@@ -14,9 +14,6 @@ the table AM track; where it and the code disagree, fix one in the same commit.
 Running example (used in tests too): `orders(id bigint, store_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb,
 metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `metrics` an object of floats, and `stores(id int, name text)`.
 
-Status legend in the tables below: **done** (in the branch and tested), **todo** (designed, planned), **stub** (the glue exists, the engine
-piece it calls is a stub, section 12), **no** (unsupported, with the error given).
-
 ---
 
 ## 1. Decisions in one page
@@ -53,7 +50,7 @@ path). Blocks 0 (meta) and 1 (directory) as in `sift_store.h`; everything else i
 | `ndocs` | rows of the immutable segments (statistics) |
 | `k1`, `b`, `analyzer_hash` | 0 |
 
-(Request to the store owners, section 12: name the field. Until then `sift_table.h` has the one accessor.)
+`sift_table.h` has the one accessor (`SIFT_TBL_NEXT_VBLOCK`).
 
 Directory entries (`SiftSegEntry`):
 
@@ -172,7 +169,7 @@ old copy, whose pages are not reused until the scan's snapshot is gone.
 
 ## 4. TableAmRoutine: every callback
 
-PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece of section 12.
+PostgreSQL 17 and 18; the differences are marked. Every callback below is implemented and tested.
 
 | callback | decision | status |
 |---|---|---|
@@ -302,8 +299,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
   `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/sift_visibility.c) which today reads the heap's
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
-  candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM. This is a
-  small patch to a file this track does not own, kept in its own commit (section 12).
+  candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM.
 - **SiftAgg over the table** (`src/table/sift_table_src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
   columns of the table, in the order of its column layout. The groups are read by the engine, one `sift_col_open_table` source per column layout
   the segments were written for (the leaves of an older layout are matched by attribute number; a column the segment lacks reads as the
@@ -431,7 +427,7 @@ insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing re
 
 ## 10. Tests
 
-All in the branch, run by `scripts/ci.sh` like the BM25 tests:
+Run by `scripts/ci.sh` like the BM25 tests:
 
 - Regression `test/sql/tbl_basic` (DDL, DML, rollback, savepoints, row locks, btree, unique and `ON CONFLICT`, VACUUM/ANALYZE, wide rows,
   TRUNCATE and its rollback, CTAS, partitions, temp tables, `ALTER ... SET ACCESS METHOD` both ways, `ADD/DROP COLUMN`), `tbl_bm25`
@@ -465,8 +461,8 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
   heap and to a sift_table subscriber with preload, and a physical standby of the publisher. `test/t/008_tbl_promote.pl`: autovacuum promotes an insert-only
   table and reclaims updates and deletes, parallel workers over write buffer pages and column groups, a repeatable-read reader across a promotion, a standby of a promoted table.
   Everything runs on PostgreSQL 17 and 18.
-- `SANITIZE=1` (ASan + UBSan) runs the same jobs through `scripts/ci.sh`. BM25 A/B: `bench/ab-query.sh` before and after the branch on a heap
-  table (the BM25 paths changed only by `sift_vis_nblocks` and the non-heap branch of the page filter).
+- `SANITIZE=1` (ASan + UBSan) runs the same jobs through `scripts/ci.sh`. BM25 A/B: `bench/ab-query.sh` compares two builds on a heap
+  table (the BM25 paths differ only by `sift_vis_nblocks` and the non-heap branch of the page filter).
 
 ## 11. Open decisions and risks
 
@@ -477,7 +473,7 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
 - The logical record doubles WAL for published tables; a custom rmgr for all page changes would remove the double write but demands
   preload everywhere.
 
-## 12. Interfaces to the engine and the other tracks: stubs and requests
+## 12. Interfaces to the engine
 
 The table AM is written against `src/col/sift_col.h`, `sift_col_enc.h`, `sift_col_seg.h` of the column track and has no second implementation of
 anything the engine does: group segments are written by `sift_colw_*` (and `sift_col_merge_segments`), read by `sift_col_open_table` /
@@ -491,25 +487,3 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
 | `sift_colw_set_tag` (segment xmin of a bulk write) | removed with the write path of 3.1: the engine writer takes the `xmin`/`cmin` of every row from the batch (`sift_cbatch_add_ver`), and the direct column writes of a rewrite are frozen (no versions) |
 | `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`sift_table_src.c`) |
-
-**Files outside this track changed in this branch, each in its own small commit** (owner in brackets):
-
-| file | change |
-|---|---|
-| `src/core/sift_store.c` [store; also edited by the m2-truncate branch] | `sift_store_removable` takes a table relation (horizon of the table itself) |
-| `src/core/sift_visibility.c/.h` [BM25 core] | `sift_vis_nblocks` (virtual blocks for a sift_table), page filter delegated to `sift_tbl_filter_page` for a sift_table |
-| `src/bm25/sift_build.c`, `src/bm25/sift_cscan.c` [BM25 core] | the `sift` index accepts a sift_table; block counts through `sift_vis_nblocks` |
-| `src/core/sift_handler.c` [BM25 core] | `_PG_init` calls `sift_tbl_init` (registers the change-record resource manager when preloaded) |
-| `scripts/isolation.sh` [test tooling] | `# requires: tam` (the spec is skipped when the installed pg_sift has no `sift_table` access method) |
-
-**Requests (for the owners, as notes; nothing here edits their files):**
-
-- col-core: (1) a storage class `SIFT_COLS_VAR` (opaque value bytes with exact round trip, no 255-byte limit, dictionary or plain, compressible)
-  and the table-schema -> leaf mapping for every type: a table cannot refuse `numeric`, `uuid`, `jsonb`, long text. (2) `SiftSegEntry.reserved`
-  documented as the segment xmin of a table AM (the engine must copy it on rewrite and never merge segments with different non-zero xmin).
-  (3) an API to add in-memory batches (`SiftColBatch`) as extra units of a `SiftColSource` (the write buffer rows). (4) a named metapage field for
-  the next vblock (table AM) instead of reusing `sum_dl`. (5) the maintenance worker entry point generalized over index and table.
-- store owners: `sift_store_removable` must accept a table relation (`index->rd_index->indrelid` is NULL for a table): a one-line change made
-  in this branch in its own commit; and the generic WAL record count limits for the tombstone append (header + tail page).
-- sift_visibility.c: the non-heap branch of section 6 (own commit).
-- col-compress: the per-column option interface (`compression=`); col-json: `paths` grammar for the table-level option.
