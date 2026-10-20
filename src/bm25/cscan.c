@@ -38,119 +38,13 @@
 
 #include "bm25/eval.h"
 #include "bm25/planner.h"
-
-typedef enum SiftColKind
-{
-	COL_VAR,					/* heap column attno (0: whole row, < 0: system column) */
-	COL_SCORE,
-	COL_MAX_SCORE,
-	COL_COUNT
-} SiftColKind;
-
-typedef struct SiftCol
-{
-	SiftColKind kind;
-	int			attno;
-} SiftCol;
-
-typedef struct SiftTotals
-{
-	int64		sb_scanned;
-	int64		blocks_scored;
-	int64		blocks_skipped;
-	int64		candidates;
-	int64		verified;
-	int64		heap_checks;
-	int64		heap_pages;
-	int64		filter_sbs;			/* pushdown: what the bitmaps kept, summed over the scans */
-	int64		filter_exact;
-	int64		filter_lossy;
-} SiftTotals;
-
-/* Heap pages of an unordered scan read ahead, and the gap from the previous page that is worth a read of its own */
-#define PREFETCH_PAGES	16
-#define PREFETCH_GAP	8
+#include "bm25/cscan_int.h"
 
 /* A hint larger than this makes the ranker keep more hits than it is likely to hand out: it grows its search past it */
 #define LIMIT_HINT_MAX	(1 << 20)
 
 /* The rows a keyed scan keeps in its first round when it has no hint */
 #define KEYED_INITIAL_ROWS	1024
-
-/*
- * A match of a keyed scan that is among the rows of the best leading keys: its index entry, its keys (those
- * of the boundary row for the rows tied with it) and the score the ranker gives it
- */
-typedef struct KeyRow
-{
-	ItemPointerData tid;
-	float4		score;
-	Datum	   *key;
-	bool	   *isnull;
-} KeyRow;
-
-typedef struct SiftScanState
-{
-	CustomScanState css;
-	SiftScanMode mode;
-	Oid			indexoid;
-	Oid			heapoid;
-	int64		k;
-	List	   *queries;			/* ExprState */
-	bool	   *query_any;			/* per query: an array of queries, ORed (body @@> ANY (array)) */
-	ExprState  *quals;				/* residual quals over the scan tuple */
-	ExprState  *cuts;				/* cutoffs of the score, over the scan tuple of a ranked row */
-	Relation	heap;
-	bool		heap_opened;
-	Relation	index;
-	IndexInfo  *iinfo;
-	TupleTableSlot *heapslot;
-	int			ncols;
-	SiftCol    *col;
-	MemoryContext cxt;				/* everything of one scan */
-	MemoryContext tmpcx;			/* one candidate's text */
-	bool		started;
-	bool		empty;				/* a query is NULL: no rows */
-	bool		done;				/* count: row returned */
-	bool		need_heap;
-	SiftIndexState *st;
-	SiftPlan   *plan;
-	PlanState  *bitmap;				/* ranked pushdown: bitmap of the tuples the other quals keep */
-	double		gate,				/* the bitmap is built when the query matches between gate and gate_to documents */
-				gate_to;
-	SiftFilter *filter;
-	SiftMatchIter *it;
-	SiftRanker *rank;
-	SiftVis		vis;
-	bool		vis_open;
-	float4		max_score;
-	SiftPageMatch pm;
-	SiftPageMatch ahead[PREFETCH_PAGES];	/* matches read from the iterator, whose heap pages are being read */
-	int			ahead_pos;
-	int			ahead_n;
-	BlockNumber ahead_blk;				/* last page read from the iterator */
-	bool		ahead_done;
-	int			wd;
-	uint64		mask;
-	uint32		vm_sb;
-	uint64		allvis[SIFT_PAGEMASK_WORDS];
-	int64		nsearches;
-	SiftTotals	tot;
-	SiftPar		par;				/* parallel-aware plan run with workers: par.sh is the shared state */
-	/* keyed scan: by the leading sort keys, then by score */
-	int			nkeys;				/* 0: by score alone */
-	ExprState **keyexpr;
-	SortSupportData *keysort;
-	int16	   *keylen;
-	bool	   *keybyval;
-	MemoryContext kcx;				/* the rows of the current round */
-	KeyRow	  **krows;				/* in order of keys, score and entry */
-	int64		nkrows,
-				kpos,				/* rows handed up */
-				kheld,				/* the best keys' rows the current round keeps, besides the ties of the last */
-				kpasses;			/* rounds so far */
-	bool		kcomplete;			/* the round holds every match */
-} SiftScanState;
 
 /* ---------- scan tuple ---------- */
 
@@ -179,7 +73,7 @@ init_cols(SiftScanState *ss, CustomScan *cs)
 }
 
 /* The scan tuple of the heap tuple in heapslot; scores are those of the ranked hit */
-static TupleTableSlot *
+TupleTableSlot *
 fill_scan_slot(SiftScanState *ss, float4 score)
 {
 	TupleTableSlot *slot = ss->css.ss.ss_ScanTupleSlot;
@@ -228,7 +122,7 @@ index_text(SiftScanState *ss)
 }
 
 /* Visible, passes the residual quals, and with want_doc yields the indexed text */
-static bool
+bool
 scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 {
 	SiftScanState *ss = arg;
@@ -275,7 +169,7 @@ add_stats(SiftScanState *ss)
 }
 
 /* Ends the heap-order iteration and the pages read ahead of it */
-static void
+void
 reset_iter(SiftScanState *ss)
 {
 	if (ss->it)
@@ -410,8 +304,6 @@ in_gate(const SiftScanState *ss, double docs)
 	return docs >= ss->gate && docs <= ss->gate_to;
 }
 
-static void keyed_search(SiftScanState *ss);
-
 static void
 start_scan(SiftScanState *ss)
 {
@@ -545,7 +437,7 @@ recheck_tuple(SiftScanState *ss)
 }
 
 /* The tuple of the next heap-order match that passes the rechecks and the quals, and in *entry the index entry of the match */
-static pg_attribute_always_inline TupleTableSlot *
+pg_attribute_always_inline TupleTableSlot *
 next_row(SiftScanState *ss, ItemPointer entry)
 {
 	ItemPointerData tid;
@@ -593,270 +485,6 @@ ranked_next(SiftScanState *ss)
 				return econtext->ecxt_scantuple;
 		}
 	return NULL;
-}
-
-/* ---------- keyed scan ---------- */
-
-/*
- * ORDER BY keys, score DESC: the score only breaks the ties of the keys, so the matches to score are those of
- * the best keys and the ones tied with the last of them. A round passes over the matches in heap order for the
- * kheld best (KeyTop, ties kept), has the ranker score just those through a filter of their entries, and sorts
- * them by keys, score and entry. A consumer that reads past them (a join that drops rows) makes the next round
- * keep more, as the ranker searches again for more hits.
- */
-typedef struct KeyTop
-{
-	SiftScanState *ss;
-	binaryheap *heap;			/* KeyRows, the worst keys at the top */
-	ItemPointerData *tie;		/* entries of the matches tied with the top that came when the heap was full */
-	int64		ntie,
-				captie,
-				seen;
-} KeyTop;
-
-static int
-key_compare(SiftScanState *ss, const Datum *a, const bool *an, const Datum *b, const bool *bn)
-{
-	for (int i = 0; i < ss->nkeys; i++)
-	{
-		int			c = ApplySortComparator(a[i], an[i], b[i], bn[i], &ss->keysort[i]);
-
-		if (c != 0)
-			return c;
-	}
-	return 0;
-}
-
-static int
-keyrow_worse(Datum a, Datum b, void *arg)
-{
-	const KeyRow *x = (const KeyRow *) DatumGetPointer(a),
-			   *y = (const KeyRow *) DatumGetPointer(b);
-
-	return key_compare(arg, x->key, x->isnull, y->key, y->isnull);
-}
-
-static KeyRow *
-new_keyrow(SiftScanState *ss, const ItemPointerData *entry, const Datum *key, const bool *isnull)
-{
-	KeyRow	   *r = palloc(sizeof(KeyRow) + ss->nkeys * (sizeof(Datum) + sizeof(bool)));
-
-	r->tid = *entry;
-	r->key = (Datum *) (r + 1);
-	r->isnull = (bool *) (r->key + ss->nkeys);
-	for (int i = 0; i < ss->nkeys; i++)
-	{
-		r->isnull[i] = isnull[i];
-		r->key[i] = isnull[i] ? 0 : datumCopy(key[i], ss->keybyval[i], ss->keylen[i]);
-	}
-	return r;
-}
-
-static void
-free_keyrow(SiftScanState *ss, KeyRow *r)
-{
-	for (int i = 0; i < ss->nkeys; i++)
-		if (!ss->keybyval[i] && !r->isnull[i])
-			pfree(DatumGetPointer(r->key[i]));
-	pfree(r);
-}
-
-static void
-add_tie(KeyTop *t, const ItemPointerData *entry)
-{
-	if (t->ntie == t->captie)
-	{
-		t->captie = Max(64, 2 * t->captie);
-		t->tie = t->tie ? repalloc_huge(t->tie, t->captie * sizeof(ItemPointerData)) :
-			MemoryContextAllocHuge(CurrentMemoryContext, t->captie * sizeof(ItemPointerData));
-	}
-	t->tie[t->ntie++] = *entry;
-}
-
-/* The match of index entry entry with keys key: kept when its keys are among the kheld best so far, or tied with the worst of them */
-static void
-keytop_add(KeyTop *t, const ItemPointerData *entry, const Datum *key, const bool *isnull)
-{
-	SiftScanState *ss = t->ss;
-	KeyRow	   *worst,
-			   *best;
-	int			c;
-
-	t->seen++;
-	if (binaryheap_size(t->heap) < ss->kheld)
-	{
-		binaryheap_add(t->heap, PointerGetDatum(new_keyrow(ss, entry, key, isnull)));
-		return;
-	}
-	worst = (KeyRow *) DatumGetPointer(binaryheap_first(t->heap));
-	if ((c = key_compare(ss, key, isnull, worst->key, worst->isnull)) > 0)
-		return;
-	if (c == 0)
-	{
-		add_tie(t, entry);
-		return;
-	}
-	binaryheap_replace_first(t->heap, PointerGetDatum(new_keyrow(ss, entry, key, isnull)));
-	best = (KeyRow *) DatumGetPointer(binaryheap_first(t->heap));
-	/* the ties were of the keys that left the top: they stay with the keys that took its place only when those are the same */
-	if (key_compare(ss, worst->key, worst->isnull, best->key, best->isnull) == 0)
-		add_tie(t, &worst->tid);
-	else
-		t->ntie = 0;
-	free_keyrow(ss, worst);
-}
-
-/* Passes over the matches in heap order that pass the quals */
-static void
-keyed_collect(SiftScanState *ss, KeyTop *t)
-{
-	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
-	Datum	   *key = palloc(ss->nkeys * sizeof(Datum));
-	bool	   *isnull = palloc(ss->nkeys * sizeof(bool));
-	ItemPointerData entry;
-
-	ss->it = sift_iter_begin(ss->plan);
-	for (;;)
-	{
-		CHECK_FOR_INTERRUPTS();
-		ResetExprContext(econtext);
-		if (next_row(ss, &entry) == NULL)
-			break;
-		for (int i = 0; i < ss->nkeys; i++)
-			key[i] = ExecEvalExprSwitchContext(ss->keyexpr[i], econtext, &isnull[i]);
-		keytop_add(t, &entry, key, isnull);
-	}
-	reset_iter(ss);
-}
-
-static int
-entry_order(const void *a, const void *b)
-{
-	return ItemPointerCompare((ItemPointer) &(*(KeyRow *const *) a)->tid, (ItemPointer) &(*(KeyRow *const *) b)->tid);
-}
-
-/* The rows the pass kept, with the ties given the keys of the worst, in order of entry */
-static KeyRow **
-keytop_rows(KeyTop *t, int64 *nrows)
-{
-	int64		nheap = binaryheap_size(t->heap);
-	KeyRow	  **rows = palloc((nheap + t->ntie) * sizeof(KeyRow *));
-	KeyRow	   *tied = palloc(t->ntie * sizeof(KeyRow));
-
-	for (int64 i = 0; i < nheap; i++)
-		rows[i] = (KeyRow *) DatumGetPointer(binaryheap_get_node(t->heap, i));
-	for (int64 i = 0; i < t->ntie; i++)
-	{
-		const KeyRow *worst = rows[0];
-
-		tied[i] = (KeyRow) {.tid = t->tie[i], .key = worst->key, .isnull = worst->isnull};
-		rows[nheap + i] = &tied[i];
-	}
-	*nrows = nheap + t->ntie;
-	qsort(rows, *nrows, sizeof(KeyRow *), entry_order);
-	return rows;
-}
-
-static int
-entry_find(const void *entry, const void *row)
-{
-	return ItemPointerCompare((ItemPointer) entry, (ItemPointer) &(*(KeyRow *const *) row)->tid);
-}
-
-/* Scores the rows (in order of entry): the ranker looks at nothing but their tuples */
-static void
-keyed_score(SiftScanState *ss, KeyRow **rows, int64 nrows)
-{
-	SiftFilter *filter = sift_filter_create(CurrentMemoryContext);
-	ItemPointerData tid;
-	float4		score;
-	int64		nscored = 0;
-
-	for (int64 i = 0; i < nrows;)
-	{
-		BlockNumber blk = ItemPointerGetBlockNumber(&rows[i]->tid);
-		uint64		mask[SIFT_OFFMASK_WORDS] = {0};
-
-		for (; i < nrows && ItemPointerGetBlockNumber(&rows[i]->tid) == blk; i++)
-		{
-			int			off = ItemPointerGetOffsetNumber(&rows[i]->tid) - 1;
-
-			mask[off / 64] |= UINT64CONST(1) << (off % 64);
-		}
-		sift_filter_add_page(filter, blk, mask);
-	}
-	sift_plan_set_filter(ss->plan, filter);
-	ss->rank = sift_rank_begin(ss->plan, 0, scan_verify, ss);
-	while (sift_rank_next(ss->rank, &tid, &score))
-	{
-		KeyRow	  **row = bsearch(&tid, rows, nrows, sizeof(KeyRow *), entry_find);
-
-		if (row)
-		{
-			(*row)->score = score;
-			nscored++;
-		}
-	}
-	sift_rank_end(ss->rank);
-	ss->rank = NULL;
-	if (nscored != nrows)
-		elog(ERROR, "sift: the ranker scored " INT64_FORMAT " of the " INT64_FORMAT " matches the keys kept", nscored, nrows);
-}
-
-static int
-keyrow_order(const void *a, const void *b, void *arg)
-{
-	const KeyRow *x = *(KeyRow *const *) a,
-			   *y = *(KeyRow *const *) b;
-	int			c = key_compare(arg, x->key, x->isnull, y->key, y->isnull);
-
-	if (c != 0)
-		return c;
-	if (x->score != y->score)
-		return x->score > y->score ? -1 : 1;
-	return ItemPointerCompare((ItemPointer) &x->tid, (ItemPointer) &y->tid);
-}
-
-static void
-keyed_search(SiftScanState *ss)
-{
-	KeyTop		t = {.ss = ss};
-	MemoryContext old;
-
-	if (ss->kcx)
-		MemoryContextDelete(ss->kcx);
-	ss->kcx = AllocSetContextCreate(ss->cxt, "sift keyed", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(ss->kcx);
-	t.heap = binaryheap_allocate(ss->kheld, keyrow_worse, ss);
-	keyed_collect(ss, &t);
-	ss->krows = keytop_rows(&t, &ss->nkrows);
-	ss->kcomplete = t.seen <= ss->kheld;
-	ss->kpasses++;
-	if (ss->nkrows > 0)
-		keyed_score(ss, ss->krows, ss->nkrows);
-	qsort_arg(ss->krows, ss->nkrows, sizeof(KeyRow *), keyrow_order, ss);
-	MemoryContextSwitchTo(old);
-}
-
-static TupleTableSlot *
-keyed_next(SiftScanState *ss)
-{
-	for (;;)
-	{
-		while (ss->kpos < ss->nkrows)
-		{
-			KeyRow	   *r = ss->krows[ss->kpos++];
-			ItemPointerData tid = r->tid;
-
-			if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
-				return fill_scan_slot(ss, r->score);
-		}
-		if (ss->kcomplete)
-			return NULL;
-		/* more than it holds, which a big tie of the last keys can exceed several times over */
-		ss->kheld = Min(Max(sift_rank_next_k(ss->kheld), ss->nkrows + 1), PG_INT32_MAX);
-		keyed_search(ss);
-	}
 }
 
 static TupleTableSlot *
