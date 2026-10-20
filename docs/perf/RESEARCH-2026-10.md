@@ -1,9 +1,9 @@
 # Where pg_sift is behind Elasticsearch, and what to do about it (October 2026)
 
-Branch `perf/research`, based on release 1.3.0. The branch is merged: the two prototypes (`rank: overpull:`, `plan: estimate:`) and the prepared-statement gate of section 10 are in release 2.0.0.
+Research on release 1.3.0 (a historical baseline). The two prototypes (`rank: overpull:`, `plan: estimate:`) and the prepared-statement gate of section 10 are in release 2.0.0.
 Written on 2026-10-17: "the committed session" below is the slim tier of 2026-10-17 (`90faba5`: 50,000 articles, 34,165 places, every engine alone on the whole host of 16 threads, load average 7-18),
 which `docs/results` has since replaced by the 3-CPU run of 2026-10-19 ([BENCHMARKS.md](../BENCHMARKS.md)); its numbers (sift or 6,210 / Elasticsearch 7,600 queries per second, for one) are a historical baseline and do not compare with the current tables.
-Every number is labelled **measured** (this branch, this host), **cited** (a paper or a benchmark of someone else, with its reference in section 9) or **estimated**
+Every number is labelled **measured** (this build, this host), **cited** (a paper or a benchmark of someone else, with its reference in section 9) or **estimated**
 (arithmetic from measured numbers, not run).
 
 ## 1. Summary
@@ -99,7 +99,7 @@ Per query, mean of 500 statements (EXPLAIN counters; the table has 307 blocks of
 | join | 1,779 before the join | 30.2 (summed over 3 searches) | 116.2 / 3.6 (last search only) | 376 (last search) | 567 | 465 | 0.88 ms |
 | count | | 9.6 | | 0 | 0 | 56 | 0.10 ms |
 
-**Oracle threshold.** A research GUC (not on the branch) starts the top-k heap with the true k-th score of the query, i.e. the best any ordering of the blocks could do with these block bounds:
+**Oracle threshold.** A research GUC (not in the tree) starts the top-k heap with the true k-th score of the query, i.e. the best any ordering of the blocks could do with these block bounds:
 
 | class | blocks scored, normal | with the true threshold from block 1 | candidates verified | exec time |
 |---|---:|---:|---:|---:|
@@ -232,7 +232,7 @@ Not on the list because the profile shows nothing to gain: MaxScore splitting (e
 
 ## 7. Part 5: prototypes
 
-Both are on the branch, based on `1f25b99`, each in a focused commit with its regression tests. All A/B below ran two builds in the same cluster, interleaved; host load average 10-22.
+Both were written on `1f25b99`, each with its regression tests. All A/B below ran two builds in the same cluster, interleaved; host load average 10-22.
 
 ### 7.1 `rank: overpull:` - grow the search 16x
 
@@ -275,7 +275,7 @@ On the loaded host the 8-client filter and mixed cells do not show the single-ba
 
 * The committed OR gap to Elasticsearch (6,210 vs 7,600): on this host sift is at 8,300 qps; the session difference is not explained.
 * The committed p1 filter p50 (0.919 ms): my reproduction is 3.2 ms (no index on `country_code`, as in the adapter); the suite's number comes from a setup I did not reproduce. The 7.4x with a forced pushdown is on my setup.
-* Kernel-side cost (syscalls, scheduling) is only the `stime` share; `perf_event_paranoid = 2` blocks kernel samples and `ptrace_scope = 1` blocked gdb, so call counts came from a temporary elog patch (not on the branch).
+* Kernel-side cost (syscalls, scheduling) is only the `stime` share; `perf_event_paranoid = 2` blocks kernel samples and `ptrace_scope = 1` blocked gdb, so call counts came from a temporary elog patch (not in the tree).
 * Rows 6-8, 10, 11, 13 of section 6 are estimates from profile shares, not prototypes.
 * pg_search's side of the OR comparison, Elasticsearch's own profile, and any disk-backed cold-cache behaviour (this host's scratch is tmpfs).
 * The literature numbers are from the sources' own benchmarks (Lucene luceneutil Wikipedia, MS MARCO learned sparse); several only as search snippets (marked).
@@ -308,11 +308,11 @@ Fetched (read) unless marked.
 
 ## 10. Follow-up: what was implemented (October 2026)
 
-The user approved implementing the findings. Branch `perf/research`, one commit and one regression test per item; every number is user cycles per
+The findings were then implemented, one regression test per item; every number is user cycles per
 transaction of one backend, the same seeded statements for both builds (`bench/steps/ab.sh run ... Nt`), mean +- standard error of 5 interleaved
 runs, host load 6 to 12.
 
-| Item | Class | main (b6e7d3b) | this branch |
+| Item | Class | before (b6e7d3b) | after |
 |---|---|---|---|
 | 4. generic plans keep the pushdown, decided at execution | prepared filter | 3.23M +- 0.12M | 1.66M +- 0.06M (-49%) |
 | | prepared join | 5.93M +- 0.41M | 4.68M +- 0.37M (-21%) |
@@ -367,7 +367,7 @@ the join order (`only_best`), so a masked scan that wins for one tenant cannot b
 join wins. Without a guard that picks between them at execution by the number of keys, a tenant with many keys pays for a mask it does not need.
 Not started: the oracle gain (-30% of the join class) does not pay for the risk of a slower shape.
 
-**Sanitizer finding.** `SANITIZE=1 scripts/ci.sh quick` failed `parallel_scan` on this branch and passed on main. The cause is older than the
+**Sanitizer finding.** `SANITIZE=1 scripts/ci.sh quick` failed `parallel_scan` with these changes and passed before them. The cause is older than the
 branch: `add_parallel_count` passed an uninitialized `AggClauseCosts` to `get_agg_clause_costs`, so the parallel count was priced with stack
 garbage (889 or 2684 for the same plan depending on the stack) and sometimes lost to a partial aggregate over a parallel scan. The late-stretch
 commit moved the stack. Fixed by zeroing the struct (commit `planner: count:`).

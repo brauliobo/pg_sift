@@ -490,7 +490,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 
 ## Extras beyond the baseline design: innovations, expected gains, measurement
 
-Every item is measured by the benchmark harness (`bench/`). It compares sift, in-database baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
+Every item is measured by the benchmark harness (`bench/`); the profile of where a query spends its time and the ideas not built yet (a 1.3.0 baseline) are in [docs/perf/RESEARCH-2026-10.md](docs/perf/RESEARCH-2026-10.md). It compares sift, in-database baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
 
 | # | Idea | Status | Expected gain **[est]** | Measure |
 |---|---|---|---|---|
