@@ -478,7 +478,7 @@ extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
  * into xmin / cmin (0: frozen; either may be NULL); their number */
 extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin);
 
-/* ---------- the column source of the aggregate scan (table/src.c) ---------- */
+/* ---------- the column source of the aggregate scan (table/feed.c, table/src.c) ---------- */
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);

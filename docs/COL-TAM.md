@@ -318,7 +318,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
 
 ## 7. Maintenance
 
-**Promotion** (`sift_tbl_promote`, `src/table/seg.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
+**Promotion** (`sift_tbl_promote`, `src/table/promote.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
 kind `SEALED`; `create_wbuf` does it when the segment fills, VACUUM closes the active one once it has 8 pages), and becomes a column
 segment when every row is *final* (`row_fate`): `xmin` committed and older than the horizon (kept, frozen), or flagged `DEAD` by VACUUM
 (dropped); a row whose insert is aborted or not yet old enough keeps the segment as it is (retried by the next promotion). A row with a

@@ -58,9 +58,9 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 | src/bm25/posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
 | src/bm25/segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
 | src/bm25/bitmap.c `sift_chunk_pagemask` | DOCMAP chunk byte0 0xB0, entry 00 00 FF FF | writes `pm[1023]` | open (source read: the page index is not bounded) |
-| src/table/store.c `sift_tbl_delta_page` | delta header npages=60000 | `seg->page[1024]` overflow on the first fetch | not re-checked; the function is now `sift_tbl_wbuf_page`, which copies the header's `npages` without a bound |
-| src/table/store.c `sift_tbl_page_rec` | slot[0]=0xFFF0 in a delta page | read of `rec->len` outside the page; `sift_tbl_rec_flag` and VACUUM write there | not re-checked |
-| src/table/store.c `sift_tbl_tomb_sync` | tombstone page nent=0xFFFF | reads 2 MB past the page; a `next` cycle loops forever | not re-checked |
+| src/table/wbuf.c `sift_tbl_delta_page` | delta header npages=60000 | `seg->page[1024]` overflow on the first fetch | not re-checked; the function is now `sift_tbl_wbuf_page`, which copies the header's `npages` without a bound |
+| src/table/wbuf.c `sift_tbl_page_rec` | slot[0]=0xFFF0 in a delta page | read of `rec->len` outside the page; `sift_tbl_rec_flag` and VACUUM write there | not re-checked |
+| src/table/tomb.c `sift_tbl_tomb_sync` | tombstone page nent=0xFFFF | reads 2 MB past the page; a `next` cycle loops forever | not re-checked |
 | src/col/codec_parse.c `parse_node` / `sift_cc_open` | 40-byte tree of CONST children, n=16M | 64-128 MB allocations before the row count is compared | not re-checked |
 | src/col/seg.c `sift_cseg_unit` | last chunk PACK | `unpack` reads up to 31 bytes past `unitbuf` (no `SIFT_COL_PAD`) | not re-checked |
 
