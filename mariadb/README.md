@@ -399,6 +399,8 @@ engine skeleton (`rnd_init`, `index_read_map`, `ha_*` registration) and nothing 
 
 ## Numbers against InnoDB FULLTEXT
 
+**Historical baseline (2026-10-17, a 3.0 development build; not repeated for 3.1.0).** The port code did not change in 3.1; the shared core did (BM25 index format 3 makes the index smaller, plus one ranking fix), so sizes and speeds may differ from these. They are kept with their date and are not current 3.1.0 measurements; `mariadb/bench/run.sh` repeats them.
+
 Corpus: the 218,058 articles of Simple English Wikipedia in an InnoDB table (`docs(id, body MEDIUMTEXT)`, 402 MB), a FULLTEXT index and
 a sift index on `body`, InnoDB buffer pool 3 GB, one client over the Unix socket, warm cache, the host as it is. Each cell is the median
 over 200 evenly spaced queries of the 1,000 benchmark queries of its class (AND, OR and phrase of the terms of an article substring),

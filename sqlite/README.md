@@ -184,6 +184,8 @@ format is refused with an error. Internals: [DESIGN.md](https://github.com/braul
 
 ## Numbers against FTS5
 
+**Historical baseline (2026-10-17, a 3.0 development build; not repeated for 3.1.0).** The port code did not change in 3.1; the shared core did (BM25 index format 3 makes the index smaller, plus one ranking fix), so sizes and speeds may differ from these. They are kept with their date and are not current 3.1.0 measurements; `sqlite/bench/` repeats them.
+
 Measured on 2026-10-17: Simple English Wikipedia, 218,058 articles (about 300 MB of text), an AVX-512 CPU (16 threads), one thread, no CPU
 pinning, run with `nice` on a **shared** host (load average 10 to 17 during all runs: no idle machine was available, so absolute figures are
 noisy; the two query runs, at load 16 and 11, differ by up to 1.6x on the heavy OR class). 200 queries per class from the benchmark trace

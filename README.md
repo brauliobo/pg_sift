@@ -249,7 +249,7 @@ The search engine as a loadable extension, for apps that want search without a s
 
 - **Needs:** Linux x86-64, SQLite 3.38 or newer.
 - **Queries:** exact BM25, phrase, prefix, wildcard, regex and fuzzy; highlights, snippets, facets.
-- **Speed:** 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles).
+- **Speed:** 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles; measured 2026-10-17 on a 3.0 development build, not repeated for 3.1.0: [sqlite/README.md](sqlite/README.md#numbers-against-fts5)).
 - **Install, options and numbers:** [sqlite/README.md](sqlite/README.md).
 
 ```sql
@@ -263,7 +263,7 @@ SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT
 `libsift_udf.so` and two SQL files bring the engine to MariaDB, with no storage engine and no server patch.
 
 - **Needs:** MariaDB 10.5 to 13.x; results are identical to pg_sift.
-- **Speed:** 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller.
+- **Speed:** 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller (measured 2026-10-17 on a 3.0 development build, not repeated for 3.1.0: [mariadb/README.md](mariadb/README.md#numbers-against-innodb-fulltext)).
 - **Install and guide:** [mariadb/README.md](mariadb/README.md).
 
 ```sql
