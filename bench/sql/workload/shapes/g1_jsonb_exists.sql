@@ -1,3 +1,4 @@
+-- Status (3.2): follow-up: the root type of the document is not in the index (docs/AGG.md, "Workload shapes")
 -- GAP 1: key-exists on a document held by the index (jsonb_exists / ? operator) keeps the normal plan.
 -- Expected: Custom Scan (SiftAgg), like `jsonb_typeof(doc -> 'mapped') IS NOT NULL` which is exactly equivalent.
 \echo -- not pushed: jsonb_exists

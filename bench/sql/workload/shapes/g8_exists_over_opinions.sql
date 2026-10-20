@@ -1,3 +1,4 @@
+-- Status (3.2): fixed: no plan error; the EXISTS over the recordset and the nested jsonpath are pushed
 -- GAP 8 (bug + shape). With a sift_col index that holds an EXPRESSION column (coldiff.wl_norm(doc)), a correlated EXISTS
 -- over the recordset of that expression fails at PLAN time: `ERROR: invalid attnum 18 for relation "o"` (the same query with
 -- sift.enable_agg = off, or over the raw column, plans fine). Expected: the normal plan, or the EXISTS as a pushed row filter.

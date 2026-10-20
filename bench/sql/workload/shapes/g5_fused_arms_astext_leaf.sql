@@ -1,3 +1,4 @@
+-- Status (3.2): fixed: the arms fuse over a text leaf with the cast in the aggregate
 -- GAP 5: the fused per-item arms over a text leaf with the cast in the aggregate (the scores of the documents are text: numbers, numbers as
 -- strings and text, so the cast is guarded). Was pushed arm by arm only, one row per item back to the executor.
 -- Expected: one SiftAgg, `Pushed Aggregates: avg(inner), count(DISTINCT row)`.

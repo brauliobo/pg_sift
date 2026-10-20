@@ -59,6 +59,40 @@ The normal plan stays for `<>`, `ctid` in an expression, in `GROUP BY` or compar
 (a custom plan folds it), a partitioned table (TIDs are per partition) and the top-N shapes (their probes read zones of units outside the range). PostgreSQL
 plans a tid range scan for a narrow range (`enable_tidscan = off` shows the scan). Fixtures `tr_*`, test `agg_tid_range`.
 
+## Workload shapes
+
+The shapes of a review analytics workload (an item table with jsonb ratings, a document with an array of opinions, entity and mapping tables) are
+the synthetic generator `test/col/workload.sql` and the files `bench/sql/workload/shapes/g*.sql` (`bench/sql/workload/run.sh build|plans|time`;
+the status of each shape is the first line of its file). Regress test `agg_workload_shapes`, fixtures `wl_*`, coverage rows `WL01` to `WL09`.
+Times are the serial plan at 300,000 items, best of 3, with `sift.enable_agg` off and on.
+
+| Shape | Status | Off | On |
+| --- | --- | --- | --- |
+| g8 `EXISTS` over `jsonb_to_recordset(expr -> 'opinions')` of an index expression (was a plan error, `invalid attnum`) | pushed | 1.64 s | 3 ms |
+| g8 nested jsonpath `$.opinions[*] ? (@.category == "x" && @.polarity == "y")` | pushed | 1.52 s | 3 ms |
+| g9 / g10 `x = ANY (ARRAY (SELECT ...))`, eight keys | pushed | 116 ms | 2 ms |
+| g5 per-item arms, `avg(n::float8)` over a text leaf, count of the items | fused | 2.83 s | 0.07 s |
+| g4 a second `count(DISTINCT)` over another column of the row | arms one by one | | follow-up |
+| g7 fused arms for a selective scan (one entity) | not offered | | follow-up |
+| g2 lookup keyed by a column of another joined table | normal plan | | follow-up |
+| g1 `jsonb_exists` / `?` on an object | normal plan | | follow-up |
+| g3 `(doc -> 'k')::int` | normal plan | | follow-up |
+| g6 one string in a typed leaf flags its unit | normal plan, leaf named at `DEBUG1` | | [design note](COL-DIRTY-UNITS.md) |
+
+What the pushed shapes do:
+
+- **Text-valued leaves (`astext`) in paths and recordsets.** `jsonb_to_recordset(expr -> 'a') AS o(k text)` reads the leaf of a list of objects whose
+  member is declared `astext`; a text literal tests it for equality (`=`, `IN`) only when no number or boolean prints as that text (it does not start with a digit or `-` and is not `true` or `false`), so the leaf's text of the number 7 is never taken for the string `'7'`.
+  A number or boolean literal against such a leaf, a strict path and a NOT of a test that may be NULL keep the normal plan (plain traps in `wl_path_opinions_*`).
+- **`EXISTS` over an index expression's array.** The planner deparses the expression with the query's own range table; the same expression in a
+  sub-select's range table is what raised `invalid attnum`. The members of one element are tested together, as for a column.
+- **`x = ANY (ARRAY (SELECT ...))`.** An uncorrelated, stable sub-select that cannot raise is an InitPlan; the scan runs it once when it starts and the
+  rows are the lookup table of the leaf (as for a hashed sub-plan, so no parallel workers). A sub-select that reads the row, is volatile or may raise
+  keeps the normal plan (`wl_any_array_subselect_*`).
+- **Fused arms over a text leaf.** The inner `sum` / `avg` of a float8 expression the scan evaluates (a cast, `CASE`) is accumulated per row like the
+  typed ones. The expression runs for every item the scan reads: the arms must share one WHERE (it is the scan's) and have no inner `FILTER`; a WHERE of
+  each arm's own keeps the arms one by one. The plain cast raises for a score that is no number, in the scan as in the heap plan.
+
 ## Differential suite
 
 `scripts/coldiff.sh` is the referee of the aggregate pushdown (`Custom Scan (SiftAgg)`): it runs a corpus of plain SQL aggregate queries

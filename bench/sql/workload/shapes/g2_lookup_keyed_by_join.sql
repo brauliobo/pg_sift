@@ -1,3 +1,4 @@
+-- Status (3.2): follow-up: a lookup keyed by another joined table needs chained joins in the executor (docs/AGG.md, "Workload shapes")
 -- GAP 2: a lookup join keyed by a column of another joined table (t_wl_map.entity_type = t_wl_entity.type) runs as hash joins.
 -- Expected: Lookup Joins on both tables. The literal key (sm.entity_type = 'attraction') is pushed.
 \echo -- not pushed: key from a joined table

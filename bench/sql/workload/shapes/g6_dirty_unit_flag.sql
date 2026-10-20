@@ -1,3 +1,4 @@
+-- Status (3.2): design note docs/COL-DIRTY-UNITS.md; the leaf that keeps the pushdown off is named at DEBUG1
 -- GAP 6: one string-valued number in a float8 path (or one non-object document in a column with paths) flags its whole unit;
 -- with the rows spread over every unit (3 % string scores) no scan that reads the path is pushed down any more, silently.
 -- Expected: the unit stays usable (recheck the flagged rows from the heap), as pg_sift 3.0.1 announced.
