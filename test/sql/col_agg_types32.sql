@@ -1,0 +1,139 @@
+-- time, enum, uuid, bytea, arrays, ranges and multiranges in a sift_col index: the column engine stores them
+-- (time and the enum's OID as integers, the others as the image of the datum) and SiftAgg reads them as dictionaries of datums, so a key, an
+-- aggregate, a conjunct, an OR, a FILTER or an expression is PostgreSQL's own function on the value. Every query runs with and without the
+-- pushdown and the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+
+CREATE TYPE lvl3 AS ENUM ('lo', 'ok', 'hi');
+ALTER TYPE lvl3 ADD VALUE 'meh' BEFORE 'ok';
+CREATE TABLE wt (id int, grp int, u uuid, b bytea, t time, e lvl3, ia int[], ta text[], na numeric[], r int4range, tr tstzrange, mr int4multirange)
+	WITH (autovacuum_enabled = false);
+INSERT INTO wt SELECT i, i % 7,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 37 = 0 THEN '00000000-0000-0000-0000-000000000000' ELSE md5((i % 50)::text)::uuid END,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN '\x'::bytea WHEN i % 19 = 0 THEN '\x00ff00'::bytea ELSE decode(md5((i % 40)::text), 'hex') END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 29 = 0 THEN '24:00:00' ELSE (((i * 7919) % 86400) * interval '1 second' + (i % 5) * interval '1 microsecond')::time END,
+	CASE WHEN i % 8 = 0 THEN NULL ELSE (ARRAY['lo', 'ok', 'hi', 'meh'])[1 + i % 4]::lvl3 END,
+	CASE WHEN i % 10 = 0 THEN NULL WHEN i % 14 = 0 THEN '{}' ELSE ARRAY[i % 5, i % 3] END,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE ARRAY['a' || (i % 4), NULL, 'z'] END,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE ARRAY[(ARRAY[1.0, 1.00, 1, 1.50, 1.5])[1 + i % 5], (i % 3)::numeric] END,
+	CASE WHEN i % 12 = 0 THEN NULL WHEN i % 15 = 0 THEN 'empty' ELSE int4range(i % 10, i % 10 + 5) END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE tstzrange('2020-01-01'::timestamptz + (i % 30) * interval '1 day', '2020-03-01') END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE int4multirange(int4range(i % 5, i % 5 + 2), int4range(20, 30)) END
+FROM generate_series(1, 6000) i;
+CREATE INDEX wt_col ON wt USING sift_col (id, grp, u, b, t, e, ia, ta, na, r, tr, mr);
+VACUUM (FREEZE, ANALYZE) wt;
+SELECT sift.col_verify('wt_col', true);
+SELECT leaf, path, type, kind FROM sift.col_leaves('wt_col') ORDER BY leaf;
+SELECT format FROM sift.col_segments('wt_col') WHERE kind = 'immutable';
+
+-- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
+BEGIN
+	SET sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
+	SET sift.enable_agg = off;
+	SET enable_sort = off;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_off := SQLERRM; END;
+	RESET sift.enable_agg;
+	RESET enable_sort;
+	IF e_on IS NOT NULL OR e_off IS NOT NULL THEN
+		DROP TABLE IF EXISTS r_on, r_off;
+		RETURN CASE WHEN e_on IS NOT DISTINCT FROM e_off THEN 'error: ' || e_on ELSE 'DIFF on=' || coalesce(e_on, 'ok') || ' off=' || coalesce(e_off, 'ok') END;
+	END IF;
+	SELECT count(*) INTO a FROM ((SELECT d::text FROM r_on d EXCEPT ALL SELECT d::text FROM r_off d)
+								  UNION ALL (SELECT d::text FROM r_off d EXCEPT ALL SELECT d::text FROM r_on d)) x;
+	DROP TABLE r_on, r_off;
+	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
+END $$;
+
+
+-- keys
+SELECT chk($$SELECT u::text AS k, count(*) AS c FROM wt GROUP BY u$$) AS uuid_key,
+       chk($$SELECT encode(b, 'hex') AS k, count(*) AS c FROM wt GROUP BY b$$) AS bytea_key,
+       chk($$SELECT t::text AS k, count(*) AS c FROM wt GROUP BY t$$) AS time_key,
+       chk($$SELECT e::text AS k, count(*) AS c FROM wt GROUP BY e$$) AS enum_key,
+       chk($$SELECT ia::text AS k, count(*) AS c FROM wt GROUP BY ia$$) AS int_array_key,
+       chk($$SELECT ta::text AS k, count(*) AS c FROM wt GROUP BY ta$$) AS text_array_key,
+       chk($$SELECT r::text AS k, count(*) AS c FROM wt GROUP BY r$$) AS range_key,
+       chk($$SELECT tr::text AS k, count(*) AS c FROM wt GROUP BY tr$$) AS tstz_range_key,
+       chk($$SELECT mr::text AS k, count(*) AS c FROM wt GROUP BY mr$$) AS multirange_key,
+       chk($$SELECT count(*) AS groups FROM (SELECT na FROM wt GROUP BY na) g$$) AS numeric_array_groups;
+-- aggregates, conjuncts, OR, FILTER, expressions
+SELECT chk($$SELECT grp AS g, min(t) AS a, max(t) AS b, min(e)::text AS c, max(e)::text AS d, count(DISTINCT u) AS f, count(DISTINCT b) AS h FROM wt GROUP BY grp$$) AS aggs,
+       chk($$SELECT grp AS g, count(DISTINCT ia) AS a, count(DISTINCT ta) AS b, count(DISTINCT r) AS c, count(DISTINCT mr) AS d FROM wt GROUP BY grp$$) AS distinct_,
+       chk($$SELECT count(*) AS c FROM wt WHERE e < 'ok' OR t > '12:00'$$) AS enum_or_time,
+       chk($$SELECT e::text AS k, count(*) AS c FROM wt WHERE u = md5('3')::uuid OR b = '\x00ff00' GROUP BY e$$) AS conjuncts_or,
+       chk($$SELECT count(*) AS c FROM wt WHERE ia @> ARRAY[1] AND r && int4range(3, 5)$$) AS array_range_ops,
+       chk($$SELECT count(*) AS c, sum(array_length(ta, 1)) AS s FROM wt WHERE ta && ARRAY['a1']$$) AS overlap,
+       chk($$SELECT grp AS g, count(*) FILTER (WHERE t BETWEEN '01:00' AND '11:00') AS c1, count(*) FILTER (WHERE e > 'lo') AS c2 FROM wt GROUP BY grp$$) AS filter_,
+       chk($$SELECT e::text AS k, avg(extract(epoch FROM t)) AS a FROM wt GROUP BY e$$) AS expression_,
+       chk($$SELECT count(*) AS c FROM wt WHERE e = ANY (ARRAY['lo', 'meh']::lvl3[]) AND u IN (md5('4')::uuid, md5('5')::uuid)$$) AS in_lists,
+       chk($$SELECT count(*) AS c FROM wt WHERE u IS NULL OR b IS NULL OR t IS NULL OR e IS NULL OR ia IS NULL OR r IS NULL$$) AS nulls,
+       chk($$SELECT mr @> 25 AS k, count(*) AS c FROM wt GROUP BY 1$$) AS multirange_op;
+
+-- parameters
+PREPARE p_e(lvl3, uuid) AS SELECT grp AS g, count(*) AS c FROM wt WHERE e >= $1 OR u = $2 GROUP BY grp;
+SET plan_cache_mode = force_generic_plan;
+SELECT chk($$EXECUTE p_e('ok', md5('3')::uuid)$$) AS generic, chk($$EXECUTE p_e(NULL, NULL)$$) AS generic_null;
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+
+-- the order of an enum is the catalog's when the query runs: a value added after the index was built and used by new rows
+ALTER TYPE lvl3 ADD VALUE 'fine' AFTER 'ok';
+ALTER TYPE lvl3 ADD VALUE 'awful' BEFORE 'lo';
+INSERT INTO wt SELECT 10000 + i, i % 7, md5(i::text)::uuid, decode(md5(i::text), 'hex'), (i || ' minutes')::interval::time,
+	(ARRAY['lo', 'ok', 'hi', 'meh', 'fine', 'awful'])[1 + i % 6]::lvl3, ARRAY[i % 4], ARRAY['q'], ARRAY[i::numeric], int4range(i, i + 3), NULL, NULL FROM generate_series(1, 1000) i;
+CREATE FUNCTION shapes(tag text) RETURNS text LANGUAGE sql AS $$
+	SELECT concat_ws(' ', tag,
+		chk('SELECT e::text AS k, count(*) AS c FROM wt GROUP BY e'),
+		chk('SELECT grp AS g, min(e)::text AS a, max(e)::text AS b, count(*) FILTER (WHERE e < ''ok'') AS c FROM wt GROUP BY grp'),
+		chk('SELECT u::text AS k, count(*) AS c FROM wt GROUP BY u'),
+		chk('SELECT encode(b, ''hex'') AS k, count(*) AS c, min(t) AS a FROM wt GROUP BY b'),
+		chk('SELECT ia::text AS k, count(*) AS c FROM wt GROUP BY ia'),
+		chk('SELECT r::text AS k, count(*) AS c FROM wt GROUP BY r'),
+		chk('SELECT grp AS g, count(*) AS c FROM wt WHERE t > ''06:00'' OR e > ''hi'' GROUP BY grp'))
+$$;
+SELECT shapes('buffered');
+DELETE FROM wt WHERE id % 5 = 1;
+UPDATE wt SET e = 'fine', t = t + interval '1 minute', u = md5(id::text)::uuid, ia = ia || 9 WHERE id % 11 = 2;
+SELECT shapes('updated');
+SELECT sift.col_promote('wt_col');
+VACUUM wt;
+SELECT sift.col_merge('wt_col', true);
+SELECT shapes('merged');
+SELECT sift.col_verify('wt_col', true);
+ALTER TYPE lvl3 RENAME VALUE 'meh' TO 'so-so';
+SELECT shapes('renamed');
+
+-- parallel workers
+RESET seq_page_cost;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 1000;
+SELECT chk($$SELECT grp AS g, count(*) AS c, min(t) AS a, max(e)::text AS b FROM wt GROUP BY grp$$) AS parallel_aggs,
+       chk($$SELECT e::text AS k, count(*) AS c FROM wt GROUP BY e$$) AS parallel_key;
+
+-- a sift_table stores these types by size and keeps its format minor
+CREATE TABLE tt (id int, t time, e lvl3, ia int[], r int4range, u uuid, b bytea) USING sift_table;
+INSERT INTO tt SELECT i, '01:00'::time + i * interval '1 second', 'ok', ARRAY[i], int4range(i, i + 2), md5(i::text)::uuid, '\x01' FROM generate_series(1, 20000) i;
+VACUUM tt;
+SELECT kind, format, count(*) FROM sift.table_segments('tt') GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT e::text, count(*), min(t), max(ia) FROM tt GROUP BY e;
+DROP TABLE tt;
+
+DROP TABLE wt;
+DROP TYPE lvl3;
+DROP FUNCTION chk(text), shapes(text);
+DROP EXTENSION pg_sift;

@@ -51,11 +51,19 @@ CREATE INDEX w_expr ON w USING sift_col ((n3::numeric(25, 5)), (id::numeric));
 CREATE INDEX w_time ON w USING sift_col (tm);
 CREATE INDEX w_uuid ON w USING sift_col (u);
 CREATE INDEX w_bytea ON w USING sift_col (b);
+-- the types that stay refused
+CREATE TABLE refused (a timetz, b point, c inet, d tsvector);
+CREATE INDEX r_timetz ON refused USING sift_col (a);
+CREATE INDEX r_point ON refused USING sift_col (b);
+CREATE INDEX r_inet ON refused USING sift_col (c);
+CREATE INDEX r_tsvector ON refused USING sift_col (d);
+DROP TABLE refused;
 SELECT indexrelid::regclass AS idx, (SELECT count(*) FROM sift.col_leaves(indexrelid)) AS leaves
 FROM pg_index WHERE indrelid = 'w'::regclass AND indexrelid::regclass::text <> 'w_expr' ORDER BY 1;
 SELECT leaf, path, kind, type FROM sift.col_leaves('w_iv') ORDER BY leaf;
 SELECT leaf, path, type FROM sift.col_leaves('w_n38') ORDER BY leaf;
 SELECT leaf, path, type FROM sift.col_leaves('w_img') ORDER BY leaf;
+DROP INDEX w_time, w_uuid, w_bytea;
 DROP INDEX w_n3, w_n30, w_nsc;
 DROP INDEX w_n38, w_n19, w_img, w_neg, w_huge, w_m, w_iv, w_expr;
 
