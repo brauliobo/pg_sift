@@ -1336,11 +1336,14 @@ expr_text(AggCtx *c, Node *n)
 	if (c->dpctx == NIL)
 	{
 		PlannedStmt *stmt = makeNode(PlannedStmt);
+		Result	   *plan = makeNode(Result);
 
 		stmt->rtable = c->rtable ? c->rtable : c->root->parse->rtable;
 		c->dpctx = deparse_context_for_plan_tree(stmt, select_rtable_names_for_explain(stmt->rtable, NULL));
-		/* the Params of a sub-plan are looked up in the plan the expression belongs to */
-		c->dpctx = set_deparse_context_plan(c->dpctx, (Plan *) makeNode(Result), NIL);
+		/* the Params of a sub-plan are looked up in the plan the expression belongs to; the InitPlans of the query give
+		 * their output Params (the deparser asserts on a Param that nothing generates) */
+		plan->plan.initPlan = c->root->init_plans;
+		c->dpctx = set_deparse_context_plan(c->dpctx, (Plan *) plan, NIL);
 	}
 	return deparse_expression(n, c->dpctx, true, false);
 }
