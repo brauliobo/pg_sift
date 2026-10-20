@@ -89,9 +89,11 @@ layout_build(Relation rel, MemoryContext cxt)
 		store = att_store(att, &scale);
 		type = sift_col_type_of_oid(getBaseType(att->atttypid));
 		l->leaf[a] = n;
-		/* the tags of the index's own images (time, enum, arrays, ranges) mean nothing to the table's layout, which stores them by size */
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,
-		.type = type == SIFT_COLT_TIME || type == SIFT_COLT_ENUM || type == SIFT_COLT_VARLENA ? SIFT_COLT_OTHER : type,.path = "",.scale = scale};
+		/* the tags of the index's own leaves (lanes, money, interval, time, enum, arrays, ranges) mean nothing to the table's layout, which
+		 * stores these types by size and stays a minor 3 or 4 group */
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.type = type,.path = "",.scale = scale};
+		if (sift_col_def_needs_wide(&defs[n]))
+			defs[n].type = SIFT_COLT_OTHER;
 		n++;
 	}
 	l->exc = n;
