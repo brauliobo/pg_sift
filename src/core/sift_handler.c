@@ -192,6 +192,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_fail_who",
 							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
 							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_space_error",
+							 "Testing: error after publishing an open write buffer relocation.",
+							 NULL, &sift_test_space_error, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_space_crash",
 							"Testing: kill the backend after recycling (1), relocation publication (2), or lowering high_water (3).",
 							NULL, &sift_test_space_crash, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -419,7 +422,7 @@ sift_amvalidate(Oid opclassoid)
 	return true;
 }
 
-/* What the sift access methods share: bitmap scans only, no ordering or uniqueness, a parallel build and parallel bulk delete (makeNode zeroes the rest) */
+/* What the sift access methods share: bitmap scans only, no ordering or uniqueness, a parallel build (makeNode zeroes the rest) */
 IndexAmRoutine *
 sift_am_routine(int strategies, int support, bool multicol)
 {
@@ -429,7 +432,7 @@ sift_am_routine(int strategies, int support, bool multicol)
 	am->amsupport = support;
 	am->amcanmulticol = am->amoptionalkey = multicol;
 	am->amcanbuildparallel = am->amusemaintenanceworkmem = true;
-	/* none: a VACUUM that hands an index to parallel workers runs the cleanup of the others in parallel mode, where the space step cannot take a transaction id and the exclusive lock (sift_maint_space) */
+	/* Bulk deletion stays on the leader. Other eligible indexes can still put VACUUM in parallel mode through cleanup, where the space step cannot assign an xid (sift_maint_space). */
 	am->amparallelvacuumoptions = 0;
 	am->amkeytype = InvalidOid;
 	return am;

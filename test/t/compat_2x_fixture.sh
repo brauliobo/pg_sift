@@ -86,7 +86,9 @@ restarted() { verify && agree; }
 
 # VACUUM marks documents dead in the dirty 2.x segment (150 more), in the clean one (140) and in the write buffer
 vacuumed() {
-	segments_are "1|immutable|1500|t|300" "4|immutable|1400|t|140" && verify && agree
+	# Relocation assigns new generations but preserves the legacy formats, document totals and liveness.
+	[[ $(sql fx "SELECT ndocs || ':' || dirty || ':' || dead_docs FROM sift.segments('docs_idx') WHERE kind = 'immutable' ORDER BY ndocs") == $'1400:true:140\n1500:true:300' ]] &&
+		formats_match '^[12](,[12])*/[12]$' && verify && agree
 }
 # the segments listed, as the prefix of the lines of sift.segments
 segments_are() {

@@ -703,7 +703,7 @@ sift_test_segments(PG_FUNCTION_ARGS)
 Datum
 sift_test_alloc(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
 	int32		nblocks = PG_GETARG_INT32(1);
 	int32		count = PG_GETARG_INT32(2);
 	BlockNumber last;
