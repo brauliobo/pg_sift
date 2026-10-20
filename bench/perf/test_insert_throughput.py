@@ -119,13 +119,14 @@ class InsertThroughput(unittest.TestCase):
 
     def test_all_validation_histories_gate_separate_sizes_not_only_last(self):
         def observation(revisions,case,identity,n,k,deadline,sink,**kw):
-            sink.update(histories=[{'sides':[{'after':{'totals':{'mutable':v,'mutable_pk':8192},'forks':{}}}
+            sink.update(complete=True,histories=[{'complete':True,'sides':[{'after':{'totals':{'mutable':v,'mutable_pk':8192},'forks':{}}}
                                            for v in (8192,32768 if j==1 else 8192)]} for j in range(k)])
         saved={}
         with patch.object(gate,'insert_observation',side_effect=observation):
             gate.validate_insert([],CASE,IDENTITY,2,math.inf,saved,histories=5)
         self.assertEqual(saved['size_checks']['status'],'regression')
         self.assertEqual(len(saved['history_size_checks']),5)
+        self.assertTrue(saved['size_checks']['complete'])
         self.assertEqual(saved['size_checks']['representative_history'],0)
 
     def test_cpu_control_is_fixed_per_row_not_sleep_and_install_is_inactive(self):
@@ -448,6 +449,101 @@ class InsertThroughput(unittest.TestCase):
                 sources=('a'*40,'a'*40,'pr'),completed_work=helper.coverage())
             self.assertFalse(budget['evidence_complete'])
             self.assertIsNone(budget['predicted_seconds'])
+
+    def interrupted_validation(self, *, completed=1, regression_history=None, failure='budget'):
+        # Round13 actual-owner reproduction: reset5 interrupts history2.
+        helper=restoration.PairedRestoration()
+        events,resets,seen=[],[0],{'A':0,'B':0}
+        revisions=[Revision('A',events),Revision('B',events)]
+        def reset(conn,case):
+            resets[0]+=1
+            if resets[0]==4*completed+1 and failure!='oracle':
+                if failure=='sql': raise RuntimeError('later history SQL failed')
+                raise gate.BudgetExpired('later history warm reset expired')
+        def footprint(conn):
+            seen[conn.side]+=1
+            value=helper.footprint()
+            if regression_history is not None and conn.side=='B' and seen['B']==2*regression_history:
+                value['totals']['mutable']=32768
+                value['forks']['mutable']['main']=32768
+            return value
+        def oracle(conn,identity,n,sink):
+            helper.oracle(conn,identity,n,sink)
+            if failure=='oracle' and resets[0]>4*completed and conn.side=='A':
+                raise ValueError('later history oracle failed')
+        saved={}
+        with patch.object(gate,'configure'), patch.object(gate,'reset',side_effect=reset), patch.object(gate,'insert_footprint',side_effect=footprint), patch.object(gate,'check_insert',side_effect=oracle):
+            try:
+                gate.validate_insert(revisions,CASE,IDENTITY,2,math.inf,saved,histories=5)
+            except Exception as error:
+                primary=error
+            else:
+                self.fail('later history interruption was not raised')
+        first=saved['pair']['histories'][0]
+        self.assertTrue(first['complete'])
+        self.assertEqual([side['oracle']['multiset_difference'] for side in first['sides']],[0,0])
+        self.assertEqual([(len(side['operation_seconds']),len(side['warm_operation_seconds'])) for side in first['sides']],[(2,2)]*2)
+        self.assertFalse(saved['complete'])
+        self.assertFalse(saved['pair']['complete'])
+        self.assertNotIn('samples',saved['pair'])
+        self.assertNotIn('n',saved['pair'])
+        self.assertEqual(len(saved['pair']['histories']),completed+1)
+        self.assertFalse(saved['size_checks']['complete'])
+        self.assertEqual(saved['size_checks']['completed_histories'],completed)
+        self.assertEqual(saved['size_checks']['expected_histories'],5)
+        case=dict(timing_status='inconclusive',validation=saved,operations=2,
+                  calibration=dict(histories=5,pilot_pair=helper.clean_pair(2048,role='pilot')))
+        report=dict(config={'verify_control':False},status='inconclusive' if isinstance(primary,gate.Inconclusive) else 'error',
+                    complete=False,size_complete=False,required_size_states=['mutable_insert_trajectory'],size_checks=[],cases=[case])
+        return saved,report,primary
+
+    def test_round13_completed_history_size_regression_survives_later_validation_expiry(self):
+        for completed,regression in ((1,1),(2,1),(2,2),(4,1)):
+            with self.subTest(completed=completed,regression=regression):
+                saved,report,error=self.interrupted_validation(completed=completed,regression_history=regression)
+                self.assertIsInstance(error,gate.BudgetExpired)
+                self.assertEqual(len(saved['history_size_checks']),completed)
+                self.assertEqual(saved['history_size_checks'][regression-1]['status'],'regression')
+                self.assertEqual(saved['size_checks']['status'],'regression')
+                self.assertEqual(saved['size_checks']['relations'][0]['threshold_bytes'],24576)
+                gate.reduce_report(report)
+                self.assertEqual((report['status'],report['size_status']),('regression','regression'))
+                self.assertFalse(report['complete'])
+                self.assertFalse(report['size_complete'])
+                diagnostic=dict(report)
+                gate.reduce_insert_feasibility(diagnostic)
+                self.assertEqual(diagnostic['status'],'diagnostic_regression')
+                self.assertEqual(diagnostic['diagnostic_size_status'],'regression')
+                self.assertFalse(diagnostic['diagnostic_complete'])
+
+    def test_round13_partial_all_pass_sizes_never_complete_validation_or_gate(self):
+        for completed in (1,4):
+            with self.subTest(completed=completed):
+                saved,report,error=self.interrupted_validation(completed=completed)
+                self.assertEqual([h['status'] for h in saved['history_size_checks']],['pass']*completed)
+                self.assertEqual(saved['size_checks']['status'],'inconclusive')
+                gate.reduce_report(report)
+                self.assertEqual((report['status'],report['size_status']),('inconclusive','inconclusive'))
+                self.assertFalse(report['size_complete'])
+                diagnostic=dict(report)
+                gate.reduce_insert_feasibility(diagnostic)
+                self.assertEqual(diagnostic['status'],'diagnostic_inconclusive')
+                self.assertEqual(diagnostic['diagnostic_size_status'],'inconclusive')
+                self.assertFalse(diagnostic['diagnostic_complete'])
+
+    def test_round13_later_sql_or_oracle_error_stays_error_over_completed_size_regression(self):
+        for failure in ('sql','oracle'):
+            with self.subTest(failure=failure):
+                saved,report,error=self.interrupted_validation(regression_history=1,failure=failure)
+                self.assertIn('later history',str(error))
+                self.assertNotIsInstance(error,gate.Inconclusive)
+                self.assertEqual(saved['size_checks']['status'],'regression')
+                gate.reduce_report(report)
+                self.assertEqual((report['status'],report['size_status']),('error','regression'))
+                diagnostic=dict(report)
+                gate.reduce_insert_feasibility(diagnostic)
+                self.assertEqual(diagnostic['status'],'diagnostic_error')
+                self.assertFalse(diagnostic['diagnostic_complete'])
 
     def test_markdown_timing_table_is_contiguous_in_diagnostic(self):
         code,report,summary,*_=restoration.PairedRestoration().main_feasibility()

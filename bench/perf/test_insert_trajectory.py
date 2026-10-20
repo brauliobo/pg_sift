@@ -97,7 +97,7 @@ class InsertTrajectory(unittest.TestCase):
     def test_validation_gates_full_n_separate_mutable_relations(self):
         def pair(revisions,case,identity,n,k,deadline,sink,**kwargs):
             self.assertEqual(n,5)
-            sink.update(histories=[{'sides':[{'after':{'totals':{'mutable':v,'mutable_pk':1048576},'forks':{}}}
+            sink.update(complete=True,histories=[{'complete':True,'sides':[{'after':{'totals':{'mutable':v,'mutable_pk':1048576},'forks':{}}}
                                for v in (8192,32768)]}])
         saved = {}
         with patch.object(gate,'insert_observation',side_effect=pair):
