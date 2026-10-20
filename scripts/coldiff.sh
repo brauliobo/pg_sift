@@ -235,6 +235,7 @@ col_index() {
 		t_wide) ddl="CREATE INDEX t_wide_col ON t_wide USING $AM (id, grp, qty, n38, n19, nimg, nneg, nhuge, m, iv)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
+		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
 	esac
 	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
 }
@@ -242,7 +243,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp orders_odd orders_part; do
+	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_tags orders_odd orders_part; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
