@@ -337,11 +337,12 @@ SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 (9 rows)
 
 INSERT INTO kt SELECT i, i % 7, doc(i + 5) FROM generate_series(8001, 12000) i;
+-- Space compaction copies the legacy group without upgrading its format; uncertain kinds retain the document plan until VACUUM FULL.
 VACUUM kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 4,6
+ 3,6
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -349,13 +350,13 @@ SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 ---+------------
  1 | not pushed
  2 | not pushed
- 3 | same
+ 3 | not pushed
  4 | not pushed
  5 | not pushed
  6 | not pushed
  7 | not pushed
  8 | not pushed
- 9 | same
+ 9 | not pushed
 (9 rows)
 
 VACUUM (FULL) kt;

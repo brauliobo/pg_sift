@@ -31,6 +31,7 @@
 
 #include "sift_col.h"
 #include "sift_estimate.h"
+#include "sift_lane.h"
 #include "sift_store.h"
 
 #define SPECIAL_SIZE		MAXALIGN(sizeof(SiftPageOpaqueData))
@@ -50,6 +51,7 @@
 bool		sift_standby_conflicts = false;
 
 #ifdef SIFT_TESTING
+int			sift_test_space_crash = 0;
 int			sift_test_fail_pages = 0;
 int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
@@ -97,6 +99,19 @@ struct SiftStreamWriter
 	uint64		blocks;			/* blocks taken for this stream */
 	SiftExtentList ext;
 };
+
+#ifdef SIFT_TESTING
+void
+sift_store_space_test_point(int phase)
+{
+	if (sift_test_space_crash == phase)
+	{
+		ereport(LOG, (errmsg("sift test: space crash phase %d", phase)));
+		XLogFlush(GetXLogInsertRecPtr());
+		kill(MyProcPid, SIGKILL);
+	}
+}
+#endif
 
 /* Records to add to the free list, and where they go */
 typedef struct FreePlan
@@ -423,13 +438,21 @@ count_below(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	FreeBelow  *c = arg;
 
 	for (uint32 i = 0; i < fl->n; i++)
-		if (fl->ext[i].start + fl->ext[i].nblocks <= c->limit && fl->ext[i].nblocks >= c->min_run &&
-			(!FullTransactionIdIsValid(fl->ext[i].safexid) || sift_store_removable(c->index, fl->ext[i].safexid)))
-			c->blocks += fl->ext[i].nblocks;
+	{
+		uint32		below;
+
+		if (fl->ext[i].start >= c->limit || fl->ext[i].nblocks < c->min_run)
+			continue;
+		if (FullTransactionIdIsValid(fl->ext[i].safexid) && !sift_store_removable(c->index, fl->ext[i].safexid))
+			continue;
+		below = Min(fl->ext[i].nblocks, c->limit - fl->ext[i].start);
+		if (below >= c->min_run)
+			c->blocks += below;
+	}
 	return true;
 }
 
-/* The reusable free blocks in runs of at least min_run that end before limit: what a segment above limit can be rewritten into */
+/* The reusable free blocks in runs of at least min_run that lie before limit (a run across it counts the part before it): what a segment above limit can be rewritten into */
 int64
 sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run)
 {
@@ -441,6 +464,29 @@ sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run)
 	return c.blocks;
 }
 
+/*
+ * Space mode (sift_store_space_exclusive): the caller holds AccessExclusiveLock on the relation, so no scan, directory copy or write target
+ * of another backend exists and every released extent is reusable at once, whatever its safexid (P7 reasons the same way for the cut).
+ */
+static uint64 space_written = 0;
+static bool space_exclusive = false;
+static BlockNumber space_limit = InvalidBlockNumber;
+
+void
+sift_store_space_exclusive(Relation index, bool on)
+{
+	Assert(!on || CheckRelationLockedByMe(index, AccessExclusiveLock, false));
+	space_exclusive = on;
+	if (!on)
+		space_limit = InvalidBlockNumber;
+}
+
+uint64
+sift_store_space_written(void)
+{
+	return space_written;
+}
+
 /* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
 bool
 sift_store_removable(Relation index, FullTransactionId xid)
@@ -448,6 +494,8 @@ sift_store_removable(Relation index, FullTransactionId xid)
 	Relation	heap;
 	bool		removable;
 
+	if (space_exclusive)
+		return true;
 	if (index->rd_rel->relkind != RELKIND_INDEX)
 		return GlobalVisCheckRemovableFullXid(index, xid);
 	heap = RelationIdGetRelation(index->rd_index->indrelid);
@@ -502,7 +550,7 @@ log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
 static bool
 reusable(Relation index, FullTransactionId safexid, FullTransactionId *horizon)
 {
-	if (!FullTransactionIdIsValid(safexid))
+	if (!FullTransactionIdIsValid(safexid) || space_exclusive)
 		return true;
 	if (!FullTransactionIdIsValid(*horizon))
 		*horizon = sift_store_horizon(index);
@@ -563,28 +611,46 @@ typedef struct FreePick
 	BlockNumber blk;			/* its free-list page */
 	int			idx;			/* its place in the page, -1 if none */
 	uint32		nblocks;
+	BlockNumber start;			/* the record's first block (space mode picks by it) */
 	FullTransactionId safexid;
 	FullTransactionId horizon;
 } FreePick;
+
+static bool
+space_fits(const SiftFreeExtent *e, uint32 min, BlockNumber limit)
+{
+	return e->nblocks >= min && e->start < limit && min <= limit - e->start;
+}
 
 static bool
 pick_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 {
 	FreePick   *p = arg;
 
-	for (uint32 i = 0; i < fl->n && p->nblocks < p->want; i++)
+	for (uint32 i = 0; i < fl->n; i++)
 	{
 		const SiftFreeExtent *e = &fl->ext[i];
+		bool		better;
 
-		if (e->nblocks >= p->min && e->nblocks > p->nblocks && reusable(p->index, e->safexid, &p->horizon))
+		if (e->nblocks < p->min || !reusable(p->index, e->safexid, &p->horizon))
+			continue;
+		if (space_exclusive && BlockNumberIsValid(space_limit))
+		{
+			/* Exact relocation reservations: the lowest eligible run below the planned end. */
+			better = space_fits(e, p->min, space_limit) && (p->idx < 0 || e->start < p->start);
+		}
+		else
+			better = p->nblocks < p->want && e->nblocks > p->nblocks;
+		if (better)
 		{
 			p->blk = blk;
 			p->idx = i;
 			p->nblocks = e->nblocks;
+			p->start = e->start;
 			p->safexid = e->safexid;
 		}
 	}
-	return p->nblocks < p->want;
+	return space_exclusive || p->nblocks < p->want;
 }
 
 /*
@@ -595,11 +661,13 @@ pick_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 static BlockNumber
 alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *got)
 {
-	FreePick	p = {index, want, min, InvalidBlockNumber, -1, 0, InvalidFullTransactionId, InvalidFullTransactionId};
+	FreePick	p = {index, want, min, InvalidBlockNumber, -1, 0, 0, InvalidFullTransactionId, InvalidFullTransactionId};
 
 	sift_freelist_walk(index, metabuf, pick_free, &p);
+	if (space_exclusive && BlockNumberIsValid(space_limit) && p.idx < 0)
+		elog(ERROR, "sift: relocation reservation no longer fits below its planned end");
 	*got = p.idx >= 0 ? Min(want, p.nblocks) : want;
-	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid))
+	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid) && !space_exclusive)
 		log_reuse(index, p.blk, p.safexid);
 	return p.idx >= 0 ? take_free(index, p.blk, p.idx, *got) : extend(index, metabuf, want);
 }
@@ -861,7 +929,7 @@ xid_safexid(void)
 static void
 store_update(Relation index, const SiftDirChange *chg, bool publish)
 {
-	bool		pending = publish && chg->nrelease > 0 && !chg->immediate;
+	bool		pending = publish && chg->nrelease > 0 && !chg->immediate && !space_exclusive;
 	FullTransactionId safexid = pending && xid_safexid() ?
 		GetTopFullTransactionId() : InvalidFullTransactionId;
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
@@ -1054,7 +1122,7 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 		return InvalidBlockNumber;
 	if (trim)
 		c->n--;
-	if (c->cleared > 0)
+	if (c->cleared > 0 && !space_exclusive)
 		log_reuse(index, InvalidBlockNumber, c->newest);
 	write_chain(index, blks, k, c->ext, c->n, InvalidBlockNumber);
 	state = GenericXLogStart(index);
@@ -1138,6 +1206,8 @@ sift_store_truncate(Relation index)
 		newhwm = hwm;
 	if ((nblocks = RelationGetNumberOfBlocks(index)) <= newhwm)
 		return 0;
+	if (space_exclusive)
+		SIFT_SPACE_TEST_POINT(3);
 	RelationTruncate(index, newhwm);
 	/*
 	 * A backend appending to the write buffer keeps the blocks of its lane tails in the relcache
@@ -1862,6 +1932,181 @@ sift_store_immutable_extents(Relation index, const SiftSegEntry *s, int *nextent
 		ext[n++] = (SiftExtent) {live_first, live_npages};
 	*nextents = n;
 	return ext;
+}
+
+/* Remap a block while preserving its position inside the original extent. */
+BlockNumber
+sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExtent *fresh, int n)
+{
+	if (!BlockNumberIsValid(blk))
+		return blk;
+	for (int i = 0; i < n; i++)
+		if (blk >= old[i].start && blk - old[i].start < old[i].nblocks)
+			return fresh[i].start + (blk - old[i].start);
+	elog(ERROR, "sift: relocation references a block outside its segment");
+	pg_unreachable();
+}
+
+/* Lowest fitting run, shared with allocation's eligibility and placement. */
+static int
+relocation_pick(const FreeChain *free, uint32 min, BlockNumber limit)
+{
+	int best = -1;
+
+	for (int k = 0; k < free->n; k++)
+		if (space_fits(&free->ext[k], min, limit) &&
+			(best < 0 || free->ext[k].start < free->ext[best].start))
+			best = k;
+	return best;
+}
+
+/*
+ * Copy stored pages without decoding, format conversion, promotion or growing stream reservations. Preflight every allocation
+ * with the same lowest-fit rule as alloc_blocks. DATA and lane runs can split across holes; a LIVE run must remain contiguous.
+ * Plan fixed runs first, then data in logical order, and verify the resulting stream directory fits its existing header page.
+ * No accepted move, including its free-list publication, needs to extend the file. The caller atomically publishes the copy.
+ */
+uint64
+sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, int n,
+					BlockNumber limit, uint64 budget, SiftSegEntry *entry_new, SiftRelocatePage relocate_page)
+{
+	Buffer metabuf;
+	FreeChain free;
+	SiftExtent *source;
+	SiftExtent *fresh;
+	int parts = 0;
+	int data_at = 0;
+	int ndata = entry->kind == SIFT_SEG_IMMUTABLE ? n - (old[n - 1].start == entry->header_blk ? 1 : 2) : 0;
+	uint64 blocks = 0;
+	int capacity;
+	SiftWriteTarget *wt;
+	uint64 gen;
+	PGIOAlignedBlock copy;
+
+	Assert(space_exclusive);
+	for (int i = 0; i < n; i++)
+		blocks += old[i].nblocks;
+	if (blocks > budget / BLCKSZ)
+		return 0;
+	capacity = entry->kind == SIFT_SEG_IMMUTABLE ? SIFT_MAX_EXTENTS + 2 : blocks;
+	source = palloc(capacity * sizeof(SiftExtent));
+	fresh = palloc(capacity * sizeof(SiftExtent));
+	metabuf = lock_meta(rel, BUFFER_LOCK_SHARE);
+	read_chain(rel, metabuf, &free, InvalidFullTransactionId);
+	UnlockReleaseBuffer(metabuf);
+	/* Immutable streams put header/LIVE last in old; reserve those exact runs before filling the small holes with data. */
+	for (int phase = 0; phase < 2; phase++)
+	{
+		int first = phase == 0 ? ndata : 0;
+		int end = phase == 0 ? n : ndata;
+
+		if (phase == 1)
+			data_at = parts;
+		for (int at = first; at < end; at++)
+		{
+			/* LIVE precedes the one-page header reservation, so that the header cannot fragment its only fitting run. */
+			int i = phase == 0 && entry->kind == SIFT_SEG_IMMUTABLE ? n - 1 - (at - first) : at;
+			SiftExtent remaining = old[i];
+			bool split = phase == 1 || entry->kind != SIFT_SEG_IMMUTABLE;
+
+			while (remaining.nblocks > 0)
+			{
+				int best = relocation_pick(&free, split ? 1 : remaining.nblocks, limit);
+				uint32 take;
+
+				if (best < 0 || parts == capacity)
+					goto skip;
+				take = Min(remaining.nblocks, Min(free.ext[best].nblocks, limit - free.ext[best].start));
+				source[parts] = (SiftExtent) {remaining.start, take};
+				fresh[parts++] = (SiftExtent) {free.ext[best].start, take};
+				free.ext[best].start += take;
+				free.ext[best].nblocks -= take;
+				remaining.start += take;
+				remaining.nblocks -= take;
+			}
+		}
+	}
+	if (entry->kind == SIFT_SEG_IMMUTABLE && parts - data_at > SIFT_MAX_EXTENTS)
+		goto skip;
+	/* Leave existing free blocks for publication's worst-case free-list page count, too. */
+	{
+		uint64 spare = 0;
+
+		for (int k = 0; k < free.n; k++)
+			spare += free.ext[k].nblocks;
+		if (spare < (n + SIFT_FREELIST_CAP - 1) / SIFT_FREELIST_CAP)
+			goto skip;
+	}
+	pfree(free.ext);
+	pfree(free.page);
+	gen = sift_store_new_gen(rel);
+	wt = sift_wt_begin(rel, SIFT_WRITE_SHARED);
+	space_limit = limit;
+	for (int i = 0; i < parts; i++)
+	{
+		BlockNumber reserved = sift_wt_reserve(wt, source[i].nblocks);
+
+		if (reserved != fresh[i].start)
+			elog(ERROR, "sift: relocation allocation differs from its plan");
+	}
+	space_limit = InvalidBlockNumber;
+	for (int i = 0; i < parts; i++)
+		for (uint32 j = 0; j < source[i].nblocks; j++)
+		{
+			BlockNumber blk = source[i].start + j;
+			Buffer buf = read_locked(rel, blk, BUFFER_LOCK_SHARE);
+			Page page = copy.data;
+			SiftPageType type = blk == entry->header_blk ?
+				(entry->kind == SIFT_SEG_IMMUTABLE ? SIFT_PT_SEGHEADER : SIFT_PT_WBUFHEADER) :
+				(entry->kind == SIFT_SEG_IMMUTABLE ? (i < data_at ? SIFT_PT_LIVE : SIFT_PT_DATA) : SIFT_PT_WBUFDATA);
+
+			sift_store_check_page(rel, buf, type, entry->gen);
+			memcpy(page, BufferGetPage(buf), BLCKSZ);
+			UnlockReleaseBuffer(buf);
+			SiftPageGetOpaque(page)->gen = gen;
+			if (type == SIFT_PT_SEGHEADER)
+			{
+				SiftSegHeaderData *h = (SiftSegHeaderData *) SiftPageGetData(page);
+
+				h->gen = gen;
+				h->nextents = parts - data_at;
+				memcpy(h->extents, fresh + data_at, h->nextents * sizeof(SiftExtent));
+				SiftPageSetUsed(page, offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent));
+				if (h->live_npages > 0)
+					h->live_first = sift_store_relocated_block(h->live_first, source, fresh, parts);
+			}
+			else if (type == SIFT_PT_WBUFHEADER)
+			{
+				SiftWbufHeaderData *h = SiftLaneHdr(page);
+
+				h->gen = gen;
+				for (int k = 0; k < SIFT_LANES; k++)
+				{
+					h->lanes[k].head = sift_store_relocated_block(h->lanes[k].head, source, fresh, parts);
+					h->lanes[k].tail = sift_store_relocated_block(h->lanes[k].tail, source, fresh, parts);
+				}
+			}
+			else if (type == SIFT_PT_WBUFDATA)
+				SiftLaneHead(page)->next = sift_store_relocated_block(SiftLaneHead(page)->next, source, fresh, parts);
+			if (relocate_page && (entry->flags & SIFT_TBL_SEG_WBUF))
+				relocate_page(page, source, fresh, parts);
+			sift_wt_put_page(wt, fresh[i].start + j, page);
+			CHECK_FOR_INTERRUPTS();
+		}
+	sift_wt_finish(wt);
+	*entry_new = *entry;
+	entry_new->gen = gen;
+	entry_new->header_blk = sift_store_relocated_block(entry->header_blk, source, fresh, parts);
+	pfree(source);
+	pfree(fresh);
+	space_written += blocks;
+	return blocks * BLCKSZ;
+skip:
+	pfree(free.ext);
+	pfree(free.page);
+	pfree(source);
+	pfree(fresh);
+	return 0;
 }
 
 static void

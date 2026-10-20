@@ -96,6 +96,7 @@ typedef struct SiftMaintOps
 	const char *worker;			/* function of pg_sift that is the background worker */
 	LOCKMODE	step_lock;			/* the maintenance lock taken for room, promotion and merge steps */
 	bool		vacuum_to_fixed_point;	/* VACUUM merges until the policy asks for no more, else one merge */
+	bool		vacuum_budget;	/* ... but stops starting merges once sift.vacuum_rewrite_limit megabytes were rewritten (the first merge always runs) */
 	bool		(*is_index) (Relation index);
 	uint64		(*seal) (Relation index, bool force);
 	SiftStepResult (*promote_next) (Relation index, bool propagate, uint64 *busy);
@@ -103,6 +104,7 @@ typedef struct SiftMaintOps
 	void		(*bulkdelete_immutable) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	void		(*bulkdelete_wbuf) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	bool		(*vacuum_truncate) (Relation index);	/* NULL: the file is not truncated by VACUUM */
+	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 } SiftMaintOps;
@@ -144,6 +146,14 @@ extern int64 sift_maint_orphan_sweep(Relation index);
  * Reports at elevel what it did.
  */
 extern void sift_maint_truncate(Relation index, int elevel);
+
+/*
+ * VACUUM's space step (sift_store.h P7): the free blocks of the relation are worth giving back (a heap's thresholds), AccessExclusiveLock is
+ * free right now, and then, with that lock keeping every reader and writer out and every released extent reusable at once
+ * (sift_store_space_exclusive), the segments that end the file are written again into the free blocks below them (at most sift.vacuum_rewrite_limit megabytes in all, so the writes under the lock are bounded) and the free end of the file is cut.
+ * The caller holds the maintenance lock exclusively. Reports at elevel what it did.
+ */
+extern void sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);

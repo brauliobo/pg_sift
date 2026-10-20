@@ -1,0 +1,114 @@
+-- Space of a sift_col index: one VACUUM after a load and after updates and deletes gives the space back, not a second one. The write
+-- buffers of a load are merged into column segments, the segments that end the file are written again into the free blocks below
+-- them (the VACUUM holds the index exclusively for that, so what it released is reusable at once) and the free end is cut. The
+-- thresholds are on block counts, not on timings. vacuum_truncate = false keeps the file.
+CREATE EXTENSION pg_sift;
+CREATE FUNCTION blocks(idx regclass) RETURNS bigint LANGUAGE sql
+	AS $$ SELECT relation_blocks FROM sift.col_index_info(idx) $$;
+CREATE TABLE cs (id int PRIMARY KEY, grp int, amount numeric(10,2), note text) WITH (autovacuum_enabled = off);
+INSERT INTO cs SELECT g, g % 50, g % 1000, 'note ' || md5(g::text) FROM generate_series(1, 200000) g;
+CREATE INDEX cs_col ON cs USING sift_col (grp, amount);
+SELECT blocks('cs_col') AS built \gset
+SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
+ count |    sum     
+-------+------------
+  4000 | 1928000.00
+(1 row)
+
+-- churn: updates write new row versions into new segments, deletes leave dead rows in the old ones
+UPDATE cs SET amount = amount + 1 WHERE id % 10 = 0;
+UPDATE cs SET amount = amount + 1 WHERE id % 3 = 0;
+DELETE FROM cs WHERE id % 20 = 1;
+SELECT blocks('cs_col') AS churned \gset
+SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
+ count |    sum     
+-------+------------
+  4000 | 1929333.00
+(1 row)
+
+VACUUM cs;
+SELECT blocks('cs_col') AS vacuumed \gset
+-- back near the size of the build (the write buffers and the metadata are a share of a small index), the free blocks that remain are few, and the file ends where the store says
+SELECT :vacuumed * 2 < :churned AS shrunk, :vacuumed <= 2.5 * :built AS near_built,
+	free_blocks * 10 < relation_blocks AS little_free, relation_blocks = high_water AS at_mark FROM sift.col_index_info('cs_col');
+ shrunk | near_built | little_free | at_mark 
+--------+------------+-------------+---------
+ t      | t          | t           | t
+(1 row)
+
+SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
+ count |    sum     
+-------+------------
+  4000 | 1929333.00
+(1 row)
+
+SELECT sift.col_verify('cs_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- nothing more to give back: another VACUUM keeps the size
+VACUUM cs;
+SELECT blocks('cs_col') <= :vacuumed AS settled;
+ settled 
+---------
+ t
+(1 row)
+
+-- everything deleted: the file is nearly empty after one VACUUM
+DELETE FROM cs;
+VACUUM cs;
+SELECT blocks('cs_col') * 10 < :churned AS nearly_empty;
+ nearly_empty 
+--------------
+ t
+(1 row)
+
+-- refilled, it takes about what it took the first time
+INSERT INTO cs SELECT g, g % 50, g % 1000, 'note ' || md5(g::text) FROM generate_series(1, 200000) g;
+VACUUM cs;
+SELECT blocks('cs_col') <= 2.5 * :built AS reused;
+ reused 
+--------
+ t
+(1 row)
+
+SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
+ count |    sum     
+-------+------------
+  4000 | 1928000.00
+(1 row)
+
+-- vacuum_truncate = false keeps the file
+ALTER INDEX cs_col SET (vacuum_truncate = false);
+UPDATE cs SET amount = amount + 1 WHERE id % 2 = 0;
+SELECT blocks('cs_col') AS grown \gset
+DELETE FROM cs WHERE id % 2 = 0;
+VACUUM cs;
+SELECT blocks('cs_col') >= :grown AS kept;
+ kept 
+------
+ t
+(1 row)
+
+ALTER INDEX cs_col RESET (vacuum_truncate);
+VACUUM cs;
+SELECT blocks('cs_col') < :grown AS cut;
+ cut 
+-----
+ t
+(1 row)
+
+SELECT sift.col_verify('cs_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- the setting takes a boolean
+ALTER INDEX cs_col SET (vacuum_truncate = 2);
+ERROR:  invalid value for boolean option "vacuum_truncate": 2
+DROP TABLE cs;
+DROP FUNCTION blocks(regclass);
+DROP EXTENSION pg_sift;

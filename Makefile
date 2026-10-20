@@ -7,6 +7,7 @@ OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c))
 DATA = $(wildcard sql/pg_sift--*.sql)
 PGFILEDESC = "pg_sift - CTID-bitmap full-text search index"
 
+# New SQL tests are registered automatically; the test-only patterns below apply to them too.
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
 REGRESS_OPTS = --inputdir=test --outputdir=test
 

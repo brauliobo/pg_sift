@@ -23,14 +23,16 @@ my ($t, $idx) = ('tr', 'tr_idx');
 my $no_inconsistency = qr/inconsistent page found|FATAL:\s+inconsistent/;
 
 # Table $t with its index, 95% of the rows deleted and merged down by VACUUM and sift.merge: the survivors are in front of the
-# segments they replaced, so the end of the file is free and the next VACUUM gives it back
+# segments they replaced, so the end of the file is free and the next VACUUM gives it back (the VACUUM of the set-up does not cut:
+# one that may moves the survivors itself and cuts in the same run)
 sub fragmented
 {
 	my ($node) = @_;
 	$node->safe_psql('postgres', "DROP TABLE IF EXISTS $t");
 	load_corpus($node, $t, $rows);
 	$node->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (build_segments = 8)");
-	$node->safe_psql('postgres', "DELETE FROM $t WHERE id % 20 <> 0; VACUUM $t; SELECT sift.merge('$idx', true)");
+	$node->safe_psql('postgres', "ALTER INDEX $idx SET (vacuum_truncate = false); DELETE FROM $t WHERE id % 20 <> 0; VACUUM $t;"
+		. " SELECT sift.merge('$idx', true); ALTER INDEX $idx RESET (vacuum_truncate)");
 }
 
 # relation_blocks and high_water of the index
@@ -81,6 +83,24 @@ subtest 'the standby replays the truncation' => sub {
 	is(extent($standby), extent($primary), 'the standby file follows it');
 	healthy($standby, 'standby after the file grew');
 	ok(!$standby->log_contains($no_inconsistency), 'no inconsistent page when the file grew again');
+};
+
+# one VACUUM merges, writes the survivors into the blocks in front of the old segments (what it released is reusable at once under the
+# exclusive lock, which the standby replays before the writes) and cuts the file
+subtest 'the standby replays segments moved by one VACUUM' => sub {
+	$primary->safe_psql('postgres', "DROP TABLE IF EXISTS $t");
+	load_corpus($primary, $t, $rows);
+	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (build_segments = 8)");
+	my $built = blocks($primary);
+	$primary->safe_psql('postgres', "DELETE FROM $t WHERE id % 20 <> 0; VACUUM $t");
+	my ($after, $hwm) = split /:/, extent($primary);
+	cmp_ok($after, '<', $built / 4, "one VACUUM gave the space back ($built to $after blocks)");
+	is($hwm, $after, 'the high-water mark follows the file');
+	$primary->wait_for_catchup($standby);
+	is(extent($standby), "$after:$hwm", 'the standby file has the size of the primary');
+	healthy($standby, 'standby after the segments moved');
+	healthy($primary, 'primary after the segments moved');
+	ok(!$standby->log_contains($no_inconsistency), 'the standby found no inconsistent page replaying the moves');
 };
 
 subtest 'a standby query holding the index is cancelled by the truncation' => sub {

@@ -1,0 +1,183 @@
+# Column/table space reclamation: exact crash boundaries, reader exclusion, replay conflicts (feedback on/off), and disabled truncation.
+use strict;
+use warnings FATAL => 'all';
+use FindBin;
+use lib $FindBin::RealBin;
+use SiftTest;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+
+my $cursor_settings = 'SET enable_seqscan = off; SET sift.enable_agg = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET max_parallel_workers_per_gather = 0';
+my $standby;
+my $primary = sift_node('space_primary', allows_streaming => 1);
+$primary->append_conf('postgresql.conf', "sift.async_maintenance = off\nwal_consistency_checking = 'generic'\nmax_parallel_maintenance_workers = 0");
+$primary->start;
+install_sift($primary);
+plan skip_all => 'space crash injection needs the testing build' unless $primary->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
+$primary->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+
+sub fixture
+{
+	my ($kind) = @_;
+	my $am = $kind eq 'tbl' ? ' USING sift_table' : '';
+	if ($standby)
+	{
+		# Prepare final groups without an earlier scenario's feedback horizon. Feedback is enabled again before the tested cursor opens.
+		$standby->safe_psql('postgres', "ALTER SYSTEM SET hot_standby_feedback = 'off'; SELECT pg_reload_conf()");
+		$primary->poll_query_until('postgres', "SELECT xmin IS NULL FROM pg_replication_slots WHERE slot_name = 'space_slot'") or die 'old feedback did not clear';
+	}
+	$primary->safe_psql('postgres', "DROP TABLE IF EXISTS s; CREATE TABLE s (id int, v bigint, body text)$am WITH (autovacuum_enabled = false, vacuum_truncate = false)");
+	$primary->safe_psql('postgres', "INSERT INTO s SELECT g, g * 3, repeat(md5(g::text), CASE WHEN g % 400 = 0 THEN 300 ELSE 1 END) FROM generate_series(1, 60000) g");
+	$primary->safe_psql('postgres', "CREATE INDEX s_col ON s USING sift_col(v, body) WITH (vacuum_truncate = false)") if $kind eq 'col';
+	$primary->safe_psql('postgres', 'UPDATE s SET v = v + 1 WHERE id % 10 = 0; DELETE FROM s WHERE id % 20 = 1');
+	$primary->safe_psql('postgres', 'VACUUM s');
+	$primary->safe_psql('postgres', $kind eq 'col' ? 'ALTER INDEX s_col RESET (vacuum_truncate)' : 'ALTER TABLE s RESET (vacuum_truncate)');
+}
+sub info_sql
+{
+	my ($kind) = @_;
+	return $kind eq 'col' ? "sift.col_index_info('s_col')" : "sift.table_space('s')";
+}
+sub size
+{
+	my ($node, $kind) = @_;
+	return $node->safe_psql('postgres', 'SELECT relation_blocks FROM ' . info_sql($kind));
+}
+sub digest
+{
+	my ($node) = @_;
+	return $node->safe_psql('postgres', 'SET sift.enable_agg = off; SELECT count(*), sum(id), sum(v), sum(length(body)) FROM s');
+}
+sub healthy
+{
+	my ($node, $kind, $expected) = @_;
+	is(digest($node), $expected, 'all rows and overflow values survived');
+	$node->safe_psql('postgres', "SELECT sift.col_verify('s_col', true)") if $kind eq 'col';
+	my $rel = $kind eq 'col' ? 's_col' : 's';
+	is($node->safe_psql('postgres', "SELECT sift._test_check('$rel') >= 0"), 't', 'every referenced and free extent has one owner');
+	is($node->safe_psql('postgres', 'SELECT relation_blocks >= high_water AND free_blocks <= relation_blocks FROM ' . info_sql($kind)), 't', 'file covers its free map and high-water mark');
+}
+
+# A crash after each WAL boundary must leave the old or the new complete directory, with no double-owned or missing pages.
+for my $kind (qw(col tbl))
+{
+	for my $phase (1 .. 3)
+	{
+		subtest "$kind crash phase $phase" => sub {
+			fixture($kind);
+			my $expected = digest($primary);
+			my $offset = -s $primary->logfile;
+			system("$ENV{SIFT_REPO}/scripts/leakcheck.sh", 'expect', 1, 'terminated by signal 9');
+			my ($out, $err) = ('', '');
+			my $rc = $primary->psql('postgres', "SET sift.test_space_crash = $phase; VACUUM s", stdout => \$out, stderr => \$err);
+			ok($rc != 0, 'the injected boundary killed VACUUM');
+			ok($primary->log_contains(qr/sift test: space crash phase $phase/, $offset), 'the requested boundary was reached');
+			$primary->poll_query_until('postgres', 'SELECT true') or die 'recovery did not finish';
+			healthy($primary, $kind, $expected);
+			$primary->safe_psql('postgres', 'VACUUM s');
+			my $rel = $kind eq 'col' ? 's_col' : 's';
+			is($primary->safe_psql('postgres', "SELECT sift._test_check('$rel')"), '0', 'VACUUM also reclaimed any crash orphans');
+			healthy($primary, $kind, $expected);
+			$primary->safe_psql('postgres', "INSERT INTO s VALUES (70001, 17, repeat('after recovery ', 2000)); VACUUM s");
+			is($primary->safe_psql('postgres', 'SELECT count(*) FROM s WHERE id = 70001 AND length(body) = 30000'), '1', 'subsequent overflow write and VACUUM succeed');
+		};
+	}
+}
+
+for my $kind (qw(col tbl))
+{
+	subtest "$kind primary cursor and disabled truncation" => sub {
+		fixture($kind);
+		my $expected = digest($primary);
+		my $before = size($primary, $kind);
+		my $bg = $primary->background_psql('postgres');
+		my $query = $kind eq 'col' ? 'SELECT v, count(*) FROM s WHERE v > 0 GROUP BY v' : 'SELECT * FROM s';
+		like($primary->safe_psql('postgres', "$cursor_settings; EXPLAIN (COSTS OFF) $query"), qr/SiftAgg/, 'cursor reads the column index') if $kind eq 'col';
+		$bg->query_safe("BEGIN; $cursor_settings; DECLARE c CURSOR FOR $query; FETCH 1 FROM c");
+		$primary->safe_psql('postgres', "SET statement_timeout = '3s'; VACUUM s");
+		is(size($primary, $kind), $before, 'an open cursor skips reclamation without waiting');
+		$bg->query_safe('COMMIT');
+		$bg->quit;
+		if ($kind eq 'tbl')
+		{
+			$primary->safe_psql('postgres', 'VACUUM (TRUNCATE FALSE) s');
+			is(size($primary, $kind), $before, 'TRUNCATE FALSE preserves the table file');
+		}
+		else
+		{
+			$primary->safe_psql('postgres', 'ALTER INDEX s_col SET (vacuum_truncate = false); VACUUM s');
+			is(size($primary, $kind), $before, 'vacuum_truncate=false preserves the index file');
+			$primary->safe_psql('postgres', 'ALTER INDEX s_col RESET (vacuum_truncate)');
+		}
+		$primary->safe_psql('postgres', 'VACUUM s');
+		cmp_ok(size($primary, $kind), '<', $before, 'closing the cursor allows reclamation');
+		healthy($primary, $kind, $expected);
+	};
+}
+
+subtest 'a young table buffer keeps its row versions and overflow links when copied' => sub {
+	fixture('tbl');
+	# A snapshot of another relation prevents promotion of the new row without retaining a lock on s.
+	$primary->safe_psql('postgres', 'SELECT pg_current_xact_id()');
+	my $bg = $primary->background_psql('postgres');
+	$bg->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM pg_class');
+	$primary->safe_psql('postgres', "INSERT INTO s VALUES (70001, 17, repeat('young overflow ', 2000))");
+	my $before = size($primary, 'tbl');
+	$primary->safe_psql('postgres', 'VACUUM s');
+	cmp_ok(size($primary, 'tbl'), '<', $before, 'the file shrank while the new row could not be promoted');
+	is($primary->safe_psql('postgres', 'SELECT count(*) FROM s WHERE id = 70001 AND length(body) = 30000'), '1', 'the copied young buffer retains its overflow bytes');
+	is($bg->query_safe('SELECT count(*) FROM s WHERE id = 70001'), '0', 'the older snapshot still excludes the young row');
+	is($primary->safe_psql('postgres', "SELECT sift._test_check('s')"), '0', 'copied buffers and free runs have unique key_sets');
+	$bg->query_safe('COMMIT');
+	$bg->quit;
+};
+
+$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('space_slot', true)");
+$primary->backup('base');
+$standby = PostgreSQL::Test::Cluster->new('space_standby');
+$standby->init_from_backup($primary, 'base', has_streaming => 1);
+$standby->append_conf('postgresql.conf', "primary_slot_name = 'space_slot'\nwal_receiver_status_interval = '1s'\nmax_standby_streaming_delay = '1s'\nwal_consistency_checking = 'generic'");
+$standby->start;
+for my $feedback (qw(off on))
+{
+	for my $kind (qw(col tbl))
+	{
+		subtest "$kind standby cursor, feedback $feedback" => sub {
+			fixture($kind);
+			my $expected = digest($primary);
+			$standby->safe_psql('postgres', "ALTER SYSTEM SET hot_standby_feedback = '$feedback'; SELECT pg_reload_conf()");
+			$primary->wait_for_catchup($standby);
+			my $bg = $standby->background_psql('postgres', on_error_stop => 0);
+			my $query = $kind eq 'col' ? 'SELECT v, count(*) FROM s WHERE v > 0 GROUP BY v' : 'SELECT * FROM s';
+			like($standby->safe_psql('postgres', "$cursor_settings; EXPLAIN (COSTS OFF) $query"), qr/SiftAgg/, 'cursor reads the column index') if $kind eq 'col';
+			$bg->query_safe("BEGIN ISOLATION LEVEL REPEATABLE READ; $cursor_settings; DECLARE c CURSOR FOR $query; FETCH 1 FROM c");
+			$primary->poll_query_until('postgres', "SELECT xmin IS NOT NULL FROM pg_replication_slots WHERE slot_name = 'space_slot'") or die 'cursor feedback did not arrive' if $feedback eq 'on';
+			my $offset = -s $standby->logfile;
+			my $before = size($primary, $kind);
+			$primary->safe_psql('postgres', 'VACUUM s');
+			cmp_ok(size($primary, $kind), '<', $before, 'primary reclaimed before replaying the moves');
+			$primary->wait_for_catchup($standby);
+			ok($standby->log_contains(qr/terminating connection due to conflict with recovery/, $offset), 'exclusive lock replay cancelled the cursor before immediate reuse');
+			eval { $bg->quit };
+			healthy($standby, $kind, $expected);
+			is(size($standby, $kind), size($primary, $kind), 'standby and primary file sizes agree');
+		};
+	}
+}
+subtest 'no exclusive-lock replay when a small table has no space to reclaim' => sub {
+	$primary->safe_psql('postgres', 'CREATE TABLE tiny (v int) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO tiny VALUES (1)');
+	is($primary->safe_psql('postgres', "SELECT free_blocks FROM sift.table_space('tiny')"), '0', 'the small file has no free blocks');
+	$primary->wait_for_catchup($standby);
+	my $bg = $standby->background_psql('postgres');
+	$bg->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM tiny');
+	$primary->safe_psql('postgres', 'VACUUM tiny');
+	$primary->wait_for_catchup($standby);
+	is($bg->query_safe('SELECT count(*) FROM tiny'), '1', 'a no-op space step preserves the standby snapshot');
+	$bg->query_safe('COMMIT');
+	$bg->quit;
+};
+
+$standby->stop;
+$primary->stop;
+done_testing();

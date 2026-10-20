@@ -381,6 +381,13 @@ sift_cwbuf_seal(Relation index, bool force)
 	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, limit_pages(index), has_rows);
 }
 
+/* VACUUM seals an open buffer once it holds a quarter of write_buffer_limit: its rows are promoted and merged with the rest instead of waiting for a seal that may never come */
+uint64
+sift_cwbuf_seal_vacuum(Relation index)
+{
+	return sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+}
+
 void
 sift_cwbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 {

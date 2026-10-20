@@ -45,6 +45,7 @@ extern bool sift_col_maint_make_room(Relation index);
 
 /* Seals the active segment (only above write_buffer_limit unless force) and opens a fresh one; returns the sealed gen or 0 (sift_wbuf_seal) */
 extern uint64 sift_cwbuf_seal(Relation index, bool force);
+extern uint64 sift_cwbuf_seal_vacuum(Relation index);
 extern void sift_cwbuf_flag_sealed(Relation index, const SiftSegEntry *entry);
 
 /* Reader: the records of a write buffer, deleted ones flagged */

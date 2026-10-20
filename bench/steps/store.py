@@ -649,7 +649,7 @@ def load_pg(eid, args, rows):
     if eid == 'citus':   # the settings the table was created with, read back from the server (the defaults of columnar.*)
         rows.add(eid, '-', 'orders', 'columnar_options', 'text', value=psql_value(eid, "SELECT 'chunk_group_row_limit=' || chunk_group_row_limit || ', stripe_row_limit=' || stripe_row_limit || ', compression=' || "
                                                                                        "compression || ', compression_level=' || compression_level FROM columnar.options WHERE relation = 'orders'::regclass"))
-    if eid == 'sift_table':   # blocks the table file holds and has free (the write pages of the load, sealed into columns): the file does not shrink
+    if eid == 'sift_table':   # reusable blocks left inside the table file after the load's VACUUM
         rows.add(eid, '-', 'free', 'size_mib', 'MiB', value=mib(int(psql_value(eid, "SELECT free_blocks FROM sift.table_space('orders')")) * 8192))
     if eid == 'sift' or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
         rows.add(eid, '-', 'orders_col', 'reloptions', 'text', value=psql_value(eid, "SELECT coalesce(reloptions::text, '(not set)') FROM pg_class WHERE relname = 'orders_col'"))

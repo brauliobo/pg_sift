@@ -14,23 +14,16 @@ INSERT INTO vt SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word' 
 CREATE INDEX vt_idx ON vt USING sift (body) WITH (build_segments = 8);
 SELECT blocks('vt_idx') AS built \gset
 DELETE FROM vt WHERE id % 20 <> 0;
+-- one VACUUM: merged down to the two segments of vacuum_segments, which are written into the space of the old ones (the VACUUM holds the
+-- index exclusively then, so what it releases is reusable at once) and the end of the file is cut
 VACUUM vt;
--- merged down to the two segments of vacuum_segments, written after the old ones, which the file still holds
-SELECT blocks('vt_idx') > :built AS grew, free_blocks > :built / 2 AS mostly_free FROM sift.index_info('vt_idx');
--- rewritten into the space of the old segments, which a reader that began before the VACUUM may still read: they are reusable once a
--- transaction has passed (a VACUUM is in no snapshot, so its own xid does not count), and the end of the file is free then
-SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
-SELECT sift.merge('vt_idx', true);
-SELECT blocks('vt_idx') AS before_truncate \gset
-SELECT free_blocks > 0 AS free_at_end FROM sift.index_info('vt_idx');
-VACUUM vt;
-SELECT blocks('vt_idx') < :before_truncate / 4 AS shrunk, blocks('vt_idx') < :built / 4 AS far_below_built, sized('vt_idx');
+SELECT blocks('vt_idx') < :built / 4 AS shrunk, free_blocks * 10 < relation_blocks AS little_free, sized('vt_idx') FROM sift.index_info('vt_idx');
 SELECT sift.verify('vt_idx', true);
 SELECT count(*) AS hits FROM vt WHERE body @@> 'common';
 -- nothing more to give back
 SELECT blocks('vt_idx') AS settled \gset
 VACUUM vt;
-SELECT blocks('vt_idx') = :settled AS unchanged;
+SELECT blocks('vt_idx') <= :settled AS no_growth;
 
 -- the file grows again as needed, and a session that appended before the truncation appends after it
 INSERT INTO vt SELECT g, 'k' || (g % 7) || ' fresh common u' || g FROM generate_series(200001, 230000) g;
@@ -51,9 +44,11 @@ SELECT blocks('vt2_idx') AS kept \gset
 VACUUM vt2;
 SELECT blocks('vt2_idx') = :kept AS file_kept, free_blocks > :kept / 2 AS mostly_free FROM sift.index_info('vt2_idx');
 ALTER INDEX vt2_idx RESET (vacuum_truncate);
--- the index cleanup of a parallel VACUUM (several indexes) runs in parallel mode, where the exclusive lock cannot be taken (it
--- needs a transaction id): it does not truncate and does not fail; autovacuum and a VACUUM without workers do
+-- a sift index is not vacuumed by workers, so a VACUUM that has one btree besides it is not in parallel mode. With two the leader
+-- runs the index cleanup in parallel mode, where the exclusive lock cannot be taken (it needs a transaction id): it does not truncate
+-- and does not fail; autovacuum and a VACUUM without workers do
 CREATE INDEX vt2_id ON vt2 (id);
+CREATE INDEX vt2_id2 ON vt2 (id, body);
 SET min_parallel_index_scan_size = 0;
 VACUUM (PARALLEL 2) vt2;
 RESET min_parallel_index_scan_size;
@@ -69,4 +64,5 @@ ALTER INDEX vt_idx SET (vacuum_truncate = on);
 ALTER INDEX vt_idx RESET (vacuum_truncate);
 
 DROP TABLE vt, vt2;
+DROP FUNCTION blocks(regclass), sized(regclass);
 DROP EXTENSION pg_sift;

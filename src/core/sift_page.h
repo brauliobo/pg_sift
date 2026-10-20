@@ -132,6 +132,9 @@ typedef struct SiftSectionRef
 	uint64		len;
 } SiftSectionRef;
 
+#define SIFT_TBL_SEG_WBUF		0x0100		/* SiftSegEntry.flags of a write buffer */
+#define SIFT_TBL_SEG_TOMB		0x0200		/* ... of the tombstone segment */
+
 typedef struct SiftSegHeaderData
 {
 	uint64		gen;
