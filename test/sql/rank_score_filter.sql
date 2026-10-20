@@ -1,0 +1,326 @@
+-- sift.score() compared with a constant in WHERE: a cutoff of the ranked scan. Every filtered query must return what the
+-- subquery that ranks and filters on the score above it returns (the reference); any other use of the score in WHERE
+-- is still an error
+CREATE EXTENSION pg_sift;
+
+CREATE FUNCTION sf_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l || E'\n';
+	END LOOP;
+	RETURN rtrim(r, E'\n');
+END $$;
+
+-- the rows of the query in its order, as one document
+CREATE FUNCTION sf_rows(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
+	RETURN j;
+END $$;
+
+-- the rows of the filtered query and the reference are the same ones in the same order
+CREATE FUNCTION sf_same(filtered text, ref text, OUT n int, OUT same boolean, OUT scan boolean) LANGUAGE plpgsql AS $$
+BEGIN
+	n := jsonb_array_length(sf_rows(filtered));
+	same := sf_rows(filtered) = sf_rows(ref);
+	scan := sf_plan(filtered) ~ 'SiftScan';
+END $$;
+
+-- the same for a prepared statement and its reference (EXECUTE is no subquery): the rows, and whether the plan has the scan
+CREATE FUNCTION sf_prepared(filtered text, ref text, OUT n int, OUT same boolean, OUT scan boolean) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE sf_a AS EXECUTE ' || filtered;
+	EXECUTE 'CREATE TEMP TABLE sf_b AS EXECUTE ' || ref;
+	SELECT count(*), (SELECT jsonb_agg(to_jsonb(a)) FROM sf_a a) IS NOT DISTINCT FROM (SELECT jsonb_agg(to_jsonb(b)) FROM sf_b b)
+	INTO n, same FROM sf_a;
+	DROP TABLE sf_a, sf_b;
+	scan := sf_plan('EXECUTE ' || filtered) ~ 'SiftScan';
+END $$;
+
+CREATE TABLE r (id int PRIMARY KEY, body text, other text, grp int);
+INSERT INTO r
+SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'the quick quick fox jumps', 'brown dog runs fast', 'fox'])[1 + i % 5]
+	|| ' w' || i % 7 || repeat(' pad', i % 4), 'note n' || i % 4 || repeat(' pad', i % 3), i % 3
+FROM generate_series(1, 300) i;
+INSERT INTO r VALUES (301, NULL, NULL, 0), (302, '', '', 0), (303, 'x', 'x', 1);
+CREATE INDEX r_idx ON r USING sift (body);
+CREATE INDEX r_other_idx ON r USING sift (other);
+ANALYZE r;
+
+-- the filter keeps the rows above the cutoff: both operand orders, and the four operators
+SELECT id, sift.score(ctid) FROM r WHERE body @@> 'quick fox' AND sift.score(ctid) > 1.5 ORDER BY sift.score(ctid) DESC, id LIMIT 5;
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5 ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) >= 1.5 ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s >= 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) < 1.5 ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s < 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) <= 1.5 ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s <= 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND 1.5 < sift.score(ctid) ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND 1.5 <= sift.score(ctid) ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s >= 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND 1.5 > sift.score(ctid) ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s < 1.5 ORDER BY 2 DESC, 1');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' AND 1.5 >= sift.score(ctid) ORDER BY 2 DESC, 1',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s <= 1.5 ORDER BY 2 DESC, 1');
+
+-- the types of the constant: an integer, a float4, a float8, a numeric
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5::float8 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5::float8 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5::numeric ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > 1.5::numeric ORDER BY 1');
+
+-- the plan is the ranked scan, with the cutoff in it
+SELECT sf_plan('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5') ~ 'Score Filter: \(\(sift\.score\(ctid\)\) > ''1\.5''::double precision\)' AS filter_in_scan;
+SELECT sf_plan('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > 1.5') !~ '\n\s+Filter:' AS no_other_filter;
+
+-- a cutoff from below keeps the limit hint of the ranked scan, one from above does not (the rows it drops are the best ones)
+SELECT sf_plan('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 1 ORDER BY sift.score(ctid) DESC LIMIT 7') ~ 'Limit Hint: 7' AS hint_from_below;
+SELECT sf_plan('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) < 1 ORDER BY sift.score(ctid) DESC LIMIT 7') !~ 'Limit Hint' AS no_hint_from_above;
+SELECT sf_plan('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.5 AND sift.score(ctid) < 1 ORDER BY sift.score(ctid) DESC LIMIT 7') !~ 'Limit Hint' AS no_hint_both;
+
+-- negative and zero cutoffs, and the ones that keep every row or none
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) > 0 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s > 0 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) >= 0 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s >= 0 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) > -1 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s > -1 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) < 0 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s < 0 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) <= -0.5 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s <= -0.5 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) > 1000 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s > 1000 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''fox'' AND sift.score(ctid) < 1000 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''fox'' OFFSET 0) q WHERE s < 1000 ORDER BY 1');
+
+-- a cutoff at a score several rows have (a tie), from the float4 itself: > and < drop the tie, >= and <= keep it
+SELECT s AS tie FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'quick fox' ORDER BY 1 DESC, id LIMIT 1 OFFSET 40) q \gset
+SELECT count(*) AS rows_at_tie FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'quick fox' OFFSET 0) q WHERE s = :'tie'::float4;
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) > ' || quote_literal(:'tie') || '::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s > ' || quote_literal(:'tie') || '::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) >= ' || quote_literal(:'tie') || '::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s >= ' || quote_literal(:'tie') || '::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) < ' || quote_literal(:'tie') || '::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s < ' || quote_literal(:'tie') || '::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) <= ' || quote_literal(:'tie') || '::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s <= ' || quote_literal(:'tie') || '::float4 ORDER BY 1');
+-- with a LIMIT inside the tie
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick fox'' AND sift.score(ctid) >= ' || quote_literal(:'tie') || '::float4 ORDER BY sift.score(ctid) DESC, id LIMIT 40',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick fox'' OFFSET 0) q WHERE s >= ' || quote_literal(:'tie') || '::float4 ORDER BY s DESC, id LIMIT 40');
+
+-- LIMIT and OFFSET, ORDER BY the score, another order, and no order
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 7',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 7');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 7 OFFSET 20',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 7 OFFSET 20');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 1000',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 1000');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 100 ORDER BY sift.score(ctid) DESC, id LIMIT 7',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 100 ORDER BY s DESC, id LIMIT 7');
+-- a cutoff from above under a LIMIT: the rows it drops are the best ones, so the scan cannot stop at the limit
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) < 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 7',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s < 0.95 ORDER BY s DESC, id LIMIT 7');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) <= 1.1 ORDER BY sift.score(ctid) DESC, id LIMIT 7 OFFSET 3',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s <= 1.1 ORDER BY s DESC, id LIMIT 7 OFFSET 3');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) <= 1.1 ORDER BY sift.score(ctid) DESC, id',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s <= 1.1 ORDER BY s DESC, id');
+-- ORDER BY another column: the limit applies after the filter
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 1 ORDER BY id DESC LIMIT 9',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 1 ORDER BY id DESC LIMIT 9');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) < 1 ORDER BY id DESC LIMIT 9',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s < 1 ORDER BY id DESC LIMIT 9');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 1 ORDER BY grp, sift.score(ctid) DESC, id LIMIT 9',
+	'SELECT id FROM (SELECT id, grp, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 1 ORDER BY grp, s DESC, id LIMIT 9');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) < 1 ORDER BY grp, sift.score(ctid) DESC, id LIMIT 9',
+	'SELECT id FROM (SELECT id, grp, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s < 1 ORDER BY grp, s DESC, id LIMIT 9');
+-- no order and a limit: the rows the limit takes all pass
+SELECT count(*) = 11 AS full, bool_and(s > 1) AS all_pass FROM
+	(SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'quick OR dog' AND sift.score(ctid) > 1 LIMIT 11) q;
+SELECT count(*) = 11 AS full_upper, bool_and(s < 1) AS all_pass_upper FROM
+	(SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'quick OR dog' AND sift.score(ctid) < 1 LIMIT 11) q;
+
+-- the score in the select list too, other conditions, an aggregate over the rows, a join
+SELECT * FROM sf_same('SELECT id, grp, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND grp = 1 AND sift.score(ctid) > 0.95 ORDER BY 3 DESC, 1 LIMIT 10',
+	'SELECT id, grp, s FROM (SELECT id, grp, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND grp = 1 OFFSET 0) q WHERE s > 0.95 ORDER BY 3 DESC, 1 LIMIT 10');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND id % 5 = 0 AND sift.score(ctid) > 0.95 AND grp <> 2 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND id % 5 = 0 AND grp <> 2 OFFSET 0) q WHERE s > 0.95 ORDER BY 1');
+SELECT count(*) AS n, round(avg(id), 2) AS avg_id FROM r WHERE body @@> 'quick OR dog' AND sift.score(ctid) > 0.95;
+SELECT count(*) AS n, round(avg(id), 2) AS avg_id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> 'quick OR dog' OFFSET 0) q WHERE s > 0.95;
+SELECT sf_plan('SELECT count(*) FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.95') ~ 'SiftScan' AS count_scan;
+SELECT grp, count(*) FROM r WHERE body @@> 'quick OR dog' AND sift.score(ctid) < 0.95 GROUP BY grp ORDER BY grp;
+SELECT grp, count(*) FROM (SELECT grp, sift.score(ctid) AS s FROM r WHERE body @@> 'quick OR dog' OFFSET 0) q WHERE s < 0.95 GROUP BY grp ORDER BY grp;
+CREATE TABLE jg (grp int PRIMARY KEY, label text);
+INSERT INTO jg VALUES (0, 'zero'), (1, 'one'), (2, 'two');
+SELECT * FROM sf_same('SELECT r.id, jg.label FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' AND sift.score(r.ctid) > 0.95 ORDER BY 1',
+	'SELECT id, label FROM (SELECT r.id, jg.label, sift.score(r.ctid) AS s FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY 1');
+SELECT * FROM sf_same('SELECT r.id, jg.label, sift.score(r.ctid) AS s FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' AND sift.score(r.ctid) > 0.95 ORDER BY 3 DESC, 1 LIMIT 6',
+	'SELECT id, label, s FROM (SELECT r.id, jg.label, sift.score(r.ctid) AS s FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY 3 DESC, 1 LIMIT 6');
+SELECT * FROM sf_same('SELECT r.id, jg.label FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' AND jg.grp > 0 AND sift.score(r.ctid) < 0.95 ORDER BY 1',
+	'SELECT id, label FROM (SELECT r.id, jg.label, sift.score(r.ctid) AS s FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR dog'' AND jg.grp > 0 OFFSET 0) q WHERE s < 0.95 ORDER BY 1');
+
+-- several conjuncts: the score must pass them all
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.5 AND sift.score(ctid) > 0.9 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.9 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) >= 0.9 AND sift.score(ctid) < 1.3 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s >= 0.9 AND s < 1.3 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) >= 0.9 AND sift.score(ctid) < 1.3 ORDER BY sift.score(ctid) DESC, id LIMIT 12',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s >= 0.9 AND s < 1.3 ORDER BY s DESC, id LIMIT 12');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 1.3 AND sift.score(ctid) < 0.9 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 1.3 AND s < 0.9 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND 0.9 <= sift.score(ctid) AND sift.score(ctid) <= 1.3 AND id > 50 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND id > 50 OFFSET 0) q WHERE s >= 0.9 AND s <= 1.3 ORDER BY 1');
+
+-- a cutoff that is an expression of constants, or of parameters of a prepared statement (custom and generic plans)
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.19 * 5 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > (SELECT 0.95) ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > (SELECT max(0.1 * id) FROM r WHERE id < 10) ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.9 ORDER BY 1');
+PREPARE sf_gt(text, float4, int) AS
+	SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> $1 AND sift.score(ctid) > $2 ORDER BY sift.score(ctid) DESC, id LIMIT $3;
+PREPARE sf_lt(text, float4, int) AS
+	SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> $1 AND $2 > sift.score(ctid) ORDER BY sift.score(ctid) DESC, id LIMIT $3;
+PREPARE sf_ref_gt(text, float4, int) AS
+	SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> $1 OFFSET 0) q WHERE s > $2 ORDER BY s DESC, id LIMIT $3;
+PREPARE sf_ref_lt(text, float4, int) AS
+	SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> $1 OFFSET 0) q WHERE $2 > s ORDER BY s DESC, id LIMIT $3;
+SET plan_cache_mode = force_custom_plan;
+SELECT * FROM sf_prepared('sf_gt(''quick OR dog'', 0.95, 6)', 'sf_ref_gt(''quick OR dog'', 0.95, 6)');
+SELECT * FROM sf_prepared('sf_lt(''quick OR dog'', 0.95, 6)', 'sf_ref_lt(''quick OR dog'', 0.95, 6)');
+SELECT * FROM sf_prepared('sf_lt(''quick OR dog'', 1.1, 100)', 'sf_ref_lt(''quick OR dog'', 1.1, 100)');
+SET plan_cache_mode = force_generic_plan;
+SELECT * FROM sf_prepared('sf_gt(''quick OR dog'', 0.95, 6)', 'sf_ref_gt(''quick OR dog'', 0.95, 6)');
+SELECT * FROM sf_prepared('sf_gt(''quick OR dog'', 1.1, 100)', 'sf_ref_gt(''quick OR dog'', 1.1, 100)');
+SELECT * FROM sf_prepared('sf_gt(''quick OR dog'', 1.1, 0)', 'sf_ref_gt(''quick OR dog'', 1.1, 0)');
+SELECT * FROM sf_prepared('sf_lt(''quick OR dog'', 0.95, 6)', 'sf_ref_lt(''quick OR dog'', 0.95, 6)');
+SELECT * FROM sf_prepared('sf_lt(''quick OR dog'', 1.1, 100)', 'sf_ref_lt(''quick OR dog'', 1.1, 100)');
+SELECT * FROM sf_prepared('sf_lt(''quick OR dog'', 1.1, 100)', 'sf_ref_lt(''quick OR dog'', 1.1, 100)');
+SELECT * FROM sf_prepared('sf_gt(NULL, 0.95, 6)', 'sf_ref_gt(NULL, 0.95, 6)');
+SELECT * FROM sf_prepared('sf_gt(''dog'', NULL, 6)', 'sf_ref_gt(''dog'', NULL, 6)');
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+
+-- the cutoff is NaN: PostgreSQL orders it above every number, as in the reference
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND sift.score(ctid) > ''NaN''::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE s > ''NaN''::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND sift.score(ctid) < ''NaN''::float4 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE s < ''NaN''::float4 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND sift.score(ctid) > ''-Infinity''::float8 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE s > ''-Infinity''::float8 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND sift.score(ctid) < ''Infinity''::float8 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE s < ''Infinity''::float8 ORDER BY 1');
+
+-- a table with several sift indexes: the cutoff follows the match
+SELECT * FROM sf_same('SELECT id FROM r WHERE other @@> ''n1 OR n2'' AND sift.score(ctid) > 1.3 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE other @@> ''n1 OR n2'' OFFSET 0) q WHERE s > 1.3 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick'' AND other @@> ''n1 OR n2'' AND sift.score(ctid) < 2 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick'' AND other @@> ''n1 OR n2'' OFFSET 0) q WHERE s < 2 ORDER BY 1');
+
+-- the same with parallel scans: a cutoff from below keeps the parallel ranked scan, one from above has no limit hint and runs serial
+CREATE TABLE pr (id int, body text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 2);
+INSERT INTO pr SELECT i, 'common w' || i % 50 || ' x' || i % 7 || repeat(' pad', i % 5) FROM generate_series(1, 20000) i;
+CREATE INDEX pr_idx ON pr USING sift (body);
+ANALYZE pr;
+SELECT s AS ptie FROM (SELECT sift.score(ctid) AS s FROM pr WHERE body @@> 'w3 OR x2' ORDER BY 1 DESC, id LIMIT 1 OFFSET 700) q \gset
+SET sift.parallel_scan = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT sf_plan('SELECT id FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) > 2 ORDER BY sift.score(ctid) DESC, id LIMIT 50') ~ 'Parallel Custom Scan \(SiftScan\)' AS parallel_from_below;
+SELECT sf_plan('SELECT id FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) < 2 ORDER BY sift.score(ctid) DESC, id LIMIT 50') !~ 'Parallel' AS serial_from_above;
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) > 2 ORDER BY sift.score(ctid) DESC, id LIMIT 50',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s > 2 ORDER BY s DESC, id LIMIT 50');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) > 2 ORDER BY sift.score(ctid) DESC, id LIMIT 2000 OFFSET 100',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s > 2 ORDER BY s DESC, id LIMIT 2000 OFFSET 100');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) >= ' || quote_literal(:'ptie') || '::float4 ORDER BY sift.score(ctid) DESC, id LIMIT 800',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s >= ' || quote_literal(:'ptie') || '::float4 ORDER BY s DESC, id LIMIT 800');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) > ' || quote_literal(:'ptie') || '::float4 ORDER BY sift.score(ctid) DESC, id LIMIT 800',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s > ' || quote_literal(:'ptie') || '::float4 ORDER BY s DESC, id LIMIT 800');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) < 2.2 ORDER BY sift.score(ctid) DESC, id LIMIT 50',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s < 2.2 ORDER BY s DESC, id LIMIT 50');
+SELECT * FROM sf_same('SELECT id FROM pr WHERE body @@> ''w3 OR x2'' AND sift.score(ctid) > 2 AND sift.score(ctid) <= 3 ORDER BY id',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM pr WHERE body @@> ''w3 OR x2'' OFFSET 0) q WHERE s > 2 AND s <= 3 ORDER BY id');
+SELECT count(*) AS n FROM pr WHERE body @@> 'w3 OR x2' AND sift.score(ctid) > 2;
+RESET sift.parallel_scan;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_index_scan_size;
+RESET max_parallel_workers_per_gather;
+DROP TABLE pr;
+
+-- the filter pushed down, and without it
+SET sift.filter_pushdown = off;
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND id > 100 AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 20',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND id > 100 OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 20');
+SET sift.filter_pushdown = force;
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND id > 100 AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 20',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' AND id > 100 OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 20');
+RESET sift.filter_pushdown;
+
+-- a partitioned table: every partition's scan applies the cutoff to its own scores
+CREATE TABLE pt (id int, body text) PARTITION BY RANGE (id);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES FROM (0) TO (100);
+CREATE TABLE pt2 PARTITION OF pt FOR VALUES FROM (100) TO (1000);
+INSERT INTO pt SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'quick quick fox'])[1 + i % 3] || ' w' || i % 5 FROM generate_series(1, 300) i;
+CREATE INDEX pt1_idx ON pt1 USING sift (body);
+CREATE INDEX pt2_idx ON pt2 USING sift (body);
+ANALYZE pt;
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pt WHERE body @@> ''quick OR dog'' AND sift.score(ctid) > 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 15',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pt WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s > 0.95 ORDER BY s DESC, id LIMIT 15');
+SELECT * FROM sf_same('SELECT id, sift.score(ctid) AS s FROM pt WHERE body @@> ''quick OR dog'' AND sift.score(ctid) < 0.95 ORDER BY sift.score(ctid) DESC, id LIMIT 15',
+	'SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pt WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s < 0.95 ORDER BY s DESC, id LIMIT 15');
+
+-- NOT and BETWEEN reach the scan as comparisons PostgreSQL has already rewritten: they are the same cutoffs
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND NOT (sift.score(ctid) > 1) ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s <= 1 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND NOT (sift.score(ctid) > 1 OR sift.score(ctid) < 0.5) ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s <= 1 AND s >= 0.5 ORDER BY 1');
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) BETWEEN 0.9 AND 1.3 ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s BETWEEN 0.9 AND 1.3 ORDER BY 1');
+
+-- any other use of the score in WHERE is an error that says where to filter
+SELECT id FROM r WHERE body @@> 'dog' AND (sift.score(ctid) > 1 OR id = 1);
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) = 1;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) <> 1;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) IS NOT NULL;
+SELECT id FROM r WHERE body @@> 'dog' AND (CASE WHEN sift.score(ctid) > 1 THEN true ELSE false END);
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) + 1 > 2;
+SELECT id FROM r WHERE body @@> 'dog' AND abs(sift.score(ctid)) > 1;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid)::numeric > 1;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > id;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > random();
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > sift.score(ctid) / 2;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.max_score(ctid) > 1;
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > ANY (ARRAY[1, 2]);
+SELECT id FROM r WHERE sift.score(ctid) > 1;
+SELECT id FROM r WHERE body @@> 'dog' OR sift.score(ctid) > 1;
+SELECT id FROM r WHERE body @@> ANY (ARRAY['dog', 'fox']) AND sift.score(ctid) > 1;
+SELECT id FROM r WHERE body @@> 'dog' AND EXISTS (SELECT 1 WHERE sift.score(r.ctid) > 1 OFFSET 0);
+SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > 1 FOR UPDATE;
+UPDATE r SET grp = grp WHERE body @@> 'dog' AND sift.score(ctid) > 1;
+
+-- the same through a subquery filters, as the hint says
+SELECT count(*) AS n FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'dog' OFFSET 0) q WHERE s > 1;
+
+DROP TABLE pt, jg;
+DROP TABLE r;
+DROP FUNCTION sf_prepared(text, text);
+DROP FUNCTION sf_same(text, text);
+DROP FUNCTION sf_rows(text);
+DROP FUNCTION sf_plan(text);
+DROP EXTENSION pg_sift;

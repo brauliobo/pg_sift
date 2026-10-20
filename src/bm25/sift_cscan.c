@@ -97,6 +97,7 @@ typedef struct SiftScanState
 	int64		k;
 	List	   *queries;			/* ExprState */
 	ExprState  *quals;				/* residual quals over the scan tuple */
+	ExprState  *cuts;				/* cutoffs of the score, over the scan tuple of a ranked row */
 	Relation	heap;
 	bool		heap_opened;
 	Relation	index;
@@ -535,7 +536,6 @@ next_row(SiftScanState *ss, ItemPointer entry)
 		econtext->ecxt_scantuple = fill_scan_slot(ss, 0);
 		if (ss->quals && !ExecQual(ss->quals, econtext))
 		{
-			InstrCountFiltered1(ss, 1);
 			continue;
 		}
 		return econtext->ecxt_scantuple;
@@ -556,10 +556,16 @@ ranked_next(SiftScanState *ss)
 {
 	ItemPointerData tid;
 	float4		score;
+	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
 
 	while (sift_rank_next(ss->rank, &tid, &score))
 		if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
-			return fill_scan_slot(ss, score);
+		{
+			ResetExprContext(econtext);
+			econtext->ecxt_scantuple = fill_scan_slot(ss, score);
+			if (ExecQual(ss->cuts, econtext))
+				return econtext->ecxt_scantuple;
+		}
 	return NULL;
 }
 
@@ -929,6 +935,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->gate_to = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE_TO))->constvalue);
 	ss->queries = ExecInitExprList(linitial_node(List, cs->custom_exprs), &node->ss.ps);
 	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
+	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
 	init_keys(ss, cs);
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
@@ -1013,20 +1020,30 @@ order_text(SiftScanState *ss, CustomScan *cs, List *dctx)
 	return buf.data;
 }
 
+/* The expressions as text, ANDed */
+static char *
+and_text(List *exprs, List *dctx)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	foreach_ptr(Node, e, exprs)
+		appendStringInfo(&buf, "%s%s", buf.len ? " AND " : "", deparse_expression(e, dctx, false, false));
+	return buf.data;
+}
+
 static void
 sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	SiftScanState *ss = (SiftScanState *) node;
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 	List	   *dctx = set_deparse_context_plan(es->deparse_cxt, node->ss.ps.plan, ancestors);
-	StringInfoData qs;
 	SiftTotals	t = ss->tot;
 
-	initStringInfo(&qs);
-	foreach_ptr(Node, q, linitial_node(List, cs->custom_exprs))
-		appendStringInfo(&qs, "%s%s", qs.len ? " AND " : "", deparse_expression(q, dctx, false, false));
 	ExplainPropertyText("Index", RelationGetRelationName(ss->index), es);
-	ExplainPropertyText("Query", qs.data, es);
+	ExplainPropertyText("Query", and_text(linitial_node(List, cs->custom_exprs), dctx), es);
+	if (list_nth_node(List, cs->custom_exprs, 4) != NIL)
+		ExplainPropertyText("Score Filter", and_text(list_nth_node(List, cs->custom_exprs, 4), dctx), es);
 	if (ss->mode == SIFT_MODE_RANKED)
 	{
 		ExplainPropertyText("Order", order_text(ss, cs, dctx), es);

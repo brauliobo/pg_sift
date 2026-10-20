@@ -4,8 +4,9 @@
  *
  * CustomScan layout (both SiftScan and SiftCount):
  *   custom_private = list of Const/Integer nodes, see SiftPrivateField
- *   custom_exprs   = four lists: the query right-hand sides (Const or Param), ANDed; the residual quals; the LIMIT
- *                    (OFFSET) Params of a generic plan; the leading sort keys of a keyed scan (SIFT_PRIV_KEYOPS)
+ *   custom_exprs   = five lists: the query right-hand sides (Const or Param), ANDed; the residual quals; the LIMIT
+ *                    (OFFSET) Params of a generic plan; the leading sort keys of a keyed scan (SIFT_PRIV_KEYOPS);
+ *                    the cutoffs of the score (sift.score(ctid) > c ...), which the scan tests on the score it computed
  *   custom_scan_tlist:
  *     SiftScan:  needed Vars of the rel, then every sift.score/max_score
  *                expression of the rel (setrefs maps them to INDEX_VAR;
