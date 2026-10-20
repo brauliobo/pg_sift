@@ -626,6 +626,28 @@ sift_query_parse(const char *src, int len)
 	return q;
 }
 
+/*
+ * The OR of the queries srcs[0..n): each parsed on its own (its errors, its positions), then joined as the
+ * parser joins the arms of an OR, so that analysis sees the tree of "q1 OR q2 OR ..."
+ */
+SiftQuery *
+sift_query_parse_any(const char *const *srcs, const int *lens, int n)
+{
+	SiftQuery  *q = palloc0(sizeof(SiftQuery));
+	List	   *kids = NIL;
+
+	Assert(n > 0);
+	for (int i = 0; i < n; i++)
+	{
+		SiftQuery  *e = sift_query_parse(srcs[i], lens[i]);
+
+		kids = add_child(kids, e->root, SQ_OR);
+		q->nleaves += e->nleaves;
+	}
+	q->root = list_node(SQ_OR, kids);
+	return q;
+}
+
 /* ---------------------------------------------------------------- analysis */
 
 static int

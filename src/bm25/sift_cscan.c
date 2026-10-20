@@ -28,6 +28,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -96,6 +97,7 @@ typedef struct SiftScanState
 	Oid			heapoid;
 	int64		k;
 	List	   *queries;			/* ExprState */
+	bool	   *query_any;			/* per query: an array of queries, ORed (body @@> ANY (array)) */
 	ExprState  *quals;				/* residual quals over the scan tuple */
 	ExprState  *cuts;				/* cutoffs of the score, over the scan tuple of a ranked row */
 	Relation	heap;
@@ -310,6 +312,32 @@ close_scan(SiftScanState *ss)
 	ss->nkrows = ss->kpos = 0;
 }
 
+/* The query of an operand: its text, or the OR of an array's elements; NULL when the operand is NULL or an array holds no element (the operator is strict) */
+static SiftQuery *
+operand_query(SiftIndexState *st, Datum d, bool any)
+{
+	text	   *q;
+	ArrayType  *arr;
+	Datum	   *elems;
+	bool	   *nulls;
+	int			n,
+				m = 0;
+	text	  **texts;
+
+	if (!any)
+	{
+		q = DatumGetTextPP(d);
+		return sift_state_query(st, VARDATA_ANY(q), VARSIZE_ANY_EXHDR(q));
+	}
+	arr = DatumGetArrayTypeP(d);
+	deconstruct_array(arr, ARR_ELEMTYPE(arr), -1, false, TYPALIGN_INT, &elems, &nulls, &n);
+	texts = palloc(Max(n, 1) * sizeof(text *));
+	for (int i = 0; i < n; i++)
+		if (!nulls[i])
+			texts[m++] = DatumGetTextPP(elems[i]);
+	return m > 0 ? sift_state_query_any(st, texts, m) : NULL;
+}
+
 /* The plan binds from the leader's export (shared), or reads the index itself; NULL: a query is NULL, no rows */
 static SiftPlan *
 bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared)
@@ -324,12 +352,10 @@ bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared)
 	{
 		bool		isnull;
 		Datum		d = ExecEvalExprSwitchContext(es, econtext, &isnull);
-		text	   *q;
 
-		if (isnull)
+		if (isnull || (queries[i] = operand_query(st, d, ss->query_any[i])) == NULL)
 			return NULL;
-		q = DatumGetTextPP(d);
-		queries[i++] = sift_state_query(st, VARDATA_ANY(q), VARSIZE_ANY_EXHDR(q));
+		i++;
 	}
 	return shared ? sift_plan_bind_shared(st, queries, n, flags, shared) : sift_plan_bind(st, queries, n, flags);
 }
@@ -934,6 +960,9 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->gate = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE))->constvalue);
 	ss->gate_to = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE_TO))->constvalue);
 	ss->queries = ExecInitExprList(linitial_node(List, cs->custom_exprs), &node->ss.ps);
+	ss->query_any = palloc(Max(list_length(ss->queries), 1) * sizeof(bool));
+	foreach_ptr(Node, q, linitial_node(List, cs->custom_exprs))
+		ss->query_any[foreach_current_index(q)] = OidIsValid(get_element_type(exprType(q)));
 	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
 	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
 	init_keys(ss, cs);

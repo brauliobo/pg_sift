@@ -46,6 +46,20 @@ extern SiftIndexState *sift_state_open_dir(Relation index, MemoryContext mcxt, c
 /* Parse + analyze q with the index analyzer; allocates in CurrentMemoryContext */
 extern SiftQuery *sift_state_query(SiftIndexState *st, const char *q, int len);
 
+/*
+ * The query of one index qual: a query text, or (any) the OR of the texts of an array (body @@> ANY (array)), which analyzes
+ * to the tree of "q1 OR q2 OR ..." with each element a whole query. texts are not copied.
+ */
+typedef struct SiftQuerySrc
+{
+	text	  **texts;
+	int			ntexts;
+	bool		any;
+} SiftQuerySrc;
+
+extern SiftQuery *sift_state_query_any(SiftIndexState *st, text *const *texts, int n);
+extern SiftQuery *sift_state_query_src(SiftIndexState *st, const SiftQuerySrc *src);
+
 #define SIFT_BIND_SCORE		0x01	/* weigh the leaves for the ranker (idf from all segments) */
 #define SIFT_BIND_CAPPED	0x02	/* stop expanding at the limit instead of raising (estimates) */
 
@@ -211,5 +225,6 @@ typedef struct SiftEstimate
 } SiftEstimate;
 
 extern void sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est);
+extern void sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est);
 
 #endif							/* SIFT_EVAL_H */

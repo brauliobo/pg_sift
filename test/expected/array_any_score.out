@@ -1,0 +1,477 @@
+-- body @@> ANY (array) is the OR of its queries: the scan answers it as one query, with the BM25 scores and the ranking of the
+-- same OR written in one query text
+CREATE EXTENSION pg_sift;
+CREATE TABLE t (id int, body text);
+INSERT INTO t
+SELECT i, 'alpha ' || (ARRAY['beta', 'gamma', 'delta', 'epsilon', 'zeta'])[1 + i % 5] || ' w' || i % 11
+	|| CASE WHEN i % 7 = 0 THEN ' pool' WHEN i % 13 = 0 THEN ' spa spa' ELSE '' END
+	|| CASE WHEN i % 17 = 0 THEN ' pool spa' ELSE '' END
+FROM generate_series(1, 3000) i;
+CREATE INDEX t_idx ON t USING sift (body);
+VACUUM ANALYZE t;
+SET enable_seqscan = off;
+-- the scored plan, top-N, the count and the match list
+EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) ORDER BY 2 DESC LIMIT 5;
+             QUERY PLAN              
+-------------------------------------
+ Limit
+   ->  Custom Scan (SiftScan) on t
+         Index: t_idx
+         Query: '{pool,spa}'::text[]
+         Order: score DESC
+         Limit Hint: 5
+(6 rows)
+
+EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+          QUERY PLAN           
+-------------------------------
+ Custom Scan (SiftScan) on t
+   Index: t_idx
+   Query: '{pool,spa}'::text[]
+   Order: score DESC
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+          QUERY PLAN           
+-------------------------------
+ Custom Scan (SiftCount)
+   Index: t_idx
+   Query: '{pool,spa}'::text[]
+(3 rows)
+
+-- the same match set as the bitmap scan and as the OR text
+CREATE TABLE ref AS SELECT id FROM t WHERE body @@> 'pool OR spa';
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+EXPLAIN (COSTS OFF) SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Bitmap Heap Scan on t
+   Recheck Cond: (body @@> ANY ('{pool,spa}'::text[]))
+   ->  Bitmap Index Scan on t_idx
+         Index Cond: (body @@> ANY ('{pool,spa}'::text[]))
+(4 rows)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+ count 
+-------
+   765
+(1 row)
+
+SELECT count(*) FROM (SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) EXCEPT SELECT id FROM ref) d;
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM (SELECT id FROM ref EXCEPT SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa'])) d;
+ count 
+-------
+     0
+(1 row)
+
+RESET sift.enable_scan;
+RESET sift.enable_count;
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+ count 
+-------
+   765
+(1 row)
+
+SELECT count(*) FROM (SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) EXCEPT SELECT id FROM ref) d;
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM (SELECT id FROM ref EXCEPT SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa'])) d;
+ count 
+-------
+     0
+(1 row)
+
+-- the scores and the ranking are those of the OR text, for every array
+CREATE FUNCTION score_same(arr text[], txt text, OUT matches int, OUT same boolean) LANGUAGE plpgsql AS $$
+DECLARE a text[]; b text[];
+BEGIN
+	EXECUTE 'SELECT array_agg(id || '':'' || s ORDER BY id) FROM (SELECT id, sift.score(ctid) s FROM t WHERE body @@> ANY ($1)) x' INTO a USING arr;
+	EXECUTE 'SELECT array_agg(id || '':'' || s ORDER BY id) FROM (SELECT id, sift.score(ctid) s FROM t WHERE body @@> $1) x' INTO b USING txt;
+	matches := cardinality(a);
+	same := a IS NOT DISTINCT FROM b;
+END $$;
+CREATE FUNCTION rank_same(arr text[], txt text, k int) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a int[]; b int[];
+BEGIN
+	EXECUTE 'SELECT array_agg(id) FROM (SELECT id FROM t WHERE body @@> ANY ($1) ORDER BY sift.score(ctid) DESC, id LIMIT $3) x' INTO a USING arr, txt, k;
+	EXECUTE 'SELECT array_agg(id) FROM (SELECT id FROM t WHERE body @@> $2 ORDER BY sift.score(ctid) DESC, id LIMIT $3) x' INTO b USING arr, txt, k;
+	RETURN a IS NOT DISTINCT FROM b AND a IS NOT NULL;
+END $$;
+SELECT * FROM score_same(ARRAY['pool', 'spa'], 'pool OR spa');
+ matches | same 
+---------+------
+     765 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['pool', 'spa', 'gamma'], 'pool OR spa OR gamma');
+ matches | same 
+---------+------
+    1213 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['pool'], 'pool');
+ matches | same 
+---------+------
+     579 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['pool', 'pool'], 'pool OR pool');
+ matches | same 
+---------+------
+     579 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['pool spa', 'zeta'], '(pool spa) OR zeta');
+ matches | same 
+---------+------
+     741 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['"alpha gamma"', 'spa^3'], '"alpha gamma" OR spa^3');
+ matches | same 
+---------+------
+     891 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['alp*', 'w1*'], 'alp* OR w1*');
+ matches | same 
+---------+------
+    3000 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['gamma NOT w3', 'pool OR spa'], '(gamma NOT w3) OR pool OR spa');
+ matches | same 
+---------+------
+    1173 | t
+(1 row)
+
+SELECT * FROM score_same(ARRAY['zeta', NULL, 'spa'], 'zeta OR spa');
+ matches | same 
+---------+------
+     889 | t
+(1 row)
+
+SELECT rank_same(ARRAY['pool', 'spa'], 'pool OR spa', 5);
+ rank_same 
+-----------
+ t
+(1 row)
+
+SELECT rank_same(ARRAY['pool', 'spa'], 'pool OR spa', 100);
+ rank_same 
+-----------
+ t
+(1 row)
+
+SELECT rank_same(ARRAY['pool spa', 'zeta', 'w4'], '(pool spa) OR zeta OR w4', 20);
+ rank_same 
+-----------
+ t
+(1 row)
+
+SELECT id, round(sift.score(ctid)::numeric, 4) AS score FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) ORDER BY sift.score(ctid) DESC, id LIMIT 5;
+  id  | score  
+------+--------
+  221 | 3.8509
+  442 | 3.8509
+  663 | 3.8509
+  884 | 3.8509
+ 1105 | 3.8509
+(5 rows)
+
+SELECT id, round(sift.score(ctid)::numeric, 4) AS score FROM t WHERE body @@> 'pool OR spa' ORDER BY sift.score(ctid) DESC, id LIMIT 5;
+  id  | score  
+------+--------
+  221 | 3.8509
+  442 | 3.8509
+  663 | 3.8509
+  884 | 3.8509
+ 1105 | 3.8509
+(5 rows)
+
+-- filters, a second query, a cutoff and the max_score
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) AND id % 3 = 0;
+ count 
+-------
+   254
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'pool OR spa' AND id % 3 = 0;
+ count 
+-------
+   254
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) AND body @@> 'gamma';
+ count 
+-------
+   152
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'pool OR spa' AND body @@> 'gamma';
+ count 
+-------
+   152
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) AND body @@> ANY (ARRAY['gamma', 'zeta']);
+ count 
+-------
+   306
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> '(pool OR spa) AND (gamma OR zeta)';
+ count 
+-------
+   306
+(1 row)
+
+SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) AND id % 3 = 0 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+  id  
+------
+  663
+ 1326
+ 1989
+(3 rows)
+
+SELECT id FROM t WHERE body @@> 'pool OR spa' AND id % 3 = 0 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+  id  
+------
+  663
+ 1326
+ 1989
+(3 rows)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) AND sift.score(ctid) > 3;
+ count 
+-------
+   176
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'pool OR spa' AND sift.score(ctid) > 3;
+ count 
+-------
+   176
+(1 row)
+
+SELECT round(max(sift.max_score(ctid))::numeric, 4) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+ round  
+--------
+ 3.8509
+(1 row)
+
+SELECT round(max(sift.max_score(ctid))::numeric, 4) FROM t WHERE body @@> 'pool OR spa';
+ round  
+--------
+ 3.8509
+(1 row)
+
+-- NULL and empty arrays, NULL elements, a nonexistent word
+SELECT count(*) FROM t WHERE body @@> ANY (NULL::text[]);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY ('{}'::text[]);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY[NULL]::text[]);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['nomatch']);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['nomatch', NULL, 'spa']);
+ count 
+-------
+   362
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'spa';
+ count 
+-------
+   362
+(1 row)
+
+SELECT id FROM t WHERE body @@> ANY (NULL::text[]) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ id 
+----
+(0 rows)
+
+SELECT id FROM t WHERE body @@> ANY ('{}'::text[]) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ id 
+----
+(0 rows)
+
+SELECT id FROM t WHERE body @@> ANY (ARRAY[NULL, 'nomatch']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ id 
+----
+(0 rows)
+
+-- an element is a whole query: an empty or a malformed one is the error of the same query on its own
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', '']);
+ERROR:  sift query: empty query at position 1
+SELECT count(*) FROM t WHERE body @@> '';
+ERROR:  sift query: empty query at position 1
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa AND']);
+ERROR:  sift query: expected a term after AND, found end of query at position 8
+SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', '(spa']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift query: unclosed "(" at position 1
+-- ALL and NOT ANY are not an OR of matches: no scan answers them, and they have no score
+DO $$ BEGIN
+	EXECUTE 'EXPLAIN SELECT id FROM t WHERE body @@> ALL (ARRAY[''pool'', ''spa''])';
+	EXECUTE 'EXPLAIN SELECT id FROM t WHERE NOT body @@> ANY (ARRAY[''pool'', ''spa''])';
+END $$;
+SELECT count(*) FROM t WHERE body @@> ALL (ARRAY['pool', 'spa']);
+ count 
+-------
+   176
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'pool AND spa';
+ count 
+-------
+   176
+(1 row)
+
+SELECT count(*) FROM t WHERE NOT body @@> ANY (ARRAY['pool', 'spa']);
+ count 
+-------
+  2235
+(1 row)
+
+SELECT count(*) FROM t WHERE NOT body @@> 'pool OR spa';
+ count 
+-------
+  2235
+(1 row)
+
+SELECT id FROM t WHERE body @@> ALL (ARRAY['pool', 'spa']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() must be computed by a sift scan of the same relation
+HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+SELECT id FROM t WHERE NOT body @@> ANY (ARRAY['pool', 'spa']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() must be computed by a sift scan of the same relation
+HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+-- a parameter: the array of a generic plan is read when the scan starts
+PREPARE any_s(text[]) AS SELECT id, round(sift.score(ctid)::numeric, 4) FROM t WHERE body @@> ANY ($1) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+PREPARE any_c(text[]) AS SELECT count(*) FROM t WHERE body @@> ANY ($1);
+SET plan_cache_mode = force_generic_plan;
+EXECUTE any_s(ARRAY['pool', 'spa']);
+ id  | round  
+-----+--------
+ 221 | 3.8509
+ 442 | 3.8509
+ 663 | 3.8509
+(3 rows)
+
+EXECUTE any_s(ARRAY['zeta']);
+ id | round  
+----+--------
+  4 | 1.6888
+  9 | 1.6888
+ 19 | 1.6888
+(3 rows)
+
+EXECUTE any_s(NULL);
+ id | round 
+----+-------
+(0 rows)
+
+EXECUTE any_s('{}');
+ id | round 
+----+-------
+(0 rows)
+
+EXECUTE any_c(ARRAY['pool', 'spa']);
+ count 
+-------
+   765
+(1 row)
+
+EXECUTE any_c(ARRAY['pool', NULL]);
+ count 
+-------
+   579
+(1 row)
+
+EXECUTE any_c(NULL);
+ count 
+-------
+     0
+(1 row)
+
+RESET plan_cache_mode;
+EXECUTE any_s(ARRAY['pool', 'spa']);
+ id  | round  
+-----+--------
+ 221 | 3.8509
+ 442 | 3.8509
+ 663 | 3.8509
+(3 rows)
+
+EXECUTE any_c(ARRAY['pool', 'spa']);
+ count 
+-------
+   765
+(1 row)
+
+-- rows written after the index was built (the write buffer) are matched and scored too
+INSERT INTO t VALUES (100001, 'alpha pool pool spa'), (100002, 'alpha zzz');
+SELECT id FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+   id   
+--------
+ 100001
+    221
+    442
+(3 rows)
+
+SELECT id FROM t WHERE body @@> 'pool OR spa' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+   id   
+--------
+ 100001
+    221
+    442
+(3 rows)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'spa']);
+ count 
+-------
+   766
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> 'pool OR spa';
+ count 
+-------
+   766
+(1 row)
+
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['pool', 'zzz']);
+ count 
+-------
+   581
+(1 row)
+
+DROP TABLE ref;
+DROP TABLE t;
+DROP FUNCTION score_same(text[], text);
+DROP FUNCTION rank_same(text[], text, int);
+DROP EXTENSION pg_sift;

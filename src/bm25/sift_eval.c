@@ -188,6 +188,28 @@ sift_state_query(SiftIndexState *st, const char *q, int len)
 	return sift_query_analyze(sift_query_parse(q, len), st->analyzer);
 }
 
+SiftQuery *
+sift_state_query_any(SiftIndexState *st, text *const *texts, int n)
+{
+	const char **srcs = palloc(n * sizeof(char *));
+	int		   *lens = palloc(n * sizeof(int));
+
+	for (int i = 0; i < n; i++)
+	{
+		srcs[i] = VARDATA_ANY(texts[i]);
+		lens[i] = VARSIZE_ANY_EXHDR(texts[i]);
+	}
+	return sift_query_analyze(sift_query_parse_any(srcs, lens, n), st->analyzer);
+}
+
+SiftQuery *
+sift_state_query_src(SiftIndexState *st, const SiftQuerySrc *src)
+{
+	if (src->any)
+		return sift_state_query_any(st, src->texts, src->ntexts);
+	return sift_state_query(st, VARDATA_ANY(src->texts[0]), VARSIZE_ANY_EXHDR(src->texts[0]));
+}
+
 static SiftSegment *
 state_segment(SiftIndexState *st, int i)
 {
@@ -3488,7 +3510,7 @@ sift_plan_docs(const SiftPlan *p)
 }
 
 void
-sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est)
+sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift estimate", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -3498,7 +3520,7 @@ sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *e
 	Estimate	e = {0};
 
 	for (int i = 0; i < nqueries; i++)
-		q[i] = sift_state_query(st, VARDATA_ANY(queries[i]), VARSIZE_ANY_EXHDR(queries[i]));
+		q[i] = sift_state_query_src(st, &srcs[i]);
 	p = sift_plan_bind(st, q, nqueries, SIFT_BIND_CAPPED);
 	est->docs = node_prob(p, p->root, &e) * p->stats.ndocs;
 	est->postings = e.postings;
@@ -3507,4 +3529,15 @@ sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *e
 	sift_state_close(st);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+}
+
+void
+sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est)
+{
+	SiftQuerySrc *srcs = palloc(nqueries * sizeof(SiftQuerySrc));
+
+	for (int i = 0; i < nqueries; i++)
+		srcs[i] = (SiftQuerySrc) {&queries[i], 1, false};
+	sift_eval_estimate_src(index, srcs, nqueries, est);
+	pfree(srcs);
 }
