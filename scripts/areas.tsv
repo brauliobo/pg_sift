@@ -45,3 +45,4 @@
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/(static\.baseline|build-bench\.sql)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
+^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb

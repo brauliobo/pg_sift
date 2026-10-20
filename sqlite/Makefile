@@ -87,10 +87,7 @@ check test: all
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-sqlite.sh).
 isa-check: all
-	@bad=0; n=0; for o in $(B)/*.o; do case $$o in *_avx2.o|*_avx512.o) continue;; esac; n=$$((n + 1)); \
-		if objdump -d $$o | grep -qE '\<(popcnt|[yz]mm[0-9]+)\>'; then echo "baseline object uses POPCNT or vector registers: $$o"; bad=1; fi; done; \
-	if nm $(B)/sift.so | grep -qi '__popcount.i2'; then echo "sift.so links a libgcc popcount helper"; bad=1; fi; \
-	[ $$bad = 0 ] && echo "isa-check: ok, $$n baseline objects without POPCNT or vector instructions, no libgcc popcount helper"; exit $$bad
+	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o
 
 # The C stress test: N threads, each with a connection, querying while one writes. The extension is linked in and
 # registered with sqlite3_auto_extension.

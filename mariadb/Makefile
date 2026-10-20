@@ -86,10 +86,7 @@ mdb-inc:
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-mariadb.sh).
 isa-check: $(OUT)/libsift_udf.so
-	@bad=0; n=0; for o in $(OUT)/*.o; do case $$o in *_avx2.o|*_avx512.o) continue;; esac; n=$$((n + 1)); \
-		if objdump -d $$o | grep -qE '\<(popcnt|[yz]mm[0-9]+)\>'; then echo "baseline object uses POPCNT or vector registers: $$o"; bad=1; fi; done; \
-		if nm $(OUT)/libsift_udf.so | grep -qi '__popcount.i2'; then echo "libsift_udf.so links a libgcc popcount helper"; bad=1; fi; \
-		[ $$bad = 0 ] && echo "isa-check: ok, $$n baseline objects without POPCNT or vector instructions, no libgcc popcount helper"; exit $$bad
+	@sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o
 
 .PHONY: all mdb-inc isa-check
 
