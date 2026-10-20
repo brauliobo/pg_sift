@@ -4328,6 +4328,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_KEY_ROW			1.0		/* a group key id */
 #define AGG_COMBO_ROW		2.5		/* a tuple's entry in a combo: gathers and a hash probe */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_SEMI_ROW		1.0		/* a tuple tested against a semi or anti join: one byte of the lookup table, or a hash probe */
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
@@ -4766,6 +4767,16 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
+/* are the lookup joins all semi or anti joins: they drop tuples, never repeat or add one */
+static bool
+semi_joins_only(AggCtx *c)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->kind != SJ_SEMI && jc->kind != SJ_ANTI)
+			return false;
+	return true;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -4797,11 +4808,14 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 			scan_cost += rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], rows));
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
+	/* semi and anti joins only filter: the tuples that reach the groups are the rows PostgreSQL expects of the join */
+	if (c->joins != NIL && s->group < 0 && semi_joins_only(c))
+		agg_rows = Min(agg_rows, Max(input_rel->rows, 1.0));
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
 	rows_out = Min(rows_out, Max(Max(s->nsets, 1) * agg_rows, 1.0));
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
-		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW;
+		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW + (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI ? sel_rows * AGG_SEMI_ROW : 0);
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
@@ -5228,11 +5242,10 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
  * (sift_aggspec_parallel_ok).
  */
 static int
-parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	PlannerGlobal *glob = c->root->glob;
-
-	if (!sift_aggspec_parallel_ok(s) || !glob->parallelModeOK || glob->maxParallelHazard != PROPARALLEL_SAFE ||
+	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
+	if (!sift_aggspec_parallel_ok(s) || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
 		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
 		return 0;
 	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
@@ -5394,7 +5407,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		return;
 	param_set_penalty(c, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
-	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
 }

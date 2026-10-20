@@ -20,6 +20,9 @@ MODES = {	# the settings of a cell
 	'planner-guess': ["set sift.enable_agg = on", "set sift.agg_param_set_size = 0"],
 	'no-index-scans': ["set sift.enable_agg = on", "set sift.agg_param_set_size = 0", "set enable_indexscan = off", "set enable_bitmapscan = off"],
 	'forced': ["set sift.enable_agg = on", "set seq_page_cost = 1000", "set random_page_cost = 1000"],
+	# the join methods off: the aggregate pushdown is the plan, with the generic lookup join and with the byte table of a semi join
+	'siftagg-generic-join': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
+	'siftagg-semi-table': ["set sift.enable_agg = on", "set sift.agg_semi_lut = on", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 }
 COMMON = ["set max_parallel_workers_per_gather = 2", "set jit = off"]
 ENV = dict(os.environ, LC_ALL='C', PGOPTIONS='-c search_path=sets,public')
@@ -67,7 +70,29 @@ def design1():
 	return cells
 
 
-DESIGNS = {'1': design1}
+def design2():
+	"""Design 2: semi and anti joins from a byte table over the keys (docs/SET-FILTERS.md section 3)."""
+	cells = []
+	member = "m.entity_id = events.entity_id AND m.group_id = %d AND m.deleted_at IS NULL"
+	attr = "e.id = events.entity_id AND e.%s"
+	queries = []
+	for size, g in GROUPS.items():
+		queries.append(('member_in-%d' % size, "entity_id IN (SELECT entity_id FROM group_members WHERE group_id = %d AND deleted_at IS NULL)" % g))
+	for size in (1000, 100000):
+		queries.append(('member_exists-%d' % size, "EXISTS (SELECT 1 FROM group_members m WHERE %s)" % (member % GROUPS[size])))
+		queries.append(('member_not_exists-%d' % size, "NOT EXISTS (SELECT 1 FROM group_members m WHERE %s)" % (member % GROUPS[size])))
+	for label, cond in (('country', 'country_id = 7'), ('category', 'category_id = 3'), ('tier_region', 'tier = 2 AND region_id < 4')):
+		queries.append(('attr_in-' + label, "entity_id IN (SELECT id FROM entities WHERE %s)" % cond))
+		queries.append(('attr_exists-' + label, "EXISTS (SELECT 1 FROM entities e WHERE %s)" % (attr % cond)))
+		queries.append(('attr_not_exists-' + label, "NOT EXISTS (SELECT 1 FROM entities e WHERE %s)" % (attr % cond)))
+	for arg, pred in queries:
+		q = SEL.format(P=pred)
+		for mode in ('normal', 'default', 'siftagg-generic-join', 'siftagg-semi-table'):
+			cells.append((2, 'semi_lut', arg, mode, [q], ["explain (costs off) " + q]))
+	return cells
+
+
+DESIGNS = {'1': design1, '2': design2}
 
 
 def plan_kind(cell):
@@ -78,12 +103,12 @@ def plan_kind(cell):
 		out = psql(MODES[mode] + expl, timing=False)[1]
 	except Exception as e:
 		return 'error'
-	return 'SiftAgg' if 'Custom Scan (SiftAgg)' in out else ('Bitmap' if 'Bitmap' in out else 'Index' if 'Index' in out else 'Seq')
+	return 'SiftAgg' if 'Custom Scan (SiftAgg)' in out else ('Join' if 'Join' in out else 'Bitmap' if 'Bitmap' in out else 'Index' if 'Index' in out else 'Seq')
 
 
 def main():
 	ap = argparse.ArgumentParser()
-	ap.add_argument('out')
+	ap.add_argument('out', nargs='?')
 	ap.add_argument('--reps', type=int, default=5)
 	ap.add_argument('--design', default=','.join(DESIGNS))
 	ap.add_argument('--cells', default='')

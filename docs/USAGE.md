@@ -236,6 +236,9 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.agg_preagg` | on | answer the units of a `SiftAgg` scan whose rows are all visible from the sums and group counts the `sift_col` index stored with them (`Units From Pre-aggregates` in `EXPLAIN ANALYZE`); `off` scans every unit |
 | `sift.enable_topn` | on | push `WHERE ... [col @@> q] ORDER BY <index columns> LIMIT n` down to `sift_col` indexes (`Custom Scan (SiftAgg)` with `Top-N`, [docs/COL-SEARCH.md](COL-SEARCH.md)); needs `sift.enable_agg` |
 | `sift.agg_combo_cache` | 1048576 | 16 to 16777216: distinct value combinations of an expression PostgreSQL evaluates for an aggregate scan that are kept before the cache starts again ([docs/COL-PLAN.md](COL-PLAN.md)) |
+| `sift.agg_param_set_size` | 1000 | elements the planner assumes for an array parameter of a set filter (`col = ANY($1)`) in a generic plan, to cost the index and bitmap scans against `Custom Scan (SiftAgg)`; `0` keeps PostgreSQL's guess of 10 ([docs/SET-FILTERS.md](SET-FILTERS.md)) |
+| `sift.agg_semi_lut` | on | answer a semi or anti join (`IN (SELECT ..)`, `EXISTS`, `NOT EXISTS`) on an integer or date leaf from a byte table over the keys of the joined table (`Semi Lookup Tables` in `EXPLAIN ANALYZE`); `off` uses the generic lookup join |
+| `sift.agg_semi_lut_size` | 4096 kB | 0 to 1048576: memory of that byte table, per scan and per worker; keys that span more keep the generic lookup join |
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 | `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
 | `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |

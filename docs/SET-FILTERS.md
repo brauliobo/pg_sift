@@ -75,3 +75,45 @@ end
 `NULL` elements, an empty array and duplicates keep the meaning they have in SQL (`x = ANY('{}')` is false, `x <> ALL('{}')` is true for every row including a NULL `x`,
 a NULL element makes `<> ALL` never true); an element outside the range of the column matches nothing. `test/sql/agg_set_array.sql` compares them with the normal plan.
 A set whose values span more than 4 million (2^22) is searched in a sorted array instead of the byte table (slower, same answers).
+
+## 3. The set as a table: `IN (SELECT ..)`, `EXISTS`, `NOT EXISTS` (`sift.agg_semi_lut`)
+
+A set kept in a table (a membership table, the entities that have an attribute) is a semi join of the fact table, and `NOT EXISTS` an anti join.
+`Custom Scan (SiftAgg)` loads the table when the scan starts, and when the join compares one integer or date leaf with one key column and gives no column
+back, it makes from the keys a byte table over their range. Every tuple then costs one byte read, where the generic lookup join makes a cache entry per
+distinct value of the leaf (a hash lookup of the rows of the table each). The table's own conditions (`group_id = 3 AND deleted_at IS NULL`, `country_id = 7`)
+are tested once per row of the table, not once per probe.
+
+| query (3M events, 12 months, `count`, `avg` per channel) | normal plan | SiftAgg, generic lookup join | SiftAgg, byte table |
+|---|---|---|---|
+| `IN`, group of 1,000 members | 55.6 ms (hash join) | 59.0 ms | 22.2 ms |
+| `IN`, group of 100,000 members | 78.8 ms | 68.8 ms | 27.9 ms |
+| `EXISTS`, group of 1,000 | 56.5 ms | 59.3 ms | 22.5 ms |
+| `NOT EXISTS`, group of 1,000 | 73.2 ms | 66.9 ms | 26.7 ms |
+| `IN`, attribute with 3,300 entities (a country) | 60.7 ms | 39.9 ms | 15.7 ms |
+| `NOT EXISTS`, the same | 76.6 ms | 52.0 ms | 19.3 ms |
+| `IN`, attribute with 17,000 entities (a category) | 62.4 ms | 39.7 ms | 16.6 ms |
+| `IN`, group of 100 members | 2.7 ms (index scan) | 55.1 ms | 22.8 ms |
+
+(`docs/results/sets-semi-lut.tsv`, 17 queries by 4 modes (`normal`, the shipped `default`, and `SiftAgg` forced with the join methods off, with and without the byte table), the medians of 5 runs,
+every answer equal to the normal plan's.) The byte table is 2.0 to 3.3 times faster than the generic lookup join on all 17 queries, and 2.5 to 4.0 times faster than the normal plan on the 14 where
+`SiftAgg` is the better plan. Three are not: a group of 100 members (2.7 ms with an index scan, against 22.8 ms: the table is loaded whole) and an attribute that selects few entities
+(`tier = 2 AND region_id < 4`, `IN` and `EXISTS`: 6 ms with a bitmap scan against 18 ms). The shipped planner chooses the faster plan in 16 of the 17 queries (`default` rows). It misses one:
+`NOT EXISTS` of a group of 1,000 keeps 99% of the events, the planner prices the hash anti join below `SiftAgg` and takes it (72.7 ms against 26.7 ms with `SET enable_hashjoin = off`);
+the same query on a group of 100,000 takes `SiftAgg`.
+
+What the plan costs: the planner prices the semi and anti joins of a `SiftAgg` path by the rows PostgreSQL expects the join to keep (before, every row that passed
+the leaf filters was priced as a tuple of the groups), so a selective set is not charged for tuples the join drops. `EXPLAIN ANALYZE` shows `Semi Lookup Tables`
+and `Semi Lookup Table Size`.
+
+Limits and fallbacks, each answered by the generic lookup join with the same rows (`test/sql/agg_semi_lut.sql` compares both and the normal plan; the `j_semi_lut_*`
+fixtures of `scripts/coldiff.sh` do it in every heap state):
+
+- the keys span more than `sift.agg_semi_lut_size` (default 4 MB, one byte per value of the range; a key outside the range of the leaf's type is ignored, it matches no row);
+- the leaf is not an integer, date or `int2` column in the index (text keys, `int8` leaves, array elements), a join has two or more keys, or the table's own condition reads a column of the fact row;
+- `NULL` keys: a `NULL` in the table matches nothing, a `NULL` leaf matches nothing (dropped by `IN` and `EXISTS`, kept by `NOT EXISTS`), as in SQL;
+- `NOT IN (SELECT ..)` is not a join: PostgreSQL plans it as a hashed subplan (a `NULL` in the table makes the whole answer empty), and the query keeps the normal plan. Write `NOT EXISTS`;
+- each worker of a parallel `SiftAgg` builds its own table, and a rescan keeps it (the groups are replayed). The table is built from the rows visible to the scan's snapshot.
+
+Parallel plans: the semi joins that PostgreSQL pulls up from a sub-select made the whole query count as parallel restricted for `SiftAgg`, and it planned no workers. It now uses the same
+per-relation flags PostgreSQL's own grouping does, so these queries get `Workers Planned` like the others (`agg_semi_lut` runs them with workers).
