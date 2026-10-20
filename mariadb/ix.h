@@ -1,6 +1,6 @@
 /*
- * ix.h - the state of an index, shared by engine.c (lifecycle, persistence, documents), query.c (live segment and
- * queries), feed.c (drain, rebuild) and merge.c (tiered merge, background thread).
+ * ix.h - the state of an index, shared by engine.c (lifecycle, configuration), persist.c (manifest, event log, slots), docs.c
+ * (documents), query.c (live segment and queries), feed.c (drain, rebuild) and merge.c (tiered merge, background thread).
  *
  * Locks. `rw` guards what queries read: the manifest, the segment slots of `sr`, the document tables (ids/pks, dead,
  * latest), the cached live segment. A query holds it shared from taking its view to its last read; a writer takes it
@@ -34,6 +34,7 @@ extern __thread char sift_err_msg[1024];
 #define MDB_FORMAT		2
 #define MAX_SEGS		120		/* of the manifest: the rest of SIFT_MAX_SEGMENTS is for the live segment */
 #define NMETA			6
+#define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
 typedef struct Ev
 {
@@ -134,7 +135,7 @@ struct SiftIdx
 	char		merge_err[256];	/* the last error of a background merge */
 };
 
-/* engine.c */
+/* engine.c, docs.c, persist.c */
 extern void thread_init(void);
 extern void fail(const char *fmt,...) pg_attribute_printf(1, 2) pg_attribute_noreturn();
 extern int	finish_call(int rc, char *err, size_t errlen);
@@ -164,6 +165,8 @@ extern void delta_release(Delta *d);
 extern SiftIdx *registered(const char *name);
 extern void registry_each(void (*fn) (SiftIdx *ix, void *arg), void *arg);
 extern void rethrow(void) pg_attribute_noreturn();
+extern void init_rel(SiftIdx *ix);
+extern void do_open(SiftIdx *ix);
 
 /* merge.c */
 extern void merge_kick(SiftIdx *ix);
