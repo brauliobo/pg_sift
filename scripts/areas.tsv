@@ -17,7 +17,7 @@
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 
 # the whole build and every harness: a change here can break anything
-^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
+^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas)\.|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
