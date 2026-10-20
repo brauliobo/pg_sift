@@ -192,6 +192,49 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 `expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast
 or faster than AVX-512 (memory bound on this host).
 
+### Arrays of objects, dynamic keys and nested objects (3.1)
+
+Historical 3.1 baseline: 100,000 synthetic documents (387,593 elements: `items[]{kind,sub,flag,score}`, `scores.*` with 2 to 7 of 20 dynamic keys,
+`attrs{channel, nested.a.b, tags[], mixed}`), PostgreSQL 18.6, one backend (`max_parallel_workers_per_gather = 0`), best of 5, warm, a busy host: the
+ratios are the finding. `bench/sql/jsonb/` has the generator, the index (`paths = 'attrs->channel text, attrs.nested.a.b int4, attrs.tags[] text,
+scores.* float8, items[]{kind text, sub text, flag text, score float8}'`) and the queries `j01` to `j23`; each query runs with `sift.enable_agg` on and off
+(the rows are equal), `index_typeof.sql` adds `attrs.mixed float8` for j16, and `bench/sql/jsonb/rollup/` measures the element rollups
+([COL-PREAGG.md](COL-PREAGG.md)).
+
+|  | size | build |
+|---|---:|---:|
+| heap table, jsonb inline | 56 MB |  |
+| `sift_col` on `id, grp, day, attrs, scores, items` with the paths above | 2.3 MB | 609 ms |
+| GIN `jsonb_path_ops` on `items`, `attrs`, `scores` | 6.2 MB | 651 ms |
+| the same documents as a `sift_table`, no paths | 11 MB |  |
+
+|  | shape | PostgreSQL ms | sift ms |
+|---|---|---:|---:|
+| j01 | `count(*) FILTER` per flag over `jsonb_to_recordset(items)` | 175 | 3.7 |
+| j02 | `GROUP BY e.kind`, `count`, `avg(e.score)` | 192 | 4.9 |
+| j03 | two keys, element and document predicates | 75 | 3.7 |
+| j04 | `EXISTS` element with two conditions | 88 | 2.4 |
+| j05 | `jsonb_path_exists(items, '$[*] ? (...)')` | 45 | 2.2 |
+| j06 | `items @> '[{"kind": .., "flag": ..}]'` (10% of the documents; GIN bitmap scan: 27.5) | 23 | 2.4 |
+| j07 | per-document `avg` per kind, then an outer aggregate (the outer one runs in PostgreSQL) | 592 | 284 |
+| j08 | `count(DISTINCT d.id) FILTER (WHERE e.score >= 8)` per kind | 514 | 5.6 |
+| j09 | `jsonb_each_text(scores)` with a regex on the value (`float8` paths: not pushed; with `astext` paths, `index_astext.sql`: 7.0) | 229 | 254 |
+| j10 | `attrs #>> '{nested,a,b}'` | 47 | 2.1 |
+| j11 | `attrs->>'channel'` and `date_trunc('month', day)` | 53 | 2.3 |
+| j12 | `jsonb_array_elements_text(attrs->'tags')` grouped by the tag | 85 | 2.6 |
+| j13 | `attrs->'tags' ? 't3'` | 33 | 1.8 |
+| j14 | `(e->>'score')::float8` of `jsonb_array_elements(items)` with a regex on `e->>'score'` (`float8` paths: not pushed; `astext` paths: 6.6) | 257 | 263 |
+| j15 | `jsonb_array_length(items)` as a key | 42 | 3.0 |
+| j16 | `jsonb_typeof(attrs->'mixed') = 'number'` (column format minor 4) | 100 | 2.1 |
+| j17 | two keys, `HAVING count(*) > 100` | 233 | 5.1 |
+| j18 | element keys joined to a lookup table | 317 | 9.1 |
+
+The pushed shapes are 10 to 100 times faster than the normal plan. Against GIN on containment: 9 times at 10% of the documents (j06), level when the match is
+selective (three conditions: GIN 8.0, sift 8.7 ms), the case where GIN stays useful. ClickHouse `Array(Tuple(kind, sub, flag, score))` from the same documents
+(`clickhouse-local`, 2 threads) answers j01 to j04 in 0.6 to 0.8 ms, 4 to 6 times faster than `SiftAgg`: the gap is the per-tuple selection (80% of 88
+instructions per element in j01), not the decoding. Strings among the numbers (`strs = 0.05` of `gen.sql`) raise the overflow error of the pushdown for the aggregates
+that read a numeric path, except for the type filters of j16 (33 times faster than the normal plan at 1,000,000 documents: 396 against 11.9 ms).
+
 ## Integration notes
 
 - `expand_parents` is the column table's. `state_counts`, `state_bits` and `minmax_*` overlap with the engine's kernels only in what

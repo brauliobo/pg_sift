@@ -470,6 +470,14 @@ Run by `scripts/ci.sh` like the BM25 tests:
   query touches are loaded. Mass deletes should be VACUUMed (autovacuum does) or avoided (TRUNCATE, partition drop).
 - Shared row locks degrade to exclusive; implementing MultiXact would need a lock-owner set per row.
 - Relation-level SSI locks; a per-SB granularity is possible once the engine reports the SBs a scan touched.
+- Typed jsonb paths for a `sift_table` (not built). A table keeps a jsonb column as one opaque leaf of exact bytes, so `SiftAgg` over it runs PostgreSQL's
+  `jsonb_to_recordset` on every row and `jsonb_typeof(x->'k')` has no leaf to answer from; on the 11 MB table of the jsonb benchmark
+  ([COL-SHRED.md](COL-SHRED.md)) the shapes cost what the heap costs (j01 354 ms, j02 408 ms, against 4 and 5 ms on a `sift_col` index). The design:
+  segments carry their schema, so the shredded leaves can sit next to the exact bytes; the paths are declared by a function (a table access method has no
+  reloptions) and stored in an extension table that an event trigger clears with the table; promotion, merge and VACUUM rewrite shred the declared
+  columns; the planner uses the paths only when every segment it reads has them (the declaration is older than all of them, the write buffer is shredded on
+  the fly), and a merge rewrites the old ones. Open: statistics and EXPLAIN need the path names, and `ALTER TABLE ... SET ACCESS METHOD` and dumps must
+  carry the declaration.
 - The logical record doubles WAL for published tables; a custom rmgr for all page changes would remove the double write but demands
   preload everywhere.
 
