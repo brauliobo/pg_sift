@@ -48,7 +48,7 @@ CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, do
 SELECT fmt('d_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 SELECT * FROM all_types('d_col');
@@ -150,7 +150,7 @@ SELECT sift.col_promote('d_col');
 SELECT fmt('d_col');
  fmt 
 -----
- 3,4
+ 3,6
 (1 row)
 
 SELECT * FROM unit_kinds('d_col');
@@ -188,7 +188,7 @@ REINDEX INDEX d_col;
 SELECT fmt('d_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 SELECT * FROM all_types('d_col') WHERE NOT same OR NOT allknown;

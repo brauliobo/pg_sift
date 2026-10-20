@@ -156,6 +156,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->cols[i].path = copy;
 		s->ngroups += defs[i].kind == SIFT_COLK_GROUP;
 		s->wide |= sift_col_def_needs_wide(&defs[i]);
+		s->kinds |= sift_col_def_has_kinds(&defs[i]);
 	}
 	s->hash = schema_hash(defs, n);
 	return s;
@@ -647,6 +648,16 @@ put_value(SiftColBatch *b, int id, const SiftColValue *v)
 				key = sift_col_f8_key(v->v.f);
 		}
 	vals_put(b->mcxt, &b->col[id], key, isnull, v->overflow, v->tag);
+}
+
+bool
+sift_cbatch_kinds_exact(const SiftColBatch *b)
+{
+	for (int c = 0; c < b->schema->ncols; c++)
+		for (uint32 i = 0; b->col[c].otag != NULL && i < b->col[c].n; i++)
+			if (b->col[c].otag[i] == SIFT_COLTAG_UNSURE)
+				return false;
+	return true;
 }
 
 void
@@ -1233,7 +1244,7 @@ kinds_mask(const SiftCVals *vals)
 	for (uint32 i = 0; vals->otag != NULL && i < vals->n; i++)
 		if (!sift_col_bit_test(vals->ovf, i))
 			mask |= 1U << vals->otag[i];
-	return mask & ~1U;
+	return mask & ~(1U | (1U << SIFT_COLTAG_UNSURE));
 }
 
 /* Appends the kinds (SIFT_COLC_KINDS): the word of the tags that have a bitmap and the bitmaps */

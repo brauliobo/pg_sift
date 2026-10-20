@@ -77,12 +77,12 @@ find_kind(const SiftDirSnapshot *snap, SiftSegKind kind)
 
 /* Allocates and initializes (logged) the pages of an empty active segment; not yet reachable */
 static SiftSegEntry
-new_segment(Relation index, Size hdrsize)
+new_segment(Relation index, Size hdrsize, uint16 format)
 {
 	uint64		gen = sift_store_new_gen(index);
 	Buffer		bufs[SIFT_LANES + 1];
 	BlockNumber first;
-	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_WBUF_OPEN};
+	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_WBUF_OPEN, .format = format};
 
 	bufs[0] = sift_alloc_page(index, SIFT_PT_WBUFHEADER, gen);
 	first = sift_alloc_extent(index, SIFT_LANES, SIFT_PT_WBUFDATA, gen, bufs + 1);
@@ -143,7 +143,7 @@ check_room(Relation index, const SiftDirSnapshot *snap)
 
 /* Creates the active segment unless another backend did meanwhile; false when the directory is full */
 static bool
-create_active(Relation index, Size hdrsize)
+create_active(Relation index, Size hdrsize, uint16 format)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	bool		room = true;
@@ -154,7 +154,7 @@ create_active(Relation index, Size hdrsize)
 	{
 		SwapArg		arg = {0};
 
-		arg.fresh = new_segment(index, hdrsize);
+		arg.fresh = new_segment(index, hdrsize, format);
 		sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
 	}
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
@@ -207,7 +207,7 @@ sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry)
 }
 
 uint64
-sift_lane_seal(Relation index, bool force, Size hdrsize, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
+sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *act;
@@ -229,7 +229,7 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint32 limit, bool (*ha
 				check_room(index, snap);
 				sealed = *act;
 				arg.sealed = act->gen;
-				arg.fresh = new_segment(index, hdrsize);
+				arg.fresh = new_segment(index, hdrsize, format);
 				sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
 			}
 		}
@@ -244,7 +244,7 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint32 limit, bool (*ha
 /* ---------- append ---------- */
 
 void
-sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, bool (*make_room) (Relation),
+sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, bool (*make_room) (Relation),
 				  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
@@ -261,7 +261,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, b
 					 errhint("Use REINDEX to apply the new options.")));
 		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
 			break;
-		if (!create_active(index, hdrsize) && !make_room(index))
+		if (!create_active(index, hdrsize, format) && !make_room(index))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift index \"%s\" has %d segments that cannot be merged", RelationGetRelationName(index),

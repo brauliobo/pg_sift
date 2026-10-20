@@ -94,6 +94,7 @@ typedef struct SiftSrcStats
 	double		max[SIFT_COLSRC_MAX_LEAVES];
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
+	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value (column format below minor 6, docs/COL.md 2.2): a test that needs it raises the REINDEX error */
 } SiftSrcStats;
 
 /* ---- executor side ---- */

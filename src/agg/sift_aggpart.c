@@ -562,6 +562,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
 		}
 		tot->ndistinct[i] = Max(tot->ndistinct[i], s->ndistinct[i]);
 		tot->ovf[i] |= s->ovf[i];
+		tot->nokinds[i] |= s->nokinds[i];
 	}
 	tot->nrows += s->nrows;
 	tot->nunits += s->nunits;

@@ -108,6 +108,9 @@ jobs:
         include: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The compatibility tests build released libraries from their tags.
+          fetch-depth: 0
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.experimental }}

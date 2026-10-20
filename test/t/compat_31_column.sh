@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Real released libraries write the input, including unpromoted records. No fixture produced by the new writer can prove this upgrade.
+. "$(dirname "$0")/lib.bash"
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+if ((PG_MAJOR < 18)); then echo '1..0 # SKIP two library roots require PostgreSQL 18'; exit 0; fi
+for ref in v3.0.1 v3.1.0; do
+	if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+		echo "1..0 # SKIP released library source $ref is unavailable"
+		exit 0
+	fi
+done
+newroot=$ROOT
+use_root() {
+	ROOT=$1
+	node_conf legacy "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
+dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
+}
+QUERY="SELECT count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s != \"gift\")')) || ':' ||
+ count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s == null)')) || ':' ||
+ count(*) FILTER (WHERE items @> '[{\"s\":null}]') FROM oldcol"
+TYPES="SELECT string_agg(coalesce(t, 'missing') || ':' || n, ',' ORDER BY t NULLS FIRST)
+ FROM (SELECT jsonb_typeof(attr->'a') t, count(*) n FROM oldcol GROUP BY 1) s"
+for ref in v3.0.1 v3.1.0; do
+	oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
+	node_init legacy 2 'autovacuum = off
+sift.async_maintenance = off'
+	use_root "$oldroot"
+	textkind=astext
+	[[ $ref != v3.0.1 ]] || textkind=text
+	node_start legacy || bail "cannot start $ref"
+	sql legacy "CREATE EXTENSION pg_sift" "CREATE TABLE oldcol (id int, items jsonb, attr jsonb)" \
+		"CREATE INDEX oldcol_idx ON oldcol USING sift_col (id,items,attr) WITH (paths = 'items[]{s text}, attr->a $textkind')" \
+		"INSERT INTO oldcol SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END),
+		 CASE i % 5 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"a\":null}'::jsonb WHEN 2 THEN '{\"a\":true}'::jsonb WHEN 3 THEN '{\"a\":1}'::jsonb ELSE '{\"a\":\"1\"}'::jsonb END
+		 FROM generate_series(1,90) i" "VACUUM ANALYZE oldcol" >/dev/null || bail "$ref setup"
+	if [[ $ref == v3.1.0 ]]; then
+		sql legacy "CREATE TABLE oldseg AS TABLE oldcol" "CREATE INDEX oldseg_idx ON oldseg USING sift_col (id,items,attr) WITH (paths = 'items[]{s text}, attr->a astext')" \
+			"VACUUM ANALYZE oldseg" "CREATE TABLE oldtbl (LIKE oldcol) USING sift_table" \
+			"INSERT INTO oldtbl SELECT * FROM oldcol" "VACUUM oldtbl" >/dev/null || bail '3.1 immutable setup'
+	fi
+	want=$(sql legacy "SET sift.enable_agg = off" "$QUERY")
+	types=$(sql legacy "SET sift.enable_agg = off" "$TYPES")
+	# The small INSERT stays in the old library's write buffer, never an immutable segment.
+	check "$ref left unpromoted records" test "$(sql legacy "SELECT count(*) FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == 0
+	node_stop legacy
+	use_root "$newroot"
+	node_start legacy || bail 'cannot start new library'
+	sql legacy "ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null || bail 'SQL update'
+	if [[ $ref == v3.1.0 ]]; then
+		sql legacy "SELECT sift.table_set_paths('oldtbl','items','items[]{s text}')" \
+			"SELECT sift.table_set_paths('oldtbl','attr','attr->a astext')" >/dev/null || bail 'declare upgraded paths'
+		check 'real 3.1 minor 4 index null predicates equal the heap' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldseg}")" == "$want"
+		check 'real 3.1 table groups preserve JSON null answers' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldtbl}")" == "$want"
+		sql legacy "VACUUM FULL oldtbl" >/dev/null || bail '3.1 table rewrite'
+		check 'VACUUM FULL upgrades 3.1 groups to minor 6' test "$(sql legacy "SELECT min(format) FROM sift.table_segments('oldtbl') WHERE kind = 'columns'")" == 6
+		check 'rewritten 3.1 groups answer null predicates exactly' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldtbl}")" == "$want"
+	fi
+	check "$ref write-buffer null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
+	check "$ref write-buffer mixed astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
+	sql legacy "SELECT sift.col_promote('oldcol_idx')" >/dev/null || bail 'promotion'
+	check "$ref promotion preserves uncertain null kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
+	check "$ref promotion preserves uncertain astext kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
+	check "$ref promotion does not claim minor 6" test "$(sql legacy "SELECT max(format) < 6 FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == t
+	sql legacy "REINDEX INDEX oldcol_idx" >/dev/null || bail 'reindex'
+	check "$ref REINDEX writes minor 6" test "$(sql legacy "SELECT min(format) FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == 6
+	check "$ref rewritten null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
+	check "$ref rewritten astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
+	if [[ $ref == v3.1.0 ]]; then
+		node_stop legacy
+		use_root "$oldroot"
+		node_start legacy || bail 'cannot restart 3.1'
+		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('oldcol_idx', false)" 2>&1)
+		diag "3.1 refusal: $err"
+		check '3.1 refuses a minor 6 index with a format error and REINDEX hint' test "$(grep -c 'format 1.6\|REINDEX' <<<"$err")" -ge 2
+		err=$(sql legacy "SELECT count(*) FROM oldtbl" 2>&1)
+		check '3.1 refuses minor 6 table groups' grep -q 'format 1.6' <<<"$err"
+	fi
+	node_stop legacy
+	ROOT=$newroot
+done
+echo "1..$NTEST"
+finish

@@ -399,7 +399,7 @@ types_leaf(AggCtx *c, Node *call)
 	int			base = typeof_leaf(c, linitial(func_args(call)));
 	SiftSrcLeaf *v;
 
-	if (base < 0 || !source_can_types(c))
+	if (base < 0 || !source_can_types(c) || c->stats.nokinds[base])
 		return -1;
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].types && c->vleaf[j].obj == base)
@@ -2597,6 +2597,20 @@ typeof_test(Node *n, Node **call, uint32 *types)
 }
 
 /*
+ * Does a test of these types (SIFT_SRC_JT_*) tell what only the kinds of a chunk say: a JSON null from a missing key (the types have one of them
+ * and not the other), or the types of the values of an astext leaf apart (some of the string, number and boolean types and not all)? Where the
+ * leaf has a segment without them (SiftSrcStats.nokinds) the source could only raise the REINDEX error.
+ */
+static bool
+types_need_kinds(uint32 types, bool astext)
+{
+	uint32		vals = types & (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN);
+
+	return ((types & SIFT_SRC_JT_NONE) != 0) != ((types & SIFT_SRC_JT_NULL) != 0) ||
+		(astext && vals != 0 && vals != (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN));
+}
+
+/*
  * A test of the JSON type of a leaf's path as a conjunct of the query (typeof_test): the source keeps the rows whose type is one of the types,
  * a stored value by the type of the leaf and the values it could not hold by the type the chunk kept for them (SAP_TYPE). Not as a branch of OR:
  * the reads of the leaf give the values of the other rows as NULL, which only a conjunct that drops those rows makes safe.
@@ -2611,7 +2625,7 @@ compile_typeof(AggCtx *c, Node *n)
 
 	n = strip_relabel(n);
 	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
-		!source_can_types(c))
+		!source_can_types(c) || (c->stats.nokinds[leaf] && types_need_kinds(types, leaf_of(c, leaf)->astext)))
 		return NULL;
 	p = new_pred(c, SAP_TYPE);
 	p->leaf = leaf;
@@ -4079,7 +4093,8 @@ null_pred(AggCtx *c, int leaf, int op)
 	static const char *const what[] = {"IS NULL", "IS NOT NULL", "IS JSON NULL", "IS MISSING"};
 	SiftAggPred *p;
 
-	if (op >= SNULL_JSON && !source_can_jnull(c))
+	/* a segment that did not keep the kinds cannot tell them: the normal plan, which reads the documents (docs/COL.md 2.2) */
+	if (op >= SNULL_JSON && (!source_can_jnull(c) || c->stats.nokinds[leaf]))
 		return NULL;
 	p = make_leaf_pred(c, SAP_NULL, leaf);
 	p->op = op;

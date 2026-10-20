@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((39 + $(wc -w <<<"$DBS")))
+plan $((41 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -143,7 +143,15 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE fresh32" "CREATE DATABASE upg31" >/dev/null
 	q life fresh32 "CREATE EXTENSION pg_sift" >/dev/null
 	check "3.0 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
-	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" "ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null
+	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" \
+		"CREATE TABLE kinds31 (id int, doc jsonb)" \
+		"INSERT INTO kinds31 SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END) FROM generate_series(1,8000) i" \
+		"SET sift.col_format_minor = 4" "CREATE INDEX kinds31_col ON kinds31 USING sift_col (id,doc) WITH (paths = 'doc[]{s text}')" \
+		"ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null
+	KINDQ="SELECT count(*) FROM kinds31 WHERE jsonb_path_exists(doc, '\$[*] ? (@.s != \"gift\")')"
+	check "a minor 4 index survives the 3.1 SQL upgrade with exact JSON null answers" test "$(q life upg31 "SET sift.enable_agg = on" "$KINDQ" | tail -n 1)" == "$(q life upg31 "SET sift.enable_agg = off" "$KINDQ" | tail -n 1)"
+	q life upg31 "REINDEX INDEX kinds31_col" >/dev/null
+	check "REINDEX after the upgrade writes complete kinds in minor 6" test "$(q life upg31 "SELECT min(format) FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == 6
 	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
 	check "the rollup refresh views exist after a fresh 3.2 install" test "$(q life fresh32 "$ROLLUPSQL")" == t
@@ -188,7 +196,7 @@ if (( PG_MAJOR >= 18 )); then
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 27 "extension_control_path needs PostgreSQL 18"
+	skip 29 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with

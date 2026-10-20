@@ -273,7 +273,7 @@ of the member's type; a scalar or null element, and a missing key, are the same 
 Against a `null` literal: `== null` is true for a JSON null only, `!= null` for every present member that is not null, and under `!()` the
 other rows. Each form pushed down is equal to the heap in every variant and scenario; a form that is not provable (the last row of the
 table, a number against a float leaf, strict `!()`, `jsonb_path_match`) is a `plain` fixture. A member the leaf cannot hold (an array or
-an object in a leaf of numbers, a number out of range) raises the error of the pushdown, so no `jp_*` fixture can hold one.
+an object in a leaf of numbers, a number out of range) keeps the normal plan. Complete kinds are guaranteed by column minor 6; older units or write buffers with uncertain kinds also keep the normal plan for tests that require them. REINDEX or VACUUM FULL restores the guarantee.
 
 ### An element against a column of its row
 
