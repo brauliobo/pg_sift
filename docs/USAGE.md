@@ -27,14 +27,8 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-If the tap was installed from the former separate repository, change its remote first:
-
-```sh
-brew tap --custom-remote brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
-```
-
 The formula in this repository builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
-The formula is HEAD-only and tracks `main`, which includes macOS arm64 support; v3.1.0 fails to compile on arm64.
+The HEAD-only formula builds `main` and supports macOS arm64.
 The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
 For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
 Remove the extension package with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
