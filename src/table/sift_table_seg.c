@@ -36,6 +36,7 @@
 #include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
 #include "sift_col_am.h"
