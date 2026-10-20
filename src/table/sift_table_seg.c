@@ -89,6 +89,7 @@ declared_paths(Relation rel, AttrNumber skip, const char *extra)
 	Oid			reloid = OidIsValid(nsp) ? get_relname_relid("table_paths", nsp) : InvalidOid;
 	StringInfoData spec;
 	Relation	pr;
+	Snapshot	snap;
 	SysScanDesc scan;
 	ScanKeyData key;
 	HeapTuple	tup;
@@ -99,8 +100,9 @@ declared_paths(Relation rel, AttrNumber skip, const char *extra)
 	if (OidIsValid(reloid))
 	{
 		pr = table_open(reloid, AccessShareLock);
+		snap = RegisterSnapshot(GetTransactionSnapshot());
 		ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(rel)));
-		scan = systable_beginscan(pr, InvalidOid, false, GetTransactionSnapshot(), 1, &key);
+		scan = systable_beginscan(pr, InvalidOid, false, snap, 1, &key);
 		while (HeapTupleIsValid(tup = systable_getnext(scan)))
 		{
 			bool		isnull;
@@ -116,6 +118,7 @@ declared_paths(Relation rel, AttrNumber skip, const char *extra)
 			}
 		}
 		systable_endscan(scan);
+		UnregisterSnapshot(snap);
 		table_close(pr, AccessShareLock);
 	}
 	if (extra && extra[0])
