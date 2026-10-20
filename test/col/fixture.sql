@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -271,6 +271,26 @@ INSERT INTO t_wide SELECT 100 + i, 6 + i % 5, i % 100,
 	CASE WHEN i % 9 = 0 THEN NULL ELSE (((i * 7919) % 200001 - 100000)::numeric / 100)::money END,
 	CASE WHEN i % 12 = 0 THEN NULL ELSE (ARRAY['1 month', '30 days', '720 hours', '1 mon 1 day', '31 days', '1 day 1 hour', '25 hours', '-1 month', '-30 days', '0', '1 year', '2 mons', '60 days'])[1 + i % 13]::interval END
 FROM generate_series(1, greatest(:n - 4000, 400)) i;
+
+-- the other 3.2 leaf types: time, enum (a value added after the first ones, so that the OID order is not the sort order), uuid, bytea, arrays,
+-- ranges and a multirange, with NULLs, empty values and equal values spelled differently (the numeric elements 1.0 and 1.00)
+DROP TYPE IF EXISTS coldiff_mood CASCADE;
+CREATE TYPE coldiff_mood AS ENUM ('sad', 'ok', 'happy');
+ALTER TYPE coldiff_mood ADD VALUE 'meh' BEFORE 'ok';
+CREATE TABLE t_misc (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, t time, e coldiff_mood, u uuid, b bytea, ia integer[], ta text[], na numeric[],
+	r int4range, tr tstzrange, mr int4multirange);
+INSERT INTO t_misc SELECT i, i % 7, i % 100,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 29 = 0 THEN '24:00:00' WHEN i % 31 = 0 THEN '00:00:00' ELSE (((i * 7919) % 86400) * interval '1 second' + (i % 5) * interval '1 microsecond')::time END,
+	CASE WHEN i % 8 = 0 THEN NULL ELSE (ARRAY['sad', 'ok', 'happy', 'meh'])[1 + i % 4]::coldiff_mood END,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 37 = 0 THEN '00000000-0000-0000-0000-000000000000' WHEN i % 41 = 0 THEN 'ffffffff-ffff-ffff-ffff-ffffffffffff' ELSE md5((i % 50)::text)::uuid END,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN '\x'::bytea WHEN i % 19 = 0 THEN '\x00ff00'::bytea WHEN i % 23 = 0 THEN '\x00'::bytea ELSE decode(md5((i % 40)::text), 'hex') END,
+	CASE WHEN i % 10 = 0 THEN NULL WHEN i % 14 = 0 THEN '{}' ELSE ARRAY[i % 5, i % 3] END,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE ARRAY['a' || (i % 4), NULL, 'z'] END,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE ARRAY[(ARRAY[1.0, 1.00, 1, 1.50, 1.5])[1 + i % 5], (i % 3)::numeric] END,
+	CASE WHEN i % 12 = 0 THEN NULL WHEN i % 15 = 0 THEN 'empty' ELSE int4range(i % 10, i % 10 + 5) END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE tstzrange('2020-01-01'::timestamptz + (i % 30) * interval '1 day', '2020-03-01') END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE int4multirange(int4range(i % 5, i % 5 + 2), int4range(20, 30)) END
+FROM generate_series(1, greatest(:n - 4000, 800)) i;
 
 -- aggregates of the generic path: a user aggregate with an immutable transition function, and one with a volatile one
 CREATE FUNCTION coldiff.fx_sq_add(acc float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT acc + x * x $$;

@@ -46,29 +46,41 @@ CREATE INDEX w_m ON w USING sift_col (m);
 CREATE INDEX w_iv ON w USING sift_col (iv);
 CREATE INDEX w_expr ON w USING sift_col ((n3::numeric(25, 5)), (id::numeric));
 CREATE INDEX w_time ON w USING sift_col (tm);
-ERROR:  sift_col does not support the type time without time zone of column "tm"
-HINT:  Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name and jsonb with paths.
 CREATE INDEX w_uuid ON w USING sift_col (u);
-ERROR:  sift_col does not support the type uuid of column "u"
-HINT:  Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name and jsonb with paths.
 CREATE INDEX w_bytea ON w USING sift_col (b);
-ERROR:  sift_col does not support the type bytea of column "b"
-HINT:  Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name and jsonb with paths.
+-- the types that stay refused (docs/COL-LEAFTYPES-32.md 7)
+CREATE TABLE refused (a timetz, b point, c inet, d tsvector);
+CREATE INDEX r_timetz ON refused USING sift_col (a);
+ERROR:  sift_col does not support the type time with time zone of column "a"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+CREATE INDEX r_point ON refused USING sift_col (b);
+ERROR:  sift_col does not support the type point of column "b"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+CREATE INDEX r_inet ON refused USING sift_col (c);
+ERROR:  sift_col does not support the type inet of column "c"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+CREATE INDEX r_tsvector ON refused USING sift_col (d);
+ERROR:  sift_col does not support the type tsvector of column "d"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+DROP TABLE refused;
 SELECT indexrelid::regclass AS idx, (SELECT count(*) FROM sift.col_leaves(indexrelid)) AS leaves
 FROM pg_index WHERE indrelid = 'w'::regclass AND indexrelid::regclass::text <> 'w_expr' ORDER BY 1;
-  idx   | leaves 
---------+--------
- w_n38  |      2
- w_n19  |      2
- w_n30  |      2
- w_nsc  |      2
- w_n3   |      1
- w_img  |      2
- w_neg  |      2
- w_huge |      2
- w_m    |      1
- w_iv   |      3
-(10 rows)
+   idx   | leaves 
+---------+--------
+ w_n38   |      2
+ w_n19   |      2
+ w_n30   |      2
+ w_nsc   |      2
+ w_n3    |      1
+ w_img   |      2
+ w_neg   |      2
+ w_huge  |      2
+ w_m     |      1
+ w_iv    |      3
+ w_time  |      1
+ w_uuid  |      1
+ w_bytea |      1
+(13 rows)
 
 SELECT leaf, path, kind, type FROM sift.col_leaves('w_iv') ORDER BY leaf;
  leaf | path |  kind  |       type        
@@ -92,6 +104,7 @@ SELECT leaf, path, type FROM sift.col_leaves('w_img') ORDER BY leaf;
     1 | img#1 | numeric (lane 1)
 (2 rows)
 
+DROP INDEX w_time, w_uuid, w_bytea;
 DROP INDEX w_n3, w_n30, w_nsc;
 DROP INDEX w_n38, w_n19, w_img, w_neg, w_huge, w_m, w_iv, w_expr;
 -- ---------------------------------------------------------------------------------------------------------
