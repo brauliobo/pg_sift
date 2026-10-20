@@ -335,7 +335,7 @@ new write buffer and which takes the maintenance lock only if it is free; it als
 pressure merges the smallest groups so the directory keeps shrinking while the load goes on. A 10M-row COPY in one transaction holds
 about 180 MB in the backend whatever its size, and a loop of 10M single-row INSERTs in one transaction ends with a handful of unfrozen groups.
 
-*Version vectors* (`src/col/sift_col_ver.[ch]`, `src/col/seg.c`, `src/col/seg_write.c`). A segment with rows that are not final is written as column format 4, with the directory entry flag `SIFT_SEG_VERS`
+*Version vectors* (`src/col/ver.[ch]`, `src/col/seg.c`, `src/col/seg_write.c`). A segment with rows that are not final is written as column format 4, with the directory entry flag `SIFT_SEG_VERS`
 (`reserved` = the smallest xid among them) and a section after the superblock directory of the DOCMAP section: a header (magic, version, the unit count, the smallest and largest xid), one record per unit (the
 range of its xids and the highest cmin, a flag for a unit that has frozen rows, the location of its vectors) and the vectors: the xmin and the cmin of each row of the unit in row order, each as a constant (one transaction, one command) or as a first value, a smallest step and
 bit-packed residuals, so that a run of single-row inserts (the same xmin, a cmin that goes up by one) takes no bits per row. A unit all of whose rows are frozen has no vectors, a segment that has none is written in the format `sift.col_format_minor` says (3, as 3.0 writes it, or 4). A group written by 3.0.1 under pressure (one writer: the directory entry's `reserved` = xid, the segment header's `sum_dl` = cid, format 3) is read as constant vectors. The

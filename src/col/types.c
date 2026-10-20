@@ -1,7 +1,7 @@
 /*
  * col/types.c - where the types of PostgreSQL meet the leaf types of the column engine: which
  * leaves an index attribute becomes, the type tag of an OID and back, the values a datum yields, and the constants of predicates on the
- * wide types. The format side (lane keys, canonical images) is sift_col_wide.[ch], portable.
+ * wide types. The format side (lane keys, canonical images) is col/wide.[ch], portable.
  */
 #include "postgres.h"
 
