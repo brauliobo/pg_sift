@@ -57,7 +57,7 @@ typedef struct SqOptions
 #define SQ_CHUNK_DEFAULT	16384
 #define SQ_CACHE_DEFAULT_KIB	(64 * 1024)
 
-/* ---------- store.c ---------- */
+/* ---------- store.c, dir.c, stream.c ---------- */
 
 extern SqStore *sq_store_new(sqlite3 *db, const char *schema, const char *name, const SqOptions *opts, int chunk_bytes,
 							 int cache_kib);

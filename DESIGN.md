@@ -732,7 +732,7 @@ path: its vocabulary is that of PostgreSQL's backend API (`palloc`, `MemoryConte
 The page/extent store is the link-time interface declared in `core/store.h` (`ReadBuffer`/`ReleaseBuffer`, `sift_wt_*`, `sift_sw_*`, `sift_sr_*`, `sift_dir_*`):
 `core/store.c` implements it over shared buffers and generic WAL, `sqlite/store.c` over rows of a shadow table and a bounded cache. The PostgreSQL build includes the
 real headers (identical calls, identical speed); the SQLite one provides the vocabulary in `sqlite/host/host.h` over `malloc`, `setjmp` and SQLite rows, and the MariaDB one
-(`mariadb/host/host.h`, `SIFT_HOST_MARIADB`) uses the same plain-C vocabulary (the file `sqlite/host/host.c` is compiled into both) over segment files mapped into the address space. Optional
+(`mariadb/host/host.h`, `SIFT_HOST_MARIADB`) uses the same plain-C vocabulary (the files `sqlite/host/host.c`, `container.c`, `mb.c` and `spool.c` are compiled into both) over segment files mapped into the address space. Optional
 collaborators the core calls but a host may not have (write buffers, visibility, TID bitmap filters) are declared in portable headers and implemented by the
 host; `sqlite/stubs.c` is the SQLite side of them.
 
