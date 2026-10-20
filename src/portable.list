@@ -19,6 +19,10 @@ bm25/postw.c
 bm25/pos.c
 bm25/dict.c
 bm25/segment.c
+bm25/writer.c
+bm25/liveness.c
+bm25/walk.c
+bm25/livestream.c
 core/sift_live.c
 bm25/runs.c
 core/sift_stream.c
@@ -54,6 +58,7 @@ bm25/query.h
 bm25/merge.h
 core/sift_live.h
 bm25/segment.h
+bm25/segment_int.h
 core/sift_span.h
 core/sift_store.h
 core/sift_varint.h
