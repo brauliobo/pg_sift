@@ -201,7 +201,7 @@ bm25_corpora() { # creates the tables titles(id, title) and articles(id, body) i
 	build_psql -d bm25 -c "CREATE TABLE titles AS SELECT id, title FROM orders_src ORDER BY id" -c "DROP TABLE orders_src" >/dev/null
 	build_psql -d bm25 >/dev/null <<-EOF
 		CREATE UNLOGGED TABLE src (src_id bigint, body text, category_id int, created date, likes int, url text);
-		\copy src FROM '$STORE/data/articles.tsv'
+		\copy src FROM PROGRAM 'zcat -f $STORE/data/articles.tsv*'
 		CREATE TABLE articles AS SELECT row_number() OVER (ORDER BY src_id) AS id, body FROM (SELECT * FROM src ORDER BY hashint8(src_id) LIMIT ${BM25_ARTICLES:-50000}) s ORDER BY src_id;
 		DROP TABLE src;
 		VACUUM (ANALYZE) titles, articles;
