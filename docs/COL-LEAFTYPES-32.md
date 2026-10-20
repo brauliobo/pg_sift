@@ -1,7 +1,7 @@
 # More leaf types for `sift_col` (3.2)
 
 `numeric` of any precision, `money` and `interval` as columns of a `sift_col` index, and what the aggregate pushdown (`SiftAgg`) does with
-them. Also `time`, enums, `uuid`, `bytea`, arrays and ranges (section 7). Status: implemented on the 3.2 branch; section 8 is what is pushed down, section 10 the format ids. The
+them. Also `time`, enums, `uuid`, `bytea`, arrays, ranges, and `inet`, `cidr`, `macaddr`, `macaddr8`, `timetz`, `bit` and `varbit` (section 7). Status: implemented on the 3.2 branch; section 8 is what is pushed down, section 10 the format ids. The
 format itself is section 2.11 of `docs/COL.md`; where the two disagree, fix the code or this file in the same commit.
 
 ## 1. Before (3.1)
@@ -127,7 +127,7 @@ in `src/portable-col.list`: C library and `sift_host.h` only, no allocation (the
 neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C sqlite col-smoke` compiles `portable-col.list`, and
 `scripts/check-portable.sh` checks both lists). The PostgreSQL side (`sift_col_types.c`) maps `Datum`s and OIDs to it.
 
-## 7. The other types: time, enum, uuid, bytea, arrays, ranges
+## 7. The other types: time, enum, uuid, bytea, arrays, ranges, network, timetz and bit strings
 
 | SQL type | leaf | encoding | why this one |
 |---|---|---|---|
@@ -136,6 +136,9 @@ neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C 
 | `uuid` | STR, type `UUID` | the 16 raw bytes | equality and `memcmp` order are PostgreSQL's (`uuid_cmp` is `memcmp`) |
 | `bytea` | STR, type `BYTEA` | the detoasted varlena image | `byteacmp` is `memcmp` then length; bytea has no ties |
 | arrays, ranges, multiranges | STR, type `VARLENA` | the detoasted varlena image of the datum | the image of a datum is its canonical form; equality, hash and every operator are PostgreSQL's on the decoded value |
+| `inet`, `cidr`, `bit`, `varbit` | STR, type `VARLENA` | the detoasted varlena image of the datum | as above: `10.0.0.1/24` and `10.0.0.1/32` are two images and two values; `inet` and `cidr` are one type to the executor (`cidr` has no operators of its own) |
+| `macaddr`, `macaddr8` | STR, types `MACADDR`, `MACADDR8` | the 6 or 8 bytes of the datum | PostgreSQL's input folds the spellings (`08-00-2B-01-02-03`, `0800.2b01.0203`) into one datum |
+| `timetz` | STR, type `TIMETZ` | the 12 bytes of the datum (`typlen`: the microseconds, then the zone in seconds; the 4 bytes of padding of the C struct are not stored) | `timetz` compares the instant first and the zone second (`12:00+01 = 11:00+00` is false), which no byte order of the image gives, so the executor uses PostgreSQL's own functions on the decoded datum |
 
 Only columns that are in a `sift_col` index are affected; `sift_table` keeps its own layout for these types (it stores them by size) and a table with
 them still writes minor 3 or 4. The column engine keeps the value and its null bitmap and applies no order of its own to an enum, a uuid, an image
@@ -146,28 +149,27 @@ touching a row.
 What stays refused, and why (`CREATE INDEX` says `sift_col does not support the type ...`, the table's other columns still work, a query that reads the
 column runs the normal plan):
 
-- `timetz`: its equality is `time + zone` in microseconds while its value is the pair, so it needs two lanes (like `interval`) and a tie rule for `12:00+01` and `11:00+00`; no
-  query shape asks for it, so it was not worth a third lane type.
-- `point`, `inet`, `cidr`, `macaddr`, `tsvector`, `xml`, `json` and the other types with no leaf form above: nothing in the engine or in the executor reads them
-  yet. An array, range or multirange *of* any of these is accepted (the image is opaque and the element type is only PostgreSQL's concern).
+- `point`, `tsvector`, `xml`, `json` and the other types with no leaf form above: they have no equality, no btree or hash operator class, or no operator
+  the executor could use for grouping and `min`/`max` (`json` has no equality at all). An array, range or multirange *of* any of these is accepted (the image is opaque
+  and the element type is only PostgreSQL's concern).
 
 ## 8. What `SiftAgg` does with them
 
-The planner reads a wide leaf (numeric lanes, image, `money`, `interval`) and the opaque images (uuid, bytea, arrays, ranges) through a per-unit
+The planner reads a wide leaf (numeric lanes, image, `money`, `interval`) and the opaque images (uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit) through a per-unit
 dictionary of Datums (`src/agg/sift_aggwide.c`): each unit decodes its lanes once into the distinct values (numeric in the short varlena form PostgreSQL
 builds, the `Interval` struct, the stored varlena or uuid bytes) and the leaf is a code vector of that dictionary, exposed to the executor as an
 ordinary `CODE` leaf whose entries *are* the Datums. Time is an `int64` vector and an enum an `int32` vector of OIDs. A wide leaf is not eligible
 for the dense or LUT key forms, native `count(DISTINCT)`, the pre-aggregates, the top-N scan or the GPU; it goes through the code of PostgreSQL's
 own functions (`SAA_GEN`: its transition and final functions on the Datums; `combo` keys: its expression per distinct tuple).
 
-| shape | `money` | `numeric` (wide and image) | `interval` | `time` | enum | `uuid`, `bytea`, arrays, ranges |
+| shape | `money` | `numeric` (wide and image) | `interval` | `time` | enum | `uuid`, `bytea`, arrays, ranges, network, `timetz`, bit strings |
 |---|---|---|---|---|---|---|
 | conjunct of the WHERE `= <> < <= > >=`, `BETWEEN`, `IN`, `NOT IN`, `IS [NOT] NULL` | pushed (lane test) | pushed (lane test) | pushed (lane test) | pushed | pushed | executor (PostgreSQL's operator), array and range operators included |
 | boolean trees: `OR`, `NOT`, 3-valued logic, `FILTER (WHERE ...)` on any aggregate, `CASE WHEN` | pushed | pushed | pushed | pushed | pushed | pushed |
 | expressions: casts, `n + const`, `IS [NOT] DISTINCT FROM`, `= ANY(array)`, `extract(...)` | pushed | pushed | pushed | pushed | pushed | pushed |
 | `GROUP BY x` | pushed | pushed | pushed | pushed | pushed | pushed |
 | `count(x)`, `count(DISTINCT x)` | pushed | pushed | pushed | pushed | pushed | pushed |
-| `min`, `max` | pushed | pushed | pushed | pushed | pushed (catalog order) | `bytea` and arrays (ranges and `uuid` have no `min`/`max`) |
+| `min`, `max` | pushed | pushed | pushed | pushed | pushed (catalog order) | `bytea`, arrays, `inet`, `cidr` (`inet`'s) and `timetz` (ranges, `uuid`, `macaddr`, `macaddr8`, `bit` and `varbit` have no `min`/`max`) |
 | `sum`, `avg` | pushed (`cash_pl`: an overflow raises as the heap's) | pushed | pushed (`interval_pl`: month, day and time added apart) | no such aggregate | no such aggregate | no such aggregate |
 
 "Pushed" means: the same function PostgreSQL's plan would call, on the same value, so the answer, its text and its errors are the normal plan's; each shape
@@ -197,7 +199,12 @@ Money, time, enum and uuid have no ties.
 - `GROUP BY money` in PostgreSQL is sort-based (money has a btree opclass and no hash one); the pushdown hashes the cents (`hashint8`), the rows are the same
   and their order is a hash order, as any hash aggregate's.
 - More than 8 lane-tested conjuncts in one scan.
-- `timetz` and the types refused in section 7.
+- `GROUP BY` a `bit` or `varbit` column: PostgreSQL has no hash operator class for them and groups by sorting, and the executor groups by hashing, so the plan stays
+  (`count(DISTINCT)`, conjuncts and expressions over them are pushed; `GROUP BY length(vb)` is a key of an integer).
+- A `cidr` column that is a group key and is also read in a conjunct, a `FILTER` or an expression of the same query (`cd = '10.0.0.0/8'`, `host(cd)`): the operators of
+  `cidr` are `inet`'s, so the query reads the leaf as `inet` and as `cidr`, and a leaf has one type in a combo. Keying on `cd::inet` (`GROUP BY cd::inet` is pushed)
+  keeps the pushdown.
+- The types refused in section 7.
 
 ## 9. Tests
 
@@ -213,6 +220,10 @@ Money, time, enum and uuid have no ties.
   that must keep the normal plan.
 - `test/col/fixtures/w_*.sql` (table `t_wide`): coldiff against the normal plan with the traps of section 4 (NaN, the precision 38 boundary, 39 and
   400 digit values, huge and negative scales, NULLs, ties of scale and of interval spelling, money extremes, infinite intervals, parameters).
+- `test/sql/col_agg_types33.sql`, `test/col/fixtures/n_net_*.sql` (table `t_net`): the network, `timetz` and bit string types against the heap: IPv4 and IPv6, masks, IPv4-mapped
+  addresses, equal values spelled differently, `timetz` extremes and the zone tie-break, `bit(8)` with leading zeros, `varbit` of lengths 0 to 3 and out of line; keys,
+  conjuncts, `min`/`max`, `count(DISTINCT)`, `OR`, `CASE`, `FILTER`, `host`/`family`/`masklen`, parameters, the write buffer, DELETE, UPDATE, merge and REINDEX; the
+  column minor of an index of old types; the types that stay refused.
 - `test/sql/col_agg_types32.sql`: the keys, aggregates, conjuncts, OR, FILTER, expressions and parameters over time, enum, uuid, bytea, arrays, ranges and
   multiranges against the heap; enum values added (`BEFORE`/`AFTER`) and renamed after the index was built; the write buffer, DELETE and UPDATE, merge,
   parallel workers; a `sift_table` with these types. `test/col/fixtures/m_*.sql`, `w_key_*`, `w_agg_*`, `w_tree_*`: the same in coldiff with scenarios.
@@ -224,14 +235,14 @@ Money, time, enum and uuid have no ties.
 
 - Column segment minor **5** (`SIFT_COL_FORMAT_WIDE`), the next free number after the 3.1 final (which uses 4 only), claimed in `docs/FORMATS.md`
   section 4.
-- A segment is written as minor 5 only when its schema has a leaf of the new kind (a lane, `MONEY`, `INTERVAL`, `TIME`, `ENUM`, `VARLENA`, or a
+- A segment is written as minor 5 only when its schema has a leaf of the new kind (a lane, `MONEY`, `INTERVAL`, `TIME`, `ENUM`, `VARLENA`, `MACADDR`, `MACADDR8`, `TIMETZ`, or a
   `UUID` or `BYTEA` leaf stored as an image; the exceptions leaf of a `sift_table`, `BYTEA` with a variable store, stays minor 3 or 4). Every other segment is
   written as before (minor 3 or 4 by `sift.col_format_minor`), so an index of old types stays readable by 3.1. `sift.col_format_minor` keeps its
   range 3 to 4; it does not apply to a wide schema, which has no older form.
 - Readers: this build reads minors 3, 4 and 5. A 3.1 library refuses a minor 5 segment (`format > SIFT_COL_FORMAT_MINOR`,
   hint "Use a newer pg_sift, or REINDEX") and cannot open the index of one of these columns at all (its column mapper refuses the type): downgrade means
   dropping that index. No further minor is needed: the phase-2 types are leaves of the minor 5 schema (INT and STR chunks as before).
-- `SiftColType` tags 15 (`MONEY`), 16 (`INTERVAL`), 17 (`TIME`), 18 (`ENUM`) and 19 (`VARLENA`); `UUID` and `BYTEA` already had tags (they were never written
+- `SiftColType` tags 15 (`MONEY`), 16 (`INTERVAL`), 17 (`TIME`), 18 (`ENUM`), 19 (`VARLENA`; also the tag of `inet`, `cidr`, `bit` and `varbit`), 20 (`MACADDR`), 21 (`MACADDR8`) and 22 (`TIMETZ`); `UUID` and `BYTEA` already had tags (they were never written
   by an index before); `SiftColDefDisk` bytes 14 and 15 are `lanes` and `lane`. The schema hash is over that
   serialization, so an old leaf list hashes as before.
 - The metapage and the BM25 minor do not change.
