@@ -23,6 +23,8 @@
 #   --no-index          without the column index: plain against plain (the self-check of the harness); without the flag a missing
 #                       access method or a failing CREATE INDEX skips the suite with a message
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
+#   --table             the fixtures suite on sift_table: the fixture tables are rewritten USING sift_table instead of getting a column index, the scenarios
+#                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl)
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
 #                       test/col/col_index.sql, USING sift_col replaced by --col-am)
 #   --scenario-slices N each scenario runs the scenario queries of one slice of N (query i is in slice i mod N), the slice moving from one scenario to
@@ -41,7 +43,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE=
+VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -49,7 +51,7 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 
 while (( $# )); do
 	case $1 in
-		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
@@ -92,7 +94,7 @@ fresh_db() {
 # the access method of the column index: --col-am, else sift_col, else sift_colstub; empty when none exists (or --no-index)
 resolve_am() {
 	[[ -z $NOINDEX ]] || return 0
-	if [[ -n $COL_AM ]]; then AM=$COL_AM; else
+	if [[ -n $TBL ]]; then AM=sift_table; elif [[ -n $COL_AM ]]; then AM=$COL_AM; else
 		AM=$(sql -c "SELECT amname FROM pg_am WHERE amname IN ('sift_col', 'sift_colstub') ORDER BY amname = 'sift_col' DESC LIMIT 1")
 	fi
 	[[ -n $AM && $(sql -c "SELECT count(*) FROM pg_am WHERE amname = '$AM'") == 1 ]] || { AM=; skip "no column index access method (sift_col, sift_colstub): run with --no-index for the plain-against-plain self-check"; return 1; }
@@ -249,6 +251,14 @@ col_index() {
 	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
 }
 
+# fixture_tables: the fixture tables (and the partitions) rewritten into sift_table, the table the queries run on
+fixture_tables() {
+	local t
+	for t in orders orders_odd orders_part_2022 orders_part_2023 orders_part_2024 orders_part_2025 t_int t_float t_num t_nan t_text t_dist t_wide; do
+		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
+	done
+}
+
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
@@ -287,12 +297,12 @@ scenarios() {
 		slice; check scenario-abort "${SLICED[@]}"
 	fi
 	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders" -c "VACUUM (ANALYZE) t_part"; slice; check scenario-vacuum "${SLICED[@]}"; fi
-	if want hot; then
+	if want hot && [[ -z $TBL ]]; then
 		sql -c "SELECT coldiff.sc_hot(0.05)" >/dev/null
 		log "scenario hot: HOT updates of columns no index holds: $(sql -c "SELECT n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'orders'")"
 		slice; check scenario-hot "${SLICED[@]}"
 	fi
-	if want recycle; then
+	if want recycle && [[ -z $TBL ]]; then
 		sql -c "DROP TABLE IF EXISTS coldiff_gone" -c "CREATE TABLE coldiff_gone AS SELECT ctid AS tid, id FROM orders WHERE coldiff.sample(id, 906, 0.05)" \
 			-c "DELETE FROM orders WHERE id IN (SELECT id FROM coldiff_gone)" -c "DELETE FROM t_part WHERE id IN (SELECT id FROM coldiff_gone)" \
 			-c "VACUUM (TRUNCATE off) orders" -c "VACUUM (TRUNCATE off) t_part" -c "SELECT coldiff.sc_insert(0.06)" >/dev/null
@@ -334,6 +344,7 @@ scenario_held() {
 scenario_maint() {
 	local fn
 	log "scenario maint: REINDEX, promote, merge"
+	if [[ -n $TBL ]]; then sql -c "VACUUM orders"; check scenario-vacuum-2 "$@"; sql -c "VACUUM FULL orders"; check scenario-vacuum-full "$@"; return; fi
 	sql -c "REINDEX INDEX orders_col" -c "REINDEX TABLE t_part"; check scenario-reindex "$@"
 	for fn in col_promote col_merge; do
 		if [[ $(sql -c "SELECT to_regproc('sift.$fn') IS NOT NULL") == t ]]; then
@@ -345,11 +356,11 @@ scenario_maint() {
 fixtures_suite() {
 	local fl
 	log "fixtures: $FIXROWS orders (seed $SEED)"
-	fresh_db "${DB_PREFIX}_fix"
+	fresh_db "${DB_PREFIX}_$([[ -n $TBL ]] && echo tbl || echo fix)"
 	[[ -n $NOINDEX ]] || resolve_am || return 0
 	sql -v n="$FIXROWS" -v seed="$SEED" -f "$REPO/test/col/fixture.sql" >/dev/null
 	fixture_indexes
-	[[ -n $NOINDEX ]] || fixture_col_indexes || return 0
+	if [[ -n $TBL ]]; then fixture_tables || return 0; elif [[ -z $NOINDEX ]]; then fixture_col_indexes || return 0; fi
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
 	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql)
 	(( ${#fl[@]} )) || { log "fixtures: no query matches --corpus"; return 0; }
