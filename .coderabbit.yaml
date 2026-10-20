@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+reviews:
+  high_level_summary: false
+  auto_review:
+    enabled:                 true
+    auto_incremental_review: true
+    drafts:                  false
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Focus on correctness, concurrency, on-disk compatibility, and demonstrable
+        regressions. Apply AGENTS.md root-cause and regression-test standards;
+        keep findings concise and grounded in the changed code.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+issue_enrichment:
+  planning:
+    enabled: false
