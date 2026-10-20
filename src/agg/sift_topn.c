@@ -189,6 +189,7 @@ sort_begin(SiftTopN *t)
 		op[j] = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, key && t->key[j].desc ? BTGreaterStrategyNumber : BTLessStrategyNumber);
 		nf[j] = key && t->key[j].nulls_first;
 	}
+	sift_tupdesc_finalize(desc);
 	t->sin = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	t->sout = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 	return tuplesort_begin_heap(desc, n, att, op, coll, nf, work_mem, NULL, TUPLESORT_RANDOMACCESS);
