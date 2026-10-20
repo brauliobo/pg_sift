@@ -6,9 +6,9 @@
 - `count(*)`;
 - build time, update cost, and resource use.
 
-Status: 3.1.0 (extension version 3.1). Of the extras below, 9 (parallel scan, opt-in and off by default), 10 (filter-mask pushdown) and 11 (keyword facets) were implemented in 1.1 (1.0.0 had none of them); the work items of milestones M0 to M7 below are shipped (M7: phrase pairs were removed in 1.3.0 for word positions).
+Status: 3.1.0 (extension version 3.1). Of the extras below, 9 (parallel scan, opt-in and off by default), 10 (filter-mask pushdown) and 11 (keyword facets) were implemented in 1.1 (1.0.0 had none of them); the phrase pair index (extra 12) was removed in 1.3.0 for word positions.
 
-This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), (l) for the 1.1 facets, then module contracts and milestones. Estimates are marked **[est]**: they are design-time figures, not measurements; measured figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and [bench/README.md](bench/README.md).
+This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), (l) for the 1.1 facets, then the module map and contracts. Estimates are marked **[est]**: they are design-time figures, not measurements; measured figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and [bench/README.md](bench/README.md).
 
 User-facing names: extension `pg_sift`, AM `sift`, schema `sift`, operator `text @@> text`, and the functions `sift.score(tid)`, `sift.max_score(tid)`, `sift.highlight(...)`, `sift.tokenize(...)`, `sift.verify(regclass)`, `sift.segments(regclass)`, `sift.promote(regclass)`, `sift.merge(regclass)`, `sift.parse_query(text)`.
 
@@ -36,7 +36,7 @@ I1 holds because heap line pointers are reused only after `ambulkdelete` has cle
 
 ### Decision
 
-1. **Matching data: the codec blob only.** Boolean and count queries never touch scoring data. The `codec` module (`src/bm25/sift_bitmap.h`, landed; owner: codec agent, `docs/CODEC.md`) encodes posting sets; one codec group (`gid`) is exactly one SB. sift encodes with the codec's tf option **off**: its 4-bit nibbles saturate at 15 and cost 4 bits on every posting. The scoring sidecar below follows the codec blob in the term blob, so it costs no bandwidth unless a query ranks.
+1. **Matching data: the codec blob only.** Boolean and count queries never touch scoring data. The `codec` module (`src/bm25/sift_bitmap.h`, `docs/CODEC.md`) encodes posting sets; one codec group (`gid`) is exactly one SB. sift encodes with the codec's tf option **off**: its 4-bit nibbles saturate at 15 and cost 4 bits on every posting. The scoring sidecar below follows the codec blob in the term blob, so it costs no bandwidth unless a query ranks.
 2. **Exact term frequency (tf) in a rank-space sidecar stream, one per term.** A *chunk* is one term's postings within one SB, i.e. one codec group. Postings are numbered in key order; that number is the *rank* (codec group `base` + rank within the group, via `sift_grp_ranks`). The stream holds:
    - `L1`: one bit per posting, set when `tf > 1`.
    - A nibble `min(tf-2, 15)` for each L1 member.
@@ -359,7 +359,7 @@ Hooks used, all present in the PG18 headers (verified):
   - Recheck ≈ heap fetch (0.3 µs hot, 100 µs cold) + tokenization (1–2 ns per byte on the ASCII fast path, ≈ 5 ns per byte with Unicode folding).
   - Top-10 ranked: about k·ln(N/k) ≈ 150 verifications → ≈ 0.5–2 ms.
   - `count(*)` with a phrase: C candidates × (1–10 µs). For C = 100 k that is 0.1–1 s. This is the weak spot.
-- **Mitigation (M7): the phrase pair index (reloption `phrase_index = pairs`, adjacent token pairs as extra terms) was removed in 1.3.0.** Word positions (below) decide phrases from the index; on the 218k articles the pairs bought `count(*)` 1.6x over them for a 2.7x larger index.
+- **Mitigation: the phrase pair index (reloption `phrase_index = pairs`, adjacent token pairs as extra terms) was removed in 1.3.0.** Word positions (below) decide phrases from the index; on the 218k articles the pairs bought `count(*)` 1.6x over them for a 2.7x larger index.
 - **Positions (reloption `positions`, default on, REINDEX to change; on-disk format 1.1).**
   - `CREATE INDEX` stores a position stream after each term's postings (layout in docs/CODEC.md 3.1): the ordinals of the term in each document, delta coded, with a checkpoint every 32 postings, so the positions of one posting are read without decoding the others. Terms with at most two postings keep their records in the dictionary entry. Queries without a phrase never read the stream.
   - A phrase on a path of ANDs from the root (not under OR or NOT) is *required*: the relaxed AND of its terms still finds the candidates, and every candidate is checked against the positions (rarest term first, narrowing the possible start positions term by term) before the heap is touched. Counts, bitmaps, unordered and ranked scans do this; a candidate refuted by the positions costs no heap page and no tokenizing. A phrase under OR is *optional*: a cursor of its own yields the documents of the AND that hold it, so the OR sees only real matches.
@@ -468,7 +468,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 - **Kernels** are compiled with function attributes:
   - `SIFT_TARGET_AVX2` = `target("avx2,bmi,bmi2,popcnt")`;
   - `SIFT_TARGET_AVX512` = `target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")`.
-- **`cpu` module** (`sift_cpu.c`, done in M0):
+- **`cpu` module** (`sift_cpu.c`):
   - Uses `__builtin_cpu_supports`, which checks OS XSAVE state for AVX.
   - Marks BMI2 PDEP/PEXT as *slow* on AMD family 0x17 (Zen1/Zen2, microcoded at about 250 cycles). Those CPUs use the AVX2 kernels without pdep.
   - The `sift.simd = auto|scalar|avx2|avx512` GUC caps the level, for testing and benchmarking.
@@ -482,7 +482,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - block-UB accumulate (u8→f32 widen + multiply-add as separate ops);
   - threshold compress (`vcompressps`/`vcompressw`);
   - VM pext.
-- **The codec owns the bitmap set kernels:** AND, OR, ANDNOT, count, iterate. It keeps its own dispatch (`sift_init` / `sift_set_isa`), which a rebind callback in `sift_handler.c` binds to `sift.simd` (done in M0).
+- **The codec owns the bitmap set kernels:** AND, OR, ANDNOT, count, iterate. It keeps its own dispatch (`sift_init` / `sift_set_isa`), which a rebind callback in `sift_handler.c` binds to `sift.simd`.
 - **Correctness:** every kernel has a scalar reference. The `kernels` regression test runs randomized equivalence at every level the CPU supports, compared bit for bit.
 - **AVX-512 frequency licensing.** Zen4/5 does not downclock. On Intel server parts, `auto` prefers the 256-bit AVX-512VL forms for scoring loops; 512-bit forms only where the data is ≥ 64 B per op.
 
@@ -490,7 +490,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 
 ## Extras beyond the baseline design: innovations, expected gains, measurement
 
-Every item is measured by the M6 harness (`bench/`). It compares sift, in-database baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
+Every item is measured by the benchmark harness (`bench/`). It compares sift, in-database baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
 
 | # | Idea | Status | Expected gain **[est]** | Measure |
 |---|---|---|---|---|
@@ -498,14 +498,14 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 | 2 | BMP best-first over (segment, 16-page block) with u8 bounds and verified θ | core | 10–50× over exhaustive disjunction top-10; beats BMW cursors on SIMD density | blocks scored / skipped (EXPLAIN), QPS |
 | 3 | Fused SIMD pipeline: page-mask program → offset decode → liveness → tf → BM25 → compress, per block in L1 | core | Removes the intermediate result sets of tbm-based plans | ns per (doc, term) |
 | 4 | Score-in-tuple via custom scan tlist (no global registry) | core | Removes a whole bug class; also allows MergeAppend top-k over partitions | Isolation and parallel tests |
-| 5 | PG18 ReadStream/AIO prefetch of heap blocks *and* index chunks (order known in advance) | core (M5) | Cold-cache p99 cut 3–10× on NVMe | p99 with `pg_prewarm` off and `io_method=io_uring` |
+| 5 | PG18 ReadStream/AIO prefetch of heap blocks *and* index chunks (order known in advance) | core | Cold-cache p99 cut 3–10× on NVMe | p99 with `pg_prewarm` off and `io_method=io_uring` |
 | 6 | VM pext → 256-bit all-visible mask per SB; chunk-count shortcut on clean SBs | core | `count(*)` at memory bandwidth; single-term count O(chunks) | count QPS against pg_textsearch and ParadeDB (Wikipedia) |
-| 7 | Write buffer lanes + bloom-gated write buffer scan + async dynamic worker without preload | core (M4) | No insert hot spot; bounded query overhead under 1,000 updates/s | QPS under the 1,000 UPDATE/s mix, WAL per update |
-| 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | M4 | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
+| 7 | Write buffer lanes + bloom-gated write buffer scan + async dynamic worker without preload | core | No insert hot spot; bounded query overhead under 1,000 updates/s | QPS under the 1,000 UPDATE/s mix, WAL per update |
+| 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | core | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
 | 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | implemented in 1.1, opt-in: `sift.parallel_scan = on` (default off). Results equal the serial plans (ties included). Measured (`bench/steps/parallel.sh`, 218,058 articles, 1/2/4/8 workers, host load 21–25): wins only for an unordered scan with a heavy residual qual (1.8×); `count(*)` 0.06–0.29× and top-1000/10000 0.5–1.2×, because a Gather costs 2.4 ms (1 worker) to 6–7 ms (8) before any work and the serial plans take 0.35–0.67 ms and 4–20 ms. Likely to pay only on much larger corpora. Historical figures, measured on 2026-10-16 during 1.1 development (commit 800f7b9) and not re-run since | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
 | 10 | Filter-mask pushdown: SiftScan accepts child BitmapIndex paths (btree, BRIN) as `custom_paths` and converts the TIDBitmap into SB page/offset masks before scoring | implemented in 1.1 (kept; gate met): 0.1% filter, ranked `or`, mean latency 23.6 -> 0.22 ms (clustered) and 15.0 -> 0.86 ms (scattered) on 218k articles, `and` 4.9 -> 0.22 / 4.3 -> 0.64 ms; 25k articles: `or` 2.2 -> 0.21 ms, `and` 0.7 -> 0.19 ms. At 10% scattered the pushdown is slower than filtering after the ranker, so the planner costs both. Historical figures, measured on 2026-10-16 during 1.1 development (commit d7a9a70), host and CPUs not recorded in the commit, not re-run since | Exact filtered top-k without post-filter over-fetch; 5–100× on selective filters | `WHERE body @@> q AND tenant = $1 ORDER BY score LIMIT 10` |
 | 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `sift.facets(index, facet_index, query, lim)` = popcount(query ∧ value) per value, a function and not a GROUP BY rewrite ((l)) | implemented in 1.1: on 25,000 Wikipedia articles with 26 values, 1.9-4.5x sift GROUP BY and 1.9-15.9x GIN GROUP BY on broad queries (1.5-2.6x Elasticsearch terms), 0.6x on a selective AND; with 2,500 values 0.5-0.9x sift GROUP BY (cost is linear in the values), see (l) | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
-| 12 | Phrase pair index (g), removed in 1.3.0 for word positions | M7 | Phrase `count(*)` 10–100× | Phrase count QPS |
+| 12 | Phrase pair index (g), removed in 1.3.0 for word positions | core | Phrase `count(*)` 10–100× | Phrase count QPS |
 | 13 | Adaptive representation (codec picks LIST vs GROUPED per term and BITMAP vs ARRAY container per group; inline df ≤ 2) | core | Rare terms at ≈ Elias-Fano cost (~25 bits), frequent at ≈ 1 bit per posting | Bits per posting histogram (`sift.segments`) |
 | 14 | Dirty-SB liveness skip: AND liveness only where VACUUM cleared bits | core | No liveness cost on clean data | — |
 
@@ -557,12 +557,11 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 - **Leak gate.** `scripts/leakcheck.sh` is the one place that decides whether a run leaked, shared by every suite through `pgtest.sh` (config, sanitizer environment, start and stop), `test/t/lib.bash` and `SiftTest.pm` (nodes), `tap.sh`, `soak.sh` and the last stage of `ci.sh`. It fails on the leak diagnostics PostgreSQL logs at transaction and backend end, on assertion failures, crashes and sanitizer reports, on the sift memory contexts that outlive a backend (`SIFT_TESTING`, `src/core/sift_leak_test.c`), on the state a cluster leaves when it stops, and on sustained memory growth of the soak backends. `leakcheck.sh selftest` and `test/t/leakcheck_gate.sh` (with `sift._test_leak`) show that it fails on each kind of leak and passes a clean log.
 - **Fuzzing.**
   - The query parser via the SQL wrapper `sift.parse_query`, driven by a grammar-aware generator script, under ASan.
-  - The codec standalone with libFuzzer, owned by the codec agent; the codec has no backend dependencies.
+  - The codec standalone with libFuzzer (`test/fuzz`); the codec has no backend dependencies.
 - **Determinism.** Fixed float evaluation order, ties broken by ctid, and `sift.simd` levels compared bit for bit.
-- **Docs.** `README.md` (overview, install, quick start, benchmark summary), `docs/USAGE.md` (user guide: DDL, SiftQL, functions, GUCs, limits), `DESIGN.md` (this file), `docs/CODEC.md` (codec agent).
+- **Docs.** `README.md` (overview, install, quick start, benchmark summary), `docs/USAGE.md` (user guide: DDL, SiftQL, functions, GUCs, limits), `DESIGN.md` (this file), `docs/CODEC.md` (the codec).
 - **Tests.** The tiers (`make check`, `make check-full`), the throwaway cluster of `scripts/pgtest.sh` and how to run one suite are in CONTRIBUTING.md; `SIFT_QUICK=1` selects the quick sizes in `test/t`. The quick differential test runs 8 of the 16 harness mutants (the ones the full run kills with the most queries).
 - **Packaging.** `packaging/PKGBUILD` (`pg_sift`) builds the committed HEAD with `nice make -j4` and installs through the standard PGXS `DESTDIR` path.
-- **M0 behaviour (historical).** The skeleton of M0 loaded with stub entry points that failed with `ERRCODE_FEATURE_NOT_SUPPORTED` "not implemented yet". Every module has landed, `src/` holds no stub file (`sift_stubs.c` is gone) and no such message, and `CREATE INDEX … USING sift` builds an index.
 
 ---
 
@@ -577,7 +576,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - dl saturates at 65535 and tf at 255 (score effect < 1.5 %).
   - ≤ 128 segments, ≤ 256 query leaves, wildcard, regex, fuzzy and prefix leaves of any number of terms (a wide leaf builds a blob of the size of its postings in memory).
 - **Scoring.** k1, b and analyzer options are fixed per index; changing them requires REINDEX (`ALTER INDEX ... SET/RESET` of one that changes the analyzer warns, through a `ProcessUtility` hook that compares the metapage's analyzer hash with the index's options; until the REINDEX queries and inserts fail). The index only grows to a high-water mark, and REINDEX shrinks it.
-- **Non-goals of the `sift` index** (v1 list, checked against 3.0.2):
+- **Non-goals of the `sift` index** (checked against 3.1.0):
   - proximity / slop queries (word positions, format 1.1, decide phrases, §g, but there is no `NEAR` or slop operator);
   - `amgettuple` plain and index-only scans (bitmap scans and the SiftScan / SiftCount custom scans only);
   - backward scan, mark/restore;
@@ -647,13 +646,13 @@ the aggregation kernels of `agg/`.
 
 ## MODULE MAP
 
-Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL entry point. Headers live next to their sources in `src/<area>/` (Source layout above). Ownership is by file. "Codec" is the concurrent codec agent.
+Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL entry point. Headers live next to their sources in `src/<area>/` (Source layout above).
 
-| Module | Files | Owner scope | Depends on |
+| Module | Files | Scope | Depends on |
 |---|---|---|---|
-| core | `sift.h`, `sift_handler.c` | Constants, options, GUCs, catalog OID cache, `_PG_init`, AM handler. **Done (M0).** | — |
-| cpu | `sift_cpu.h/.c` | Feature detection, `sift.simd` GUC, dispatch rebind registry. **Done (M0).** | core |
-| codec | `sift_bitmap.h`, `sift_bitmap*.c`, `docs/CODEC.md` | Term blob encoding (LIST/GROUPED), group cursors and AND/OR/ANDNOT cursor trees, set and count kernels, its own ISA dispatch. **Landed.** | — |
+| core | `sift.h`, `sift_handler.c` | Constants, options, GUCs, catalog OID cache, `_PG_init`, AM handler. | — |
+| cpu | `sift_cpu.h/.c` | Feature detection, `sift.simd` GUC, dispatch rebind registry. | core |
+| codec | `sift_bitmap.h`, `sift_bitmap*.c`, `docs/CODEC.md` | Term blob encoding (LIST/GROUPED), group cursors and AND/OR/ANDNOT cursor trees, set and count kernels, its own ISA dispatch. | — |
 | kernels | `sift_kernels.h/.c` | Scoring SIMD kernels + scalar references | cpu |
 | analyze | `sift_analyze.h/.c` | Tokenizer, folding, stemming, term hashing | core |
 | query | `sift_query.h/.c` | SiftQL parse, analyze, deparse, document evaluation | analyze |
@@ -673,7 +672,6 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 ### Cross-module contracts (binding)
 
 1. **SQL entry points.** `PG_FUNCTION_INFO_V1` appears **only** in `sift_handler.c`. Implementers define `Datum fn(PG_FUNCTION_ARGS)`, declared in `sift_sql.h` (`PGDLLEXPORT`).
-   - While the modules landed one by one, `sift_stubs.c` held `__attribute__((weak))` stubs for every AM callback and SQL entry point, and a landing module deleted its stubs. All modules have landed and the file is gone.
 2. **Memory.**
    - Functions that allocate take an explicit `MemoryContext` or document "allocates in CurrentMemoryContext".
    - Long-lived objects (`SiftIndexState`, `SiftPlan`, `SiftRanker`, `SiftSegment`) live in their creator's context. `*_close` / `*_end` release buffers and pins only, never memory; memory is freed by deleting the context.
@@ -690,7 +688,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
    - The matching path works on the codec's decoded group view `sift_grp`: a 256-bit page mask (bit i is page `sb*256 + i`) and, for each set page, an offset bitmap of `w` bytes (bit `off-1` is offset `off`).
    - Scoring kernels take fixed `uint64[SIFT_OFFMASK_WORDS = 8]` offset masks, 64-byte aligned. `eval` widens `w`-byte bitmaps to 64 bytes only for the pages it scores.
    - `SiftKey` and the codec's `sift_tid` use the same encoding (`blk << 16 | off`).
-6. **Codec usage** (`sift_bitmap.h`, landed):
+6. **Codec usage** (`sift_bitmap.h`):
    - `sift_encode` with tf off;
    - `sift_cur_blob`, and `sift_cur_tids` for inline postings;
    - cursor trees `sift_cur_and` / `sift_cur_or` / `sift_cur_andnot` for the boolean program;
@@ -706,21 +704,6 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
    - Only `store` frees or recycles extents.
 
 ---
-
-## MILESTONES
-
-Each milestone ends with green `make installcheck` plus its listed tests, under `scripts/pgtest.sh`. Modules within a milestone run in parallel. The table is the original plan; its work items are all shipped (1.0.0 to 1.1.0, M7 as noted), and the current tiers of tests are in CONTRIBUTING.md.
-
-| M | Deliverable | Parallel work items (owner = module) | Exit test |
-|---|---|---|---|
-| M0 | Skeleton (the first commit; historical): builds, loads, stubs, `pgtest.sh`, packaging | architect | `CREATE EXTENSION`; CREATE INDEX gives a clear "not implemented" error (the stubs are gone) |
-| M1 | Foundations | analyze (+`sift.tokenize`), query (+`sift.parse_query`), store (+ unit SQL test functions under `sift._test_*` behind `#ifdef SIFT_TESTING`), kernels, codec | tokenize/parse golden tests; kernel equivalence; store page round-trip |
-| M2 | Immutable index | posting, dict, segment, build (serial), eval (iterator + count), amscan, sql (`match`, `matchsel`) | Bitmap Heap Scan results = seq scan for 200 random queries; `sift.verify` |
-| M3 | Planner | planner (SiftScan unordered and ranked, SiftCount, EXPLAIN), eval (ranker), visibility, sql (support functions, `highlight`) | top-k = reference BM25 (bit-equal scores, ctid ties); count pushdown plan shapes |
-| M4 | Mutability | wbuf, maint (seal, promote, merge, recycle, sweep, worker), vacuum liveness | isolation suite; TAP crash and replica; 1,000 UPDATE/s soak with verify |
-| M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs ParadeDB; cold p99 |
-| M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
-| M7 | Extras beyond the baseline design | phrase pairs (done, removed in 1.3.0); parallel scan with shared θ (1.1, opt-in); filter-mask pushdown and keyword facets (1.1) | Each meets its ≥ 10 % gate or is dropped |
 
 ## Shared core and hosts
 
