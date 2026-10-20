@@ -493,7 +493,7 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(t->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(t->cxt, b->cap);
-		b->ovf = MemoryContextAlloc(t->cxt, (b->cap / 64 + 1) * sizeof(uint64));
+		b->ovf = MemoryContextAlloc(t->cxt, SIFT_COL_NWORDS(b->cap) * sizeof(uint64));
 	}
 	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
