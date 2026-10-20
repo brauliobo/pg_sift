@@ -54,6 +54,7 @@ while (my $f = <STDIN>) {
 	}
 	while ($head =~ m{(?<![\w/.-])sift_(\w+\.(?:c|h))\b}g) {
 		my ($n, $pos) = ($1, $-[0]);
+		next if glob("src/*/sift_$n");	# the file of an area that is not renamed yet
 		for my $a (keys %renamed) { report($f, $head, $pos, "old name sift_$n (now $a/$n)") if -e "src/$a/$n" }
 	}
 }
