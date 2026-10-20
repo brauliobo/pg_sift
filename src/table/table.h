@@ -2,7 +2,9 @@
  * table/table.h - the table access method sift_table (docs/COL-TAM.md): formats and the interfaces between its modules.
  *
  *   table/am.c         handler, the TableAmRoutine callbacks, DML
- *   table/store.c   layout, per-relation cache, write buffers (row format), tombstone segment
+ *   table/store.c   layout, per-relation cache
+ *   table/wbuf.c    write buffers (row format)
+ *   table/tomb.c    tombstone segment
  *   table/mvcc.c    visibility of a row version under every snapshot type
  *   table/scan.c    sequential, TID range and parallel scans
  *   table/fetch.c   TID fetches, bitmap scans, TABLESAMPLE
