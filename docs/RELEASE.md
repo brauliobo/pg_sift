@@ -17,8 +17,8 @@ Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, h
 
 | Step | |
 |---|---|
-| preflight | clean tree on `main`, equal to `origin/main`; notes, CHANGELOG, control, SQL scripts (`pg_sift--PREV--NEW.sql` for a new minor) in place |
-| `ci` | a green run of the workflow `ci` marked "Full scope" (every job of the quick tier ran; the run's `changes` job has the step) on the last commit that changed a build input (`src test scripts Makefile pg_sift.control pg_sift--*.sql sqlite mariadb`, except `*.md`, `VERSION` files and the release scripts) or on a later one. A run in progress is waited for; with none, the full run is dispatched |
+| preflight | clean tree on `main`, equal to `origin/main`; notes, CHANGELOG, control, SQL scripts (`sql/pg_sift--PREV--NEW.sql` for a new minor) in place |
+| `ci` | a green run of the workflow `ci` marked "Full scope" (every job of the quick tier ran; the run's `changes` job has the step) on the last commit that changed a build input (`src test scripts Makefile pg_sift.control sql/pg_sift--*.sql sqlite mariadb`, except `*.md`, `VERSION` files and the release scripts) or on a later one. A run in progress is waited for; with none, the full run is dispatched |
 | `upgrade` | the previous tag's library writes a BM25 index, a `sift_col` index and a `sift_table` in a cluster; this tree's files replace it, `ALTER EXTENSION pg_sift UPDATE`, answers equal, `sift.verify`, `sift.col_verify`, `REINDEX`; then, with `sift.col_format_minor` at its lowest value, the previous library reads what this tree wrote |
 | `package` | `make install DESTDIR` (production build): every extension file and the library in place, no test-only file, `packaging/smoke.sql` from the first and from the last version in a cluster that sees only the installed files |
 | `bump` | `CHANGELOG.md` and the CHANGELOG and `VERSION` of the ports, `PKGBUILD`, README badge, install lines: one commit, after a check that every place agrees |

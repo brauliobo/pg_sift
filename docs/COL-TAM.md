@@ -7,7 +7,7 @@ indexes, unique constraints, foreign keys, triggers, `pg_dump`, `pg_basebackup`,
 requirement, section 5) logical replication.
 
 Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
-index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
+index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `sql/pg_sift--3.0.sql` and `sql/pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
 `src/table/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
 the table AM track; where it and the code disagree, fix one in the same commit.
 
