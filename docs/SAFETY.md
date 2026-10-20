@@ -110,7 +110,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-9 | sift_table_store.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |
 | P2-1 | bm25/posting.c:post_attach, sift_post_group_tf, list_tf_pos | nnib/df/ng/esc length raw (F-BM25-5, fixed by explicit checks in 3.0.0, 7f59d1a; the Span conversion is open): carve sidecar Spans at attach |
 | P2-2 | bm25/posting.c:post_open; bm25/dict.c:sift_dict_open; bm25/segment.c:docmap, load_sb; bm25/walk.c:walk_docs | allocation before validation (up to 32 GB) |
-| P2-3 | bm25/eval.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
+| P2-3 | bm25/rank.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
 | P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; sift_col_seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream |
 | P2-5 | sift_live.c:sift_live_clear | page index and write unchecked (Assert only) |
 | P2-6 | sift_table_store.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |

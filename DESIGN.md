@@ -670,7 +670,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 | build | `bm25/build.h/.c` | `SiftInvBuf`, `ambuild` (serial and parallel), `ambuildempty` | segment, analyze |
 | maint | `bm25/maint.h/.c` | Promote, merge, recycle, orphan sweep, `ambulkdelete`, `amvacuumcleanup`, worker, `sift.promote` / `sift.merge` / `sift.segments` / `sift.verify` | segment, wbuf, build |
 | visibility | `sift_visibility.h/.c` | VM masks, heap checks, fetch | core |
-| eval | `bm25/eval.h/.c` | Bind, iterate, rank, count, estimate | segment, wbuf, query, dict, kernels, visibility |
+| eval | `bm25/eval.h/.c`, `eval_int.h`, `wbind.c`, `phrase.c`, `iter.c`, `bounds.c`, `rank.c`, `count.c` | Bind, iterate, rank, count, estimate | segment, wbuf, query, dict, kernels, visibility |
 | amscan | `bm25/amscan.c` (`bm25/am.h`) | `ambeginscan`, `amrescan`, `amgetbitmap`, `amendscan` | eval |
 | planner | `bm25/planner.h`, `bm25/planner.c`, `bm25/cscan.c` | Hooks, paths, costs, `amcostestimate`, SiftScan / SiftCount exec, EXPLAIN | eval |
 | sql | `sift_sql.h`, `bm25/funcs.c` | `sift.match`, `match_idx`, support, `matchsel`, highlight, tokenize, `parse_query`, score stubs | query, analyze, planner |
