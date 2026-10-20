@@ -31,6 +31,12 @@ bm25/merge.c
 bm25/prefix.c
 core/sift_filter.c
 bm25/eval.c
+bm25/wbind.c
+bm25/phrase.c
+bm25/iter.c
+bm25/bounds.c
+bm25/rank.c
+bm25/count.c
 bm25/parallel.c
 core/sift_cpu.c
 core/sift_span.c
@@ -44,6 +50,7 @@ core/sift_cmp.h
 core/sift_cpu.h
 bm25/dict.h
 bm25/eval.h
+bm25/eval_int.h
 core/sift_filter.h
 bm25/kernels.h
 bm25/kernels_int.h
