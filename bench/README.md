@@ -119,7 +119,7 @@ Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and s
 regenerates its files daily and keeps no archive, so a mismatch only warns; the places, and the numbers, then differ
 slightly), pg_search 0.26.1, pg_textsearch 1.5.1 (tag v1.5.1 of timescale/pg_textsearch, commit and tarball sha256),
 rum 1.3.15 (tag of postgrespro/rum, tarball sha256), PostgreSQL major. sift is built from the checkout
-(`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
+(`SIFT_SRC=head` builds the last commit instead of the working tree, `SIFT_SRC=ref:v3.1.0` the `git archive` of a tag or commit, so a release is measured as released); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
 Adding an engine: one adapter file `engines/<name>.sh` (see Engine adapters below; for places it holds the `PLACES_*` and `P_*` statements too) and one line
@@ -386,6 +386,9 @@ bench/bench store gap                   # pg_sift against ClickHouse and Elastic
 bench/bench store all --sizes 1000000 --compression --docs   # the pg_sift `compression` variants as lanes and every system's size with its other codec settings
 bench/steps/gap.sh                      # the pg_sift profile (planning, instructions, symbols) on a private cluster under a memory cap
 bench/bench resume                      # continue the unfinished run from what is done (exit status 75 = interrupted, resumable); bench/test/test_resume.sh kills a run at random points and checks it
+SIFT_SRC=ref:v3.1.0 bench/bench final --size standard --docs   # the release pass on a tag; `--stages search` reruns one stage (SERVER_BUDGET, SERVER_CPUS and taskset as in Reproduce for an equal CPU budget)
+bench/bench sets [--docs] [--ref TAG]   # filtering by a set of ids (1k to 100k entity ids, array parameter, literal list, membership table, key types, ClickHouse): results/sets.tsv and its block in docs/BENCHMARKS.md
+bench/bench extras ITEM... [--docs]     # rollup tablewrites writepath bm25size leaftypes fields buildcost gpu (or all): docs/results/<item>.tsv; builds of the releases to compare from EXTRAS_SRC/EXTRAS_CACHE (steps/builds.sh)
 bench/bench final --dry-run             # the release pass: stages, budgets, total against 25 min, preconditions (without --dry-run: runs it; --docs publishes)
 bench/bench store clean                 # containers, volumes, the image, the CSV
 ```
