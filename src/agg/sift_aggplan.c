@@ -6074,7 +6074,10 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 			typed = bms_add_member(typed, s->pred[i]->leaf);
 	while ((m = bms_next_member(c->used, m)) >= 0)
 		if (c->stats.ovf[m] && !bms_is_member(m, typed))
+		{
+			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m))));
 			return true;
+		}
 	return false;
 }
 
