@@ -12,9 +12,9 @@
  *   errors       ereport(ERROR, ...)/elog never return; the host unwinds to its caller (longjmp, exception, ...)
  *   strings      StringInfo, List (pointers), HTAB (fixed-size keys), text/varlena (len + bytes), UTF-8 helpers (pg_mb*)
  *   regex        pg_regcomp/pg_regexec/pg_regfree over pg_wchar
- *   bits, atomics, spin locks, dsa_*: the primitives of sift_parallel.c, which a host without shared memory implements
+ *   bits, atomics, spin locks, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements
  *                with threads and malloc
- *   temp files   BufFile (the sorted runs of sift_runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
+ *   temp files   BufFile (the sorted runs of bm25/runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
  *   storage      the page/extent store of sift_store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
  *                stream reader/writer. This is a link-time interface (sift_store.c in PostgreSQL, sqlite/sqstore.c in
  *                SQLite): the hot path (sift_sr_get) is a plain call, never a table of function pointers.

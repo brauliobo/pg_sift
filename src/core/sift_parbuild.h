@@ -1,5 +1,5 @@
 /*
- * sift_parbuild.h - the parallel context of a parallel CREATE INDEX, shared by the BM25 build (sift_build.c) and the column build
+ * sift_parbuild.h - the parallel context of a parallel CREATE INDEX, shared by the BM25 build (bm25/build.c) and the column build
  * (sift_col_build_par.c): the leader's set-up of the dynamic shared memory (shared state, the workers' parts, their WAL and buffer
  * usage, the snapshot of a concurrent build, the query text), the launch, and the opening of the relations in a worker.
  *

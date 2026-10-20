@@ -1,7 +1,7 @@
 /*
- * harness.c - standalone ASan/UBSan fuzz harness for sift_query.c.
+ * harness.c - standalone ASan/UBSan fuzz harness for bm25/query.c.
  *
- * Links src/bm25/sift_query.c with frontend libpgcommon, tools/pgshim.c (palloc is plain malloc per chunk
+ * Links src/bm25/query.c with frontend libpgcommon, tools/pgshim.c (palloc is plain malloc per chunk
  * so that ASan sees every overflow, ereport longjmps back to pgshim_try) and small shims for the
  * rest of the backend services it uses: the analyzer is an ASCII test double, and regexes compile
  * to "never matches" (regex paths are covered by the SQL tests). Reads COPY-escaped queries
@@ -20,7 +20,7 @@
 #include "mb/pg_wchar.h"
 #include "regex/regex.h"
 
-#include "sift_query.h"
+#include "bm25/query.h"
 #include "../pgshim.h"
 
 void

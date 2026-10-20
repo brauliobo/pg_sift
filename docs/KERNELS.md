@@ -1,6 +1,6 @@
 # Scoring kernels
 
-`src/bm25/sift_kernels.h` is the API; the scalar table in `src/bm25/sift_kernels.c` is the specification. `src/bm25/sift_kernels_avx2.c` and `src/bm25/sift_kernels_avx512.c` must match it bit for bit, including the slots they must leave unchanged. Dispatch follows `sift.simd` through the cpu module's rebind registry; `sift_kernels_for(level)` returns a level's table for tests.
+`src/bm25/kernels.h` is the API; the scalar table in `src/bm25/kernels.c` is the specification. `src/bm25/kernels_avx2.c` and `src/bm25/kernels_avx512.c` must match it bit for bit, including the slots they must leave unchanged. Dispatch follows `sift.simd` through the cpu module's rebind registry; `sift_kernels_for(level)` returns a level's table for tests.
 
 ## Formulas and evaluation order
 
@@ -26,7 +26,7 @@ All arithmetic is IEEE float32, round to nearest, no FMA (`-ffp-contract=off`), 
 
 ## Bounds
 
-`sift_kern_bound_u8(ref, tf, dl) = clamp(ceil(255 * tf / (tf + K_ref(dl))), 1, 255)`, evaluated in double from the segment's `k1, b, avgdl_ref`. (DESIGN.md (a).5 writes `max w / (k1 + 1)`; the UB formula there and `sift_posting.h` both need `bound / 255 >= x`, which is what this computes.)
+`sift_kern_bound_u8(ref, tf, dl) = clamp(ceil(255 * tf / (tf + K_ref(dl))), 1, 255)`, evaluated in double from the segment's `k1, b, avgdl_ref`. (DESIGN.md (a).5 writes `max w / (k1 + 1)`; the UB formula there and `bm25/posting.h` both need `bound / 255 >= x`, which is what this computes.)
 
 At query time `sift_kern_ub_weight(w, avgdl_now, avgdl_ref)` returns `W = w * c / 255 * (1 + 2^-12)` rounded up to float, `c = max(1, avgdl_now / avgdl_ref)`, and `ub_accum` sums `W_t * bound_t`. Pass the same float avgdl values used in `sift_kern_bm25_init`.
 
@@ -214,5 +214,5 @@ Not an overlap, or not one to remove now:
 
 - `SiftColKernels.unpack` and `SiftCcKernels.unpack32` are different layouts (sequential `PACK`, vertical `FORBIT`); `PACK` is still the in-memory form (`sift_col_enc.c`), so the core slot goes only when it is retired (COL-CODEC.md). `unpack_range32` is the fused unpack and range test of the vertical layout, which the core's slots cannot compose.
 - `SiftCcKernels.max32` is an unsigned maximum without a mask; `SiftAggKernels.minmax_i32` is signed and masked.
-- `vop` and `and2` of the BM25 bitmap module (`sift_bitmap_kern.h`) and `bits_and`, `bits_or`, `bits_andnot` of the column table are the same words operation (`o = a op b` against `dst op= src`). The bitmap module is in `portable.list` (the SQLite and MariaDB hosts build it) and the column table is in `portable-col.list`, so the BM25 index cannot call `sift_colk` until the column track moves to `portable.list`; the column table's `bits_count` already uses the bitmap module's popcount in the other direction.
+- `vop` and `and2` of the BM25 bitmap module (`bm25/bitmap_kern.h`) and `bits_and`, `bits_or`, `bits_andnot` of the column table are the same words operation (`o = a op b` against `dst op= src`). The bitmap module is in `portable.list` (the SQLite and MariaDB hosts build it) and the column table is in `portable-col.list`, so the BM25 index cannot call `sift_colk` until the column track moves to `portable.list`; the column table's `bits_count` already uses the bitmap module's popcount in the other direction.
 - `expand_parents` stores a register of the row ordinal at the start of each row and the next row overwrites the tail, like `rle_expand32` (its output has `SIFT_COL_PAD`): the contract is room for `SIFT_COL_PAD` bytes past `end[np - 1]`, which the aggregation executor, the column scan and the shredder test allocate. `bench shred`, ns for 4096 elements, best of two runs on a busy host, before and after: runs of 1 AVX2 3016 and 1833, AVX-512 3052 and 1958; runs of 4 970 and 457, 726 and 513; runs of 16 259 and 178, 178 and 117; runs of 64 120 and 103, 137 and 77; scalar is unchanged. The comparison with `rle_expand32` above was made with the old, exact kernel.

@@ -17,12 +17,12 @@
 
 #include <unistd.h>
 
-#include "sift_analyze.h"
-#include "sift_bitmap.h"
+#include "bm25/analyze.h"
+#include "bm25/bitmap.h"
 #include "sift_cmp.h"
-#include "sift_eval.h"
-#include "sift_kernels.h"
-#include "sift_runs.h"
+#include "bm25/eval.h"
+#include "bm25/kernels.h"
+#include "bm25/runs.h"
 
 #define DELTA_BUDGET	((Size) 256 << 20)
 #define DELTA_MAX_DOCS	500000

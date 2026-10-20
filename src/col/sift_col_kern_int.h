@@ -5,8 +5,8 @@
 #define SIFT_COL_KERN_INT_H
 
 #include "sift_col_kern.h"
-#include "sift_bitmap_kern.h"
-#include "sift_kernels_int.h"
+#include "bm25/bitmap_kern.h"
+#include "bm25/kernels_int.h"
 
 extern const SiftColKernels sift_col_kernels_scalar;
 extern const SiftColKernels sift_col_kernels_avx2;
@@ -65,7 +65,7 @@ sift_colk_zero_pad(uint64 *bits, uint32 from, uint32 n)
 }
 
 /*
- * bits_count of a level is the popcount kernel of the bitmap module's table of the same level (sift_bitmap_kern.h; AVX2 and AVX-512
+ * bits_count of a level is the popcount kernel of the bitmap module's table of the same level (bm25/bitmap_kern.h; AVX2 and AVX-512
  * have vector ones), the scalar bits_and / bits_or / bits_andnot its vop: static wrappers for the table initializers
  */
 #define SIFT_COLK_BITS_COUNT(sfx, tab) \

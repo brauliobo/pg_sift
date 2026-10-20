@@ -1,6 +1,6 @@
 /*
  * sift_col_wbuf.h - L3 of the column engine: the write buffers of a column index (docs/COL.md 2.5). The lane structure, locking,
- * sealing and WAL of sift_wbuf.c, with row records instead of term records. Page types SIFT_PT_WBUFHEADER / SIFT_PT_WBUFDATA, the
+ * sealing and WAL of bm25/wbuf.c, with row records instead of term records. Page types SIFT_PT_WBUFHEADER / SIFT_PT_WBUFDATA, the
  * SiftWbufHeaderData / SiftLaneData of sift_page.h; the data page header and the record are private to sift_col_wbuf.c.
  */
 #ifndef SIFT_COL_WBUF_H

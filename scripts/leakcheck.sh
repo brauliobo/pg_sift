@@ -37,7 +37,7 @@ LEAK_RULES=(
 	$'leaking still-referenced relcache entry\tWARNING:  leaking still-referenced relcache entry for "pg_class"'
 	$'is still referenced \\(local\tERROR:  block 3 of base/5/16384 is still referenced (local 1)'
 	$'leaked (hash_seq_search|parallel context|AIO handle)\tWARNING:  leaked hash_seq_search scan for hash table 0x55d0'
-	$'TRAP:\tTRAP: failed Assert("x == 1"), File: "sift_eval.c", Line: 1, PID: 42'
+	$'TRAP:\tTRAP: failed Assert("x == 1"), File: "bm25/eval.c", Line: 1, PID: 42'
 	$'PANIC:\tPANIC:  could not locate a valid checkpoint record'
 	$'terminated by (signal|exception)\tLOG:  server process (PID 42) was terminated by signal 11: Segmentation fault'
 	$'ERROR: (Address|Leak)Sanitizer\t==42==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1'

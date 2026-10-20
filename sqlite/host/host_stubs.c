@@ -1,14 +1,14 @@
 /*
- * host_stubs.c - the collaborators of src/bm25/sift_eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
+ * host_stubs.c - the collaborators of src/bm25/eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
  * need, the same on both: docmap directories are not kept between queries and there are no write buffers (the live
  * segment of a query is an immutable one built from the queue). Options, visibility and the TID bitmap are the host's own.
  */
 #include "sift_host.h"
 
-#include "sift_wbuf.h"
-#include "sift_segment.h"
+#include "bm25/wbuf.h"
+#include "bm25/segment.h"
 
-/* ---------- docmap directories (sift_docdir.c): not kept between queries ---------- */
+/* ---------- docmap directories (bm25/docdir.c): not kept between queries ---------- */
 
 bool
 sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
@@ -24,7 +24,7 @@ sift_docdir_ready(void *handle)
 {
 }
 
-/* ---------- write buffers (sift_wbuf.c): the directory never lists one ---------- */
+/* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
 
 bool
 sift_wbuf_bloom_has(const uint64 *bloom, uint32 hash)

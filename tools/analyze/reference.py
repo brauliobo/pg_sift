@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Differential test: a direct Python transcription of the tokenization rules
-in sift_analyze.h, computed from unicodedata (not from the generated tables),
+in bm25/analyze.h, computed from unicodedata (not from the generated tables),
 against `harness dump`. Checks every code point in every folding mode, then
 random mixed strings.
 
