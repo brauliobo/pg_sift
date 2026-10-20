@@ -19,7 +19,8 @@
 #include "sift_aggkern.h"
 #include "sift_colsrc.h"
 
-#define SIFT_AGG_MAX_KEYS	8		/* group columns (at most 8, 7 with grouping sets), the cell keys of the arms and the grouping set number */
+/* Each physical key has one bit in the grouping/arm masks, including the set number. */
+#define SIFT_AGG_MAX_KEYS	(sizeof(uint32) * CHAR_BIT)
 #define SIFT_AGG_MAX_FUSE	5		/* keys of the arms one pass serves, with the arm number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	8	/* leaves one combo reads */
@@ -350,6 +351,9 @@ typedef struct SiftAggJoin
 	Oid			relid;			/* the table; InvalidOid when the rows are those of a plan (child) */
 	int			child;			/* index in the node's child plans (CustomScan.custom_plans): a sub-select, VALUES list or function; -1: the table */
 	SiftJoinKind kind;
+	int			subplan;		/* native correlated plan ID, 0 for a once-loaded lookup */
+	List	   *params;		/* native PARAM_EXEC IDs supplied for each cached input */
+	List	   *args;			/* their expressions over the combo inputs */
 	int			nkey;
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];

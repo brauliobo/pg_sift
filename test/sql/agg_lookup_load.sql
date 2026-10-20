@@ -65,7 +65,7 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELEC
 -- a value join on an attribute table
 SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = 5 GROUP BY d.tier ORDER BY 1');
 SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = 5 AND d.active GROUP BY d.tier ORDER BY 1');
--- no index on the condition and no pushed plan: the normal plan keeps its answer
+-- no index on the condition: the filter runs while the table loads, and the answer is the normal plan's
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.tier = 2 GROUP BY d.country ORDER BY 1');
 
 -- the value of the condition is a parameter, NULL included (no row matches NULL), and a generic plan

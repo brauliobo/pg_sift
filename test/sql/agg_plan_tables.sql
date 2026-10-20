@@ -84,10 +84,11 @@ SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) A
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM stores ORDER BY id LIMIT 5) s ON e.store_id = s.id GROUP BY s.kind;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC LIMIT 100);
 
--- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, or a side above sift.agg_lookup_max_rows.
+-- what keeps the normal plan: a volatile side, ON true, or a side above sift.agg_lookup_max_rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM stores WHERE random() < 2 LIMIT 100) s ON e.store_id = s.id GROUP BY s.kind$$) AS volatile_subselect;
+-- A correlated (LATERAL) sub-select keeps its native plan as a child that the scan runs for each distinct input.
 SELECT plan_of($$SELECT k.kind, count(*) FROM ev e JOIN LATERAL (SELECT s.kind FROM stores s WHERE s.id = e.store_id ORDER BY s.id LIMIT 1) k ON k.kind IS NOT NULL GROUP BY k.kind$$) AS lateral_subselect;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM stores ORDER BY id LIMIT 1) s ON true GROUP BY s.kind$$) AS on_true;
 -- A predicate-only child join is exact for every match, as for an equality join.

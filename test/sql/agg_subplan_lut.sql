@@ -121,9 +121,9 @@ SET sift.enable_agg = off;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM blocked) GROUP BY kind$$) AS pushdown_off;
 RESET sift.enable_agg;
 
--- what keeps the normal plan: two columns (a row-valued NOT IN), a sub-select that reads a column of the row, a volatile one, one that may raise (a
--- division, a cast), one that holds a sub-select of its own (it may raise), FOR UPDATE, a leaf the lookup table does not hold (an int8 column), a
--- sub-select too large for the hash table (a SubPlan that is not hashed)
+-- what keeps the normal plan: a sub-select that reads a column of the row, a volatile one, one that may raise (a division, a cast), one that holds
+-- a sub-select of its own (it may raise), FOR UPDATE, a sub-select too large for the hash table (a SubPlan that is not hashed). A test of two columns
+-- (a row-valued NOT IN) or of a leaf the lookup table does not hold (an int8 column) is not a lookup table: the scan asks the SubPlan for each tuple.
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (entity_id, store_id) NOT IN (SELECT entity_id, 7 FROM blocked WHERE entity_id IS NOT NULL) GROUP BY kind$$) AS row_valued;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (entity_id, store_id) IN (SELECT entity_id, 7 FROM blocked) OR kind = 'c' GROUP BY kind$$) AS row_valued_in;
 SELECT plan_of($$SELECT kind, count(*) FROM ev e WHERE entity_id NOT IN (SELECT b.entity_id FROM blocked b WHERE b.entity_id IS NOT NULL AND b.entity_id % 5 = e.store_id % 5) GROUP BY kind$$) AS correlated;
