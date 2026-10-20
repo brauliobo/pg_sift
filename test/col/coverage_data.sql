@@ -18,6 +18,7 @@ CREATE INDEX t_int_col ON t_int USING sift_col (id, grp, i4, i8);
 CREATE INDEX t_num_col ON t_num USING sift_col (id, grp, n2, n0, n6);
 CREATE INDEX t_float_col ON t_float USING sift_col (id, grp, f4, f8);
 CREATE INDEX t_text_col ON t_text USING sift_col (id, grp, t, vc);
+CREATE INDEX t_jp_col ON t_jp USING sift_col (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}');
 
 CREATE TYPE cv_color AS ENUM ('red', 'green', 'blue');
 CREATE TABLE cv_types (

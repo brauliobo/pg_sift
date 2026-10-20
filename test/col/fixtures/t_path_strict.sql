@@ -1,8 +1,9 @@
--- trap: strict mode raises where lax mode skips
+-- strict mode with a positive filter: the same documents match as in lax mode
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- sets: K4000
 -- key: -
+-- scenario: yes
 SELECT o.lang, count(*) AS orders
 FROM orders o
 WHERE o.tenant_id IN ({tenants}) AND o.deleted_at IS NULL

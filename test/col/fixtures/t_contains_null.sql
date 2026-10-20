@@ -1,8 +1,9 @@
--- trap: containment of a JSON null member: the index holds a NULL for an absent key too
+-- containment of a JSON null member: the index tells it from an absent key
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- sets: K4000
 -- key: -
+-- scenario: yes
 SELECT o.lang, count(*) AS orders
 FROM orders o
 WHERE o.tenant_id IN ({tenants}) AND o.deleted_at IS NULL

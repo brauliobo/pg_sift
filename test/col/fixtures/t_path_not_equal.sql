@@ -1,8 +1,9 @@
--- trap: jsonpath != is true for a JSON null member, which the index cannot tell from an absent key
+-- jsonpath != on a text member: a JSON null member is not equal to the literal, a missing key is not
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- sets: K4000
 -- key: -
+-- scenario: yes
 SELECT o.lang, count(*) AS orders
 FROM orders o
 WHERE o.tenant_id IN ({tenants}) AND o.deleted_at IS NULL

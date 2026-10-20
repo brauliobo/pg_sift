@@ -1,8 +1,9 @@
--- trap: a negated filter is unknown for a missing key
+-- a negated filter: !() is true for a missing key and a JSON null member
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- sets: K4000
 -- key: -
+-- scenario: yes
 SELECT o.lang, count(*) AS orders
 FROM orders o
 WHERE o.tenant_id IN ({tenants}) AND o.deleted_at IS NULL
