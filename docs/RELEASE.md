@@ -30,9 +30,14 @@ Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 1
 
 ## Homebrew tap
 
-The public tap is [brauliobo/homebrew-pg_sift](https://github.com/brauliobo/homebrew-pg_sift). Until a release contains the non-x86 bitmap dispatch fix,
-its HEAD-only formula builds `feat/homebrew`; after merging the portability PR, change its HEAD branch to `main` before deleting the branch.
-No tag or release is created by the tap.
+The tap is this source repository: `Formula/pg_sift.rb` is maintained alongside the extension.
+Install with `brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift`, then `brew install --HEAD brauliobo/pg_sift/pg_sift`.
+HEAD tracks `main`; the portability fix must merge before the default installation works on arm64. No tag or release is created by the tap.
+
+To validate an unmerged packaging branch, clone the tap with the command above, check out that branch in
+`$(brew --repo brauliobo/pg_sift)`, and temporarily set the formula's HEAD branch to the same branch.
+Install with `--HEAD`, run the formula tests, style and audit, then restore the formula with `git restore Formula/pg_sift.rb`.
+This tests GitHub source for both the tap and extension without claiming that the default `main` installation already works.
 
 For the first compatible release, add `url "https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz"` and its downloaded source tarball's
 `sha256` to `Formula/pg_sift.rb` before `license`. Keep HEAD tracking `main`. For later releases, use
