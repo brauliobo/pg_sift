@@ -5,6 +5,8 @@
 #
 # sources
 bm25/bitmap.c
+bm25/blob.c
+bm25/topk.c
 bm25/bitmap_scalar.c
 bm25/bitmap_avx2.c
 bm25/bitmap_avx512.c
@@ -47,6 +49,7 @@ core/sift.h
 bm25/analyze.h
 bm25/analyze_tables.h
 bm25/bitmap.h
+bm25/bitmap_int.h
 bm25/bitmap_kern.h
 core/sift_cmp.h
 core/sift_cpu.h
