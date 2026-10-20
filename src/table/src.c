@@ -1,7 +1,7 @@
 /*
- * sift_table_src.c - the column source of SiftAgg over a sift_table (sift_colsrc.h, docs/COL-PLAN.md, docs/COL-TAM.md section 12).
+ * table/src.c - the column source of SiftAgg over a sift_table (sift_colsrc.h, docs/COL-PLAN.md, docs/COL-TAM.md section 12).
  *
- * The leaves are the columns of the table (the layout of the column groups, sift_table_seg.c). The groups are read by the engine, one
+ * The leaves are the columns of the table (the layout of the column groups, table/seg.c). The groups are read by the engine, one
  * source per column layout the segments were written for (a segment keeps its own after ALTER TABLE; its leaves are matched by attribute
  * number), the rows of the write buffers are fed to the source of the table's layout as in-memory batches, one per superblock, and the
  * rows the snapshot sees are the table's: a superblock without tombstones or write buffer rows is entirely visible, the others are filtered by
@@ -38,7 +38,7 @@
 #include "col/pagg.h"
 #include "col/seg.h"
 #include "sift_colsrc.h"
-#include "sift_table.h"
+#include "table/table.h"
 #include "sift_visibility.h"
 
 typedef struct TblLeafBuf

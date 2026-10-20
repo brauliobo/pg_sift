@@ -37,7 +37,7 @@
 #include "sift_ops.h"
 #include "bm25/posting.h"
 #include "bm25/prefix.h"
-#include "sift_table.h"
+#include "table/table.h"
 #include "bm25/segment.h"
 #include "sift_visibility.h"
 #include "bm25/pushdown.h"

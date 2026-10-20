@@ -1,5 +1,5 @@
 /*
- * sift_table_mvcc.c - visibility of a row version of a sift_table under every snapshot type (docs/COL-TAM.md section 3).
+ * table/mvcc.c - visibility of a row version of a sift_table under every snapshot type (docs/COL-TAM.md section 3).
  *
  * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the xmin/cmin its unit keeps for the row) and no
  * DELETE or UPDATE tombstone of it counts as a deletion for the snapshot. LOCK tombstones never delete.
@@ -13,7 +13,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "sift_table.h"
+#include "table/table.h"
 
 bool
 sift_tbl_xid_aborted(TransactionId xid)

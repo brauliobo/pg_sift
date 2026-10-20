@@ -92,14 +92,14 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/col/seg_write.c|per
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/table/sift_table_scan.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/table/sift_table_scan.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-integer-division|src/table/sift_table_src.c|result of integer division used in a floating point context; possible loss of precision
+tidy|bugprone-implicit-widening-of-multiplication-result|src/table/scan.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/table/scan.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-integer-division|src/table/src.c|result of integer division used in a floating point context; possible loss of precision
 tidy|bugprone-not-null-terminated-result|src/bm25/analyze.c|the result from calling 'memcpy' is not null-terminated
 tidy|bugprone-signed-char-misuse|src/bm25/query.c|comparison between 'signed char' and 'unsigned char'
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/col/seg_maint.c|comparing object representation of type 'double' which does not have a unique object representation; consider comparing the values manually
-tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/sift_table_seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
-tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/sift_table_seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
+tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
+tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
 tidy|clang-analyzer-core.BitwiseShift|src/agg/sift_agg.c|Right operand is negative in left shift
 tidy|clang-analyzer-core.BitwiseShift|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t'
 tidy|clang-analyzer-core.BitwiseShift|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32'

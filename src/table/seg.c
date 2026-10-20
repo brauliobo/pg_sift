@@ -1,5 +1,5 @@
 /*
- * sift_table_seg.c - the column groups of a sift_table: the glue to the column engine (docs/COL-TAM.md sections 6, 7 and 12).
+ * table/seg.c - the column groups of a sift_table: the glue to the column engine (docs/COL-TAM.md sections 6, 7 and 12).
  *
  * A sealed write buffer becomes a column segment of the engine (col/seg.h) with the same TIDs: one leaf per column (typed when
  * the engine stores the type natively, SIFT_COLS_VAR holding the exact datum image otherwise) and one VAR leaf of exceptions, the
@@ -46,7 +46,7 @@
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "sift_ops.h"
-#include "sift_table.h"
+#include "table/table.h"
 
 #define SB_KEYS		(((uint64) SIFT_SB_PAGES) << 16)	/* keys of a superblock: (vblock << 16) | offset */
 
@@ -1526,7 +1526,7 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 	return true;
 }
 
-/* ---------- the column source of the aggregate scan (sift_table_src.c) ---------- */
+/* ---------- the column source of the aggregate scan (table/src.c) ---------- */
 
 const SiftColSchema *
 sift_tbl_layout_schema(Relation rel, SiftTblRel *st)

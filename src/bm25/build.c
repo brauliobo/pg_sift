@@ -25,7 +25,7 @@
 #include "bm25/am.h"
 #include "bm25/build.h"
 #include "sift_parbuild.h"
-#include "sift_table.h"
+#include "table/table.h"
 #include "sift_visibility.h"
 
 #define BATCH			1024
