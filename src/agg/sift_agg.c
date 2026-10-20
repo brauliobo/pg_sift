@@ -64,6 +64,7 @@
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
+#include "sift_aggwide.h"
 #include "sift_aggback.h"
 #include "sift_aggkern.h"
 #include "sift_aggspec.h"
@@ -149,7 +150,11 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 				rhs;
 
 	if (!get_op_hash_functions(eqop, &lhs, &rhs))
-		elog(ERROR, "sift: no hash function for operator %u", eqop);
+	{
+		if (get_opcode(eqop) != F_CASH_EQ)
+			elog(ERROR, "sift: no hash function for operator %u", eqop);
+		lhs = F_HASHINT8;		/* money has no hash operator class, and is its int64 */
+	}
 	fmgr_info(lhs, &t->hashfn);
 	fmgr_info(get_opcode(eqop), &t->eqfn);
 	get_typlenbyval(typid, &t->len, &t->byval);
@@ -813,6 +818,8 @@ text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len)
 
 	if (typid == TEXTOID || typid == VARCHAROID)
 		return PointerGetDatum(cstring_to_text_with_len(bytes, len));
+	if (sift_aggwide_type(typid))
+		return sift_aggwide_datum(typid, bytes, len);
 	getTypeInputInfo(typid, &infn, &ioparam);
 	fmgr_info(infn, &f);
 	return InputFunctionCall(&f, pnstrdup(bytes, len), ioparam, typmod);
@@ -5946,6 +5953,8 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 			{
 				uint32		code = ((const uint32 *) v->data)[i];
 
+				if (l->wide)
+					return sift_aggwide_datum(l->typid, v->dict->bytes + v->dict->off[code], v->dict->off[code + 1] - v->dict->off[code]);
 				return PointerGetDatum(cstring_to_text_with_len(v->dict->bytes + v->dict->off[code],
 																v->dict->off[code + 1] - v->dict->off[code]));
 			}

@@ -816,7 +816,7 @@ lut_leaf_ok(AggCtx *c, int leaf)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
 
-	return l->kind == SCL_SCALAR && (l->vtype == SCV_CODE || l->vtype == SCV_I32);
+	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_CODE || l->vtype == SCV_I32);
 }
 
 /* a leaf an expression PostgreSQL evaluates may read: a combo gives an id to each distinct value of a dictionary, integer, 64-bit integer (numeric included) or float leaf */
@@ -2151,7 +2151,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	if ((leaf = match_leaf(c, l)) < 0 || !pseudo_const(r))
 		return NULL;
 	lf = leaf_of(c, leaf);
-	if (lf->kind == SCL_SCALAR && lf->typid == NUMERICOID && type_class(lt) == TC_NUMERIC)
+	if (lf->kind == SCL_SCALAR && lf->typid == NUMERICOID && lf->vtype == SCV_I64 && type_class(lt) == TC_NUMERIC)
 		return compile_num_in(c, sa, leaf, r);
 	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_I32 || type_class(lf->typid) == TC_NONE ||
 		type_class(lf->typid) != type_class(lt) || type_class(lf->typid) != type_class(rt) ||
@@ -2606,7 +2606,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	RegProcedure lhs,
 				rhs;
 
-	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs))
+	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ)
 		return false;
 	expr = normalize_expr(c, expr);
 	k->typid = exprType(expr);
@@ -2956,6 +2956,8 @@ gen_leaf_ok(AggCtx *c, int id)
 
 	if (l->kind != SCL_SCALAR || l->lossy)
 		return false;
+	if (l->wide)
+		return true;
 	switch (l->typid)
 	{
 		case BOOLOID:
@@ -2970,6 +2972,8 @@ gen_leaf_ok(AggCtx *c, int id)
 		case TEXTOID:
 		case VARCHAROID:
 			return true;
+		case CASHOID:
+			return l->vtype == SCV_I64;
 		case NUMERICOID:
 			return l->vtype == SCV_I64;
 		default:
@@ -3162,7 +3166,8 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 				transtype;
 	SiftAggGen *g;
 	double		cost = 0;
-	bool		mapped = false;
+	bool		mapped = false,
+				wide = false;
 	StringInfoData txt;
 
 	if ((a->aggkind != AGGKIND_NORMAL && !ordered) || a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > SIFT_AGG_MAX_GARGS ||
@@ -3237,7 +3242,11 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	g->distinct = a->aggdistinct != NIL;
 	g->ordered = ordered;
 	g->hyp = hyp;
-	g->parallel = !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, transfn, combfn, serfn, deserfn, transtype);
+	/* the representation of equal values (1.0, 1.00) that min and max keep follows the order of the rows, which the workers' do not */
+	for (int k = 0; k < g->nargs; k++)
+		for (int j = 0; j < g->arg[k].nleaves; j++)
+			wide |= leaf_of(c, g->arg[k].leaf[j])->wide;
+	g->parallel = !wide && !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, transfn, combfn, serfn, deserfn, transtype);
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
 	g->cost = AGG_GEN_ROW + fn_cost(c, transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
@@ -3332,6 +3341,8 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 			leaf = match_leaf(c, arg);
 			if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
 				return compile_mapped(c, a, arg, out, ai);
+			if (leaf_of(c, leaf)->wide && fid != F_COUNT_ANY)
+				return false;
 			out->leaf = leaf;
 			out->argtype = leaf_of(c, leaf)->typid;
 			switch (fid)
@@ -5197,6 +5208,10 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 	if (!sift_aggspec_parallel_ok(s) || !glob->parallelModeOK || glob->maxParallelHazard != PROPARALLEL_SAFE ||
 		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
 		return 0;
+	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
+	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
+		if (leaf_of(c, s->leaves[i])->wide)
+			return 0;
 	return compute_parallel_worker(c->rel, c->rel->pages, -1, max_parallel_workers_per_gather);
 }
 

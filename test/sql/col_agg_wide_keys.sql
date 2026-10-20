@@ -1,0 +1,151 @@
+-- SiftAgg over the wide leaves of a sift_col index as keys, aggregates and values (docs/COL-LEAFTYPES-32.md 8): numeric of more than 18 digits
+-- or of any other shape, money and interval. The scan reads a wide leaf as a dictionary of the unit's distinct values and hands them to
+-- PostgreSQL's own functions, so a key, an aggregate, an OR, a FILTER, a CASE or an expression gives the rows of the normal plan, the
+-- spelling of equal values (1.0 and 1.00, 1 mon and 30 days) included: the one of the first row, as a hash aggregate shows it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+SET lc_monetary = 'C';
+
+CREATE TABLE wa (id int, grp int, qty int, n38 numeric(38, 10), n19 numeric(19, 2), img numeric, neg numeric(5, -2), m money, iv interval)
+	WITH (autovacuum_enabled = false);
+INSERT INTO wa
+SELECT i, i % 7, i % 100,
+	   CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN 'NaN' WHEN i % 19 = 0 THEN 9999999999999999999999999999.9999999999
+			WHEN i % 29 = 0 THEN -9999999999999999999999999999.9999999999 WHEN i % 23 = 0 THEN 0
+			WHEN i % 2 = 0 THEN round(((i * 7919) % 2000001 - 1000000) / 100.0, 10)
+			ELSE round(mod(i::numeric * 1234567890123456789012345.6789012345, 9999999999999999999999999999) * CASE WHEN i % 3 = 0 THEN -1 ELSE 1 END, 10) END,
+	   CASE WHEN i % 11 = 0 THEN NULL WHEN i % 17 = 0 THEN 'NaN' WHEN i % 31 = 0 THEN 99999999999999999.99
+			WHEN i % 37 = 0 THEN -99999999999999999.99 ELSE ((i * 104729) % 2000001 - 1000000) / 100.0 END,
+	   CASE WHEN i % 10 = 0 THEN NULL WHEN i % 41 = 0 THEN 'NaN' WHEN i % 43 = 0 THEN 'Infinity' WHEN i % 47 = 0 THEN '-Infinity'
+			WHEN i % 53 = 0 THEN 10::numeric ^ 400 + i WHEN i % 59 = 0 THEN -(10::numeric ^ 400) WHEN i % 61 = 0 THEN 1 / 10::numeric ^ 300
+			WHEN i % 5 = 0 THEN (ARRAY[1.0, 1.00, 1, 1.000, 1.5, 1.50])[1 + i % 6]
+			ELSE round(((i * 7919) % 200001 - 100000) / 7.0, 1 + i % 5) END,
+	   CASE WHEN i % 6 = 0 THEN NULL ELSE ((i % 300) - 150) * 100 END,
+	   CASE WHEN i % 9 = 0 THEN NULL WHEN i % 101 = 0 THEN '92233720368547758.07'::money WHEN i % 103 = 0 THEN '-92233720368547758.08'::money
+			ELSE (((i * 7919) % 200001 - 100000)::numeric / 100)::money END,
+	   CASE WHEN i % 12 = 0 THEN NULL WHEN i % 71 = 0 THEN 'infinity' WHEN i % 73 = 0 THEN '-infinity'
+			WHEN i % 79 = 0 THEN '2147483647 months 2147483647 days 9223372036854775807 us'::interval
+			WHEN i % 83 = 0 THEN '-2147483648 months -2147483648 days -9223372036854775808 us'::interval
+			ELSE (ARRAY['1 month', '30 days', '720 hours', '1 mon 1 day', '31 days', '1 day 1 hour', '25 hours', '-1 month', '-30 days', '0',
+						'00:00:00.000001', '-00:00:00.000001', '1 year', '12 mons', '365 days', '2 mons', '59 days', '60 days'])[1 + i % 18]::interval END
+FROM generate_series(1, 20000) i;
+CREATE INDEX wa_col ON wa USING sift_col (id, grp, qty, n38, n19, img, neg, m, iv);
+VACUUM (FREEZE, ANALYZE) wa;
+
+-- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
+BEGIN
+	SET sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
+	SET sift.enable_agg = off;
+	SET enable_sort = off;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_off := SQLERRM; END;
+	RESET sift.enable_agg;
+	RESET enable_sort;
+	IF e_on IS NOT NULL OR e_off IS NOT NULL THEN
+		DROP TABLE IF EXISTS r_on, r_off;
+		RETURN CASE WHEN e_on IS NOT DISTINCT FROM e_off THEN 'error: ' || e_on ELSE 'DIFF on=' || coalesce(e_on, 'ok') || ' off=' || coalesce(e_off, 'ok') END;
+	END IF;
+	SELECT count(*) INTO a FROM ((SELECT d::text FROM r_on d EXCEPT ALL SELECT d::text FROM r_off d)
+								  UNION ALL (SELECT d::text FROM r_off d EXCEPT ALL SELECT d::text FROM r_on d)) x;
+	DROP TABLE r_on, r_off;
+	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
+END $$;
+
+-- keys
+SELECT chk($$SELECT n38 AS k, count(*) AS c FROM wa GROUP BY n38$$) AS n38_key,
+       chk($$SELECT n19 AS k, count(*) AS c, sum(qty) AS s FROM wa GROUP BY n19$$) AS n19_key,
+       chk($$SELECT img AS k, count(*) AS c FROM wa GROUP BY img$$) AS image_key,
+       chk($$SELECT neg AS k, count(*) AS c FROM wa GROUP BY neg$$) AS negative_scale_key,
+       chk($$SELECT iv AS k, count(*) AS c FROM wa GROUP BY iv$$) AS interval_key,
+       chk($$SELECT m AS k, count(*) AS c, min(m) AS a, max(m) AS b FROM wa GROUP BY m$$) AS money_key,
+       chk($$SELECT grp AS g, n19 AS k, count(*) AS c FROM wa GROUP BY grp, n19$$) AS two_keys,
+       chk($$SELECT n38 + 1 AS k, count(*) AS c FROM wa GROUP BY n38 + 1$$) AS expression_key,
+       chk($$SELECT n38 > 0 AS k, count(*) AS c FROM wa GROUP BY 1$$) AS predicate_key,
+       chk($$SELECT iv AS k, sum(n38) AS s, avg(iv) AS a FROM wa WHERE iv < '1000 years' AND iv > '-1000 years' GROUP BY iv$$) AS key_and_sums;
+-- aggregates
+SELECT chk($$SELECT grp AS g, count(*) AS c, count(n38) AS cn, min(n38) AS mn, max(n38) AS mx, sum(n38) AS s, avg(n38) AS a FROM wa GROUP BY grp$$) AS n38_aggs,
+       chk($$SELECT grp AS g, sum(n19) AS s, avg(n19) AS a, min(n19) AS mn, max(n19) AS mx FROM wa GROUP BY grp$$) AS n19_aggs,
+       chk($$SELECT grp AS g, sum(img) AS s, avg(img) AS a, min(img) AS mn, max(img) AS mx FROM wa GROUP BY grp$$) AS image_aggs,
+       chk($$SELECT grp AS g, min(iv) AS mn, max(iv) AS mx, count(DISTINCT iv) AS d FROM wa GROUP BY grp$$) AS interval_minmax,
+       chk($$SELECT grp AS g, sum(iv) AS s FROM wa WHERE iv < 'infinity' AND iv > '-infinity' AND iv < '1000 years' GROUP BY grp$$) AS interval_sum,
+       chk($$SELECT avg(iv) AS a, sum(iv) AS s FROM wa WHERE iv < 'infinity' AND iv > '-infinity'$$) AS interval_avg,
+       chk($$SELECT sum(iv) AS s FROM wa$$) AS interval_sum_overflow,
+       chk($$SELECT count(DISTINCT n38) AS a, count(DISTINCT img) AS b, count(DISTINCT n19) AS c FROM wa$$) AS count_distinct,
+       chk($$SELECT sum(n38) AS s FROM wa$$) AS sum_all,
+       chk($$SELECT min(img) AS a, max(img) AS b, min(iv) AS c, max(iv) AS d, min(n38) AS e, max(n38) AS f FROM wa WHERE grp = 3$$) AS ties_minmax,
+       chk($$SELECT grp AS g, string_agg(DISTINCT iv::text, ',' ORDER BY iv::text) AS s FROM wa GROUP BY grp$$) AS ordered_distinct,
+       chk($$SELECT grp AS g, count(DISTINCT n38::text) AS c FROM wa GROUP BY grp$$) AS text_cast;
+-- money
+SELECT chk($$SELECT grp AS g, sum(m) AS s FROM wa WHERE m < '1000'::money AND m > '-1000'::money GROUP BY grp$$) AS money_sum,
+       chk($$SELECT grp AS g, avg(m::numeric) AS a FROM wa GROUP BY grp$$) AS money_avg,
+       chk($$SELECT sum(m) AS s FROM wa$$) AS money_overflow,
+       chk($$SELECT count(DISTINCT m) AS c, min(m) AS a, max(m) AS b FROM wa$$) AS money_distinct;
+-- under OR, NOT, FILTER, CASE and expressions
+SELECT chk($$SELECT count(*) AS c FROM wa WHERE n38 > 100 OR iv > '1 mon'$$) AS or_,
+       chk($$SELECT grp AS g, count(*) AS c FROM wa WHERE NOT (n38 > 100 AND iv > '1 mon') GROUP BY grp$$) AS not_and,
+       chk($$SELECT grp AS g, count(*) AS c FROM wa WHERE n38 > 100 OR (m < '0' AND img IS NULL) GROUP BY grp$$) AS or_and,
+       chk($$SELECT grp AS g, count(*) FILTER (WHERE n38 > 100) AS c1, sum(qty) FILTER (WHERE img > 1.0 OR iv < '2 days') AS c2,
+                    max(id) FILTER (WHERE NOT n19 > 0) AS c3 FROM wa GROUP BY grp$$) AS filter_,
+       chk($$SELECT CASE WHEN n38 > 100 THEN 'a' WHEN iv > '1 mon' THEN 'b' ELSE 'c' END AS k, count(*) AS c FROM wa GROUP BY 1$$) AS case_,
+       chk($$SELECT count(*) AS c FROM wa WHERE n38 IS DISTINCT FROM 0 AND img IS NOT DISTINCT FROM 1.00$$) AS distinct_from,
+       chk($$SELECT count(*) AS c FROM wa WHERE n38 = ANY (ARRAY[0, 1.5, 3])$$) AS any_array,
+       chk($$SELECT count(*) AS c FROM wa WHERE n38 + 1 > 5$$) AS expression_,
+       chk($$SELECT count(*) AS c FROM wa WHERE img::text = '1'$$) AS cast_,
+       chk($$SELECT count(*) AS c FROM wa WHERE n38 > 1e60 OR iv > interval '1 month'$$) AS unreachable_or;
+-- the empty groups, a window of the table, the other keys
+SELECT chk($$SELECT n38 AS k, count(*) AS c FROM wa WHERE id < 0 GROUP BY n38$$) AS empty,
+       chk($$SELECT sum(n38) AS s, min(iv) AS a, count(DISTINCT img) AS c FROM wa WHERE id < 0$$) AS empty_aggs,
+       chk($$SELECT iv AS k, count(*) AS c FROM wa WHERE id BETWEEN 5000 AND 7000 GROUP BY iv$$) AS window_,
+       chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s FROM wa WHERE iv > interval '1 day' AND n38 IS NOT NULL GROUP BY grp$$) AS conjunct_and_agg;
+
+-- parameters: a generic plan
+PREPARE p_k(numeric) AS SELECT iv AS k, count(*) AS c, sum(n38) AS s FROM wa WHERE n38 > $1 OR img = $1 GROUP BY iv;
+SET plan_cache_mode = force_generic_plan;
+SELECT chk($$EXECUTE p_k(1234.5)$$) AS generic, chk($$EXECUTE p_k('NaN')$$) AS generic_nan, chk($$EXECUTE p_k(NULL)$$) AS generic_null;
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+
+-- the write buffer, a deleted row, an updated one and a merged index
+INSERT INTO wa SELECT 30000 + i, i % 7, i % 100, CASE WHEN i % 7 = 0 THEN 'NaN' ELSE i * 1234567.1234567891 END, i / 3.0,
+	   CASE WHEN i % 5 = 0 THEN 'NaN' ELSE round(i / 7.0, i % 9) END, 100, (i * 17 || '.' || i % 100)::money, make_interval(months => i % 14, days => i % 40) FROM generate_series(1, 3000) i;
+CREATE FUNCTION shapes(tag text) RETURNS text LANGUAGE sql AS $$
+	SELECT concat_ws(' ', tag,
+		chk('SELECT n38 AS k, count(*) AS c FROM wa GROUP BY n38'),
+		chk('SELECT img AS k, count(*) AS c, min(img) AS a, max(img) AS b FROM wa GROUP BY img'),
+		chk('SELECT iv AS k, count(*) AS c, min(iv) AS a, max(iv) AS b FROM wa GROUP BY iv'),
+		chk('SELECT grp AS g, sum(n19) AS s, avg(n19) AS a, count(DISTINCT n38) AS d FROM wa GROUP BY grp'),
+		chk('SELECT grp AS g, count(*) FILTER (WHERE n38 > 100 OR iv > ''1 mon'') AS c FROM wa GROUP BY grp'))
+$$;
+SELECT shapes('buffered');
+DELETE FROM wa WHERE id % 5 = 1;
+UPDATE wa SET n38 = round(n38 / 2, 10), m = m / 2, iv = iv + interval '1 day'
+WHERE id % 11 = 2 AND id % 71 <> 0 AND id % 73 <> 0 AND id % 79 <> 0 AND id % 83 <> 0 AND id % 101 <> 0 AND id % 103 <> 0;
+SELECT shapes('updated');
+SELECT sift.col_promote('wa_col');
+VACUUM wa;
+SELECT sift.col_merge('wa_col', true);
+SELECT shapes('merged');
+
+-- parallel workers: the aggregates run in them, a key of equal spellings does not
+RESET seq_page_cost;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 1000;
+SELECT chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s, min(iv) AS a FROM wa GROUP BY grp$$) AS parallel_aggs,
+       chk($$SELECT iv AS k, count(*) AS c FROM wa GROUP BY iv$$) AS parallel_key;
+
+DROP TABLE wa;
+DROP FUNCTION chk(text), shapes(text);
+DROP EXTENSION pg_sift;

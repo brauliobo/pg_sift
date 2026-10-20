@@ -127,7 +127,7 @@ plain_leaf(const SiftSrcLayout *lay, int nbase, int group, int leaf)
 	if (leaf < 0 || leaf >= nbase)
 		return false;
 	lf = &lay->leaf[leaf];
-	return lf->kind == SCL_SCALAR && lf->parent == group && !lf->lossy;
+	return lf->kind == SCL_SCALAR && lf->parent == group && !lf->lossy && !lf->wide;
 }
 
 int
