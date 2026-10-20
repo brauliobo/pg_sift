@@ -324,8 +324,8 @@ cleanup() {
 # --check proves the proofs themselves: a table with wrong claims must fail on exactly those rows
 selftest() {
 	local mut=$OUT/mutated.tsv out n
-	awk -F'\t' -v OFS='\t' '$1 == "A01" { $10 = "plain" } $1 == "T08" { $10 = "agg" } $1 == "T05" { $10 = "error:42601" } $1 == "A02" { $12 = "selftest" } $1 == "X03" { $11 = "SELECT false" } { print } END { print "#feature\tselftest\tnone\tno/such/marker" }' "$TSV" >"$mut"
-	out=$(TSV=$mut ROWS='^(A01|T08|T05|A02|X03)$' run_proofs 2>&1 >/dev/null || true)
+	awk -F'\t' -v OFS='\t' '$1 == "A01" { $10 = "plain" } $1 == "T18" { $10 = "agg" } $1 == "T05" { $10 = "error:42601" } $1 == "A02" { $12 = "selftest" } $1 == "X03" { $11 = "SELECT false" } { print } END { print "#feature\tselftest\tnone\tno/such/marker" }' "$TSV" >"$mut"
+	out=$(TSV=$mut ROWS='^(A01|T18|T05|A02|X03)$' run_proofs 2>&1 >/dev/null || true)
 	n=$(grep -c '^FAIL' <<<"$out" || true)
 	(( n == 5 )) || { echo "coverage: selftest: 5 wrong claims (a plan that is not there, a node that is, a SQLSTATE, a feature that is not there, a probe that is false) must fail, $n did:" >&2; echo "$out" >&2; return 1; }
 	log "selftest: the 5 wrong claims failed as they should"

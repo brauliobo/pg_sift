@@ -1,7 +1,7 @@
 # More leaf types for `sift_col` (3.2)
 
 `numeric` of any precision, `money` and `interval` as columns of a `sift_col` index, and what the aggregate pushdown (`SiftAgg`) does with
-them. Status: implemented on the 3.2 branch; section 8 is what is pushed down, section 10 the format ids. The
+them. Also `time`, enums, `uuid`, `bytea`, arrays and ranges (section 7). Status: implemented on the 3.2 branch; section 8 is what is pushed down, section 10 the format ids. The
 format itself is section 2.11 of `docs/COL.md`; where the two disagree, fix the code or this file in the same commit.
 
 ## 1. Before (3.1)
@@ -127,38 +127,77 @@ in `src/portable-col.list`: C library and `sift_host.h` only, no allocation (the
 neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C sqlite col-smoke` compiles `portable-col.list`, and
 `scripts/check-portable.sh` checks both lists). The PostgreSQL side (`sift_col_types.c`) maps `Datum`s and OIDs to it.
 
-## 7. Where the engine stops
+## 7. The other types: time, enum, uuid, bytea, arrays, ranges
 
-`sift_table` keeps its own mapping (`SIFT_COLS_VAR` for what the INT class cannot hold); `sift_col_numeric_scale` still answers "one narrow INT
-leaf" for it, and now also requires s <= 18, which makes `numeric(5, 30)` a lane pair for the index and a variable-length leaf for the table
-(it was an error in the index before). `uuid` and `bytea` are not part of this change (the STR class could hold them; no query shape reads them yet). `time`, `timetz`,
-`enum`, arrays and ranges stay refused.
+| SQL type | leaf | encoding | why this one |
+|---|---|---|---|
+| `time` | INT, type `TIME` | the `int64` microseconds since midnight (`24:00:00` included) | PostgreSQL's own `TimeADT`; equality is the integer's, there are no ties |
+| enum | INT, type `ENUM` | the OID of the value as an `int32` | the *order* of an enum is the catalog's (`pg_enum.enumsortorder`, which `ALTER TYPE ... ADD VALUE BEFORE/AFTER` changes without touching a row), so no rank is stored: the order is read when a query runs |
+| `uuid` | STR, type `UUID` | the 16 raw bytes | equality and `memcmp` order are PostgreSQL's (`uuid_cmp` is `memcmp`) |
+| `bytea` | STR, type `BYTEA` | the detoasted varlena image | `byteacmp` is `memcmp` then length; bytea has no ties |
+| arrays, ranges, multiranges | STR, type `VARLENA` | the detoasted varlena image of the datum | the image of a datum is its canonical form; equality, hash and every operator are PostgreSQL's on the decoded value |
+
+Only columns that are in a `sift_col` index are affected; `sift_table` keeps its own layout for these types (it stores them by size) and a table with
+them still writes minor 3 or 4. The column engine keeps the value and its null bitmap and applies no order of its own to an enum, a uuid, an image
+(`sift_colw_test` has none), so a conjunct on one of them is PostgreSQL's operator evaluated by the executor on the value of each distinct entry
+(section 8); an enum is never compared as an OID, because its order is the catalog's, which `ALTER TYPE ... ADD VALUE BEFORE/AFTER` changes without
+touching a row.
+
+What stays refused, and why (`CREATE INDEX` says `sift_col does not support the type ...`, the table's other columns still work, a query that reads the
+column runs the normal plan):
+
+- `timetz`: its equality is `time + zone` in microseconds while its value is the pair, so it needs two lanes (like `interval`) and a tie rule for `12:00+01` and `11:00+00`; no
+  query shape asks for it, so it was not worth a third lane type.
+- `point`, `inet`, `cidr`, `macaddr`, `tsvector`, `xml`, `json` and the other types with no leaf form above: nothing in the engine or in the executor reads them
+  yet. An array, range or multirange *of* any of these is accepted (the image is opaque and the element type is only PostgreSQL's concern).
 
 ## 8. What `SiftAgg` does with them
 
-The planner sees one leaf per head, but no expression reads its values: a lane and a head of these types have `typid = InvalidOid` in the layout
-(`SiftSrcLeaf.wtypid` keeps the SQL type for the one place that tests them). Only a conjunct of the WHERE can test such a leaf (`SAP_WIDE`), and
-the column engine decides it on the stored lanes; the executor never reads the values, so a NaN, an image or a lane pair needs no vector type.
+The planner reads a wide leaf (numeric lanes, image, `money`, `interval`) and the opaque images (uuid, bytea, arrays, ranges) through a per-unit
+dictionary of Datums (`src/agg/sift_aggwide.c`): each unit decodes its lanes once into the distinct values (numeric in the short varlena form PostgreSQL
+builds, the `Interval` struct, the stored varlena or uuid bytes) and the leaf is a code vector of that dictionary, exposed to the executor as an
+ordinary `CODE` leaf whose entries *are* the Datums. Time is an `int64` vector and an enum an `int32` vector of OIDs. A wide leaf is not eligible
+for the dense or LUT key forms, native `count(DISTINCT)`, the pre-aggregates, the top-N scan or the GPU; it goes through the code of PostgreSQL's
+own functions (`SAA_GEN`: its transition and final functions on the Datums; `combo` keys: its expression per distinct tuple).
 
-| | `money` | `numeric(p, s)` wide | `numeric` image | `interval` |
-|---|---|---|---|---|
-| WHERE conjunct `= <> < <= > >=`, `BETWEEN`, `IN` / `= ANY`, `NOT IN` / `<> ALL`, `IS [NOT] NULL` | pushed | pushed | pushed | pushed |
-| the same under `OR`, `CASE`, `FILTER`, as a key, in an expression, a cast | normal plan | normal plan | normal plan | normal plan |
-| `count(x)`, `min`, `max`, `sum`, `avg`, `GROUP BY x`, `count(DISTINCT x)` | normal plan | normal plan | normal plan | normal plan |
+| shape | `money` | `numeric` (wide and image) | `interval` | `time` | enum | `uuid`, `bytea`, arrays, ranges |
+|---|---|---|---|---|---|---|
+| conjunct of the WHERE `= <> < <= > >=`, `BETWEEN`, `IN`, `NOT IN`, `IS [NOT] NULL` | pushed (lane test) | pushed (lane test) | pushed (lane test) | pushed | pushed | executor (PostgreSQL's operator), array and range operators included |
+| boolean trees: `OR`, `NOT`, 3-valued logic, `FILTER (WHERE ...)` on any aggregate, `CASE WHEN` | pushed | pushed | pushed | pushed | pushed | pushed |
+| expressions: casts, `n + const`, `IS [NOT] DISTINCT FROM`, `= ANY(array)`, `extract(...)` | pushed | pushed | pushed | pushed | pushed | pushed |
+| `GROUP BY x` | pushed | pushed | pushed | pushed | pushed | pushed |
+| `count(x)`, `count(DISTINCT x)` | pushed | pushed | pushed | pushed | pushed | pushed |
+| `min`, `max` | pushed | pushed | pushed | pushed | pushed (catalog order) | `bytea` and arrays (ranges and `uuid` have no `min`/`max`) |
+| `sum`, `avg` | pushed (`cash_pl`: an overflow raises as the heap's) | pushed | pushed (`interval_pl`: month, day and time added apart) | no such aggregate | no such aggregate | no such aggregate |
 
-Operands are constants, parameters (a generic plan evaluates them when the scan starts, a NULL parameter passes no row) or stable expressions; an IN
-list is a constant array or an array parameter. At most 8 such conjuncts per scan (`SIFT_AGG_MAX_WIDE`), more keep the normal plan. A scan with
-a wide conjunct skips the pre-aggregates of its units (it must test rows) but keeps zone pruning, parallel workers, the BM25 match set, the top-N scan and
-the write buffer. `EXPLAIN ANALYZE` shows `Wide Filters In Source`.
+"Pushed" means: the same function PostgreSQL's plan would call, on the same value, so the answer, its text and its errors are the normal plan's; each shape
+is a coldiff fixture (`m_*`, `w_wide_*`, `w_key_*`, `w_agg_*`, `w_tree_*`) and a regress check that compares the rows as text with the pushdown on and off.
+Operands are constants, parameters (a generic plan evaluates them when the scan starts) or stable expressions. At most 8 lane-tested conjuncts per scan
+(`SIFT_AGG_MAX_WIDE`). A scan with a lane-tested conjunct skips the pre-aggregates of its units but keeps zone pruning, the BM25 match set, the top-N scan
+and the write buffer. `EXPLAIN ANALYZE` shows `Wide Filters In Source`.
 
-What stays on the normal plan, and why. Reading the value is what the executor has no vector for: the lane pair, the image and the interval would
-each need a vector type and kernels. For the image and the interval it is also an equality class problem: the value of a group key or of `min` /
-`max` is observable beyond its equality class (`1.0` against `1.00`, `1 mon` against `30 days`), and PostgreSQL's choice among equal values depends on
-its plan (the first seen for a hash group, the later for `min`/`max`); the stored totals and images do not say which row's representation a group
-should show. The display-scale and payload lanes are stored so a later version can return the representation of the first row of each group.
-`sum`/`avg` of an `interval` need the three components added separately (PostgreSQL adds month, day and time apart), which the canonical total does
-not give. Money is the cheap next step (its leaf is an `int64` with no ties): `min`/`max`/`sum`/`GROUP BY` need the type in the executor's operator and
-function tables. A wide column in the index never stops the pushdown of the other columns of a query.
+### 8.1 The tie rule
+
+Values equal under PostgreSQL's equality but spelled differently (`1.0` and `1.00`, `1 mon` and `30 days`, `'{1.0}'` and `'{1.00}'`) are one group, as in
+the heap. The spelling a group shows is that of the first selected row of the group in scan order, which is what a serial hash aggregate
+shows. PostgreSQL's *sort*-based plans keep an arbitrary one (a sort is not stable and the plan picks by cost), and `min`/`max`/`DISTINCT` aggregates of
+tie-prone values (`min(numeric)` over `1.0`, `1.00`; `sum(DISTINCT n)`; `max(interval)` over `1 mon`, `30 days`) pick the first or the last seen in an order
+the plan decides, so for those the answer is only one of PostgreSQL's possible answers, not the one of every plan. The fixtures that show a spelling run
+the heap plan with `enable_sort = off` (the hash plan); the others compare counts, never the spelling.
+Money, time, enum and uuid have no ties.
+
+### 8.2 What stays on the normal plan, and why
+
+- Parallel workers: a spec with a key over a wide leaf, or a `SAA_GEN` aggregate with a wide argument, runs serial. The dictionaries are per unit and per
+  worker, and the first-seen spelling of a group would then depend on which worker saw it first; serial keeps the tie rule above. Parallel stays on for
+  every other shape (`col_agg_types32`, `col_agg_wide_keys` check workers).
+- A unique wide column (a numeric with a distinct value per row): the dictionary is as large as the unit, so building it costs more than the normal plan.
+  The planner prices a wide leaf by its `pg_statistic` distinct fraction (`AGG_WIDE_ROW` per row, `AGG_WIDE_ENTRY` per distinct value) and keeps the heap
+  plan when that is cheaper.
+- `GROUP BY money` in PostgreSQL is sort-based (money has a btree opclass and no hash one); the pushdown hashes the cents (`hashint8`), the rows are the same
+  and their order is a hash order, as any hash aggregate's.
+- More than 8 lane-tested conjuncts in one scan.
+- `timetz` and the types refused in section 7.
 
 ## 9. Tests
 
@@ -174,6 +213,10 @@ function tables. A wide column in the index never stops the pushdown of the othe
   that must keep the normal plan.
 - `test/col/fixtures/w_*.sql` (table `t_wide`): coldiff against the normal plan with the traps of section 4 (NaN, the precision 38 boundary, 39 and
   400 digit values, huge and negative scales, NULLs, ties of scale and of interval spelling, money extremes, infinite intervals, parameters).
+- `test/sql/col_agg_types32.sql`: the keys, aggregates, conjuncts, OR, FILTER, expressions and parameters over time, enum, uuid, bytea, arrays, ranges and
+  multiranges against the heap; enum values added (`BEFORE`/`AFTER`) and renamed after the index was built; the write buffer, DELETE and UPDATE, merge,
+  parallel workers; a `sift_table` with these types. `test/col/fixtures/m_*.sql`, `w_key_*`, `w_agg_*`, `w_tree_*`: the same in coldiff with scenarios.
+  `test/sql/col_agg_wide_keys.sql`: the shapes of section 8 for the wide types, the tie rule, the planner's pricing.
 - Interval ordering was checked on a live server (the facts of section 2.3, and the extreme totals `2147483647 months 2147483647 days
   9223372036854775807 us` against `... 2147483646 days ...`), not only read from source.
 
@@ -181,13 +224,15 @@ function tables. A wide column in the index never stops the pushdown of the othe
 
 - Column segment minor **5** (`SIFT_COL_FORMAT_WIDE`), the next free number after the 3.1 final (which uses 4 only), claimed in `docs/FORMATS.md`
   section 4.
-- A segment is written as minor 5 only when its schema has a leaf of the new kind (a lane, `MONEY` or `INTERVAL`). Every other segment is
+- A segment is written as minor 5 only when its schema has a leaf of the new kind (a lane, `MONEY`, `INTERVAL`, `TIME`, `ENUM`, `VARLENA`, or a
+  `UUID` or `BYTEA` leaf stored as an image; the exceptions leaf of a `sift_table`, `BYTEA` with a variable store, stays minor 3 or 4). Every other segment is
   written as before (minor 3 or 4 by `sift.col_format_minor`), so an index of old types stays readable by 3.1. `sift.col_format_minor` keeps its
   range 3 to 4; it does not apply to a wide schema, which has no older form.
 - Readers: this build reads minors 3, 4 and 5. A 3.1 library refuses a minor 5 segment (`format > SIFT_COL_FORMAT_MINOR`,
-  hint "Use a newer pg_sift, or REINDEX") and cannot open the index of a wide column at all (its column mapper refuses the type): downgrade means
-  dropping that index.
-- `SiftColType` tags 15 (`MONEY`) and 16 (`INTERVAL`); `SiftColDefDisk` bytes 14 and 15 are `lanes` and `lane`. The schema hash is over that
+  hint "Use a newer pg_sift, or REINDEX") and cannot open the index of one of these columns at all (its column mapper refuses the type): downgrade means
+  dropping that index. No further minor is needed: the phase-2 types are leaves of the minor 5 schema (INT and STR chunks as before).
+- `SiftColType` tags 15 (`MONEY`), 16 (`INTERVAL`), 17 (`TIME`), 18 (`ENUM`) and 19 (`VARLENA`); `UUID` and `BYTEA` already had tags (they were never written
+  by an index before); `SiftColDefDisk` bytes 14 and 15 are `lanes` and `lane`. The schema hash is over that
   serialization, so an old leaf list hashes as before.
 - The metapage and the BM25 minor do not change.
 - Upgrade tests: `test/sql/col_format5.sql` (side by side, merge, REINDEX). The extension script does not change (the access method and operator

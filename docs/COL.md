@@ -381,6 +381,14 @@ A segment of a schema with such a leaf is written as **format minor 5** and only
 SiftAgg tests a WHERE conjunct on these leaves in the source and reads nothing else of them; the pre-aggregates and cubes ignore them.
 The value code is the portable `sift_col_wide.[ch]`. Details, the special values and what stays on the normal plan: `docs/COL-LEAFTYPES-32.md`.
 
+### 2.12 time, enum, uuid, bytea, arrays, ranges (3.2)
+
+Leaves of one attribute each, no new storage class: `time` is an INT leaf (type `TIME`, the `int64` microseconds), an enum an INT leaf of the value's OID
+(`ENUM`; the order is the catalog's, read when a query runs, so no rank is stored), `uuid` a STR leaf of the 16 bytes (`UUID`), `bytea` and the
+detoasted varlena image of an array, range or multirange a STR leaf (`BYTEA`, `VARLENA`). Tags 17, 18 and 19 are `TIME`, `ENUM` and `VARLENA`. A segment with
+such a leaf is format minor 5; a `sift_table` stores these types by size and is not affected. SiftAgg reads them through the dictionaries of
+`docs/COL-LEAFTYPES-32.md` 8.
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -630,7 +638,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 ## 10. Limits
 
 BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
-integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, float4/8, text-like. A group's elements: any number, one level. Not supported: `uuid`, `bytea`, `time`,
+integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, time, enums, uuid, bytea, arrays, ranges (section 2.12), float4/8, text-like. A group's elements: any number, one level. Not supported: `timetz`,
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_zone_exact`).
 
