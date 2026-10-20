@@ -238,6 +238,11 @@ col_index() {
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
 		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
+		t_part) ddl="CREATE INDEX t_part_col ON t_part USING $AM (id, grp, d, qty, amount, tag, doc, note) WITH (paths = 'doc->k int4, doc->s text')" ;;
+		t_part_ni) ddl="CREATE INDEX t_part_ni_a_col ON t_part_ni_a USING $AM (id, grp, d, qty)" ;;
+		t_part_op) ddl="CREATE INDEX t_part_op_a_col ON t_part_op_a USING $AM (id, grp, d, qty, doc) WITH (paths = 'doc->k int4');
+					   CREATE INDEX t_part_op_b_col ON t_part_op_b USING $AM (id, grp, d, qty, doc) WITH (paths = 'doc->k int8')" ;;
+		t_inh) ddl="CREATE INDEX t_inh_a_col ON t_inh_a USING $AM (id, grp, d, qty); CREATE INDEX t_inh_b_col ON t_inh_b USING $AM (id, grp, d, qty)" ;;
 	esac
 	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
 }
@@ -245,7 +250,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags orders_odd orders_part; do
+	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
@@ -279,7 +284,7 @@ scenarios() {
 		SQL
 		slice; check scenario-abort "${SLICED[@]}"
 	fi
-	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders"; slice; check scenario-vacuum "${SLICED[@]}"; fi
+	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders" -c "VACUUM (ANALYZE) t_part"; slice; check scenario-vacuum "${SLICED[@]}"; fi
 	if want hot; then
 		sql -c "SELECT coldiff.sc_hot(0.05)" >/dev/null
 		log "scenario hot: HOT updates of columns no index holds: $(sql -c "SELECT n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'orders'")"
@@ -287,7 +292,8 @@ scenarios() {
 	fi
 	if want recycle; then
 		sql -c "DROP TABLE IF EXISTS coldiff_gone" -c "CREATE TABLE coldiff_gone AS SELECT ctid AS tid, id FROM orders WHERE coldiff.sample(id, 906, 0.05)" \
-			-c "DELETE FROM orders WHERE id IN (SELECT id FROM coldiff_gone)" -c "VACUUM (TRUNCATE off) orders" -c "SELECT coldiff.sc_insert(0.06)" >/dev/null
+			-c "DELETE FROM orders WHERE id IN (SELECT id FROM coldiff_gone)" -c "DELETE FROM t_part WHERE id IN (SELECT id FROM coldiff_gone)" \
+			-c "VACUUM (TRUNCATE off) orders" -c "VACUUM (TRUNCATE off) t_part" -c "SELECT coldiff.sc_insert(0.06)" >/dev/null
 		log "scenario recycle: new orders on recycled TIDs: $(sql -c "SELECT count(*) FROM orders WHERE ctid = ANY (ARRAY(SELECT tid FROM coldiff_gone))")"
 		slice; check scenario-recycle "${SLICED[@]}"
 	fi
@@ -326,7 +332,7 @@ scenario_held() {
 scenario_maint() {
 	local fn
 	log "scenario maint: REINDEX, promote, merge"
-	sql -c "REINDEX INDEX orders_col"; check scenario-reindex "$@"
+	sql -c "REINDEX INDEX orders_col" -c "REINDEX TABLE t_part"; check scenario-reindex "$@"
 	for fn in col_promote col_merge; do
 		if [[ $(sql -c "SELECT to_regproc('sift.$fn') IS NOT NULL") == t ]]; then
 			sql -c "SELECT sift.$fn('orders_col'$([[ $fn == col_merge ]] && echo ', true'))" >/dev/null; check "scenario-$fn" "$@"
