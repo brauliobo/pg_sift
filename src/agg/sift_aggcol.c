@@ -704,7 +704,7 @@ leaf_buf(ColSource *src, int leaf, size_t n)
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
-		b->ovf = MemoryContextAlloc(src->cxt, (b->cap / 64 + 1) * sizeof(uint64));
+		b->ovf = MemoryContextAlloc(src->cxt, SIFT_COL_NWORDS(b->cap) * sizeof(uint64));
 	}
 	return b;
 }
