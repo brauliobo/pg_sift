@@ -1,4 +1,4 @@
-# User-space instructions per operation of the server processes, 3.0.2 against 3.1.0 against main (bench/steps/cpu_gate.sh).
+# User-space instructions per operation of the server processes, 3.0.2 against 3.1.0 (bench/steps/cpu_gate.sh).
 # date: 2026-10-20
 # cpu: AMD Ryzen 7 9700X 8-Core Processor (88% threads)
 # noisy_starts: 0 of the timed runs started while the pressure was above 15% for 300 s
@@ -10,85 +10,57 @@
 version	case	arm	metric	value	min	max	n	load	note
 gate	session	v302	Minstr_per_op	4.2700					v3.0.2
 gate	session	v310	ratio	0.987	0.965	1.010	9		ok (v3.1.0)
-gate	session	main	ratio	0.987	0.964	1.010	9		ok (v3.1.0-23-ga43d075)
 gate	insert1	v302	Minstr_per_op	0.1259					v3.0.2
 gate	insert1	v310	ratio	1.000	1.000	1.000	7		ok (v3.1.0)
-gate	insert1	main	ratio	1.000	1.000	1.000	7		ok (v3.1.0-23-ga43d075)
 gate	bulk	v302	Minstr_per_op	0.0550					v3.0.2
 gate	bulk	v310	ratio	1.006	1.006	1.006	7		ok (v3.1.0)
-gate	bulk	main	ratio	1.006	1.006	1.006	7		ok (v3.1.0-23-ga43d075)
 gate	copy	v302	Minstr_per_op	0.0632					v3.0.2
 gate	copy	v310	ratio	1.003	1.003	1.003	7		ok (v3.1.0)
-gate	copy	main	ratio	1.003	1.002	1.003	7		ok (v3.1.0-23-ga43d075)
 gate	update	v302	Minstr_per_op	0.0402					v3.0.2
 gate	update	v310	ratio	1.001	0.998	1.004	7		ok (v3.1.0)
-gate	update	main	ratio	1.001	0.998	1.004	7		ok (v3.1.0-23-ga43d075)
 gate	delete	v302	Minstr_per_op	0.0063					v3.0.2
 gate	delete	v310	ratio	1.001	0.994	1.009	7		ok (v3.1.0)
-gate	delete	main	ratio	1.001	0.994	1.009	7		ok (v3.1.0-23-ga43d075)
 gate	promote	v302	Minstr_per_op	108.9300					v3.0.2
 gate	promote	v310	ratio	1.013	1.012	1.014	7		ok (v3.1.0)
-gate	promote	main	ratio	1.013	1.012	1.015	7		ok (v3.1.0-23-ga43d075)
 gate	merge	v302	Minstr_per_op	894.3800					v3.0.2
 gate	merge	v310	ratio	1.002	1.002	1.003	7		ok (v3.1.0)
-gate	merge	main	ratio	1.002	1.002	1.003	7		ok (v3.1.0-23-ga43d075)
 gate	create	v302	Minstr_per_op	873.3700					v3.0.2
 gate	create	v310	ratio	1.006	1.006	1.007	7		ok (v3.1.0)
-gate	create	main	ratio	1.006	1.006	1.007	7		ok (v3.1.0-23-ga43d075)
 gate	vacuum_backlog	v302	Minstr_per_op	914.3900					v3.0.2
 gate	vacuum_backlog	v310	ratio	1.003	1.003	1.003	7		ok (v3.1.0)
-gate	vacuum_backlog	main	ratio	1.003	1.003	1.003	7		ok (v3.1.0-23-ga43d075)
 gate	vacuum_dead	v302	Minstr_per_op	390.3600					v3.0.2
 gate	vacuum_dead	v310	ratio	1.005	1.005	1.005	7		ok (v3.1.0)
-gate	vacuum_dead	main	ratio	1.005	1.005	1.005	7		ok (v3.1.0-23-ga43d075)
 gate	vacuum_clean	v302	Minstr_per_op	11.3500					v3.0.2
 gate	vacuum_clean	v310	ratio	1.005	0.993	1.017	7		ok (v3.1.0)
-gate	vacuum_clean	main	ratio	1.004	0.993	1.016	7		ok (v3.1.0-23-ga43d075)
 gate	vacuum_nofree	v302	Minstr_per_op	4.0900					v3.0.2
 gate	vacuum_nofree	v310	ratio	1.004	1.003	1.004	7		ok (v3.1.0)
-gate	vacuum_nofree	main	ratio	1.004	1.004	1.004	7		ok (v3.1.0-23-ga43d075)
 gate	idle60_count	v302	Minstr_per_op	3.4500					v3.0.2
 gate	idle60_count	v310	ratio	0.975	0.970	0.980	7		faster (v3.1.0)
-gate	idle60_count	main	ratio	0.975	0.970	0.979	7		faster (v3.1.0-23-ga43d075)
 gate	idle60_rank	v302	Minstr_per_op	3.7700					v3.0.2
 gate	idle60_rank	v310	ratio	0.991	0.990	0.991	7		ok (v3.1.0)
-gate	idle60_rank	main	ratio	0.991	0.990	0.991	7		ok (v3.1.0-23-ga43d075)
 gate	idle60_and	v302	Minstr_per_op	2.3700					v3.0.2
 gate	idle60_and	v310	ratio	0.990	0.989	0.992	7		ok (v3.1.0)
-gate	idle60_and	main	ratio	0.990	0.988	0.991	7		ok (v3.1.0-23-ga43d075)
 gate	idle60_or	v302	Minstr_per_op	6.9700					v3.0.2
 gate	idle60_or	v310	ratio	0.991	0.991	0.991	7		ok (v3.1.0)
-gate	idle60_or	main	ratio	0.991	0.991	0.991	7		ok (v3.1.0-23-ga43d075)
 gate	idle60_phrase	v302	Minstr_per_op	2.4100					v3.0.2
 gate	idle60_phrase	v310	ratio	0.989	0.987	0.990	7		ok (v3.1.0)
-gate	idle60_phrase	main	ratio	0.989	0.988	0.989	7		ok (v3.1.0-23-ga43d075)
 gate	idle1_count	v302	Minstr_per_op	0.4577					v3.0.2
 gate	idle1_count	v310	ratio	0.880	0.866	0.894	7		faster (v3.1.0)
-gate	idle1_count	main	ratio	0.880	0.867	0.893	7		faster (v3.1.0-23-ga43d075)
 gate	idle1_rank	v302	Minstr_per_op	0.5224					v3.0.2
 gate	idle1_rank	v310	ratio	0.998	0.993	1.003	7		ok (v3.1.0)
-gate	idle1_rank	main	ratio	0.998	0.992	1.005	7		ok (v3.1.0-23-ga43d075)
 gate	idle1_and	v302	Minstr_per_op	0.2428					v3.0.2
 gate	idle1_and	v310	ratio	0.998	0.986	1.011	7		ok (v3.1.0)
-gate	idle1_and	main	ratio	0.998	0.988	1.008	7		ok (v3.1.0-23-ga43d075)
 gate	idle1_or	v302	Minstr_per_op	0.8229					v3.0.2
 gate	idle1_or	v310	ratio	1.017	1.015	1.018	7		ok (v3.1.0)
-gate	idle1_or	main	ratio	1.018	1.015	1.021	7		uncertain (v3.1.0-23-ga43d075)
 gate	idle1_phrase	v302	Minstr_per_op	0.2930					v3.0.2
 gate	idle1_phrase	v310	ratio	0.997	0.990	1.004	7		ok (v3.1.0)
-gate	idle1_phrase	main	ratio	0.998	0.993	1.003	7		ok (v3.1.0-23-ga43d075)
 gate	vac_count	v302	Minstr_per_op	10.5700					v3.0.2
 gate	vac_count	v310	ratio	1.000	0.999	1.001	7		ok (v3.1.0)
-gate	vac_count	main	ratio	1.000	0.999	1.001	7		ok (v3.1.0-23-ga43d075)
 gate	vac_rank	v302	Minstr_per_op	21.9200					v3.0.2
 gate	vac_rank	v310	ratio	1.000	1.000	1.000	7		ok (v3.1.0)
-gate	vac_rank	main	ratio	1.000	1.000	1.000	7		ok (v3.1.0-23-ga43d075)
 gate	vac_and	v302	Minstr_per_op	11.8800					v3.0.2
 gate	vac_and	v310	ratio	1.000	1.000	1.000	7		ok (v3.1.0)
-gate	vac_and	main	ratio	1.000	1.000	1.000	7		ok (v3.1.0-23-ga43d075)
 gate	vac_or	v302	Minstr_per_op	42.7200					v3.0.2
 gate	vac_or	v310	ratio	1.000	1.000	1.000	7		ok (v3.1.0)
-gate	vac_or	main	ratio	1.000	1.000	1.000	7		ok (v3.1.0-23-ga43d075)
 gate	vac_phrase	v302	Minstr_per_op	12.0200					v3.0.2
 gate	vac_phrase	v310	ratio	1.000	1.000	1.000	7		ok (v3.1.0)
-gate	vac_phrase	main	ratio	1.000	1.000	1.000	7		ok (v3.1.0-23-ga43d075)

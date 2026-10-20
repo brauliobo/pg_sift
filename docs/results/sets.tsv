@@ -1,4 +1,4 @@
-# Set filters: a fact table filtered by 1k, 2k, 5k, 10k and 100k entity ids (bench/steps/sets.sh).
+# Set filters: a fact table filtered by 1k, 2k, 10k and 100k entity ids (bench/steps/sets.sh).
 # date: 2026-10-20
 # cpu: AMD Ryzen 7 9700X 8-Core Processor (93% threads), scope 3 CPUs 12G
 # postgresql: PostgreSQL 18.6
@@ -42,22 +42,6 @@ version	case	arm	metric	value	min	max	n	load	note
 3.1	2k	ch_literal_ins	median_ms	14.00	13.00	18.00	9	5.69	ClickHouse
 3.1	2k	ch_literal_tuned	median_ms	18.00	15.00	23.00	9	5.84	ClickHouse
 3.1	2k	ch_member_tuned	median_ms	14.00	12.00	22.00	9	5.81	ClickHouse
-3.1	5k	array_generic	median_ms	5.07	4.59	6.87	9	5.73	SiftAgg
-3.1	5k	array_custom	median_ms	10.48	8.99	10.82	9	5.74	SiftAgg
-3.1	5k	literal_in	median_ms	11.16	10.13	11.52	9	5.76	SiftAgg
-3.1	5k	literal_in_agg	median_ms	11.76	10.70	14.38	9	5.73	SiftAgg
-3.1	5k	normal_plan	median_ms	66.01	57.24	69.52	9	5.77	Index Scan
-3.1	5k	member_in	median_ms	63.55	56.47	66.31	9	5.73	Index Scan
-3.1	5k	member_in_agg	median_ms	76.17	58.05	105.72	9	5.77	SiftAgg
-3.1	5k	array_generic_int8	median_ms	1373.52	1339.41	1436.84	9	5.79	Seq Scan
-3.1	5k	normal_plan_int8	median_ms	70.76	64.79	91.52	9	5.76	Index Scan
-3.1	5k	array_generic_text	median_ms	14349.88	14049.71	14699.68	9	5.78	SiftAgg
-3.1	5k	normal_plan_text	median_ms	76.95	68.95	84.90	9	5.68	Index Scan
-3.1	5k	array_generic_date	median_ms	5.72	5.01	6.21	9	5.75	SiftAgg
-3.1	5k	normal_plan_date	median_ms	65.34	61.39	75.51	9	5.75	Index Scan
-3.1	5k	ch_literal_ins	median_ms	22.00	18.00	62.00	9	5.76	ClickHouse
-3.1	5k	ch_literal_tuned	median_ms	26.00	21.00	33.00	9	5.77	ClickHouse
-3.1	5k	ch_member_tuned	median_ms	16.00	13.00	20.00	9	5.71	ClickHouse
 3.1	10k	array_generic	median_ms	5.46	4.83	6.70	9	5.74	SiftAgg
 3.1	10k	array_custom	median_ms	15.87	15.12	18.85	9	5.75	SiftAgg
 3.1	10k	literal_in	median_ms	17.01	16.06	18.68	9	5.84	SiftAgg
