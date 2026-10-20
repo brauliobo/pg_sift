@@ -658,7 +658,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 |---|---|---|---|
 | core | `sift.h`, `sift_handler.c` | Constants, options, GUCs, catalog OID cache, `_PG_init`, AM handler. | — |
 | cpu | `sift_cpu.h/.c` | Feature detection, `sift.simd` GUC, dispatch rebind registry. | core |
-| codec | `bm25/bitmap.h`, `bm25/bitmap*.c`, `docs/CODEC.md` | Term blob encoding (LIST/GROUPED), group cursors and AND/OR/ANDNOT cursor trees, set and count kernels, its own ISA dispatch. | — |
+| codec | `bm25/bitmap.h`, `bm25/bitmap*.c`, `bm25/blob.c`, `bm25/topk.c`, `docs/CODEC.md` | Term blob encoding (LIST/GROUPED), group cursors and AND/OR/ANDNOT cursor trees, set and count kernels, its own ISA dispatch. | — |
 | kernels | `bm25/kernels.h/.c` | Scoring SIMD kernels + scalar references | cpu |
 | analyze | `bm25/analyze.h/.c` | Tokenizer, folding, stemming, term hashing | core |
 | query | `bm25/query.h`, `bm25/query.c`, `bm25/query_analyze.c`, `bm25/query_match.c` | SiftQL parse, analyze, deparse, document evaluation | analyze |
@@ -672,7 +672,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 | visibility | `sift_visibility.h/.c` | VM masks, heap checks, fetch | core |
 | eval | `bm25/eval.h/.c`, `eval_int.h`, `wbind.c`, `phrase.c`, `iter.c`, `bounds.c`, `rank.c`, `count.c` | Bind, iterate, rank, count, estimate | segment, wbuf, query, dict, kernels, visibility |
 | amscan | `bm25/amscan.c` (`bm25/am.h`) | `ambeginscan`, `amrescan`, `amgetbitmap`, `amendscan` | eval |
-| planner | `bm25/planner.h`, `bm25/planner.c`, `bm25/planner_match.c`, `bm25/planner_path.c`, `bm25/planner_plan.c`, `bm25/cscan.c` | Hooks, paths, costs, `amcostestimate`, SiftScan / SiftCount exec, EXPLAIN | eval |
+| planner | `bm25/planner.h`, `bm25/planner.c`, `bm25/planner_match.c`, `bm25/planner_path.c`, `bm25/planner_plan.c`, `bm25/cscan.c`, `bm25/cscan_keyed.c` | Hooks, paths, costs, `amcostestimate`, SiftScan / SiftCount exec, EXPLAIN | eval |
 | sql | `sift_sql.h`, `bm25/funcs.c` | `sift.match`, `match_idx`, support, `matchsel`, highlight, tokenize, `parse_query`, score stubs | query, analyze, planner |
 
 ### Cross-module contracts (binding)
@@ -721,7 +721,7 @@ apply to the others; the SQLite host's own design is in [sqlite/DESIGN.md](sqlit
 **What is shared.** Besides the codec and the evaluator: the segment format and its writer/reader (`bm25/segment.c`, `bm25/writer.c`), the tiered merge policy
 (`bm25/merge.c`: which segments merge, from the directory and the sizes), the sorted runs and their merge into a segment (`bm25/runs.c`, `bm25/inv.c`: the inverted buffer `SiftInvBuf`, `sift_run_from_segment`, `sift_runs_write`; promotion and merge of PostgreSQL, merge of SQLite), the deletion of one document (`sift_seg_delete_key`, which VACUUM's `sift_seg_bulkdelete`
 shares with the SQLite DELETE: the dirty flag, then the liveness bits), the byte stream's extent bookkeeping and padding (`sift_store.h`, `sift_stream.c`), the
-analyzer-options validation and hash (`bm25/analyze.c`), the layout constants and error texts. **What a host owns**: where bytes live (page store), transactions and
+analyzer-options validation and hash (`bm25/analyze_config.c`), the layout constants and error texts. **What a host owns**: where bytes live (page store), transactions and
 crash safety, memory and error plumbing, the way a query reaches the evaluator (planner and custom scan, xBestIndex), the write path that feeds the writer
 (heap build and write buffers, the in-memory buffer), background work, and option syntax (reloptions, `CREATE VIRTUAL TABLE` arguments).
 
