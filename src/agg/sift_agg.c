@@ -3795,6 +3795,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 
 		TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
 		TupleDescInitEntry(desc, 2, "val", INT8OID, -1, 0);
+		sift_tupdesc_finalize(desc);
 		d->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 		d->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 		d->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_RANDOMACCESS);
@@ -6289,6 +6290,7 @@ gen_sort_begin(GenSt *st)
 			st->dcol[st->ndcol++] = st->vcol[k];
 		}
 	}
+	sift_tupdesc_finalize(desc);
 	st->pcx = AllocSetContextCreate(CurrentMemoryContext, "sift agg distinct", ALLOCSET_SMALL_SIZES);
 	st->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	st->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
