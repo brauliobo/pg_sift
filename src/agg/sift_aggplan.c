@@ -3768,6 +3768,7 @@ typedef struct FromScan
 {
 	List	   *rtis;			/* range table indexes, in FROM order */
 	List	   *quals;
+	List	   *scan_quals;		/* conditions inside the nullable scanned input, before preservation */
 	List	   *lefts;			/* LeftJoin */
 	bool		ok;
 	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
@@ -3784,6 +3785,8 @@ right_table(Node *n)
 	return IsA(n, RangeTblRef) ? (RangeTblRef *) n : NULL;
 }
 
+static void scan_from(Node *n, FromScan *f);
+
 /*
  * A LEFT JOIN with the scanned table on its right (the left side is preserved: flip), or a FULL JOIN of two tables: the table that is
  * not scanned is the join, with all of its rows kept. The ON clause is the join's; whatever the WHERE says of the scanned table is not.
@@ -3793,25 +3796,33 @@ scan_preserved(JoinExpr *j, FromScan *f)
 {
 	bool		full = j->jointype == JOIN_FULL;
 	RangeTblRef *l = IsA(j->larg, RangeTblRef) ? (RangeTblRef *) j->larg : NULL,
-			   *r = full ? (IsA(j->rarg, RangeTblRef) ? (RangeTblRef *) j->rarg : NULL) : right_table(j->rarg);
+			   *r = IsA(j->rarg, RangeTblRef) ? (RangeTblRef *) j->rarg : NULL;
+	FromScan	right = {.ok = true};
 	LeftJoin   *lj;
 	Index		scanned,
 				dim;
 
-	if ((!full && j->jointype != JOIN_LEFT) || l == NULL || r == NULL)
+	if ((!full && j->jointype != JOIN_LEFT) || l == NULL || (full && r == NULL))
 		return false;
 	f->flippable = true;
 	if (!full && !f->flip)
 		return false;
-	scanned = f->flip ? r->rtindex : l->rtindex;
+	if (f->flip)
+	{
+		scan_from(j->rarg, &right);
+		if (!right.ok || right.lefts != NIL || right.rtis == NIL)
+			return false;
+	}
+	scanned = f->flip ? linitial_int(right.rtis) : l->rtindex;
 	dim = f->flip ? l->rtindex : r->rtindex;
 	lj = palloc(sizeof(LeftJoin));
 	lj->kind = full ? SJ_FULL : SJ_RIGHT;
 	lj->rti = dim;
 	lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
-	if (!full && IsA(j->rarg, FromExpr) && ((FromExpr *) j->rarg)->quals)
-		lj->quals = list_concat(lj->quals, list_copy((List *) ((FromExpr *) j->rarg)->quals));
-	f->rtis = lappend_int(lappend_int(f->rtis, scanned), dim);
+	/* Filter the nullable input before matching; these conditions never test its preserved NULL rows. */
+	f->scan_quals = list_concat(f->scan_quals, right.quals);
+	f->rtis = f->flip ? list_concat(f->rtis, right.rtis) : lappend_int(f->rtis, scanned);
+	f->rtis = lappend_int(f->rtis, dim);
 	f->lefts = lappend(f->lefts, lj);
 	f->ojrels = bms_add_member(f->ojrels, j->rtindex);
 	return true;
@@ -5907,7 +5918,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	if (c->rel == NULL || !find_source(c, &ii))
 		return false;
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
-	if (fs->ojrels && (input_rel == NULL || list_length(c->joins) != 1 || c->func_rti != 0 || c->nparts > 0))
+	if (fs->ojrels && (input_rel == NULL || list_length(c->joins) != 1 || c->nparts > 0))
 		return false;
 	build_attexprs(c);
 	if (c->func_rti)
@@ -5974,6 +5985,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 
 	if (!setup_joins(c, &quals, &joined))
 		return false;
+	quals = list_concat(quals, fs->scan_quals);
 	s->pred = palloc(Max(list_length(quals), 1) * sizeof(SiftAggPred *));
 	s->post = palloc(Max(list_length(quals) + list_length(joined), 1) * sizeof(SiftAggPred *));
 	initStringInfo(&txt);
@@ -6140,7 +6152,7 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 
 		if (jc->cpath == NULL)
 			continue;
-		if (j->nkey == 0 || !child_cols_kept(c, jc))
+		if (!child_cols_kept(c, jc))
 			return false;
 		foreach_ptr(Var, v, jc->cvars)
 			add_column_to_pathtarget(t, (Expr *) v, 0);
@@ -6585,7 +6597,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
-	FromScan	fs = {NIL, NIL, NIL, true};
+	FromScan	fs = {.ok = true};
 	SiftAggSpec *s;
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL,
@@ -6827,7 +6839,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
-	FromScan	fs = {NIL, NIL, NIL, true};
+	FromScan	fs = {.ok = true};
 	SiftAggSpec *s;
 	CustomPath *cp;
 	StringInfoData txt;
@@ -7385,7 +7397,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	PlannerInfo *base = NULL;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
-	FromScan	fs = {NIL, NIL, NIL, true};
+	FromScan	fs = {.ok = true};
 	SiftAggSpec *s;
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL;

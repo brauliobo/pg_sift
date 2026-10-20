@@ -42,6 +42,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: SiftAgg predicate-only joins to child plans, including overlapping date ranges, and preserved date buckets over a nullable JSON expansion. Duplicate matches and empty-bucket NULL inputs keep PostgreSQL semantics.
+
 - Added: pg_sift: SiftAgg pushes down jsonpath `!=` and constant variables where the result equals the heap's. The same forms push down with `!()`, a `null` literal, `@>` with a JSON null member and a strict path without `!()`; a JSON null member is told from a missing key by the complete kinds of column format minor 6; older units keep the normal plan when their kinds are uncertain (docs/COL.md section 2.2). What stays on the normal plan: a literal of another JSON type than the member's, a number against a `float4` / `float8` member, strict `!()`, `jsonb_path_match` / `@@`, `@>` with a float or `{}`.
 - Added: `SiftAgg` group by up to 8 columns (7 with grouping sets), 8 joined tables and 16 combos; `bool_and`, `bool_or` and `every` run in parallel workers.
 - Added: `SiftAgg` reads the `numeric(p > 18)`, unconstrained `numeric`, `interval`, `uuid`, `bytea`, `inet`, array and range columns of a `sift_table` through a dictionary of the values, as a `sift_col` index does: keys, `count(DISTINCT)`, `min`, `max`, `sum` and WHERE conjuncts (also under `OR` and `FILTER`) of those columns and of `money`, `time` and enums run in the source. A `money`, `time` or enum conjunct or key of a `sift_table` raised `XX000` `unexpected operand type` before.
