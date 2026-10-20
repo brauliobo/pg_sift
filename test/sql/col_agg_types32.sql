@@ -126,11 +126,12 @@ SELECT chk($$SELECT grp AS g, count(*) AS c, min(t) AS a, max(e)::text AS b FROM
        chk($$SELECT e::text AS k, count(*) AS c FROM wt GROUP BY e$$) AS parallel_key;
 
 -- a sift_table stores these types by size and keeps its format minor
-CREATE TABLE tt (id int, t time, e mood, ia int[], r int4range, u uuid, b bytea) USING sift_table;
-INSERT INTO tt SELECT i, '01:00'::time + i * interval '1 second', 'ok', ARRAY[i], int4range(i, i + 2), md5(i::text)::uuid, '\x01' FROM generate_series(1, 20000) i;
+CREATE TABLE tt (id int, t time, e mood, ia int[], r int4range, u uuid, b bytea, mo money) USING sift_table;
+INSERT INTO tt SELECT i, '01:00'::time + i * interval '1 second', 'ok', ARRAY[i], int4range(i, i + 2), md5(i::text)::uuid, '\x01', (i % 50)::numeric::money FROM generate_series(1, 20000) i;
 VACUUM tt;
 SELECT kind, format, count(*) FROM sift.table_segments('tt') GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT e::text, count(*), min(t), max(ia) FROM tt GROUP BY e;
+SELECT chk($$SELECT mo::text AS k, count(*) AS c, sum(mo)::text AS s, max(mo)::text AS m FROM tt GROUP BY mo$$) AS table_money;
 DROP TABLE tt;
 
 DROP TABLE wt;
