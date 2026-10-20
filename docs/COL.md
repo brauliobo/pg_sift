@@ -209,7 +209,7 @@ on the encoded form 2.5 ms). `src/agg/sift_colsrc.h` therefore carries two optio
 tests `SiftSrcStrTest` (EQ, NE, IN, NOT IN for any deterministic collation; the range operators and PREFIX only where the comparison is
 bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. As applied:
 
-1. Providers (the index in `sift_aggcol.c`, the table in `sift_table_src.c`) are the same, over `sift_col_begin` / `sift_col_filter`:
+1. Providers (the index in `sift_aggcol.c`, the table in `table/src.c`) are the same, over `sift_col_begin` / `sift_col_filter`:
    `col_prune_str` converts each test to a `SiftColPred` (`SSTR_EQ` -> `SIFT_COLOP_EQ`, ... `SSTR_PREFIX` -> `SIFT_COLOP_PREFIX`, `vals[i]` ->
    `SiftColValue{.v.s, .len}`) and keeps them in the source; `col_begin` appends them to the `preds` it passes to `sift_col_begin` (zone
    pruning: the segment dictionary's test and the zone set for dictionary units, the prefix zone for inline ones). `col_filter_str` converts the

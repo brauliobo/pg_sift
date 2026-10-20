@@ -1,5 +1,5 @@
 /*
- * sift_table.c - the table access method sift_table: handler, DML, relation lifecycle (docs/COL-TAM.md section 4).
+ * table/am.c - the table access method sift_table: handler, DML, relation lifecycle (docs/COL-TAM.md section 4).
  *
  * Row locking protocol of DELETE, UPDATE and SELECT FOR ...: LockTuple on the TID, the tombstone log brought up to date, the
  * deletion state of the row decided (sift_tbl_del_state), then the tombstone appended, all under the tuple lock, which is
@@ -41,7 +41,7 @@
 
 #include "col/am.h"
 #include "bm25/merge.h"
-#include "sift_table.h"
+#include "table/table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
 

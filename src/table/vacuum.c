@@ -1,5 +1,5 @@
 /*
- * sift_table_vacuum.c - VACUUM, VACUUM FULL / CLUSTER (rewrite), CREATE INDEX CONCURRENTLY validation (docs/COL-TAM.md section 7).
+ * table/vacuum.c - VACUUM, VACUUM FULL / CLUSTER (rewrite), CREATE INDEX CONCURRENTLY validation (docs/COL-TAM.md section 7).
  *
  * VACUUM: write buffer rows whose insertion aborted, or whose deleter is committed and older than OldestXmin, are flagged DEAD (and are
  * the dead TIDs the indexes drop); committed old insertions are frozen; then the tombstone segment is rewritten without the
@@ -37,7 +37,7 @@
 #include "col/seg.h"
 #include "sift_lane.h"
 #include "bm25/maint.h"
-#include "sift_table.h"
+#include "table/table.h"
 
 #define MAX_MERGE_STEPS	16
 

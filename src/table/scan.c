@@ -1,9 +1,9 @@
 /*
- * sift_table_scan.c - sequential, TID range, parallel, bitmap and index scans of a sift_table, TID fetches, ANALYZE sampling
+ * table/scan.c - sequential, TID range, parallel, bitmap and index scans of a sift_table, TID fetches, ANALYZE sampling
  * and CREATE INDEX (docs/COL-TAM.md section 4). Every row returned goes through sift_tbl_visible.
  *
  * A scan reads, in order, the write buffers (a page copy at a time, rows in slot order) and the column groups (a unit of the
- * engine at a time, sift_table_seg.c). It works on a private copy of the directory taken at begin, protected by its registered
+ * engine at a time, table/seg.c). It works on a private copy of the directory taken at begin, protected by its registered
  * snapshot (P4 of sift_store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
  * (visibility, index build verdict) is the caller's.
  */
@@ -31,7 +31,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/kern.h"
-#include "sift_table.h"
+#include "table/table.h"
 #include "sift_visibility.h"
 
 /* ---------- parallel scans ---------- */

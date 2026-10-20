@@ -1,5 +1,5 @@
 /*
- * sift_table_store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, write
+ * table/store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, write
  * buffers (row format) and the tombstone segment. Pages and the directory are those of sift_store.h.
  *
  * The page chains (a write buffer's data pages, the tombstone log) are the lane 0 of the lane segments of sift_lane.h, which also
@@ -23,7 +23,7 @@
 #include "utils/rel.h"
 
 #include "sift_lane.h"
-#include "sift_table.h"
+#include "table/table.h"
 
 #define OVF_PAYLOAD		(SIFT_PAGE_PAYLOAD - TBL_PAGE_INIT)
 

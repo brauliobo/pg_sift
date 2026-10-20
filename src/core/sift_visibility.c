@@ -16,7 +16,7 @@
 #include "utils/snapmgr.h"
 
 #include "bm25/kernels.h"
-#include "sift_table.h"
+#include "table/table.h"
 #include "sift_store.h"
 #include "sift_visibility.h"
 

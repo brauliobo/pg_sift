@@ -1,5 +1,5 @@
 /*
- * sift_table_slot.c - the tuple table slot of a sift_table (docs/COL-TAM.md section 4): a virtual slot whose attributes of a row of a column
+ * table/slot.c - the tuple table slot of a sift_table (docs/COL-TAM.md section 4): a virtual slot whose attributes of a row of a column
  * group are decoded when an expression asks for them. A scan or a fetch only records where the row is (the group scan, the unit token,
  * the position in the unit's vectors); slot_getsomeattrs reaches getsomeattrs with the number of leading attributes the query reads, and
  * only the columns up to there are decoded, one vector per column and unit, on the first row that needs it. count(*) decodes nothing.
@@ -18,7 +18,7 @@
 #include "utils/rel.h"
 #include "utils/relcache.h"
 
-#include "sift_table.h"
+#include "table/table.h"
 
 typedef struct SiftTblSlot
 {

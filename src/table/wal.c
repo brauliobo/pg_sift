@@ -1,5 +1,5 @@
 /*
- * sift_table_wal.c - logical replication of a sift_table (docs/COL-TAM.md section 5).
+ * table/wal.c - logical replication of a sift_table (docs/COL-TAM.md section 5).
  *
  * Page changes go through generic WAL and need no setup. Logical decoding does not decode generic WAL, so a published table
  * (wal_level = logical) also writes one record of the custom resource manager per row change: {rlocator, new row, replica
@@ -26,7 +26,7 @@
 #include "replication/snapbuild.h"
 #include "utils/rel.h"
 
-#include "sift_table.h"
+#include "table/table.h"
 
 /* A development resource manager id; a permanent one is requested from the PostgreSQL custom rmgr list before a release */
 #define SIFT_TBL_RMGR_ID	RM_EXPERIMENTAL_ID

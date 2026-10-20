@@ -8,7 +8,7 @@ requirement, section 5) logical replication.
 
 Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
 index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `sql/pg_sift--3.0.sql` and `sql/pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
-`src/table/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
+`src/table/*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
 the table AM track; where it and the code disagree, fix one in the same commit.
 
 Running example (used in tests too): `orders(id bigint, store_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb,
@@ -50,7 +50,7 @@ path). Blocks 0 (meta) and 1 (directory) as in `sift_store.h`; everything else i
 | `ndocs` | rows of the immutable segments (statistics) |
 | `k1`, `b`, `analyzer_hash` | 0 |
 
-`sift_table.h` has the one accessor (`SIFT_TBL_NEXT_VBLOCK`).
+`table/table.h` has the one accessor (`SIFT_TBL_NEXT_VBLOCK`).
 
 Directory entries (`SiftSegEntry`):
 
@@ -284,7 +284,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
 ## 6. Reading: scans, indexes, the engine, SiftAgg
 
 - **Sequential/bitmap/TID/index scans** are the AM callbacks above. A scan owns a `SiftTblScan` (directory copy, write buffer page cursor,
-  group reader, tombstone cache). The slot of a `sift_table` (`sift_table_slot.c`, a virtual slot) is given a row of a column group
+  group reader, tombstone cache). The slot of a `sift_table` (`table/slot.c`, a virtual slot) is given a row of a column group
   as a reference only: the group reader, the unit it was in (a token that changes with every unit) and the position of the row in the
   unit's vectors. `slot_getsomeattrs` reaches the AM with the number of leading columns the query reads, and only those leaf columns
   are decoded, one vector per column and unit on the first row that needs it (`fill_attr`); `count(*)` decodes nothing. The decoded
@@ -300,7 +300,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/sift_visibility.c) which today reads the heap's
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
   candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM.
-- **SiftAgg over the table** (`src/table/sift_table_src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
+- **SiftAgg over the table** (`src/table/src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
   columns of the table, in the order of its column layout. The groups are read by the engine, one `sift_col_open_table` source per column layout
   the segments were written for (the leaves of an older layout are matched by attribute number; a column the segment lacks reads as the
   catalog's default for rows that lack it, null or the constant of `ADD COLUMN .. DEFAULT`), with the table's visibility as the engine's
@@ -318,7 +318,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
 
 ## 7. Maintenance
 
-**Promotion** (`sift_tbl_promote`, `src/table/sift_table_seg.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
+**Promotion** (`sift_tbl_promote`, `src/table/seg.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
 kind `SEALED`; `create_wbuf` does it when the segment fills, VACUUM closes the active one once it has 8 pages), and becomes a column
 segment when every row is *final* (`row_fate`): `xmin` committed and older than the horizon (kept, frozen), or flagged `DEAD` by VACUUM
 (dropped); a row whose insert is aborted or not yet old enough keeps the segment as it is (retried by the next promotion). A row with a
@@ -496,4 +496,4 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | `SIFT_COLS_VAR` (exact datum images, engine), `exceptions` leaf (table layout) | used |
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
 | `sift_colw_set_tag` (segment xmin of a bulk write) | removed with the write path of 3.1: the engine writer takes the `xmin`/`cmin` of every row from the batch (`sift_cbatch_add_ver`), and the direct column writes of a rewrite are frozen (no versions) |
-| `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`sift_table_src.c`) |
+| `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`table/src.c`) |
