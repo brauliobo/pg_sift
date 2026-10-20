@@ -53,3 +53,5 @@
 ^sql/.*\.sql$	.
 ^scripts/(perf-select\.py|test-perf-select\.py)$	{perf}
 ^(bench/steps/perf_gate\.py|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
+
+^scripts/areas\.sh$	.
