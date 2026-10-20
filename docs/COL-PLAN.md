@@ -389,13 +389,13 @@ A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/sift_ag
 
 ## Stays on the normal plan
 
-What the planner refuses among the joins, the per-order form and a few jsonb tests, each once with the reason. The traps with a fixture (`t_not_in_subquery`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
+What the planner refuses among the joins, the per-order form and a few jsonb tests, each once with the reason. The traps with a fixture (`t_not_in_subquery_correlated`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
 
 | Shape | Reason |
 |---|---|
 | `FULL JOIN` to a table | the unmatched rows of the table would be output rows with no source row; the scan only emits tuples of source rows |
 | `RIGHT JOIN` | PostgreSQL turns it into a `LEFT` join of the other side, so the table is the preserved side: the same reason as `FULL` |
-| `NOT IN (SELECT ..)` | a hashed `SubPlan` with the NULL rule of `NOT IN` (one NULL member turns every answer into NULL); it is no anti join. `NOT EXISTS` is (pushed) |
+| a correlated or row-valued `NOT IN (SELECT ..)` | the hashed `SubPlan` reads the row, or tests two columns at once: it is no lookup table over one leaf. `NOT EXISTS` is a join (pushed) |
 | a correlated `LEFT JOIN LATERAL (SELECT .. LIMIT 1)` lookup | the row PostgreSQL takes among duplicate keys depends on its plan, so the scan cannot be exact unless the key is unique: write it as a join on the key |
 | join to a sub-select with `GROUP BY`/`LIMIT`/`DISTINCT`, a CTE that is read more than once, `VALUES`, a function in `FROM` | PostgreSQL does not pull them up to a base table, so the right side is a plan, not a table the scan can read at start; running a child plan under the node is not done |
 | the scanned table on the nullable side of an outer join (`spine s LEFT JOIN items t ON t.d <@ s.range`) | the scan would have to return a group for every row of the other table (a `RIGHT JOIN`): write the aggregate first and join the spine above it, which is pushed |

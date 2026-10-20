@@ -32,6 +32,19 @@ reads one index for (a ranked search with `sift.score`, a top-N, a time series o
 attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
 Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
 
+## Uncorrelated sub-selects
+
+`col NOT IN (SELECT ...)`, and `col IN (SELECT ...)` under `OR` or `NOT`, are hashed `SubPlan`s in PostgreSQL (a semi join is not possible for them), and
+`Custom Scan (SiftAgg)` takes them as a lookup table over the leaf: PostgreSQL's own `SubPlan` answers once for every distinct value of the column, so the NULL rule
+of `IN` and `NOT IN` is PostgreSQL's (one NULL in the sub-select makes every `NOT IN` NULL, no row; an empty sub-select makes it true for a NULL value too) and the
+test composes with `AND`, `OR`, `NOT`, `CASE` and `FILTER`. The sub-select runs once, when the scan starts, with the query's snapshot, and `EXPLAIN` shows it as
+`SubPlan` under the node; a rescan keeps the answers, and a prepared statement's parameters are read by the sub-select as in any plan.
+
+The normal plan stays when the sub-select is correlated or reads a parameter of the outer query, tests two columns (`(a, b) NOT IN (SELECT x, y ...)`), is not
+hashed (too large for `work_mem` and `hash_mem_multiplier`), reads a volatile function, locks rows (`FOR UPDATE`), holds a sub-select of its own or an expression
+that may raise (a division, a cast through text) or the tested column is not one the lookup table holds (an `int8` column). A scan with such a test runs without
+parallel workers: the leader runs the sub-plans. Fixtures `t_not_in_subquery*`, `t_in_subquery_or`, test `agg_subplan_lut`.
+
 ## Differential suite
 
 `scripts/coldiff.sh` is the referee of the aggregate pushdown (`Custom Scan (SiftAgg)`): it runs a corpus of plain SQL aggregate queries
