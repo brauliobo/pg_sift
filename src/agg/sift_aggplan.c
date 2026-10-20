@@ -179,8 +179,19 @@ static const char *
 att_name(AggCtx *c, int attno)
 {
 	Node	   *x = list_nth(c->attexpr, attno - 1);
+	List	   *rtable = c->rtable,
+			   *dpctx = c->dpctx;
+	char	   *text;
 
-	return x == NULL ? "?" : IsA(x, Var) ? get_attname(c->heapoid, ((Var *) x)->varattno, false) : expr_text(c, x);
+	if (x == NULL || IsA(x, Var))
+		return x == NULL ? "?" : get_attname(c->heapoid, ((Var *) x)->varattno, false);
+	/* the Vars of an index expression are the table's of the query, not of the sub-query whose predicate is being compiled */
+	c->rtable = NIL;
+	c->dpctx = NIL;
+	text = expr_text(c, x);
+	c->rtable = rtable;
+	c->dpctx = dpctx;
+	return text;
 }
 
 static const char *
@@ -3784,14 +3795,15 @@ func_leaf_kind(FuncKind k)
 	return k == FK_EACH || k == FK_EACH_TEXT ? SCL_OBJECT : SCL_ARRAY;
 }
 
-/* the group leaf of the given kind an expression is: the jsonb array (object) leaf an unnested function reads */
+/* the group leaf of the given kind the keys below an expression lead to: the jsonb array (object) leaf an unnested function reads */
 static int
-group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
+group_leaf_below(AggCtx *c, Node *arg, List *keys, SiftSrcLeafKind kind)
 {
 	JsonRef		r = {0};
 
 	if (!json_access(c, arg, &r) || r.as_text || r.att == 0)
 		return -1;
+	r.path = list_concat_copy(r.path, keys);
 	for (int i = 0; i < c->lay->nleaves; i++)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
@@ -3800,6 +3812,12 @@ group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
 			return i;
 	}
 	return -1;
+}
+
+static int
+group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
+{
+	return group_leaf_below(c, arg, NIL, kind);
 }
 
 /* ---------- existential predicates: some element of one array passes (SAP_ANY_ELEM) ---------- */
@@ -3869,27 +3887,38 @@ typedef struct Lit
 } Lit;
 
 static int
-child_named(AggCtx *c, int group, const char *name)
+child_named(AggCtx *c, int group, const char *name, bool astext)
 {
 	for (int i = 0; i < c->lay->nleaves; i++)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->parent == group && !l->lossy && !l->astext && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
+		if (l->parent == group && !l->lossy && l->astext == astext && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
 			return i;
 	}
 	return -1;
+}
+
+/* a string no number or boolean prints as: the text of an astext leaf equals it for a JSON string only */
+static bool
+lit_is_plain_text(const Lit *lit)
+{
+	return lit->kind == 's' && (lit->len == 0 || (!isdigit((unsigned char) lit->s[0]) && lit->s[0] != '-')) &&
+		!(lit->len == 4 && memcmp(lit->s, "true", 4) == 0) && !(lit->len == 5 && memcmp(lit->s, "false", 5) == 0);
 }
 
 /* element leaf (JSON member `name`) op lit with the semantics of a jsonpath / containment comparison of JSON values, or NULL when not provable */
 static SiftAggPred *
 lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 {
-	int			leaf = child_named(c, grp, name);
+	int			leaf = child_named(c, grp, name, false);
 	SiftAggPred *p;
 	Const	   *k;
 	Oid			typid;
 
+	/* the text leaf of any scalar answers an equality with a string of its own kind: the comparison of another JSON type is unknown, not equal */
+	if (leaf < 0 && op == SCMP_EQ && lit_is_plain_text(lit))
+		leaf = child_named(c, grp, name, true);
 	if (leaf < 0)
 		return NULL;
 	typid = leaf_of(c, leaf)->typid;
@@ -3989,10 +4018,10 @@ negate_op(int op)
 static SiftAggPred *
 lit_test(AggCtx *c, int grp, const char *name, int op, const Lit *lit, bool neg)
 {
-	int			leaf = child_named(c, grp, name);
+	int			leaf = child_named(c, grp, name, false);
 
 	if (leaf < 0)
-		return NULL;
+		return !neg && op == SCMP_EQ ? lit_cmp(c, grp, name, op, lit) : NULL;
 	if (lit->kind == 'z')
 	{
 		if (op != SCMP_EQ && op != SCMP_NE)
@@ -4296,7 +4325,7 @@ path_vars(Node *vars, bool *ok)
 	return *ok && JB_ROOT_COUNT(jb) > 0 ? jb : NULL;
 }
 
-/* `$[*] ? (filter)` on the array column (lax, or strict without !), the variables of the filter constants */
+/* `$[*] ? (filter)` on the array column, or `$.k.j[*] ? (filter)` on the array below keys of the object (lax only: a strict path raises for a missing key) */
 static SiftAggPred *
 compile_path_exists(AggCtx *c, Node *n)
 {
@@ -4308,6 +4337,7 @@ compile_path_exists(AggCtx *c, Node *n)
 				expr;
 	JsonPath   *jp;
 	PathArg		arg = {&expr, NULL, false};
+	List	   *keys = NIL;
 	bool		ok = true;
 	int			grp;
 
@@ -4317,13 +4347,24 @@ compile_path_exists(AggCtx *c, Node *n)
 			return NULL;
 		arg.vars = path_vars(lthird(args), &ok);
 	}
-	if (!ok || !IsA(path, Const) || ((Const *) path)->constisnull || (grp = group_leaf_of(c, linitial(args), SCL_ARRAY)) < 0)
+	if (!ok || !IsA(path, Const) || ((Const *) path)->constisnull)
 		return NULL;
 	jp = DatumGetJsonPathP(((Const *) path)->constvalue);
 	jspInit(&root, jp);
 	arg.strict = !(jp->header & JSONPATH_LAX);
-	if (root.type != jpiRoot || !jspGetNext(&root, &any) || any.type != jpiAnyArray ||
-		!jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
+	if (root.type != jpiRoot || !jspGetNext(&root, &any))
+		return NULL;
+	for (; any.type == jpiKey && !arg.strict; jspGetNext(&any, &any))
+	{
+		int32		len;
+		const char *key = jspGetString(&any, &len);
+
+		keys = lappend(keys, makeString(pnstrdup(key, len)));
+		if (!jspHasNext(&any))
+			return NULL;
+	}
+	if (any.type != jpiAnyArray || !jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt) ||
+		(grp = group_leaf_below(c, linitial(args), keys, SCL_ARRAY)) < 0)
 		return NULL;
 	jspGetArg(&filt, &expr);
 	return any_elem(c, grp, build_path, &arg);
