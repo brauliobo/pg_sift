@@ -1827,11 +1827,43 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 	clear_nulls(ex, v, start, n, out);
 }
 
+/* the JSON nulls of the leaf's NULL slots in the unit, read once (SNULL_JSON, SNULL_MISSING) */
+static const uint64 *
+jnull_bits(AggExec *ex, SiftAggPred *p, int nslots)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->rowmask_ok)
+	{
+		st->rowmask = MemoryContextAllocZero(ex->ucxt, ((nslots + 63) / 64 + PADW) * sizeof(uint64));
+		sift_colsrc_read_jnull(ex->src, &ex->unit, p->leaf, st->rowmask);
+		st->rowmask_ok = true;
+	}
+	return st->rowmask;
+}
+
 static void
 eval_null(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 {
 	const SiftSrcVec *v = get_vec(ex, p->leaf);
 
+	if (p->op >= SNULL_JSON)
+	{
+		const uint64 *jn = jnull_bits(ex, p, v->n) + start / 64;
+
+		memcpy(out, jn, ((n + 63) / 64) * sizeof(uint64));
+		if (p->op == SNULL_MISSING && v->isnull != NULL)
+		{
+			uint64		nul[VECW + PADW];
+
+			sift_colk_nonzero(v->isnull + start, n, nul);
+			sift_colk->bits_andnot(nul, out, (n + 63) / 64);
+			memcpy(out, nul, ((n + 63) / 64) * sizeof(uint64));
+		}
+		else if (p->op == SNULL_MISSING)
+			clear_words(out, n);
+		return;
+	}
 	if (v->isnull == NULL)
 	{
 		if (p->op)

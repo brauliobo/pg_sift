@@ -77,6 +77,10 @@ typedef struct SiftAggNum
 
 #define SIFT_AGG_MAX_WIDE	8		/* conjuncts on wide leaves (SAP_WIDE) of one scan: what a column source takes in set_wide */
 
+/* SAP_NULL ops besides 0 (IS NULL) and 1 (IS NOT NULL): a slot that is a JSON null, a NULL slot that is not (the key is missing) */
+#define SNULL_JSON		2
+#define SNULL_MISSING	3
+
 typedef enum SiftAggPredKind
 {
 	SAP_TRUE,
@@ -85,7 +89,7 @@ typedef enum SiftAggPredKind
 	SAP_OR,
 	SAP_CMP,					/* leaf op operand: kernels on I32/I64/F64 leaves */
 	SAP_IN,						/* leaf IN / NOT IN (array operand): I32 leaves */
-	SAP_NULL,					/* leaf IS [NOT] NULL */
+	SAP_NULL,					/* leaf IS [NOT] NULL; the ops SNULL_JSON and SNULL_MISSING tell a JSON null from a missing key among the NULL slots (element leaves) */
 	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
 	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
 	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */

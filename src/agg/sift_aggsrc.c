@@ -133,6 +133,14 @@ sift_colsrc_can_types(Oid relam, bool index)
 }
 
 bool
+sift_colsrc_can_jnull(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->read_jnull != NULL;
+}
+
+bool
 sift_colsrc_can_wide(Oid relam, bool index)
 {
 	const SiftSrcProvider *prov = provider_of(relam, index);
@@ -162,6 +170,12 @@ void
 sift_colsrc_read_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 {
 	src->prov->read_types(src->impl, unit, leaf, tags);
+}
+
+void
+sift_colsrc_read_jnull(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint64 *bits)
+{
+	src->prov->read_jnull(src->impl, unit, leaf, bits);
 }
 
 void

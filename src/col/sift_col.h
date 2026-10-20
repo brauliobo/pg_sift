@@ -528,6 +528,14 @@ extern bool sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagma
 /* out[0..nrows) = the type of every row of the unit as above (0 where it is not known); false when some row's is not */
 extern bool sift_col_row_types(const SiftColUnit *unit, int col, uint8 deftag, bool mixed, uint8 *out);
 
+/*
+ * The JSON nulls among the slots of the leaf col (a NULL slot whose chunk kept the kind SIFT_COLTAG_JNULL, which a missing key does not have):
+ * bit k of bits is set for the k-th slot in the numbering of sift_col_read_idx (idx, m: the compacted rows of a match set, NULL: the unit as
+ * stored). Returns the number of slots (SIFT_COL_NWORDS of them are written); *known is false when the unit was written without the kinds
+ * and has a NULL slot, so that it cannot tell a JSON null from a missing key.
+ */
+extern uint32 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known);
+
 /* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
 extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
 
