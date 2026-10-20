@@ -1,5 +1,19 @@
 # Aggregate pushdown
 
+## Joins to plans
+
+The right side of a lookup join of `Custom Scan (SiftAgg)` is a table, or a plan: a `VALUES` list, a function (`generate_series`) or a sub-select that
+PostgreSQL keeps (`GROUP BY`, `LIMIT`, `DISTINCT`, a set operation, a ranked scan with `LIMIT`) in an inner, `LEFT`, `IN` or `NOT EXISTS` join.
+PostgreSQL's plan of the right side is the child of the node (`EXPLAIN` shows it under `Lookup Joins: s (subquery)`); the scan runs it once when it
+starts, with the query's snapshot, and its rows are the lookup table, so duplicate keys multiply the rows, a NULL key matches nothing, and the result is the
+one of the normal plan (`EXPLAIN ANALYZE` has `Lookup Rows Read`). A rescan replays the groups; a prepared statement's parameters in the right side are read
+by the child plan as in any plan.
+
+The normal plan stays when the right side is lateral or reads a volatile function, the join has no equality with the table (`ON true`, `<`), the right side is
+estimated above `sift.agg_lookup_max_rows` rows, a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there), the
+table is on the nullable side of an outer join. A scan with such a join runs without workers.
+Fixtures `pt_*`, test `agg_plan_tables`.
+
 ## Differential suite
 
 `scripts/coldiff.sh` is the referee of the aggregate pushdown (`Custom Scan (SiftAgg)`): it runs a corpus of plain SQL aggregate queries
