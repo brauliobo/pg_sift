@@ -37,7 +37,8 @@ cluster before settled size probes or read validation/calibration/timing. Both
 barriers must complete within the global setup budget. Reports retain each
 barrier’s UTC start/end, duration and completion state, plus read/block start
 timestamps. This drains pending setup checkpoints; it does not guarantee a quiet
-host or lower variance. Mutable resets are unchanged and receive no added checkpoint.
+host or lower variance. INSERT has the paired final-restoration barrier described below; UPDATE/VACUUM
+receive no extra checkpoints.
 
 The 16 PR cases in `bench/perf/catalog.py` cover BM25 top ten and counts for common,
 rare, and filtered terms; aggregate scan, group, distinct, filter, and table
@@ -100,38 +101,57 @@ are six pairs (df 5, critical value 2.570581835636305) and sixteen pairs
 (df 15, critical value 2.131449545559323); partial blocks have no interval.
 Repeated operations within a batch are not treated as independent samples.
 
-INSERT uses explicit lifecycle `insert_trajectory`, workload `committed_append_v2`.
-Its timings are not comparable to the old one-row-after-reset workload. Each
-independent side visit restores the seed, warms N separate autocommitted point
-INSERTs, restores again, then measures N separate point INSERTs with no inner
-reset. Each statement completes on the persistent simple-protocol connection
-before the next; the sample is the sum of its SQL times. There is no encompassing
-transaction, bulk statement, server loop, pipeline, or rollback restoration.
-IDs are seed maximum + 1 through + N on both sides. This changes B-tree insertion
-position as well as table growth. The inherited inserted pad is 1,500 repeated
-`p` bytes; it is compressible. This measures bounded committed append throughput
-in the configured non-durable fixture, not long-run steady state.
+INSERT uses lifecycle `insert_trajectory`, experimental workload
+`committed_append_settled_pair_v3`. Historical v2/one-row timings are not
+interchangeable with this metric. One pair owner uses fixed order O: AB,BA,AB,BA,
+AB,BA independently in each block; standalone pilot and validation are AB:
 
-Before any pilot INSERT, seed count/maximum/digest must agree and the integer
-ID domain must accommodate both pilot256 and full allowed growth2048. One fixed
-AB pilot per side performs 256 disposable warm inserts, restores, then times256
-point inserts. With measured reset R, SQL sum T and full point-loop wall L,
-c=T/256 and w=L/256. The common frozen N is the minimum of ceil(.150/min(c)),
-floor(min((1-R)/w)), and2048. A wall cap below1 is inconclusive, never coerced
-to1. The predicted one-second reset-plus-loop cap excludes warm/check costs;
-prefix256 may miss later allocator costs. The global deadline remains binding.
-All raw pilot operation times, caps, predicted and actual windows, seed identity,
-N and lifecycle version remain in JSON. No result-driven recalibration occurs.
+1. Warm both sides in O: configure, restore seed, N separate autocommitted points.
+2. Final restore and all pre-stream counter/geometry/raw-fork probes on both in O.
+3. Synchronous CHECKPOINT on each in O; BOTH must finish before either stream.
+4. N individually completed point statements on each in O, with no SQL/probes/
+   configure between streams. SQL timer sums remain separate from loop wall.
+5. Deferred counters, seed/full-row multiset/count/digest and geometry/fork checks
+   on both in O. Publish the pair only after BOTH checks pass.
 
-Full-N validation and every completed measured stream compare explicit complete
-rows (including NULLs and pad) against ordinary-heap seed UNION ALL generated
-expected inserts, using bidirectional EXCEPT ALL, count and digest. Seed identity
-is rechecked; actual table units/segments/pages and separate table/B-tree forks
-are retained before/after. The declared full-N validation state supplies the
-INSERT size gates. Sample footprints corroborate that state; they are not
-alternative size states from which a favorable result may be selected. Restoring
-warms code/storage paths but does not equalize physical pages, caches, WAL or
-checkpointer activity. Natural allocation and checkpoints remain in the evidence.
+There are exactly two restores per side, no inner reset or extra checkpoint.
+Before-forks are explicitly pre-finalization observations; after-forks are
+sequential pair-end observations. Full-N validation gates mutable and mutable_pk
+separately; sample footprints corroborate that state, not select a favorable one.
+Partial phases/raw timings survive failure, without a valid pair or partial CI.
+Warm/reset/probe/checkpoint/stream/check UTC and common process-origin monotonic
+offsets expose unequal ages. Pair wall includes both sequential checkpoints,
+all warm/reset/probe/loop/check/wait and residual bookkeeping exactly once;
+phase costs explain wall, and overlapping ages are not additional costs.
+
+IDs are seed maximum+1 through+N, checked against both seeds and the full integer
+ID domain before any insertion. Payload is unchanged, including the compressible
+1,500-byte pad. One sample is N autocommitted point requests; no BEGIN wrapper,
+bulk/server loop, pipeline, rollback restoration or physical fixture copy exists.
+Full checks use explicit rows including NULLs/pad against ordinary heap seed plus
+generated expected inserts, bidirectional EXCEPT ALL and count/digest. Actual
+units/segments/pages/free/reusable blocks and raw main/FSM/VM/init forks remain.
+
+One fixed clean AB pilot pair REPLACES the old prefix pilot: 2,048 warm AND
+2,048 measured points per side, under this SAME owner and full checks. Retain
+all raw operations. For each side, c=SQL sum/2048, w=loop wall/2048 and R=FINAL
+reset wall. Freeze N once as min(ceil(.150/min(c)), floor(min((1-R)/w)),2048).
+Nonpositive admissible wall cap is inconclusive, never coerced to1. The predicted
+1s cap covers FINAL reset plus measured loop only; warm/probes/BOTH checkpoints/
+waits/checks remain in the global budget. A separate full-N validation follows;
+there is no new pilot or recalibration under a fault/after a verdict. If N<2048,
+the longer pilot's growth/warm history need not model N linearly.
+
+This measures non-durable append after paired settled restoration, not durable
+commit latency. It changes dirty/writeback/redo/recycling and cache age; fsync and
+full_page_writes remain off. A waits through B's checkpoint, B through A's append;
+slow candidate warm work can age the opposite side. Alternation does not equalize
+ages or prove independence. Natural actual-append/time/other-cluster activity and
+checkpoint overlaps remain in the samples, with no wait-until-quiet, exclusion or
+retry. Restoration/checkpoint cost increases can be absent from the point ratio;
+full wall costs remain visible, without a separate 10% restoration gate. Historical
+~39ms windows at cap2048 achieved ~26% of150ms; neither the full pilot nor settling
+proves target attainment, improved precision, adequate power or budget feasibility.
 
 The material threshold is 1.10. An initial upper bound at most 1.10 passes.
 Every other case receives exactly one fresh confirmation block: **sixteen pairs
@@ -201,29 +221,60 @@ counter and scheduler rounding add control overhead and are not subtracted.
 The trigger is removed before unrelated lifecycle work. Normal comparisons have
 no injection flags or environment controls.
 
-Before installing the trigger, the existing report writer persists
-`mutation_control_preflight` in `results.json` and `summary.md`: seed identity,
-frozen N, full clean calibration with raw 256-operation pilots from both sides,
-growth/wall caps and the complete control budget. This snapshot is written before
-fault DDL and retained in the final report if setup or measurement fails.
+Before installing a trigger, the existing writer persists immutable
+`mutation_control_preflight`: refs/version/identity/N, full raw2048 AB pilot,
+caps/windows, full-N clean validation/verdict phase evidence and control budget.
+The estimate is `13 * max_clean_full_N_pair_wall + 26*N*.001 + required post-control
+costs`. The maximum population contains ONLY complete finite CLEAN full-N
+validation/verdict pairs, never the pilot (even if N equals2048). Pair wall already
+includes both sides, checkpoints, waits and residuals; nested phase costs are not
+added again. The13 pairs include controlled validation and fixed6+6; minimum
+candidate warm+measured sleep is26*N*.001s (53.248s at2048), once only.
 
-The control budget uses the clean
-pilot reset/loop costs, observed checks/validation, worst-case fixed6+6 blocks,
-and all candidate warm AND measured delays, including validation:26*N*.001s
-minimum added sleep. Insufficient predicted remaining allowance is nonzero,
-without shortening N. This estimate excludes unobserved trigger/setup/scheduler
-overhead and is not a full runtime bound. Build/cluster startup has already
-consumed the global budget; clean reset costs are included in the prediction,
-while added trigger predicate/function work during resets, fault DDL/removal,
-preflight reporting, counter and scheduler overhead are excluded. Existing global
-deadline/reserve still applies. Acceptance requires a complete fresh mutation
-confirmation with lower CI>1.10, correct full-state/geometry, all normal size states PASS, both unchanged
-controls PASS, confirmed read slowdown and rejected real BM25 size fault. An
-incomplete acceptance never passes. This tests sensitivity to a large actual
-per-row effect, not power at an11% regression. All deliberate faults remain
-labeled; acceptance success does not make their regression records normal passes.
-Final-head real acceptance, selected gate, hosted duration and larger-nightly
-feasibility still require separate measured evidence.
+Required disjoint post-control evidence covers fault removal, churn/normal sizes,
+BM25 ALTER/REINDEX, logical/size-control probes, final reporting and teardown,
+each with measured duration and provenance. The current workflow has NOT_MEASURED
+costs for these future phases before control. **Full acceptance is therefore NOT
+admissible under this experimental implementation.** Missing/incomplete/nonfinite
+cost evidence means inconclusive before fault installation; no zero, historical
+setup-checkpoint substitution, invented multiplier or unmeasured savings is used.
+The INSERT-only experiment below cannot fill these post-control costs. A later
+explicit design must resolve their availability before full acceptance can run.
+
+After preflight writing returns, admission re-reads the FRESH global remainder
+before first fault SQL, without overwriting the immutable snapshot. Known demand
+exceeding that remainder is nonzero. Startup is already elapsed; extra trigger
+seed predicate/counter/DDL/scheduler variability remains unknown. An observed
+maximum plus configured minimum sleep is an estimate, not a full runtime bound.
+The same global deadline/reserve remains authoritative. All meaningful controls,
+exact selected comparison, hosted duration and larger nightly remain unresolved.
+
+`--insert-feasibility` is a separate experimental diagnostic, requiring equal exact
+commits, PR tier, committed driver/catalog/fixture identity, no tree overrides,
+no groups and no verify-control. It shares the fresh archives/builds/fixture/setup
+barrier and v3 pair owner; skips all read/UPDATE/VACUUM/settled/churn/controlled
+fault work. It ALWAYS runs one2048 pilot, full-N validation, initial6 and fresh6:
+14 pairs/28 restoration checkpoints/56 resets, plus the two setup checkpoints.
+No pooling/retry/early pass occurs. Reports persist source/configuration before
+measurement, full validation before initial, each block, raw phases and costs.
+Normal gate/acceptance and omitted coverage are explicitly NOT evaluated.
+
+Diagnostic exit0 requires BOTH separate upper CIs<=1.10, complete INSERT evidence,
+logical/geometry/fork/size checks and cleanup. Exit1 flags fresh lowerCI>1.10 or
+valid size discrepancy; exit2 covers either block's imprecision, incomplete
+coverage/evidence or budget; exit3 covers SQL/correctness/source/cleanup errors.
+An initial imprecise block remains diagnostic2 even if fresh passes. Normal
+complete/size_complete stay false; diagnostic completion/status are separate.
+Target fractions/attainment are explicit; a diagnostic0 with short SQL windows
+still establishes neither adequate window/power nor gate readiness.
+
+Proposed next experiment, ONLY after independent review and separate runtime/
+slot/device admission, is ONE180s whole-workflow budget minus actual prior elapsed
+and30s reserve, nice19/max2workers, with equal final reviewed SHA. Use explicit
+`--budget-seconds 180 --cleanup-report-reserve-seconds 30`; no automatic escalation,
+repeat, controls, selected run or nightly follows. SQL/teardown make this a soft
+envelope, not a promised180s fit. The review handoff records the complete proposed
+command and evidence/cleanup requirements. This documentation authorizes no run.
 
 Temporary INSERT SQL restoration/removal preserves any existing SQL/correctness
 error if cleanup also expires; both failures remain in case/oracle evidence. A
