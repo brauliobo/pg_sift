@@ -334,15 +334,15 @@ does that 3.7 times as often and the writers pay for it, so the default stays 40
 | 1024 | 87k rows/s, p99 0.81 ms | 94k rows/s | 137k rows/s | 13 ms / 0.43 s | 98 MB, 78 | 10.6 / 4.1 / 2.6 ms |
 
 `VACUUM` also gives the free blocks at the end of the index file back to the operating system, as it does for a heap (`sift.index_info(index)`:
-`relation_blocks` falls to `high_water`). It tries when they are 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` on the
+`relation_blocks` falls to `high_water`). It tries when free space amounts to 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` on the
 index only if that is free right now, and lets go of it as soon as the file is cut; if any query, insert or maintenance step holds the index it
 does nothing, and the next `VACUUM` tries again (it says so at `DEBUG2`; `VACUUM VERBOSE` shows the new size of the index). A hot standby
 cancels the queries that hold the index when it replays that lock (or delays replay up to `max_standby_streaming_delay`), as for a heap
 (`hot_standby_feedback` does not prevent it; `vacuum_truncate = false` does). A
 `VACUUM` that runs with parallel workers (it vacuums several large indexes at once) cannot take the lock, which needs a transaction id, and
-leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate. Only space that is free and past the point where an old
-snapshot could still read it goes, so the end of the file is what the merges released, once the snapshots older than them are gone.
-Freed space in the middle of the file is not moved, it is reused by the next merge or promotion. `ALTER INDEX ... SET (vacuum_truncate = false)`
+leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate. Under the exclusive lock, newly released space can be reused
+immediately and tail segments can be relocated into interior free runs before truncation, all in the same `VACUUM`. See [COL §2.7](COL.md#27-liveness-and-vacuum)
+for the write allowance and conditions that defer relocation. Free pages left inside the file remain reusable by later writes. `ALTER INDEX ... SET (vacuum_truncate = false)`
 turns the truncation off for an index (no `REINDEX`), like `vacuum_truncate` of a heap table.
 
 **Merging is automatic.** Sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
@@ -371,7 +371,7 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
   A partitioned table works the same when every partition the query reads has a `sift_col` index of the same columns and options: create it per partition or
   once on the parent (`CREATE INDEX ON parent USING sift_col (...)` builds one per partition, also for later ones); `EXPLAIN` lists the `Partitions:` ([AGG.md](AGG.md), "Partitioned tables").
 - **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump`
-  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write buffer fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them with their column format minor, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct`, in the settings table of [Maintenance and operations](#maintenance-and-operations)). VACUUM clears deleted rows out of the column segments, rewrites a segment once more than `sift.table_dead_rewrite_pct` percent of it is dead, and gives the free blocks at the end of the file back as for a heap (`vacuum_truncate`; what a VACUUM itself frees is given back by the next VACUUM after another transaction has ended); `VACUUM FULL` and `CLUSTER` write the table anew as column segments. Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
+  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write buffer fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them with their column format minor, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct`, in the settings table of [Maintenance and operations](#maintenance-and-operations)). VACUUM clears deleted rows out of the column segments, rewrites a segment once more than `sift.table_dead_rewrite_pct` percent of it is dead, and, when it can take the exclusive lock, can reuse newly released space and relocate tail segments into interior free runs before returning the free tail to the operating system in the same VACUUM (`vacuum_truncate`, also `VACUUM (TRUNCATE FALSE)`; allowance and deferral conditions in [COL §2.7](COL.md#27-liveness-and-vacuum)); `VACUUM FULL` and `CLUSTER` write the table anew as column segments. Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
 
 ```sql
 CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
