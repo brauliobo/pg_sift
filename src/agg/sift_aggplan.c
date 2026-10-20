@@ -153,6 +153,8 @@ typedef struct AggCtx
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
+	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
+	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -731,7 +733,30 @@ typedef struct LeafWalk
 	int32		ptypmod;
 	Oid			pcoll;
 	bool		bad;
+	List	   *subparams;		/* the output Params of the sub-plans met: the only executor parameters an expression may hold */
 } LeafWalk;
+
+static bool raising_walker(Node *n, void *context);
+
+/*
+ * An uncorrelated ANY sub-plan that PostgreSQL hashes (x IN (SELECT ..), x NOT IN (SELECT ..) and their NULL rules): its answer is a function of
+ * the tested value alone and holds for the statement, so the lookup table of the leaf may ask the sub-plan once per distinct value. The sub-select
+ * is run when the scan starts, also when no row would reach it in the normal plan, so it must not raise, be volatile, lock rows, hold a sub-plan of its own
+ * or read a parameter of an outer query (a CTE scan, an initplan of the outer level).
+ */
+static bool
+lut_subplan_ok(AggCtx *c, SubPlan *sp)
+{
+	PlannerGlobal *glob = c->root->glob;
+	Query	   *q;
+
+	if (sp->subLinkType != ANY_SUBLINK || !sp->useHashTable || sp->testexpr == NULL || sp->parParam != NIL || sp->args != NIL ||
+		sp->setParam != NIL || sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
+		return false;
+	q = ((PlannerInfo *) list_nth(glob->subroots, sp->plan_id - 1))->parse;
+	return bms_is_empty(((Plan *) list_nth(glob->subplans, sp->plan_id - 1))->extParam) && q->rowMarks == NIL &&
+		!contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c);
+}
 
 static bool
 leaf_walker(Node *n, LeafWalk *w)
@@ -758,12 +783,14 @@ leaf_walker(Node *n, LeafWalk *w)
 			return false;
 		}
 	}
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	if (IsA(n, SubPlan) && lut_subplan_ok(w->c, (SubPlan *) n))
+		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
+	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !list_member_int(w->subparams, ((Param *) n)->paramid))
 	{
 		w->bad = true;
 		return false;
 	}
-	if (IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) || IsA(n, WindowFunc) || IsA(n, GroupingFunc) ||
+	else if (IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) || IsA(n, WindowFunc) || IsA(n, GroupingFunc) ||
 		IsA(n, PlaceHolderVar) || IsA(n, CurrentOfExpr) || IsA(n, NextValueExpr) || IsA(n, SQLValueFunction) ||
 		IsA(n, MinMaxExpr) || IsA(n, SetToDefault))
 	{
@@ -780,7 +807,7 @@ leaf_walker(Node *n, LeafWalk *w)
 static bool
 single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll)
 {
-	LeafWalk	w = {c, -1, InvalidOid, -1, InvalidOid, false};
+	LeafWalk	w = {c, -1, InvalidOid, -1, InvalidOid, false, NIL};
 
 	if (contain_volatile_functions(e))
 		return false;
@@ -838,6 +865,11 @@ subst_mutator(Node *n, SubstCtx *s)
 	if ((IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType)) &&
 		match_leaf(s->c, n) >= 0)
 		return (Node *) copyObject(s->param);
+	if (IsA(n, SubPlan))
+	{
+		s->c->nsubplan++;
+		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
+	}
 	return expression_tree_mutator(n, subst_mutator, s);
 }
 
@@ -907,7 +939,10 @@ raising_walker(Node *n, void *context)
 
 	if (n == NULL)
 		return false;
-	if (IsA(n, CoerceViaIO))
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, raising_walker, context, 0);
+	/* a context: a sub-select, whose own sub-plans and init plans may raise too (more than one row) */
+	if (IsA(n, CoerceViaIO) || (context && (IsA(n, SubPlan) || IsA(n, SubLink) || (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC))))
 		return true;
 	if (IsA(n, FuncExpr))
 	{
@@ -1250,6 +1285,8 @@ expr_text(AggCtx *c, Node *n)
 
 		stmt->rtable = c->rtable ? c->rtable : c->root->parse->rtable;
 		c->dpctx = deparse_context_for_plan_tree(stmt, select_rtable_names_for_explain(stmt->rtable, NULL));
+		/* the Params of a sub-plan are looked up in the plan the expression belongs to */
+		c->dpctx = set_deparse_context_plan(c->dpctx, (Plan *) makeNode(Result), NIL);
 	}
 	return deparse_expression(n, c->dpctx, true, false);
 }
@@ -5052,7 +5089,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 		scan_cost += exact * (units * (AGG_UNIT_COST + Min(rows_out, 256.0) * AGG_PREAGG_GROUP) * cpu_operator_cost - scan_cost);
-	startup = AGG_START_COST * cpu_operator_cost + child_cost;
+	startup = AGG_START_COST * cpu_operator_cost + child_cost + c->subplan_cost;
 	if (s->nworkers > 0)
 	{
 		/* each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
@@ -5843,7 +5880,7 @@ static int
 parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
-	if (!sift_aggspec_parallel_ok(s) || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
+	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
 		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
 		return 0;
 	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
