@@ -317,7 +317,8 @@ typedef struct SiftAggArm
  * A table joined by equality to leaves of the scan or to expressions of them (INNER, LEFT, SEMI or ANTI): a tuple's join key is read
  * from the leaves, the table's rows with that key that pass the rest of the ON clause are its matches (any number: the join is exact
  * for duplicates, a tuple is repeated per match, and a LEFT join keeps a tuple without a match once, with NULL columns). The table is
- * read when the scan starts, with the scan's snapshot. The columns the expressions read are colatt[]; they reach the expressions as
+ * read when the scan starts, with the scan's snapshot, or is the output of a child plan (a sub-select, VALUES list or function: its rows are
+ * the ones PostgreSQL's plan of it returns, run once in the query's snapshot). The columns the expressions read are colatt[]; they reach the expressions as
  * Params nleaves + i of the combo that owns the join.
  */
 typedef enum SiftJoinKind
@@ -330,7 +331,8 @@ typedef enum SiftJoinKind
 
 typedef struct SiftAggJoin
 {
-	Oid			relid;
+	Oid			relid;			/* the table; InvalidOid when the rows are those of a plan (child) */
+	int			child;			/* index in the node's child plans (CustomScan.custom_plans): a sub-select, VALUES list or function; -1: the table */
 	SiftJoinKind kind;
 	int			nkey;
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
@@ -434,7 +436,8 @@ extern sift_i128 sift_pow10(int e);
  * The specs whose group tables can leave a process (dumped and merged by value) and be reset: plain keys (a column, or an
  * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column). The others
  * (combos, joins, ordered sets, two level arms, grouping sets, numeric and float keys, numeric states, mapped aggregates) keep
- * their state in the leader: the plan asks for no workers and the scan has no lanes.
+ * their state in the leader: the plan asks for no workers and the scan has no lanes. A join to a child plan (a sub-select, VALUES list or
+ * function) is run by the leader only: no workers either.
  */
 extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
 
