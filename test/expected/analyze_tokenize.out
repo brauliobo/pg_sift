@@ -245,6 +245,15 @@ SELECT count(*) AS bad FROM rnd, sift.tokenize(d) t WHERE toks(t.token) IS DISTI
    0
 (1 row)
 
+-- only NULL selects the default analyzer; a non-NULL zero OID is opened
+SELECT token FROM sift.tokenize('Hello', NULL);
+ token 
+-------
+ hello
+(1 row)
+
+SELECT token FROM sift.tokenize('Hello', 0::oid::regclass);
+ERROR:  could not open relation with OID 0
 -- the analyzer of a relation that is not a sift index
 CREATE TABLE plain (body text);
 CREATE INDEX plain_btree ON plain (body);
