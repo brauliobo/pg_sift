@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 AREAS='core bm25 col agg table'
-RENAMED='bm25 col table'
+RENAMED='bm25 col table core'
 KEEP='areas.mk portable.list portable-col.list'
 
 src_files() { git ls-files -- src | grep -v -E "^src/($(tr ' ' '|' <<<"$KEEP"))\$" || true; }
@@ -30,7 +30,7 @@ check_layout() {
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|docs/NAMING\.md$|scripts/test-perf-select\.py$|src/(agg|compat)/)'	# src/agg keeps the old names until it is renamed; src/compat forwards them
+EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|docs/NAMING\.md$|scripts/test-perf-select\.py$|src/(agg|compat)/)'	# src/agg keeps the old names until it is renamed; src/compat forwards them
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true

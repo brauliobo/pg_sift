@@ -1,5 +1,5 @@
 /*
- * sift_host.h - the host interface of the portable core.
+ * core/host.h - the host interface of the portable core.
  *
  * The files listed in portable.list (the codec, dictionary, segment reader/writer, evaluator, scoring kernels, analyzer
  * and query language) are compiled by every host: the PostgreSQL extension, the SQLite extension and whatever comes next.
@@ -15,8 +15,8 @@
  *   bits, atomics, spin locks, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements
  *                with threads and malloc
  *   temp files   BufFile (the sorted runs of bm25/runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
- *   storage      the page/extent store of sift_store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
- *                stream reader/writer. This is a link-time interface (sift_store.c in PostgreSQL, sqlite/sqstore.c in
+ *   storage      the page/extent store of core/store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
+ *                stream reader/writer. This is a link-time interface (core/store.c in PostgreSQL, sqlite/sqstore.c in
  *                SQLite): the hot path (sift_sr_get) is a plain call, never a table of function pointers.
  *   options      sift_host_enum_option: a process setting with a fixed set of values (sift.simd)
  *
@@ -34,7 +34,7 @@
 
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 
-#include "host.h"
+#include <host.h>				/* the host's own, on -I: a quoted name would find this file first */
 
 #else							/* PostgreSQL */
 
@@ -77,7 +77,7 @@
 #include "utils/snapshot.h"
 
 /* the PostgreSQL 17..19 differences (and the planner and executor headers only the PostgreSQL host needs) */
-#include "sift_compat.h"
+#include "core/compat.h"
 
 typedef struct config_enum_entry SiftEnumEntry;
 

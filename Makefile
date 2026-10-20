@@ -14,7 +14,7 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
 # -MMD records header dependencies (src/*/*.d) so a header edit rebuilds its users.
-PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SRC) $(SIFT_DIRS))
+PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS))
 PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement
 ifeq ($(shell uname -m),x86_64)
 PG_CFLAGS += -march=x86-64 -mtune=generic

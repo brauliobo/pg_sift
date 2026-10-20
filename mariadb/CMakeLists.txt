@@ -38,14 +38,8 @@ file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/VERSION SIFT_VERSION LIMIT_COUNT 1)
 
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(SRC ${ROOT}/src)
-# the area folders of src/: the sources include each other by bare name
-file(GLOB sift_entries RELATIVE ${SRC} ${SRC}/*)
-set(SIFT_DIRS "")
-foreach(e ${sift_entries})
-  if(IS_DIRECTORY ${SRC}/${e})
-    list(APPEND SIFT_DIRS ${SRC}/${e})
-  endif()
-endforeach()
+# the sources include each other by their path from src/ (src/agg and src/compat: see src/areas.mk)
+set(SIFT_INCDIRS ${SRC} ${SRC}/agg ${SRC}/compat)
 set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN})
 
@@ -65,7 +59,7 @@ set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/host_stubs.c host/host_r
 set(GLUE engine.c query.c feed.c merge.c)
 
 add_library(sift_engine OBJECT ${portable} ${GEN}/bitmap.c ${HOST} ${GLUE})
-target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${SIFT_DIRS})
+target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_INCDIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
   # the codec's names are those of two UDFs
