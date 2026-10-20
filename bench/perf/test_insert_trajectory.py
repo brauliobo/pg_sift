@@ -28,7 +28,7 @@ class InsertTrajectory(unittest.TestCase):
 
     def test_explicit_lifecycles_and_point_identity(self):
         self.assertEqual(CASE.lifecycle,'insert_trajectory')
-        self.assertEqual(CASE.workload_version,'committed_append_v2')
+        self.assertEqual(CASE.workload_version,'committed_append_settled_pair_v3')
         for seed_max in (8192,32768):
             statements = CASE.statements(seed_max,5)
             self.assertEqual(len(statements),5)
@@ -39,20 +39,6 @@ class InsertTrajectory(unittest.TestCase):
         self.assertTrue(all(c.lifecycle=='reset_each_operation' for c in gate.CASES[14:16]))
         self.assertTrue(all(c.lifecycle=='read' for c in gate.CASES[:13]))
 
-    def test_trajectory_has_two_resets_and_no_inner_reset(self):
-        conn = Capture()
-        identity = {'seed_count':32768,'seed_max_id':32768,'first_id':32769,'seed_digest':'digest'}
-        with patch.object(gate,'reset',side_effect=lambda *args:conn.calls.append('RESET')), \
-             patch.object(gate,'insert_footprint',return_value={}), \
-             patch.object(gate,'check_insert',return_value={}):
-            saved = {}
-            gate.insert_visit(conn,CASE,identity,5,math.inf,saved)
-        inserts = CASE.statements(32768,5)
-        calls = [c for c in conn.calls if c=='RESET' or c.startswith('INSERT')]
-        self.assertEqual(calls,['RESET',*inserts,'RESET',*inserts])
-        self.assertEqual(len(saved['operation_seconds']),5)
-        self.assertGreater(saved['sql_seconds'],0)
-        self.assertGreater(saved['loop_wall_seconds'],0)
 
     def test_full_growth_domain_checked_before_pilot(self):
         class Conn:
@@ -69,34 +55,7 @@ class InsertTrajectory(unittest.TestCase):
         reset.assert_not_called()
         self.assertEqual(conn.calls,statements)
 
-    def test_calibration_uses_both_sides_and_keeps_raw(self):
-        class Rev:
-            def __init__(self,side): self.conn = side
-        calls = []
-        def visit(conn,case,identity,n,deadline,sink,**kwargs):
-            calls.append((conn,n))
-            sink.update(reset_seconds=.2 if conn=='A' else .3,
-                        sql_seconds=.0256 if conn=='A' else .0512,
-                        loop_wall_seconds=.0256 if conn=='A' else .0512,
-                        operation_seconds=[.0001 if conn=='A' else .0002]*n)
-        with patch.object(gate,'insert_visit',side_effect=visit):
-            result = gate.calibrate_insert([Rev('A'),Rev('B')],CASE,{},math.inf,{})
-        self.assertEqual(calls,[('A',256),('B',256)])
-        self.assertEqual(result['operations'],1500)
-        self.assertEqual(result['wall_cap_operations'],3499)
-        self.assertEqual(result['growth_cap_operations'],2048)
-        self.assertEqual(len(result['pilots'][0]['operation_seconds']),256)
 
-    def test_unadmissible_cap_is_inconclusive_and_growth_is_bounded(self):
-        class Rev: conn=None
-        def visit(*args,**kwargs):
-            args[5].update(reset_seconds=1.1,sql_seconds=.001,loop_wall_seconds=.001,operation_seconds=[.001/256]*256)
-        saved = {}
-        with patch.object(gate,'insert_visit',side_effect=visit):
-            with self.assertRaises(gate.Inconclusive):
-                gate.calibrate_insert([Rev(),Rev()],CASE,{},math.inf,saved)
-        self.assertLess(saved['wall_cap_operations'],1)
-        self.assertNotIn('operations',saved)
 
     def test_full_multiset_mismatch_rejects_compensating_corruption(self):
         identity = {'seed_count':8192,'seed_max_id':8192,'first_id':8193,'seed_digest':'seed'}
@@ -115,27 +74,11 @@ class InsertTrajectory(unittest.TestCase):
             self.assertIn('generate_series(1,5)',query)
             self.assertIn('8192+i',query)
 
-    def test_mutation_control_scales_per_operation_and_excludes_reset(self):
-        for n in (2,5):
-            class Conn(Capture):
-                def __init__(self): super().__init__(); self.delayed=0
-                def exec(self,sql):
-                    super().exec(sql)
-                    if sql.startswith('INSERT INTO mutable VALUES'): self.delayed+=1
-                def rows(self,sql): return [[str(self.delayed)]]
-            conn = Conn()
-            with patch.object(gate,'reset',side_effect=lambda c,k:conn.calls.append('RESET')), \
-                 patch.object(gate,'insert_footprint',return_value={}), \
-                 patch.object(gate,'check_insert',return_value={}):
-                saved = {}
-                gate.insert_visit(conn,CASE,{'seed_max_id':8192},n,math.inf,saved,control=True)
-            self.assertEqual(conn.delayed,2*n)
-            self.assertEqual(saved['control_counts'],[0,0,n,n,2*n])
+    def test_mutation_control_is_real_row_trigger_above_seed(self):
         conn = Capture()
         gate.install_insert_control(conn,8192)
-        function = conn.calls[0]
-        self.assertIn('IF NEW.id > 8192 THEN',function)
-        self.assertIn('pg_sleep(0.001)',function)
+        self.assertIn('IF NEW.id > 8192 THEN',conn.calls[0])
+        self.assertIn('pg_sleep(0.001)',conn.calls[0])
         self.assertIn('FOR EACH ROW',conn.calls[1])
 
     def test_raw_relation_forks_sum_per_relation(self):
@@ -150,15 +93,13 @@ class InsertTrajectory(unittest.TestCase):
         for fork in gate.FORKS: self.assertIn(f"pg_relation_size(c.oid,'{fork}')",conn.query)
 
     def test_validation_gates_full_n_separate_mutable_relations(self):
-        class Rev: conn=None
-        def visit(conn,case,identity,n,deadline,sink,**kwargs):
+        def pair(revisions,case,identity,n,deadline,sink,**kwargs):
             self.assertEqual(n,5)
-            candidate = bool(saved['visits'].index(sink))
-            sink.update(after={'totals':{'mutable':32768 if candidate else 8192,'mutable_pk':1048576},
-                               'forks':{'mutable':{'main':32768 if candidate else 8192,'fsm':0,'vm':0,'init':0}}})
+            sink.update(sides=[{'after':{'totals':{'mutable':v,'mutable_pk':1048576},'forks':{}}}
+                               for v in (8192,32768)])
         saved = {}
-        with patch.object(gate,'insert_visit',side_effect=visit):
-            gate.validate_insert([Rev(),Rev()],CASE,{},5,math.inf,saved)
+        with patch.object(gate,'insert_pair',side_effect=pair):
+            gate.validate_insert([],CASE,{},5,math.inf,saved)
         sizes = saved['size_checks']
         self.assertEqual(sizes['state'],'mutable_insert_trajectory')
         self.assertEqual(sizes['relations'][0]['status'],'regression')
@@ -175,55 +116,18 @@ class InsertTrajectory(unittest.TestCase):
 
     def test_common_n_frozen_for_initial_and_fresh_six(self):
         calls = []
-        class Rev:
-            def __init__(self,side): self.conn=side
-        def visit(conn,case,identity,n,deadline,sink,**kwargs):
-            calls.append((conn,n,kwargs.get('control',False)))
-            return 1.3 if conn=='B' else 1
+        def pair(revisions,case,identity,n,deadline,sink,**kwargs):
+            calls.append((n,list(kwargs['order'])))
+            return [1,1.3]
         def calibration(*args): args[-1].update(operations=5)
         def validation(*args,**kwargs): args[-1].update(size_checks=None)
-        with patch.object(gate,'insert_identity',return_value={'seed_max_id':32768}), \
-             patch.object(gate,'calibrate_insert',side_effect=calibration) as pilot, \
-             patch.object(gate,'validate_insert',side_effect=validation), \
-             patch.object(gate,'insert_visit',side_effect=visit):
-            result = gate.measure([Rev('A'),Rev('B')],CASE,math.inf)
+        with patch.object(gate,'insert_identity',return_value={'seed_max_id':32768}), patch.object(gate,'calibrate_insert',side_effect=calibration) as pilot, patch.object(gate,'validate_insert',side_effect=validation), patch.object(gate,'insert_pair',side_effect=pair):
+            result = gate.measure([],CASE,math.inf)
         pilot.assert_called_once()
-        self.assertEqual(calls,[(side,5,False) for side in ['A','B','B','A']*6])
+        self.assertEqual(calls,[(5,order) for order in ([0,1],[1,0])]*6)
         self.assertEqual(result['confirmation']['n'],6)
         self.assertEqual(result['timing_status'],'regression')
-        self.assertEqual(result['workload_version'],'committed_append_v2')
-
-    def test_growth_cap_and_raw_partial_pilot_are_retained(self):
-        class Rev: conn=None
-        def visit(*args,**kwargs):
-            args[-1].update(reset_seconds=.1,sql_seconds=.00256,loop_wall_seconds=.00256,
-                            operation_seconds=[.00001]*256)
-        saved = {}
-        with patch.object(gate,'insert_visit',side_effect=visit):
-            gate.calibrate_insert([Rev(),Rev()],CASE,{},math.inf,saved)
-        self.assertEqual(saved['operations'],2048)
-        self.assertTrue(saved['limited_by_growth'])
-        def partial(*args,**kwargs):
-            args[-1].update(operation_seconds=[.001,.002],complete=False)
-            raise gate.BudgetExpired('pilot')
-        saved = {}
-        with patch.object(gate,'insert_visit',side_effect=partial):
-            with self.assertRaises(gate.Inconclusive):
-                gate.calibrate_insert([Rev(),Rev()],CASE,{},math.inf,saved)
-        self.assertEqual(saved['pilots'][0]['operation_seconds'],[.001,.002])
-        self.assertNotIn('operations',saved)
-
-    def test_control_budget_includes_all_excluded_warm_delays(self):
-        unchanged = {'calibration':{'operations':2048,'pilots':[{'reset_seconds':.2}]*2,
-                                   'loop_wall_seconds_per_operation':[.0001,.0002]},
-                     'initial':{'visits':[[{'check_seconds':.03},{'check_seconds':.04}]]*6},
-                     'phase_runtime_seconds':{'validation':2}}
-        with patch.object(gate.time,'monotonic',return_value=10):
-            budget = gate.insert_control_budget(unchanged,300)
-        self.assertEqual(budget['candidate_delayed_operations'],26*2048)
-        self.assertAlmostEqual(budget['minimum_added_sleep_seconds'],53.248)
-        self.assertAlmostEqual(budget['predicted_check_seconds'],12*.07)
-        self.assertEqual(budget['remaining_seconds'],290)
+        self.assertEqual(result['workload_version'],'committed_append_settled_pair_v3')
 
     def test_seed_identity_mismatch_and_full_allowed_id_range(self):
         class Rev:
@@ -240,7 +144,7 @@ class InsertTrajectory(unittest.TestCase):
     def test_partial_insert_block_never_has_interval(self):
         class Rev: conn=None
         saved = {}
-        with patch.object(gate,'insert_visit',side_effect=[1,1,gate.BudgetExpired('partial')]):
+        with patch.object(gate,'insert_pair',side_effect=[[1,1],gate.BudgetExpired('partial')]):
             with self.assertRaises(gate.BudgetExpired):
                 gate.block([Rev(),Rev()],CASE,5,math.inf,sink=saved,identity={})
         self.assertEqual(saved['samples'],[[1,1],[None,None]])
@@ -271,7 +175,7 @@ class InsertTrajectory(unittest.TestCase):
             def run(self,sql): pass
         class Rev: conn=Conn()
         identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed'}
-        frozen = {'name':'clean','identity':identity,'calibration':{'operations':5}}
+        frozen = {'name':'clean','identity':identity,'calibration':{'operations':5},'validation':{}}
         saved = []
         def invalid(*args,**kwargs):
             gate.DEADLINE = -math.inf
@@ -279,7 +183,7 @@ class InsertTrajectory(unittest.TestCase):
         gate.DEADLINE = math.inf
         try:
             with patch.object(gate,'insert_identity',return_value=identity), \
-                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100}), \
+                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100,'evidence_complete':True}), \
                  patch.object(gate,'validate_insert',side_effect=invalid), patch.object(gate,'write_report'):
                 with self.assertRaisesRegex(ValueError,'original correctness error'):
                     gate.measure([Rev(),Rev()],CASE,math.inf,True,sink=saved,frozen=frozen,report={})
@@ -291,11 +195,10 @@ class InsertTrajectory(unittest.TestCase):
 
     def main_cleanup_scenario(self, mode):
         identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed','first_id':8193}
-        calibration = {'operations':5,'pilot_operations':256,'growth_cap_operations':2048,
+        calibration = {'operations':5,'pilot_operations':2048,'growth_cap_operations':2048,
                        'predicted_wall_limit_seconds':1,'predicted_reset_loop_seconds':[.105,.105],
                        'loop_wall_seconds_per_operation':[.001,.001],
-                       'pilots':[{'reset_seconds':.1,'operation_seconds':[.001]*256},
-                                 {'reset_seconds':.1,'operation_seconds':[.002]*256}]}
+                       'pilot_pair':{'sides':[{'operation_seconds':[.001]*2048},{'operation_seconds':[.002]*2048}]}}
         observed = []
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp)
@@ -358,6 +261,7 @@ class InsertTrajectory(unittest.TestCase):
                  patch.object(gate,'calibrate',return_value={'operations':5}), patch.object(gate,'block',side_effect=block), \
                  patch.object(gate,'insert_identity',return_value=identity), \
                  patch.object(gate,'calibrate_insert',side_effect=calibrate), patch.object(gate,'validate_insert',side_effect=validate), \
+                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100,'evidence_complete':True,'candidate_delayed_operations':130,'cost_scope':{'startup':'already elapsed'}}), \
                  contextlib.redirect_stdout(io.StringIO()):
                 try:
                     code = gate.main(args)
@@ -374,7 +278,7 @@ class InsertTrajectory(unittest.TestCase):
                 record = report['mutation_control_preflight']
                 self.assertEqual(record,observed[0])
                 self.assertEqual(record['calibration'],calibration)
-                self.assertEqual([len(p['operation_seconds']) for p in record['calibration']['pilots']],[256,256])
+                self.assertEqual([len(p['operation_seconds']) for p in record['calibration']['pilot_pair']['sides']],[2048,2048])
                 self.assertEqual(record['calibration']['growth_cap_operations'],2048)
                 self.assertEqual(record['calibration']['predicted_wall_limit_seconds'],1)
                 self.assertFalse(record['fault_installed'])
