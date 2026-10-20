@@ -37,6 +37,18 @@ SELECT i, i % 7, (i % 100)::int2, i, i * 1000000000::bigint, ((i % 50) / 4.0)::f
 FROM generate_series(1, 3000) i;
 CREATE INDEX cv_types_col ON cv_types USING sift_col (id, grp, i2, i4, i8, f4, f8, n2, n15, n18, n38, nfree, tx, vc, b, d, ts, tstz, ch, m, iv, ba, tm, u, e, ia);
 
+-- the network, time zone and bit string types, as images of the value
+CREATE TABLE cv_net (id int PRIMARY KEY, grp int NOT NULL, ip inet, cd cidr, mac macaddr, mac8 macaddr8, tz timetz, b bit(8), vb varbit);
+INSERT INTO cv_net SELECT i, i % 7,
+	(ARRAY['10.0.0.1', '10.0.0.1/24', '10.0.0.1/32', '192.168.1.5', '::1', '2001:db8::1', '::ffff:10.0.0.1'])[1 + i % 7]::inet,
+	(ARRAY['10.0.0.0/24', '10.0.0.0/8', '192.168.0.0/16', '::/0'])[1 + i % 4]::cidr,
+	(ARRAY['08:00:2b:01:02:03', 'AA:BB:CC:DD:EE:FF', 'ff:ff:ff:ff:ff:ff'])[1 + i % 3]::macaddr,
+	(ARRAY['08:00:2b:01:02:03:04:05', 'aabbccddeeff0011'])[1 + i % 2]::macaddr8,
+	(ARRAY['12:00+01', '11:00+00', '24:00:00-15:59', '04:05:06.5-03'])[1 + i % 4]::timetz,
+	(ARRAY[B'00000000', B'00000001', B'11111111'])[1 + i % 3], (ARRAY['', '0', '00', '101'])[1 + i % 4]::varbit
+FROM generate_series(1, 3000) i;
+CREATE INDEX cv_net_col ON cv_net USING sift_col (id, grp, ip, cd, mac, mac8, tz, b, vb);
+
 -- the same rows in a sift_table (every type is kept exactly), sealed into column groups
 CREATE TABLE cv_tt USING sift_table AS SELECT * FROM cv_types;
 VACUUM cv_tt;
