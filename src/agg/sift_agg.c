@@ -364,6 +364,7 @@ typedef struct PredState
 	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
 	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */
 	bool		rowmask_ok;
+	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	int			nop;			/* numeric operand: the comparison of the scaled integers equivalent to the query's (SiftCmpOp) ... */
 	sift_i128	cn;				/* ... with this operand, or ... */
 	int			konst;			/* ... -1, or 1 / 0: it holds for every / no value */
@@ -1651,6 +1652,7 @@ fill_ones(uint64 *m, int n)
 {
 	int			nw = (n + 63) / 64;
 
+			st->in_dense = memchr(st->in_lut, 0, span) == NULL;
 	for (int i = 0; i < nw; i++)
 		m[i] = ~UINT64CONST(0);
 	if (n & 63)
@@ -2111,7 +2113,6 @@ map_load(AggExec *ex, const SiftAggJoin *j)
 	}
 	MemoryContextSwitchTo(old);
 	ExecDropSingleTupleTableSlot(slot);
-	table_endscan(scan);
 	table_close(rel, NoLock);
 	return m;
 }
@@ -2254,6 +2255,14 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	for (int k = 0; k < j->nkey; k++)
 	{
 		if (j->keyexpr[k])
+	ex->lookup_loaded += m->nrow;
+	{
+		instr_time	t1;
+
+		INSTR_TIME_SET_CURRENT(t1);
+		INSTR_TIME_SUBTRACT(t1, t0);
+		ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
+	}
 		{
 			bool		isnull;
 			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
@@ -6994,6 +7003,15 @@ join_stage(AggExec *ex, int s, Tup *in)
 			if (e >= en->nout)
 			{
 				j++;
+/* does the expression of a slot of the combo read one of its leaves? */
+static bool
+slot_reads_leaf(const SiftAggCombo *cb, int sl)
+{
+	int			nleaves = cb->nleaves;
+
+	return reads_leaf_param((Node *) cb->slot[sl].expr, &nleaves);
+}
+
 				e = 0;
 				k--;
 				continue;

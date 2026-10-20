@@ -784,11 +784,41 @@ typedef struct SubstCtx
 	Param	   *param;
 } SubstCtx;
 
+/*
+ * PostgreSQL hashes the array of x = ANY (array) when it is a constant; one that comes from a parameter is searched linearly for every
+ * value the executor tests (a dictionary of 200k entries against 5000 elements takes seconds). The executor builds the hash table on the
+ * first call and keeps it, so the parameter is read once.
+ */
+static void
+hash_param_saop(ScalarArrayOpExpr *sa)
+{
+	Node	   *arr = lsecond(sa->args);
+	Oid			op = sa->opno,
+				lh,
+				rh;
+
+	if (!IsA(arr, Param) || ((Param *) arr)->paramkind != PARAM_EXTERN || OidIsValid(sa->hashfuncid))
+		return;
+	if (!sa->useOr && !OidIsValid(op = get_negator(op)))
+		return;
+	if (!get_op_hash_functions(op, &lh, &rh) || lh != rh)
+		return;
+	sa->hashfuncid = lh;
+	sa->negfuncid = sa->useOr ? InvalidOid : get_opcode(op);
+}
+
 static Node *
 subst_mutator(Node *n, SubstCtx *s)
 {
 	if (n == NULL)
 		return NULL;
+	if (IsA(n, ScalarArrayOpExpr))
+	{
+		Node	   *r = expression_tree_mutator(n, subst_mutator, s);
+
+		hash_param_saop((ScalarArrayOpExpr *) r);
+		return r;
+	}
 	if ((IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType)) &&
 		match_leaf(s->c, n) >= 0)
 		return (Node *) copyObject(s->param);
@@ -1703,6 +1733,13 @@ combo_sub_mutator(Node *n, ComboSub *s)
 
 	if (n == NULL)
 		return NULL;
+	if (IsA(n, ScalarArrayOpExpr))
+	{
+		Node	   *r = expression_tree_mutator(n, combo_sub_mutator, s);
+
+		hash_param_saop((ScalarArrayOpExpr *) r);
+		return r;
+	}
 	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType))
 	{
 		p = makeNode(Param);
