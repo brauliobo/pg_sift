@@ -2904,6 +2904,9 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	direct = !joined && !(fid == F_COUNT_ANY && a->aggdistinct != NIL);
 	if (ai < 0 || (!direct && (!OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))))
 		return false;
+	/* a direct bool_and, bool_or and every are PostgreSQL's own aggregates, not min and max of a boolean: they have a combine function and run in workers */
+	if (direct && (fid == F_BOOL_AND || fid == F_BOOL_OR || fid == F_EVERY))
+		return false;
 	if (a->aggdistinct != NIL && fid != F_COUNT_ANY)
 		return false;
 	if (fid == F_COUNT_ANY)
