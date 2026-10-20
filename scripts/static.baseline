@@ -92,8 +92,8 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/col/seg_write.c|per
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/table/scan.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/table/scan.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-integer-division|src/table/src.c|result of integer division used in a floating point context; possible loss of precision
 tidy|bugprone-not-null-terminated-result|src/bm25/analyze.c|the result from calling 'memcpy' is not null-terminated
 tidy|bugprone-signed-char-misuse|src/bm25/query.c|comparison between 'signed char' and 'unsigned char'

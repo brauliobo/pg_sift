@@ -296,6 +296,6 @@ CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrow
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;
 
--- Table module (src/table/seg.c): the column groups of a sift_table that still carry their writer (rows that are not final)
+-- Table module (src/table/funcs.c): the column groups of a sift_table that still carry their writer (rows that are not final)
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_tagged' LANGUAGE C STRICT;
