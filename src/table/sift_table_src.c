@@ -19,6 +19,9 @@
 #include "nodes/makefuncs.h"
 #include "nodes/bitmapset.h"
 #include "pgstat.h"
+#include "optimizer/optimizer.h"
+#include "optimizer/planner.h"
+#include "rewrite/rewriteHandler.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -130,6 +133,15 @@ leaf_wide(const SiftColDef *def)
 	return def->type == SIFT_COLT_MONEY || def->type == SIFT_COLT_INTERVAL || (def->type == SIFT_COLT_NUMERIC && def->store == SIFT_COLS_VAR);
 }
 
+/* The expression of a stored generated column, as the planner sees it in a query: a query that writes it reads the column (always the value the row holds) */
+static Node *
+generation_expr(Relation rel, Form_pg_attribute att)
+{
+	if (att->attgenerated != ATTRIBUTE_GENERATED_STORED)
+		return NULL;
+	return (Node *) expression_planner((Expr *) build_column_default(rel, att->attnum));
+}
+
 /* The planner's view of the table: a scalar leaf per column; the exact datum images (SIFT_COLS_VAR) are not values the executor reads */
 static SiftSrcLayout *
 tbl_layout(Relation rel)
@@ -147,6 +159,7 @@ tbl_layout(Relation rel)
 
 		lay->attexprs = lappend(lay->attexprs, att->attisdropped ? NULL :
 								(Node *) makeVar(1, a, att->atttypid, att->atttypmod, att->attcollation, 0));
+		lay->attalias = lappend(lay->attalias, generation_expr(rel, att));
 	}
 	lay->nleaves = cur->ncols - 1;	/* the last leaf holds the exceptions */
 	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * lay->nleaves);

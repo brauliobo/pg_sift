@@ -62,6 +62,12 @@ INSERT INTO cv_tt SELECT 3000 + i, i % 7, (i % 100)::int2, i, i, i / 4.0, i / 4.
 DELETE FROM cv_tt WHERE id % 50 = 0;
 CREATE INDEX cv_tt_tx_fts ON cv_tt USING sift (tx);
 
+-- a sift_table with a stored generated column (K16), part of it in the write buffer
+CREATE TABLE cv_gt (id int, ts timestamp, v int, mon date GENERATED ALWAYS AS (date_trunc('month', ts)::date) STORED) USING sift_table;
+INSERT INTO cv_gt (id, ts, v) SELECT i, '2024-01-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, 3000) i;
+VACUUM cv_gt;
+INSERT INTO cv_gt (id, ts, v) SELECT 3000 + i, '2025-02-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, 300) i;
+
 -- a numeric NaN, which the column index stores as NULL with an overflow flag
 CREATE TABLE cv_nan (g int, n numeric(10,2));
 INSERT INTO cv_nan VALUES (1, 1.5), (1, 'NaN'), (2, 2.5);

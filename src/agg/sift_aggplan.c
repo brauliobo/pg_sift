@@ -132,6 +132,7 @@ typedef struct AggCtx
 	Oid		   *partindex;
 	double		part_pages;		/* ... and the pages of their heaps */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
+	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
@@ -293,8 +294,9 @@ attr_of_expr(AggCtx *c, Node *e)
 	for (int a = 0; a < list_length(c->attexpr); a++)
 	{
 		Node	   *x = list_nth(c->attexpr, a);
+		Node	   *y = c->attalias ? list_nth(c->attalias, a) : NULL;
 
-		if (x && equal(e, x))
+		if ((x && equal(e, x)) || (y && equal(e, y)))
 			return a + 1;
 	}
 	return 0;
@@ -5707,17 +5709,27 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	return false;
 }
 
-static void
-build_attexprs(AggCtx *c)
+static List *
+vars_of_rel(AggCtx *c, List *exprs)
 {
-	foreach_ptr(Node, e, c->lay->attexprs)
+	List	   *out = NIL;
+
+	foreach_ptr(Node, e, exprs)
 	{
 		Node	   *x = e ? copyObject(e) : NULL;
 
 		if (x)
 			ChangeVarNodes(x, 1, c->relid, 0);
-		c->attexpr = lappend(c->attexpr, x);
+		out = lappend(out, x);
 	}
+	return out;
+}
+
+static void
+build_attexprs(AggCtx *c)
+{
+	c->attexpr = vars_of_rel(c, c->lay->attexprs);
+	c->attalias = vars_of_rel(c, c->lay->attalias);
 }
 
 static int
@@ -5927,6 +5939,15 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 }
 
 /* the groups the scan makes: those of the keys, or of each grouping set */
+/* what PostgreSQL has statistics of for a key: the column behind an expression that denotes a stored generated column, else the expression */
+static Node *
+stats_expr(AggCtx *c, Node *e)
+{
+	int			att = attr_of_expr(c, e);
+
+	return att > 0 ? list_nth(c->attexpr, att - 1) : e;
+}
+
 static double
 set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
 {
@@ -5947,7 +5968,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 			if (b > 0)
 				bucketed *= b;
 			else
-				sub = lappend(sub, list_nth(keys, j));
+				sub = lappend(sub, stats_expr(c, list_nth(keys, j)));
 		}
 		/* Min and Max evaluate their arguments more than once: the estimate is made once */
 		g = sub == NIL ? 1.0 : estimate_num_groups(root, sub, rows, NULL, NULL);

@@ -75,6 +75,8 @@ typedef struct SiftSrcLayout
 	int			natts;			/* attributes of the index (table: columns of the table) */
 	List	   *attexprs;		/* natts expressions over the heap row (Var nodes with varno 1, or the index expressions
 								 * with varno 1); a jsonb attribute's leaves are described by path. Copies, palloc'd */
+	List	   *attalias;		/* NIL or natts entries: a second expression that denotes the same attribute (NULL: none). A sift_table keeps the
+								 * generation expression of a stored generated column, so that the column is read where the query writes the expression */
 	int			nleaves;
 	SiftSrcLeaf *leaf;
 } SiftSrcLayout;
