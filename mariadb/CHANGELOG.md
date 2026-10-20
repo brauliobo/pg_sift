@@ -4,6 +4,11 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 3.1.0
+
+- No change to the index format (2) or the SQL files: an index of 3.0.2 opens as it is, and this extension still writes BM25 segment format 1. The library is rebuilt with the PostgreSQL release 3.1.0 and `sift_version()` reports pages 1.3 (what the build reads: the segment format 3 that PostgreSQL 3.1 writes is read by the shared core, which this extension never writes).
+- Fixed, shared core: a wide wildcard, regex or fuzzy leaf (more terms than the expansion limit) next to an optional phrase (`/lev.*/ OR "two words"`) lost its score for the documents that matched it, so the ranking differed from the documented one; counts and the set of matches were right. The files of the shared core (`src/portable.list`) that changed are the BM25 segment, dictionary, posting, bitmap, query and evaluator code, for the PostgreSQL index format 3 and this fix. No speed-up or slow-down is claimed for this extension. The other changes of 3.1 (the column engine, the aggregate pushdown, the `sift_table` write path, field weights and facet counts, the Vulkan backend) are PostgreSQL features and are not in the MariaDB extension.
+
 ## 3.0.2
 
 - No change to the index format (2) or the SQL files: an index of 3.0.1 opens as it is. The library is rebuilt with the PostgreSQL release 3.0.2. One file of the shared core (`src/portable.list`) changed: `bm25/sift_eval.c`, where a ranked query with no limit (`k` = 0 of `sift_rank_begin`) now ranks every match in one search instead of searching again for 1024 hits, then 16 times as many; the ranked rows and their scores are the same. No speed-up or slow-down is claimed for this extension. The other fixes of 3.0.2 (the column scans, the aggregate pushdown, the keyed ranked scan) are PostgreSQL features and are not in the MariaDB extension.
