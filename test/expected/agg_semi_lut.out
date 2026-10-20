@@ -131,9 +131,9 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE small_id IN (SELEC
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE small_id NOT IN (SELECT code FROM codes) GROUP BY kind$$);
-  plan  | result_rows | vs_generic_join | vs_normal_plan 
---------+-------------+-----------------+----------------
- normal |           4 |               0 |              0
+  plan   | result_rows | vs_generic_join | vs_normal_plan 
+---------+-------------+-----------------+----------------
+ SiftAgg |           4 |               0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE day IN (SELECT d FROM holidays)$$);
@@ -160,7 +160,7 @@ SELECT * FROM same($$SELECT count(*) AS n, count(dim_a_id) AS c FROM ev WHERE NO
  SiftAgg semi tables 1 |           1 |               0 |              0
 (1 row)
 
--- NOT IN of a table whose key can be NULL stays on the hashed subplan (the NULL makes the answer empty); of NOT NULL columns it is the same answer
+-- NOT IN of a table whose key can be NULL is the hashed subplan (the NULL makes the answer empty; agg_subplan_lut pushes it down); of NOT NULL columns it is the same answer
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM dim_b8)$$);
   plan  | result_rows | vs_generic_join | vs_normal_plan 
 --------+-------------+-----------------+----------------
