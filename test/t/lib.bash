@@ -207,7 +207,7 @@ node_leakcheck() {
 	local d rc=0
 	d=$(dir "$1")
 	if [[ -f $d/data/postmaster.pid ]]; then
-		PGHOST=$d/sock PGPORT=$(port "$1") leak_cluster "$d/data" || rc=1
+		PGHOST=$d/sock PGPORT=$(port "$1") PGUSER=postgres leak_cluster "$d/data" || rc=1
 		pg_ctl -D "$d/data" -m fast -w -t 120 stop >/dev/null 2>&1 || pg_ctl -D "$d/data" -m immediate stop >/dev/null 2>&1
 		leak_after_stop "$d/data" || rc=1
 	fi
