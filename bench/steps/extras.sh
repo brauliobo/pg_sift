@@ -46,8 +46,12 @@ mkdir -p "$OUT"
 cleanup() { [[ -z ${PG:-} ]] || scratch_down; }
 trap cleanup EXIT
 export PERF_LOCK=${PERF_LOCK:-/tmp/sift-perf.lock}   # PERF_LOCK=/tmp/other.lock: a smoke test of the script, never a number to keep
-locked() { # one timed run at a time on the host
-	( flock 9; "$@" ) 9>>"$PERF_LOCK"
+. "$REPO/scripts/quiet.sh"
+locked() { # one timed run at a time on the host, started when the pressure of the host is low (else after SIFT_QUIET_TIMEOUT s, marked NOISY in $OUT/noisy.txt)
+	( flock 9
+	  quiet_batch --max "${SIFT_QUIET_MAX:-15}" --timeout "${SIFT_QUIET_TIMEOUT:-300}" >&2
+	  [[ -z $QUIET_MARK ]] || echo "${ITEM:-?}: $* ($(quiet_report 2>&1))" >>"$OUT/noisy.txt"
+	  "$@" ) 9>>"$PERF_LOCK"
 }
 
 # ---- builds -------------------------------------------------------------------------------------------------------------------------------
@@ -82,6 +86,7 @@ finish_item() { # NAME TITLE [KEY=VALUE ...]
 	python3 -I "$HERE/extras.py" wrap --name "$name" --title "$title" --rows "$ROWS_FILE" --out "$OUT/$name.tsv" --load-before "$LOAD0" \
 		--meta "date=$(date -u +%Y-%m-%d)" \
 		--meta "cpu=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/, "", $2); n=$2} /^CPU\(s\)/ {gsub(/ /, "", $2); t=$2} END {printf "%s (%s threads)", n, t}')" \
+		--meta "noisy_starts=$(cat "$OUT/noisy.txt" 2>/dev/null | wc -l) of the timed runs started while the pressure was above ${SIFT_QUIET_MAX:-15}% for ${SIFT_QUIET_TIMEOUT:-300} s" \
 		--meta "postgresql=PostgreSQL $(pg_config --version | awk '{print $2}')" --meta "scope=$(cat /proc/self/cgroup | sed 's,.*/,,' | head -1)" "$@"
 	echo "extras: $OUT/$name.tsv" >&2
 	[[ -z $DOCS ]] || cp "$OUT/$name.tsv" "$REPO/bench/results/$name.tsv"
@@ -284,6 +289,6 @@ item_gpu() { # bench/results/gpu.tsv keeps its own layout: rows, query, mode (cp
 
 for item in "${ITEMS[@]}"; do
 	declare -F "item_$item" >/dev/null || { echo "extras: unknown item $item" >&2; exit 1; }
-	"item_$item"
+	ITEM=$item "item_$item"
 done
 [[ -z $DOCS ]] || python3 -I "$HERE/extras.py" render
