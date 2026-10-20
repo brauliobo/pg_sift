@@ -3611,7 +3611,7 @@ any_elem(AggCtx *c, int grp, ElemBuild build, void *arg)
 /* a value the element leaf is compared with: a JSON string, number or boolean */
 typedef struct Lit
 {
-	char		kind;			/* 's', 'n', 'b' */
+	char		kind;			/* 's', 'n', 'b', 'z' (JSON null) */
 	const char *s;
 	int			len;
 	Numeric		num;
@@ -3643,11 +3643,12 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 	if (leaf < 0)
 		return NULL;
 	typid = leaf_of(c, leaf)->typid;
-	if (lit->kind == 's' && typid == TEXTOID && op == SCMP_EQ && lut_leaf_ok(c, leaf))
+	if (lit->kind == 's' && typid == TEXTOID && (op == SCMP_EQ || op == SCMP_NE) && lut_leaf_ok(c, leaf))
 	{
 		/* bytewise equality: the C collation is deterministic whatever the database collation is */
 		Param	   *pm = makeNode(Param);
 		char	   *str = pnstrdup(lit->s, lit->len);
+		Oid			eq = get_opfamily_member(TEXT_BTREE_FAM_OID, TEXTOID, TEXTOID, BTEqualStrategyNumber);
 		OpExpr	   *e;
 
 		pm->paramkind = PARAM_EXEC;
@@ -3656,12 +3657,11 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 		pm->paramcollid = C_COLLATION_OID;
 		pm->location = -1;
 		k = makeConst(TEXTOID, -1, C_COLLATION_OID, -1, PointerGetDatum(cstring_to_text_with_len(lit->s, lit->len)), false, false);
-		e = (OpExpr *) make_opclause(get_opfamily_member(TEXT_BTREE_FAM_OID, TEXTOID, TEXTOID, BTEqualStrategyNumber), BOOLOID,
-									 false, (Expr *) pm, (Expr *) k, InvalidOid, C_COLLATION_OID);
+		e = (OpExpr *) make_opclause(op == SCMP_NE ? get_negator(eq) : eq, BOOLOID, false, (Expr *) pm, (Expr *) k, InvalidOid, C_COLLATION_OID);
 		set_opfuncid(e);
 		p = make_leaf_pred(c, SAP_LUT, leaf);
 		p->expr = (Node *) e;
-		p->desc = psprintf("%s = %s", leaf_name(c, leaf), quote_literal_cstr(str));
+		p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(op), quote_literal_cstr(str));
 		return p;
 	}
 	/* jsonb numbers are numerics: only an integer leaf and an integral literal compare exactly (a float8 leaf holds the rounded value) */
@@ -3685,6 +3685,80 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 	p->argtype = k->consttype;
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(op), expr_text(c, (Node *) k));
 	return p;
+}
+
+static SiftAggPred *
+or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b)
+{
+	SiftAggPred *p;
+
+	if (a == NULL || b == NULL)
+		return NULL;
+	p = new_junction(c, SAP_OR, 2);
+	p->child[0] = a;
+	p->child[1] = b;
+	junction_done(p);
+	return p;
+}
+
+static bool
+source_can_jnull(AggCtx *c)
+{
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_jnull(get_rel_relam(c->indexoid), true) : sift_colsrc_can_jnull(get_rel_relam(c->heapoid), false);
+}
+
+/* the NULL slots of an element leaf by what they are (SAP_NULL ops); a JSON null and a missing key need the kinds of the source */
+static SiftAggPred *
+null_pred(AggCtx *c, int leaf, int op)
+{
+	static const char *const what[] = {"IS NULL", "IS NOT NULL", "IS JSON NULL", "IS MISSING"};
+	SiftAggPred *p;
+
+	if (op >= SNULL_JSON && !source_can_jnull(c))
+		return NULL;
+	p = make_leaf_pred(c, SAP_NULL, leaf);
+	p->op = op;
+	p->desc = psprintf("%s %s", leaf_name(c, leaf), what[op]);
+	return p;
+}
+
+static int
+negate_op(int op)
+{
+	static const int neg[] = {SCMP_NE, SCMP_EQ, SCMP_GE, SCMP_GT, SCMP_LE, SCMP_LT};
+
+	return neg[op];
+}
+
+/*
+ * `@.name op lit` as a jsonpath filter has it, or with neg its negation `!(@.name op lit)`, on the element leaf of the member. The leaf
+ * holds the members of its type and sets the others aside (overflow, an error for a scan that reads the leaf), so what is left is a value
+ * of the type of the literal, a JSON null or a missing key (both NULL slots): a comparison is false for a missing key and for a JSON null
+ * (true for != alone), so the negation is true for both (false for a JSON null under != ). Never unknown, which `!` could not negate.
+ */
+static SiftAggPred *
+lit_test(AggCtx *c, int grp, const char *name, int op, const Lit *lit, bool neg)
+{
+	int			leaf = child_named(c, grp, name);
+
+	if (leaf < 0)
+		return NULL;
+	if (lit->kind == 'z')
+	{
+		if (op != SCMP_EQ && op != SCMP_NE)
+			return NULL;
+		/* a JSON null equals only a JSON null; every other value, a missing key apart, differs from it */
+		if (op == SCMP_EQ)
+			return neg ? or_of(c, null_pred(c, leaf, 1), null_pred(c, leaf, SNULL_MISSING)) : null_pred(c, leaf, SNULL_JSON);
+		return null_pred(c, leaf, neg ? 0 : 1);
+	}
+	if (!neg && op != SCMP_NE)
+		return lit_cmp(c, grp, name, op, lit);
+	if (!neg)
+		return or_of(c, lit_cmp(c, grp, name, SCMP_NE, lit), null_pred(c, leaf, SNULL_JSON));
+	if (op == SCMP_NE)
+		return or_of(c, lit_cmp(c, grp, name, SCMP_EQ, lit), null_pred(c, leaf, SNULL_MISSING));
+	return or_of(c, lit_cmp(c, grp, name, negate_op(op), lit), null_pred(c, leaf, 0));
 }
 
 /* ---- EXISTS (SELECT 1 FROM <unnest of the array> AS t(..) WHERE <element conjunction>) ---- */
@@ -3782,6 +3856,23 @@ compile_exists(AggCtx *c, SubPlan *sp)
 	return grp < 0 ? NULL : any_elem(c, grp, build_exists, &x);
 }
 
+/* a JSON string, number, boolean or null as a literal an element leaf is compared with */
+static bool
+jsonb_lit(const JsonbValue *v, Lit *lit)
+{
+	if (v->type == jbvString)
+		*lit = (Lit) {'s', v->val.string.val, v->val.string.len};
+	else if (v->type == jbvNumeric)
+		*lit = (Lit) {'n', NULL, 0, v->val.numeric};
+	else if (v->type == jbvBool)
+		*lit = (Lit) {'b', NULL, 0, NULL, v->val.boolean};
+	else if (v->type == jbvNull)
+		*lit = (Lit) {'z'};
+	else
+		return false;
+	return true;
+}
+
 /* ---- jsonb_path_exists(col, '$[*] ? (<comparisons of @.key with literals, && ||>)') ---- */
 
 static int
@@ -3799,14 +3890,21 @@ path_cmp_op(JsonPathItemType t)
 			return SCMP_GT;
 		case jpiGreaterOrEqual:
 			return SCMP_GE;
-		default:					/* <>: JSON null is "not equal" to a literal but looks like an absent key in the index */
+		case jpiNotEqual:
+			return SCMP_NE;
+		default:
 			return -1;
 	}
 }
 
+/* a literal of the path, or a variable of it with its value in the constant vars of the call (a variable it lacks is an error of the heap's plan) */
 static bool
-path_lit(JsonPathItem *v, Lit *lit)
+path_lit(JsonPathItem *v, const Jsonb *vars, Lit *lit)
 {
+	JsonbValue	jv;
+	int32		len;
+	const char *name;
+
 	if (jspHasNext(v))
 		return false;
 	switch (v->type)
@@ -3823,6 +3921,12 @@ path_lit(JsonPathItem *v, Lit *lit)
 			lit->kind = 'b';
 			lit->b = jspGetBool(v);
 			return true;
+		case jpiNull:
+			lit->kind = 'z';
+			return true;
+		case jpiVariable:
+			name = jspGetString(v, &len);
+			return vars != NULL && getKeyJsonValueFromContainer((JsonbContainer *) &vars->root, name, len, &jv) != NULL && jsonb_lit(&jv, lit);
 		default:
 			return false;
 	}
@@ -3842,8 +3946,20 @@ path_key(JsonPathItem *v)
 	return pnstrdup(name, len);
 }
 
+typedef struct PathArg
+{
+	JsonPathItem *expr;
+	const Jsonb *vars;			/* the constant variables of the call, NULL: none */
+	bool		strict;			/* strict mode: a missing key is unknown, not false, which only a filter without ! cannot tell */
+} PathArg;
+
+/*
+ * The filter expression as a predicate on the element leaves: comparisons of @.key with literals and variables, && || and ! (neg: under
+ * an odd number of them, where the comparison is the negated one of lit_test and && and || swap). Every comparison of these is true or
+ * false for a value the leaf holds (what it sets aside is an error of the scan), so ! is the complement and De Morgan holds.
+ */
 static SiftAggPred *
-path_pred(AggCtx *c, int grp, JsonPathItem *v)
+path_pred(AggCtx *c, int grp, JsonPathItem *v, const PathArg *a, bool neg)
 {
 	JsonPathItem l,
 				r;
@@ -3852,43 +3968,59 @@ path_pred(AggCtx *c, int grp, JsonPathItem *v)
 	char	   *key;
 	Lit			lit;
 
+	if (jspHasNext(v))
+		return NULL;
+	if (v->type == jpiNot)
+	{
+		jspGetArg(v, &l);
+		return a->strict ? NULL : path_pred(c, grp, &l, a, !neg);
+	}
 	op = path_cmp_op(v->type);
-	if (jspHasNext(v) || (op < 0 && v->type != jpiAnd && v->type != jpiOr))
+	if (op < 0 && v->type != jpiAnd && v->type != jpiOr)
 		return NULL;
 	jspGetLeftArg(v, &l);
 	jspGetRightArg(v, &r);
 	if (op < 0)
 	{
-		p = new_junction(c, v->type == jpiAnd ? SAP_AND : SAP_OR, 2);
-		if ((p->child[0] = path_pred(c, grp, &l)) == NULL || (p->child[1] = path_pred(c, grp, &r)) == NULL)
+		p = new_junction(c, (v->type == jpiAnd) != neg ? SAP_AND : SAP_OR, 2);
+		if ((p->child[0] = path_pred(c, grp, &l, a, neg)) == NULL || (p->child[1] = path_pred(c, grp, &r, a, neg)) == NULL)
 			return NULL;
 		junction_done(p);
 		return p;
 	}
-	if ((key = path_key(&l)) != NULL && path_lit(&r, &lit))
+	if ((key = path_key(&l)) != NULL && path_lit(&r, a->vars, &lit))
 		;
-	else if ((key = path_key(&r)) != NULL && path_lit(&l, &lit))
+	else if ((key = path_key(&r)) != NULL && path_lit(&l, a->vars, &lit))
 		op = commute(op);
 	else
 		return NULL;
-	return lit_cmp(c, grp, key, op, &lit);
+	return lit_test(c, grp, key, op, &lit, neg);
 }
 
 static SiftAggPred *
 build_path(AggCtx *c, int grp, void *arg)
 {
-	return path_pred(c, grp, arg);
+	PathArg    *a = arg;
+
+	return path_pred(c, grp, a->expr, a, false);
 }
 
-static bool
-empty_jsonb_object(Node *n)
+/* the variables of jsonb_path_exists as an object constant (NULL with *ok: none; not ok: not a constant object) */
+static const Jsonb *
+path_vars(Node *vars, bool *ok)
 {
-	n = strip_relabel(n);
-	return IsA(n, Const) && !((Const *) n)->constisnull && JB_ROOT_IS_OBJECT(DatumGetJsonbP(((Const *) n)->constvalue)) &&
-		JB_ROOT_COUNT(DatumGetJsonbP(((Const *) n)->constvalue)) == 0;
+	Jsonb	   *jb;
+
+	vars = strip_relabel(vars);
+	*ok = IsA(vars, Const) && !((Const *) vars)->constisnull;
+	if (!*ok)
+		return NULL;
+	jb = DatumGetJsonbP(((Const *) vars)->constvalue);
+	*ok = JB_ROOT_IS_OBJECT(jb);
+	return *ok && JB_ROOT_COUNT(jb) > 0 ? jb : NULL;
 }
 
-/* lax mode `$[*] ? (filter)` on the array column; no variables */
+/* `$[*] ? (filter)` on the array column (lax, or strict without !), the variables of the filter constants */
 static SiftAggPred *
 compile_path_exists(AggCtx *c, Node *n)
 {
@@ -3899,42 +4031,35 @@ compile_path_exists(AggCtx *c, Node *n)
 				filt,
 				expr;
 	JsonPath   *jp;
+	PathArg		arg = {&expr, NULL, false};
+	bool		ok = true;
 	int			grp;
 
-	if ((func_of(n) == F_JSONB_PATH_EXISTS && (list_length(args) != 4 || !empty_jsonb_object(lthird(args)))) || !IsA(path, Const) ||
-		((Const *) path)->constisnull || (grp = group_leaf_of(c, linitial(args), SCL_ARRAY)) < 0)
+	if (func_of(n) == F_JSONB_PATH_EXISTS)
+	{
+		if (list_length(args) != 4)
+			return NULL;
+		arg.vars = path_vars(lthird(args), &ok);
+	}
+	if (!ok || !IsA(path, Const) || ((Const *) path)->constisnull || (grp = group_leaf_of(c, linitial(args), SCL_ARRAY)) < 0)
 		return NULL;
 	jp = DatumGetJsonPathP(((Const *) path)->constvalue);
 	jspInit(&root, jp);
-	if (!(jp->header & JSONPATH_LAX) || root.type != jpiRoot || !jspGetNext(&root, &any) || any.type != jpiAnyArray ||
+	arg.strict = !(jp->header & JSONPATH_LAX);
+	if (root.type != jpiRoot || !jspGetNext(&root, &any) || any.type != jpiAnyArray ||
 		!jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
 		return NULL;
 	jspGetArg(&filt, &expr);
-	return any_elem(c, grp, build_path, &expr);
+	return any_elem(c, grp, build_path, &arg);
 }
 
 /* ---- col @> '[{"k": v, ...}, ...]': every object of the right side is contained by some element ---- */
-
-/* a JSON string, number or boolean as a literal an element leaf is compared with; a JSON null equals an absent member in the index but only a JSON null contains it */
-static bool
-jsonb_lit(const JsonbValue *v, Lit *lit)
-{
-	if (v->type == jbvString)
-		*lit = (Lit) {'s', v->val.string.val, v->val.string.len};
-	else if (v->type == jbvNumeric)
-		*lit = (Lit) {'n', NULL, 0, v->val.numeric};
-	else if (v->type == jbvBool)
-		*lit = (Lit) {'b', NULL, 0, NULL, v->val.boolean};
-	else
-		return false;
-	return true;
-}
 
 /* an element of an array of scalars (the unnamed child of the array leaf) equals the literal */
 static SiftAggPred *
 build_elem_lit(AggCtx *c, int grp, void *arg)
 {
-	return lit_cmp(c, grp, "", SCMP_EQ, arg);
+	return lit_test(c, grp, "", SCMP_EQ, arg, false);
 }
 
 static SiftAggPred *
@@ -3959,7 +4084,7 @@ build_contains(AggCtx *c, int grp, void *arg)
 		(void) JsonbIteratorNext(&it, &v, true);
 		if (!jsonb_lit(&v, &lit))
 			return NULL;
-		if ((e = lit_cmp(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit)) == NULL)
+		if ((e = lit_test(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit, false)) == NULL)
 			return NULL;
 		if (p)
 			p->child[i] = e;
@@ -3999,7 +4124,7 @@ compile_contains(AggCtx *c, Node *target, Node *rhs)
 		(void) JsonbIteratorNext(&it, &v, true);
 		if (v.type == jbvBinary && JsonContainerIsObject(v.val.binary.data))
 			e = any_elem(c, grp, build_contains, v.val.binary.data);
-		else if (jsonb_lit(&v, &lit))
+		else if (jsonb_lit(&v, &lit) && lit.kind != 'z')	/* the JSON null of a scalar element: not proven */
 			e = any_elem(c, grp, build_elem_lit, &lit);
 		else
 			return NULL;
