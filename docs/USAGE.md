@@ -239,6 +239,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.agg_param_set_size` | 1000 | elements the planner assumes for an array parameter of a set filter (`col = ANY($1)`) in a generic plan, to cost the index and bitmap scans against `Custom Scan (SiftAgg)`; `0` keeps PostgreSQL's guess of 10 ([docs/SET-FILTERS.md](SET-FILTERS.md)) |
 | `sift.agg_semi_lut` | on | answer a semi or anti join (`IN (SELECT ..)`, `EXISTS`, `NOT EXISTS`) on an integer or date leaf from a byte table over the keys of the joined table (`Semi Lookup Tables` in `EXPLAIN ANALYZE`); `off` uses the generic lookup join |
 | `sift.agg_semi_lut_size` | 4096 kB | 0 to 1048576: memory of that byte table, per scan and per worker; keys that span more keep the generic lookup join |
+| `sift.agg_lookup_pushdown` | on | the lookup table of a join (a set kept in a table, an attribute table) is loaded with only the rows its own conditions `column = value` can match: an index scan on the leading columns of a btree, else the filter runs as each row is read; off loads the whole table ([docs/SET-FILTERS.md](SET-FILTERS.md)) |
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 | `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
 | `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |

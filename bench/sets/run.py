@@ -10,7 +10,7 @@ length and is meant to run in a systemd scope (run.sh). Connection: the libpq en
 """
 import argparse, fcntl, hashlib, os, random, re, statistics, subprocess, sys, time
 
-GROUPS = {100: 1, 1000: 61, 10000: 81, 100000: 89}	# group_id of a membership group of that many entities
+GROUPS = {100: 1, 1000: 61, 2000: 91, 5000: 95, 10000: 81, 100000: 89}	# group_id of a membership group of that many entities
 LAST = "event_date >= '2025-10-01'"
 SEL = ("SELECT channel_id, count(*), round(avg(score)::numeric, 4) FROM events WHERE deleted_at IS NULL AND " + LAST +
 	   " AND {P} GROUP BY 1 ORDER BY 1")
@@ -22,6 +22,9 @@ MODES = {	# the settings of a cell
 	'forced': ["set sift.enable_agg = on", "set seq_page_cost = 1000", "set random_page_cost = 1000"],
 	# the join methods off: the aggregate pushdown is the plan, with the generic lookup join and with the byte table of a semi join
 	'siftagg-generic-join': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
+	# the lookup join with the whole joined table loaded, with only the rows its own conditions can match, and the default (byte table of a semi join too)
+	'siftagg-lookup-full': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set sift.agg_lookup_pushdown = off", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
+	'siftagg-lookup-pushdown': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set sift.agg_lookup_pushdown = on", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 	'siftagg-semi-table': ["set sift.enable_agg = on", "set sift.agg_semi_lut = on", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 }
 COMMON = ["set max_parallel_workers_per_gather = 2", "set jit = off"]
@@ -92,7 +95,23 @@ def design2():
 	return cells
 
 
-DESIGNS = {'1': design1, '2': design2}
+def design4():
+	"""Design 4: the rows of the lookup table its own conditions cannot match are not loaded (docs/SET-FILTERS.md section 4)."""
+	cells = []
+	queries = []
+	for size, g in GROUPS.items():
+		queries.append(('member_in-%d' % size, SEL.format(P="entity_id IN (SELECT entity_id FROM group_members WHERE group_id = %d AND deleted_at IS NULL)" % g)))
+	for label, cond in (('country', 'country_id = 7'), ('category', 'category_id = 3'), ('tier_region', 'tier = 2 AND region_id < 4')):
+		queries.append(('attr_in-' + label, SEL.format(P="entity_id IN (SELECT id FROM entities WHERE %s)" % cond)))
+		queries.append(('attr_join-' + label, "SELECT e.region_id, count(*), round(avg(score)::numeric, 4) FROM events JOIN entities e ON e.id = events.entity_id "
+											   "WHERE deleted_at IS NULL AND %s AND e.%s GROUP BY 1 ORDER BY 1" % (LAST, cond.replace(' AND ', ' AND e.'))))
+	for arg, q in queries:
+		for mode in ('normal', 'siftagg-lookup-full', 'siftagg-lookup-pushdown', 'siftagg-semi-table'):
+			cells.append((4, 'lookup_load', arg, mode, [q], ["explain (costs off) " + q]))
+	return cells
+
+
+DESIGNS = {'1': design1, '2': design2, '4': design4}
 
 
 def plan_kind(cell):
