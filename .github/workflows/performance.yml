@@ -33,7 +33,7 @@ jobs:
           ARTIFACTS="$RUNNER_TEMP/focused-perf-artifacts"
           echo "ARTIFACTS=$ARTIFACTS" >> "$GITHUB_ENV"
           mkdir -p "$ARTIFACTS"
-          date +%s > "$ARTIFACTS/workflow-start"
+          date +%s.%N > "$ARTIFACTS/workflow-start"
           printf 'Elapsed time is the primary metric. Hardware counters are diagnostic only.\n' > "$ARTIFACTS/workflow-summary.md"
 
       # PRs are untrusted: no credentials persisted, secrets, PR-target event or merge checkout.
@@ -139,6 +139,8 @@ jobs:
             --baseline-ref "$BASELINE_SHA" --candidate-ref "$CANDIDATE_SHA" \
             --groups "$PERF_GROUPS" --output "$ARTIFACTS/gate" --tier "$TIER" \
             --scratch-root "$RUNNER_TEMP/focused-perf-scratch" --port-base 56240 "${acceptance[@]}" \
+            --budget-seconds 300 --workflow-start-seconds "$(cat "$ARTIFACTS/workflow-start")" \
+            --cleanup-report-reserve-seconds 30 \
             2>&1 | tee "$ARTIFACTS/driver.log"
 
       - name: Report total elapsed and budget
@@ -159,7 +161,7 @@ jobs:
           result = {'elapsed_seconds_including_checkout_dependencies_build_setup_cleanup': elapsed,
                     'pr_target_seconds': [180, 300], 'target_exceeded': over,
                     'gate_status': os.environ['GATE_STATUS'], 'code_change': code,
-                    'note': 'Budget overages are reported separately from measurement verdicts; upload overhead follows.'}
+                    'note': 'Driver allowance deducts prior workflow elapsed time and reserves 30s for cleanup/report/upload. This is not a hard end-to-end deadline: dependency steps, in-flight SQL and cleanup can overrun; upload overhead follows.'}
           (root / 'workflow-timing.json').write_text(json.dumps(result, indent=2) + '\n')
           with (root / 'workflow-summary.md').open('a') as out:
               out.write(f'\nJob status: {result["gate_status"]}.\n')

@@ -32,6 +32,13 @@ not measure durable commit latency. The caller must reserve its scratch storage
 and two ports (`--port-base`, default 56240); use dedicated test partitions on a
 shared local development host.
 
+After both fixture loads finish, an untimed synchronous `CHECKPOINT` runs on each
+cluster before settled size probes or read validation/calibration/timing. Both
+barriers must complete within the global setup budget. Reports retain each
+barrier’s UTC start/end, duration and completion state, plus read/block start
+timestamps. This drains pending setup checkpoints; it does not guarantee a quiet
+host or lower variance. Mutable resets are unchanged and receive no added checkpoint.
+
 The 16 PR cases in `bench/perf/catalog.py` cover BM25 top ten and counts for common,
 rare, and filtered terms; aggregate scan, group, distinct, filter, and table
 paths; and table point lookup, insert, update, and VACUUM space behavior.
@@ -86,16 +93,26 @@ and the resulting operation count rather than hiding reset work or pretending
 that every mutable timing window achieved 150 ms. Six independent paired
 batches alternate baseline/head then head/baseline. The per-pair candidate/base
 elapsed ratios are logged; their mean and sample standard deviation give a
-geometric ratio and two-sided 95% Student-t interval (five degrees of freedom).
+geometric ratio and two-sided 95% Student-t interval. Supported complete blocks
+are six pairs (df 5, critical value 2.570581835636305) and sixteen pairs
+(df 15, critical value 2.131449545559323); partial blocks have no interval.
 Repeated operations within a batch are not treated as independent samples.
 
 The material threshold is 1.10. An initial upper bound at most 1.10 passes.
-Every other case receives exactly one fresh six-pair confirmation block, retaining
-both blocks separately. Only the confirmation decides: lower bound above 1.10 is
+Every other case receives exactly one fresh confirmation block: **sixteen pairs
+for reads without resets, six pairs for mutations**. This policy is fixed before
+sampling, with the original 150 ms target and the same calibrated operation count
+for both blocks. No post-verdict calibration or sample reuse occurs. Both blocks
+and every raw sample are retained separately, including interrupted blocks. Only the confirmation decides: lower bound above 1.10 is
 a regression (exit 1), upper bound at most 1.10 passes, and overlap is inconclusive
 (exit 2). Exhausted measurement budget is also inconclusive. No noisy cell becomes
 a silent pass. Intervals are per case, without a multiple-comparison guarantee;
 shared-host load and temporal drift remain limitations of paired elapsed timing.
+The prospective sixteen-pair read confirmation adds ten pairs versus the original
+six: about 3 seconds of target SQL per suspect read, 9 seconds for three suspects
+or 39 seconds for all thirteen PR reads. These estimates exclude checkpoint,
+warmup and other overhead and are not runtime or precision guarantees. No prior
+inconclusive run is reinterpreted or pooled under this new policy.
 
 `--budget-seconds` defaults to a **global** 300 seconds including source/build,
 cluster setup, fixtures, validation, reset, measurement, and size lifecycle checks.
@@ -103,8 +120,16 @@ Subprocesses use the remaining deadline and an expired build process group is
 terminated. SQL checks the deadline before and after reset, operations, and
 validation; an already running statement can overrun it by at most the 30-second statement timeout. Cleanup has
 a separate bounded stop allowance and always contributes to reported total time.
-CI also sets a job timeout. The proposed three to five minute CI target, including
-dependency installation, still requires measurement on its actual runner.
+CI passes the timestamp recorded before checkout. The driver deducts all prior
+workflow elapsed time from 300 seconds and reserves 30 seconds for cleanup,
+reporting and upload; it never starts with a fresh 300 seconds after dependencies.
+An exhausted remaining allowance reports inconclusive (exit 2) before building.
+The report records nominal budget, prior elapsed, reserve and actual remaining
+allowance. This is a soft end-to-end budget: dependency steps are not individually
+bounded to it, in-flight SQL and cleanup can overrun, and upload follows the
+reported workflow time. The separate 20-minute CI job timeout is a safety ceiling,
+not proof of meeting the three to five minute target. Final-head hosted duration
+and checkpoint cost still require measurement on the actual runner.
 
 `results.json` and `summary.md` include exact revisions, UTC date, PostgreSQL and
 compiler versions, CPU/runner/load, metric/configuration, fixture digest, raw

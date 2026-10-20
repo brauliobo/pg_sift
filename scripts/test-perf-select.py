@@ -31,6 +31,7 @@ class SelectionTest(unittest.TestCase):
             'test/sql/count_scan.sql': ['smoke', 'bm25'],
             'sqlite/host/host.h': ['smoke'],
             '.github/workflows/assert.yml': ['smoke'],
+            'scripts/source-snapshot.sh': ['smoke'],
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(self.selected(path), expected)
