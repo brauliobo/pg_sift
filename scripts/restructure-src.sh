@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 AREAS='core bm25 col agg table'
-RENAMED='bm25 col'
+RENAMED='bm25 col table'
 KEEP='areas.mk portable.list portable-col.list'
 
 src_files() { git ls-files -- src | grep -v -E "^src/($(tr ' ' '|' <<<"$KEEP"))\$" || true; }
