@@ -1,3 +1,4 @@
+-- Status (3.2): fixed: eight keys, and x = ANY (ARRAY (sub-select)) is pushed
 -- GAP 9: more than 5 group keys in one scan silently falls back to the heap (no message, no setting to raise it).
 -- Expected: SiftAgg for 6 keys (or an EXPLAIN note that names the limit).
 \echo -- 5 keys: pushed

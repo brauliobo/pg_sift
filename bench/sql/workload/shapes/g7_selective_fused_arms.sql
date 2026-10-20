@@ -1,3 +1,4 @@
+-- Status (3.2): follow-up: the fused arms are not offered for a selective scan (docs/AGG.md, "Workload shapes")
 -- GAP 7: the fused per-item arms are not offered for a selective scan (few t_work_dim and a short period), even with every other path
 -- priced out; the flat arms are (metrics_a). A cost decision at this size, to recheck at 3 M rows.
 \echo -- one entity + a period: not pushed

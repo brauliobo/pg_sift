@@ -1,3 +1,4 @@
+-- Status (3.2): partial: the arms are pushed one by one; the fused scan counts distinct rows only (docs/AGG.md, "Workload shapes")
 -- GAP 4: per-item arms under an outer aggregate (fused scan, `Pushed Aggregates: avg(inner), count(DISTINCT row)`) lose the fusion
 -- as soon as the outer query holds a second count(DISTINCT) over another column (entities_count next to the items count).
 -- Expected: one SiftAgg for both.
