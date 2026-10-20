@@ -40,8 +40,10 @@
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "executor/nodeHash.h"
+#include "executor/nodeSubplan.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
@@ -894,7 +896,7 @@ param_walker(Node *n, Param **found)
 {
 	if (n == NULL)
 		return false;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM)
 	{
 		*found = (Param *) n;
 		return true;
@@ -915,6 +917,30 @@ find_param(Node *expr)
 }
 
 /*
+ * The output of an ARRAY sub-select (an InitPlan of the query, its Param offset by SIFT_AGG_INIT_PARAM) is the constant of the expression: the sub-select
+ * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's.
+ */
+static Node *
+init_param_mutator(Node *n, AggExec *ex)
+{
+	Param	   *p = (Param *) n;
+	EState	   *estate = ex->css.ss.ps.state;
+	ParamExecData *prm;
+	int16		len;
+	bool		byval;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || p->paramid < SIFT_AGG_INIT_PARAM)
+		return expression_tree_mutator(n, init_param_mutator, ex);
+	prm = &estate->es_param_exec_vals[p->paramid - SIFT_AGG_INIT_PARAM];
+	if (prm->execPlan != NULL)
+		ExecSetParamPlan(prm->execPlan, GetPerTupleExprContext(estate));
+	get_typlenbyval(p->paramtype, &len, &byval);
+	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, len, prm->value, prm->isnull, byval);
+}
+
+/*
  * The expression of a lookup table. A sub-plan in it (its state, hash table and the scans it starts) lives in the query's memory: PostgreSQL ends
  * the sub-plans after this node, which frees its own memory.
  */
@@ -922,7 +948,7 @@ static ExprState *
 init_lut_expr(AggExec *ex, Node *expr)
 {
 	MemoryContext old = MemoryContextSwitchTo(contain_subplans(expr) ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
-	ExprState  *e = ExecInitExpr((Expr *) expr, EXPR_PARENT(ex));
+	ExprState  *e = ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
 
 	MemoryContextSwitchTo(old);
 	return e;

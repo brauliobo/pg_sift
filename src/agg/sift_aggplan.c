@@ -219,9 +219,12 @@ leaf_name(AggCtx *c, int id)
 	return s.data;
 }
 
+static bool array_initplan_ok(AggCtx *c, Param *prm);
+
 /*
- * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context
- * lets the EXISTS sub-plans through: the clause was compiled, and compile_exists proved the ones it kept.
+ * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context (the query's
+ * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
+ * compile_exists and array_initplan_ok proved the ones it kept.
  */
 static bool
 has_exec_param_walker(Node *node, void *context)
@@ -231,7 +234,7 @@ has_exec_param_walker(Node *node, void *context)
 	if (IsA(node, SubPlan) && context)
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
-		return true;
+		return !context || !array_initplan_ok(context, (Param *) node);
 	if (IsA(node, SubPlan) || IsA(node, SubLink) || IsA(node, Aggref) || IsA(node, WindowFunc))
 		return true;
 	return expression_tree_walker(node, has_exec_param_walker, context);
@@ -757,17 +760,37 @@ static bool raising_walker(Node *n, void *context);
  * or read a parameter of an outer query (a CTE scan, an initplan of the outer level).
  */
 static bool
-lut_subplan_ok(AggCtx *c, SubPlan *sp)
+subplan_runs_at_start(AggCtx *c, SubPlan *sp)
 {
 	PlannerGlobal *glob = c->root->glob;
 	Query	   *q;
 
-	if (sp->subLinkType != ANY_SUBLINK || !sp->useHashTable || sp->testexpr == NULL || sp->parParam != NIL || sp->args != NIL ||
-		sp->setParam != NIL || sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
+	if (sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
 		return false;
 	q = ((PlannerInfo *) list_nth(glob->subroots, sp->plan_id - 1))->parse;
 	return bms_is_empty(((Plan *) list_nth(glob->subplans, sp->plan_id - 1))->extParam) && q->rowMarks == NIL &&
 		!contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c);
+}
+
+static bool
+lut_subplan_ok(AggCtx *c, SubPlan *sp)
+{
+	return sp->subLinkType == ANY_SUBLINK && sp->useHashTable && sp->testexpr != NULL && sp->parParam == NIL && sp->args == NIL &&
+		sp->setParam == NIL && subplan_runs_at_start(c, sp);
+}
+
+/*
+ * The output of an uncorrelated ARRAY(SELECT ..) of the query (x = ANY (ARRAY(SELECT ..)) has it as a parameter, set by an InitPlan the first time
+ * the test needs it): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan (a scalar
+ * sub-select raises for a second row) or one of an outer query keeps the normal plan.
+ */
+static bool
+array_initplan_ok(AggCtx *c, Param *prm)
+{
+	foreach_ptr(SubPlan, sp, c->root->init_plans)
+		if (list_member_int(sp->setParam, prm->paramid))
+			return sp->subLinkType == ARRAY_SUBLINK && sp->parParam == NIL && sp->args == NIL && subplan_runs_at_start(c, sp);
+	return false;
 }
 
 static bool
@@ -797,7 +820,8 @@ leaf_walker(Node *n, LeafWalk *w)
 	}
 	if (IsA(n, SubPlan) && lut_subplan_ok(w->c, (SubPlan *) n))
 		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
-	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !list_member_int(w->subparams, ((Param *) n)->paramid))
+	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !list_member_int(w->subparams, ((Param *) n)->paramid) &&
+			 !array_initplan_ok(w->c, (Param *) n))
 	{
 		w->bad = true;
 		return false;
@@ -840,7 +864,7 @@ typedef struct SubstCtx
 } SubstCtx;
 
 /*
- * PostgreSQL hashes the array of x = ANY (array) when it is a constant; one that comes from a parameter is searched linearly for every
+ * PostgreSQL hashes the array of x = ANY (array) when it is a constant; one that comes from a parameter (or an ARRAY sub-select) is searched linearly for every
  * value the executor tests (a dictionary of 200k entries against 5000 elements takes seconds). The executor builds the hash table on the
  * first call and keeps it, so the parameter is read once.
  */
@@ -852,7 +876,7 @@ hash_param_saop(ScalarArrayOpExpr *sa)
 				lh,
 				rh;
 
-	if (!IsA(arr, Param) || ((Param *) arr)->paramkind != PARAM_EXTERN || OidIsValid(sa->hashfuncid))
+	if (!IsA(arr, Param) || (((Param *) arr)->paramkind != PARAM_EXTERN && ((Param *) arr)->paramid < SIFT_AGG_INIT_PARAM) || OidIsValid(sa->hashfuncid))
 		return;
 	if (!sa->useOr && !OidIsValid(op = get_negator(op)))
 		return;
@@ -882,6 +906,17 @@ subst_mutator(Node *n, SubstCtx *s)
 		s->c->nsubplan++;
 		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
+	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		foreach_ptr(SubPlan, sp, s->c->root->init_plans)
+			if (list_member_int(sp->setParam, ((Param *) n)->paramid))
+			{
+				Param	   *init = copyObject((Param *) n);
+
+				s->c->nsubplan++;
+				s->c->subplan_cost += sp->startup_cost;
+				init->paramid += SIFT_AGG_INIT_PARAM;
+				return (Node *) init;
+			}
 	return expression_tree_mutator(n, subst_mutator, s);
 }
 
@@ -5227,9 +5262,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 static const CustomPathMethods agg_path_methods;
 
 static bool
-unsupported_clause(Node *n)
+unsupported_clause(AggCtx *c, Node *n)
 {
-	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, n));
+	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
 }
 
 /* does the tree read a column or an aggregate of a query above it, or a common table expression of one (a plan per row, not a list)? */
@@ -5380,7 +5415,7 @@ join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
 		}
 		else
 			continue;
-		if (!OidIsValid(opno) || !op_mergejoinable(opno, exprType(l)) || unsupported_clause(val) || contain_var_clause(val))
+		if (!OidIsValid(opno) || !op_mergejoinable(opno, exprType(l)) || unsupported_clause(c, val) || contain_var_clause(val))
 			continue;
 		j->idxatt[j->nidx] = ((Var *) l)->varattno;
 		j->idxop[j->nidx] = opno;
@@ -5843,7 +5878,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 			p = compile_tid(c, e);
 		if (p == NULL)
 			p = compile_pred(c, e);
-		if (p == NULL || unsupported_clause(q))
+		if (p == NULL || unsupported_clause(c, q))
 			return false;
 		if (p->level > 1)
 			s->post[s->npost++] = p;
@@ -5855,7 +5890,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	{
 		SiftAggPred *p = compile_combo_pred(c, normalize_expr(c, q));
 
-		if (p == NULL || unsupported_clause(q))
+		if (p == NULL || unsupported_clause(c, q))
 			return false;
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
@@ -7124,7 +7159,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		{
 			SiftAggPred *p = compile_combo_pred(c, q);
 
-			if (p == NULL || unsupported_clause(q))
+			if (p == NULL || unsupported_clause(c, q))
 				return;
 			in->out->filter[in->out->nfilter++] = p;
 		}
