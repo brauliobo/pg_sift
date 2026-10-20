@@ -481,7 +481,7 @@ Cell keys (arms that group by more than the outer keys; fixtures on 300000 order
 | `s2_per_order_hidden_empty` | no cell survives: the global row of an empty input | 992 | 76.3 | 68.2 | 79.7 | 13.0 / 11.6 / 13.3 |
 | `s2_per_order_union` | the form without cell keys, for reference | 2195 | 110.3 | 98.7 | 185.8 | 19.9 / 18.5 / 17.6 |
 
-`t_two_level_hidden_many` and `t_two_level_hidden_8` (six and eight cell keys) run the outer aggregate in the scan; `t_two_level_hidden_9` (nine, more than the scan's eight) is the trap: the outer aggregate stays in the normal plan, and its arms with eight keys run in the scan when the cost says so, so the fixture tag is `any`.
+`t_two_level_hidden_many` and `t_two_level_hidden_8` (six and eight cell keys) run the outer aggregate in the scan; `t_two_level_hidden_9` (nine) may stay in the normal plan, and its arms run in the scan when the cost says so, so the fixture tag is `any`.
 
 The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one error code that differs (above) is tagged `-- error: either` in its fixture.
 
@@ -511,7 +511,7 @@ What the planner refuses among the joins, the per-order form and a few jsonb tes
 | outer qual that reads the columns of several arms of the `UNION ALL` (it stays as a filter of the append) | a cell belongs to one arm; the qual would need the other arms' cells of the same row, which the scan has not seen yet |
 | a non-null constant as the key of an arm (`SELECT id, 'z', avg(x) .. GROUP BY id`; `NULL` is pushed) | the arms are the cells of one outer key, and no arm's group expression holds the constant: the key's value table would take it from the arm |
 | `max`/`min` as the inner aggregate of an arm, or `FILTER` or `CASE` over a text leaf in one | the inner aggregates are `count`, `sum` and `avg`; the arms are pushed one by one and the outer aggregate runs in PostgreSQL |
-| arms with more than `SIFT_AGG_MAX_KEYS` (8) keys in all: the outer keys, the cell keys and the number of the set | the group tables take 8 key ids per group |
+| arms with more than `SIFT_AGG_MAX_KEYS` (32) keys in all: the outer keys, the cell keys and the number of the set | the grouping and arm masks have one bit per key |
 | `x ? 'k'` on an object (`jsonb_exists`), a comparison of jsonb values (`x['k'] = '"v"'`), `x['k'] IS NOT NULL` | a leaf stores NULL for a missing key and for a JSON null alike, and a jsonb comparison tells a string from a number: they are no function of the stored values. `x ->> 'k'` and the cast to the leaf's own type are pushed |
 
 ## Open
