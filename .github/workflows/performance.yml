@@ -1,0 +1,187 @@
+name: focused performance
+
+on:
+  pull_request:
+  schedule:
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+    inputs:
+      verify_control:
+        description: Acceptance only, unchanged SHA plus controlled SQL slowdown
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      TIER: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 'pr' || 'nightly' }}
+      VERIFY_CONTROL: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_control == true && 'true' || 'false' }}
+    steps:
+      - name: Start end-to-end clock
+        run: |
+          ARTIFACTS="$RUNNER_TEMP/focused-perf-artifacts"
+          echo "ARTIFACTS=$ARTIFACTS" >> "$GITHUB_ENV"
+          mkdir -p "$ARTIFACTS"
+          date +%s > "$ARTIFACTS/workflow-start"
+          printf 'Elapsed time is the primary metric. Hardware counters are diagnostic only.\n' > "$ARTIFACTS/workflow-summary.md"
+
+      # PRs are untrusted: no credentials persisted, secrets, PR-target event or merge checkout.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve exact revisions and select cases
+        id: scope
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          finish_phase() { echo "selection $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
+          trap finish_phase EXIT
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$VERIFY_CONTROL" == true ]]; then
+            # Explicit acceptance builds the exact same source twice. Injection
+            # is only enabled by the fixed flag below, never on normal PR runs.
+            baseline=$CANDIDATE_SHA
+          elif [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git fetch --no-tags origin "$BASE_SHA" "$CANDIDATE_SHA"
+            baseline=$(git merge-base "$BASE_SHA" "$CANDIDATE_SHA")
+          else
+            # Daily comparison: newest first-parent ancestor at least 24h before the
+            # exact candidate commit. Never a PR merge ref, last job, or moving HEAD.
+            cutoff=$(( $(git show -s --format=%ct "$CANDIDATE_SHA") - 86400 ))
+            baseline=$(git rev-list --first-parent --max-count=1 --before="@$cutoff" "$CANDIDATE_SHA^")
+            [[ "$baseline" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$baseline" != "$CANDIDATE_SHA" ]]
+            git merge-base --is-ancestor "$baseline" "$CANDIDATE_SHA"
+          fi
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          printf 'Baseline: %s\nCandidate: %s\nTier: %s\n' "$baseline" "$CANDIDATE_SHA" "$TIER" >> "$ARTIFACTS/workflow-summary.md"
+          python3 scripts/test-perf-select.py 2>&1 | tee "$ARTIFACTS/selection-tests.log"
+          python3 -m unittest discover -s bench/perf -p 'test_*.py' -v 2>&1 | tee "$ARTIFACTS/methodology-tests.log"
+          python3 scripts/perf-select.py --baseline-ref "$baseline" --candidate-ref "$CANDIDATE_SHA" \
+            --tier "$TIER" --output "$ARTIFACTS/selection.json" | tee -a "$GITHUB_OUTPUT"
+          if [[ "$VERIFY_CONTROL" == true ]]; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+            echo 'groups=smoke' >> "$GITHUB_OUTPUT"
+            echo 'Explicit acceptance: unchanged and controlled slowdown; see gate report for both verdicts.' >> "$ARTIFACTS/workflow-summary.md"
+          fi
+
+      - name: Install PostgreSQL 18 and measurement dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          finish_phase() { echo "dependencies $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
+          trap finish_phase EXIT
+          exec > >(tee "$ARTIFACTS/dependencies.log") 2>&1
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev linux-tools-common linux-tools-generic build-essential python3
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+
+      - name: Probe hosted hardware counters (diagnostic only)
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          finish_phase() { echo "hardware-probe $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
+          trap finish_phase EXIT
+          sysctl kernel.perf_event_paranoid kernel.kptr_restrict > "$ARTIFACTS/perf-sysctl-before.log"
+          set +e
+          { sudo sysctl -w kernel.perf_event_paranoid=0; } > "$ARTIFACTS/perf-sysctl-change.log" 2>&1
+          sysctl_status=$?
+          perf --version > "$ARTIFACTS/perf-version.log" 2>&1
+          perf stat -x, -e instructions,cycles -o "$ARTIFACTS/perf-hardware-stat.csv" \
+            python3 -c 'print(sum(i*i for i in range(200000)))' > "$ARTIFACTS/perf-probe.log" 2>&1
+          probe_status=$?
+          set -e
+          sysctl kernel.perf_event_paranoid kernel.kptr_restrict > "$ARTIFACTS/perf-sysctl-after.log"
+          printf '{"sysctl_exit":%s,"hardware_probe_exit":%s,"primary_metric":"elapsed","diagnostic_only":true}\n' \
+            "$sysctl_status" "$probe_status" > "$ARTIFACTS/perf-probe.json"
+          printf '\nHardware probe exit: %s (see raw counter results; diagnostic only).\n' "$probe_status" >> "$ARTIFACTS/workflow-summary.md"
+
+      # Both exact SHA builds, isolated libraries/clusters and paired samples run here,
+      # with one PG18/compiler/configuration. No matrix or source/object cache.
+      - name: Paired focused gate
+        if: steps.scope.outputs.run == 'true'
+        env:
+          BASELINE_SHA: ${{ steps.scope.outputs.baseline }}
+          PERF_GROUPS: ${{ steps.scope.outputs.groups }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          finish_phase() { echo "driver-build-setup-measure-cleanup $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
+          trap finish_phase EXIT
+          acceptance=()
+          if [[ "$VERIFY_CONTROL" == true ]]; then acceptance+=(--verify-control); fi
+          nice -n 19 python3 bench/steps/perf_gate.py \
+            --baseline-ref "$BASELINE_SHA" --candidate-ref "$CANDIDATE_SHA" \
+            --groups "$PERF_GROUPS" --output "$ARTIFACTS/gate" --tier "$TIER" \
+            --scratch-root "$RUNNER_TEMP/focused-perf-scratch" --port-base 56240 "${acceptance[@]}" \
+            2>&1 | tee "$ARTIFACTS/driver.log"
+
+      - name: Report total elapsed and budget
+        if: always()
+        env:
+          SCOPE_RUN: ${{ steps.scope.outputs.run }}
+          GATE_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p "$ARTIFACTS"
+          python3 - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          root = Path(os.environ['ARTIFACTS'])
+          start = root / 'workflow-start'
+          elapsed = time.time() - float(start.read_text()) if start.exists() else None
+          code = os.environ['SCOPE_RUN'] == 'true'
+          over = elapsed is not None and elapsed > 300 and code
+          result = {'elapsed_seconds_including_checkout_dependencies_build_setup_cleanup': elapsed,
+                    'pr_target_seconds': [180, 300], 'target_exceeded': over,
+                    'gate_status': os.environ['GATE_STATUS'], 'code_change': code,
+                    'note': 'Budget overages are reported separately from measurement verdicts; upload overhead follows.'}
+          (root / 'workflow-timing.json').write_text(json.dumps(result, indent=2) + '\n')
+          with (root / 'workflow-summary.md').open('a') as out:
+              out.write(f'\nJob status: {result["gate_status"]}.\n')
+              out.write(f'Elapsed including checkout/dependencies/build/setup/cleanup: {elapsed} seconds.\n')
+              if not code:
+                  out.write('No measurement ran (documentation-only selection or earlier setup failure; see job status).\n')
+              elif over:
+                  out.write('TARGET EXCEEDED: 3–5 minute PR target; this is an explicit measured overage.\n')
+              else:
+                  out.write('PR budget target: 3–5 minutes; no hosted duration is claimed before this run.\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as out:
+              out.write((root / 'workflow-summary.md').read_text())
+              summary = root / 'gate/summary.md'
+              if summary.exists():
+                  out.write('\n' + summary.read_text())
+          PY
+
+      - name: Upload selection, JSON, raw samples, plans, logs and summaries
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: focused-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/focused-perf-artifacts
+          if-no-files-found: error
+          retention-days: 14
