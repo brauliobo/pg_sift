@@ -64,7 +64,7 @@ class Methodology(unittest.TestCase):
                 gate.interval([(1,1)]*count)
 
     def test_fixed_confirmation_policy_and_fresh_samples(self):
-        for case in (gate.CASES[0],gate.CASES[13]):
+        for case in (gate.CASES[0],gate.CASES[14]):
             calls = []
             def sample(conn,case,operations,deadline,delay=0):
                 if operations==7:
@@ -218,6 +218,115 @@ class Methodology(unittest.TestCase):
         self.assertIn('16 read pairs',summary)
         gate.DEADLINE = math.inf
 
+    def test_main_preserves_completed_evidence_at_budget_boundaries(self):
+        class Revision:
+            def __init__(self, name, *args):
+                self.name, self.conn, self.timings, self.versions, self.started = name, self, {}, [], False
+            def setup(self, rows): return ''
+            def exec(self, sql): pass
+            def rows(self, sql): return [['3']]
+            def stop(self, output): pass
+        for prior in ('pass', 'regression'):
+            for phase in ('validation', 'calibration', 'initial', 'churn', 'final', 'size', 'settled', 'sql', 'cleanup'):
+                with self.subTest(prior=prior, phase=phase), tempfile.TemporaryDirectory() as tmp:
+                    clock = [0.0]
+                    validations = [0]
+                    def validate(*args):
+                        validations[0] += 1
+                        if phase=='sql' and validations[0]==2:
+                            raise RuntimeError('validation SQL failed')
+                        if phase=='validation' and validations[0]==2:
+                            raise gate.BudgetExpired('next validation')
+                        return {'size_checks': {'status':'regression', 'relations':[]} if phase=='size' and validations[0]==2 else None}
+                    def calibrate(*args):
+                        if phase in ('calibration','size') and validations[0]==2:
+                            raise gate.BudgetExpired('active calibration')
+                        return {'operations':7}
+                    def block(*args, sink=None, **kwargs):
+                        if phase=='initial' and validations[0]==2:
+                            sink.update(samples=[[1,None]], expected_pairs=6)
+                            raise gate.BudgetExpired('active block')
+                        return dict(gate.interval([(1,1.3 if prior=='regression' else 1)]*6), samples=[[1,1.3 if prior=='regression' else 1]]*6)
+                    def churn(*args):
+                        if phase in ('churn','settled'): raise gate.BudgetExpired('churn')
+                        if phase=='final': clock[0] = 301
+                        return {'state':'churn_vacuum','status':'pass', 'relations':[]}
+                    def stop(*args):
+                        if phase=='cleanup': raise RuntimeError('cleanup failed')
+                    args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
+                            '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
+                    with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+                         patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
+                         patch.object(gate,'select',return_value=gate.CASES[:2]), \
+                         patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
+                         patch.object(gate,'sizes',return_value=[]), \
+                         patch.object(gate,'size_snapshot',return_value={'state':'settled_build','status':'regression' if phase=='settled' else 'pass','relations':[]}), \
+                         patch.object(Revision,'stop',side_effect=stop), \
+                         patch.object(gate,'validate_case',side_effect=validate), \
+                         patch.object(gate,'calibrate',side_effect=calibrate), \
+                         patch.object(gate,'block',side_effect=block), patch.object(gate,'churn_sizes',side_effect=churn), \
+                         patch.object(gate.time,'monotonic',side_effect=lambda:clock[0]), \
+                         contextlib.redirect_stdout(io.StringIO()):
+                        code = gate.main(args)
+                    report = json.loads((Path(tmp)/'results.json').read_text())
+                    summary = (Path(tmp)/'summary.md').read_text()
+                    expected = ('error' if phase in ('sql','cleanup') else
+                                'regression' if prior=='regression' or phase in ('size','settled') else 'inconclusive')
+                    self.assertEqual(report['cases'][0]['status'],prior)
+                    self.assertEqual(code,{'error':3,'regression':1,'inconclusive':2}[expected])
+                    self.assertEqual(report['status'],expected)
+                    self.assertEqual(report['complete'],phase=='cleanup')
+                    self.assertEqual(report['size_complete'],phase=='cleanup')
+                    self.assertIn(f"Complete: **{phase=='cleanup'}**",summary)
+                    if phase in ('validation','calibration','initial','size'):
+                        self.assertEqual(report['cases'][1]['status'],'inconclusive')
+                    if phase=='size': self.assertEqual(report['size_status'],'regression')
+        gate.DEADLINE = math.inf
+
+    def test_incomplete_acceptance_cannot_pass_detected_controls(self):
+        class Revision:
+            def __init__(self,name,*args):
+                self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
+            def setup(self,rows): return ''
+            def exec(self,sql): pass
+            def script(self,sql): pass
+            def rows(self,sql): return [['3']]
+            def stop(self,output): pass
+        def measure(revisions,case,deadline,control=False,sink=None,**kwargs):
+            status = 'regression' if control else 'pass'
+            result = dict(name=case.name,workload_version=case.workload_version,phase='complete',complete=True,
+                          timing_status=status,status=status,validation={'size_checks':None},
+                          confirmation=gate.interval([(1,1.5)]*6))
+            if coverage and case.lifecycle=='insert_trajectory':
+                result['validation']['size_checks'] = {'state':'mutable_insert_trajectory','status':'pass','relations':[]}
+            sink.append(result)
+            return result
+        for expiry,coverage in ((False,False),(True,True),(False,True)):
+            with tempfile.TemporaryDirectory() as tmp:
+                args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
+                        '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
+                def size_snapshot(revisions,state):
+                    return {'state':state,'status':'regression' if state.startswith('control_') else 'pass','relations':[]}
+                with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+                     patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
+                     patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
+                     patch.object(gate,'sizes',return_value=[]), patch.object(gate,'size_snapshot',side_effect=size_snapshot), \
+                     patch.object(gate,'validate_case',return_value={'size_checks':{'state':'mutable_vacuum','status':'pass','relations':[]} if coverage else None}), \
+                     patch.object(gate,'measure',side_effect=measure), \
+                     patch.object(gate,'churn_sizes',side_effect=gate.BudgetExpired('after controls') if expiry else None,
+                                  return_value={'state':'churn_vacuum','status':'pass','relations':[]}), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    code = gate.main(args)
+                report = json.loads((Path(tmp)/'results.json').read_text())
+                self.assertEqual(code,0 if coverage and not expiry else 2)
+                self.assertEqual(report['size_status'],'pass' if coverage and not expiry else 'inconclusive')
+                self.assertEqual(len(report['cases']),4)
+                self.assertEqual(report['cases'][-1]['timing_status'],'regression')
+                if expiry:
+                    self.assertFalse(report['complete'])
+                    self.assertIn('Complete: **False**',(Path(tmp)/'summary.md').read_text())
+        gate.DEADLINE = math.inf
+
     def test_exhausted_workflow_budget_reports_exit_two_without_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
@@ -317,13 +426,15 @@ class Methodology(unittest.TestCase):
         self.assertEqual(c['desired_operations'],1500)
         self.assertTrue(c['target_limited_by_reset'])
 
-    def test_each_mutation_resets_before_timing(self):
+    def test_update_and_vacuum_reset_before_every_operation(self):
         calls = []
         class Conn:
             def exec(self,sql): calls.append(sql)
-        with patch.object(gate,'reset',side_effect=lambda c,k:calls.append('RESET')):
-            gate.elapsed(Conn(),gate.CASES[13],2,math.inf)
-        self.assertEqual(calls,['RESET',gate.CASES[13].sql,'RESET',gate.CASES[13].sql])
+        for case in gate.CASES[14:16]:
+            calls.clear()
+            with patch.object(gate,'reset',side_effect=lambda c,k:calls.append('RESET')):
+                gate.elapsed(Conn(),case,2,math.inf)
+            self.assertEqual(calls,['RESET',case.sql,'RESET',case.sql])
 
     def test_structured_plan_rejects_unrelated_marker(self):
         fake = [{'Plan':{'Node Type':'Seq Scan','Filter':'docs_bm25'}}]

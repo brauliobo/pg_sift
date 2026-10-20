@@ -14,6 +14,17 @@ class Case:
     check: str = ''
     settings: str = ''
     nightly: bool = False
+    lifecycle: str = 'read'
+    workload_version: str = 'v1'
+
+    def statements(self, seed_max, operations):
+        if self.lifecycle != 'insert_trajectory':
+            raise ValueError('point rendering requires insert_trajectory')
+        return [self.sql.format(id=seed_max+i) for i in range(1,operations+1)]
+
+    def expected_rows(self, seed_max, operations):
+        return ("SELECT id,g,amount,body,pad FROM seed UNION ALL "
+                f"SELECT {seed_max}+i,1,7,'insert common',repeat('p',1500) FROM generate_series(1,{operations}) i")
 
 
 RESET = 'TRUNCATE mutable; INSERT INTO mutable SELECT * FROM seed ORDER BY id; VACUUM (FREEZE, ANALYZE) mutable'
@@ -32,9 +43,9 @@ CASES = [
     Case('agg_table_group', 'agg', 'SELECT g,count(*),sum(amount) FROM store GROUP BY g ORDER BY g', 'SELECT g,count(*),sum(amount) FROM seed GROUP BY g ORDER BY g', 'SiftAgg'),
     Case('agg_table_scan', 'agg', 'SELECT sum(amount) FROM store WHERE id BETWEEN 100 AND 7000', 'SELECT sum(amount) FROM seed WHERE id BETWEEN 100 AND 7000', 'SiftAgg', settings='SET sift.agg_preagg=off'),
     Case('storage_point_lookup', 'storage', 'SELECT id,g,amount,body FROM store WHERE id=4097', 'SELECT id,g,amount,body FROM seed WHERE id=4097', 'store_pk', True),
-    Case('storage_insert', 'storage', "INSERT INTO mutable VALUES (9001,1,7,'insert common',repeat('p',1500))", reset=RESET, check=STATE),
-    Case('storage_update', 'storage', 'UPDATE mutable SET amount=amount+1 WHERE id BETWEEN 100 AND 200', reset=RESET, check=STATE),
-    Case('storage_vacuum_space', 'storage', 'VACUUM (DISABLE_PAGE_SKIPPING) mutable', reset=RESET+'; DELETE FROM mutable WHERE id>2048', check=STATE),
+    Case('storage_insert', 'storage', "INSERT INTO mutable VALUES ({id},1,7,'insert common',repeat('p',1500))", reset=RESET, check=STATE, lifecycle='insert_trajectory', workload_version='committed_append_v2'),
+    Case('storage_update', 'storage', 'UPDATE mutable SET amount=amount+1 WHERE id BETWEEN 100 AND 200', reset=RESET, check=STATE, lifecycle='reset_each_operation'),
+    Case('storage_vacuum_space', 'storage', 'VACUUM (DISABLE_PAGE_SKIPPING) mutable', reset=RESET+'; DELETE FROM mutable WHERE id>2048', check=STATE, lifecycle='reset_each_operation'),
     Case('bm25_phrase_nightly', 'bm25', "SELECT count(*) FROM docs WHERE body @@> '\"common wifi\"'", "SELECT count(*) FROM seed WHERE body LIKE '%common wifi%'", 'docs_bm25', nightly=True),
     Case('agg_high_cardinality_nightly', 'agg', 'SELECT id,count(*),sum(amount) FROM docs GROUP BY id ORDER BY id', 'SELECT id,count(*),sum(amount) FROM seed GROUP BY id ORDER BY id', 'SiftAgg', nightly=True),
 ]
