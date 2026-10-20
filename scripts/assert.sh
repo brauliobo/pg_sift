@@ -14,6 +14,7 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+source "$REPO/scripts/source-snapshot.sh"
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
@@ -33,7 +34,7 @@ unset SIFT_INITDB_TEMPLATE INITDB_TEMPLATE SANITIZE
 
 rm -rf "$WORK" && mkdir -p "$WORK/tree"
 # a private copy: the build writes into the tree and its flavor stamp does not know which server it was built for
-( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$WORK/tree" -xf -
+copy_git_sources "$REPO" "$WORK/tree"
 cd "$WORK/tree"
 export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_SUDO=
 scripts/pgtest.sh install

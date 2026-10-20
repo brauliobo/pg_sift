@@ -44,4 +44,5 @@
 ^scripts/(check-neutral|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src|rename-write-buffer)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/(static\.baseline|build-bench\.sql)	-
+^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
