@@ -314,6 +314,8 @@ class ProductionInsert(unittest.TestCase):
         helper=restoration.PairedRestoration()
         class Rev:
             def __init__(self,name,*args):
+                self.socket_path={'path':'unit-stub'}
+                self.server_log_evidence={'state':'unit-stub'}
                 self.name,self.conn,self.timings,self.versions,self.started=name,self,{},[],False
             def setup(self,rows): events.append('setup_'+self.name); return ''
             def exec(self,sql): events.append(sql)
@@ -410,6 +412,7 @@ class ProductionInsert(unittest.TestCase):
         from unittest.mock import MagicMock
         rev=gate.Revision.__new__(gate.Revision)
         rev.bindir,rev.base,rev.data,rev.socket=map(Path,('bin','owned','owned/data','owned/socket'))
+        rev.socket_owned=True
         rev.env,rev.log,rev.port,rev.timings={},Path('owned/setup.log'),56260,{'cluster_init_start':.1}
         sql=[]
         class Conn:

@@ -230,6 +230,8 @@ class InsertTrajectory(unittest.TestCase):
                     return [['3']]
             class Revision:
                 def __init__(self,name,*args):
+                    self.socket_path={'path':'unit-stub'}
+                    self.server_log_evidence={'state':'unit-stub'}
                     self.name,self.conn,self.timings,self.versions,self.started = name,Conn(),{},[],False
                 def setup(self,rows): return ''
                 def stop(self,output): pass

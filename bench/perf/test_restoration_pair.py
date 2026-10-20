@@ -413,6 +413,8 @@ class PairedRestoration(unittest.TestCase):
         seen = []
         class Rev:
             def __init__(self,name,*args):
+                self.socket_path={'path':'unit-stub'}
+                self.server_log_evidence={'state':'unit-stub'}
                 self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
             def setup(self,rows): return ''
             def exec(self,sql): events.append(sql)

@@ -146,6 +146,8 @@ class Methodology(unittest.TestCase):
             events = []
             class Revision:
                 def __init__(self,name,*args):
+                    self.socket_path={'path':'unit-stub'}
+                    self.server_log_evidence={'state':'unit-stub'}
                     self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
                 def setup(self,rows):
                     events.append('load '+self.name)
@@ -186,6 +188,8 @@ class Methodology(unittest.TestCase):
     def test_main_reports_partial_confirmation_as_exit_two_with_all_raw(self):
         class Revision:
             def __init__(self,name,*args):
+                self.socket_path={'path':'unit-stub'}
+                self.server_log_evidence={'state':'unit-stub'}
                 self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
             def setup(self,rows): return ''
             def exec(self,sql): pass
@@ -221,6 +225,8 @@ class Methodology(unittest.TestCase):
     def test_main_preserves_completed_evidence_at_budget_boundaries(self):
         class Revision:
             def __init__(self, name, *args):
+                self.socket_path={'path':'unit-stub'}
+                self.server_log_evidence={'state':'unit-stub'}
                 self.name, self.conn, self.timings, self.versions, self.started = name, self, {}, [], False
             def setup(self, rows): return ''
             def exec(self, sql): pass
@@ -286,6 +292,8 @@ class Methodology(unittest.TestCase):
     def test_incomplete_acceptance_cannot_pass_detected_controls(self):
         class Revision:
             def __init__(self,name,*args):
+                self.socket_path={'path':'unit-stub'}
+                self.server_log_evidence={'state':'unit-stub'}
                 self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
             def setup(self,rows): return ''
             def exec(self,sql): pass

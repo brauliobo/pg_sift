@@ -156,6 +156,39 @@ def exact_sha(ref):
     return got
 
 
+# Socket endpoints only: data/build/TMPDIR remain on the caller's test backing.
+SOCKET_PARENT = Path('/tmp')
+
+
+def validate_socket_path(directory, port):
+    if sys.platform.startswith('linux'):
+        limit=107  # sockaddr_un.sun_path[108], including the terminating NUL.
+    elif sys.platform.startswith(('darwin','freebsd','openbsd','netbsd','dragonfly')):
+        limit=103  # These platforms use sun_path[104].
+    else:
+        raise ValueError('unsupported platform for UNIX socket pathname contract: '+sys.platform)
+    if type(port) is not int or not 1<=port<=65535:
+        raise ValueError('invalid PostgreSQL socket port')
+    path=Path(directory)/f'.s.PGSQL.{port}'
+    length=len(os.fsencode(path))
+    if not path.is_absolute() or length>limit:
+        raise ValueError(f'UNIX socket path is {length} bytes; {sys.platform} maximum {limit} pathname bytes plus NUL: {path}; use a shorter socket parent')
+    return dict(path=str(path),path_bytes=length,pathname_limit_bytes=limit,port=port,
+                platform=sys.platform,encoding=sys.getfilesystemencoding(),
+                parent_policy='private0700 socket-only directory under /tmp; independent of scratch-root and TMPDIR')
+
+
+def allocate_socket_directory(port):
+    directory=Path(tempfile.mkdtemp(prefix='pgs-',dir=SOCKET_PARENT))
+    try:
+        directory.chmod(0o700)
+        evidence=validate_socket_path(directory,port)
+    except Exception:
+        shutil.rmtree(directory)  # No cluster can exist before this constructor returns.
+        raise
+    return directory,evidence
+
+
 class Revision:
     def __init__(self, name, sha, tree, scratch, output, pg_config, port):
         self.name, self.sha = name, sha
@@ -164,8 +197,6 @@ class Revision:
         self.tree = self.base / 'source'
         self.data = self.base / 'cluster'
         self.stage = self.base / 'stage'
-        self.socket = self.base / 'sock'
-        self.socket.mkdir()
         self.port = port
         self.conn = None
         self.started = False
@@ -183,6 +214,9 @@ class Revision:
         with tarfile.open(archive) as tar:
             tar.extractall(self.tree, filter='data')
         archive.unlink()
+        self.socket,self.socket_path = allocate_socket_directory(port)
+        self.socket_owned = True
+        self.server_log_evidence = None
 
     def setup(self, rows=8192):
         self.timings = {}
@@ -219,7 +253,7 @@ max_parallel_workers_per_gather=0
 max_parallel_maintenance_workers=0
 jit=off
 """
-        with (self.data/'postgresql.conf').open('a') as f:
+        with (self.data/'postgresql.conf').open('a',encoding=sys.getfilesystemencoding(),errors='surrogateescape') as f:
             f.write(config)
         self.env = env
         self.timings['cluster_init_start'] = time.monotonic()-phase
@@ -229,6 +263,11 @@ jit=off
     def start(self, *, fixture_rows=None):
         # The restart path launches the existing data directory without loading fixtures.
         phase=time.monotonic()
+        if not self.socket_owned:
+            # Exclusive recreation after the cost probe; never adopt an existing path.
+            self.socket.mkdir(mode=0o700)
+            self.socket_owned = True
+            self.socket.chmod(0o700)
         self.started = True
         command(['nice','-n','19',self.bindir/'pg_ctl','-D',self.data,'-l',self.base/'server.log','-w','start'],env=self.env,log=self.log)
         if fixture_rows is not None:
@@ -247,15 +286,40 @@ jit=off
         self.versions = self.conn.rows("SELECT version(),extversion FROM pg_extension WHERE extname='pg_sift'")
 
     def stop(self, output):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-        if self.started and not (self.data/'postmaster.pid').exists():
-            self.started = False
-        if self.started:
-            command([self.bindir/'pg_ctl','-D',self.data,'-m','fast','-w','stop'],log=self.log,bounded=False)
-            self.started = False
-            shutil.copyfile(self.base/'server.log',output/f'{self.name}-server.log')
+        try:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+            pid=self.data/'postmaster.pid'
+            self.started = pid.exists()
+            if self.started:
+                command([self.bindir/'pg_ctl','-D',self.data,'-m','fast','-w','stop'],log=self.log,bounded=False)
+                if pid.exists():
+                    raise RuntimeError('postmaster.pid remains after stop; preserving cluster and socket directory')
+                self.started = False
+        finally:
+            primary=sys.exc_info()[1]
+            source,destination=self.base/'server.log',output/f'{self.name}-server.log'
+            self.server_log_evidence=dict(source=str(source),artifact=str(destination),state='absent')
+            try:
+                # Failed startup can produce a log without ever leaving a PID.
+                try:
+                    source.stat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    shutil.copyfile(source,destination)
+                    self.server_log_evidence['state']='copied'
+            except Exception as exc:
+                self.server_log_evidence.update(state='copy_failed',error=f'{type(exc).__name__}: {exc}')
+                if primary is None:
+                    raise
+                primary.add_note('server log preservation failed: '+str(exc))
+            finally:
+                if self.socket_owned and not self.started and not (self.data/'postmaster.pid').exists():
+                    shutil.rmtree(self.socket)
+                    self.socket_owned = False
+
 
 
 def utc_now():
@@ -1365,7 +1429,9 @@ def _write_report(output, report):
     lines.extend(['', 'Physical schedule: `'+report.get('physical_schedule_version','normal catalog order')+'`.',
                   'Measured phase ledger (nested phases are explanatory): `phase_ledger` in results.json; final closed-writer accounting: `terminal-accounting.json`.',
                   'Same-invocation future cost estimates: `'+json.dumps(report.get('post_control_costs',{}))+'`. Estimates are not bounds.',
-                  'Cleanup errors: `'+json.dumps(report.get('cleanup_errors',[]))+'`.'])
+                  'Cleanup errors: `'+json.dumps(report.get('cleanup_errors',[]))+'`.',
+                  'UNIX socket paths: `'+json.dumps(report.get('unix_socket_paths',{}))+'`.',
+                  'Server log preservation: `'+json.dumps(report.get('server_logs',{}))+'`.'])
     lines.extend(['', 'Required size states: `'+json.dumps(report.get('required_size_states',[]))+'`.'])
     lines.extend(['', '| Size state | Relation / role | Base bytes/pages | Head bytes/pages | Ratio | Limit bytes | Status |', '|---|---|---|---|---:|---:|---|'])
     for snapshot in normal_size_checks(report) + ([report['size_control']] if 'size_control' in report else []):
@@ -1477,6 +1543,11 @@ def main(argv=None):
                 phase = time.monotonic()
                 rev = Revision(name,sha,tree,scratch,args.output,str(Path(args.pg_config).resolve()),args.port_base+i)
                 revisions.append(rev)
+                report.setdefault('unix_socket_paths',{})[name] = rev.socket_path
+            write_report(args.output,report)
+            for rev in revisions:
+                phase = time.monotonic()
+                name = rev.name
                 report.setdefault('cluster_config',{})[name] = rev.setup(32768 if args.tier=='nightly' else 8192)
                 report.setdefault('setup_phases',{})[name] = rev.timings
                 report.setdefault('versions',{})[name] = rev.versions
@@ -1579,7 +1650,9 @@ def main(argv=None):
                     cleanup_phase['error']='; '.join(report['cleanup_errors'])
                     if report['status']!='error':
                         report['status'],report['error']='error',f'cleanup failed: {exc}'
-            if scratch and not any(r.started for r in revisions):
+                finally:
+                    report.setdefault('server_logs',{})[rev.name]=rev.server_log_evidence
+            if scratch and not any(r.started for r in revisions) and not report.get('cleanup_errors'):
                 try:
                     shutil.rmtree(scratch)
                 except Exception as exc:
