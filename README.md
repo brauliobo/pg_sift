@@ -317,7 +317,7 @@ Online-store table, one backend, one CPU core, NVIDIA GeForce RTX 3090, measured
 
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
 - [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every benchmark table, the losses and the method; [docs/COVERAGE.md](docs/COVERAGE.md): what the engine accelerates.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every benchmark table, the losses and the method; [docs/BENCH-GAP.md](docs/BENCH-GAP.md): where pg_sift trails ClickHouse and Elasticsearch on the store questions; [docs/COVERAGE.md](docs/COVERAGE.md): what the engine accelerates.
 - [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
 - [docs/COL.md](docs/COL.md): the column engine; [docs/COL-PLAN.md](docs/COL-PLAN.md) and [docs/AGG.md](docs/AGG.md): aggregate pushdown and its test suite.
 - [docs/COL-TAM.md](docs/COL-TAM.md): `sift_table`; [docs/COL-SHRED.md](docs/COL-SHRED.md): `jsonb` paths; [docs/COL-CODEC.md](docs/COL-CODEC.md): chunk compression.
