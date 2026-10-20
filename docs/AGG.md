@@ -59,6 +59,23 @@ The normal plan stays for `<>`, `ctid` in an expression, in `GROUP BY` or compar
 (a custom plan folds it), a partitioned table (TIDs are per partition) and the top-N shapes (their probes read zones of units outside the range). PostgreSQL
 plans a tid range scan for a narrow range (`enable_tidscan = off` shows the scan). Fixtures `tr_*`, test `agg_tid_range`.
 
+## DISTINCT ON
+
+`SELECT DISTINCT ON (keys) ... ORDER BY keys, sort` is a group by the ON columns that keeps the columns of the first row of each group by the `ORDER BY`. The
+scan returns each such column as a "first row" aggregate (`first_row(x ORDER BY ...)` in `EXPLAIN`): not the `array_agg(...)[1]` rewrite, which would sort
+the rows of the groups, but the best row of each group, kept while the rows pass and compared with the sort operator, collation and `NULLS FIRST/LAST` of
+the `ORDER BY`. The ORDER BY, LIMIT and OFFSET of the query run above it. With workers, each keeps its best rows and the leader merges them with the same comparison.
+Several columns of the select list share one comparison per row.
+
+The rows of a group tie unless the `ORDER BY` is a total order, and then the row is the choice of PostgreSQL's sort. So the scan is planned only when the sort
+holds every column of a unique index of the table (all `NOT NULL`, or `NULLS NOT DISTINCT`; not partial; of a partitioned table the index holds the partition key),
+and has at most 4 columns after the ON columns. The test reads the catalog at plan time, so a prepared plan is replanned when the index is dropped.
+
+The normal plan stays when the sort is not a total order, a sort or select list expression is volatile, a value is an array or a column of a joined table,
+or the estimated groups times the bytes of their best rows are more than the memory of a hash aggregate (`work_mem` times `hash_mem_multiplier`): the groups are
+not spilled. A volatile function of the select list that PostgreSQL evaluates after the rows are picked does not matter. Fixtures `do_*`, `t_distinct_on`,
+`pa_distinct_on`, test `agg_distinct_on`.
+
 ## Workload shapes
 
 The shapes of a review analytics workload (an item table with jsonb ratings, a document with an array of opinions, entity and mapping tables) are
@@ -207,7 +224,7 @@ same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates 
 `CASE`, `IS [NOT] NULL`, `FILTER`, `HAVING`, grouping by expressions), NULL-heavy documents and empty sets, a BM25 match with an aggregate,
 a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), group keys up to the limit of 8, rollups and cubes of up to 7 columns (`k_keys_*`, `k_rollup_*`, `k_cube_*`) and the plain traps one past each limit (9 keys, 9 joined tables, 17 combos), lookup joins of up to 8 tables and 16 combos (`j_joins_*`, `j_combos_*`), generic aggregates (`g_*`: the variance family, `DISTINCT` forms over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine, `x_bool_*`: `bool_and`, `bool_or` and `every` merged from two workers) with their traps (a volatile transition function, a float read into text with `-0`), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
-that are not numbers, `DISTINCT ON`, outer joins, a set-returning function in the select
+that are not numbers, `DISTINCT ON` (`do_*`: latest and earliest rows, mixed sort directions, expressions, joins, every column type, and the plain traps), outer joins, a set-returning function in the select
 list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE` and `SERIALIZABLE`; partitioned tables (`pa_*`: pruning at every level, a dropped column before the index, a default and an unlogged partition, `ONLY`, partitions without the index or with other options, inheritance, run-time pruning) run DML through the parent in the scenarios.
 
 ### Scenarios
