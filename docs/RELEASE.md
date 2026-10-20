@@ -25,7 +25,7 @@ Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, h
 | publish | `main` and the tag in one push; the workflow `release` (the `.deb` and `.rpm` in parallel, the SQLite and MariaDB tarballs); the downloaded assets against `SHA256SUMS` and their names; `scripts/release-aur.sh` |
 
 `ci`, `upgrade` and `package` run at once. The steps that passed are in `~/.local/state/pg_sift-release/VERSION/manifest` and the logs in `logs/` there.
-The AUR step needs the key: `SSH_ASKPASS=/usr/bin/ksshaskpass SSH_ASKPASS_REQUIRE=force AUR_SSH_KEY=~/.ssh/id_github scripts/release.sh VERSION`.
+The AUR step needs the key: a key loaded in your ssh-agent, or `AUR_SSH_KEY=PATH scripts/release.sh VERSION` (the passphrase is asked through your `SSH_ASKPASS`).
 Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 12 GB, ports from `SIFT_PORT` (56210) and the 10th after it.
 
 ## What CI runs
