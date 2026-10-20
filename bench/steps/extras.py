@@ -409,7 +409,7 @@ def main():
             replace_block(a.benchmarks, name, lines)
             for doc in ALSO.get(name, []):   # the other documents that carry the block
                 if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
-                    replace_block(doc, name, lines)
+                    replace_block(doc, name, [l.replace('](results/', '](bench/results/') for l in lines] if os.path.basename(doc) == 'README.md' else lines)
 
 
 ALSO = {'gpu': [os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'GPU.md')]}
