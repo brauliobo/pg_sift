@@ -52,10 +52,10 @@ CREATE INDEX w_time ON w USING sift_col (tm);
 CREATE INDEX w_uuid ON w USING sift_col (u);
 CREATE INDEX w_bytea ON w USING sift_col (b);
 -- the types that stay refused
-CREATE TABLE refused (a timetz, b point, c inet, d tsvector);
-CREATE INDEX r_timetz ON refused USING sift_col (a);
+CREATE TABLE refused (a xml, b point, c json, d tsvector);
+CREATE INDEX r_xml ON refused USING sift_col (a);
 CREATE INDEX r_point ON refused USING sift_col (b);
-CREATE INDEX r_inet ON refused USING sift_col (c);
+CREATE INDEX r_json ON refused USING sift_col (c);
 CREATE INDEX r_tsvector ON refused USING sift_col (d);
 DROP TABLE refused;
 SELECT indexrelid::regclass AS idx, (SELECT count(*) FROM sift.col_leaves(indexrelid)) AS leaves
