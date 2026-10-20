@@ -415,6 +415,7 @@ typedef struct SiftColCounters
 	int64		rows_vetted;	/* rows checked against the heap (page not all-visible) */
 	int64		heap_pages;
 	int64		bytes_decoded;
+	int64		tests_made;		/* predicates turned into a test of the stored codes (a LUT over a segment's dictionary for a text or an image leaf) */
 	SiftSimdLevel simd;			/* the level the kernels ran at (sift_cpu.active) */
 } SiftColCounters;
 
