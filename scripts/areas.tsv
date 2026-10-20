@@ -1,0 +1,45 @@
+# What a change can break: the one map of the CI workflow and of `scripts/ci.sh affected`.
+#
+# `=NAME<TAB>ERE` names a group of job names of scripts/ci.sh (`scripts/ci.sh --plan`). Any other row is `PATH<TAB>JOBS`: PATH is an ERE over a changed file,
+# JOBS an ERE over job names in which {NAME} stands for a group and \N for a group of PATH; `-` means no job (the file is mapped, nothing runs), `.` every job. A file
+# takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb` and `gh:replication` are the
+# workflow jobs that are not in scripts/ci.sh. `scripts/ci.sh --selftest` fails when a tracked file matches no row or a job is in no group, so a new
+# test or file is never left out silently. The nightly run and the release check run every job: this map only picks what a push runs.
+#
+# groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
+=bm25	^(installcheck-(sift_basic|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
+=col	^(installcheck-(col_|segfmt_mixed|facet_counts|colcodec_|shred_)|tap-shell-col_|soak-col$|difftest-col)
+=agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|difftest-col)
+=tbl	^(installcheck-(tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate)|difftest-col)
+=dec	^(fuzz|hardened)$
+=any	^(release-library-regress|coverage|isa-baseline|isolation(-emulated)?|static)$
+# the search the other areas call
+=search	^installcheck-(col_search|tbl_bm25|aggstub_)
+
+# the whole build and every harness: a change here can break anything
+^(Makefile|pg_sift[^/]*\.(sql|control)|src/(core/|areas\.mk)|scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats)\.|scripts/(lsan\.supp|harden\.mk|areas\.tsv)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.
+^test/fixtures/	^tap-shell-compat_2x
+^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$
+^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$
+^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$
+^test/col/	^difftest-col|^coverage$
+^test/diff/	^difftest
+^test/fuzz/	^(fuzz|hardened)$
+^test/isolation/	^isolation
+# the source areas
+^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
+^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
+^src/agg/	{col}|{agg}|{tbl}|{any}|gh:replication
+^src/table/	{tbl}|{any}|gh:replication
+^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
+# the harness of one job
+^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|release-library-check|isolation|static)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|release-library-regress|isolation|static)
+^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
+^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
+^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb
+# nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
+^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|LICENSE|NOTICE|\.gitignore)	-
+^scripts/(bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src|rename-write-buffer)	-
+^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
+^scripts/(static\.baseline|build-bench\.sql)	-
+^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-

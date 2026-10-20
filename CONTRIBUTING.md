@@ -6,6 +6,7 @@ pg_sift needs PostgreSQL 17 or 18 (19 is experimental) with the server headers (
 make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_config picks another installation
 make installcheck                   # regression tests against a running server that can load pg_sift
 make check                          # quick tier: every suite in throwaway clusters, about 1.5 minutes on 8 cores, 2.5 on 4
+scripts/ci.sh affected              # the same, only the jobs your diff against origin/main (with the working tree) can break (scripts/areas.tsv); use it before a push
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
@@ -67,8 +68,6 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Releasing
 
-1. Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, retitle `## Unreleased` in `CHANGELOG.md`, `sqlite/CHANGELOG.md` and `mariadb/CHANGELOG.md`, and
-   set `pkgver` in `packaging/PKGBUILD`, `sqlite/VERSION` and `mariadb/VERSION` (both must equal the tag), the release badge of the README, the install lines of `docs/USAGE.md` and the `V=` of `sqlite/README.md`.
-2. `scripts/ci.sh release` passes on the head; push `main` and wait for CI.
-3. Tag `vX.Y.Z` and push the tag: the `release` workflow builds the `.deb`, `.rpm` and SQLite tarball and publishes them with the notes.
-   `AUR_SSH_KEY`). Every release goes to the AUR.
+Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, keep the notes of the release under `## Unreleased` of the CHANGELOGs, push `main`, then
+`scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`: it takes the green full CI run of the commit, checks the upgrade from the previous release and
+`AUR_SSH_KEY`).
