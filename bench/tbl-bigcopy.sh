@@ -13,8 +13,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 ROWS=${1:-5000000}
 PG="$REPO/scripts/pgtest.sh"
 q() { "$PG" psql -X -qAt "$@"; }
-exec 9>/tmp/sift-perf.lock
-flock -n 9 || { echo "tbl-bigcopy: /tmp/sift-perf.lock is held, try later" >&2; exit 2; }
+exec 9>${PERF_LOCK:-/tmp/sift-perf.lock}
+flock -n 9 || { echo "tbl-bigcopy: the perf lock is held, try later" >&2; exit 2; }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0

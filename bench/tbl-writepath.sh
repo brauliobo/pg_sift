@@ -40,10 +40,10 @@ if [[ -z ${WP_SCOPED:-} && -z ${NO_CAPS:-} ]] && command -v systemd-run >/dev/nu
 fi
 
 # the perf lock: poll for it, never queue
-exec 9>>/tmp/sift-perf.lock
+exec 9>>${PERF_LOCK:-/tmp/sift-perf.lock}
 for ((waited = 0; ; waited += 10)); do
 	flock -n 9 && break
-	((waited < LOCK_WAIT)) || { echo "tbl-writepath: /tmp/sift-perf.lock is held after ${LOCK_WAIT}s, try later" >&2; exit 2; }
+	((waited < LOCK_WAIT)) || { echo "tbl-writepath: the perf lock is held after ${LOCK_WAIT}s, try later" >&2; exit 2; }
 	sleep 10
 done
 
