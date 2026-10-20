@@ -233,7 +233,7 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
                      Limit Hint: 100
 (11 rows)
 
--- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, or a side above sift.agg_lookup_max_rows.
+-- what keeps the normal plan: a volatile side, ON true, or a side above sift.agg_lookup_max_rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
  volatile_values 
@@ -247,10 +247,11 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM te
  normal
 (1 row)
 
+-- A correlated (LATERAL) sub-select keeps its native plan as a child that the scan runs for each distinct input.
 SELECT plan_of($$SELECT k.kind, count(*) FROM ev e JOIN LATERAL (SELECT s.kind FROM tenants s WHERE s.id = e.tenant_id ORDER BY s.id LIMIT 1) k ON k.kind IS NOT NULL GROUP BY k.kind$$) AS lateral_subselect;
- lateral_subselect 
--------------------
- normal
+  lateral_subselect   
+----------------------
+ SiftAgg k (subquery)
 (1 row)
 
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM tenants ORDER BY id LIMIT 1) s ON true GROUP BY s.kind$$) AS on_true;

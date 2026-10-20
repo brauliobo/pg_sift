@@ -121,9 +121,9 @@ SET sift.enable_agg = off;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked) GROUP BY kind$$) AS pushdown_off;
 RESET sift.enable_agg;
 
--- what keeps the normal plan: two columns (a row-valued NOT IN), a sub-select that reads a column of the row, a volatile one, one that may raise (a
--- division, a cast), one that holds a sub-select of its own (it may raise), FOR UPDATE, a leaf the lookup table does not hold (an int8 column), a
--- sub-select too large for the hash table (a SubPlan that is not hashed)
+-- what keeps the normal plan: a sub-select that reads a column of the row, a volatile one, one that may raise (a division, a cast), one that holds
+-- a sub-select of its own (it may raise), FOR UPDATE, a sub-select too large for the hash table (a SubPlan that is not hashed). A test of two columns
+-- (a row-valued NOT IN) or of a leaf the lookup table does not hold (an int8 column) is not a lookup table: the scan asks the SubPlan for each tuple.
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (dim_a_id, tenant_id) NOT IN (SELECT dim_a_id, 7 FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS row_valued;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, 7 FROM blocked) OR kind = 'c' GROUP BY kind$$) AS row_valued_in;
 SELECT plan_of($$SELECT kind, count(*) FROM ev e WHERE dim_a_id NOT IN (SELECT b.dim_a_id FROM blocked b WHERE b.dim_a_id IS NOT NULL AND b.dim_a_id % 5 = e.tenant_id % 5) GROUP BY kind$$) AS correlated;

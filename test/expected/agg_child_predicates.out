@@ -148,7 +148,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | differences 
 --------+-------------
- f      |           0
+ t      |           0
 (1 row)
 
 -- Constants projected inside the nullable input have no source leaf, but still have a nulling boundary.

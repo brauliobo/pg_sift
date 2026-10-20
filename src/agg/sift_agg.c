@@ -581,6 +581,7 @@ typedef struct ComboSt
 	int32		slo;
 	uint32		snlut;
 	ExprState **slot;
+	List       *args;			/* correlated child parameter expressions */
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* the join keys that are expressions */
 	int16	   *tlen;			/* per slot: the length and pass-by-value of its result, for the direct slots */
 	bool	   *tbyval;
@@ -793,7 +794,7 @@ typedef struct AggExec
 	uint32	   *pti;
 	uint32	   *pri;
 	uint32	   *gid;
-	uint32	   *kids;			/* hash mode: ids per key, SIFT_AGG_MAX_KEYS * VEC */
+	uint32	   *kids;			/* hash mode: ids per key, spec->nkeys * VEC */
 	uint32	   *cu32;
 	uint64	   *c64;
 	uint8	   *okb;
@@ -2416,11 +2417,11 @@ map_index_rows(MapTab *m)
 
 /* EXPLAIN ANALYZE: the rows loaded and the time since t0 */
 static void
-map_loaded(AggExec *ex, const MapTab *m, instr_time t0)
+map_loaded(AggExec *ex, int nrows, instr_time t0)
 {
 	instr_time	t1;
 
-	ex->lookup_loaded += m->nrow;
+	ex->lookup_loaded += nrows;
 	INSTR_TIME_SET_CURRENT(t1);
 	INSTR_TIME_SUBTRACT(t1, t0);
 	ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
@@ -2487,7 +2488,7 @@ map_load_table(AggExec *ex, int ci)
 	MemoryContextSwitchTo(old);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
-	map_loaded(ex, m, t0);
+	map_loaded(ex, m->nrow, t0);
 	return m;
 }
 
@@ -2518,7 +2519,7 @@ map_load_child(AggExec *ex, int ci)
 	}
 	map_index_rows(m);
 	MemoryContextSwitchTo(caller);
-	map_loaded(ex, m, t0);
+	map_loaded(ex, m->nrow, t0);
 	return m;
 }
 
@@ -2526,7 +2527,11 @@ map_load_child(AggExec *ex, int ci)
 static MapTab *
 map_load(AggExec *ex, int ci)
 {
-	return ex->spec->join[ex->spec->combo[ci].join].child >= 0 ? map_load_child(ex, ci) : map_load_table(ex, ci);
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+
+	if (j->params != NIL)
+		return map_new(j, false);
+	return j->child >= 0 ? map_load_child(ex, ci) : map_load_table(ex, ci);
 }
 
 static void
@@ -2666,6 +2671,51 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 	}
 }
 
+/* A native correlated child runs for this input only; cached output rows keep their own identity. */
+static int
+combo_child_rows(AggExec *ex, int ci, uint32 **rows)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	EState     *estate = ex->css.ss.ps.state;
+	PlanState  *child = list_nth(estate->es_subplanstates, j->subplan - 1);
+	ListCell   *lp, *la;
+	int         start = cs->map->nrow, n = 0;
+	MemoryContext caller = CurrentMemoryContext;
+	instr_time  t0;
+
+	INSTR_TIME_SET_CURRENT(t0);
+	forboth(lp, j->params, la, cs->args)
+	{
+		int         id = lfirst_int(lp);
+		ParamExecData *prm = &estate->es_param_exec_vals[id];
+
+		prm->value = ExecEvalExprSwitchContext(lfirst(la), ex->lutcx, &prm->isnull);
+		Assert(prm->execPlan == NULL);
+		child->chgParam = bms_add_member(child->chgParam, id);
+	}
+	MemoryContextSwitchTo(estate->es_query_cxt);
+	ExecReScan(child);
+	for (;;)
+	{
+		TupleTableSlot *slot = ExecProcNode(child);
+
+		if (TupIsNull(slot))
+			break;
+		MemoryContextSwitchTo(ex->cxt);
+		map_row(ex, cs->map, slot, j, cb, NULL);
+		MemoryContextSwitchTo(estate->es_query_cxt);
+	}
+	MemoryContextSwitchTo(caller);
+	n = cs->map->nrow - start;
+	map_loaded(ex, n, t0);
+	*rows = palloc(Max(n, 1) * sizeof(uint32));
+	for (int i = 0; i < n; i++)
+		(*rows)[i] = start + i;
+	return n;
+}
+
 /* the rows of the table with the entry's key (none when a key is NULL) */
 static int
 combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
@@ -2677,6 +2727,8 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
 	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
 
+	if (j->params != NIL)
+		return combo_child_rows(ex, ci, rows);
 	*rows = NULL;
 	for (int k = 0; k < j->nkey; k++)
 	{
@@ -4633,8 +4685,27 @@ HASH_GROUP_FN(6)
 HASH_GROUP_FN(7)
 HASH_GROUP_FN(8)
 
-static uint32 (*const hash_group_fns[SIFT_AGG_MAX_KEYS]) (AggExec *, const uint32 *) =
+static uint32 (*const hash_group_fns[]) (AggExec *, const uint32 *) =
 {hash_group_1, hash_group_2, hash_group_3, hash_group_4, hash_group_5, hash_group_6, hash_group_7, hash_group_8};
+
+/* Wider tuples use the same hash and equality with the plan's actual width. */
+static uint32
+hash_group_generic(AggExec *ex, const uint32 *ids)
+{
+	return hash_probe(ex, ids, ex->spec->nkeys);
+}
+
+static void
+hash_init(AggExec *ex)
+{
+	int         nk = ex->spec->nkeys;
+
+	ex->hash = true;
+	ex->hashg = nk <= lengthof(hash_group_fns) ? hash_group_fns[nk - 1] : hash_group_generic;
+	ex->nhslot = 1024;
+	ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
+	ex->ngroups = 0;
+}
 
 /* the group of an id tuple in hash mode */
 static inline uint32
@@ -4675,17 +4746,13 @@ direct_grow(AggExec *ex)
 		oldmult[j] = k->mult;
 		while (k->cap < key_used(k))
 			k->cap *= 2;
-		total *= k->cap;
+		total = Min((uint64) ex->direct_max + 1, total * k->cap);
 	}
 	remap = palloc(oldcap * sizeof(uint32));
 	if (total > ex->direct_max)
 	{
 		/* the existing groups keep their ids in the hash table */
-		ex->hash = true;
-		ex->hashg = hash_group_fns[nk - 1];
-		ex->nhslot = 1024;
-		ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
-		ex->ngroups = 0;
+		hash_init(ex);
 		for (uint32 g = 0; g < oldcap; g++)
 		{
 			uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
@@ -9814,6 +9881,9 @@ register_combos(AggExec *ex)
 				cs->decode[s->agg[ai].slot] = true;
 			}
 		combo_reset(ex, ci);
+		if (cb->join >= 0)
+			foreach_ptr(Node, arg, s->join[cb->join].args)
+				cs->args = lappend(cs->args, ExecInitExpr((Expr *) arg, EXPR_PARENT(ex)));
 		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
 			if (s->join[cb->join].keyexpr[k])
 				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
@@ -9831,7 +9901,7 @@ table_init(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
-	uint32		total = 1;
+	uint64		total = 1;
 
 	ex->hash = false;
 	ex->direct_max = ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
@@ -9862,9 +9932,15 @@ table_init(AggExec *ex)
 	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */
 	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max)
 		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
-	direct_layout(ex);
 	for (int j = 0; j < s->nkeys; j++)
-		total *= ex->ks[j].cap;
+		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
+	if (total > ex->direct_max)
+	{
+		hash_init(ex);
+		total = 1024;
+	}
+	else
+		direct_layout(ex);
 	ex->gcap = total;
 	ex->seen = palloc0(total * sizeof(int64));
 	ex->acc = acc_alloc(ex, total);
@@ -9965,7 +10041,8 @@ scan_buffers(AggExec *ex)
 		if (s->combo[ci].join >= 0)
 		{
 			ex->cs[ci].map = map_load(ex, ci);
-			semi_lut_build(ex, ci);
+			if (s->join[s->combo[ci].join].params == NIL)
+				semi_lut_build(ex, ci);
 		}
 	}
 	ex->calive = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -9973,7 +10050,7 @@ scan_buffers(AggExec *ex)
 	ex->pti = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->pri = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
-	ex->kids = MemoryContextAlloc(ex->cxt, (Size) maxv * SIFT_AGG_MAX_KEYS * sizeof(uint32));
+	ex->kids = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->c64 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	ex->okb = MemoryContextAlloc(ex->cxt, maxv);
@@ -9984,7 +10061,7 @@ scan_buffers(AggExec *ex)
 	ex->okm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm2 = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
-	ex->tmpu32 = MemoryContextAlloc(ex->cxt, (Size) maxv * SIFT_AGG_MAX_KEYS * sizeof(uint32));
+	ex->tmpu32 = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
 }
 
 /* ---------- partial group tables ---------- */
@@ -11941,6 +12018,26 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			appendStringInfo(&buf, "%s%s", i ? ", " : "", s->join[i].desc);
 		ExplainPropertyText("Lookup Joins", buf.data, es);
 	}
+	for (int i = 0; i < s->njoin; i++)
+		if (s->join[i].subplan > 0)
+		{
+			EState     *estate = node->ss.ps.state;
+			QueryDesc   query = {0};
+			ExplainState child;
+			char       *label = psprintf("Correlated Lookup %d", i + 1);
+
+			ExplainOpenGroup("Correlated Lookup", label, true, es);
+			ExplainPropertyText("Name", s->join[i].desc, es);
+			query.plannedstmt = estate->es_plannedstmt;
+			query.planstate = list_nth(estate->es_subplanstates, s->join[i].subplan - 1);
+			query.estate = estate;
+			child = *es;
+			child.printed_subplans = NULL;
+			ExplainPrintPlan(&child, &query);
+			es->indent = child.indent;
+			es->grouping_stack = child.grouping_stack;
+			ExplainCloseGroup("Correlated Lookup", label, true, es);
+		}
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
 	if (es->analyze && ex->started)

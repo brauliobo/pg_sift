@@ -1,0 +1,152 @@
+-- A correlated LIMIT child that reads a document only through a non-raising call (key presence) takes the call's value as its parameter.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
+INSERT INTO dim_a SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 49) i;
+CREATE TABLE mappings (kind text, category text, value_num text, derived_category text, mapped_subscore text);
+INSERT INTO mappings VALUES ('a', 'svc', '', 'service', NULL), ('a', 'svc', '', 'duplicate', NULL), ('b', 'svc', '', 'staff', NULL),
+ ('b', 'clean', 'x', 'm_tidy', 'room'), ('a', 'nul', NULL, 'never', NULL);
+CREATE TABLE facts (id int, dim_a_id int, kind text, document jsonb, payload text);
+INSERT INTO facts
+SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
+ jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
+   WHEN i % 3 = 0 THEN '[{"category":"svc","value_num":"","tone":"up","score":8}]'::jsonb
+   ELSE '[{"category":"svc","value_num":"","tone":"up","score":9},{"category":"clean","value_num":"x","tone":"down","score":3},{"category":"zzz","value_num":"","tone":"flat","score":null}]'::jsonb END)
+  || CASE WHEN i % 5 = 0 THEN '{"flag_a":false}'::jsonb WHEN i % 11 = 0 THEN '{"flag_a":null}'::jsonb ELSE '{}'::jsonb END,
+ repeat('payload', 50)
+FROM generate_series(1, 60000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, document, jsonb_exists(document, 'flag_a'))
+ WITH (paths = 'document.parts[]{category text,value_num text,score float8,tone text}');
+-- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
+CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
+INSERT INTO odd_facts
+SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
+ CASE i % 8 WHEN 0 THEN NULL WHEN 1 THEN '[]' WHEN 2 THEN '"flag_a"' WHEN 3 THEN '["flag_a"]' WHEN 4 THEN 'null' WHEN 5 THEN '{"flag_a":true}' WHEN 6 THEN '["x"]' ELSE '{}' END::jsonb,
+ repeat('payload', 50)
+FROM generate_series(1, 40000) i;
+CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, jsonb_exists(document, 'flag_a')) WITH (paths = 'document.flag_a astext');
+-- The same table without the indexed call: the child needs the whole document, which the index does not hold.
+CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
+CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
+ WITH (paths = 'document.parts[]{category text,value_num text,score float8,tone text}');
+VACUUM (FREEZE, ANALYZE) facts;
+VACUUM (FREEZE, ANALYZE) odd_facts;
+VACUUM (FREEZE, ANALYZE) plain_facts;
+ANALYZE dim_a;
+ANALYZE mappings;
+-- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
+CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, eligible bool, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  eligible := false;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+-- The child's condition reads key presence only: false, null and missing keys.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = 'a' AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- Presence on documents that are arrays, strings, JSON null and SQL NULL follows PostgreSQL's rule, per document.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM odd_facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- Another outer column in the same child, and duplicate candidates broken by the child's own ORDER BY.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND NOT jsonb_exists(f.document, 'flag_a')
+   ORDER BY derived_category DESC LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- Mapped parts per item: the presence also chooses the category in the lateral's output, and the unmapped parts drop out.
+SELECT * FROM check_query($q$
+ SELECT f.id, mo.category, mo.value_num, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.tone = 'up') AS positive
+ FROM facts f INNER JOIN LATERAL (
+  SELECT (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_category ELSE rm.derived_category END) AS category,
+         (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_subscore ELSE rm.mapped_subscore END) AS value_num, o.tone, o.score
+  FROM LATERAL (SELECT category AS source_category, value_num AS source_subscore, tone, score
+    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, value_num text, tone text, score float8) WHERE o.score IS NOT NULL) o
+  LEFT JOIN LATERAL (SELECT derived_category, mapped_subscore FROM mappings m WHERE m.derived_category IS NOT NULL AND m.kind = f.kind
+    AND m.category = o.source_category AND m.value_num = o.source_subscore AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
+ ) mo ON true
+ WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category, mo.value_num
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- The mean of the per-item means over the same mapping (the items weigh equally whatever their part count).
+SELECT * FROM check_query($q$
+ SELECT category, avg(score) AS score, count(*) AS items FROM (
+  SELECT f.id, mo.category, avg(mo.score) AS score
+  FROM facts f INNER JOIN LATERAL (
+   SELECT (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_category ELSE rm.derived_category END) AS category, o.score
+   FROM LATERAL (SELECT category AS source_category, value_num AS source_subscore, score
+     FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, value_num text, score float8) WHERE o.score IS NOT NULL) o
+   LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND m.category = o.source_category
+     AND m.value_num = o.source_subscore AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
+  ) mo ON true WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category) per_item
+ GROUP BY category
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- Stays native: the child reads the document in another way too, so it needs the whole document.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = 'a' AND NOT jsonb_exists(f.document, 'flag_a')
+   AND f.document -> 'parts' IS NOT NULL LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+-- Stays native: the index holds no presence column, and a presence test of a whole object has no other leaf.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM plain_facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = 'a' AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+DROP FUNCTION check_query(text);
+DROP TABLE facts, odd_facts, plain_facts, dim_a, mappings;
+DROP EXTENSION pg_sift;

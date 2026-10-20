@@ -115,11 +115,11 @@ SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN 
  SiftAgg,Lookup Rows Read: 500,Lookup Rows Loaded: 429,Lookup Index Scans: 1 |           1 |              0 |              0
 (1 row)
 
--- no index on the condition and no pushed plan: the normal plan keeps its answer
+-- no index on the condition: the filter runs while the table loads, and the answer is the normal plan's
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.tier = 2 GROUP BY d.country ORDER BY 1');
-  plan  | result_rows | vs_no_pushdown | vs_normal_plan 
---------+-------------+----------------+----------------
- normal |          12 |              0 |              0
+                          plan                           | result_rows | vs_no_pushdown | vs_normal_plan 
+---------------------------------------------------------+-------------+----------------+----------------
+ SiftAgg,Lookup Rows Read: 6000,Lookup Rows Loaded: 6000 |          12 |              0 |              0
 (1 row)
 
 -- the value of the condition is a parameter, NULL included (no row matches NULL), and a generic plan
