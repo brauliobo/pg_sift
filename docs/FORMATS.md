@@ -36,7 +36,7 @@ failure count (`SIFT_META_FAILURES_MASK`).
 |---|---|---|
 | 1 | `SIFT_SEGFMT_RANKBITS`: one liveness bit per doc in rank order | SQLite and MariaDB hosts |
 | 2 | `SIFT_SEGFMT_LIVEROWS`: liveness rows per superblock, dead-posting table | 3.0 |
-| 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers, position blocks | 3.1 PostgreSQL |
+| 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers, position blocks (perf/BM25-SIZE.md section 5) | 3.1 PostgreSQL |
 
 A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.0 refuses a segment of format 3 through the metapage minor
 (section 2).
