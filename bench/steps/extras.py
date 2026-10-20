@@ -119,29 +119,31 @@ def cell(rows, arm, size):
 
 
 def sets_section(meta, rows):
-    body = [['`%s`' % a, d] + [cell(rows, a, s) for s in SET_SIZES] for a, d in SET_ARMS if get(rows, arm=a)]
+    sizes = [s for s in SET_SIZES if get(rows, case=s)]   # the sizes of the results file: a published file may leave some out
+    body = [['`%s`' % a, d] + [cell(rows, a, s) for s in sizes] for a, d in SET_ARMS if get(rows, arm=a)]
     sift = rows[0]['version'] if rows else '?'
     lines = [
         '3,000,000 facts of 200,000 entities (facts per entity: zipf, p50 5, p90 20, p99 135, the largest about 85,000), 30 sources, 40 languages, 1.5%% soft-deleted; the set is the members '
-        'of one group of a 334,000-row membership table (60 groups of 100, 20 of 1,000, 4 of 2,000, 4 of 5,000, 8 of 10,000, 2 of 100,000). The sets of 1k to 5k ids are the ones the workload '
-        'has today; 10k and 100k are headroom. One client, the median of %s timed runs of the statement '
+        'of one group of a 334,000-row membership table (60 groups of 100, 20 of 1,000, 4 of 2,000, 4 of 5,000, 8 of 10,000, 2 of 100,000). The sets of up to a few thousand ids are the ones the workload '
+        'has today, larger ones are headroom. One client, the median of %s timed runs of the statement '
         '`SELECT source_id, count(*), avg(score) ... WHERE deleted_at IS NULL AND fact_date >= <12 months ago> AND entity_id <set> GROUP BY 1`, in milliseconds, planning included '
         '(lower is better); the plan the statement ran is in brackets. Build: pg_sift %s. %s %s' % (rows[0]['n'] if rows else '?', meta.get('build', sift), footer(meta), meta.get('method', '')),
         '',
-    ] + table(['arm', 'statement'] + ['%s ids' % s for s in SET_SIZES], body, ['---', '---'] + ['---:'] * len(SET_SIZES))
+    ] + table(['arm', 'statement'] + ['%s ids' % s for s in sizes], body, ['---', '---'] + ['---:'] * len(sizes))
     types = ['int4', 'int8', 'text', 'date']
+    tsizes = [s for s in ('1k', '5k') if s in sizes]
     trows = []
     for t in types:
         sfx = '' if t == 'int4' else '_' + t
         row = ['`%s`' % t]
         for arm in ('array_generic', 'normal_plan'):
-            for s in ('1k', '5k'):
+            for s in tsizes:
                 row.append(cell(rows, arm + sfx, s))
         trows.append(row)
     unsupported = [(r['case'], r['note']) for r in rows if r['arm'] == 'sift_col_key' and r['value'] == '0']
-    lines += ['', 'The same statement with the key column of another type, the array as a parameter of a generic plan (`= ANY($1::T[])`, index and bitmap scans off at 5k) against the literal list on the normal plan '
+    lines += ['', 'The same statement with the key column of another type, the array as a parameter of a generic plan (`= ANY($1::T[])`, index and bitmap scans off above 2k) against the literal list on the normal plan '
               '(same rows, key mapped from the entity id):', '']
-    lines += table(['key type', 'array 1k', 'array 5k', 'normal plan 1k', 'normal plan 5k'], trows, ['---', '---:', '---:', '---:', '---:'])
+    lines += table(['key type'] + ['array %s' % s for s in tsizes] + ['normal plan %s' % s for s in tsizes], trows, ['---'] + ['---:'] * (2 * len(tsizes)))
     for t, note in unsupported:
         lines += ['', '`%s` is not supported by `sift_col` on this build (`%s`).' % (t, re.sub(r'^ERROR:\s*|\s*HINT.*$', '', note).strip())]
     lines += ['', 'Reproduce: `bench/bench sets` (data: `bench/sql/sets/gen.sql`, deterministic; results: [results/sets.tsv](results/sets.tsv)).']
@@ -331,6 +333,16 @@ def buildcost_section(meta, rows):
     return lines + table(['cell', '%s Minstr/op' % base] + rest, body, ['---', '---:'] + ['---:'] * len(rest)) + ['', 'Reproduce: `bench/bench extras buildcost` (results: [results/buildcost.tsv](results/buildcost.tsv)).']
 
 
+def filter_rows(a):
+    """drop the rows of a results file whose case or arm matches (a release publishes the builds and sizes it has measured and holds back the others)"""
+    meta, rows = read(a.file)
+    keep = [r for r in rows if not (a.drop_case and re.search(a.drop_case, r['case'])) and not (a.drop_arm and re.search(a.drop_arm, r['arm']))]
+    first = open(a.file).readline()[2:].strip()   # the title can hold a colon, which read() takes for a key
+    meta = {k: v for k, v in meta.items() if k != 'title' and first != '%s: %s' % (k, v)}
+    write(a.file, a.title or first, meta, keep)
+    print('%s: %d of %d rows kept' % (a.file, len(keep), len(rows)))
+
+
 def gate(a):
     """the table of cpu_gate.sh's log -> rows: case = cell, arm = build, metric ratio (min, max the interval, n, note the verdict); the baseline's instructions per operation as metric instr_per_op"""
     vers = dict(kv.split('=', 1) for kv in a.versions.split(','))
@@ -383,8 +395,11 @@ def wrap(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('cmd', choices=['render', 'wrap', 'gate'])
+    ap.add_argument('cmd', choices=['render', 'wrap', 'gate', 'filter'])
     ap.add_argument('--name')
+    ap.add_argument('--file')
+    ap.add_argument('--drop-case')
+    ap.add_argument('--drop-arm')
     ap.add_argument('--title')
     ap.add_argument('--rows')
     ap.add_argument('--out')
@@ -401,6 +416,8 @@ def main():
         return wrap(a)
     if a.cmd == 'gate':
         return gate(a)
+    if a.cmd == 'filter':
+        return filter_rows(a)
     for name, section in SECTIONS.items():
         path = os.path.join(a.results, name + '.tsv')
         if os.path.exists(path):
