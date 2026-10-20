@@ -19,14 +19,15 @@
 #include "sift_aggkern.h"
 #include "sift_colsrc.h"
 
-#define SIFT_AGG_MAX_KEYS	5		/* group columns (at most 4), the cell keys of the arms and the grouping set number */
+#define SIFT_AGG_MAX_KEYS	8		/* group columns (at most 8, 7 with grouping sets), the cell keys of the arms and the grouping set number */
+#define SIFT_AGG_MAX_FUSE	5		/* keys of the arms one pass serves, with the arm number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
 #define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
-#define SIFT_AGG_MAX_COMBOS	8
-#define SIFT_AGG_MAX_JOINS	4
+#define SIFT_AGG_MAX_COMBOS	16
+#define SIFT_AGG_MAX_JOINS	8
 #define SIFT_AGG_MAX_VLEAVES	8
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
