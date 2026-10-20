@@ -25,6 +25,7 @@ MODES = {	# the settings of a cell
 	# the lookup join with the whole joined table loaded, with only the rows its own conditions can match, and the default (byte table of a semi join too)
 	'siftagg-lookup-full': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set sift.agg_lookup_pushdown = off", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 	'siftagg-lookup-pushdown': ["set sift.enable_agg = on", "set sift.agg_semi_lut = off", "set sift.agg_lookup_pushdown = on", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
+	'siftagg-semi-table-full': ["set sift.enable_agg = on", "set sift.agg_semi_lut = on", "set sift.agg_lookup_pushdown = off", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 	'siftagg-semi-table': ["set sift.enable_agg = on", "set sift.agg_semi_lut = on", "set enable_hashjoin = off", "set enable_nestloop = off", "set enable_mergejoin = off"],
 }
 COMMON = ["set max_parallel_workers_per_gather = 2", "set jit = off"]
@@ -106,7 +107,7 @@ def design4():
 		queries.append(('attr_join-' + label, "SELECT e.region_id, count(*), round(avg(score)::numeric, 4) FROM events JOIN entities e ON e.id = events.entity_id "
 											   "WHERE deleted_at IS NULL AND %s AND e.%s GROUP BY 1 ORDER BY 1" % (LAST, cond.replace(' AND ', ' AND e.'))))
 	for arg, q in queries:
-		for mode in ('normal', 'siftagg-lookup-full', 'siftagg-lookup-pushdown', 'siftagg-semi-table'):
+		for mode in ('normal', 'siftagg-lookup-full', 'siftagg-lookup-pushdown', 'siftagg-semi-table-full', 'siftagg-semi-table'):
 			cells.append((4, 'lookup_load', arg, mode, [q], ["explain (costs off) " + q]))
 	return cells
 
