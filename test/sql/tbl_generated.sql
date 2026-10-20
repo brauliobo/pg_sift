@@ -1,0 +1,64 @@
+-- A stored generated column of a sift_table is a leaf, and a query that writes its expression reads the column (and its pre-aggregates):
+-- the same rows as the plain plan, with the group key (or the filter) the column.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+
+CREATE TABLE gn (id int, ts timestamp, v int, g int GENERATED ALWAYS AS (v % 7) STORED,
+	mon date GENERATED ALWAYS AS (date_trunc('month', ts)::date) STORED, lbl text GENERATED ALWAYS AS ('k' || (v % 5)) STORED) USING sift_table;
+
+CREATE FUNCTION gn_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- the line of the plan that names the group keys, SiftAgg for a plan without any, empty for a plan without SiftAgg
+CREATE FUNCTION gn_keys(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Group Keys:%' THEN RETURN trim(l); ELSIF l LIKE '%SiftAgg%' THEN r := 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE TABLE gn_q (q text);
+INSERT INTO gn_q VALUES
+	('SELECT date_trunc(''month'', ts)::date, sum(v), count(*) FROM gn GROUP BY 1'),
+	('SELECT mon, sum(v), count(*) FROM gn GROUP BY 1'),
+	('SELECT v % 7, count(*), min(ts) FROM gn GROUP BY 1'),
+	('SELECT g, count(*), avg(v) FROM gn GROUP BY g'),
+	('SELECT date_trunc(''month'', ts)::date, v % 7, count(*) FROM gn WHERE v % 7 <> 3 GROUP BY 1, 2'),
+	('SELECT count(*) FROM gn WHERE date_trunc(''month'', ts)::date >= ''2024-06-01'''),
+	('SELECT lbl, count(*), sum(v) FROM gn GROUP BY lbl'),
+	('SELECT ''k'' || (v % 5), count(*), sum(v) FROM gn GROUP BY 1');
+
+CREATE FUNCTION gn_compare(OUT query text, OUT keys text, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM gn_q ORDER BY q COLLATE "C" LOOP
+		keys := gn_keys(query);
+		same := gn_rows(query, true) IS NOT DISTINCT FROM gn_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+INSERT INTO gn (id, ts, v) SELECT i, '2024-01-01'::timestamp + (i * 7 || ' hours')::interval, i FROM generate_series(1, 6000) i;
+SELECT * FROM gn_compare();
+VACUUM gn;
+SELECT * FROM gn_compare();
+
+-- the values of the rows that changed are those the expression gives, in the write buffer and in the stored units
+UPDATE gn SET ts = ts + interval '45 days', v = v + 2 WHERE id % 4 = 0;
+DELETE FROM gn WHERE id % 10 = 0;
+INSERT INTO gn (id, ts, v) SELECT 10000 + i, '2025-03-15'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, 400) i;
+SELECT * FROM gn_compare();
+VACUUM gn;
+SELECT * FROM gn_compare();
+
+DROP TABLE gn, gn_q;
+DROP FUNCTION gn_rows, gn_keys, gn_compare;
+DROP EXTENSION pg_sift;
