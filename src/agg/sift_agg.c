@@ -6215,13 +6215,10 @@ typedef struct GenSt
 } GenSt;
 
 /* the best row of a group of a DISTINCT ON aggregate (the group's state until the scan ends): the values of the arguments, then their NULL flags */
-typedef struct GenBest
-{
-	Datum		val[FLEXIBLE_ARRAY_MEMBER];
-} GenBest;
+typedef Datum GenBest;
 
-#define GEN_BEST_SIZE(n)		(offsetof(GenBest, val) + (n) * (sizeof(Datum) + sizeof(bool)))
-#define GEN_BEST_NULL(b, n, k)	(((bool *) ((b)->val + (n)))[k])
+#define GEN_BEST_SIZE(n)		((n) * (sizeof(Datum) + sizeof(bool)))
+#define GEN_BEST_NULL(b, n, k)	(((bool *) ((b) + (n)))[k])
 
 /* the leaves an argument reads, decoded for the chunk's tuples */
 typedef struct GenIn
@@ -6935,7 +6932,7 @@ gen_best_free(GenSt *st, GenBest *b)
 
 	for (int k = 0; k < n; k++)
 		if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
-			pfree(DatumGetPointer(b->val[k]));
+			pfree(DatumGetPointer(b[k]));
 	pfree(b);
 }
 
@@ -6952,7 +6949,7 @@ gen_best_set(GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nu
 		if (gen_stored(st->g, k))
 		{
 			GEN_BEST_NULL(nb, n, k) = nulls[k];
-			nb->val[k] = nulls[k] ? (Datum) 0 : datumCopy(args[k], st->abyval[k], st->alen[k]);
+			nb[k] = nulls[k] ? (Datum) 0 : datumCopy(args[k], st->abyval[k], st->alen[k]);
 		}
 	if (ob != NULL)
 		gen_best_free(st, ob);
@@ -6970,7 +6967,7 @@ gen_first_cmp(GenSt *st, const Datum *args, const bool *nulls, const GenBest *b)
 	{
 		int			k = st->fkey[i],
 					c;
-		Datum		bv = gen_stored(st->g, k) ? b->val[k] : st->argk[k];
+		Datum		bv = gen_stored(st->g, k) ? b[k] : st->argk[k];
 		bool		bn = gen_stored(st->g, k) ? GEN_BEST_NULL(b, n, k) : st->argknull[k];
 
 		if ((c = ApplySortComparator(args[k], nulls[k], bv, bn, &st->fsup[i])) != 0)
@@ -7013,11 +7010,11 @@ gen_flush_first(AggExec *ex, int ai)
 
 		if (b == NULL)
 			continue;
-		acc->v[g] = b->val[0];
+		acc->v[g] = b[0];
 		acc->nf[g] = GEN_INIT | (GEN_BEST_NULL(b, n, 0) ? GEN_NULL : 0);
 		for (int k = 1; k < n; k++)
 			if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
-				pfree(DatumGetPointer(b->val[k]));
+				pfree(DatumGetPointer(b[k]));
 		pfree(b);
 	}
 }
@@ -7034,7 +7031,7 @@ gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb)
 	if (b != NULL)
 		for (int k = 0; k < n; k++)
 			if (gen_stored(st->g, k))
-				len += datumEstimateSpace(b->val[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k]);
+				len += datumEstimateSpace(b[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k]);
 	appendBinaryStringInfo(vb, (char *) &len, sizeof(len));
 	if (len == 0)
 		return;
@@ -7042,7 +7039,7 @@ gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb)
 	at = vb->data + vb->len;
 	for (int k = 0; k < n; k++)
 		if (gen_stored(st->g, k))
-			datumSerialize(b->val[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k], &at);
+			datumSerialize(b[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k], &at);
 	vb->len += len;
 }
 
