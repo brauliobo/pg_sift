@@ -50,6 +50,193 @@ class Methodology(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.interval([(1,1)]*5)
 
+    def test_supported_sample_counts_use_correct_student_t(self):
+        for count, critical in ((6,2.570581835636305),(16,2.131449545559323)):
+            logs = [(i-(count-1)/2)/100 for i in range(count)]
+            b = gate.interval([(1,math.exp(x)) for x in logs])
+            half = critical * math.sqrt(sum(x*x for x in logs)/(count-1))/math.sqrt(count)
+            self.assertAlmostEqual(b['lower'],math.exp(-half))
+            self.assertAlmostEqual(b['upper'],math.exp(half))
+            self.assertEqual(b['degrees_freedom'],count-1)
+            self.assertEqual(b['t_critical'],critical)
+        for count in (5,7,12,15,17,22):
+            with self.assertRaises(ValueError):
+                gate.interval([(1,1)]*count)
+
+    def test_fixed_confirmation_policy_and_fresh_samples(self):
+        for case in (gate.CASES[0],gate.CASES[13]):
+            calls = []
+            def sample(conn,case,operations,deadline,delay=0):
+                if operations==7:
+                    calls.append(conn)
+                    # Initial block is a regression; the fresh block alone passes.
+                    return 1.2 if len(calls)<=12 and conn=='B' else 1.0
+                return 1.0
+            class Rev:
+                def __init__(self,side): self.conn = side
+            with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+                 patch.object(gate,'calibrate',return_value={'operations':7}) as calibration, \
+                 patch.object(gate,'prepare'), patch.object(gate,'elapsed',side_effect=sample):
+                result = gate.measure([Rev('A'),Rev('B')],case,math.inf)
+            count = 6 if case.reset else 16
+            self.assertEqual(calibration.call_count,1)
+            self.assertEqual(result['status'],'pass')
+            self.assertEqual(result['initial']['n'],6)
+            self.assertEqual(result['confirmation']['n'],count)
+            self.assertEqual(calls[:12],['A','B','B','A']*3)
+            self.assertEqual(calls[12:],['A','B','B','A']*(count//2))
+            self.assertEqual(result['confirmation']['samples'],[[1,1]]*count)
+            self.assertIsNot(result['initial']['samples'],result['confirmation']['samples'])
+
+    def test_partial_sixteen_pair_confirmation_retains_initial_and_raw(self):
+        saved = []
+        class Rev: conn=None
+        # Twelve initial sides, then two fresh sides and one incomplete pair.
+        values = [v for _ in range(6) for side in (1,1.2) for v in (1,side)]
+        values += [1,1,1,1,gate.BudgetExpired('confirmation exhausted')]
+        with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+             patch.object(gate,'calibrate',return_value={'operations':7}), \
+             patch.object(gate,'prepare'), patch.object(gate,'elapsed',side_effect=values):
+            with self.assertRaises(gate.BudgetExpired):
+                gate.measure([Rev(),Rev()],gate.CASES[0],math.inf,sink=saved)
+        self.assertEqual(saved[0]['initial']['n'],6)
+        self.assertEqual(saved[0]['confirmation']['expected_pairs'],16)
+        self.assertEqual(saved[0]['confirmation']['samples'],[[1,1],[None,None]])
+        self.assertNotIn('n',saved[0]['confirmation'])
+        self.assertEqual(saved[0]['status'],'inconclusive')
+
+    def test_fixture_checkpoint_barrier_is_synchronous_and_timed(self):
+        calls = []
+        class Rev:
+            def __init__(self,name): self.name,self.conn = name,self
+            def exec(self,sql): calls.append((self.name,sql))
+        saved = {}
+        with patch.object(gate.time,'monotonic',side_effect=[0,0,0,1,1,1,1,3,3,3]):
+            gate.finalize_fixtures([Rev('A'),Rev('B')],10,saved)
+        self.assertEqual(calls,[('A','CHECKPOINT'),('B','CHECKPOINT')])
+        self.assertEqual(saved['revisions']['A']['runtime_seconds'],1)
+        self.assertEqual(saved['revisions']['B']['runtime_seconds'],2)
+        self.assertEqual(saved['runtime_seconds'],3)
+        self.assertTrue(all(x['complete'] for x in saved['revisions'].values()))
+        self.assertLessEqual(saved['revisions']['A']['finished_at'],saved['revisions']['B']['started_at'])
+
+    def test_checkpoint_expiry_or_failure_stops_later_cluster(self):
+        calls = []
+        class Rev:
+            def __init__(self,name): self.name,self.conn = name,self
+            def exec(self,sql): calls.append(self.name)
+        saved = {}
+        with patch.object(gate.time,'monotonic',side_effect=[0,0,0,2,2,2]):
+            with self.assertRaises(gate.BudgetExpired):
+                gate.finalize_fixtures([Rev('A'),Rev('B')],1,saved)
+        self.assertEqual(calls,['A'])
+        self.assertFalse(saved['revisions']['A']['complete'])
+        self.assertEqual(saved['runtime_seconds'],2)
+        calls.clear()
+        with patch.object(gate.time,'monotonic',return_value=2):
+            with self.assertRaises(gate.BudgetExpired):
+                gate.finalize_fixtures([Rev('A'),Rev('B')],1,{})
+        self.assertEqual(calls,[])
+        with patch.object(Rev,'exec',side_effect=RuntimeError('checkpoint SQL failed')):
+            with self.assertRaisesRegex(RuntimeError,'checkpoint SQL failed'):
+                gate.finalize_fixtures([Rev('A'),Rev('B')],math.inf,{})
+
+    def test_both_fixture_loads_and_barriers_precede_read_validation(self):
+        for fail in (False,True):
+            events = []
+            class Revision:
+                def __init__(self,name,*args):
+                    self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
+                def setup(self,rows):
+                    events.append('load '+self.name)
+                    return ''
+                def exec(self,sql):
+                    events.append(sql+' '+self.name)
+                    if fail: raise RuntimeError('checkpoint failed')
+                def rows(self,sql):
+                    events.append('read '+self.name)
+                    raise RuntimeError('stopped at first validation')
+                def stop(self,output): events.append('stop '+self.name)
+            with tempfile.TemporaryDirectory() as tmp:
+                args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
+                        '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
+                with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+                     patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(gate.main(args),3)
+                report = json.loads((Path(tmp)/'results.json').read_text())
+            expected = ['load baseline','load candidate','CHECKPOINT baseline']
+            if not fail: expected += ['CHECKPOINT candidate','read baseline']
+            self.assertEqual(events,expected+['stop candidate','stop baseline'])
+            self.assertIn('fixture_checkpoint_barrier',report['runtime_seconds'])
+            self.assertEqual(report['fixture_checkpoint_barrier']['revisions']['baseline']['complete'],not fail)
+            gate.DEADLINE = math.inf
+
+    def test_workflow_elapsed_and_reserve_reduce_driver_budget(self):
+        context = gate.budget_context(300,1000,30,now=1044)
+        self.assertEqual(context['prior_elapsed_seconds'],44)
+        self.assertEqual(context['measurement_budget_seconds'],226)
+        self.assertEqual(context['cleanup_report_reserve_seconds'],30)
+        self.assertEqual(gate.budget_context(300,1000,30,now=1400)['measurement_budget_seconds'],0)
+        self.assertEqual(gate.budget_context(300,None,0,now=1400)['measurement_budget_seconds'],300)
+        for budget,started,reserve in ((-1,None,0),(300,float('nan'),30),(300,None,-1)):
+            with self.assertRaises(ValueError):
+                gate.budget_context(budget,started,reserve,now=1044)
+
+    def test_main_reports_partial_confirmation_as_exit_two_with_all_raw(self):
+        class Revision:
+            def __init__(self,name,*args):
+                self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
+            def setup(self,rows): return ''
+            def exec(self,sql): pass
+            def rows(self,sql): return [['3']]
+            def stop(self,output): pass
+        values = [v for _ in range(6) for side in (1,1.2) for v in (1,side)]
+        values += [1,1,1,1,gate.BudgetExpired('confirmation exhausted')]
+        with tempfile.TemporaryDirectory() as tmp:
+            args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
+                    '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
+            with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+                 patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
+                 patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
+                 patch.object(gate,'sizes',return_value=[]), \
+                 patch.object(gate,'size_snapshot',return_value={'status':'pass','relations':[]}), \
+                 patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+                 patch.object(gate,'calibrate',return_value={'operations':7}), \
+                 patch.object(gate,'prepare'), patch.object(gate,'elapsed',side_effect=values), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(gate.main(args),2)
+            report = json.loads((Path(tmp)/'results.json').read_text())
+            summary = (Path(tmp)/'summary.md').read_text()
+        self.assertEqual(report['status'],'inconclusive')
+        self.assertEqual(report['size_status'],'inconclusive')
+        self.assertEqual(report['cases'][0]['initial']['n'],6)
+        confirmation = report['cases'][0]['confirmation']
+        self.assertEqual(confirmation['expected_pairs'],16)
+        self.assertEqual(confirmation['samples'],[[1,1],[None,None]])
+        self.assertNotIn('ratio',confirmation)
+        self.assertIn('16 read pairs',summary)
+        gate.DEADLINE = math.inf
+
+    def test_exhausted_workflow_budget_reports_exit_two_without_setup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
+                    '--output',tmp,'--scratch-root',tmp,'--workflow-start-seconds','1',
+                    '--cleanup-report-reserve-seconds','30']
+            with patch.object(gate,'Revision') as revision, patch.object(gate,'exact_sha') as identity, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = gate.main(args)
+            self.assertEqual(code,2)
+            revision.assert_not_called()
+            identity.assert_not_called()
+            report = json.loads((Path(tmp)/'results.json').read_text())
+            self.assertEqual(report['status'],'inconclusive')
+            self.assertEqual(report['budget']['measurement_budget_seconds'],0)
+            self.assertEqual(report['config']['initial_pairs'],6)
+            self.assertEqual(report['config']['read_confirmation_pairs'],16)
+            self.assertEqual(report['config']['mutation_confirmation_pairs'],6)
+            gate.DEADLINE = math.inf
+
     def test_correctness_mismatch_fails(self):
         with self.assertRaisesRegex(ValueError,'correctness differs'):
             gate.require_equal([['8192']],[['8191']],'baseline/head')
@@ -101,12 +288,13 @@ class Methodology(unittest.TestCase):
     def test_confirmation_is_one_fresh_block(self):
         case = gate.CASES[0]
         initial = dict(gate.interval([(1,1.2)]*6),samples=[(1,1.2)]*6)
-        confirm = dict(gate.interval([(1,1.01)]*6),samples=[(1,1.01)]*6)
+        confirm = dict(gate.interval([(1,1.01)]*16),samples=[(1,1.01)]*16)
         with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
              patch.object(gate,'calibrate',return_value={'operations':7}), \
              patch.object(gate,'block',side_effect=[initial,confirm]) as blocks:
             result = gate.measure([],case,math.inf)
         self.assertEqual(blocks.call_count,2)
+        self.assertEqual(blocks.call_args.kwargs['pair_count'],16)
         self.assertEqual(result['status'],'pass')
         self.assertNotEqual(result['initial']['samples'],result['confirmation']['samples'])
         self.assertIsNot(result['initial'],result['confirmation'])
