@@ -32,6 +32,18 @@ not measure durable commit latency. The caller must reserve its scratch storage
 and two ports (`--port-base`, default 56240); use dedicated test partitions on a
 shared local development host.
 
+Socket endpoints alone use unique private0700 directories under `/tmp`, independent
+of build/data/artifact roots and `TMPDIR`; all database/build/benchmark temporary
+data stays on the caller's scratch backing. Both actual socket names are checked
+in filesystem-encoded bytes before either build: Linux permits107 pathname bytes
+plus NUL; macOS and supported BSD platforms permit103 plus NUL. No TCP/abstract
+namespace or alternate-path fallback exists. Reports retain actual paths/limits.
+Stopped clusters release their owned socket directories; the cost-probe restart
+recreates its directory exclusively. A live or unsuccessfully stopped cluster
+retains its directory. Startup server logs are copied before scratch removal even
+without a PID; absent logs are explicitly reported, and copy failure retains
+original scratch and primary error evidence.
+
 After both fixture loads finish, an untimed synchronous `CHECKPOINT` runs on each
 cluster before settled size probes or read validation/calibration/timing. Both
 barriers must complete within the global setup budget. Reports retain each
