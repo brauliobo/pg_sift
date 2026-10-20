@@ -94,6 +94,9 @@ ROLLBACK;
 -- ORDER BY ... DESC is still served by the index, FETCH LAST and ABSOLUTE by the same scan
 CREATE INDEX sc_id ON sc (id);
 BEGIN;
+-- the order of a query without ORDER BY is that of its scan: the index's, whatever size VACUUM left the table
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
 DECLARE c SCROLL CURSOR FOR SELECT id FROM sc WHERE id < 20 ORDER BY id DESC;
 FETCH LAST FROM c;
 FETCH ABSOLUTE 3 FROM c;

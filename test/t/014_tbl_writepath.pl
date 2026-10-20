@@ -96,7 +96,9 @@ $standby->append_conf('postgresql.conf', $primary_conf);
 $standby->start;
 
 subtest 'a standby replays a loop of single-row INSERTs and sees the rows at the commit only' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE r (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false)');
+	# vacuum_truncate = false: a VACUUM that moves or cuts the file replays an exclusive lock, which cancels the standby's snapshot (as a
+	# heap's truncation does); the snapshot of the third subtest is held across the VACUUM
+	$primary->safe_psql('postgres', 'CREATE TABLE r (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)');
 	my $bg = $primary->background_psql('postgres');
 	$bg->query_safe('BEGIN');
 	$bg->query_safe(loop_sql('r', 1, $rows));

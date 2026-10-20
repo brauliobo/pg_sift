@@ -329,125 +329,31 @@ tomb_drops(SiftTblRel *st, VacState *v)
 	return drops;
 }
 
-/* Tail space worth an exclusive lock, as for a heap (REL_TRUNCATE_MINIMUM, REL_TRUNCATE_FRACTION) */
-#define TRUNCATE_MIN_BLOCKS	1000
-#define TRUNCATE_FRACTION	16
-/* Free runs worth writing a segment into (the shortest run the stream writer takes, sift_store.c RUN_MIN) */
-#define COMPACT_MIN_RUN		16
-
-/*
- * Gives the reusable free blocks at the end of the file back as a heap's VACUUM does: when they are worth it and AccessExclusiveLock
- * on the table is free now (sift_store.h P7; the store invalidates every backend's cache of the table, whose target pages and write buffer
- * page tables may point past the new end). Returns the blocks given back.
- */
-static BlockNumber
-truncate_tail(Relation rel, int elevel)
-{
-	BlockNumber tail = sift_store_tail_blocks(rel);
-	BlockNumber freed;
-
-	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(rel) / TRUNCATE_FRACTION))
-		return 0;
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
-	{
-		ereport(elevel, (errmsg("table \"%s\": stopping truncate due to conflicting lock request", RelationGetRelationName(rel))));
-		return 0;
-	}
-	freed = sift_store_truncate(rel);
-	UnlockRelation(rel, AccessExclusiveLock);
-	if (freed > 0)
-		ereport(elevel, (errmsg("table \"%s\": truncated %u to %u pages", RelationGetRelationName(rel),
-								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
-	return freed;
-}
-
-static SiftExtent *
-segment_extents(Relation rel, const SiftSegEntry *e, int *n)
-{
-	return e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, n) : sift_lane_extents(rel, e, n);
-}
-
-/* The segment whose blocks end last in the file, with the blocks it takes and where they end */
-static const SiftSegEntry *
-last_segment(Relation rel, SiftTblRel *st, uint64 *blocks, BlockNumber *end)
-{
-	const SiftSegEntry *last = NULL;
-
-	for (int i = 0; i < st->dir.nsegs; i++)
-	{
-		const SiftSegEntry *e = &st->dir.segs[i];
-		int			n;
-		SiftExtent *ext = segment_extents(rel, e, &n);
-		uint64		total = 0;
-		BlockNumber top = 0;
-
-		for (int k = 0; k < n; k++)
-		{
-			total += ext[k].nblocks;
-			top = Max(top, ext[k].start + ext[k].nblocks);
-		}
-		pfree(ext);
-		if (last == NULL || top > *end)
-		{
-			last = e;
-			*end = top;
-			*blocks = total;
-		}
-	}
-	return last;
-}
-
-/* Is a cut of the free blocks worth it, as truncate_tail judges the free run at the end of the file */
-static bool
-worth_cutting(Relation rel)
-{
-	int64		free = sift_store_free_stats(rel).reusable;
-
-	return free >= TRUNCATE_MIN_BLOCKS || free >= RelationGetNumberOfBlocks(rel) / TRUNCATE_FRACTION;
-}
-
-/*
- * Writes the segment that ends the file again, into the free blocks below it: a column segment or the tombstones are rewritten, the
- * write buffer is closed and sealed (its successor starts in the free blocks). False when it cannot move.
- */
-static bool
-move_segment(Relation rel, SiftTblRel *st, VacState *v, const SiftSegEntry *e)
-{
-	if (e->kind == SIFT_SEG_IMMUTABLE)
-		return sift_tbl_rewrite(rel, st, e);
-	if (e->flags & SIFT_TBL_SEG_TOMB)
-	{
-		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
-		return true;
-	}
-	if (e->kind == SIFT_SEG_WBUF_OPEN)
-		sift_tbl_close_wbuf(rel, st, 0);
-	return sift_tbl_promote(rel, st, v->oldest, true) > 0;
-}
-
-/*
- * Moves the segment that ends the file into the free blocks below it while they hold it, so that the cut finds the end of the file
- * free: a load leaves its write buffers below the column segment sealed from them, and that segment (or the write buffer that
- * follows) would hold the file at the size of the load for good. Stops when the free blocks below do not hold the segment or a
- * move did not lower the end.
- */
+/* The table buffer adds a virtual-to-physical page vector and overflow links to the common lane layout. */
 static void
-compact_tail(Relation rel, SiftTblRel *st, VacState *v)
+relocate_page(Page page, const SiftExtent *old, const SiftExtent *fresh, int n)
 {
-	BlockNumber last_end = PG_UINT32_MAX;
-
-	for (int i = 0; i < MAX_MERGE_STEPS && worth_cutting(rel); i++)
+	if (SiftPageGetOpaque(page)->type == SIFT_PT_WBUFHEADER)
 	{
-		uint64		blocks;
-		BlockNumber end;
-		const SiftSegEntry *e = last_segment(rel, st, &blocks, &end);
+		SiftTblWbufHdr *h = TBL_WBUF_HDR(page);
 
-		if (e == NULL || end >= last_end || sift_store_free_below(rel, end, COMPACT_MIN_RUN) < blocks)
-			return;
-		last_end = end;
-		if (!move_segment(rel, st, v, e))
-			return;
-		CHECK_FOR_INTERRUPTS();
+		for (uint32 i = 0; i < h->npages; i++)
+			h->page[i] = sift_store_relocated_block(h->page[i], old, fresh, n);
+	}
+	else if (SiftPageGetOpaque(page)->type == SIFT_PT_WBUFDATA)
+	{
+		SiftTblPageHdr *h = TBL_PAGE(page);
+
+		if (h->flags & SIFT_TBL_PAGE_OVFDATA)
+			h->ovf_next = sift_store_relocated_block(h->ovf_next, old, fresh, n);
+		else
+			for (uint32 i = 1; i <= h->nrows; i++)
+			{
+				SiftTblRec *rec = (SiftTblRec *) sift_tbl_page_rec(page, SiftPageGetOpaque(page)->gen, i);
+
+				if (rec && (rec->flags & SIFT_TBL_REC_OVF))
+					rec->aux = sift_store_relocated_block(rec->aux, old, fresh, n);
+			}
 	}
 }
 
@@ -455,9 +361,10 @@ compact_tail(Relation rel, SiftTblRel *st, VacState *v)
 #define VACUUM_CLOSE_PAGES	8
 
 /*
- * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the free run at the end
- * of the file is cut. What this VACUUM releases is reused once another transaction has ended: a lazy VACUUM's own xid is in no snapshot
- * or horizon, so it releases with the next xid (sift_store.c, xid_safexid); the cut, under AccessExclusiveLock, does not wait for it.
+ * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the end of the file is
+ * given back (sift_maint_space): under AccessExclusiveLock, which keeps every reader out, what this VACUUM released is reusable at once
+ * (a lazy VACUUM's own xid is in no snapshot or horizon, so outside that lock it is reused once another transaction has ended), so the
+ * segments that end the file are written again into the free blocks below them and the cut finds the end free.
  */
 static void
 vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
@@ -473,10 +380,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
 	if (truncate)
-	{
-		compact_tail(rel, st, v);
-		(void) truncate_tail(rel, elevel);
-	}
+		sift_maint_space(rel, relocate_page, elevel);
 }
 
 /* Step 6, with the counts of a heap: reltuples and the live rows, the recently dead ones for autovacuum */

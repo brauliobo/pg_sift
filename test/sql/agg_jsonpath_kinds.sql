@@ -147,6 +147,7 @@ RESET sift.col_format_minor;
 SELECT tfmt('kt');
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 INSERT INTO kt SELECT i, i % 7, doc(i + 5) FROM generate_series(8001, 12000) i;
+-- Space compaction copies the legacy group without upgrading its format; uncertain kinds retain the document plan until VACUUM FULL.
 VACUUM kt;
 SELECT tfmt('kt');
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;

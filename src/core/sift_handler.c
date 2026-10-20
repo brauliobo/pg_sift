@@ -82,6 +82,7 @@ bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
 int			sift_maintenance_cost_delay = 0;
+int			sift_vacuum_rewrite_limit = 128;
 
 static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
@@ -132,6 +133,11 @@ define_gucs(void)
 							"Milliseconds the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, 0 to run them at full speed.",
 							NULL, &sift_maintenance_cost_delay, 0, 0, 100,
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.vacuum_rewrite_limit",
+							"Megabytes of segments a column VACUUM may rewrite to merge (past the first merge step), with a separate equal allowance to copy the end of the file into free blocks below it, "
+							"which holds the table or index under an exclusive lock; 0 keeps the one merge step and moves nothing.",
+							NULL, &sift_vacuum_rewrite_limit, 128, 0, 1048576,
+							PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.grouped_min_df",
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
@@ -186,6 +192,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_fail_who",
 							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
 							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_space_crash",
+							"Testing: kill the backend after recycling (1), relocation publication (2), or lowering high_water (3).",
+							NULL, &sift_test_space_crash, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_phase_gate",
 							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
 							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -420,7 +429,8 @@ sift_am_routine(int strategies, int support, bool multicol)
 	am->amsupport = support;
 	am->amcanmulticol = am->amoptionalkey = multicol;
 	am->amcanbuildparallel = am->amusemaintenanceworkmem = true;
-	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
+	/* none: a VACUUM that hands an index to parallel workers runs the cleanup of the others in parallel mode, where the space step cannot take a transaction id and the exclusive lock (sift_maint_space) */
+	am->amparallelvacuumoptions = 0;
 	am->amkeytype = InvalidOid;
 	return am;
 }

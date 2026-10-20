@@ -1,0 +1,245 @@
+Baseline measurements
+=====================
+
+[10:36:58] <scratch>/csv/orders-1000000.csv: 1000000 orders, 84 MB, generated in 2 s, sha256 15a2ee51cb6bfc61
+[10:37:11] pg update 1%: 10000 rows in 0.19 s (53981 rows/s), state reference
+[10:37:13] pg update 10%: 100000 rows in 1.27 s (78882 rows/s), state reference
+[10:37:13] pg delete 5%: 50000 rows in 0.12 s (433094 rows/s), state reference
+[10:37:13] pg commit: acknowledged in 0.138 ms, visible to a query 0.167 ms later
+[10:37:28] pg load 0/s: query p50 141 ms p95 221 ms
+[10:37:44] pg load 1000/s: query p50 184 ms p95 215 ms, 1002 rows/s, 0 failed batches
+[10:38:00] pg load 10000/s: query p50 143 ms p95 216 ms, 10004 rows/s, 0 failed batches
+[10:38:09] sift update 1%: 10000 rows in 0.14 s (72547 rows/s), state ok
+[10:38:09] sift update 10%: 100000 rows in 0.72 s (139711 rows/s), state ok
+[10:38:10] sift delete 5%: 50000 rows in 0.11 s (441662 rows/s), state ok
+[10:38:10] sift commit: acknowledged in 0.339 ms, visible to a query 23.9 ms later
+[10:38:25] sift load 0/s: query p50 53.7 ms p95 73 ms
+[10:38:41] sift load 1000/s: query p50 64.9 ms p95 93.6 ms, 1003 rows/s, 0 failed batches
+[10:38:57] sift load 10000/s: query p50 102 ms p95 143 ms, 10000 rows/s, 0 failed batches
+[10:39:01] sift_table update 1%: 10000 rows in 0.14 s (69477 rows/s), state ok
+[10:39:03] sift_table update 10%: 100000 rows in 1.45 s (69158 rows/s), state ok
+[10:39:03] sift_table delete 5%: 50000 rows in 0.23 s (213422 rows/s), state ok
+[10:39:03] sift_table commit: acknowledged in 0.34 ms, visible to a query 18.7 ms later
+[10:39:18] sift_table load 0/s: query p50 53.6 ms p95 84.5 ms
+[10:39:34] sift_table load 1000/s: query p50 64.1 ms p95 98.9 ms, 1004 rows/s, 0 failed batches
+[10:39:50] sift_table load 10000/s: query p50 63.8 ms p95 92.1 ms, 8150 rows/s, 0 failed batches
+[10:39:57] baseline-451d529 repetition 1 stored
+[10:40:12] pg update 1%: 10000 rows in 0.19 s (51612 rows/s), state reference
+[10:40:13] pg update 10%: 100000 rows in 1.17 s (85600 rows/s), state reference
+[10:40:14] pg delete 5%: 50000 rows in 0.10 s (504299 rows/s), state reference
+[10:40:14] pg commit: acknowledged in 0.0524 ms, visible to a query 0.0933 ms later
+[10:40:29] pg load 0/s: query p50 141 ms p95 219 ms
+[10:40:45] pg load 1000/s: query p50 196 ms p95 227 ms, 1004 rows/s, 0 failed batches
+[10:41:01] pg load 10000/s: query p50 198 ms p95 231 ms, 10002 rows/s, 0 failed batches
+[10:41:11] sift update 1%: 10000 rows in 0.17 s (60167 rows/s), state ok
+[10:41:12] sift update 10%: 100000 rows in 0.83 s (121053 rows/s), state ok
+[10:41:12] sift delete 5%: 50000 rows in 0.17 s (296333 rows/s), state ok
+[10:41:13] sift commit: acknowledged in 0.55 ms, visible to a query 37.7 ms later
+[10:41:28] sift load 0/s: query p50 71.9 ms p95 81.2 ms
+[10:41:44] sift load 1000/s: query p50 79.7 ms p95 94.2 ms, 1005 rows/s, 0 failed batches
+[10:42:00] sift load 10000/s: query p50 119 ms p95 170 ms, 10000 rows/s, 0 failed batches
+[10:42:06] sift_table update 1%: 10000 rows in 0.17 s (58646 rows/s), state ok
+[10:42:08] sift_table update 10%: 100000 rows in 1.71 s (58441 rows/s), state ok
+[10:42:09] sift_table delete 5%: 50000 rows in 0.30 s (166909 rows/s), state ok
+[10:42:09] sift_table commit: acknowledged in 0.569 ms, visible to a query 31.5 ms later
+[10:42:24] sift_table load 0/s: query p50 88 ms p95 96.1 ms
+[10:42:40] sift_table load 1000/s: query p50 90.6 ms p95 101 ms, 1003 rows/s, 0 failed batches
+[10:42:56] sift_table load 10000/s: query p50 63.4 ms p95 103 ms, 8497 rows/s, 0 failed batches
+[10:43:01] baseline-451d529 repetition 2 stored
+[10:43:17] pg update 1%: 10000 rows in 0.20 s (50136 rows/s), state reference
+[10:43:18] pg update 10%: 100000 rows in 1.29 s (77500 rows/s), state reference
+[10:43:19] pg delete 5%: 50000 rows in 0.08 s (629786 rows/s), state reference
+[10:43:19] pg commit: acknowledged in 0.0592 ms, visible to a query 0.084 ms later
+[10:43:34] pg load 0/s: query p50 205 ms p95 227 ms
+[10:43:50] pg load 1000/s: query p50 141 ms p95 215 ms, 1003 rows/s, 0 failed batches
+[10:44:06] pg load 10000/s: query p50 141 ms p95 218 ms, 10005 rows/s, 0 failed batches
+[10:44:14] sift update 1%: 10000 rows in 0.13 s (77621 rows/s), state ok
+[10:44:15] sift update 10%: 100000 rows in 0.65 s (153573 rows/s), state ok
+[10:44:15] sift delete 5%: 50000 rows in 0.08 s (625431 rows/s), state ok
+[10:44:16] sift commit: acknowledged in 0.393 ms, visible to a query 26.4 ms later
+[10:44:31] sift load 0/s: query p50 56.7 ms p95 74 ms
+[10:44:47] sift load 1000/s: query p50 70.5 ms p95 81.4 ms, 1006 rows/s, 0 failed batches
+[10:45:03] sift load 10000/s: query p50 107 ms p95 160 ms, 10002 rows/s, 0 failed batches
+[10:45:08] sift_table update 1%: 10000 rows in 0.16 s (62118 rows/s), state ok
+[10:45:09] sift_table update 10%: 100000 rows in 1.48 s (67662 rows/s), state ok
+[10:45:10] sift_table delete 5%: 50000 rows in 0.26 s (190920 rows/s), state ok
+[10:45:10] sift_table commit: acknowledged in 0.485 ms, visible to a query 30.8 ms later
+[10:45:25] sift_table load 0/s: query p50 79.4 ms p95 87.4 ms
+[10:45:41] sift_table load 1000/s: query p50 87.5 ms p95 97.1 ms, 1003 rows/s, 0 failed batches
+[10:45:57] sift_table load 10000/s: query p50 71.6 ms p95 92.1 ms, 7895 rows/s, 0 failed batches
+[10:46:01] baseline-451d529 repetition 3 stored
+
+
+Candidate measurements
+======================
+
+[11:18:36] <scratch>/csv/orders-1000000.csv: already generated (15a2ee51cb6b)
+[11:18:49] pg update 1%: 10000 rows in 0.16 s (61144 rows/s), state reference
+[11:18:50] pg update 10%: 100000 rows in 0.95 s (104781 rows/s), state reference
+[11:18:51] pg delete 5%: 50000 rows in 0.06 s (871749 rows/s), state reference
+[11:18:51] pg commit: acknowledged in 0.0552 ms, visible to a query 0.0775 ms later
+[11:19:06] pg load 0/s: query p50 129 ms p95 212 ms
+[11:19:22] pg load 1000/s: query p50 129 ms p95 211 ms, 1002 rows/s, 0 failed batches
+[11:19:38] pg load 10000/s: query p50 141 ms p95 212 ms, 10002 rows/s, 0 failed batches
+[11:19:47] sift update 1%: 10000 rows in 0.13 s (77072 rows/s), state ok
+[11:19:48] sift update 10%: 100000 rows in 0.68 s (147126 rows/s), state ok
+[11:19:48] sift delete 5%: 50000 rows in 0.11 s (447806 rows/s), state ok
+[11:19:48] sift commit: acknowledged in 0.374 ms, visible to a query 33.7 ms later
+[11:20:03] sift load 0/s: query p50 60.9 ms p95 64.4 ms
+[11:20:20] sift load 1000/s: query p50 48.8 ms p95 73.5 ms, 1004 rows/s, 0 failed batches
+[11:20:36] sift load 10000/s: query p50 90 ms p95 148 ms, 10003 rows/s, 0 failed batches
+[11:20:40] sift_table update 1%: 10000 rows in 0.12 s (81658 rows/s), state ok
+[11:20:42] sift_table update 10%: 100000 rows in 1.37 s (72931 rows/s), state ok
+[11:20:42] sift_table delete 5%: 50000 rows in 0.19 s (258726 rows/s), state ok
+[11:20:42] sift_table commit: acknowledged in 0.353 ms, visible to a query 16.1 ms later
+[11:20:57] sift_table load 0/s: query p50 51.1 ms p95 82.6 ms
+[11:21:13] sift_table load 1000/s: query p50 83.6 ms p95 95.2 ms, 1000 rows/s, 0 failed batches
+[11:21:29] sift_table load 10000/s: query p50 58.9 ms p95 84.1 ms, 8700 rows/s, 0 failed batches
+[11:21:34] candidate-edb865d-vacuum-space repetition 1 stored
+[11:21:47] pg update 1%: 10000 rows in 0.19 s (53320 rows/s), state reference
+[11:21:48] pg update 10%: 100000 rows in 1.20 s (83090 rows/s), state reference
+[11:21:48] pg delete 5%: 50000 rows in 0.10 s (512138 rows/s), state reference
+[11:21:48] pg commit: acknowledged in 0.0663 ms, visible to a query 0.111 ms later
+[11:22:03] pg load 0/s: query p50 124 ms p95 211 ms
+[11:22:19] pg load 1000/s: query p50 204 ms p95 215 ms, 1006 rows/s, 0 failed batches
+[11:22:35] pg load 10000/s: query p50 202 ms p95 212 ms, 10002 rows/s, 0 failed batches
+[11:22:44] sift update 1%: 10000 rows in 0.14 s (73510 rows/s), state ok
+[11:22:44] sift update 10%: 100000 rows in 0.50 s (201722 rows/s), state ok
+[11:22:44] sift delete 5%: 50000 rows in 0.09 s (533236 rows/s), state ok
+[11:22:45] sift commit: acknowledged in 0.438 ms, visible to a query 27.2 ms later
+[11:23:00] sift load 0/s: query p50 60.3 ms p95 70.7 ms
+[11:23:16] sift load 1000/s: query p50 62.6 ms p95 75.7 ms, 1002 rows/s, 0 failed batches
+[11:23:32] sift load 10000/s: query p50 98.2 ms p95 145 ms, 10005 rows/s, 0 failed batches
+[11:23:37] sift_table update 1%: 10000 rows in 0.14 s (73447 rows/s), state ok
+[11:23:38] sift_table update 10%: 100000 rows in 1.23 s (81440 rows/s), state ok
+[11:23:38] sift_table delete 5%: 50000 rows in 0.24 s (208274 rows/s), state ok
+[11:23:39] sift_table commit: acknowledged in 0.454 ms, visible to a query 27.9 ms later
+[11:23:54] sift_table load 0/s: query p50 75.4 ms p95 82 ms
+[11:24:10] sift_table load 1000/s: query p50 61.9 ms p95 99 ms, 1004 rows/s, 0 failed batches
+[11:24:26] sift_table load 10000/s: query p50 85.1 ms p95 112 ms, 8523 rows/s, 0 failed batches
+[11:24:30] candidate-edb865d-vacuum-space repetition 2 stored
+[11:24:43] pg update 1%: 10000 rows in 0.18 s (56321 rows/s), state reference
+[11:24:45] pg update 10%: 100000 rows in 1.03 s (97057 rows/s), state reference
+[11:24:45] pg delete 5%: 50000 rows in 0.09 s (542141 rows/s), state reference
+[11:24:45] pg commit: acknowledged in 0.0514 ms, visible to a query 0.0725 ms later
+[11:25:00] pg load 0/s: query p50 135 ms p95 211 ms
+[11:25:16] pg load 1000/s: query p50 133 ms p95 214 ms, 1001 rows/s, 0 failed batches
+[11:25:32] pg load 10000/s: query p50 155 ms p95 214 ms, 10005 rows/s, 0 failed batches
+[11:25:40] sift update 1%: 10000 rows in 0.14 s (71589 rows/s), state ok
+[11:25:41] sift update 10%: 100000 rows in 0.54 s (185603 rows/s), state ok
+[11:25:41] sift delete 5%: 50000 rows in 0.10 s (482777 rows/s), state ok
+[11:25:42] sift commit: acknowledged in 0.412 ms, visible to a query 23.5 ms later
+[11:25:57] sift load 0/s: query p50 51.4 ms p95 69.2 ms
+[11:26:13] sift load 1000/s: query p50 67.4 ms p95 74 ms, 1005 rows/s, 0 failed batches
+[11:26:29] sift load 10000/s: query p50 89.4 ms p95 140 ms, 10005 rows/s, 0 failed batches
+[11:26:33] sift_table update 1%: 10000 rows in 0.11 s (87032 rows/s), state ok
+[11:26:34] sift_table update 10%: 100000 rows in 1.06 s (94249 rows/s), state ok
+[11:26:34] sift_table delete 5%: 50000 rows in 0.15 s (342507 rows/s), state ok
+[11:26:34] sift_table commit: acknowledged in 0.31 ms, visible to a query 15.7 ms later
+[11:26:49] sift_table load 0/s: query p50 75 ms p95 84.4 ms
+[11:27:05] sift_table load 1000/s: query p50 62.8 ms p95 97.1 ms, 1004 rows/s, 0 failed batches
+[11:27:21] sift_table load 10000/s: query p50 61.3 ms p95 79.3 ms, 8426 rows/s, 0 failed batches
+[11:27:26] candidate-edb865d-vacuum-space repetition 3 stored
+
+
+Focused regressions
+===================
+
+# using postmaster on <scratch>/test/sock, port 56190
+ok 1         - store_space                               134 ms
+ok 2         - col_space                                1366 ms
+ok 3         - tbl_space                                 535 ms
+ok 4         - vacuum_truncate                           356 ms
+ok 5         - tbl_compact                               155 ms
+ok 6         - tbl_scroll                                104 ms
+ok 7         - tbl_topn                                 3329 ms
+ok 8         - store_truncate                             69 ms
+ok 9         - col_preagg_maint                          274 ms
+ok 10        - col_wbuf                                  332 ms
+ok 11        - col_preagg                               2484 ms
+ok 12        - col_topn                                 5154 ms
+ok 13        - col_topn_moved                            198 ms
+ok 14        - col_search                               2816 ms
+ok 15        - tbl_basic                                  29 ms
+ok 16        - vacuum_converge                            86 ms
+ok 17        - vacuum_segments                           219 ms
+ok 18        - col_agg_overflow_vacuum                   372 ms
+ok 19        - agg_jsonpath_kinds                       1623 ms
+1..19
+# All 19 tests passed.
+
+
+Isolation
+=========
+
+# using postmaster on <scratch>/test/sock, port 56190
+ok 1         - vacuum_scan                               384 ms
+ok 2         - vacuum_truncate                          1344 ms
+ok 3         - truncate_hint                            1191 ms
+1..3
+# All 3 tests passed.
+
+
+TAP and WAL consistency
+=======================
+
+t/006_truncate.pl ....... ok
+t/014_tbl_writepath.pl .. ok
+t/015_space.pl .......... ok
+All tests successful.
+Files=3, Tests=31, 37 wallclock secs ( 0.07 usr  0.01 sys +  3.99 cusr  3.98 csys =  8.05 CPU)
+Result: PASS
+
+
+CI map
+======
+
+neutral-selftest: 22 words flagged, a neutral sample and the repository pass
+plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv
+
+
+Portable boundary
+=================
+
+check-portable: ok, 87 files include only sift_host.h, the C library and each other
+
+
+Neutral names
+=============
+
+neutral: ok
+
+
+Expected failures from negative controls
+========================================
+
+# using postmaster on <scratch>/negative/sock, port 56198
+not ok 1     - store_space                               172 ms
+1..1
+# 1 of 1 tests failed.
+# The differences that caused some tests to fail can be viewed in the file "<scratch>/negative/regress/store_space/regression.diffs".
+# A copy of the test summary that you see above is saved in the file "<scratch>/negative/regress/store_space/regression.out".
+diff -U3 <checkout>/test/expected/store_space.out <scratch>/negative/regress/store_space/results/store_space.out
+--- <checkout>/test/expected/store_space.out	2026-10-20 11:15:46.311704491 -0300
++++ <scratch>/negative/regress/store_space/results/store_space.out	2026-10-20 11:15:57.955931357 -0300
+@@ -38,7 +38,7 @@
+ SELECT :copied_pages BETWEEN 1 AND 128 AS bounded;
+  bounded 
+ ---------
+- t
++ f
+ (1 row)
+ 
+ SELECT bool_and(sift._test_seg_read('i', gen) = payload) AS intact FROM sift._test_segments('i');
+@@ -130,7 +130,7 @@
+ SELECT sift._test_space('i') > 0 AS profitable;
+  profitable 
+ ------------
+- t
++ f
+ (1 row)
+ 
+ SELECT bool_and(sift._test_seg_read('i', gen) = payload) AS intact FROM sift._test_segments('i');
+
+
+Final packaging: focused verification used main 36b7999 plus the storage change. Clean rebase onto d32061d picked up shared UTF-8 emitter and analyzer index-lookup refactors. No further local build/test/benchmark after the quiet-host handoff; GitHub CI remains the gate.

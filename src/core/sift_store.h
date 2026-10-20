@@ -165,6 +165,30 @@ extern uint64 sift_store_new_gen(Relation index);
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
 
+/*
+ * While on, every extent released is reusable at once and every free record counts as reusable: for a caller that holds AccessExclusiveLock on
+ * the relation (VACUUM's space step, sift_maint_space), which no scan, write buffer appender or other step can hold at the same time (P7).
+ * The caller turns it off again before it releases the lock, also on error.
+ */
+extern void sift_store_space_exclusive(Relation index, bool on);
+
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_space_crash;
+extern void sift_store_space_test_point(int phase);
+#define SIFT_SPACE_TEST_POINT(phase) sift_store_space_test_point(phase)
+#else
+#define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
+#endif
+extern uint64 sift_store_space_written(void);
+
+/* A host's extra physical links in a copied lane page. Edits only this page; no allocation or IO. */
+typedef void (*SiftRelocatePage) (Page page, const SiftExtent *old, const SiftExtent *fresh, int n);
+extern BlockNumber sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExtent *fresh, int n);
+
+/* Copy a segment into exact free runs below limit, within budget; zero if they do not fit. The caller publishes fresh and releases old. */
+extern uint64 sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, int n,
+								 BlockNumber limit, uint64 budget, SiftSegEntry *fresh, SiftRelocatePage relocate_page);
+
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
 
