@@ -1,73 +1,48 @@
-# Release gate
+# Release
 
-`scripts/ci.sh release` is the check a release head passes, once. It does not repeat the whole test matrix: the full CI, the full
-differential test, the long soaks and the long fuzz runs belong to development. The gate picks the jobs by the risk of what changed since the
-last head that was gated in full, and a tree that already has a stamp is not gated again.
+GitHub CI is the gate of a release. `scripts/release.sh` does not run the test matrix again: it reuses the green CI run of the commit, adds what CI
+cannot give, and ships.
 
 ```
-scripts/ci.sh release                 run the gate on HEAD (stamp written when everything passes)
-scripts/ci.sh release --list          the key of the tree, whether it has a stamp, and the jobs in order (nothing runs)
-scripts/ci.sh release --force         run although the tree has a stamp
-scripts/ci.sh release --only REGEX    some jobs (no stamp)
-scripts/ci.sh release --keep          keep the scratch directory of every job
+scripts/release.sh VERSION --dry-run   everything on a scratch clone: nothing is pushed, tagged or published
+scripts/release.sh VERSION             the release
+scripts/release.sh VERSION --resume    continue a stopped release at the step that failed
 ```
 
-## What is gated
+Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, have the notes of the release under `## Unreleased` in
+`CHANGELOG.md`, `pg_sift.control` at the version of the extension SQL (a patch release keeps it), and push `main`. When the last code commit is pushed,
+`gh workflow run ci.yml --ref main` starts the full run of that commit (about 8 minutes), so that the release finds it done.
 
-| Tier | Job | Proves |
-|---|---|---|
-| 1 | `build` | both flavors (production, `SIFT_TESTING`) build with no warning |
-| 1 | `werror-gcc`, `werror-clang` | warnings are errors |
-| 1 | `portable` | the portable core includes only the host header |
-| 1 | `ci-quick` | `scripts/ci.sh quick`, the shrunk suites, on the normal build |
-| 1 | `coverage` | every row of the coverage table holds (`scripts/coverage.sh --check`) |
-| 2 | `ci-sanitize` | `scripts/ci.sh quick` on the ASan+UBSan build |
-| 2 | `pg17` | `scripts/ci.sh quick` on PostgreSQL 17, in a container (the fuzz part only the targets that run in the server, `query` and `sql`: the standalone harnesses do not depend on the server and are the `fuzz` job's, on the host compiler) |
-| 2 | `race` | `vacuum_count_stress`, `vacuum_count_dead`, `vacuum_count_snapshot`, `vacuum_agg_stress`, `col_vacuum_scan`, `topn_vacuum_scan` |
-| 2 | `gate-bm25` | user instructions per BM25 operation against `RELEASE_BM25_BASE` (`bench/steps/cpu_gate.sh`); a cell above 1.02 fails unless it is in `RELEASE_BM25_ACCEPT` (`session`, `vacuum_nofree`, `idle1_rank`, documented in the README) |
-| 2 | `gate-col` | user instructions per question of the store (`bench/cpu-query.sh`, 100 000 rows) on a `sift_col` index against `RELEASE_COL_REF` (`baab1a2` for 3.0); above `RELEASE_COL_MAX` (1.15) fails, between 1.02 and 1.15 is printed as `accepted: size work`. The `sift_table` ratios are printed, not judged (the grouped scan on `title` is 1.209 on purpose) |
-| 2 | `fuzz` | 60 s each of the column chunk and BM25 decoders (`scripts/fuzz.sh colchunk bm25`) |
-| 2 | `coldiff` | the aggregate pushdown against PostgreSQL's own plan: the distinct, pre-aggregate, top-N, search, set and table fixtures with every scenario |
-| 2 | `sqlite`, `mariadb` | the shared core still builds and answers in the two hosts (smoke only; MariaDB one series) |
-| 3 | `upgrade` | 2.0 files in a cluster with a BM25 index are replaced by 3.0, `ALTER EXTENSION UPDATE TO '3.0'`, the answers are the same, `sift.verify` and REINDEX pass, a `sift_col` index is created; then a column index written by the last head with column format 2 (`RELEASE_MINOR2`) answers with a REINDEX hint, and after REINDEX with the same result |
-| 3 | `package` | `make install DESTDIR=...`, then `CREATE EXTENSION` and both index types in a fresh cluster that sees only the installed files |
+## What it does
 
-After every job the logs it left are searched for a server crash (`terminated by signal` 4, 6, 7, 8 or 11, and `TRAP:`); signals 9 and 15 are what
-the crash tests send on purpose, and the fuzz job aborts one backend on purpose (`sift_asan_canary`) to see ASan report. A crash fails the job.
+| Step | |
+|---|---|
+| preflight | clean tree on `main`, equal to `origin/main`; notes, CHANGELOG, control, SQL scripts (`pg_sift--PREV--NEW.sql` for a new minor) in place |
+| `ci` | a green run of the workflow `ci` marked "Full scope" (every job of the quick tier ran; the run's `changes` job has the step) on the last commit that changed a build input (`src test scripts Makefile pg_sift.control pg_sift--*.sql sqlite mariadb`, except `*.md`, `VERSION` files and the release scripts) or on a later one. A run in progress is waited for; with none, the full run is dispatched |
+| `upgrade` | the previous tag's library writes a BM25 index, a `sift_col` index and a `sift_table` in a cluster; this tree's files replace it, `ALTER EXTENSION pg_sift UPDATE`, answers equal, `sift.verify`, `sift.col_verify`, `REINDEX`; then, with `sift.col_format_minor` at its lowest value, the previous library reads what this tree wrote |
+| `package` | `make install DESTDIR` (production build): every extension file and the library in place, no test-only file, `packaging/smoke.sql` from the first and from the last version in a cluster that sees only the installed files |
+| `bump` | `CHANGELOG.md` and the CHANGELOG and `VERSION` of the ports, `PKGBUILD`, README badge, install lines: one commit, after a check that every place agrees |
+| publish | `main` and the tag in one push; the workflow `release` (the `.deb` and `.rpm` in parallel, the SQLite and MariaDB tarballs); the downloaded assets against `SHA256SUMS` and their names; `scripts/release-aur.sh` |
 
-## Why these jobs
+`ci`, `upgrade` and `package` run at once. The steps that passed are in `~/.local/state/pg_sift-release/VERSION/manifest` and the logs in `logs/` there.
+The AUR step needs the key: `SSH_ASKPASS=/usr/bin/ksshaskpass SSH_ASKPASS_REQUIRE=force AUR_SSH_KEY=~/.ssh/id_github scripts/release.sh VERSION`.
+Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 12 GB, ports from `SIFT_PORT` (56210) and the 10th after it.
 
-The base of 3.0 was gated in full. What changed since is the aggregate source and planner (top-N, pre-aggregates, distinct bitmaps, filters in
-the source), the BM25 visibility paths, the column format (minor 3), the build layout (rename, folders) and the test and bench scripts. The
-jobs are the ones that fail when one of these breaks: the quick suites on three builds, the races, the two instruction gates (which do not
-depend on the load of the host), the decoders whose format moved, the differential test of what was pushed down, the upgrade of what is on disk.
+## What CI runs
 
-## Why the column gate allows 1.15
+A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared by the workflow and `scripts/ci.sh affected`. The base of a push is the last green run of
+`main`, so a red or cancelled push is not forgotten by the next one. A change of `src/core`, the build or the harness runs everything.
 
-Compressed dictionaries and the column format minor 3 trade some CPU for size, and the user accepted that for CPU-bound questions. A `sift_col`
-question up to 1.15 of the reference is therefore printed, not failed; anything above needs a cause. The BM25 gate keeps 1.02: the BM25
-format did not change.
+| Change | Runs |
+|---|---|
+| docs, bench, packaging, other workflows | lint (syntax of the scripts, portable core, `scripts/ci.sh --selftest`, actionlint); packaging also the release dry run |
+| `src/bm25` | the BM25 jobs, the decoders, the search callers, SQLite, MariaDB, replication |
+| `src/col`, `src/agg` | the column, aggregate and table jobs and the common ones (production build, coverage, isolation) |
+| `src/table` | the table jobs and the common ones |
+| a test file | that test |
 
-## Failures
-
-A failed job runs once more alone (a CI job: only the parts that failed). It passes the gate only if it then passes and every failed part has a
-line in `scripts/release.flakes` (regex, tab, cause); a second failure stops the run and no stamp is written. A flake is fixed with a test that
-fails first, or explained in that file; it is not skipped.
-
-## The stamp
-
-The key is the hash of the committed `src/` (all of it, whatever its layout), `test/`, `scripts/`, `Makefile`, `pg_sift.control` and the
-`pg_sift--*.sql` scripts. A head with a stamp (`$RELEASE_STATE`, default `~/.local/state/pg_sift-release/KEY`) is reported as gated. A commit
-that touches only docs, bench or packaging keeps the key; any change under the paths above gives a new key and a new gate. Uncommitted changes
-in those paths stop the run (the gate runs on a clone of HEAD).
-
-## Cost and limits
-
-The jobs run one at a time in a scope of 2 cores and 12 GB (`systemd-run`, `CPUQuota=200%`), at most 100 000 rows, with `nice`. The scratch is
-under `$RELEASE_TMP` (default `/tmp`) and removed at the end except the logs, which are in `sift-release.*/logs` (`NAME.log`, and
-`NAME.first.log` for a job that ran twice, and `NAME.scratch.N/` with the logs, diffs and findings of every failed attempt). Not in the gate: the full CI, the full differential test, PG18 full, the long soaks and fuzz
-runs, repeated runs of flaky tests, the full SQLite and MariaDB suites, and the timed benchmarks (`bench/bench final --docs`).
-
-Environment: `RELEASE_BM25_BASE` (544ddf0, the main the 3.0 branch started from), `RELEASE_BM25_ACCEPT`, `RELEASE_COL_REF` (a gated ref;
-default the head of the newest stamp), `RELEASE_COL_MAX` (1.15), `RELEASE_COL_NOTE` (1.02), `RELEASE_OLD` (v2.0.3), `RELEASE_MINOR2` (46008df), `RELEASE_MARIADB_SERIES` (11.8),
-`RELEASE_TMP`, `SIFT_PORT` (first port, 56130).
+PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
+PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).
+`scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
+the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18, and the experimental PostgreSQL 19. `assert.yml`
+(assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks (`bench/bench final --docs`) are a separate step, not part of a release.

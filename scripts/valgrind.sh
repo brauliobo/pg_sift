@@ -5,8 +5,8 @@
 #
 #   scripts/valgrind.sh [--major 17|18] [TEST...]       (SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
 #
-# Memcheck is 20 to 50 times slower, so the default tests are a representative few: BM25 store, column encodings, column index, table AM and the
-# shredder. The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
+# Memcheck is 20 to 50 times slower, so the default tests are a representative few: BM25 store, column index, table AM and the shredder
+# (`col_enc` alone takes over 30 minutes: name it to run it). The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
 # backend run under valgrind with --error-exitcode=99 (a backend with an error exits 99 and the postmaster restarts: the test fails) and
 # the logs ($WORK/vg/PID.log) are scanned for error markers, so that an error in a process that did not affect a test still fails the lane.
 # SIFT_VALGRIND_ORIGINS=1 adds --track-origins=yes (two times slower, tells where an uninitialized value came from). sift.simd is capped to
@@ -27,7 +27,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
-(( ${#TESTS[@]} )) || TESTS=(store_basic col_enc col_index_basic tbl_basic shred_values)
+(( ${#TESTS[@]} )) || TESTS=(store_basic col_index_basic tbl_basic shred_values)
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
 

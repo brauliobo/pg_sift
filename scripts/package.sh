@@ -3,7 +3,7 @@
 # The source is `git archive REF`; the packaging recipes (packaging/) come from this checkout. The package version is the tag
 # (v1.1.0 -> 1.1.0); a ref that is not a tag gets default_version.0~git<sha>.
 #
-#   scripts/package.sh [all] [REF [OUTDIR]]   build deb and rpm, test them on every image below, write OUTDIR/SHA256SUMS
+#   scripts/package.sh [all] [REF [OUTDIR]]   build deb and rpm (FAMILIES="deb" or "rpm" for one), test them on every image below, write OUTDIR/SHA256SUMS
 #   scripts/package.sh build IMAGE REF OUTDIR  build the package of IMAGE's family (debian/ubuntu: deb; rocky/alma: rpm)
 #   scripts/package.sh test IMAGE PACKAGE      install PACKAGE in a fresh IMAGE container, run packaging/smoke.sql, remove it
 #
@@ -38,13 +38,14 @@ test_package() {
 }
 
 all() {
-	local ref=${1:-HEAD} out=${2:-$REPO/dist} image pkg
-	rm -f "$out"/*.deb "$out"/*.rpm
-	build "$BUILD_DEB" "$ref" "$out"
-	build "$BUILD_RPM" "$ref" "$out"
-	for image in $TEST_DEB; do test_package "$image" "$out"/*.deb; done
-	for image in $TEST_RPM; do test_package "$image" "$out"/*.rpm; done
-	(cd "$out" && sha256sum *.deb *.rpm > SHA256SUMS && cat SHA256SUMS)
+	local ref=${1:-HEAD} out=${2:-$REPO/dist} fam image b t
+	for fam in ${FAMILIES:-deb rpm}; do
+		b=BUILD_${fam^^} t=TEST_${fam^^}
+		rm -f "$out"/*."$fam"
+		build "${!b}" "$ref" "$out"
+		for image in ${!t}; do test_package "$image" "$out"/*."$fam"; done
+	done
+	(cd "$out" && shopt -s nullglob && sha256sum *.deb *.rpm > SHA256SUMS && cat SHA256SUMS)
 }
 
 case ${1:-all} in

@@ -1,15 +1,29 @@
 name: ci
 
+# A push or pull request runs what its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`): the base of a push is the last green run of main, so a red
+# or cancelled push is not forgotten by the next one. The nightly run and a dispatch run every job of the quick tier ("Full scope" in the first job is the
+# mark the release tool looks for, docs/RELEASE.md); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs) and the
+# experimental PostgreSQL 19. The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      heavy:
+        description: Also run the full tier (make check-full) and PostgreSQL 19
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
+  actions: read
 
+# a push cancels the run of the one it supersedes; a nightly or dispatch run is never cancelled by a push
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -17,20 +31,80 @@ env:
   PG19_REF: REL_19_STABLE
 
 jobs:
-  postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.experimental && ' (git, experimental)' || '' }}
+  changes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 5
+    outputs:
+      jobs: ${{ steps.scope.outputs.jobs }}
+      sqlite: ${{ steps.scope.outputs.sqlite }}
+      mariadb: ${{ steps.scope.outputs.mariadb }}
+      replication: ${{ steps.scope.outputs.replication }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=all
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base=origin/$GITHUB_BASE_REF ;;
+            push)
+              # the newest green run of main whose commit is an ancestor of this one: what it checked is not checked again
+              for sha in $(gh run list --workflow ci.yml --branch main --status success --limit 20 --json headSha --jq '.[].headSha'); do
+                git merge-base --is-ancestor "$sha" HEAD 2>/dev/null && { base=$sha; break; }
+              done ;;
+          esac
+          echo "base: $base"
+          scripts/ci.sh affected --list "$base" | tee -a "$GITHUB_STEP_SUMMARY"
+          scripts/ci.sh affected --github "$base" | tee -a "$GITHUB_OUTPUT"
+
+      # the mark of a run that covered everything (the release tool reads it from the API)
+      - name: Full scope
+        if: ${{ steps.scope.outputs.full == 'true' }}
+        run: echo "every job of the quick tier ran"
+
+      - id: matrix
+        env:
+          NSHARDS: ${{ steps.scope.outputs.nshards }}
+          PG: ${{ steps.scope.outputs.pg }}
+          JOBS: ${{ steps.scope.outputs.jobs }}
+          HEAVY: ${{ github.event_name == 'schedule' || inputs.heavy == true }}
+        run: |
+          # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
+          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" '
+            (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}] else [] end)
+            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: ".", experimental: true}] else [] end' |
+            sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
+
+  # no PostgreSQL: the syntax of every script, the portable core, the map of areas against the tests, the workflows
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - run: for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f"; done
+      - run: scripts/check-portable.sh
+      - run: scripts/ci.sh --selftest
+      - name: actionlint
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
+
+  postgresql:
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.tier == 'full' && ' full tier' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.experimental && ' (git, experimental)' || '' }}
+    needs: changes
+    if: ${{ needs.changes.outputs.matrix != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.tier == 'full' && 150 || 90 }}
     # an experimental server shows API drift without failing the workflow
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - pg: 17
-          - pg: 18
-          - pg: 19
-            experimental: true
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -97,16 +171,19 @@ jobs:
       # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
       # includes the regression tests against the production library (SIFT_TESTING off, stage production-regress), with its own leak gate
-      - name: Quick test tier (make check, with the leak gate)
-        run: make check
+      # the jobs: the ones scripts/areas.tsv picks for the diff (all of them in the nightly entries), and this runner's share of them (shard k of n)
+      - name: ${{ matrix.tier == 'full' && 'Full test tier (make check-full)' || 'Quick test tier (make check, with the leak gate)' }}
+        run: make ${{ matrix.tier == 'full' && 'check-full' || 'check' }}
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+          SIFT_CI_AFFECTED: ${{ matrix.jobs }}
+          SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
 
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-test-logs-pg${{ matrix.pg }}
+          name: pg_sift-test-logs-pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
@@ -120,6 +197,8 @@ jobs:
   # one container per node (primary, standby, subscriber): separate filesystems and installs of the extension
   replication:
     name: Replication in containers (${{ matrix.image }})
+    needs: changes
+    if: ${{ needs.changes.outputs.replication == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -133,6 +212,8 @@ jobs:
   # the SQLite extension (sqlite/): independent of PostgreSQL, built against the system SQLite development package
   sqlite:
     name: SQLite extension
+    needs: changes
+    if: ${{ needs.changes.outputs.sqlite == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -160,6 +241,8 @@ jobs:
   # on a quiet machine), needs a PostgreSQL and the corpus and is run by hand before a release.
   mariadb:
     name: MariaDB extension (${{ matrix.series }})
+    needs: changes
+    if: ${{ needs.changes.outputs.mariadb == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:

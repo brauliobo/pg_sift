@@ -13,12 +13,13 @@ name: release
 # The text of the release is docs/releases/<tag>.md: write it before tagging, from docs/releases/TEMPLATE.md (a PostgreSQL part and, when the
 # SQLite or the MariaDB tarball is attached, a "## SQLite extension" or "## MariaDB extension" part; the publish job refuses a missing file or section).
 # workflow_dispatch rebuilds and republishes the assets of an existing tag with the recipes of the selected ref.
-# Dry run: a pull request builds and tests the merge commit's assets and publishes nothing; it builds only the assets whose recipes
-# it touches (packaging/, scripts/package*.sh, sqlite/, mariadb/, this file).
+# Dry run: a pull request or a push to main builds and tests the assets of its commit and publishes nothing; it builds only the assets whose recipes
+# it touches (packaging/, scripts/package*.sh, sqlite/, mariadb/, this file): a push of anything else ends after the first job.
 
 on:
   push:
     tags: ['v*']
+    branches: [main]
   pull_request:
     paths:
       - packaging/**
@@ -38,11 +39,13 @@ permissions:
   contents: read
 
 env:
-  REF: ${{ github.event_name == 'pull_request' && 'HEAD' || inputs.tag || github.ref_name }}
+  REF: ${{ inputs.tag || github.ref_type == 'tag' && github.ref_name || 'HEAD' }}
+  # a tag or a dispatch publishes; a pull request or a push to a branch only builds
+  PUBLISH: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   # which assets this run builds: everything for a tag or a dispatch (the SQLite and MariaDB ones only if the tag has the extension), and for a
-  # pull request what its files touch (the merge commit against its first parent, the base)
+  # dry run what its files touch (a pull request: the merge commit against its first parent; a push: against the commit before it)
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -56,9 +59,13 @@ jobs:
           fetch-depth: 0
 
       - id: what
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            files=$(git diff --name-only HEAD^1 HEAD)
+          if [ "$PUBLISH" = false ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || BEFORE=HEAD^1
+            [ "$GITHUB_EVENT_NAME" = pull_request ] && BEFORE=HEAD^1
+            files=$(git diff --name-only "$BEFORE" HEAD)
             packages=false sqlite=false mariadb=false
             grep -Eq '^(packaging/[^/]+|packaging/debian/.*|scripts/package\.sh|\.github/workflows/release\.yml)$' <<<"$files" && packages=true
             grep -Eq '^(sqlite/.*|packaging/sqlite/.*|scripts/package-sqlite\.sh|\.github/workflows/release\.yml)$' <<<"$files" && sqlite=true
@@ -68,29 +75,37 @@ jobs:
             git cat-file -e "$REF:sqlite/VERSION" 2>/dev/null && sqlite=true
             git cat-file -e "$REF:mariadb/VERSION" 2>/dev/null && mariadb=true
           fi
-          echo "packages=$packages" >> "$GITHUB_OUTPUT"
-          echo "sqlite=$sqlite" >> "$GITHUB_OUTPUT"
-          echo "mariadb=$mariadb" >> "$GITHUB_OUTPUT"
+          {
+            echo "packages=$packages"
+            echo "sqlite=$sqlite"
+            echo "mariadb=$mariadb"
+          } >> "$GITHUB_OUTPUT"
           echo "packages=$packages sqlite=$sqlite mariadb=$mariadb"
         shell: bash {0}
 
+  # the two families in parallel: each builds its package and installs it in every image of its family
   packages:
+    name: packages (${{ matrix.family }})
     needs: changes
     if: needs.changes.outputs.packages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [deb, rpm]
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Build and test the packages
-        run: scripts/package.sh all "$REF" dist
+        run: FAMILIES=${{ matrix.family }} scripts/package.sh all "$REF" dist
 
       - uses: actions/upload-artifact@v6
         with:
-          name: packages
-          path: dist/
+          name: packages-${{ matrix.family }}
+          path: dist/*.${{ matrix.family }}
           if-no-files-found: error
 
   sqlite:
@@ -139,7 +154,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.packages.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.sqlite.result) && contains(fromJSON('["success","skipped"]'), needs.mariadb.result) }}
+    if: ${{ !cancelled() && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && needs.packages.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.sqlite.result) && contains(fromJSON('["success","skipped"]'), needs.mariadb.result) }}
     needs: [changes, packages, sqlite, mariadb]
     runs-on: ubuntu-24.04
     permissions:
@@ -153,7 +168,8 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: packages
+          pattern: packages-*
+          merge-multiple: true
           path: dist
 
       - uses: actions/download-artifact@v7
@@ -182,7 +198,7 @@ jobs:
             echo "$notes has no '## MariaDB extension' section (see docs/releases/TEMPLATE.md)" >&2; exit 1
           fi
           # one checksum file for every asset (the build jobs' own are not uploaded or are rewritten here)
-          (cd dist && rm -f SHA256SUMS && sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && rm -f SHA256SUMS && sha256sum -- *.deb *.rpm *.tar.gz > SHA256SUMS && cat SHA256SUMS)
           title="pg_sift ${TAG#v}"
           if gh release view "$TAG" >/dev/null 2>&1; then gh release edit "$TAG" --title "$title" --notes-file "$notes"
           else gh release create "$TAG" --verify-tag --title "$title" --notes-file "$notes"; fi
