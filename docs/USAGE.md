@@ -22,9 +22,15 @@ Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_s
 ### Install with Homebrew
 
 ```sh
-brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift
+brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
 brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
+```
+
+If the tap was installed from the former separate repository, change its remote first:
+
+```sh
+brew tap --custom-remote brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
 ```
 
 The formula in this repository builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
