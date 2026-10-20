@@ -142,7 +142,7 @@ The full tables with every part, B/posting and B/term are produced by `scripts/b
 - Liveness pages (`live pages`): 27 pages on the titles (a row of the offsets of the documents that are live for every present page, 16 bytes per page of 76 rows)
   and 43 on the articles, of which 310 KB are the table of dead postings per non-inline term, 4 bytes each, all zero until a VACUUM.
 
-## 4. Candidates, in the order the task gave them
+## 4. Candidates
 
 | # | candidate | needs a format change | titles | articles | decision |
 |---|---|---|---|---|---|

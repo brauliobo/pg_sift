@@ -134,7 +134,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 Also: extend sift.verify (src/bm25/sift_segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: sift_docdir.c, sift_lane.c, rest of sift_wbuf.c, sift_cscan.c, sift_cscan consumers.
 
-## Decisions for the coordinator
+## Decisions
 
 Decided: assert and valgrind lanes, Coverity Scan, `pointer-overflow` out of `1`, and the fix of F-BM25-2/3 and F-COL-1 (reachable from a corrupt page on the query path) ahead of the full conversion (done: F-BM25-2/3 in 2.0.2, F-COL-1 in 3.0.0). Open:
 1. Accept up to 1% instructions on column-scan and BM25 cells per converted decoder?

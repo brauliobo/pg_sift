@@ -104,7 +104,7 @@ Feature facts for search and for analytics, pg_sift against the PostgreSQL optio
 
 Every cell above was checked against the pages listed for its column on 2026-10-18; versions are the latest release on that date unless noted. Most pages were read through a summarizing fetcher, so quoted fragments are its excerpts; the pages that decide a contested cell (pg_search replication, Citus columnar limits, pgx-bm25, TIN limits and SQL shapes, ClickHouse `UPDATE`, DuckDB `CREATE VIEW` and `GROUP BY`) were fetched a second time.
 
-**pg_sift** 3.0, branch `v3-next` at `40b6e18`: [COVERAGE.md](COVERAGE.md) (ids S01-S19, C01, W05-W13, K01-K13, J01-J21, AP01-AP06, L01-L10, D01-D07, T01-T25), [USAGE.md](USAGE.md), [COL-PREAGG.md](COL-PREAGG.md), [COL-CODEC.md](COL-CODEC.md), [BENCHMARKS.md](BENCHMARKS.md), `test/sql/count_scan.sql`, `test/sql/tbl_bm25.sql`, [LICENSE](../LICENSE).
+**pg_sift** 3.0 (commit `40b6e18`): [COVERAGE.md](COVERAGE.md) (ids S01-S19, C01, W05-W13, K01-K13, J01-J21, AP01-AP06, L01-L10, D01-D07, T01-T25), [USAGE.md](USAGE.md), [COL-PREAGG.md](COL-PREAGG.md), [COL-CODEC.md](COL-CODEC.md), [BENCHMARKS.md](BENCHMARKS.md), `test/sql/count_scan.sql`, `test/sql/tbl_bm25.sql`, [LICENSE](../LICENSE).
 
 **PostgreSQL built-in FTS**, docs of PostgreSQL 18 (18.6, 2026-08-13; 19 is at release candidate):
 [ranking](https://www.postgresql.org/docs/18/textsearch-controls.html), [indexes](https://www.postgresql.org/docs/18/textsearch-indexes.html), [GIN](https://www.postgresql.org/docs/18/gin.html),
