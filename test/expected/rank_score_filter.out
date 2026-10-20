@@ -800,9 +800,18 @@ HINT:  Call it on the ctid of a table with a sift index, in the query level that
 SELECT id FROM r WHERE body @@> 'dog' OR sift.score(ctid) > 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
-SELECT id FROM r WHERE body @@> ANY (ARRAY['dog', 'fox']) AND sift.score(ctid) > 1;
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+SELECT count(*) FROM r WHERE body @@> ANY (ARRAY['dog', 'fox']) AND sift.score(ctid) > 1;
+ count 
+-------
+    30
+(1 row)
+
+SELECT count(*) FROM r WHERE body @@> 'dog OR fox' AND sift.score(ctid) > 1;
+ count 
+-------
+    30
+(1 row)
+
 SELECT id FROM r WHERE body @@> 'dog' AND EXISTS (SELECT 1 WHERE sift.score(r.ctid) > 1 OFFSET 0);
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.

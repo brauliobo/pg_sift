@@ -115,8 +115,10 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
 - **`ALTER INDEX ... SET/RESET`** of `k1`, `b` or an analyzer option (`stemmer`, `fields`, `analyzer`, `prefix_index`, folding)
   needs a `REINDEX`. Until then queries and inserts on the table fail ("built with other analyzer options"), and the statement warns about
   it. To change them without downtime build the new index with `CREATE INDEX CONCURRENTLY` and drop the old one.
-- **`ANY (array)`**: ``col @@> ANY (ARRAY['a', 'b'])`` is an OR of the elements through a bitmap scan; it has no ranked scan, so
-  `sift.score()` cannot be used with it (write the OR in the query text: `col @@> 'a OR b'`).
+- **`ANY (array)`**: ``col @@> ANY (ARRAY['a', 'b'])`` is the OR of the elements, scanned and scored like ``col @@> 'a OR b'``
+  (`sift.score()`, `ORDER BY`, `LIMIT` and `count(*)` work). A NULL element is skipped; a NULL or empty array matches no rows. A list with no
+  score or order that is estimated above 100,000 rows (after a `LIMIT`) is left to the bitmap scan, which was as fast or faster there
+  on a 1,000,000-row table ([docs/results/any-array.tsv](results/any-array.tsv)).
 - **`FOR UPDATE`, `UPDATE`, `DELETE`, `MERGE`**: matching works through a bitmap scan; `sift.score()` in those statements is an error
   (rank in a `SELECT` and change the rows by key).
 - **Indexes beyond 2^31 blocks (16 TB).** The orphan sweep and `sift.verify` collect block numbers in PostgreSQL `Bitmapset`s, which stop at

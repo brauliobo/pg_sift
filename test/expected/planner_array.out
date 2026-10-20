@@ -1,4 +1,6 @@
--- @@> against an array (ANY, ALL, NOT ANY, prepared) plans and answers like the SQL it stands for
+-- @@> against an array (ANY, ALL, NOT ANY, prepared) plans and answers like the SQL it stands for: ANY is one scan of the OR of its queries
+-- (a SiftScan, a SiftCount, the score), the bitmap scan with one index scan per element stays as sift.enable_scan = off; array_any_score
+-- tests the scores and the ranking
 CREATE EXTENSION pg_sift;
 CREATE TABLE a (id int, body text);
 INSERT INTO a SELECT i, 'alpha beta ' || i || CASE WHEN i % 5 = 0 THEN ' gamma' ELSE '' END FROM generate_series(1, 2000) i;
@@ -6,13 +8,31 @@ CREATE INDEX a_idx ON a USING sift (body);
 VACUUM ANALYZE a;
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
-                        QUERY PLAN                        
-----------------------------------------------------------
- Bitmap Heap Scan on a
-   Recheck Cond: (body @@> ANY ('{7,gamma}'::text[]))
-   ->  Bitmap Index Scan on a_idx
-         Index Cond: (body @@> ANY ('{7,gamma}'::text[]))
-(4 rows)
+          QUERY PLAN          
+------------------------------
+ Custom Scan (SiftScan) on a
+   Index: a_idx
+   Query: '{7,gamma}'::text[]
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
+          QUERY PLAN          
+------------------------------
+ Custom Scan (SiftCount)
+   Index: a_idx
+   Query: '{7,gamma}'::text[]
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY 2 DESC LIMIT 3;
+             QUERY PLAN             
+------------------------------------
+ Limit
+   ->  Custom Scan (SiftScan) on a
+         Index: a_idx
+         Query: '{7,gamma}'::text[]
+         Order: score DESC
+         Limit Hint: 3
+(6 rows)
 
 -- planning only: ALL and NOT ANY are not index quals, their plan depends on the server version
 DO $$ BEGIN
@@ -67,7 +87,48 @@ SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) AND body @@> '10
      1
 (1 row)
 
--- the same counts through a sequential scan
+-- the same counts through the bitmap scan (one index scan per element) and through a sequential scan
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+EXPLAIN (COSTS OFF) SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Bitmap Heap Scan on a
+   Recheck Cond: (body @@> ANY ('{7,gamma}'::text[]))
+   ->  Bitmap Index Scan on a_idx
+         Index Cond: (body @@> ANY ('{7,gamma}'::text[]))
+(4 rows)
+
+SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
+ count 
+-------
+   401
+(1 row)
+
+SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) AND body @@> 'beta';
+ count 
+-------
+   401
+(1 row)
+
+SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['nomatch']);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM a WHERE body @@> ANY ('{}'::text[]);
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) AND body @@> '10';
+ count 
+-------
+     1
+(1 row)
+
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SET enable_seqscan = on;
@@ -122,10 +183,44 @@ EXECUTE any_p(ARRAY['nomatch']);
      0
 (1 row)
 
+RESET sift.enable_scan;
+RESET sift.enable_count;
+DEALLOCATE any_p;
+PREPARE any_p(text[]) AS SELECT count(*) FROM a WHERE body @@> ANY ($1);
+EXPLAIN (COSTS OFF) EXECUTE any_p(ARRAY['7', 'gamma']);
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftCount)
+   Index: a_idx
+   Query: $1
+(3 rows)
+
+EXECUTE any_p(ARRAY['7', 'gamma']);
+ count 
+-------
+   401
+(1 row)
+
+EXECUTE any_p(ARRAY['nomatch']);
+ count 
+-------
+     0
+(1 row)
+
 RESET plan_cache_mode;
--- the score has no scan to come from: an array condition is a bitmap scan
+-- the score comes from the scan of the OR; with the bitmap scan there is none
+SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+ id 
+----
+  7
+  5
+ 10
+(3 rows)
+
+SET sift.enable_scan = off;
 SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+RESET sift.enable_scan;
 DROP TABLE a;
 DROP EXTENSION pg_sift;

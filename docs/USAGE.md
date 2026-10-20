@@ -33,7 +33,7 @@ SELECT id FROM docs WHERE body @@> '{case clip squeaky}';             -- any of 
 SELECT id FROM docs WHERE body @@> '"friendly support"';              -- phrase: 2, 5
 SELECT id FROM docs WHERE body @@> 'batt* OR sq?eaky OR /sq.*y/ OR frendly~1';  -- prefix, wildcard, regex, fuzzy
 SELECT id FROM docs WHERE body @@> '(case OR clip) AND friendly^3';   -- grouping and boost
-SELECT id FROM docs WHERE body @@> ANY (ARRAY['case', 'clip']);       -- OR of several queries, a bitmap scan (no sift.score)
+SELECT id FROM docs WHERE body @@> ANY (ARRAY['case', 'clip']);       -- OR of several queries, same as 'case OR clip' (scored, counted)
 ```
 
 ## Ranking, filters and joins
@@ -467,8 +467,8 @@ its own docker container.
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
   inserted since the build, and phrases under `NOT`.
 - `sift.score()` in `WHERE` is only a comparison with a constant (`>`, `>=`, `<`, `<=`); any other use is an error, read the score from a subquery
-  to filter on it. It is not available with `@@> ANY (array)` (write
-  the OR in the query text), nor in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
+  to filter on it. It works with `@@> ANY (array)` (the OR of its
+  queries, scored like the same OR in one query text), but not in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
 - Under `SERIALIZABLE` a sift scan locks the whole relation (the index access method has no finer predicate locks), so concurrent writers
   can make a serializable transaction fail with `40001`: retry.
 - Row-level security and security barrier views: a role under a policy gets no ranked scan, no `count(*)` pushdown and no index estimate

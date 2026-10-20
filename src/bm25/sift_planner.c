@@ -28,6 +28,7 @@
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "utils/array.h"
 #include "utils/float.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -102,6 +103,41 @@ sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
 	return true;
 }
 
+/*
+ * `key @@> ANY (array)` of the index: the clause is the OR of its elements' queries, which the scan evaluates as one query (the
+ * ranker scores it as the OR written in the query text). *array is the array operand. ALL and NOT are not an OR of matches.
+ */
+static bool
+sift_match_any_clause(Node *clause, IndexOptInfo *index, Expr **array)
+{
+	ScalarArrayOpExpr *sa;
+	Node	   *rhs;
+
+	if (IsA(clause, RestrictInfo))
+	{
+		if (!restriction_is_securely_promotable((RestrictInfo *) clause, index->rel))
+			return false;
+		clause = (Node *) ((RestrictInfo *) clause)->clause;
+	}
+	if (!IsA(clause, ScalarArrayOpExpr))
+		return false;
+	sa = (ScalarArrayOpExpr *) clause;
+	if (!sa->useOr || sa->opno != sift_catalog()->match_op)
+		return false;
+	rhs = lsecond(sa->args);
+	if (!sift_index_matches_key(index, linitial(sa->args)) || contain_var_clause(rhs) || contain_volatile_functions(rhs))
+		return false;
+	*array = (Expr *) rhs;
+	return true;
+}
+
+/* A qual the scan answers: a query, or an array of queries ORed */
+static bool
+scan_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
+{
+	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query);
+}
+
 bool
 sift_is_score_expr(Node *expr, Index relid, bool *is_max)
 {
@@ -125,17 +161,49 @@ sift_is_score_expr(Node *expr, Index relid, bool *is_max)
 	return true;
 }
 
-/* Query texts of the constant queries; false when one is not a constant */
+/* Does the operand hold an array of queries (an ANY qual) rather than one query text? */
 static bool
-const_queries(List *queries, text ***texts, int *ntexts)
+is_query_array(Node *arg)
 {
-	*texts = palloc(list_length(queries) * sizeof(text *));
-	*ntexts = 0;
+	return OidIsValid(get_element_type(exprType(arg)));
+}
+
+/* The queries of the constant operands, an array's non-NULL elements as one source; false when one is not a constant or an array has no element */
+static bool
+const_queries(List *queries, SiftQuerySrc **srcs, int *nsrcs)
+{
+	*srcs = palloc(list_length(queries) * sizeof(SiftQuerySrc));
+	*nsrcs = 0;
 	foreach_ptr(Node, arg, queries)
 	{
+		SiftQuerySrc *src = &(*srcs)[(*nsrcs)++];
+
+		while (IsA(arg, RelabelType))
+			arg = (Node *) ((RelabelType *) arg)->arg;
 		if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
 			return false;
-		(*texts)[(*ntexts)++] = DatumGetTextPP(((Const *) arg)->constvalue);
+		if (is_query_array(arg))
+		{
+			ArrayType  *arr = DatumGetArrayTypeP(((Const *) arg)->constvalue);
+			Datum	   *elems;
+			bool	   *nulls;
+			int			n;
+
+			deconstruct_array(arr, ARR_ELEMTYPE(arr), -1, false, TYPALIGN_INT, &elems, &nulls, &n);
+			src->texts = palloc(n * sizeof(text *));
+			src->ntexts = 0;
+			src->any = true;
+			for (int i = 0; i < n; i++)
+				if (!nulls[i])
+					src->texts[src->ntexts++] = DatumGetTextPP(elems[i]);
+			if (src->ntexts == 0)
+				return false;
+			continue;
+		}
+		src->texts = palloc(sizeof(text *));
+		src->texts[0] = DatumGetTextPP(((Const *) arg)->constvalue);
+		src->ntexts = 1;
+		src->any = false;
 	}
 	return true;
 }
@@ -169,19 +237,19 @@ typedef struct IndexWork
 static void
 index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 {
-	text	  **texts;
-	int			ntexts;
+	SiftQuerySrc *srcs;
+	int			nsrcs;
 	double		random_cost,
 				seq_cost,
 				dict_pages;
 	Relation	index;
 
-	w->known = queries != NIL && const_queries(queries, &texts, &ntexts);
+	w->known = queries != NIL && const_queries(queries, &srcs, &nsrcs);
 	w->cost = w->dict_cost = 0;
 	if (!w->known)
 		return;
 	index = index_open(indexoid, AccessShareLock);
-	sift_estimate_cached(index, texts, ntexts, &w->est);
+	sift_estimate_cached_src(index, srcs, nsrcs, &w->est);
 	index_close(index, AccessShareLock);
 	get_tablespace_page_costs(tablespace, &random_cost, &seq_cost);
 	dict_pages = w->est.terms * DICT_PAGES_PER_TERM;
@@ -241,7 +309,7 @@ split_quals(RelOptInfo *rel, IndexOptInfo *ii, ScanCand *c)
 	{
 		Expr	   *q;
 
-		if (sift_match_clause((Node *) rinfo, ii, &q))
+		if (scan_match_clause((Node *) rinfo, ii, &q))
 			c->queries = lappend(c->queries, q);
 		else
 			c->residual = lappend(c->residual, rinfo);
@@ -565,6 +633,36 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost
 	scan_cost_docs(root, rel, c, sc->idx.known ? sc->idx.est.docs : ranked ? rel->tuples * UNKNOWN_QUERY_SEL : rel->rows, sc);
 	/* rows holds the default match fraction when the query is unknown: the quals' own selectivity is what passes */
 	sc->pass = sc->idx.known || !ranked ? Min(rel->rows / sc->docs, 1.0) : clauselist_selectivity(root, c->residual, rel->relid, JOIN_INNER, NULL);
+}
+
+/* Does an index qual hold an array of queries (an ANY qual)? */
+static bool
+has_query_array(ScanCand *c)
+{
+	foreach_ptr(Node, q, c->queries)
+		if (is_query_array(q))
+			return true;
+	return false;
+}
+
+/*
+ * The most rows of an unscored match list of an ANY qual that the unordered scan takes. Past it PostgreSQL's bitmap heap scan, which
+ * its parallel workers share, is the faster plan (a full list of 133,000 to 637,000 of 1,000,000 narrow rows took the scan 1.3 to 1.45
+ * times as long, serial; up to 28,000 matches, or 45,000 of 50,000 wide rows, it is as fast or faster: CHANGELOG.md), so the scan is
+ * not offered, as before. A LIMIT that stops it earlier counts, and then the scan is the plan (10 to 60 times faster: the bitmap
+ * is built whole before its first row), as is the count, which never reads the rows.
+ */
+#define ANY_LIST_MAX_ROWS		100000
+
+static bool
+any_list_too_long(PlannerInfo *root, ScanCand *c, const ScanCost *sc)
+{
+	double		rows = sc->docs;
+	int64		k = scan_limit(root, false);
+
+	if (!has_query_array(c))
+		return false;
+	return (k > 0 ? Min(rows, (double) k) : rows) > ANY_LIST_MAX_ROWS;
 }
 
 /* ko: the leading sort keys the scan sorts by, NULL for none; the path's private list is SIFT_NPRIV fields, then the queries, then the keys' expressions */
@@ -997,6 +1095,7 @@ has_match_clause(RelOptInfo *rel)
 		Node	   *clause = (Node *) rinfo->clause;
 
 		if ((IsA(clause, OpExpr) && ((OpExpr *) clause)->opno == cat->match_op) ||
+			(IsA(clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) clause)->opno == cat->match_op) ||
 			(IsA(clause, FuncExpr) && (((FuncExpr *) clause)->funcid == cat->match_func ||
 									   ((FuncExpr *) clause)->funcid == cat->match_idx_func)))
 			return true;
@@ -1253,6 +1352,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter_looked = true;
 		}
 		scan_est(root, rel, &c, mode, k, filter, &est);
+		if (mode == SIFT_MODE_UNORDERED && any_list_too_long(root, &c, &est.sc))
+			continue;
 		if (keyed)
 		{
 			CustomPath *cp = keyed_path(root, rel, &c, &est, &ko, query_limit(root));
@@ -1507,7 +1608,7 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	{
 		Expr	   *q;
 
-		if (sift_match_clause((Node *) rinfo, ii, &q))
+		if (scan_match_clause((Node *) rinfo, ii, &q))
 			continue;
 		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
 			cuts = lappend(cuts, rinfo);

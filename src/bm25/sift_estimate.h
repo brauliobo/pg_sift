@@ -9,5 +9,6 @@
 
 /* sift_eval_estimate, with the last few answers of the backend kept */
 extern void sift_estimate_cached(Relation index, text **queries, int nqueries, SiftEstimate *est);
+extern void sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est);
 
 #endif							/* SIFT_ESTIMATE_H */
