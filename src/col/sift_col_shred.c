@@ -166,20 +166,15 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 		add_column(a, at, gd->cols[i], gid, LEAF_CHILD_COL, g);
 }
 
+/* The adapter of a paths specification over the first natts attributes of desc (the jsonb ones are the columns it may name) */
 SiftColShredAdapter *
-sift_col_shred_create(MemoryContext mcxt, Relation index)
+sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const char *paths)
 {
-	const char *paths = sift_col_options_paths(index);
-	MemoryContext old;
-	SiftColShredAdapter *a;
-	TupleDesc	desc = RelationGetDescr(index);
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftColShredAdapter *a = palloc0(sizeof(SiftColShredAdapter));
 	const SiftShredSpec *spec;
 
-	if (paths[0] == '\0')
-		return NULL;
-	old = MemoryContextSwitchTo(mcxt);
-	a = palloc0(sizeof(SiftColShredAdapter));
-	a->natts = IndexRelationGetNumberOfKeyAttributes(index);
+	a->natts = natts;
 	a->attr = palloc0((a->natts + 1) * sizeof(ShredAttr));
 	for (int i = 1; i <= a->natts; i++)
 		if (TupleDescAttr(desc, i - 1)->atttypid == JSONBOID)
@@ -202,6 +197,16 @@ sift_col_shred_create(MemoryContext mcxt, Relation index)
 	a->sh = sift_shred_create(spec, NULL, true);
 	MemoryContextSwitchTo(old);
 	return a;
+}
+
+SiftColShredAdapter *
+sift_col_shred_create(MemoryContext mcxt, Relation index)
+{
+	const char *paths = sift_col_options_paths(index);
+
+	if (paths[0] == '\0')
+		return NULL;
+	return sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
 }
 
 int
