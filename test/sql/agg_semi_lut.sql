@@ -162,3 +162,10 @@ INSERT INTO dim_b SELECT 5, 20000 + i, NULL FROM generate_series(1, 300) i;
 UPDATE dim_b SET deleted_at = now() WHERE group_id = 3 AND dim_a_id < 100;
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id IN (3, 5) AND deleted_at IS NULL) GROUP BY kind$$);
 ROLLBACK;
+
+DEALLOCATE ALL;
+DROP FUNCTION same_group(int);
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, dim_b, dims, codes, holidays, dim_b8, dim_b_nn, nothing, sparse;
+DROP EXTENSION pg_sift;
