@@ -78,6 +78,41 @@ CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TA
 	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
 $$;
 
+-- Compare execution with the stored dimension intersection, independently of physical unit packing.
+-- Function-local settings also restore the changes made by pa_rows on return.
+CREATE FUNCTION pa_contract(idx regclass, q text, two_keys bool)
+RETURNS TABLE (inventory bool, visible bool, used bool, same bool) LANGUAGE plpgsql
+SET sift.agg_preagg = on SET sift.enable_agg = on SET enable_seqscan = off AS $$
+DECLARE
+	stored bigint; eligible bigint; planned int; answered int; l text; siftagg bool := false;
+	a text; b text; c text;
+BEGIN
+	SELECT count(*) > 0 AND count(*) = (SELECT units FROM sift.col_index_info(idx)) AND
+	       count(DISTINCT (segment, sb)) = count(*) AND
+	       bool_and((segment IS NOT NULL AND sb IS NOT NULL AND rows > 0) IS TRUE),
+	       bool_and(exact IS TRUE), count(*)
+	INTO inventory, visible, stored FROM sift.col_unit_agg(idx, 'id');
+	WITH kind AS (SELECT DISTINCT segment, sb FROM sift.col_unit_hist(idx, 'items[].kind') WHERE exact IS TRUE),
+	     nums AS (SELECT DISTINCT segment, sb FROM sift.col_unit_hist(idx, 'items[].n') WHERE exact IS TRUE)
+	SELECT count(*) INTO eligible FROM kind k
+	WHERE NOT two_keys OR EXISTS (SELECT 1 FROM nums n WHERE (n.segment, n.sb) = (k.segment, k.sb));
+	-- Capture counters before pa_rows changes either setting; missing counters must fail.
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		siftagg := siftagg OR l LIKE '%Custom Scan (SiftAgg)%';
+		planned := coalesce(substring(l from '^\s*Units: (\d+)')::int, planned);
+		answered := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, answered);
+	END LOOP;
+	used := (siftagg AND planned = stored AND answered = eligible) IS TRUE;
+	a := pa_rows(q, true, true);
+	b := pa_rows(q, false, true);
+	c := pa_rows(q, false, false);
+	same := (a IS NOT NULL AND b IS NOT NULL AND c IS NOT NULL AND
+	         a NOT LIKE 'ERROR:%' AND b NOT LIKE 'ERROR:%' AND c NOT LIKE 'ERROR:%' AND a = b AND b = c) IS TRUE;
+	inventory := inventory IS TRUE;
+	visible := visible IS TRUE;
+	RETURN NEXT;
+END $$;
+
 -- absent, null and empty arrays, objects with missing and null members; in fixed id ranges what a unit cannot hold: floats too large for the sum of
 -- their squares (3000..3003), more than 256 distinct kinds in a unit (20000..20400)
 INSERT INTO ae
@@ -121,13 +156,47 @@ SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.co
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');
 
 -- 1. built, every page all-visible
+-- Freeze automatic rollup selection before any query can enqueue a refresh of ae.
+SET sift.col_rollup_on_demand = off;
 SELECT * FROM pa_check('ac');
-SELECT * FROM pa_check('ae');
+SELECT * FROM pa_check('ae') WHERE n <> 16;
+SELECT c.* FROM pa_q q, LATERAL pa_contract('ae_col', format(q.q, 'ae'), true) c WHERE q.n = 16;
+RESET sift.col_rollup_on_demand;
 SELECT * FROM pa_sum('ao');
 SELECT * FROM pa_sum('a3');
 SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
 SELECT count(DISTINCT sb) FILTER (WHERE nn IS NULL) AS units_without_n, count(DISTINCT sb) FILTER (WHERE nn IS NOT NULL) AS units_with_n
 FROM sift.col_unit_hist('ab_col', 'items[].kind', 'items[].n');
+
+-- Small automatic cubes: both dimensions fit; 65 distinct n values exceed the 64-key preselection cap.
+-- The only element leaves are kind and n; short text/small integers leave ample encoding room.
+SET sift.col_rollup_on_demand = off;
+CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
+FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
+CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}');
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+SELECT count(*) = 4 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 2 AS nums
+FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
+SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
+       (SELECT count(DISTINCT (segment, sb)) FROM sift.col_unit_hist('ap_col', 'items[].kind')) = 1 AS kind_selected,
+       (SELECT count(DISTINCT (segment, sb)) FROM sift.col_unit_hist('ap_col', 'items[].n')) = 1 AS n_selected;
+SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, e.n, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1, 2', true);
+SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1', false);
+TRUNCATE ap;
+INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', CASE WHEN n % 2 = 0 THEN 'a' ELSE 'b' END, 'n', n) ORDER BY n)
+FROM generate_series(1, 65) n;
+REINDEX INDEX ap_col;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+SELECT count(*) = 65 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 65 AS nums
+FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
+SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
+       (SELECT count(DISTINCT (segment, sb)) FROM sift.col_unit_hist('ap_col', 'items[].kind')) = 1 AS kind_selected,
+       (SELECT count(*) FROM sift.col_unit_hist('ap_col', 'items[].n')) = 0 AS n_excluded;
+SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, e.n, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1, 2', true);
+SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1', false);
+DROP TABLE ap;
+RESET sift.col_rollup_on_demand;
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
@@ -187,6 +256,6 @@ SELECT * FROM pa_sum('a3');
 SELECT * FROM pa_sum('ao');
 
 DROP TABLE ae, ac, ao, a3, ab, pa_q;
-DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int);
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int), pa_contract(regclass, text, bool);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
