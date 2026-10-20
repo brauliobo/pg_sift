@@ -273,10 +273,10 @@ col_paths() {
 	END { print out }' <<<"$COL_PATHS"
 }
 
-# fixture_tables: the fixture tables (and the partitions) rewritten into sift_table, the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
+# fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd orders_part_2022 orders_part_2023 orders_part_2024 orders_part_2025 t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags; do
+	for t in orders orders_odd t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
 		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
@@ -285,6 +285,7 @@ fixture_tables() {
 		done
 		sql -c "VACUUM FULL $t" || return 1
 	done
+	for t in orders_part t_part t_part_ni t_part_op t_inh; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
 }
 
 fixture_col_indexes() {
@@ -399,6 +400,7 @@ fixtures_suite() {
 # ---------- analytics ----------
 analytics_suite() {
 	local fl col
+	if [[ -n $TBL ]]; then skip "analytics: the corpus builds a column index, not a sift_table"; return 0; fi
 	if [[ ! -f $ANALYTICS_DIR/gen.sql ]]; then skip "analytics: no data directory $ANALYTICS_DIR (SIFT_ANALYTICS_DIR)"; return 0; fi
 	log "analytics: $ROWS orders in $STORES stores ($ANALYTICS_DIR)"
 	fresh_db "${DB_PREFIX}_ana"
