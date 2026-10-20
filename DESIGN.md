@@ -741,7 +741,7 @@ over the host's storage, and the optional collaborators it does not need as stub
 host's front end: option parsing, the write path (feed `sift_segw_*` in key order: `sqlite/build.c` is the smallest example), and the merge driver
 (`sift_merge_pick` chooses, the host rewrites). (4) Run the equivalence tests: scores must be bit-equal to PostgreSQL's evaluator on the same corpus
 (`sqlite/bench/compare_pg.py`, `mariadb/tools/compare.py`). `mariadb/host/` is the example of a host whose store is a directory of mapped files, and of one that keeps its own
-regular expression matcher (`host_regex.c`) to match PostgreSQL's advanced regular expressions where the C library's would not.
+regular expression matcher (`host/regex.c`) to match PostgreSQL's advanced regular expressions where the C library's would not.
 
 **Still two copies.** The SQLite in-memory write buffer (`SqInv` in `sqlite/build.c`, any key order, deletes) against `SiftInvBuf` (ascending keys) and the
 highlight/snippet/facet code are not unified; why, and what it would take, is in [sqlite/DESIGN.md](sqlite/DESIGN.md#what-is-not-shared-yet). The heap build, parallel workers
