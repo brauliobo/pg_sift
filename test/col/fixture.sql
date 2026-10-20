@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -136,6 +136,16 @@ CREATE TABLE dim_customer (customer_id integer, segment text);
 INSERT INTO dim_customer SELECT i, (ARRAY['retail','trade','vip'])[1 + i % 3] FROM generate_series(1, 500) i WHERE i % 11 <> 0;
 CREATE TABLE dim_pair (source text, lang text, band integer);
 INSERT INTO dim_pair SELECT s, l, hashtext(s || l) & 3 FROM (SELECT DISTINCT source AS s, lang AS l FROM orders) d WHERE hashtext(s || l) % 3 <> 0;
+
+-- the preserved side of outer joins (ps_*): a fact with two keys (NULLs among them), its dimension with a key of two rows, a pair with no fact, NULL keys,
+-- and an empty twin of the fact
+CREATE TABLE pf_fact (id integer PRIMARY KEY, a integer, b integer, t text, v integer, f float8);
+INSERT INTO pf_fact SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 7 END, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 5 END, (ARRAY['x', 'y', 'z'])[1 + i % 3],
+	CASE WHEN i % 13 = 0 THEN NULL ELSE i % 13 END, i / 7.0 FROM generate_series(1, 600) i;
+CREATE TABLE pf_fact_empty (LIKE pf_fact INCLUDING ALL);
+CREATE TABLE pf_dim (a integer, b integer, label text, w float8);
+INSERT INTO pf_dim SELECT a, b, 'l' || (a + b) % 4, a * 10 + b FROM generate_series(0, 9) a, generate_series(0, 4) b WHERE (a + b) % 6 <> 5;
+INSERT INTO pf_dim VALUES (1, 1, 'dup', 0.5), (NULL, 1, 'null a', 1), (2, NULL, 'null b', 2), (NULL, NULL, 'null both', NULL);
 
 -- the keys of the metrics of a source -> metric and aspect (about one in seven has no row: the split of the key is the fallback)
 CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, derived_metric text, mapped_aspect text);
