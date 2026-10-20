@@ -1,0 +1,14 @@
+# date 2026-10-20 00:32 load 4.81 6.34 10.04 -> 4.81 6.34 10.04 reps 5
+design	query	arg	mode	plan	median_ms	min_ms	runs	result_ok
+5	attr_semi_join	country	normal	Join	61.06	58.54	5	True
+5	attr_semi_join	country	default	SiftAgg	9.11	8.9	5	True
+5	attr_column-events_dn_u	country	normal	Seq	41.38	40.74	5	True
+5	attr_column-events_dn_u	country	default	SiftAgg	3.75	3.45	5	True
+5	attr_column-events_dn	country	normal	Seq	41.48	40.85	5	True
+5	attr_column-events_dn	country	default	SiftAgg	1.91	1.82	5	True
+5	attr_semi_join	category	normal	Join	64.88	63.36	5	True
+5	attr_semi_join	category	default	SiftAgg	10.93	10.44	5	True
+5	attr_column-events_dn_u	category	normal	Seq	44.08	43.47	5	True
+5	attr_column-events_dn_u	category	default	SiftAgg	6.02	5.92	5	True
+5	attr_column-events_dn	category	normal	Seq	44.67	43.93	5	True
+5	attr_column-events_dn	category	default	SiftAgg	6.82	6.44	5	True

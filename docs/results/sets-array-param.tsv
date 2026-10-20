@@ -1,30 +1,44 @@
-# date 2026-10-19 22:04 load 4.87 4.64 4.99 -> 5.04 4.68 5.00 reps 5
+# date 2026-10-20 00:35 load 8.72 7.71 9.89 -> 8.52 7.70 9.86 reps 5
 design	query	arg	mode	plan	median_ms	min_ms	runs	result_ok
-1	set_literal	100	normal		2.41	2.16	5	True
-1	set_literal	100	default		2.61	2.16	5	True
-1	set_array_generic	100	planner-guess	Bitmap	2.74	1.9	5	True
-1	set_array_generic	100	no-index-scans	SiftAgg	4.75	4.37	5	True
-1	set_array_generic	100	default	SiftAgg	4.75	4.18	5	True
-1	set_array_generic	100	normal	Bitmap	2.34	2.1	5	True
-1	set_array_custom	100	default	Bitmap	2.62	2.27	5	True
-1	set_literal	1000	normal		8.77	8.43	5	True
-1	set_literal	1000	default		5.77	5.37	5	True
-1	set_array_generic	1000	planner-guess	Bitmap	8.81	7.84	5	True
-1	set_array_generic	1000	no-index-scans	SiftAgg	4.61	4.41	5	True
-1	set_array_generic	1000	default	SiftAgg	4.57	4.29	5	True
-1	set_array_generic	1000	normal	Bitmap	8.46	7.54	5	True
-1	set_array_custom	1000	default	SiftAgg	5.54	5.2	5	True
-1	set_literal	10000	normal		71.45	67.96	5	True
-1	set_literal	10000	default		16.85	16.56	5	True
-1	set_array_generic	10000	planner-guess	Bitmap	32.39	31.76	5	True
-1	set_array_generic	10000	no-index-scans	SiftAgg	4.95	4.65	5	True
-1	set_array_generic	10000	default	SiftAgg	5.24	4.59	5	True
-1	set_array_generic	10000	normal	Bitmap	31.63	31.13	5	True
-1	set_array_custom	10000	default	SiftAgg	15.5	15.01	5	True
-1	set_literal	100000	normal		151.72	150.38	5	True
-1	set_literal	100000	default		128.23	126.37	5	True
-1	set_array_generic	100000	planner-guess	Bitmap	98.51	96.46	5	True
-1	set_array_generic	100000	no-index-scans	SiftAgg	10.12	10.04	5	True
-1	set_array_generic	100000	default	SiftAgg	10.15	9.97	5	True
-1	set_array_generic	100000	normal	Bitmap	95.89	94.99	5	True
-1	set_array_custom	100000	default	SiftAgg	116.41	111.55	5	True
+1	set_literal	100	normal		2.62	1.96	5	True
+1	set_literal	100	default		3.09	2.33	5	True
+1	set_array_generic	100	planner-guess	Bitmap	2.72	2.46	5	True
+1	set_array_generic	100	no-index-scans	SiftAgg	5.28	4.46	5	True
+1	set_array_generic	100	default	SiftAgg	5.0	4.69	5	True
+1	set_array_generic	100	normal	Bitmap	2.99	2.74	5	True
+1	set_array_custom	100	default	Bitmap	2.99	2.55	5	True
+1	set_literal	1000	normal		9.6	8.13	5	True
+1	set_literal	1000	default		5.97	5.94	5	True
+1	set_array_generic	1000	planner-guess	Bitmap	10.34	9.08	5	True
+1	set_array_generic	1000	no-index-scans	SiftAgg	5.04	4.51	5	True
+1	set_array_generic	1000	default	SiftAgg	4.82	4.26	5	True
+1	set_array_generic	1000	normal	Bitmap	9.97	9.38	5	True
+1	set_array_custom	1000	default	SiftAgg	6.03	5.1	5	True
+1	set_literal	2000	normal		65.07	62.56	5	True
+1	set_literal	2000	default		7.4	6.66	5	True
+1	set_array_generic	2000	planner-guess	Bitmap	15.03	14.18	5	True
+1	set_array_generic	2000	no-index-scans	SiftAgg	4.84	4.51	5	True
+1	set_array_generic	2000	default	SiftAgg	5.14	4.82	5	True
+1	set_array_generic	2000	normal	Bitmap	14.96	14.0	5	True
+1	set_array_custom	2000	default	SiftAgg	6.88	6.78	5	True
+1	set_literal	5000	normal		65.28	64.38	5	True
+1	set_literal	5000	default		11.4	10.97	5	True
+1	set_array_generic	5000	planner-guess	Bitmap	30.21	28.46	5	True
+1	set_array_generic	5000	no-index-scans	SiftAgg	5.24	5.23	5	True
+1	set_array_generic	5000	default	SiftAgg	5.5	4.89	5	True
+1	set_array_generic	5000	normal	Bitmap	30.09	29.4	5	True
+1	set_array_custom	5000	default	SiftAgg	10.58	10.39	5	True
+1	set_literal	10000	normal		79.14	67.32	5	True
+1	set_literal	10000	default		17.83	17.48	5	True
+1	set_array_generic	10000	planner-guess	Bitmap	32.36	29.86	5	True
+1	set_array_generic	10000	no-index-scans	SiftAgg	5.8	5.01	5	True
+1	set_array_generic	10000	default	SiftAgg	5.57	5.44	5	True
+1	set_array_generic	10000	normal	Bitmap	33.9	31.66	5	True
+1	set_array_custom	10000	default	SiftAgg	15.79	15.41	5	True
+1	set_literal	100000	normal		155.32	150.51	5	True
+1	set_literal	100000	default		129.76	128.81	5	True
+1	set_array_generic	100000	planner-guess	Bitmap	100.45	98.21	5	True
+1	set_array_generic	100000	no-index-scans	SiftAgg	11.27	10.5	5	True
+1	set_array_generic	100000	default	SiftAgg	10.42	9.93	5	True
+1	set_array_generic	100000	normal	Bitmap	103.61	100.4	5	True
+1	set_array_custom	100000	default	SiftAgg	116.22	113.85	5	True

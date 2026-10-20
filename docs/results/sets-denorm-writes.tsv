@@ -1,0 +1,18 @@
+measure	case	value	unit
+entities	country_id = 7	4844	entities
+wal	update entities (dimension)	7508472	bytes
+wal	update events_dn_u (denormalised copy)	358168392	bytes
+rows	events updated in events_dn_u	66168	rows
+wal_ratio	denormalised / dimension (events_dn_u)	48	x
+wal	update events_dn (denormalised copy)	74809200	bytes
+rows	events updated in events_dn	66168	rows
+wal_ratio	denormalised / dimension (events_dn)	10	x
+wal	insert 1000 events (heap, no copy)	6292440	bytes
+wal	insert 1000 events (denormalised)	6321248	bytes
+units	country_id = 7 on events_dn	7	units
+units_pruned	country_id = 7 on events_dn	106	units
+units	country_id = 7 on events_dn_u	113	units
+units_pruned	country_id = 7 on events_dn_u	0	units
+units	after 3% late rows (insertion order), country_id = 7	9	units
+units_pruned	after 3% late rows (insertion order), country_id = 7	106	units
+late_rows	rows in the late tail	90585	rows

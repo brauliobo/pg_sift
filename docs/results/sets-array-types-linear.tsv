@@ -1,0 +1,23 @@
+# the same cells before the array of a PostgreSQL expression filter was hashed (the executor searched it linearly for each distinct value); medians of 5 runs, the first script of bench/sets/types.py, host load 6-11
+type	elements	normal_ms	pushed_ms	ratio	plan	same_answer
+int2	1000	33.493	2.947	11.37	SiftAgg	True
+int2	2000	48.293	3.096	15.60	SiftAgg	True
+int2	5000	83.051	3.094	26.84	SiftAgg	True
+int4	1000	13.125	3.267	4.02	SiftAgg	True
+int4	2000	22.552	3.511	6.42	SiftAgg	True
+int4	5000	36.917	3.789	9.74	SiftAgg	True
+int8	1000	13.685	354.751	0.04	SiftAgg	True
+int8	2000	22.286	674.059	0.03	SiftAgg	True
+int8	5000	36.906	1664.448	0.02	SiftAgg	True
+text	1000	14.959	3098.973	0.00	SiftAgg	True
+text	2000	24.212	6688.556	0.00	SiftAgg	True
+text	5000	39.92	18402.74	0.00	SiftAgg	True
+date	1000	40.291	3.676	10.96	SiftAgg	True
+date	2000	57.261	3.615	15.84	SiftAgg	True
+date	5000	102.748	1.628	63.11	SiftAgg	True
+timestamp	1000	14.942	354.507	0.04	SiftAgg	True
+timestamp	2000	19.427	670.825	0.03	SiftAgg	True
+timestamp	5000	35.576	1595.211	0.02	SiftAgg	True
+timestamptz	1000	11.578	344.977	0.03	SiftAgg	True
+timestamptz	2000	18.97	670.163	0.03	SiftAgg	True
+timestamptz	5000	39.49	1625.259	0.02	SiftAgg	True
