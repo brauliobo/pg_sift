@@ -38,6 +38,7 @@
 ^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
+^\.coderabbit\.yaml$	-
 ^Formula/	-
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|LICENSE|NOTICE|\.gitignore)	-
 ^scripts/neutral\.denylist$	-
