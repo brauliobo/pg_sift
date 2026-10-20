@@ -56,6 +56,10 @@ Commands
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
   resume     `resume [ID]`: continue the unfinished run (the latest, or ID) from what is done: results of the same key are kept, the rest is measured; exit status 75 means a run was interrupted
   compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
+  sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
+             parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
+  extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
+             leaftypes fields buildcost gpu all (steps/extras.sh)
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
@@ -160,7 +164,7 @@ Environment
                     wait for that (default 60) before the batch runs marked NOISY; SIFT_QUIET_WINDOW avg10 | avg60 (scripts/quiet.sh)
   KEEP_DOWNLOADS=1  keep the raw downloads and engine tarballs after setup (removed by default); REFRESH_DATASETS=1, REBUILD_ENGINES=1: setup
                     converts / builds again what it finds up to date
-  SIFT_SRC          head | worktree: sift is built from the last commit or the tracked files (default worktree)
+  SIFT_SRC          head | worktree | ref:REF (a tag or commit, ref:v3.1.0): sift is built from the last commit, the tracked files (default) or that ref
   SIFT_REF          the git ref of sift_ref (default v1.1.0)
   BM25_PKG, BM25_SRC  pgx-bm25 when it is not installed (it is a system package: pacman -S pgx-bm25): the Arch package to unpack, or the source tarball to build
   JOBS              parallel jobs of the engine builds (default 4)
@@ -643,7 +647,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store compare final resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store sets compare final resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -661,6 +665,8 @@ shift || true
 case $cmd in
   -h|--help|help) usage; exit 0 ;;
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
+  sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
+  extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac
 parse "$@"
 case $cmd in
