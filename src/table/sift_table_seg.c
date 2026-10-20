@@ -10,14 +10,22 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/table.h"
 #include "access/htup_details.h"
 #include "access/tupmacs.h"
 #include "access/xact.h"
+#include "catalog/namespace.h"
+#include "catalog/objectaddress.h"
+#include "catalog/pg_class.h"
+#include "utils/acl.h"
+#include "utils/fmgroids.h"
+#include "utils/inval.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "access/skey.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
@@ -31,6 +39,7 @@
 #include "utils/tuplestore.h"
 
 #include "sift_col_am.h"
+#include "sift_col_pg.h"
 #include "sift_col_seg.h"
 #include "sift_lane.h"
 #include "sift_maint.h"
@@ -48,6 +57,8 @@ struct SiftTblLayout
 	int			natts;
 	int		   *leaf;			/* [natts + 1] the leaf of attribute a, -1 for a dropped column */
 	int			exc;			/* the leaf of the exceptions */
+	SiftColShredAdapter *shred;	/* the declared paths of the jsonb columns (sift.table_set_paths), NULL when there are none */
+	int		   *first;			/* [natts + 1] the first leaf the shredder fills for attribute a */
 };
 
 static SiftColStore
@@ -66,16 +77,71 @@ att_store(Form_pg_attribute att, uint8 *scale)
 	return att->attbyval && (att->attlen == 1 || att->attlen == 2 || att->attlen == 4 || att->attlen == 8) ? SIFT_COLS_INT : SIFT_COLS_VAR;
 }
 
+/*
+ * The paths declared for the table's jsonb columns (sift.table_paths: one row per column, by name, the grammar of the sift_col `paths` option), joined; NULL
+ * when there are none or the extension has no such table yet. skip: a column whose row is replaced by `extra` (the check of a new declaration).
+ */
+static char *
+declared_paths(Relation rel, AttrNumber skip, const char *extra)
+{
+	Oid			nsp = get_namespace_oid("sift", true);
+	Oid			reloid = OidIsValid(nsp) ? get_relname_relid("table_paths", nsp) : InvalidOid;
+	StringInfoData spec;
+	Relation	pr;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tup;
+	char	   *specs[SIFT_COL_MAX_COLS] = {NULL};
+	TupleDesc	desc = RelationGetDescr(rel);
+
+	initStringInfo(&spec);
+	if (OidIsValid(reloid))
+	{
+		pr = table_open(reloid, AccessShareLock);
+		ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(rel)));
+		scan = systable_beginscan(pr, InvalidOid, false, GetTransactionSnapshot(), 1, &key);
+		while (HeapTupleIsValid(tup = systable_getnext(scan)))
+		{
+			bool		isnull;
+			Name		name = DatumGetName(heap_getattr(tup, 2, RelationGetDescr(pr), &isnull));
+
+			/* a column renamed, dropped or no longer jsonb since the declaration has no paths */
+			for (int a = 1; a <= Min(desc->natts, SIFT_COL_MAX_COLS); a++)
+			{
+				Form_pg_attribute att = TupleDescAttr(desc, a - 1);
+
+				if (a != skip && !att->attisdropped && att->atttypid == JSONBOID && namestrcmp(name, NameStr(att->attname)) == 0)
+					specs[a - 1] = TextDatumGetCString(heap_getattr(tup, 3, RelationGetDescr(pr), &isnull));
+			}
+		}
+		systable_endscan(scan);
+		table_close(pr, AccessShareLock);
+	}
+	if (extra && extra[0])
+		specs[skip - 1] = (char *) extra;
+	for (int a = 0; a < SIFT_COL_MAX_COLS; a++)
+		if (specs[a] && specs[a][0])
+			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", specs[a]);
+	return spec.len ? spec.data : NULL;
+}
+
 static SiftTblLayout *
-layout_build(Relation rel, MemoryContext cxt)
+layout_build_for(Relation rel, MemoryContext cxt, const char *paths)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 	SiftTblLayout *l = MemoryContextAllocZero(cxt, sizeof(SiftTblLayout));
-	SiftColDef *defs = palloc0((desc->natts + 1) * sizeof(SiftColDef));
+	int			npath = 0;
+	SiftColDef *defs;
 	int			n = 0;
 
 	l->natts = desc->natts;
 	l->leaf = MemoryContextAlloc(cxt, (desc->natts + 1) * sizeof(int));
+	l->first = MemoryContextAllocZero(cxt, (desc->natts + 1) * sizeof(int));
+	if (paths)
+		l->shred = sift_col_shred_create_for(cxt, desc, desc->natts, paths);
+	for (int a = 1; l->shred && a <= desc->natts; a++)
+		npath += sift_col_shred_nleaves(l->shred, a);
+	defs = palloc0((desc->natts + npath + 1) * sizeof(SiftColDef));
 	for (int a = 1; a <= desc->natts; a++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
@@ -96,6 +162,22 @@ layout_build(Relation rel, MemoryContext cxt)
 			defs[n].type = SIFT_COLT_OTHER;
 		n++;
 	}
+	for (int a = 1; l->shred && a <= desc->natts; a++)
+	{
+		int			k = sift_col_shred_nleaves(l->shred, a);
+
+		l->first[a] = n;
+		for (int i = 0; i < k; i++)
+		{
+			SiftColDef *d = &defs[n + i];
+
+			sift_col_shred_leaf(l->shred, a, i, d);
+			d->id = n + i;
+			d->attno = a;
+			d->parent = d->parent < 0 ? -1 : n + d->parent;
+		}
+		n += k;
+	}
 	l->exc = n;
 	defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_VAR,.attno = 0,.type = SIFT_COLT_BYTEA,.path = "exceptions"};
 	n++;
@@ -103,10 +185,16 @@ layout_build(Relation rel, MemoryContext cxt)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("a sift_table holds at most %d columns", SIFT_COL_MAX_COLS - 1),
-				 errdetail("Table \"%s\" has %d.", RelationGetRelationName(rel), n - 1)));
+				 errdetail("Table \"%s\" has %d%s.", RelationGetRelationName(rel), n - 1 - npath, npath ? " and its declared paths hold the rest" : "")));
 	l->schema = sift_cschema_create(cxt, defs, n);
 	pfree(defs);
 	return l;
+}
+
+static SiftTblLayout *
+layout_build(Relation rel, MemoryContext cxt)
+{
+	return layout_build_for(rel, cxt, declared_paths(rel, 0, NULL));
 }
 
 /* The column format minor of a group: sift.col_format_minor, but the version section of a group with unfrozen rows is minor 4 whatever it says */
@@ -134,7 +222,8 @@ layout_policy(Relation rel, const SiftTblLayout *l)
 
 	for (int i = 0; i < l->schema->ncols; i++)
 	{
-		const char *name = i == l->exc ? "exceptions" : NameStr(TupleDescAttr(RelationGetDescr(rel), l->schema->cols[i].attno - 1)->attname);
+		const SiftColDef *def = &l->schema->cols[i];
+		const char *name = i == l->exc ? "exceptions" : def->path[0] ? def->path : NameStr(TupleDescAttr(RelationGetDescr(rel), def->attno - 1)->attname);
 		const char *err = sift_cc_policy_for_column(sift_tbl_compression_spec, name, &pol[i]);
 
 		if (err)
@@ -149,6 +238,12 @@ layout_of(Relation rel, SiftTblRel *st)
 	if (st->layout == NULL)
 		st->layout = layout_build(rel, st->cxt);
 	return st->layout;
+}
+
+void
+sift_tbl_layout_adopt(Relation rel, SiftTblRel *st, Relation from)
+{
+	st->layout = layout_build_for(rel, st->cxt, declared_paths(from, 0, NULL));
 }
 
 void
@@ -388,6 +483,8 @@ row_in(const SiftTblLayout *l, TupleDesc desc, ItemPointer tid, const Datum *val
 		else
 			value_in(&l->schema->cols[l->leaf[a]], TupleDescAttr(desc, a - 1), values[a - 1], &row->val[l->leaf[a]], &exc);
 	}
+	if (l->shred)
+		sift_col_shred_row(l->shred, values, isnull, row, l->first, CurrentMemoryContext);
 	if (exc.len == 0)
 		row->val[l->exc].isnull = true;
 	else
@@ -433,6 +530,10 @@ struct SiftTblGroupCache
 	SiftTblGroupScan *fetch;	/* serves the TID fetches while the directory and the backend's xmin stay as they were */
 	uint32		fetch_version;
 	TransactionId fetch_xmin;
+	uint64		pkey;			/* path_zones: the segments pls was computed over */
+	SiftColLeafStats *pls;
+	struct PathWbuf *pwb;		/* path_wbuf_ovf: per write buffer */
+	int			npwb;
 };
 
 typedef struct UnitTids
@@ -766,7 +867,7 @@ src_map(GroupSrc *gs, int natts, MemoryContext cxt)
 
 		if (attno == 0)
 			gs->exc = i;
-		else if (attno <= natts)
+		else if (attno <= natts && !gs->schema->cols[i].path[0])
 			gs->leaf[attno] = i;
 	}
 }
@@ -1447,49 +1548,222 @@ seg_page(Relation rel, SiftTblSeg *seg, uint32 idx, Page copy)
 	return !(TBL_PAGE(copy)->flags & SIFT_TBL_PAGE_OVFDATA);
 }
 
+typedef void (*RowFn) (const SiftColRow *row, void *arg);
+
+/* The live rows of page p of the write buffer seg (copy: the page) as column rows, in rowcx, which the caller resets */
+static void
+page_rows(Relation rel, const SiftTblLayout *l, const SiftTblSeg *seg, uint32 p, Page copy, MemoryContext rowcx, RowFn fn, void *arg)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	Datum	   *values = palloc(desc->natts * sizeof(Datum));
+	bool	   *isnull = palloc(desc->natts * sizeof(bool));
+	BlockNumber vblock = seg->vbase + p;
+
+	for (uint32 off = 1; off <= TBL_PAGE(copy)->nrows; off++)
+	{
+		const SiftTblRec *rec = sift_tbl_page_rec(copy, seg->gen, off);
+		MemoryContext old = MemoryContextSwitchTo(rowcx);
+		ItemPointerData tid;
+		SiftColRow	row;
+		HeapTupleData tup;
+
+		if (rec != NULL && !(rec->flags & SIFT_TBL_REC_DEAD))
+		{
+			ItemPointerSet(&tid, vblock, off);
+			tup = *sift_tbl_rec_tuple(rel, rec, seg->gen, sift_key_from_tid(&tid));
+			heap_deform_tuple(&tup, desc, values, isnull);
+			row_in(l, desc, &tid, values, isnull, &row);
+			fn(&row, arg);
+		}
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(rowcx);
+	}
+	pfree(values);
+	pfree(isnull);
+}
+
+static void
+batch_add(const SiftColRow *row, void *arg)
+{
+	sift_cbatch_add(arg, row);
+}
+
 SiftColBatch *
 sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	TupleDesc	desc = RelationGetDescr(rel);
 	MemoryContext rowcx = AllocSetContextCreate(CurrentMemoryContext, "sift_table batch row", ALLOCSET_SMALL_SIZES);
 	SiftColBatch *b = sift_cbatch_create(mcxt, l->schema);
-	Datum	   *values = palloc(desc->natts * sizeof(Datum));
-	bool	   *isnull = palloc(desc->natts * sizeof(bool));
 	PGAlignedBlock copy;
 
 	sift_cbatch_reset(b, sb);
 	for (int i = 0; i < nseg; i++)
 		for (uint32 p = 0; p < seg[i].npages; p++)
-		{
-			BlockNumber vblock = seg[i].vbase + p;
-
-			if (vblock / SIFT_SB_PAGES != sb || !seg_page(rel, &seg[i], p, copy.data))
-				continue;
-			for (uint32 off = 1; off <= TBL_PAGE(copy.data)->nrows; off++)
-			{
-				const SiftTblRec *rec = sift_tbl_page_rec(copy.data, seg[i].gen, off);
-				MemoryContext old = MemoryContextSwitchTo(rowcx);
-				ItemPointerData tid;
-				SiftColRow	row;
-				HeapTupleData tup;
-
-				if (rec != NULL && !(rec->flags & SIFT_TBL_REC_DEAD))
-				{
-					ItemPointerSet(&tid, vblock, off);
-					tup = *sift_tbl_rec_tuple(rel, rec, seg[i].gen, sift_key_from_tid(&tid));
-					heap_deform_tuple(&tup, desc, values, isnull);
-					row_in(l, desc, &tid, values, isnull, &row);
-					sift_cbatch_add(b, &row);
-				}
-				MemoryContextSwitchTo(old);
-				MemoryContextReset(rowcx);
-			}
-		}
+			if ((seg[i].vbase + p) / SIFT_SB_PAGES == sb && seg_page(rel, &seg[i], p, copy.data))
+				page_rows(rel, l, &seg[i], p, copy.data, rowcx, batch_add, b);
 	MemoryContextDelete(rowcx);
-	pfree(values);
-	pfree(isnull);
 	return b;
+}
+
+/* ---------- the statistics of the declared paths ---------- */
+
+/* The values a path leaf cannot hold, which make a query that reads it keep the normal plan (SiftSrcStats.ovf) */
+typedef struct PathWbuf
+{
+	uint64		gen;
+	uint16	   *seen;			/* [npages] the rows each page held when it was last read, 0xFFFF before: a page fills while it is the target of a backend */
+	bool		ovf[SIFT_COL_MAX_COLS];
+} PathWbuf;
+
+typedef struct PathOvf
+{
+	const SiftColSchema *schema;
+	bool	   *ovf;
+} PathOvf;
+
+static void
+row_path_ovf(const SiftColRow *row, void *arg)
+{
+	const PathOvf *po = arg;
+
+	for (int c = 0; c < po->schema->ncols; c++)
+	{
+		const SiftColDef *def = &po->schema->cols[c];
+
+		if (def->attno == 0 || !def->path[0])
+			continue;
+		if (def->parent < 0)
+			po->ovf[c] |= row->val[c].overflow;
+		else
+			for (uint64 j = 0, n = row->val[def->parent].isnull ? 0 : row->val[def->parent].v.i; j < n; j++)
+				po->ovf[c] |= row->elem[c][j].overflow;
+	}
+}
+
+static PathWbuf *
+path_wbuf(SiftTblRel *st, const SiftTblSeg *seg)
+{
+	struct SiftTblGroupCache *c = gcache_of(st);
+	MemoryContext old;
+
+	for (int i = 0; i < c->npwb; i++)
+		if (c->pwb[i].gen == seg->gen)
+			return &c->pwb[i];
+	old = MemoryContextSwitchTo(st->cxt);
+	c->pwb = c->pwb ? repalloc(c->pwb, (c->npwb + 1) * sizeof(PathWbuf)) : palloc((c->npwb + 1) * sizeof(PathWbuf));
+	c->pwb[c->npwb] = (PathWbuf) {.gen = seg->gen,.seen = palloc(SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16))};
+	memset(c->pwb[c->npwb].seen, 0xFF, SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16));
+	MemoryContextSwitchTo(old);
+	return &c->pwb[c->npwb++];
+}
+
+/* The leaf of seg that holds the leaf d of the table's layout (same attribute, path and type), -1 when it has none */
+static int
+seg_leaf(const SiftColSchema *seg, const SiftColDef *d)
+{
+	for (int j = 0; j < seg->ncols; j++)
+	{
+		const SiftColDef *e = &seg->cols[j];
+
+		if (e->attno == d->attno && e->kind == d->kind && e->store == d->store && e->type == d->type && e->path && strcmp(e->path, d->path) == 0)
+			return j;
+	}
+	return -1;
+}
+
+/* What the zones of the segments say about the leaves of the declared paths, kept until the set of segments changes */
+static const SiftColLeafStats *
+path_zones(Relation rel, SiftTblRel *st, const SiftTblLayout *l)
+{
+	struct SiftTblGroupCache *c = gcache_of(st);
+	uint64		key = st->dir.nsegs;
+
+	for (int i = 0; i < st->dir.nsegs; i++)
+		key = key * 1000003 + st->dir.segs[i].gen * (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE);
+	if (c->pls && c->pkey == key)
+		return c->pls;
+	if (c->pls)
+		pfree(c->pls);
+	c->pls = MemoryContextAlloc(st->cxt, l->schema->ncols * sizeof(SiftColLeafStats));
+	for (int i = 0; i < l->schema->ncols; i++)
+		sift_col_leaf_stats_init(&c->pls[i]);
+	for (int i = 0; i < st->dir.nsegs; i++)
+		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift_table path stats", ALLOCSET_SMALL_SIZES);
+			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], tmp);
+
+			for (int k = 0; k < l->schema->ncols; k++)
+			{
+				const SiftColDef *d = &l->schema->cols[k];
+				int			j = d->attno > 0 && d->path[0] ? seg_leaf(seg->schema, d) : -1;
+
+				if (j >= 0)
+					sift_cseg_leaf_stats(seg, j, &c->pls[k]);
+			}
+			sift_cseg_close(seg);
+			MemoryContextDelete(tmp);
+		}
+	c->pkey = key;
+	return c->pls;
+}
+
+/* The leaves of the write buffers that hold a value the leaf cannot: only the pages that grew since the last call are decoded */
+static void
+path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf)
+{
+	struct SiftTblGroupCache *c = gcache_of(st);
+	MemoryContext rowcx = AllocSetContextCreate(CurrentMemoryContext, "sift_table path ovf", ALLOCSET_SMALL_SIZES);
+	PGAlignedBlock copy;
+	int			n = 0;
+
+	for (int i = 0; i < st->nwbuf; i++)
+	{
+		SiftTblSeg	seg = st->wbuf[i];
+		PathWbuf   *w = path_wbuf(st, &seg);
+		PathOvf		po = {l->schema, w->ovf};
+
+		sift_tbl_seg_load(rel, &seg);
+		for (uint32 p = 0; p < seg.npages; p++)
+		{
+			if (!seg_page(rel, &seg, p, copy.data) || w->seen[p] == TBL_PAGE(copy.data)->nrows)
+				continue;
+			page_rows(rel, l, &seg, p, copy.data, rowcx, row_path_ovf, &po);
+			w->seen[p] = TBL_PAGE(copy.data)->nrows;
+		}
+		for (int k = 0; k < l->schema->ncols; k++)
+			ovf[k] |= w->ovf[k];
+	}
+	MemoryContextDelete(rowcx);
+	for (int i = 0; i < c->npwb; i++)
+	{
+		bool		live = false;
+
+		for (int k = 0; k < st->nwbuf && !live; k++)
+			live = st->wbuf[k].gen == c->pwb[i].gen;
+		if (live)
+			c->pwb[n++] = c->pwb[i];
+		else
+			pfree(c->pwb[i].seen);
+	}
+	c->npwb = n;
+}
+
+void
+sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+
+	memset(wovf, 0, l->schema->ncols * sizeof(bool));
+	if (!l->shred)
+	{
+		for (int i = 0; i < l->schema->ncols; i++)
+			sift_col_leaf_stats_init(&ls[i]);
+		return;
+	}
+	sift_tbl_refresh(rel, st);
+	memcpy(ls, path_zones(rel, st, l), l->schema->ncols * sizeof(SiftColLeafStats));
+	path_wbuf_ovf(rel, st, l, wovf);
 }
 
 /* ---------- promotion ---------- */
@@ -2147,6 +2421,84 @@ sift_tbl_rewrite(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, e, 1, tbl_col_format(any_vers(e, 1)), NULL, NULL);
 	sift_tbl_refresh(rel, st);
 	return true;
+}
+
+/* Does the segment schema hold the leaf of every declared path of the table's layout (a segment written before the declaration does not)? */
+static bool
+schema_has_paths(const SiftColSchema *seg, const SiftColSchema *cur)
+{
+	for (int i = 0; i < cur->ncols; i++)
+	{
+		const SiftColDef *d = &cur->cols[i];
+		bool		found = false;
+
+		if (d->attno == 0 || !d->path[0])
+			continue;
+		for (int j = 0; j < seg->ncols && !found; j++)
+		{
+			const SiftColDef *e = &seg->cols[j];
+
+			found = e->attno == d->attno && e->kind == d->kind && e->store == d->store && e->type == d->type && e->path && strcmp(e->path, d->path) == 0;
+		}
+		if (!found)
+			return false;
+	}
+	return true;
+}
+
+bool
+sift_tbl_paths_complete(Relation rel, SiftTblRel *st)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		const SiftSegEntry *e = &st->dir.segs[i];
+
+		/* the types of the values of a path (docs/COL-JSONB-31.md 5.1) are in a segment of column format minor 4 and later */
+		if (e->kind == SIFT_SEG_IMMUTABLE && (e->format < SIFT_COL_FORMAT_MINOR || !schema_has_paths(schema_of(rel, st, e), l->schema)))
+			return false;
+	}
+	return true;
+}
+
+/* ---------- sift.table_set_paths ---------- */
+
+PG_FUNCTION_INFO_V1(sift_table_paths_check);
+
+/*
+ * sift.table_paths_check(tbl, col, spec): the declaration of paths for a jsonb column is one the table can hold (the grammar of the sift_col `paths` option, which
+ * names only that column; at most the leaves of the engine with the table's own), and the table's layout is rebuilt. The caller stores it in sift.table_paths.
+ */
+Datum
+sift_table_paths_check(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessExclusiveLock);
+	const char *col = NameStr(*PG_GETARG_NAME(1));
+	char	   *spec = PG_ARGISNULL(2) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(2));
+	AttrNumber	attno = get_attnum(RelationGetRelid(rel), col);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table paths check", ALLOCSET_SMALL_SIZES);
+
+	if (!object_ownercheck(RelationRelationId, RelationGetRelid(rel), GetOuterUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	if (attno <= 0 || TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("\"%s\" is not a jsonb column of \"%s\"", col, RelationGetRelationName(rel))));
+	if (spec && spec[0])
+	{
+		SiftColShredAdapter *a = sift_col_shred_create_for(cx, RelationGetDescr(rel), RelationGetDescr(rel)->natts, spec);
+
+		for (int i = 1; i <= RelationGetDescr(rel)->natts; i++)
+			if ((sift_col_shred_nleaves(a, i) > 0) != (i == attno))
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("the paths of \"%s\" must all start with that column's name", col)));
+		(void) layout_build_for(rel, cx, declared_paths(rel, attno, spec));
+	}
+	MemoryContextDelete(cx);
+	CacheInvalidateRelcache(rel);
+	table_close(rel, NoLock);
+	PG_RETURN_VOID();
 }
 
 /* ---------- sift.table_segments ---------- */

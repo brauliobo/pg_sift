@@ -1,0 +1,108 @@
+-- Declared paths of a jsonb column of a sift_table (sift.table_set_paths): the path leaves are written next to the exact bytes, and a query that
+-- reads a path runs as SiftAgg once every segment has them, with the rows of the plan without it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+
+CREATE TABLE ph (id int, doc jsonb);
+SELECT sift.table_set_paths('ph', 'doc', 'doc->ch text');
+CREATE TABLE pt (id int, doc jsonb, n int) USING sift_table;
+SELECT sift.table_set_paths('pt', 'n', 'n->ch text');
+SELECT sift.table_set_paths('pt', 'nope', 'nope->ch text');
+SELECT sift.table_set_paths('pt', 'doc', 'doc->ch banana');
+SELECT sift.table_set_paths('pt', 'doc', 'other->ch text');
+SELECT count(*) FROM sift.table_paths;
+
+CREATE FUNCTION pt_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- SiftAgg for a plan that has it, empty for one that has not
+CREATE FUNCTION pt_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAgg%' THEN RETURN 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN '';
+END $$;
+
+CREATE TABLE pt_q (q text);
+INSERT INTO pt_q VALUES
+	('SELECT doc->>''ch'', count(*), min(id) FROM pt WHERE doc->>''ch'' <> ''zz'' GROUP BY 1'),
+	('SELECT doc->>''ch'', count(*), sum((doc->>''w'')::int) FROM pt WHERE doc->>''ch'' <> ''zz'' GROUP BY 1'),
+	('SELECT count(*) FROM pt WHERE doc->>''ch'' = ''b'' AND (doc->>''w'')::int > 2'),
+	('SELECT (doc->>''w'')::int, count(*), min(id) FROM pt WHERE (doc->>''w'')::int >= 0 GROUP BY 1'),
+	('SELECT e.k, count(*), sum(e.p) FROM pt, jsonb_to_recordset(doc->''items'') AS e(k int, p float8) GROUP BY 1'),
+	('SELECT id % 3, count(*), sum((doc->>''w'')::int) FROM pt WHERE doc->>''ch'' IN (''a'', ''c'') GROUP BY 1'),
+	('SELECT count(*), sum(id) FROM pt');
+
+CREATE FUNCTION pt_compare(OUT query text, OUT plan text, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM pt_q ORDER BY q COLLATE "C" LOOP
+		plan := pt_plan(query);
+		same := pt_rows(query, true) IS NOT DISTINCT FROM pt_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+INSERT INTO pt SELECT i, jsonb_build_object('ch', (ARRAY['a', 'b', 'c'])[i % 3 + 1], 'w', i % 7,
+	'items', jsonb_build_array(jsonb_build_object('k', i % 4, 'p', i * 1.5), jsonb_build_object('k', i % 3, 'p', i * 0.5))), i FROM generate_series(1, 6000) i;
+VACUUM pt;
+SELECT * FROM pt_compare();
+
+-- a declaration applies to the segments written afterwards: the stored ones lack the leaves until a rewrite, and until then the plan is the normal one
+SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text, doc->w int4, doc->items[]{k int4, p float8}');
+SELECT * FROM pt_compare();
+VACUUM FULL pt;
+SELECT * FROM pt_compare();
+
+-- the write buffer rows are read through the same paths, and so are the rows that changed
+INSERT INTO pt SELECT 10000 + i, jsonb_build_object('ch', 'a', 'w', i % 5, 'items', jsonb_build_array(jsonb_build_object('k', 9, 'p', 1.25))), i
+	FROM generate_series(1, 700) i;
+UPDATE pt SET doc = jsonb_set(doc, '{ch}', '"b"') WHERE id % 11 = 0;
+DELETE FROM pt WHERE id % 13 = 0;
+SELECT * FROM pt_compare();
+VACUUM pt;
+SELECT * FROM pt_compare();
+
+-- a value of another type than its leaf's is one the leaf cannot hold: the queries that read the leaf keep the normal plan, the others do not
+INSERT INTO pt VALUES (20001, '{"ch": 5, "w": "12", "items": [{"k": "7", "p": 1}]}', 0);
+SELECT * FROM pt_compare();
+VACUUM pt;
+SELECT * FROM pt_compare();
+SELECT pt_plan('SELECT count(*) FROM pt WHERE jsonb_typeof(doc->''ch'') = ''string''') AS typeof_plan,
+	pt_rows('SELECT count(*) FROM pt WHERE jsonb_typeof(doc->''ch'') = ''string''', true) = pt_rows('SELECT count(*) FROM pt WHERE jsonb_typeof(doc->''ch'') = ''string''', false) AS typeof_same;
+DELETE FROM pt WHERE id = 20001;
+VACUUM FULL pt;
+SELECT * FROM pt_compare();
+
+-- a narrower declaration is served by the segments that have its leaves; the leaves it no longer declares are gone from the next rewrite
+SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text');
+SELECT * FROM pt_compare();
+VACUUM FULL pt;
+SELECT * FROM pt_compare();
+
+-- no declaration: the table is as before
+SELECT sift.table_set_paths('pt', 'doc', NULL);
+SELECT count(*) FROM sift.table_paths;
+SELECT * FROM pt_compare();
+VACUUM FULL pt;
+SELECT * FROM pt_compare();
+
+-- the declaration goes with its table and does not outlive its column
+SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text');
+ALTER TABLE pt RENAME COLUMN doc TO body;
+SELECT count(*) FROM pt WHERE body->>'ch' = 'a';
+SELECT pt_plan('SELECT count(*) FROM pt WHERE body->>''ch'' = ''a''') AS renamed_plan;
+DROP TABLE pt;
+SELECT count(*) FROM sift.table_paths;
+
+DROP TABLE ph, pt_q;
+DROP FUNCTION pt_rows, pt_plan, pt_compare;
+DROP EXTENSION pg_sift;

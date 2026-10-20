@@ -23,7 +23,8 @@
 #   --no-index          without the column index: plain against plain (the self-check of the harness); without the flag a missing
 #                       access method or a failing CREATE INDEX skips the suite with a message
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
-#   --table             the fixtures suite on sift_table: the fixture tables are rewritten USING sift_table instead of getting a column index, the scenarios
+#   --table             the fixtures suite on sift_table: the fixture tables are rewritten USING sift_table (with the paths of --col-paths declared for
+#                       their jsonb columns) instead of getting a column index, the scenarios
 #                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl)
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
 #                       test/col/col_index.sql, USING sift_col replaced by --col-am)
@@ -251,11 +252,36 @@ col_index() {
 	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
 }
 
-# fixture_tables: the fixture tables (and the partitions) rewritten into sift_table, the table the queries run on
+# col_paths COLUMN: the entries of COL_PATHS for one jsonb column (a table declares them per column), split at the commas outside braces
+col_paths() {
+	awk -v col="$1" 'BEGIN { RS = "\n" } {
+		depth = 0; ent = ""
+		for (i = 1; i <= length($0); i++) {
+			c = substr($0, i, 1)
+			if (c == "{") depth++; else if (c == "}") depth--
+			if (c == "," && depth == 0) { emit(); ent = ""; continue }
+			ent = ent c
+		}
+		emit()
+	}
+	function emit(   name) {
+		sub(/^ +/, "", ent); name = ent; sub(/[-.[].*/, "", name)
+		if (name == col) out = out (out == "" ? "" : ", ") ent
+	}
+	END { print out }' <<<"$COL_PATHS"
+}
+
+# fixture_tables: the fixture tables (and the partitions) rewritten into sift_table, the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
-	local t
+	local t c spec
 	for t in orders orders_odd orders_part_2022 orders_part_2023 orders_part_2024 orders_part_2025 t_int t_float t_num t_nan t_text t_dist t_wide; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
+		[[ $t == orders* ]] || continue
+		for c in attributes metrics items notes; do
+			spec=$(col_paths $c)
+			[[ -z $spec ]] || printf '%s\n' "SELECT sift.table_set_paths('$t', '$c', :'spec')" | sql -v spec="$spec" >/dev/null || return 1
+		done
+		sql -c "VACUUM FULL $t" || return 1
 	done
 }
 

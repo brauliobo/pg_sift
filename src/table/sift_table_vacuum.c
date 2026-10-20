@@ -636,6 +636,7 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 
 	*num_tuples = *tups_vacuumed = *tups_recently_dead = 0;
 	new_st->fresh = true;
+	sift_tbl_layout_adopt(NewTable, new_st, OldTable);
 	sift_tbl_ensure_init(NewTable);
 	sift_tbl_refresh(OldTable, c.st);
 	sift_tbl_tomb_sync(OldTable, c.st);
