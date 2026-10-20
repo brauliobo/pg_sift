@@ -32,6 +32,7 @@ areas_expand() {
 }
 areas_regex() {
 	local f row hit out=() AREA_JOBS AREA_OWNER_MODE=0
+	local -A seen=()   # a diff of hundreds of files would repeat each row hundreds of times: the workflow output limit is 1 MB
 	local -a AREA_CAPTURES
 	for f in "$@"; do
 		hit=
@@ -40,7 +41,7 @@ areas_regex() {
 			AREA_CAPTURES=("${BASH_REMATCH[@]}")
 			hit=1
 			areas_expand "${row#*$'\t'}"
-			[[ $AREA_JOBS == - ]] || out+=("$AREA_JOBS")
+			[[ $AREA_JOBS == - || -n ${seen[$AREA_JOBS]:-} ]] || { seen[$AREA_JOBS]=1; out+=("$AREA_JOBS"); }
 		done
 		[[ -n $hit ]] || { echo "areas: $f is in no row of scripts/areas.tsv" >&2; out+=(.); }
 	done
