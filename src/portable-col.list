@@ -21,6 +21,8 @@ col/seg_write.c
 col/seg_maint.c
 col/ver.c
 col/preagg.c
+col/preagg_opt.c
+col/preagg_read.c
 col/wide.c
 col/shred.c
 col/shred_spec.c
@@ -41,6 +43,7 @@ col/seg.h
 col/seg_int.h
 col/ver.h
 col/preagg.h
+col/preagg_int.h
 col/wide.h
 col/codec.h
 col/codec_int.h
