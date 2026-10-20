@@ -53,8 +53,8 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 
 | Where | Corruption to try | Effect | Status at 3.0.2 |
 |---|---|---|---|
-| src/col/scan.c `unit_group`, src/col/enc.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
-| (fixed, P1-6) src/col/scan.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/sift_agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
+| src/col/scan_unit.c `unit_group`, src/col/enc.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
+| (fixed, P1-6) src/col/scan_read.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/sift_agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
 | src/bm25/posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
 | src/bm25/segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
 | src/bm25/bitmap.c `sift_chunk_pagemask` | DOCMAP chunk byte0 0xB0, entry 00 00 FF FF | writes `pm[1023]` | open (source read: the page index is not bounded) |

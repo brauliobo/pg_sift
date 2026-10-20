@@ -420,7 +420,7 @@ version, whatever the snapshot, and the only question is visibility:
 
 **Order of reads.** Step 2 trusts two facts, "live" and "all-visible", that VACUUM changes in a fixed order: `ambulkdelete` first (the
 index entries of the dead tuples go), the heap pass and the VM bit after. A scan can use the pair only in that order's reading direction:
-the all-visible mask first, the liveness of the unit after (`unit_clean` in `col/scan.c`; `sift_cseg_dirty` reads the LIVE page each
+the all-visible mask first, the liveness of the unit after (`unit_clean` in `col/scan_unit.c`; `sift_cseg_dirty` reads the LIVE page each
 time). A mask that says "all-visible" was set after the index pass, so liveness read later shows the removals; liveness read first (a
 directory snapshot taken when the scan opened, a cached dirty bit) and the mask later counts rows of tuples that VACUUM removed after the
 scan's snapshot, on pages it made all-visible. Two more rules complete it:
@@ -685,9 +685,9 @@ The storage engine is separate from the index AM so that the table AM `sift_tabl
 |---|---|---|---|
 | L0 kernels | `col/kern*.c/.h` (portable) | arrays and bit vectors | yes |
 | L1 chunks, batches, dictionaries, zones | `col/enc.c/.h` (portable): `SiftColBatch`, chunk encode/decode, predicate -> key range / LUT, zone computation, batch merge | values, not pages | yes |
-| L2 segment | `col/seg.c/.h`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `sift_store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
+| L2 segment | `col/seg.c/.h`, `col/seg_write.c`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `sift_store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
 | L3 write buffer | `col/wbuf.c/.h` (lanes: `sift_lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
-| L4 source | `col/scan.c`: `SiftColSource`, units, filters, reads, selections (`col/col.h` section 3) | a visibility callback | yes: it asks `SiftColVisibility` (below) which rows are visible |
+| L4 source | `col/scan*.c`: `SiftColSource`, units, filters, reads, selections (`col/col.h` section 3) | a visibility callback | yes: it asks `SiftColVisibility` (below) which rows are visible |
 | L5 index glue | `col/am*.c`: `ambuild`, `aminsert`, `ambulkdelete`, handler, options, the heap/VM visibility (`sift_col_vet`), SQL | the heap table | no |
 
 The one hook between L4 and L5 is the visibility rule: L4 asks the `SiftColVisibility` callbacks (`sift_col_set_visibility`, `col/col.h`) which rows of a unit are visible; the index

@@ -13,7 +13,7 @@ the includes). Checked by building them, not only by reading includes (`make -C 
 |---|---|---|---|
 | chunk and unit encoding, zones, dictionaries, batches | `col/enc.c` | 2.1k | builds, round trip passes |
 | chunk codec (cascades, FOR/delta/RLE/dict/ALP), LZ4/zstd layer | `col/codec*.c`, `col/compress.c` | 3.6k | builds, round trip passes |
-| segment writer/reader of units over the page store | `col/seg.c` | 0.9k | builds, linked (not yet exercised) |
+| segment writer/reader of units over the page store | `col/seg*.c` | 0.9k | builds, linked (not yet exercised) |
 | column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
 | shredder core (JSON paths into leaves, no JSON parser) | `col/shred*.c` | 1.6k | builds |
 | aggregation kernels (sum/min/max/count, group-by) | `sift_aggkern*.c` | 1.2k | builds |

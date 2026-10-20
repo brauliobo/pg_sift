@@ -102,9 +102,9 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-1 | bm25/bitmap.c:sift_cur_blob, gr_seek, ls_seek, ef_hdr, ef_decode, ls_at | query path decodes unchecked blobs (F-BM25-2/3/4, fixed by explicit checks in 2.0.2, 463951f; the Span conversion is open): cursor over a Span, per-group sub-span, lazy check_grouped rules |
 | P1-2 | bm25/bitmap.c:sift_chunk_pagemask/offsets/count (called by bm25/segment.c:load_sb) | no length argument; pass `sift_span_sub(rec,8,h[1])`, require w in {1,2,4,8..64}, pg<256 |
 | P1-3 | bm25/segment.c:load_sb; bm25/walk.c:walk_docs; bm25/liveness.c:live_sb_bits | ndocs from mask popcounts never compared with the header; `keys[]` overflow |
-| P1-4 | col/scan.c:unit_group, sift_col_read; col/enc.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
+| P1-4 | col/scan_unit.c:unit_group, col/scan_read.c:sift_col_read; col/enc.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
 | P1-5 | col/enc.c:chunk_lut, cc_lut | done (F-COL-1): tables of at most 16 bits cover the width, wider codes pass `max32(codes) < sbits` |
-| P1-6 | col/scan.c:read_positions (STR), sift_col_read_lane (CODE lane) | done: `max32(codes) <= dict->n` once per chunk read, before sift_agg.c indexes `map[code]` or the LUT |
+| P1-6 | col/scan_read.c:read_positions (STR), sift_col_read_lane (CODE lane) | done: `max32(codes) <= dict->n` once per chunk read, before sift_agg.c indexes `map[code]` or the LUT |
 | P1-7 | sift_table_store.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
 | P1-8 | sift_table_store.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
 | P1-9 | sift_table_store.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |
