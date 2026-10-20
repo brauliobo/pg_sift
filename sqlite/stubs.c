@@ -1,10 +1,10 @@
 /*
- * sqstubs.c - the PostgreSQL-only collaborators of src/bm25/eval.c, as a single-writer embedded database sees them:
+ * stubs.c - the PostgreSQL-only collaborators of src/bm25/eval.c, as a single-writer embedded database sees them:
  * no heap (every document is visible, no recheck against a snapshot), no TID bitmap filter. The index options are those of
- * the virtual table. No write buffers (documents are buffered in memory by sqbuild.c and written as an immutable segment
+ * the virtual table. No write buffers (documents are buffered in memory by build.c and written as an immutable segment
  * before they are searched) and no kept docmap directories: host/host_stubs.c.
  */
-#include "sqapi.h"
+#include "api.h"
 
 #include "bm25/eval.h"
 

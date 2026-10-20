@@ -1,9 +1,9 @@
 /*
- * sqinit.c - the loadable extension: entry points, one-time engine initialization (CPU dispatch included) and the
+ * init.c - the loadable extension: entry points, one-time engine initialization (CPU dispatch included) and the
  * SQL functions that are not tied to a cursor. A connection that loads the extension gets its own SqConn, the list of
  * its sift tables, so connections (and threads, one per connection or serialized) share no mutable state.
  */
-#include "sqvtab.h"
+#include "vtab.h"
 
 #include <pthread.h>
 

@@ -1,6 +1,6 @@
 /*
- * sqapi.h - the interface between the SQLite virtual table (sqvtab.c), the segment builder (sqbuild.c), the streaming
- * merge (sqmerge.c) and the page store (sqstore.c), which stands in for core/store.c.
+ * api.h - the interface between the SQLite virtual table (vtab.c), the segment builder (build.c), the streaming
+ * merge (merge.c) and the page store (store.c), which stands in for core/store.c.
  */
 #ifndef SQAPI_H
 #define SQAPI_H
@@ -57,7 +57,7 @@ typedef struct SqOptions
 #define SQ_CHUNK_DEFAULT	16384
 #define SQ_CACHE_DEFAULT_KIB	(64 * 1024)
 
-/* ---------- sqstore.c ---------- */
+/* ---------- store.c ---------- */
 
 extern SqStore *sq_store_new(sqlite3 *db, const char *schema, const char *name, const SqOptions *opts, int chunk_bytes,
 							 int cache_kib);
@@ -129,7 +129,7 @@ extern void sq_store_seg_rows(const SqStore *st, const SiftSegEntry *e, int64_t 
 extern bool sq_store_rows_between(SqStore *st, int64_t lo, int64_t hi, int64_t *count, int64_t *bytes);
 extern int64_t sq_store_rows_total(SqStore *st);
 
-/* ---------- sqbuild.c ---------- */
+/* ---------- build.c ---------- */
 
 typedef struct SqInv SqInv;
 
@@ -148,7 +148,7 @@ extern void sq_inv_write(SqInv *inv, SqStore *st);
 /* Clears the liveness bit of key in whichever segment holds it; true when it was live */
 extern bool sq_delete_key(SqStore *st, SiftKey key);
 
-/* ---------- sqmerge.c ---------- */
+/* ---------- merge.c ---------- */
 
 /* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/bm25/runs.c),
  * publishes it and retires them in the caller's transaction. Nothing is published when nothing live is left (they are

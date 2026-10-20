@@ -1,5 +1,5 @@
 /*
- * sqvtab.c - the SQLite virtual table module "sift":
+ * vtab.c - the SQLite virtual table module "sift":
  *
  *   CREATE VIRTUAL TABLE docs USING sift(title, body, positions=1, stemmer='english');
  *   SELECT rowid, rank FROM docs WHERE docs MATCH 'quick fox*' ORDER BY rank LIMIT 10;
@@ -11,7 +11,7 @@
  * SQLite transaction, so the table commits and rolls back with it. The text comes from <t>_content, from the
  * user's table (content='tbl') or is not kept at all (content=''). See README.md.
  */
-#include "sqvtab.h"
+#include "vtab.h"
 
 #include <ctype.h>
 

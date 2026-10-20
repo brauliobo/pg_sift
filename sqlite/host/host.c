@@ -3,7 +3,7 @@
  * ereport, StringInfo, List, dynahash, UTF-8 multibyte helpers and spool files. Only what src/ uses.
  */
 #include "host.h"
-#include "host_utf8.h"
+#include "utf8.h"
 
 #include <ctype.h>
 #include <fcntl.h>

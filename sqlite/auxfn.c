@@ -1,5 +1,5 @@
 /*
- * sqaux.c - what FTS5 calls auxiliary functions, and facets.
+ * auxfn.c - what FTS5 calls auxiliary functions, and facets.
  *
  *   sift_highlight(t, col, open, close)               the text of column col with the matches of the MATCH wrapped
  *   sift_snippet(t, col, open, close, ellipsis, n)    the n tokens of column col that hold the most matches
@@ -14,7 +14,7 @@
  * and a token matches when it is a term, prefix, wildcard, regex or fuzzy leaf of the query outside a NOT, or part of an
  * occurrence of a phrase of it.
  */
-#include "sqvtab.h"
+#include "vtab.h"
 
 SQLITE_EXTENSION_INIT3
 
