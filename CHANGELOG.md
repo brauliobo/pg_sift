@@ -10,6 +10,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: pg_sift: sift_table returns the row's xmin, xmax, cmin and cmax. They read zero before; now `xmin` and `cmin` are the stored versions of the row (write buffer record or the version section of its column group; `FrozenTransactionId` once frozen) and `xmax` and `cmax` those of its last delete, update or lock tombstone (0 if none). A row locked by several transactions shows the last locker, not a MultiXactId. Tests `tbl_sysattr`, the isolation specs `tbl_sysattr` and `tbl_sysattr_groups` and the `t_sysattr_xmin` coldiff fixture.
+
 ## 3.1.0 - 2026-10-19
 
 Feature release. The extension SQL goes from 3.0 to 3.1: install the new files and run `ALTER EXTENSION pg_sift UPDATE TO '3.1'` in every database. BM25 indexes, `sift_col` indexes and `sift_table` data of 3.0.x keep working across it, with no `REINDEX`; what 3.1 writes afterwards is in newer formats (`docs/FORMATS.md`) that a 3.0.x library refuses. Highlights: smaller BM25 indexes (segment format 3), rollups of the elements of a list that answer any `GROUP BY` over their dimensions and refresh on demand, a `sift_table` write path with per-row versions, field weights and facet counts, the JSON type tag of `jsonb` leaves and calendar group keys, aggregates from the bitmap of a chunk, and an opt-in Vulkan backend (off by default, not part of the packages).

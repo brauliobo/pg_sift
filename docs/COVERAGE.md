@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-197 rows: 127 Yes, 22 Partly, 38 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+197 rows: 128 Yes, 21 Partly, 38 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -222,5 +222,5 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | L06 | sift_table | COPY in and out, INSERT ... SELECT, CREATE TABLE AS, ALTER TABLE ... SET ACCESS METHOD | Yes | sift_table | `COPY t FROM STDIN` | Rows go through the write buffer one at a time (no bulk column path). Proof: test `tbl_diff`, test `tbl_basic`. |
 | L07 | sift_table | Row scans of some columns (SELECT a FROM t WHERE ...), btree, GIN, BRIN, BM25 indexes, bitmap scans | Yes | sift_table | `SELECT i4 FROM t WHERE i4 < 10` | Works as for a heap; a table access method is not told which columns a query needs, so every row scan decodes whole units. Only the aggregate scan reads just its columns. Proof: test `tbl_basic`, test `tbl_bm25`. |
 | L08 | sift_table | UPDATE, DELETE, ON CONFLICT, row locks, triggers, savepoints, VACUUM FULL, CLUSTER | Partly (no HOT; shared row locks degrade to exclusive) | sift_table | `UPDATE t SET ... WHERE ...` | An UPDATE writes a new version and a tombstone, both visible to the aggregate scan under MVCC. Proof: test `tbl_basic`, test `tbl_diff`. |
-| L09 | sift_table | System columns xmin, xmax, cmin, cmax | Partly (ctid and tableoid are the row's; xmin, xmax and cmin return placeholder values, not the row's transaction ids) | sift_table | `SELECT xmin FROM t` | docs/COL-TAM.md and USAGE.md say 0A000 for these; the query runs. Proof: test `tbl_basic`. |
+| L09 | sift_table | System columns xmin, xmax, cmin, cmax | Yes | sift_table | `SELECT xmin FROM t` | ctid, tableoid, xmin, xmax, cmin and cmax are the row's: xmin and cmin the stored versions of its insertion (FrozenTransactionId once frozen), xmax and cmax those of its last delete, update or lock (0 if none; a row locked by several transactions shows the last locker, not a MultiXactId). Proof: test `tbl_sysattr`. |
 | L10 | sift_table | Publishing a sift_table under wal_level = logical without pg_sift in shared_preload_libraries | Error (0A000 on the first DML; preload pg_sift on the publisher and its standbys, or publish a heap staging table) | sift_table | `CREATE PUBLICATION p FOR TABLE t` | A subscriber needs nothing. Unpublished tables never need the preload. Proof: test `tbl_bm25`. |

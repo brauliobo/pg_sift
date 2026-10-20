@@ -138,7 +138,7 @@ progress: `TM_BeingModified` (`wait = false`) or release the tuple lock, `XactLo
 see the same results and the executor raises the serialization failure, as for heap. `tuple_lock` with `TUPLE_LOCK_FLAG_FIND_LAST_VERSION`
 follows `succ` while the entry is a committed UPDATE, fetching the latest version into the slot (so READ COMMITTED's EvalPlanQual, the
 logical-replication apply worker and `ON CONFLICT DO UPDATE` work). `ctid` and `tableoid` work (`slot->tts_tid`); `xmin`, `xmax`, `cmin`,
-`cmax` read zero (the transaction ids of a row are not kept as a heap keeps them; the logical-replication apply worker reads `xmin` for its conflict report).
+`cmax` are the row's stored versions, read by TID when asked (`sift_slot_getsysattr`): `xmin` and `cmin` of the write buffer record or of the version section of its unit (a frozen row: `FrozenTransactionId`, command 0), `xmax` and `cmax` of the last tombstone of the row, delete, update or lock, aborted or not as the heap keeps them (none: 0). A row locked by several transactions shows the last locker, not a MultiXactId. The logical-replication apply worker reads `xmin` for its conflict report.
 
 **Speculative insertion** (`INSERT ... ON CONFLICT`): the record carries the token; `tuple_complete_speculative(succeeded = false)` sets
 its `DEAD` flag, so a killed insertion is never visible to anyone and other inserters waiting on the token proceed; `succeeded = true` clears the speculative flag (a row that stayed speculative would keep its write buffer from being promoted).
@@ -173,7 +173,7 @@ PostgreSQL 17 and 18; the differences are marked. Every callback below is implem
 
 | callback | decision | status |
 |---|---|---|
-| `slot_callbacks` | `TTSOpsHeapTuple`: every row is built as a HeapTuple (`t_self` = its TID) and handed to the slot with `sift_tbl_store`, which moves it into the slot's own memory context (a scan runs in a per-tuple context that is reset under it; the heap's buffer slots never allocate there). `ctid`/`tableoid` work, other system columns error. | done |
+| `slot_callbacks` | `TTSOpsHeapTuple`: every row is built as a HeapTuple (`t_self` = its TID) and handed to the slot with `sift_tbl_store`, which moves it into the slot's own memory context (a scan runs in a per-tuple context that is reset under it; the heap's buffer slots never allocate there). All system columns work (`xmin`, `xmax`, `cmin`, `cmax` are read by TID when asked). | done |
 | `scan_begin` / `scan_end` / `scan_rescan` | walks, in order: write buffers (page by page, rows in slot order), groups (engine units, in SB order). Snapshot registered, directory copied once. `SO_TYPE_SEQSCAN`, `SO_TYPE_ANALYZE`, `SO_TYPE_BITMAPSCAN`, `SO_TYPE_TIDRANGESCAN` honored; scan keys unsupported (the planner never passes them for a non-heap AM). | done |
 | `scan_getnextslot` | both directions, as a heap: the cursor is on the row last returned, so a backward step gives the one before it, an end resets the position (a forward step then starts at the first row, a backward one at the last). Backward goes over the column groups from their last unit, then the write buffer pages from the last. The units of the range are listed on the first backward step and found again by superblock and place in it; no unit is decoded twice per step. | done |
 | `scan_set_tidrange` / `scan_getnextslot_tidrange` | by SB/vblock range on the directory, then the filter `mintid <= tid <= maxtid`. | done |
@@ -294,7 +294,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   (index scans, bitmap, UPDATE) keep the last decoded unit of a backend-wide fetch scan (valid while the directory and the
   backend's xmin stay; its pages are unpinned after every fill), and a caller that needs the version of a row, not its values (row
   locks, uniqueness checks, `index_delete_tuples`), asks for it without decoding (`sift_tbl_fetch_lazy`: the live-row list of the
-  unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` read zero.
+  unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` are read by TID when asked, from the same fetch (`sift_tbl_fetch_lazy`) and the tombstones.
 - **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the
   synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
   `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/sift_visibility.c) which today reads the heap's
