@@ -26,8 +26,12 @@ SELECT id, grp, v,
        (v / 100.0)::numeric(18,2) AS n18, v AS m8, v AS iv8
 FROM (SELECT g AS id, 1 + floor(pg_temp.u(g, 1) * 200)::int AS grp, floor(pg_temp.u(g, 2) * 1e8)::bigint AS v FROM generate_series(1::bigint, :n) g) t;
 \if :wide
-ALTER TABLE lt ADD COLUMN n30 numeric(30,6), ADD COLUMN nu numeric, ADD COLUMN mny money, ADD COLUMN ivl interval;
-UPDATE lt SET n30 = v / 100.0, nu = v / 100.0, mny = (v / 100.0)::numeric::money, ivl = (v || ' microseconds')::interval;
+-- a copy, not an UPDATE: the old versions would keep the heap pages from being all-visible while a transaction of the host is older than the update,
+-- and the scan would check the rows in the heap (Rows Vetted By Heap), which is not what the figures compare
+CREATE TABLE lt_wide AS
+SELECT lt.*, (v / 100.0)::numeric(30,6) AS n30, (v / 100.0)::numeric AS nu, (v / 100.0)::numeric::money AS mny, (v || ' microseconds')::interval AS ivl FROM lt;
+DROP TABLE lt;
+ALTER TABLE lt_wide RENAME TO lt;
 \endif
 VACUUM (FREEZE, ANALYZE) lt;
 SELECT percentile_disc(.9) WITHIN GROUP (ORDER BY v) AS p90, percentile_disc(.4) WITHIN GROUP (ORDER BY v) AS p40, percentile_disc(.41) WITHIN GROUP (ORDER BY v) AS p41 FROM lt \gset
