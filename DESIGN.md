@@ -730,19 +730,19 @@ crash safety, memory and error plumbing, the way a query reaches the evaluator (
 path: its vocabulary is that of PostgreSQL's backend API (`palloc`, `MemoryContext`, `ereport` that does not return, `StringInfo`, `List`, `HTAB`, `pg_mb*`,
 `pg_reg*`, atomics and spin locks for `bm25/parallel.c`, `BufFile` for the builder's runs), plus `sift_host_enum_option` for the one process setting (`sift.simd`).
 The page/extent store is the link-time interface declared in `core/store.h` (`ReadBuffer`/`ReleaseBuffer`, `sift_wt_*`, `sift_sw_*`, `sift_sr_*`, `sift_dir_*`):
-`core/store.c` implements it over shared buffers and generic WAL, `sqlite/sqstore.c` over rows of a shadow table and a bounded cache. The PostgreSQL build includes the
+`core/store.c` implements it over shared buffers and generic WAL, `sqlite/store.c` over rows of a shadow table and a bounded cache. The PostgreSQL build includes the
 real headers (identical calls, identical speed); the SQLite one provides the vocabulary in `sqlite/host/host.h` over `malloc`, `setjmp` and SQLite rows, and the MariaDB one
 (`mariadb/host/host.h`, `SIFT_HOST_MARIADB`) uses the same plain-C vocabulary (the file `sqlite/host/host.c` is compiled into both) over segment files mapped into the address space. Optional
 collaborators the core calls but a host may not have (write buffers, visibility, TID bitmap filters) are declared in portable headers and implemented by the
-host; `sqlite/sqstubs.c` is the SQLite side of them.
+host; `sqlite/stubs.c` is the SQLite side of them.
 
 **Adding a host.** (1) Provide a header with the vocabulary above and add its branch to `core/host.h` (a `SIFT_HOST_<NAME>` define). (2) Implement `core/store.h`
 over the host's storage, and the optional collaborators it does not need as stubs that fail. (3) Build the files of `portable.list` (the Makefile reads it) and write the
-host's front end: option parsing, the write path (feed `sift_segw_*` in key order: `sqlite/sqbuild.c` is the smallest example), and the merge driver
+host's front end: option parsing, the write path (feed `sift_segw_*` in key order: `sqlite/build.c` is the smallest example), and the merge driver
 (`sift_merge_pick` chooses, the host rewrites). (4) Run the equivalence tests: scores must be bit-equal to PostgreSQL's evaluator on the same corpus
 (`sqlite/bench/compare_pg.py`, `mariadb/tools/compare.py`). `mariadb/host/` is the example of a host whose store is a directory of mapped files, and of one that keeps its own
 regular expression matcher (`host_regex.c`) to match PostgreSQL's advanced regular expressions where the C library's would not.
 
-**Still two copies.** The SQLite in-memory write buffer (`SqInv` in `sqlite/sqbuild.c`, any key order, deletes) against `SiftInvBuf` (ascending keys) and the
+**Still two copies.** The SQLite in-memory write buffer (`SqInv` in `sqlite/build.c`, any key order, deletes) against `SiftInvBuf` (ascending keys) and the
 highlight/snippet/facet code are not unified; why, and what it would take, is in [sqlite/DESIGN.md](sqlite/DESIGN.md#what-is-not-shared-yet). The heap build, parallel workers
 and the leader (`src/bm25/build.c`) stay with the PostgreSQL host.

@@ -7,7 +7,7 @@
  * generation and header block, up to DOCDIR_CACHE_BYTES per backend. A segment object pins the entry it
  * uses until its memory context goes (a callback), and eviction only takes unpinned, complete ones.
  * Directories under sift_docdir_min_sb superblocks are read each time: that costs less than the lookup.
- * The SQLite port keeps none (sqstubs.c).
+ * The SQLite port keeps none (stubs.c).
  */
 #include "postgres.h"
 
