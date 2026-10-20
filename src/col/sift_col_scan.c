@@ -922,11 +922,15 @@ sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *
 	return chunk_filter(unit->priv, p, sel, NULL);
 }
 
-/* A unit written with the kinds (column format minor 4): its NULL slots say whether they are a JSON null, and an astext leaf's values their type */
+/*
+ * A unit with complete kinds (column format minor 6, or the rows of a write buffer): its NULL slots say whether they are a JSON null, and an
+ * astext leaf's values their type. A segment of minor 4 or 5 may lack them for a slot (a merge of a segment written before the kinds were kept
+ * wrote it without), so it answers like one of minor 3 for the tests that need them.
+ */
 static bool
 unit_kinds(const ColUnit *cu)
 {
-	return cu->seg == NULL || cu->seg->entry.format >= 4;
+	return cu->seg == NULL ? sift_cbatch_kinds_exact(cu->batch) : cu->seg->entry.format >= SIFT_COL_FORMAT_KINDS;
 }
 
 #define TYPES_VALS	(1U << SIFT_COLTAG_STRING | 1U << SIFT_COLTAG_NUMBER | 1U << SIFT_COLTAG_BOOLEAN)

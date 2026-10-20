@@ -1,0 +1,30 @@
+# 2026-10-20; PostgreSQL 18.6; AMD Ryzen 7 9700X (8 cores / 16 logical CPUs); nice 19; serial index build (0 maintenance workers).
+# Shared host: load average about 10-11 during measurements; warmed data; three alternating runs. Timings are observations, not a causal speed claim.
+# Dataset: bench/sql/store/gen.sql, n=1000000. Column index: customer_id,country,category,status,amount,quantity,created_at,date_trunc(month,created_at)::date.
+# store-json adds items[]{s text}, cycling gift / JSON null / missing; other columns and rows unchanged.
+# Compare released v3.1.0 to 3.2 candidate, then isolate the format setting with the same 3.2 candidate binary.
+version	case	run	build_seconds	index_bytes
+3.1.0	store	1	0.459261	11370496
+3.2-P12	store	1	0.649708	11370496
+3.1.0	store	2	0.499494	11370496
+3.2-P12	store	2	0.697178	11370496
+3.1.0	store	3	0.531836	11370496
+3.2-P12	store	3	0.564410	11370496
+3.1.0	store-json	1	0.857794	11640832
+3.2-P12	store-json	1	0.882667	11640832
+3.1.0	store-json	2	0.753590	11640832
+3.2-P12	store-json	2	0.835808	11640832
+3.1.0	store-json	3	0.920776	11640832
+3.2-P12	store-json	3	0.899986	11640832
+3.2-minor4	store	1	0.496891	11370496
+3.2-minor6	store	1	0.459221	11370496
+3.2-minor4	store	2	0.578339	11370496
+3.2-minor6	store	2	0.483663	11370496
+3.2-minor4	store	3	0.527701	11370496
+3.2-minor6	store	3	0.519473	11370496
+3.2-minor4	store-json	1	0.878874	11640832
+3.2-minor6	store-json	1	0.989844	11640832
+3.2-minor4	store-json	2	0.923127	11640832
+3.2-minor6	store-json	2	0.852211	11640832
+3.2-minor4	store-json	3	1.005934	11640832
+3.2-minor6	store-json	3	0.795816	11640832

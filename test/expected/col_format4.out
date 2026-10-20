@@ -17,13 +17,15 @@ END $$;
 SHOW sift.col_format_minor;
  sift.col_format_minor 
 -----------------------
- 4
+ 6
 (1 row)
 
 SET sift.col_format_minor = 2;
-ERROR:  2 is outside the valid range for parameter "sift.col_format_minor" (3 .. 4)
+ERROR:  2 is outside the valid range for parameter "sift.col_format_minor" (3 .. 6)
 SET sift.col_format_minor = 5;
-ERROR:  5 is outside the valid range for parameter "sift.col_format_minor" (3 .. 4)
+ERROR:  invalid value for parameter "sift.col_format_minor": 5
+DETAIL:  Column format minor 5 is written for wide leaves only, whatever the setting.
+HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1) or 6.
 CREATE TABLE f (id int, grp int, v numeric(10,2));
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 30000) g;
 SET sift.col_format_minor = 3;

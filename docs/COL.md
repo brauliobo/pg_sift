@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 4; minor 3 is read side by side; minor 5 for the wide leaves of section 2.11)
+## 2. Format (format major 1, col minor 6; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -46,8 +46,8 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.1 library reads minors 3 and 4 in one index
-  as written and rewrites them as minor 4 by merge (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4 or 6; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.2 library reads minors 3 to 6 in one index
+  as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
 
@@ -137,7 +137,7 @@ floats and numeric number, text string). The write buffer keeps the type in the 
 `sift_col_filter_types` (the rows of a unit whose value has a type of a mask), `sift_col_row_types` (the type of every row), `sift_col_ovf_bits`,
 the tag of `SiftColValue.tag` in a merge.
 
-**Kinds** (minor 4). The slots that do not overflow can have a type their leaf does not say: a JSON null is a NULL slot like a missing key, and the
+**Kinds** (minor 4; complete in minor 6). The slots that do not overflow can have a type their leaf does not say: a JSON null is a NULL slot like a missing key, and the
 text of an `astext` leaf is a string, a number or a boolean. `KINDS` is a word whose low byte has bit `t` set for each tag that has a bitmap (7
 JSON null, 1 to 3 the type of a value), then those bitmaps in tag order, `n` bits each, tail bits zero. A bitmap is never empty, no slot is in two,
 none is in `ovfbits`, JSON null (tag 7) is a subset of `nullbits` and the others are disjoint from it. A chunk without any has no flag and no bytes (a
@@ -146,6 +146,17 @@ kind in the high nibble of the flag byte of the value, like the type of an overf
 (overflow value, kind), else the leaf's own type for a value and none for a NULL slot (jsonb_typeof is NULL for a missing key and for a path that leads to no
 value). A segment of minor 3 has no kinds, so it cannot tell a JSON null from a missing key or the types of an astext leaf's values: its answer for a test that needs it
 is "not known" (`sift_col_filter_types` sets `*known` false), exactly as for an overflow value without a tag.
+
+**Minor 6, the kinds are complete** (3.2). The chunk layout is that of minor 4; what minor 6 adds is a guarantee of the segment: for every leaf filled from a jsonb path, a NULL slot
+that is a JSON null has its bit in tag 7, and the value of an `astext` leaf has its type bit. Minor 4 did not give it: a merge of a minor 3 segment (or
+of rows decoded from one) into a minor 4 segment wrote its JSON nulls as missing keys, and the rows of such a unit cannot be told from those of a clean one. So a
+reader trusts the kinds of a minor 6 segment, a new write buffer and the rows of the heap, and not those of a minor 3, 4 or 5 segment that has a NULL slot (or an `astext` value) in such a leaf
+(`unit_kinds`; `SiftColLeafStats.nokinds`, which the planner reads: a jsonpath `!=`, `!()`, a null literal, `@>` with a JSON null or a `jsonb_typeof` that needs the kinds keeps the
+normal plan, exact; one that does not (`==`, a number, a non-NULL test) and a segment with no such slot are not in the way). The writer takes minor 6 for a schema with jsonb paths from rows
+whose kinds are known (build, promotion, a sift_table group sealed from its write buffer, a merge whose inputs are all minor 6 or keep their kinds,
+`sift_cseg_kinds_exact`), minor 4 for a merge with another input (so the claim is never made falsely), and keeps minor 3 under `sift.col_format_minor = 3`. REINDEX and VACUUM FULL of a table
+rewrite from the heap and so give minor 6 back. A schema without jsonb paths is not affected and stays minor 4. A 3.1 library refuses a minor 6 segment with the REINDEX hint,
+a 3.0.x one does too. New column write buffers carry directory format 6. An unmarked legacy buffer keeps uncertainty (`SIFT_COLTAG_UNSURE`, memory only) for an untagged NULL or astext value: the planner declines tests needing its kinds, the reader refuses to guess, and promotion writes minor 4 (or 5 for wide leaves). REINDEX restores the missing kinds from the documents.
 
 `enc`:
 
@@ -450,7 +461,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
-  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, `sift.col_format_minor` is 3, 4 or 6 (default 6; 5 is the wide leaves' and is not a setting) and keeps writing the minor it says: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
@@ -680,6 +691,8 @@ glue answers with the VM mask plus heap checks (section 3), a table AM with its 
 the nested column model, the dictionaries, the kernels and the write buffer record format are independent of the heap.
 
 ## Changes (contract log, newest first; rebase on these)
+
+- 2026-10 (col minor 6, complete kinds): `SIFT_COL_FORMAT_MINOR` 6, `SIFT_COL_FORMAT_KINDS`, `sift_col_write_minor` (the minor of a segment from the setting, the schema's `kinds` and `wide`, and whether every input keeps its kinds), `sift_cseg_kinds_exact`, `SiftColLeafStats.nokinds` and `SiftSrcStats.nokinds[]`; `unit_kinds` trusts minor 6 and batches without uncertain kinds only; `sift.col_format_minor` takes 3, 4 or 6; the leaf statistics cache of an index is keyed by its relfilenumber and the format of its segments (REINDEX starts the generations over).
 
 - 2026-10 (col minor 4, element rollups): the `COLP` directory is version 2 in a minor 4 segment (`ecubedir_off`, `ecube_bytes`; the rollup blob of each list follows the cubes of the columns and names its dims and measures), `sift_cpagg_cube(..., StringInfo out, StringInfo eout)`, `sift_cpagg_rollup_decode`, `sift_cseg_rollup`, `sift_cseg_dim_cube`, `SIFT_PAGG_MAX_RDIMS` 6 and `SIFT_PAGG_ROLLUP_TUPLES` 4096; the option `rollup` of `sift_col` and `sift_col_alter_check` (validation at CREATE and ALTER INDEX), `sift_col_rollup.c` (the on-demand refresh: queue, worker, `sift.col_rollup_state`); `sift_aggspec_preagg` accepts the unnest of an array leaf or a map with any subset of the dims as keys; `preagg_rollup` folds the tuples (`PaVal.sumf`, min, max). The writer remembers the minor it began under (`SiftColSegWriter.minor`), so `sift.col_format_minor` is read once per segment.
 - 2026-10 (col minor 4, version vectors): a segment whose owner passes the `xmin` and `cmin` of its rows (`sift_cbatch_add_ver`: a sift_table group written while its transactions run) is written as format 4 with the entry flag `SIFT_SEG_VERS` and `reserved` = the smallest xid, and carries a version section after the superblock directory of the DOCMAP section (`sift_col_ver.[ch]`; header `COLV`, per unit the xid range and the highest cmin, the vectors as a constant or a first value, a smallest step and packed residuals). The engine only stores and returns them (`sift_cseg_vers`, `sift_cseg_ver_sum`, `sift_cseg_ver_unit`, `sift_cseg_ver_range`, `sift_cseg_decode_unit_freeze`); merges keep them (`sift_cbatch_merge`) and the owner clears the flag when the rows are final. The owner begins the writer with a format of at least 4 for such a segment (`sift.col_format_minor` says the format of the others). A group of 3.0.1 that carried one writer (`reserved` = xid, header `sum_dl` = cid, format 3) is read as constant vectors. The metapage minor of a table goes to 3 with the first such segment (sift.h `SIFT_FORMAT_MINOR`), so a 3.0.x library refuses the table.

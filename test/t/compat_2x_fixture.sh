@@ -5,6 +5,7 @@
 # the files of an empty table and index created by the build under test. Then: sift.verify, the results the 2.x build
 # gave (counts, sums, ranked ids, segments), the same counts from the heap, and further DML that works on the 2.x
 # segments: more deletes with VACUUM, inserts with a promotion, a forced merge of everything into a new segment.
+# Column-format compatibility and legacy write buffers are covered by compat_31_column.sh.
 # COMPAT_FIXTURE names another fixture directory (compat_30_fixture.sh runs this test on the files of 3.0). The segments of the
 # fixture are older than segment format 3: they are read as they are, a promotion writes a segment of format 3 next to them (and
 # raises the metapage to 1.3), and a merge or VACUUM-driven rewrite leaves nothing but format 3.

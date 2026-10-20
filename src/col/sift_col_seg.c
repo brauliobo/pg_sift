@@ -97,6 +97,18 @@ sw_pad8(SiftStreamWriter *sw)
 	sift_sw_write(sw, zeros, ALIGN8(sift_sw_tell(sw)) - sift_sw_tell(sw));
 }
 
+int
+sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact)
+{
+	int			minor = setting;
+
+	if (minor >= SIFT_COL_FORMAT_KINDS)
+		minor = schema->kinds && kinds_exact ? SIFT_COL_FORMAT_KINDS : SIFT_COL_FORMAT_TAGS;
+	if (schema->wide)
+		minor = Max(minor, SIFT_COL_FORMAT_WIDE);	/* a wide schema has no older form */
+	return minor;
+}
+
 SiftColSegWriter *
 sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol, int format, MemoryContext mcxt)
 {
@@ -108,7 +120,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->schema = schema;
 	w->pol = pol;
 	w->mcxt = mcxt;
-	w->format = schema->wide ? SIFT_COL_FORMAT_WIDE : format;	/* a wide schema has no older form */
+	w->format = sift_col_write_minor(schema, format, true);
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
@@ -249,6 +261,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	Size		start;
 	uint64		off;
 
+	if (!sift_cbatch_kinds_exact(b))
+		w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
 	if (w->nsb > 0 && b->sb <= w->sbdir[w->nsb - 1].sb)
 		elog(ERROR, "sift_col: superblock %u added after %u", b->sb, w->sbdir[w->nsb - 1].sb);
@@ -959,6 +973,35 @@ sift_col_leaf_stats_init(SiftColLeafStats *acc)
 	acc->has_range = acc->has_sum = true;
 }
 
+/* The kinds of a leaf in a unit of this segment that has nnull NULL slots among nvals: complete in a segment of format SIFT_COL_FORMAT_KINDS, and where nothing needs them */
+static bool
+leaf_kinds_exact(const SiftColSegment *seg, const SiftColDef *def, uint32 nnull, uint32 nvals)
+{
+	if (seg->entry.format >= SIFT_COL_FORMAT_KINDS || !sift_col_def_has_kinds(def))
+		return true;
+	return nnull == 0 && !((def->flags & SIFT_COLD_ASTEXT) && nvals > 0);
+}
+
+bool
+sift_cseg_kinds_exact(SiftColSegment *seg)
+{
+	if (seg->entry.format >= SIFT_COL_FORMAT_KINDS)
+		return true;
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		const SiftColDef *def = &seg->schema->cols[c];
+		const ZoneArrays *z;
+
+		if (!sift_col_def_has_kinds(def))
+			continue;
+		z = zone_arrays(seg, c);
+		for (uint32 u = 0; u < seg->nsb; u++)
+			if (!leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]))
+				return false;
+	}
+	return true;
+}
+
 void
 sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 {
@@ -971,6 +1014,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 
 		acc->nvals += z->nvals[u];
 		acc->nnull += z->nnull[u];
+		acc->nokinds |= !leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]);
 		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
 		{
 			acc->has_range = acc->has_sum = false;

@@ -341,7 +341,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	for (;;)
 	{
 		if (h->gen == 0)
-			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 		flag_overflow(index, h, ovf);
 		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
@@ -378,7 +378,7 @@ has_rows(Relation index, const SiftSegEntry *entry)
 uint64
 sift_cwbuf_seal(Relation index, bool force)
 {
-	return sift_lane_seal(index, force, HDRSIZE, limit_pages(index), has_rows);
+	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, limit_pages(index), has_rows);
 }
 
 void
@@ -558,8 +558,11 @@ get_value(SiftCWbufReader *r, const SiftColDef *def, const uint8 *p, const uint8
 	v->isnull = (flag & (COLV_NULL | COLV_OVERFLOW)) != 0;
 	v->overflow = (flag & COLV_OVERFLOW) != 0;
 	v->tag = flag >> COLV_TAG_SHIFT;
-	if (!sift_col_tag_valid(v))
+	if (v->tag > SIFT_COLTAG_MAX || !sift_col_tag_valid(v))
 		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu has the flag byte 0x%02x.", (unsigned long long) r->entry.gen, flag);
+	if (r->entry.format < SIFT_COL_FORMAT_KINDS && sift_col_def_has_kinds(def) && v->tag == SIFT_COLTAG_UNKNOWN &&
+		!v->overflow && (v->isnull || (def->flags & SIFT_COLD_ASTEXT)))
+		v->tag = SIFT_COLTAG_UNSURE;
 	if (v->isnull)
 		return p;
 	if (def->kind == SIFT_COLK_GROUP)
