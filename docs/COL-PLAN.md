@@ -175,6 +175,7 @@ Listed once, with the reason:
 - An expression of more than three leaves, or reading a column that is not in the index: the combo would need the tuples of four leaves.
 - Volatile functions, sub-plans, aggregates and window functions inside the expression: not constant per tuple of leaf values.
 - A `numeric` column that the index cannot hold (precision over 18, unconstrained, negative scale) is not on the index, so no query reads it from the index (request below). The digit limits above do not apply to it.
+- A filter on an expression (`lower(col) IN (...)`) is pushed, but PostgreSQL estimates 1% of the rows for an expression, so the normal plan can look cheaper than the scan: `CREATE STATISTICS s (mcv) ON lower(col) FROM t; ANALYZE t` gives the planner the real share.
 
 ## Executor
 
@@ -486,14 +487,17 @@ The comparator found no difference in the 145 corpus runs, 880 fixture runs and 
 
 ## Stays on the normal plan
 
-What the planner refuses among the joins and the per-order form, each once with the reason. The traps with a fixture (`t_not_in_subquery`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
+What the planner refuses among the joins, the per-order form and a few jsonb tests, each once with the reason. The traps with a fixture (`t_not_in_subquery`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
 
 | Shape | Reason |
 |---|---|
 | `FULL JOIN` to a table | the unmatched rows of the table would be output rows with no source row; the scan only emits tuples of source rows |
 | `RIGHT JOIN` | PostgreSQL turns it into a `LEFT` join of the other side, so the table is the preserved side: the same reason as `FULL` |
 | `NOT IN (SELECT ..)` | a hashed `SubPlan` with the NULL rule of `NOT IN` (one NULL member turns every answer into NULL); it is no anti join. `NOT EXISTS` is (pushed) |
+| a correlated `LEFT JOIN LATERAL (SELECT .. LIMIT 1)` lookup | the row PostgreSQL takes among duplicate keys depends on its plan, so the scan cannot be exact unless the key is unique: write it as a join on the key |
 | join to a sub-select with `GROUP BY`/`LIMIT`/`DISTINCT`, a CTE that is read more than once, `VALUES`, a function in `FROM` | PostgreSQL does not pull them up to a base table, so the right side is a plan, not a table the scan can read at start; running a child plan under the node is not done |
+| the scanned table on the nullable side of an outer join (`spine s LEFT JOIN items t ON t.d <@ s.range`) | the scan would have to return a group for every row of the other table (a `RIGHT JOIN`): write the aggregate first and join the spine above it, which is pushed |
+| a lookup keyed from a column of another joined lookup | a second join level (one combo holds one table); a literal, a `CASE`, or a join of the lookup to the scan's own column is pushed |
 | join with no equality between leaves and columns of the table (a range or inequality join, `ON true`) | nothing to hash the table by; each distinct tuple would scan the table |
 | more than 3 keys, more than 4 joined tables, more than 8 combos | the limits of the spec (`SIFT_AGG_MAX_JOINS`, `SIFT_AGG_MAX_COMBOS`) |
 | key or filter that is volatile (`random()`, `clock_timestamp()`) | PostgreSQL evaluates it per row; the combo cache evaluates it once per distinct tuple |
@@ -505,7 +509,10 @@ What the planner refuses among the joins and the per-order form, each once with 
 | volatile outer qual above the arms (`WHERE random() < 0.5`) | PostgreSQL evaluates it once per inner group; the scan would evaluate it per cell, in another order; fixture `t_two_level_where_volatile` |
 | outer qual above the arms that mixes a group column of an arm with an inner aggregate (`avg_price > 100 OR kind = ..`) | the column belongs to the cell's outer group, which is known only when the cell is attributed; fixture `t_two_level_where_mixed` (the inner aggregate may still run in the scan) |
 | outer qual that reads the columns of several arms of the `UNION ALL` (it stays as a filter of the append) | a cell belongs to one arm; the qual would need the other arms' cells of the same row, which the scan has not seen yet |
+| a non-null constant as the key of an arm (`SELECT id, 'z', avg(x) .. GROUP BY id`; `NULL` is pushed) | the arms are the cells of one outer key, and no arm's group expression holds the constant: the key's value table would take it from the arm |
+| `max`/`min` as the inner aggregate of an arm, or `FILTER` or `CASE` over a text leaf in one | the inner aggregates are `count`, `sum` and `avg`; the arms are pushed one by one and the outer aggregate runs in PostgreSQL |
 | arms with more than `SIFT_AGG_MAX_KEYS` (5) keys in all: the outer keys, the cell keys and the number of the set | the group tables take 5 key ids per group |
+| `x ? 'k'` on an object (`jsonb_exists`), a comparison of jsonb values (`x['k'] = '"v"'`), `x['k'] IS NOT NULL` | a leaf stores NULL for a missing key and for a JSON null alike, and a jsonb comparison tells a string from a number: they are no function of the stored values. `x ->> 'k'` and the cast to the leaf's own type are pushed |
 
 ## Open
 
