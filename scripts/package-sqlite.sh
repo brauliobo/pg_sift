@@ -34,7 +34,7 @@ build() { # build REF OUTDIR
 	local ref=$1 out ver epoch src; mkdir -p "$2" && out=$(cd "$2" && pwd)
 	ver=$(version "$ref"); epoch=$(git -C "$REPO" log -1 --format=%ct "$ref")
 	src=$(mktemp -d -p "$TMP")
-	git -C "$REPO" archive "$ref" sqlite src LICENSE NOTICE | tar x -C "$src"
+	git -C "$REPO" archive "$ref" sqlite src scripts LICENSE NOTICE | tar x -C "$src"
 	docker run --rm --cpus 4 -e VER="$ver" -e EPOCH="$epoch" -e HOST_UID="$(id -u)" \
 		-v "$REPO/packaging/sqlite:/pkg:ro" -v "$src:/src:ro" -v "$out:/out" "$BUILD_IMAGE" /pkg/container.sh build
 	echo "built $out/sift-sqlite-$ver-linux-x86_64.tar.gz"

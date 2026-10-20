@@ -35,7 +35,7 @@ build() { # build REF OUTDIR
 	local ref=$1 out ver epoch src work name s; mkdir -p "$2" && out=$(cd "$2" && pwd)
 	ver=$(version "$ref"); epoch=$(git -C "$REPO" log -1 --format=%ct "$ref"); name=sift-mariadb-$ver-linux-x86_64
 	src=$(mktemp -d -p "$TMP"); work=$(mktemp -d -p "$TMP")
-	git -C "$REPO" archive "$ref" mariadb src sqlite/host LICENSE NOTICE | tar x -C "$src"
+	git -C "$REPO" archive "$ref" mariadb src sqlite/host scripts LICENSE NOTICE | tar x -C "$src"
 	for s in $SERIES; do
 		docker run --rm --cpus "${DOCKER_CPUS:-4}" --entrypoint bash -e SERIES="$s" -e VER="$ver" -e HOST_UID="$(id -u)" \
 			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$src:/src:ro" -v "$work:/out" "mariadb:$s" /pkg/container.sh build

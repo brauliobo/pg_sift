@@ -26,6 +26,7 @@ on:
       - scripts/package.sh
       - scripts/package-sqlite.sh
       - scripts/package-mariadb.sh
+      - scripts/port-isa-check.sh
       - sqlite/**
       - mariadb/**
       - .github/workflows/release.yml
@@ -68,8 +69,8 @@ jobs:
             files=$(git diff --name-only "$BEFORE" HEAD)
             packages=false sqlite=false mariadb=false
             grep -Eq '^(packaging/[^/]+|packaging/debian/.*|scripts/package\.sh|\.github/workflows/release\.yml)$' <<<"$files" && packages=true
-            grep -Eq '^(sqlite/.*|packaging/sqlite/.*|scripts/package-sqlite\.sh|\.github/workflows/release\.yml)$' <<<"$files" && sqlite=true
-            grep -Eq '^(mariadb/.*|sqlite/host/.*|packaging/mariadb/.*|scripts/package-mariadb\.sh|\.github/workflows/release\.yml)$' <<<"$files" && mariadb=true
+            grep -Eq '^(sqlite/.*|packaging/sqlite/.*|scripts/package-sqlite\.sh|scripts/port-isa-check\.sh|\.github/workflows/release\.yml)$' <<<"$files" && sqlite=true
+            grep -Eq '^(mariadb/.*|sqlite/host/.*|packaging/mariadb/.*|scripts/package-mariadb\.sh|scripts/port-isa-check\.sh|\.github/workflows/release\.yml)$' <<<"$files" && mariadb=true
           else
             packages=true sqlite=false mariadb=false
             git cat-file -e "$REF:sqlite/VERSION" 2>/dev/null && sqlite=true
