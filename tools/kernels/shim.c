@@ -1,7 +1,7 @@
 /* Stand-ins for the backend-side cpu module (same detection rules as src/core/sift_cpu.c). */
 #include "harness.h"
 
-#include "sift_bitmap_kern.h"
+#include "bm25/bitmap_kern.h"
 
 SiftCpu		sift_cpu;
 

@@ -8,7 +8,7 @@
 
 #include "mb/pg_wchar.h"
 
-#include "sift_analyze.h"
+#include "bm25/analyze.h"
 #include "../pgshim.h"
 
 static SiftAnalyzer *

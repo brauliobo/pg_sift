@@ -36,7 +36,7 @@
 
 #include "sift_col_seg.h"
 #include "sift_lane.h"
-#include "sift_maint.h"
+#include "bm25/maint.h"
 #include "sift_table.h"
 
 #define MAX_MERGE_STEPS	16

@@ -20,12 +20,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "sift_analyze.h"
-#include "sift_bitmap.h"
+#include "bm25/analyze.h"
+#include "bm25/bitmap.h"
 #include "sift_cmp.h"
 #include "sift_cpu.h"
-#include "sift_kernels.h"
-#include "sift_prefix.h"
+#include "bm25/kernels.h"
+#include "bm25/prefix.h"
 
 __thread char sift_err_msg[1024];
 

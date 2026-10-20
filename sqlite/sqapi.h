@@ -12,10 +12,10 @@
 #include "sift.h"
 #include "sift_page.h"
 #include "sift_store.h"
-#include "sift_analyze.h"
-#include "sift_posting.h"
-#include "sift_segment.h"
-#include "sift_merge.h"
+#include "bm25/analyze.h"
+#include "bm25/posting.h"
+#include "bm25/segment.h"
+#include "bm25/merge.h"
 
 /* rowid <-> document key: block = rowid >> SQ_ROWID_SHIFT, offset = (rowid & mask) + 1; rowids 0 .. 2^37 - 1 */
 #define SQ_ROWID_SHIFT	5
@@ -150,7 +150,7 @@ extern bool sq_delete_key(SqStore *st, SiftKey key);
 
 /* ---------- sqmerge.c ---------- */
 
-/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/bm25/sift_runs.c),
+/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/bm25/runs.c),
  * publishes it and retires them in the caller's transaction. Nothing is published when nothing live is left (they are
  * retired all the same) */
 extern void sq_merge(SqStore *st, const uint64 *gens, int n);

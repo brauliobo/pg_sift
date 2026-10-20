@@ -26,7 +26,7 @@
 #include "utils/rel.h"
 
 #include "sift.h"
-#include "sift_am.h"
+#include "bm25/am.h"
 #include "sift_col_am.h"
 #include "sift_col_build.h"
 #include "sift_col_seg.h"

@@ -59,7 +59,7 @@ CREATE FUNCTION sift._test_poke(index regclass, blkno int8, "offset" int4, value
 CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;
 
--- Kernels module (src/bm25/sift_kernels_test.c): bit-exact SIMD checks through sift.simd.
+-- Kernels module (src/bm25/kernels_test.c): bit-exact SIMD checks through sift.simd.
 CREATE FUNCTION sift._test_kern_digest(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_kern_digest' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_kern_equiv(seed int8, iters int4) RETURNS int8
@@ -86,7 +86,7 @@ CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
 CREATE FUNCTION sift._test_aggkern_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern_level' LANGUAGE C STRICT;
 
--- Index build (src/bm25/sift_segment_sql.c): every posting decoded from the index.
+-- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
@@ -100,7 +100,7 @@ CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kin
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_formats' LANGUAGE C STRICT;
 
--- Term blobs (src/bm25/sift_segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
+-- Term blobs (src/bm25/segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
 -- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,
 									 OUT codec_len int4, OUT nnib int4)
@@ -123,7 +123,7 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
 
--- Read side (src/bm25/sift_read_test.c): what this backend's reads allocated and did; reset clears the counters.
+-- Read side (src/bm25/read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_read_stats' LANGUAGE C STRICT;
 

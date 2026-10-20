@@ -27,7 +27,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 - **Writes.** One writer (SQLite's). INSERT/UPDATE/DELETE go to an in-memory inverted buffer; commit (xSync), the
   posting threshold, or a savepoint boundary flushes it as one immutable segment published in the manifest in the same
   SQLite transaction, so rollback, crash and WAL readers are consistent by construction.
-- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/bm25/sift_runs.c`): the live part of every input (documents, then every term with its
+- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/bm25/runs.c`): the live part of every input (documents, then every term with its
   postings and positions) is spilled to a run, a temporary file, and the runs are merged by a k-way merge into the output segment, in several
   passes when they do not fit the memory budget (`maintenance_work_mem`, 64 MiB here); memory is the reader buffers plus one term, never the inverted
   index. Before this unification the SQLite host merged the inputs in lockstep without a temporary file (same result, byte for byte; on the 12-segment 218k
@@ -37,13 +37,13 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   (tests inject a fault and `_exit` in the middle of the write). Merging purges deleted documents from df/N/avgdl, so
   ranked scores of a table with deletes move at the merge, not before (as in pg_sift until vacuum).
 - **Threads.** The shim's allocation and error state is thread-local; the engine's two process-global mutable objects are
-  made safe by the build (the scan limit of `sift_bitmap.c` becomes `_Thread_local` through a `sed` copy in `build/gen`,
-  the wide-prefix cache of `sift_prefix.c` is behind a mutex), `src/` is not touched. Each connection has its own
+  made safe by the build (the scan limit of `bm25/bitmap.c` becomes `_Thread_local` through a `sed` copy in `build/gen`,
+  the wide-prefix cache of `bm25/prefix.c` is behind a mutex), `src/` is not touched. Each connection has its own
   tables, cache and statements, so threads with their own connections, and one connection shared by threads in
   serialized mode, work (stress test, below). The loader sets `sqlite3_api` once under a lock.
 - **Parallel scans** (`parallel=N`, default off). A ranked top-k or a count of a phrase runs on N participants: the
   caller and threads of a process-wide pool, all over the same segments, using the engine's own distribution
-  (`sift_parallel.c`: morsels of units, shared threshold, last finisher merges; result identical to the serial one). It
+  (`bm25/parallel.c`: morsels of units, shared threshold, last finisher merges; result identical to the serial one). It
   needs the index resident in the page cache and no document text, and is used only when the estimated postings are
   100,000 or more; otherwise the scan is serial. See the measurements for what it buys.
 - **SIMD.** AVX2/AVX-512 kernels are chosen at load from the CPU (`sift_isa()`), capped by `SIFT_SIMD=scalar|avx2|avx512`
@@ -58,7 +58,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   for matches without a value.
 - **Host implementation** (`host/`). The vocabulary of `src/core/sift_host.h` over the C library: memory contexts over malloc, `ereport` as `siglongjmp`
   (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
-  atomics/spin locks/dsa for `sift_parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
+  atomics/spin locks/dsa for `bm25/parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
   `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/core/sift_store.h` (extent index, padding and
   extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (write buffers, visibility).
 - **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `write_buffer_limit` there), the run merge
@@ -88,7 +88,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   each reader checks inside a read transaction that `count(*)` equals `sift_count`, ranks are ordered, highlights are
   well formed, `LIMIT` is honoured, then the index is integrity-checked.
   - TSan (multi-thread and serialized, 4 readers; one shared connection; parallel scans on): clean after fixing one race
-    in the loader (the global `sqlite3_api`). One benign race inside the unmodified `sift_parallel.c` is suppressed
+    in the loader (the global `sqlite3_api`). One benign race inside the unmodified `bm25/parallel.c` is suppressed
     (`tests/tsan.supp`): the emitting participant reads the attach count without its lock, and a participant that attaches
     after the work is gone publishes an empty slot.
   - ASan+UBSan (stress with parallel scans, both test files, FTS5 differential): clean. The engine's `qsort(NULL, 0, ...)` in
@@ -169,11 +169,11 @@ serial reruns of AND gave 4534 and 5782 qps). Hence it stays **off by default** 
 
 ## What is not shared yet
 
-Measured, not guessed: 8-token shingles of the code (3.8 percent of `sqbuild.c` appears in `sift_build.c` before the split, 5 percent of the old `sqmerge.c` in `sift_maint.c`);
+Measured, not guessed: 8-token shingles of the code (3.8 percent of `sqbuild.c` appears in `bm25/build.c` before the split, 5 percent of the old `sqmerge.c` in `bm25/maint.c`);
 the likeness is in the idea. The merge is now one implementation; what is left:
 
 | SQLite | PostgreSQL | what differs | verdict |
 |---|---|---|---|
-| `sqbuild.c` `SqInv` (malloc buffer, key-hash `dmap`, per-term posting arrays, `sq_inv_write`) | `sift_runs.c` `SiftInvBuf` (delta-packed slices within a budget, spill to a sorted run) | SqInv takes documents in any order, deletes a buffered document and has no budget; SiftInvBuf requires strictly ascending keys (its postings are deltas of document ordinals) and spills | keep separate for now. To share: SQLite would keep the pending documents as (key, dl, terms) like PostgreSQL's promotion (`sift_maint.c` `read_docs`), sort them at flush and feed `SiftInvBuf` (spilling to runs over the `pending_postings` budget); deletes of pending documents drop them from the list. Costs memory per pending document (a term list instead of 16-byte postings), so the default threshold must come down; decide on `bench/dml.py` and `bench/build.py` peak RSS |
-| `sqaux.c` highlight/snippet | `sift_funcs.c` `sift.highlight` | different results by design: SQLite marks a phrase occurrence as one span and snippets windows; PostgreSQL wraps every matching token | none: a shared helper would change one of the two outputs |
-| `sqaux.c` facets | `sift_facet.c` | PostgreSQL counts on bitmaps with the visibility map and the write buffers; SQLite on the matches of the evaluator (the terms come from the shared `sift_seg_dump`) | none |
+| `sqbuild.c` `SqInv` (malloc buffer, key-hash `dmap`, per-term posting arrays, `sq_inv_write`) | `bm25/runs.c` `SiftInvBuf` (delta-packed slices within a budget, spill to a sorted run) | SqInv takes documents in any order, deletes a buffered document and has no budget; SiftInvBuf requires strictly ascending keys (its postings are deltas of document ordinals) and spills | keep separate for now. To share: SQLite would keep the pending documents as (key, dl, terms) like PostgreSQL's promotion (`bm25/maint.c` `read_docs`), sort them at flush and feed `SiftInvBuf` (spilling to runs over the `pending_postings` budget); deletes of pending documents drop them from the list. Costs memory per pending document (a term list instead of 16-byte postings), so the default threshold must come down; decide on `bench/dml.py` and `bench/build.py` peak RSS |
+| `sqaux.c` highlight/snippet | `bm25/funcs.c` `sift.highlight` | different results by design: SQLite marks a phrase occurrence as one span and snippets windows; PostgreSQL wraps every matching token | none: a shared helper would change one of the two outputs |
+| `sqaux.c` facets | `bm25/facet.c` | PostgreSQL counts on bitmaps with the visibility map and the write buffers; SQLite on the matches of the evaluator (the terms come from the shared `sift_seg_dump`) | none |

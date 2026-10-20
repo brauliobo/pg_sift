@@ -7,7 +7,7 @@
 
 #include "sqapi.h"
 
-#include "sift_eval.h"
+#include "bm25/eval.h"
 
 typedef enum SqContent
 {

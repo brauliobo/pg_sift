@@ -11,7 +11,7 @@ std='assert|ctype|errno|float|inttypes|limits|locale|math|setjmp|stdarg|stdatomi
 intrinsics='immintrin|emmintrin|x86intrin|cpuid'
 compress='lz4|lz4hc|zstd'	# the optional libraries of src/col/sift_colz.c, behind SIFT_HAVE_LZ4 / SIFT_HAVE_ZSTD
 mapfile -t files < <(cat "$SRC/portable.list" "$SRC/portable-col.list" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
-names=("${files[@]##*/}")
+names=("${files[@]}" "${files[@]##*/}")	# a file is included by its path from src/ (the bare name is the layout before the rename of its folder)
 bad=0
 for f in "${files[@]}"; do
 	[[ -f $SRC/$f ]] || { echo "portable.list: $f does not exist"; bad=1; continue; }

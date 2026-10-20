@@ -1,7 +1,7 @@
 /*
  * sift_col_wbuf.c - write buffers of a column index: aminsert appends one row record to one of
  * SIFT_LANES lane chains of the active segment, each append one generic WAL record per page touched. The lane machinery (creation, tail
- * locking, growth, sealing, walks) is sift_lane.c's, shared with the BM25 doc records of sift_wbuf.c; this file is the record.
+ * locking, growth, sealing, walks) is sift_lane.c's, shared with the BM25 doc records of bm25/wbuf.c; this file is the record.
  *
  * A record is SiftColRecHead and `len` payload bytes, 4-byte aligned. The payload of a row, for every top level leaf in id order, is a flag
  * byte (COLV_NULL, COLV_OVERFLOW) and, unless NULL, the value: INT a zigzag varint, F4 and F8 their raw bytes, STR a varint length and the

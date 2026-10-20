@@ -10,8 +10,8 @@
 #                                make SIMD=none B=build-scalar span-test with the vector-free flags
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
-# only src/core/sift_host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: sift_bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
-# $(B)/gen, src/ is untouched) and sift_prefix.c's one entry point is renamed so that sqinit.c can serialize it.
+# only src/core/sift_host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: bm25/bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
+# $(B)/gen, src/ is untouched) and bm25/prefix.c's one entry point is renamed so that sqinit.c can serialize it.
 SRC := ../src
 include $(SRC)/areas.mk
 B ?= build
@@ -23,14 +23,14 @@ ARCH := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
 SIMD ?= auto
 # SIFT_ISA: the x86-64 baseline, SIMD kernels opt in per function (see src/core/sift_cpu.h); -ffp-contract=off keeps scores bit-identical.
 # Other architectures have no vector kernels (SIMD=none): the vector levels dispatch to the scalar tables, and the x86 CPU probes
-# of sift_bitmap.c answer "no"
+# of bm25/bitmap.c answer "no"
 ifeq ($(ARCH),x86_64)
 ISA := -march=x86-64 -mtune=generic
 else
 SIMD := none
 CPUPROBE := '-D__builtin_cpu_init()=' '-D__builtin_cpu_supports(x)=0'
 endif
-SIMD_SRC := sift_bitmap_avx2 sift_bitmap_avx512 sift_kernels_avx2 sift_kernels_avx512
+SIMD_SRC := bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/kernels_avx2 bm25/kernels_avx512
 ifeq ($(SIMD),none)
 EXTRA += -DSQ_SIMD_NONE
 ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar -Dsift_kernels_avx2=sift_kernels_scalar \
@@ -41,7 +41,7 @@ CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -
 LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
-PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(notdir $(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable.list)))))
+PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable.list))))
 OWN := host host_regex host_stubs sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
@@ -50,20 +50,23 @@ all: $(B)/sift.so
 $(B)/sift.so: $(OBJS)
 	$(CC) -shared $(EXTRA) -o $@ $(OBJS) $(LDLIBS)
 
-# sift_bitmap.c: the scan limit of sift_seek_eq is a global written during scans; one per thread
-$(B)/gen/sift_bitmap.c: $(SRC)/bm25/sift_bitmap.c | $(B)/gen
+# bm25/bitmap.c: the scan limit of sift_seek_eq is a global written during scans; one per thread
+$(B)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(B)/gen
 	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< > $@
 	grep -q '_Thread_local uint32_t seek_limit' $@
 
-$(B)/sift_bitmap.o: $(B)/gen/sift_bitmap.c | $(B)
+$(B)/bm25/bitmap.o: $(B)/gen/bitmap.c | $(B)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
-# sift_prefix.c keeps a process-wide cache of wide-prefix unions; sqinit.c wraps the entry point in a mutex
-$(B)/sift_prefix.o: $(SRC)/bm25/sift_prefix.c | $(B)
+# bm25/prefix.c keeps a process-wide cache of wide-prefix unions; sqinit.c wraps the entry point in a mutex
+$(B)/bm25/prefix.o: $(SRC)/bm25/prefix.c | $(B)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Dsift_prefix_union=sq_real_sift_prefix_union -c -o $@ $<
 
 # SIMD=none: the dispatch tables of the vector levels are the scalar ones (the vector files are not built)
-$(B)/sift_kernels.o: $(SRC)/bm25/sift_kernels.c | $(B)
+$(B)/bm25/kernels.o: $(SRC)/bm25/kernels.c | $(B)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
 # sift_version() reports it: rebuild sqinit.o when it changes
@@ -71,6 +74,10 @@ $(B)/gen/version: FORCE | $(B)/gen
 	@echo '$(SIFT_VERSION)' | cmp -s - $@ || echo '$(SIFT_VERSION)' > $@
 $(B)/sqinit.o: $(B)/gen/version
 FORCE:
+
+$(B)/%.o: $(SRC)/%.c | $(B)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(B)/%.o: %.c | $(B)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -87,7 +94,7 @@ check test: all
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-sqlite.sh).
 isa-check: all
-	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o
+	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o $(B)/*/*.o
 
 # The C stress test: N threads, each with a connection, querying while one writes. The extension is linked in and
 # registered with sqlite3_auto_extension.
@@ -95,12 +102,13 @@ $(B)/stress: tests/stress.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -o $@ tests/stress.c $(OBJS) $(LDLIBS) -lsqlite3
 
 # the column engine of src/portable-col.list, unmodified, against this host; SIMD=none leaves out its vector files and aliases their tables
-COLSRC := $(notdir $(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable-col.list))))
+COLSRC := $(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable-col.list)))
 COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512,$(s)),$(s)))),$(COLSRC))
 COLOBJS := $(addprefix $(B)/,$(addsuffix .o,$(COLSRC)))
 COLALIASES := $(if $(filter none,$(SIMD)),$(foreach l,avx2 avx512,-Dsift_col_kernels_$(l)=sift_col_kernels_scalar -Dsift_cc_kernels_$(l)=sift_cc_kernels_scalar \
 	-Dsift_shred_kernels_$(l)=sift_shred_kernels_scalar -Dsift_aggkern_$(l)=sift_aggkern_scalar))
-$(COLOBJS): $(B)/%.o: %.c | $(B)
+$(COLOBJS): $(B)/%.o: $(SRC)/%.c | $(B)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COLALIASES) -c -o $@ $<
 
 $(B)/col-smoke: tests/col_smoke.c $(COLOBJS) $(OBJS) | $(B)
@@ -144,6 +152,6 @@ cross-objs: $(OBJS)
 clean:
 	rm -rf build build-asan build-tsan build-scalar build-aarch64
 
--include $(wildcard $(B)/*.d)
+-include $(wildcard $(B)/*.d $(B)/*/*.d)
 
 .PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan

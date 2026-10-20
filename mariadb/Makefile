@@ -27,7 +27,7 @@ CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing
 LIBS    = -lm -lpthread -ldl
 
 # the portable core, one list for every host and for scripts/check-portable.sh
-PORTABLE := $(notdir $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
+PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
 HOSTC    := host host_stubs
 OWN      := host_regex store stubs
 GLUE     := engine query feed merge
@@ -35,8 +35,9 @@ OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLU
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
 
-PORTOBJS := $(filter-out $(OUT)/sift_bitmap.o,$(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE))))
-$(PORTOBJS): $(OUT)/%.o: %.c | $(OUT)
+PORTOBJS := $(filter-out $(OUT)/bm25/bitmap.o,$(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE))))
+$(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
@@ -52,11 +53,12 @@ $(OUT)/host_stubs.o: $(SQHOST)/host_stubs.c | $(OUT)
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the seek limit of the bitmap cursors is a global of src/bm25/sift_bitmap.c that a query sets while it seeks: per thread here
-$(OUT)/gen/sift_bitmap.c: $(SRC)/bm25/sift_bitmap.c | $(OUT)/gen
+# the seek limit of the bitmap cursors is a global of src/bm25/bitmap.c that a query sets while it seeks: per thread here
+$(OUT)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(OUT)/gen
 	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< >$@
 	grep -q '_Thread_local uint32_t seek_limit' $@
-$(OUT)/sift_bitmap.o: $(OUT)/gen/sift_bitmap.c | $(OUT)
+$(OUT)/bm25/bitmap.o: $(OUT)/gen/bitmap.c | $(OUT)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT) $(OUT)/gen:
@@ -86,8 +88,8 @@ mdb-inc:
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-mariadb.sh).
 isa-check: $(OUT)/libsift_udf.so
-	@sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o
+	@sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o
 
 .PHONY: all mdb-inc isa-check
 
--include $(wildcard $(OUT)/*.d)
+-include $(wildcard $(OUT)/*.d $(OUT)/*/*.d)

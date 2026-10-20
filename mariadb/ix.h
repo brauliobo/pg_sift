@@ -17,7 +17,7 @@
 #include <pthread.h>
 
 #include "sift_page.h"
-#include "sift_segment.h"
+#include "bm25/segment.h"
 #include "engine.h"
 #include "store.h"
 

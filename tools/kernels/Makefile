@@ -8,13 +8,13 @@
 OUT     ?= /tmp/sift-kernels-tools
 N       ?= 2
 
-LIB      = $(SRC)/bm25/sift_kernels.c $(SRC)/bm25/sift_kernels_avx2.c $(SRC)/bm25/sift_kernels_avx512.c \
+LIB      = $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c \
            $(SRC)/col/sift_col_kern.c $(SRC)/col/sift_col_kern_avx2.c $(SRC)/col/sift_col_kern_avx512.c \
            $(SRC)/col/sift_shred_kern.c $(SRC)/col/sift_shred_kern_avx2.c $(SRC)/col/sift_shred_kern_avx512.c \
            $(SRC)/col/sift_colcodec_kern.c $(SRC)/col/sift_colcodec_avx2.c $(SRC)/col/sift_colcodec_avx512.c \
            $(SRC)/agg/sift_aggkern.c $(SRC)/agg/sift_aggkern_avx2.c $(SRC)/agg/sift_aggkern_avx512.c \
-           $(SRC)/bm25/sift_bitmap_scalar.c $(SRC)/bm25/sift_bitmap_avx2.c $(SRC)/bm25/sift_bitmap_avx512.c
-HDR      = $(SRC)/bm25/sift_kernels.h $(SRC)/bm25/sift_kernels_int.h $(SRC)/col/sift_col_kern.h $(SRC)/col/sift_col_kern_int.h $(SRC)/col/sift_shred.h $(SRC)/agg/sift_aggkern.h $(SRC)/col/sift_colcodec.h $(SRC)/col/sift_colcodec_int.h harness.h
+           $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c
+HDR      = $(SRC)/bm25/kernels.h $(SRC)/bm25/kernels_int.h $(SRC)/col/sift_col_kern.h $(SRC)/col/sift_col_kern_int.h $(SRC)/col/sift_shred.h $(SRC)/agg/sift_aggkern.h $(SRC)/col/sift_colcodec.h $(SRC)/col/sift_colcodec_int.h harness.h
 
 include ../tools.mk
 

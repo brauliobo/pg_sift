@@ -25,7 +25,7 @@ CREATE EXTENSION pg_sift;
 -- Statistics (N, avgdl, df) are those of the loaded rows, which equal sift's only
 -- when no indexed-but-unvacuumed versions exist (fresh build, REINDEX).
 --
--- Canonical float4 evaluation (sift_kernels.h); every step is
+-- Canonical float4 evaluation (bm25/kernels.h); every step is
 -- rounded to float4 exactly as C float arithmetic with -ffp-contract=off:
 --   idf   = (float4) log(1.0 + (N - df + 0.5) / (df + 0.5))          [double]
 --   avgdl = (float4) ((double) sum_dl / N)

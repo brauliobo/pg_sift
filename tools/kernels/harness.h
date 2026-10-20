@@ -10,7 +10,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "sift_kernels_int.h"
+#include "bm25/kernels_int.h"
 #include "sift_testrng.h"
 
 /* libc, not libpgport */

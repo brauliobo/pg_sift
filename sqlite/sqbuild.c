@@ -1,6 +1,6 @@
 /*
  * sqbuild.c - segment construction for the SQLite table: an in-memory inverted buffer (the role of SiftInvBuf in
- * src/bm25/sift_build.c, whose heap build, spill files and parallel workers do not apply), written as an
+ * src/bm25/build.c, whose heap build, spill files and parallel workers do not apply), written as an
  * immutable segment through the unmodified segment writer, and deletion of one document (sift_seg_delete_key).
  * The merge of segments is in sqmerge.c.
  */

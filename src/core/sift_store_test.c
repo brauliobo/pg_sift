@@ -35,7 +35,7 @@
 #include "utils/guc.h"
 #include "utils/snapmgr.h"
 
-#include "sift_maint.h"
+#include "bm25/maint.h"
 #include "sift_store.h"
 #include "sift_testrng.h"
 

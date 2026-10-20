@@ -36,7 +36,7 @@
 #include "sift_col_am.h"
 #include "sift_col_pagg.h"
 #include "sift_col_seg.h"
-#include "sift_maint.h"
+#include "bm25/maint.h"
 #include "sift_ops.h"
 
 #define ROLLUP_QUEUE		64		/* segments waiting */

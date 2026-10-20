@@ -11,7 +11,7 @@
 
 #include <math.h>
 
-#include "sift_analyze.h"
+#include "bm25/analyze.h"
 #include "sift_cmp.h"
 #include "sift_colcodec_int.h"
 #include "sift_colz.h"

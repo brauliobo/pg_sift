@@ -4,8 +4,8 @@ CFLAGS  ?= -O2 -g
 CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function $(SIFT_INC)
 SRC      = ../../src
 include $(SRC)/areas.mk
-LIB      = $(SRC)/bm25/sift_bitmap.c $(SRC)/bm25/sift_bitmap_scalar.c $(SRC)/bm25/sift_bitmap_avx2.c $(SRC)/bm25/sift_bitmap_avx512.c
-HDR      = $(SRC)/bm25/sift_bitmap.h $(SRC)/bm25/sift_bitmap_kern.h
+LIB      = $(SRC)/bm25/bitmap.c $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c
+HDR      = $(SRC)/bm25/bitmap.h $(SRC)/bm25/bitmap_kern.h
 OUT     ?= /tmp/sift-codec
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o
 

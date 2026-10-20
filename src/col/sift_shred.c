@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sift_analyze.h"
+#include "bm25/analyze.h"
 #include "sift_col_kern.h"
 #include "sift_shred.h"
 

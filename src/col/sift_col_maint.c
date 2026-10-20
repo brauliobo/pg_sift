@@ -1,9 +1,9 @@
 /*
  * sift_col_maint.c - promotion, merge, VACUUM, the maintenance worker and the SQL functions of sift_col indexes.
- * The lock, the directory switch, the room, back-pressure, VACUUM and SQL control flow and the sweep are those of sift_maint.c
+ * The lock, the directory switch, the room, back-pressure, VACUUM and SQL control flow and the sweep are those of bm25/maint.c
  * (sift_mops_*); what this file supplies in col_ops is a column segment: how a sealed one is promoted and how segments are merged.
  *
- * Intentional differences from the BM25 maintenance (sift_maint.c), kept so the behaviour of sift_col stays what it was:
+ * Intentional differences from the BM25 maintenance (bm25/maint.c), kept so the behaviour of sift_col stays what it was:
  * - a step holds the maintenance lock exclusively, not in RowExclusiveLock with claims on its segments: one step of the index at a time;
  * - a step is not run in a subtransaction: an ERROR goes on to the caller, nothing is counted for the backoff (the failure flags are never
  *   set, so the backoff of the shared flow never applies) and there is no segment another step could have claimed (busy stays 0);
@@ -33,8 +33,8 @@
 
 #include "sift_col_am.h"
 #include "sift_col_seg.h"
-#include "sift_maint.h"
-#include "sift_merge.h"
+#include "bm25/maint.h"
+#include "bm25/merge.h"
 #include "sift_ops.h"
 
 #define corrupt SIFT_CORRUPT

@@ -45,7 +45,7 @@ Industry shapes, and what they teach:
 **SQLite: a `sift_col` virtual table.** `CREATE VIRTUAL TABLE t USING sift_col(a INT, b TEXT, ts INT)`; shadow tables exactly as the BM25
 vtab (`t_chunks` BLOB rows holding segments, `t_segs` manifest with per-segment min/max, `t_meta`, `t_config`; `xShadowName` declared).
 Writes buffer in memory, flush as one immutable segment of units at commit (`xSync`), published in the manifest in the same
-transaction; deletes set liveness bits; merge reuses `sift_merge.c`. Reads: `xBestIndex` turns `=, <, <=, >, >=, IN, IS NULL, LIKE
+transaction; deletes set liveness bits; merge reuses `bm25/merge.c`. Reads: `xBestIndex` turns `=, <, <=, >, >=, IN, IS NULL, LIKE
 'p%'` and LIMIT into `SiftColPred`s, zone maps and dictionaries prune units, kernels build the selection vector, `xColumn` yields
 values. Honest limit: SQLite calls `xColumn` per value and cannot push an aggregate into a vtab, so the win is **filtered scans** and
 a **table-valued function** `sift_col_agg(t, 'sum(b) group by a where ...')` over `sift_aggkern` (eponymous vtab, one pass). Row
