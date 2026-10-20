@@ -1,5 +1,32 @@
 Parsed test spec with 2 sessions
 
+starting permutation: s1b s2b s1u s2qual s1c s2c
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1u: UPDATE iso_tbl SET v = v + 1 WHERE id = 1;
+step s2qual: SELECT id FROM iso_tbl WHERE v = 10 FOR UPDATE; <waiting ...>
+step s1c: COMMIT;
+step s2qual: <... completed>
+id
+--
+(0 rows)
+
+step s2c: COMMIT;
+
+starting permutation: s1b s2b s1u s2qual s1u s1c s2c
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1u: UPDATE iso_tbl SET v = v + 1 WHERE id = 1;
+step s2qual: SELECT id FROM iso_tbl WHERE v = 10 FOR UPDATE; <waiting ...>
+step s1u: UPDATE iso_tbl SET v = v + 1 WHERE id = 1;
+step s1c: COMMIT;
+step s2qual: <... completed>
+id
+--
+(0 rows)
+
+step s2c: COMMIT;
+
 starting permutation: s1b s2b s1u s2u s1c s2c s2sel
 step s1b: BEGIN;
 step s2b: BEGIN;

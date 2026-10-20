@@ -225,7 +225,6 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 		tmfd->ctid = *tid;
 		tmfd->xmax = del->xid;
 		tmfd->cmax = del->cid;
-		tmfd->traversed = false;
 		switch (del->state)
 		{
 			case SIFT_TBL_DEL_SELF:
@@ -371,6 +370,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
+	tmfd->traversed = false;
 	for (;;)
 	{
 		SiftTblDel	del;
@@ -388,6 +388,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("could not serialize access due to concurrent update")));
 			*tid = tmfd->ctid;
+			tmfd->traversed = true;
 			continue;
 		}
 		if (result != TM_Ok)
@@ -398,8 +399,6 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
 			elog(ERROR, "could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
 		sift_tbl_store(slot, rv.tuple);
-		if (tmfd->traversed)
-			tmfd->traversed = true;
 		return TM_Ok;
 	}
 }
