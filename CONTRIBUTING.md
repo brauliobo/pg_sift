@@ -12,6 +12,8 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
+The gate runs the PostgreSQL of `pg_config` on `PATH` only, and GitHub CI also runs 17: PostgreSQL 17 installs sift into the server's own directories (`SIFT_SUDO` when they are not writable), so run it on a private copy of the installation
+(`cp -a /opt/pgsql-17 /tmp/pg17`, the `postgresql-old-upgrade` package of Arch) with `PATH=/tmp/pg17/bin:$PATH SIFT_TMP=/tmp/sift-pg17 SIFT_PORT=56180 scripts/ci.sh affected`, or one job of it with `SIFT_CI_JOBS`. That build has no Perl TAP modules: the `tap-*.pl` jobs need a server built with `--enable-tap-tests`.
 `make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
 runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown, plain SQL aggregates with `sift.enable_agg` off and on, the results compared,
