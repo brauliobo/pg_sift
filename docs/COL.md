@@ -47,7 +47,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
 - Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.1 library reads minors 3 and 4 in one index
-  as written and rewrites them as minor 4 by merge (docs/COL-JSONB-31.md 5.2). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
+  as written and rewrites them as minor 4 by merge (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
 
@@ -540,8 +540,7 @@ Every hot loop over column data (filters, selection vectors, null bitmaps, zone-
    NULL, falls back downwards for a level the CPU lacks) so tests can run every level.
 3. `static void xxx_rebind(const SiftCpu *cpu) { sift_xxxk = sift_xxx_kernels_for(cpu->active); }` registered once with
    `sift_cpu_register(xxx_rebind)` from `sift_xxx_kernels_init()`, called by `_PG_init`. `sift_cpu_register` calls it immediately and
-   again on every `SET sift.simd`. `SIFT_MAX_REBINDS` in `sift_cpu.c` is raised from 8 to 16 for the column modules (this change is in
-   the first commit of the core branch; other branches take it by rebase).
+   again on every `SET sift.simd`. `SIFT_MAX_REBINDS` in `sift_cpu.c` is 16 (raised from 8 for the column modules).
 4. Kernels take plain arrays and lengths: no `Relation`, no `palloc`, no ereport; portable files (`src/portable.list`, only `sift_host.h`).
    Inputs are padded per the table's comments (`SIFT_COL_PAD` = 64 bytes readable past the last used byte), outputs written in whole words.
 5. A test (`sift._test_col_kernels(level)`, regression `col_kernels_simd`) runs random inputs through every level the CPU supports and
@@ -685,7 +684,6 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
   (section 2.9); `SIFT_COL_MAX_STR` is gone (`SIFT_COL_MAX_VALUE`, `SIFT_COL_DICT_MAX_ENTRY`, `SIFT_COL_DICT_MAX_BYTES`); `sift_cunit_encode` takes `inl[]`
   after `dictmap`; `SiftCTest.pred`, `SIFT_CT_STRS`, `sift_ctest_make_strs`, `sift_cchunk_istr_codes`, `sift_cchunk_strs_length`, `sift_cbatch_str_inline`;
   the lane stores string lengths as varints; `sift.col_leaves` has `inline_chunks`. `-0.0` keeps its sign in the float key.
-- 2026-10: the history of the column engine is squashed into seven commits (contract, kern, enc, shred, codec, lane, index) on `feat/col-core-clean`, which has the tree of `feat/col-core`; the contract commit stays first. Take that branch for the integration.
 - 2026-10: chunk encoding 4 (`CC`) is written: reloption `compression`, `sift_colw_begin(..., pol, ...)` and `sift_cunit_encode(..., pol, ...)` take the policy of each leaf (array, NULL = plain chunks), `SiftColRel.policy`, `sift.col_leaves.other_chunks` is now `codec_chunks`. The column engine headers and sources (`sift_col.h`, `sift_col_enc.[ch]`, `sift_colcodec*`) are listed in `src/portable-col.list`: they are checked by `check-portable.sh` but SQLite and MariaDB do not compile them yet (`sift_col.h` still carries the PostgreSQL types of the SQL entry points and the planner hooks).
 - 2026-10: `numeric(p <= 18, s)` leaves: `SiftColDef.scale` (serialized in the schema, hash included), INT storage of the scaled value, `sift_col_numeric_key` / `sift_col_key_numeric` in `sift_col_am.h`.
 - 2026-10: chunk encoding 4 (`CC`, the chunk codec blob) is reserved in section 2.2; the values at NULL slots of a decoded chunk are unspecified (they were 0).
