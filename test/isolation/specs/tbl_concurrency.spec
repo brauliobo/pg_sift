@@ -34,6 +34,7 @@ step s2u	{ UPDATE iso_tbl SET v = v * 2 WHERE id = 1; }
 step s2ukey	{ UPDATE iso_tbl SET id = 5 WHERE id = 1; }
 step s2d	{ DELETE FROM iso_tbl WHERE id = 1; }
 step s2lock	{ SELECT id FROM iso_tbl WHERE id = 1 FOR UPDATE; }
+step s2qual	{ SELECT id FROM iso_tbl WHERE v = 10 FOR UPDATE; }
 step s2share	{ SELECT id FROM iso_tbl WHERE id = 1 FOR SHARE; }
 step s2nowait	{ SELECT id FROM iso_tbl WHERE id = 1 FOR UPDATE NOWAIT; }
 step s2skip	{ SELECT id FROM iso_tbl ORDER BY id FOR UPDATE SKIP LOCKED; }
@@ -42,6 +43,10 @@ step s2w	{ UPDATE iso_tbl SET v = 0 WHERE id = 1; }
 step s2ins	{ INSERT INTO iso_tbl VALUES (10, 99, 'again') ON CONFLICT (id) DO UPDATE SET v = excluded.v; }
 step s2c	{ COMMIT; }
 step s2sel	{ SELECT id, v, note FROM iso_tbl ORDER BY id; }
+
+# Locking follows updated versions and rechecks the original predicate, including a multi-hop chain
+permutation s1b s2b s1u s2qual s1c s2c
+permutation s1b s2b s1u s2qual s1u s1c s2c
 
 # READ COMMITTED: the second updater waits, then applies its change on the new version
 permutation s1b s2b s1u s2u s1c s2c s2sel

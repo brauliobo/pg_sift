@@ -136,7 +136,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/pg19
-          key: pg19-${{ runner.os }}-${{ steps.pg19.outputs.sha }}
+          key: pg19-contrib-v2-${{ runner.os }}-${{ steps.pg19.outputs.sha }}
 
       - name: Build PostgreSQL 19
         if: ${{ matrix.experimental && steps.pg19-cache.outputs.cache-hit != 'true' }}
@@ -148,10 +148,12 @@ jobs:
           ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --enable-tap-tests --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
           make -j4 -s
           make -s install
-          # what the suites use besides the server: the TAP modules and two contrib modules
+          # what the suites use besides the server: the TAP modules and contrib modules
           make -s -C src/test/perl install
           make -s -C contrib/amcheck install
           make -s -C contrib/pg_walinspect install
+          make -s -C contrib/dblink install
+          make -s -C contrib/pageinspect install
 
       - name: Use PostgreSQL 19
         if: ${{ matrix.experimental }}

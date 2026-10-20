@@ -137,14 +137,22 @@ elem_groups() {
 }
 
 # kill -9 the postmaster and every child at once, as a power loss would; the postmaster is stopped
-# first so that it cannot fork a parallel worker that would outlive the list of children
+# first so that it cannot fork a parallel worker that would outlive the list of children. Stop every child before
+# killing the postmaster: a running parallel leader otherwise observes its death and enters fatal-error cleanup.
 crash() {
-	local pm kids
+	local pm kids pid state
 	pm=$(head -1 "$(dir "$1")/data/postmaster.pid")
 	kill -STOP "$pm" 2>/dev/null
 	while [[ $(cut -d' ' -f3 "/proc/$pm/stat" 2>/dev/null) =~ ^[RSD]$ ]]; do :; done
 	kids=$(pgrep -P "$pm" | tr '\n' ' ')
-	kill -9 "$pm" $kids 2>/dev/null
+	kill -STOP $kids 2>/dev/null
+	for pid in $kids; do
+		while state=$(ps -o stat= -p "$pid"); do
+			[[ $state =~ ^[[:space:]]*[TZ] ]] && break
+			sleep 0.001
+		done
+	done
+	kill -9 $kids "$pm" 2>/dev/null
 	while kill -0 "$pm" $kids 2>/dev/null; do sleep 0.02; done
 }
 
