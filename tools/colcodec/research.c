@@ -5,7 +5,7 @@
  *
  * For each column, per chunk of -c rows: the size under every candidate encoding (real encoders, vertical 32-lane bit-packing,
  * cascades up to depth 2), each layered with lz4 / lz4hc / zstd, plus the per-chunk "pick the smallest" outcome. Throwaway
- * experiments (Gorilla, byte-stream-split, front coding) live here only; what the extension ships is src/col/sift_colcodec.c.
+ * experiments (Gorilla, byte-stream-split, front coding) live here only; what the extension ships is src/col/codec.c.
  */
 #define _GNU_SOURCE
 #include <lz4.h>

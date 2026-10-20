@@ -1,4 +1,4 @@
--- Column codec (src/col/sift_colcodec*.c): the chooser, round trips, filters on the encoded form, random access, the policy option and the
+-- Column codec (src/col/codec*.c): the chooser, round trips, filters on the encoded form, random access, the policy option and the
 -- validation of damaged chunks. Sizes are printed only for policies without LZ4/zstd (their bytes depend on the library version).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

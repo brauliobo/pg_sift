@@ -82,7 +82,7 @@ from the ordinary lane tests and bitmap algebra, `EQ` is both lanes, `IN` is the
 the non-NULL rows. For a STR head (the image) the constants are images and the tests are the bytewise ones of `docs/COL.md` 2.9; lane 1
 is never tested alone. Money is an ordinary INT leaf.
 
-The constant of a SQL predicate is turned into one of those tests by `sift_colw_test` (`sift_col_widescan.c`), which decides what the constant
+The constant of a SQL predicate is turned into one of those tests by `sift_colw_test` (`col/widescan.c`), which decides what the constant
 means against the stored domain, with PostgreSQL's order (NaN above everything, equal to itself): on the scaled integers `x = c` needs c to be a
 multiple of 10^-s (else no row), `x < c` is `x < ceil(c * 10^s)`, `x <= c` is `x <= floor`, `x > c` is `x > floor`, `x >= c` is `x >= ceil`; a
 constant beyond the 128-bit range makes the predicate true for every non-NULL value or for none (a clamp to the extreme `int128`, which no
@@ -123,9 +123,9 @@ of its month, day and time.
 
 The value code (lane keys, the 128-bit decimal text codec, the image encoder and decoder, the interval total) is `src/col/sift_col_wide.[ch]`,
 in `src/portable-col.list`: C library and `sift_host.h` only, no allocation (the caller passes the buffers), no host type. It uses `__int128`
-(`unsigned __int128`), as `sift_col_preagg.h` and `sift_aggspec.h` already do; a compiler without it (MSVC) cannot build the column engine, which
+(`unsigned __int128`), as `col/preagg.h` and `sift_aggspec.h` already do; a compiler without it (MSVC) cannot build the column engine, which
 neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C sqlite col-smoke` compiles `portable-col.list`, and
-`scripts/check-portable.sh` checks both lists). The PostgreSQL side (`sift_col_types.c`) maps `Datum`s and OIDs to it.
+`scripts/check-portable.sh` checks both lists). The PostgreSQL side (`col/types.c`) maps `Datum`s and OIDs to it.
 
 ## 7. The other types: time, enum, uuid, bytea, arrays, ranges, network, timetz and bit strings
 

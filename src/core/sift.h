@@ -17,7 +17,7 @@
  * 1.3: segments of segment format 3 (below) in a BM25 index, or a column group with unfrozen rows (SIFT_SEG_VERS) in a sift_table: the first
  *      one raises the minor, nothing lowers it; all older ones are read as before
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
- * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, sift_col.h)
+ * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
 #define SIFT_FORMAT_MINOR		3
 #define SIFT_FORMAT_MINOR_BASE	2

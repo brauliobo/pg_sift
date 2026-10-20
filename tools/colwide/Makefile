@@ -1,4 +1,4 @@
-# Tests of the portable value code of the wide leaf types (src/col/sift_col_wide.c, docs/COL-LEAFTYPES-32.md); no backend linked.
+# Tests of the portable value code of the wide leaf types (src/col/wide.c, docs/COL-LEAFTYPES-32.md); no backend linked.
 #   nice make -j2 -C tools/colwide test [N=1]      random and boundary tests (N scales the iterations)
 #   make SANITIZE=1 test                            ASan + UBSan build (into $(OUT)-san), what scripts/fuzz.sh colwide runs
 CC      ?= gcc
@@ -15,9 +15,9 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-$(OUT)/test: test.c $(SRC)/col/sift_col_wide.c $(SRC)/col/sift_col_wide.h
+$(OUT)/test: test.c $(SRC)/col/wide.c $(SRC)/col/wide.h
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/sift_col_wide.c $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/wide.c $(LDLIBS)
 
 test: $(OUT)/test
 	$(OUT)/test $(N)

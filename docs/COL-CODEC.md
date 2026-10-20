@@ -5,13 +5,13 @@ The codec compresses and reads **one column chunk**: the values of one leaf for 
 pages, a heap, a snapshot or a relation. Why these encodings, the measurements and the cost rule are in `docs/perf/COMPRESSION.md`; this file is the
 contract the engine (L1, `sift_col_enc.[ch]`) is written against.
 
-Files: `sift_colcodec.[ch]` (writer, reader, policy, string and bit blobs), `sift_colcodec_kern.c` (scalar kernels = the specification, dispatch),
-`sift_colcodec_avx2.c`, `sift_colcodec_avx512.c`, `sift_colcodec_vec.h` (the unpacking written once with vector extensions), `sift_colcodec_int.h` (layout
-helpers shared by those), `sift_colz.[ch]` (the LZ4 / zstd interface and its PostgreSQL implementation), `sift_colcodec_test.c` (`sift._test_cc_*`) with `sift_colcodec_gen.h` (its chunk generators, shared with the standalone test),
+Files: `sift_colcodec.[ch]` (writer, reader, policy, string and bit blobs), `col/codec_kern.c` (scalar kernels = the specification, dispatch),
+`col/codec_avx2.c`, `col/codec_avx512.c`, `col/codec_vec.h` (the unpacking written once with vector extensions), `col/codec_int.h` (layout
+helpers shared by those), `sift_colz.[ch]` (the LZ4 / zstd interface and its PostgreSQL implementation), `col/codec_test.c` (`sift._test_cc_*`) with `col/codec_gen.h` (its chunk generators, shared with the standalone test),
 `tools/colcodec/` (standalone test, benchmark and the research harness).
 
-Portability: the codec includes `sift_host.h`, the C library and its own headers only, and reaches LZ4 and zstd through `sift_colz.h`, a link-time interface
-like the page store (`sift_colz.c` in PostgreSQL). It is therefore portable in the sense of `src/portable.list` but **not listed there yet**: SQLite and
+Portability: the codec includes `sift_host.h`, the C library and its own headers only, and reaches LZ4 and zstd through `col/compress.h`, a link-time interface
+like the page store (`col/compress.c` in PostgreSQL). It is therefore portable in the sense of `src/portable.list` but **not listed there yet**: SQLite and
 MariaDB compile every listed file and have no `sift_colz` implementation. When the portable column engine starts calling the codec, list the codec files
 and add a `colz.c` to `sqlite/host` and `mariadb/host` (`sift_colz_available()` returning false and the three other functions never reached is enough:
 `auto` then writes lightweight chunks only, and a chunk that needs a layer fails with `ERRCODE_FEATURE_NOT_SUPPORTED`).
@@ -67,7 +67,7 @@ sift_cc_filter(c, lo, hi, bits);        /* key in [lo, hi], signed; (n + 63) / 6
 sift_cc_decode(c, int64 *dst);  sift_cc_decode_sel(c, idx, m, dst);  sift_cc_get(c, row);  sift_cc_sum(c, bits, &sum);
 ```
 
-- Buffers: `dst` of `sift_cc_decode` holds `n + SIFT_COL_PAD / 8` int64, of `sift_cc_decode_off32` `SIFT_CC_CAP32(n)` u32 (`sift_colcodec.h`: whole rows of 32
+- Buffers: `dst` of `sift_cc_decode` holds `n + SIFT_COL_PAD / 8` int64, of `sift_cc_decode_off32` `SIFT_CC_CAP32(n)` u32 (`col/codec.h`: whole rows of 32
   plus the pad, the kernels write whole vectors); `bits` has room for `SIFT_COL_NWORDS(n)` words (the engine's range kernels write the padded vector), the
   first `(n + 63) / 64` carry the result and bits past `n` are zero. Input arrays of the kernels are readable `SIFT_COL_PAD` bytes past their end.
 - `sift_cc_open` validates everything it can in O(size of the headers) plus one pass over the small arrays (run lengths sum to `n`, dictionary sorted,
@@ -91,15 +91,15 @@ sift_cc_decode(c, int64 *dst);  sift_cc_decode_sel(c, idx, m, dst);  sift_cc_get
 
 ## 4. Kernels and dispatch
 
-`SiftCcKernels` (`sift_colcodec.h`) follows `docs/KERNELS.md` and `docs/COL.md` section 8: the scalar table (`sift_colcodec_kern.c`) is the specification,
+`SiftCcKernels` (`col/codec.h`) follows `docs/KERNELS.md` and `docs/COL.md` section 8: the scalar table (`col/codec_kern.c`) is the specification,
 the AVX2 and AVX-512 tables are bit-identical, `sift_cc_kernels_for(level)` never returns NULL (a level the CPU lacks falls back downwards), `sift_cck` is
 the active table and `sift_cc_kernels_init()` registers the rebind with `sift_cpu_register` (called from `_PG_init`, so `sift.simd` selects the level).
 The slots: `unpack32`, `unpack_range32` (fused), `prefix32/64`, `max32`, `alp_keys_f8/f4`, `rle_expand32`. The vertical bit-packing is written once
-(`sift_colcodec_vec.h`) and compiled at 256 and 512 bits under the level's target options.
+(`col/codec_vec.h`) and compiled at 256 and 512 bits under the level's target options.
 
-The codec has no copy of what the column engine's table `sift_colk` (`sift_col_kern.h`) already does: range tests of the u8 to u64 arrays are
+The codec has no copy of what the column engine's table `sift_colk` (`col/kern.h`) already does: range tests of the u8 to u64 arrays are
 `sift_colk->range[]`, the widening of u32 offsets `for_i64[SIFT_COLW_32]`, the dictionary gathers `gather_u32` and `for_i64_sel[SIFT_COLW_64]` (base 0),
-and `SIFT_COL_PAD`, `SIFT_COL_NWORDS` and `sift_col_f8_key` / `sift_col_f8_from_key` (`sift_col.h`) are the only definitions of pad, bit vector size and
+and `SIFT_COL_PAD`, `SIFT_COL_NWORDS` and `sift_col_f8_key` / `sift_col_f8_from_key` (`col/col.h`) are the only definitions of pad, bit vector size and
 float keys. Tests that run the codec at a level set both tables (`sift_cck` and `sift_colk`). The core's `unpack` (sequential `PACK` layout, bits 1..31)
 and the codec's `unpack32` (vertical layout, bits 0..32) are different layouts of the same idea; with `PACK` retired the core's slot can be removed.
 
@@ -122,7 +122,7 @@ each one it finds; the packages depend on both).
 ## 7. Tests and tools
 
 - `make -C tools/colcodec SANITIZE=1 test [N=2]` (opt-in, not part of the extension build; `make -C tools/colcodec research` is the encoder research tool): round trips of 20 data shapes
-  (`sift_colcodec_gen.h`, the generators the in-backend test uses too) (constants, ramps, 64-bit extremes, runs, low cardinality, outliers, decimal
+  (`col/codec_gen.h`, the generators the in-backend test uses too) (constants, ramps, 64-bit extremes, runs, low cardinality, outliers, decimal
   floats with NaN, infinities and -0.0, float4, ranges at 2^32, microsecond timestamps, steps of 2^40) at the sizes around every block boundary, with and without NULL slots, under 18 policies;
   decode, `get`, `decode_sel`, `decode_off32`, filters and sums against the plain values; every operation and the written bytes at every SIMD level; every
   kernel of the codec's table at every level against the scalar table on exact-size buffers; string lists and bit vectors; the corruption fuzz (about 50 000 damaged blobs).

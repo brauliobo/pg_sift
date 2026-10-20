@@ -4,8 +4,8 @@
 #   make test [N=2]            round trips, adversarial data, corruption fuzz, per-level kernel differential
 #   make SANITIZE=1 test       ASan + UBSan build (into $(OUT)-san)
 #   make bench                 ratios per policy and decode/filter speeds per SIMD level (under flock /tmp/sift-perf.lock)
-# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h); the column kernels the codec runs on are src/col/sift_col_kern*.c.
-# The chunk generators of test.c are src/col/sift_colcodec_gen.h, the ones of the in-backend regress test (test/sql/colcodec_*.sql) too.
+# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h); the column kernels the codec runs on are src/col/kern*.c.
+# The chunk generators of test.c are src/col/codec_gen.h, the ones of the in-backend regress test (test/sql/colcodec_*.sql) too.
 CC      ?= gcc
 SRC      = ../../src
 include $(SRC)/areas.mk
@@ -23,11 +23,11 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-CODEC    = $(addprefix $(SRC)/,sift_colcodec.c sift_colcodec_kern.c sift_colcodec_avx2.c sift_colcodec_avx512.c sift_colz.c \
+CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/compress.c \
                                bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
-                               sift_col_kern.c sift_col_kern_avx2.c sift_col_kern_avx512.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c) $(KT)/shim.c
+                               col/kern.c col/kern_avx2.c col/kern_avx512.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c) $(KT)/shim.c
 OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o $(OUT)/pgshim.o
-HDR      = $(wildcard $(SRC)/col/sift_colcodec*.h $(SRC)/col/sift_colz.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/sift_col_kern*.h $(SRC)/col/sift_col.h) ccshim.h
+HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/compress.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/kern*.h $(SRC)/col/col.h) ccshim.h
 
 all: $(OUT)/test $(OUT)/bench
 
@@ -45,7 +45,7 @@ $(OUT)/%.o: %.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/test: test.c $(SRC)/col/sift_colcodec_gen.h $(OBJ) $(HDR)
+$(OUT)/test: test.c $(SRC)/col/codec_gen.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) $(PGLIB) -lpgport $(LDLIBS)
 
 $(OUT)/bench: bench.c gen.h $(OBJ) $(HDR)

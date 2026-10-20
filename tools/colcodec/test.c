@@ -13,13 +13,13 @@
 
 #include <math.h>
 
-#include "../../src/col/sift_colcodec_int.h"
+#include "../../src/col/codec_int.h"
 #include "harness.h"
 #include "ccshim.h"
 
 typedef SiftRng CcgRng;
 #define ccg_next sift_rng_next
-#include "../../src/col/sift_colcodec_gen.h"	/* the chunk generators of the in-backend test too */
+#include "../../src/col/codec_gen.h"	/* the chunk generators of the in-backend test too */
 
 static int	nfail;
 static uint64 tag_hist[16][16];	/* [root tag][inner tag] of every written chunk */

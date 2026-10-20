@@ -8,8 +8,8 @@
 
 #include "sift_host.h"
 
-#include "sift_col_enc.h"
-#include "sift_colcodec.h"
+#include "col/enc.h"
+#include "col/codec.h"
 
 #define NROWS 5000
 

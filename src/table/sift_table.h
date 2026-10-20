@@ -19,8 +19,8 @@
 #include "storage/read_stream.h"
 #include "utils/snapshot.h"
 
-#include "sift_col_enc.h"
-#include "sift_col_seg.h"
+#include "col/enc.h"
+#include "col/seg.h"
 #include "sift_store.h"
 
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
@@ -214,7 +214,7 @@ typedef struct SiftTblRowVer
 
 /*
  * Column groups with rows that are not final (docs/COL-TAM.md section 7). A write buffer promoted while its rows are not final becomes a
- * group whose units keep the xmin and cmin of every row (the engine's version section, sift_col_ver.h); a frozen row has xmin 0, and the
+ * group whose units keep the xmin and cmin of every row (the engine's version section, col/ver.h); a frozen row has xmin 0, and the
  * directory entry says SIFT_SEG_VERS while some row is not. The visibility of a row is sift_tbl_visible's, as for a write buffer record; a
  * group whose rows are all final loses the flag (VACUUM, a merge of its rows) and its vectors with the next rewrite. A group of 3.0.1 carried
  * one xid and one command for all its rows; the engine reads that as constant vectors, so there is one case here.
