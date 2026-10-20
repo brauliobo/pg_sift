@@ -24,6 +24,12 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 psql -d mydb -c 'CREATE EXTENSION pg_sift'          # as a superuser; after an upgrade: ALTER EXTENSION pg_sift UPDATE
 ```
 
+### Install with Homebrew
+
+On macOS, `brew tap brauliobo/pg_sift && brew install --HEAD brauliobo/pg_sift/pg_sift` builds for Homebrew PostgreSQL 17 and 18.
+Tested on Apple Silicon with PostgreSQL 17.11 and 18.6. The [tap](https://github.com/brauliobo/homebrew-pg_sift) temporarily builds the macOS portability branch;
+v3.1.0 cannot build on arm64. Run `brew test pg_sift`, then `CREATE EXTENSION pg_sift;` in a database.
+
 ## Search
 
 ```sql
