@@ -797,12 +797,15 @@ leaf_datum(Oid typid, int64 iv)
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
+		case TIMEOID:
 			return Int64GetDatum(iv);
 		case FLOAT4OID:			/* the bits of a float key (float_key) */
 			return Float4GetDatum((float4) float_from_key(iv));
 		case FLOAT8OID:
 			return Float8GetDatum(float_from_key(iv));
 		default:
+			if (type_is_enum(typid))
+				return ObjectIdGetDatum((Oid) iv);
 			elog(ERROR, "sift: unexpected integer leaf type %u", typid);
 	}
 	return (Datum) 0;

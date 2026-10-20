@@ -95,6 +95,9 @@ typedef enum SiftColType
 	SIFT_COLT_JSONB,
 	SIFT_COLT_MONEY,			/* INT class: the int64 count of the smallest currency unit */
 	SIFT_COLT_INTERVAL,			/* three INT lanes: the canonical total as 128 bits (two lanes) and the month and day counts */
+	SIFT_COLT_TIME,				/* INT class: the int64 microseconds since midnight */
+	SIFT_COLT_ENUM,				/* INT class: the OID of the enum value (its order is the catalog's, read when a query runs) */
+	SIFT_COLT_VARLENA,			/* STR class: the image of a varlena datum that no other tag names (an array, a range, a multirange), the varlena itself */
 	SIFT_COLT_END
 } SiftColType;
 
@@ -126,11 +129,19 @@ sift_col_def_is_wide(const SiftColDef *d)
 	return d->lanes > 1;
 }
 
-/* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval */
+/* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval, time, enum, uuid, bytea (as images: the exceptions leaf of a sift_table is a plain minor 3 one) or another varlena */
 static inline bool
 sift_col_def_needs_wide(const SiftColDef *d)
 {
-	return d->lanes > 0 || d->lane > 0 || d->type == SIFT_COLT_MONEY || d->type == SIFT_COLT_INTERVAL;
+	return d->lanes > 0 || d->lane > 0 || d->type == SIFT_COLT_MONEY || d->type == SIFT_COLT_INTERVAL || d->type == SIFT_COLT_TIME ||
+		d->type == SIFT_COLT_ENUM || d->type == SIFT_COLT_VARLENA || (d->store == SIFT_COLS_STR && (d->type == SIFT_COLT_UUID || d->type == SIFT_COLT_BYTEA));
+}
+
+/* a leaf whose value the column engine tests on its stored lanes (numeric, money, interval: sift_col_widescan.c) */
+static inline bool
+sift_col_def_lane_tested(const SiftColDef *d)
+{
+	return d->lane == 0 && (d->lanes > 0 || d->type == SIFT_COLT_MONEY);
 }
 
 /* The JSON type of an overflowing value (SiftColValue.tag, the chunk flag SIFT_COLC_TAGS, docs/COL.md 2.2); the numbers are on disk */
