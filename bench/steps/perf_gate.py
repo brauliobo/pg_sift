@@ -841,16 +841,25 @@ def calibrate_insert(revisions, case, identity, deadline, sink):
 
 def validate_insert(revisions, case, identity, operations, deadline, sink, *, control=False, histories=1):
     sink.update(pair={},size_checks=None,history_size_checks=[],complete=False)
-    insert_observation(revisions,case,identity,operations,histories,deadline,sink['pair'],role='validation',control=control)
-    for history in sink['pair']['histories']:
-        sides=history['sides']
-        sink['history_size_checks'].append(dict(compare_sizes([side['after']['totals'] for side in sides],
-                                                'mutable_insert_trajectory',MUTABLE_RELATIONS),
-                                               forks=[side['after']['forks'] for side in sides]))
-    # First history is the declared representative; every history gates separately.
-    sink['size_checks']=dict(sink['history_size_checks'][0],representative_history=0,
-                            history_checks=sink['history_size_checks'],
-                            status='regression' if any(s['status']=='regression' for s in sink['history_size_checks']) else 'pass')
+    try:
+        insert_observation(revisions,case,identity,operations,histories,deadline,sink['pair'],role='validation',control=control)
+    finally:
+        # Size decisions belong to completed histories, independently of observation timing.
+        for history in sink['pair'].get('histories',[]):
+            if not history.get('complete'):
+                continue
+            sides=history['sides']
+            sink['history_size_checks'].append(dict(compare_sizes([side['after']['totals'] for side in sides],
+                                                    'mutable_insert_trajectory',MUTABLE_RELATIONS),
+                                                   forks=[side['after']['forks'] for side in sides]))
+        checks=sink['history_size_checks']
+        if checks:
+            complete=sink['pair'].get('complete',False) and len(checks)==histories
+            # First history represents the state; ANY completed history regression is decisive.
+            sink['size_checks']=dict(checks[0],representative_history=0,history_checks=checks,
+                                    complete=complete,completed_histories=len(checks),expected_histories=histories,
+                                    status='regression' if any(s['status']=='regression' for s in checks) else
+                                           'pass' if complete else 'inconclusive')
     sink['complete']=True
     return sink
 
