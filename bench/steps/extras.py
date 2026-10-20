@@ -405,9 +405,14 @@ def main():
         path = os.path.join(a.results, name + '.tsv')
         if os.path.exists(path):
             meta, rows = read(path)
-            replace_block(a.benchmarks, name, section(meta, rows))
+            lines = section(meta, rows)
+            replace_block(a.benchmarks, name, lines)
+            for doc in ALSO.get(name, []):   # the other documents that carry the block
+                if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
+                    replace_block(doc, name, lines)
 
 
+ALSO = {'gpu': [os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'GPU.md')]}
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
             'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section}
 
