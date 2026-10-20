@@ -233,8 +233,8 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
                      Limit Hint: 100
 (11 rows)
 
--- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, a side above sift.agg_lookup_max_rows, a non-equality
--- condition; the fact table on the nullable side of a LEFT JOIN keeps the rows of the sub-select (the preserved side: docs/AGG.md)
+-- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, or a side above sift.agg_lookup_max_rows.
+-- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
  volatile_values 
 -----------------
@@ -259,10 +259,11 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM stores
  normal
 (1 row)
 
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM stores ORDER BY id LIMIT 30) s ON e.store_id < s.id GROUP BY s.kind$$) AS inequality;
- inequality 
-------------
- normal
+-- A predicate-only child join is exact for every match, as for an equality join.
+SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kind FROM stores ORDER BY id LIMIT 30) s ON e.store_id < s.id GROUP BY s.kind$$);
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM stores ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.store_id = s.id GROUP BY s.id$$) AS fact_nullable;
