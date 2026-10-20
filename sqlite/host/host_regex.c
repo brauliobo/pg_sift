@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "host_utf8.h"
+
 /* the one thing of the PostgreSQL side we need: regex_t holds a pointer */
 typedef struct pgre
 {
@@ -29,30 +31,7 @@ to_utf8(const pg_wchar *w, size_t len)
 			   *p = s;
 
 	for (size_t i = 0; i < len; i++)
-	{
-		pg_wchar	c = w[i];
-
-		if (c < 0x80)
-			*p++ = c;
-		else if (c < 0x800)
-		{
-			*p++ = 0xC0 | (c >> 6);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-		else if (c < 0x10000)
-		{
-			*p++ = 0xE0 | (c >> 12);
-			*p++ = 0x80 | ((c >> 6) & 0x3F);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-		else
-		{
-			*p++ = 0xF0 | (c >> 18);
-			*p++ = 0x80 | ((c >> 12) & 0x3F);
-			*p++ = 0x80 | ((c >> 6) & 0x3F);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-	}
+		p = host_utf8_emit(p, w[i]);
 	*p = '\0';
 	return s;
 }
