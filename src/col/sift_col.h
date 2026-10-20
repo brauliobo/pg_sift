@@ -97,7 +97,10 @@ typedef enum SiftColType
 	SIFT_COLT_INTERVAL,			/* three INT lanes: the canonical total as 128 bits (two lanes) and the month and day counts */
 	SIFT_COLT_TIME,				/* INT class: the int64 microseconds since midnight */
 	SIFT_COLT_ENUM,				/* INT class: the OID of the enum value (its order is the catalog's, read when a query runs) */
-	SIFT_COLT_VARLENA,			/* STR class: the image of a varlena datum that no other tag names (an array, a range, a multirange), the varlena itself */
+	SIFT_COLT_VARLENA,			/* STR class: the image of a varlena datum that no other tag names (an array, a range, a multirange, inet, cidr, bit, varbit), the varlena itself */
+	SIFT_COLT_MACADDR,			/* STR class: the 6 bytes of the datum */
+	SIFT_COLT_MACADDR8,			/* STR class: the 8 bytes of the datum */
+	SIFT_COLT_TIMETZ,			/* STR class: the 12 bytes of the datum (the microseconds, then the zone in seconds), never compared as bytes */
 	SIFT_COLT_END
 } SiftColType;
 
@@ -129,12 +132,20 @@ sift_col_def_is_wide(const SiftColDef *d)
 	return d->lanes > 1;
 }
 
-/* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval, time, enum, uuid, bytea (as images: the exceptions leaf of a sift_table is a plain minor 3 one) or another varlena */
+/* a leaf that is the image of a datum: uuid and bytea (as images: the exceptions leaf of a sift_table is a plain minor 3 one) or another datum, whose value only its type's own functions know */
+static inline bool
+sift_col_def_is_image(const SiftColDef *d)
+{
+	return d->type == SIFT_COLT_VARLENA || d->type == SIFT_COLT_MACADDR || d->type == SIFT_COLT_MACADDR8 || d->type == SIFT_COLT_TIMETZ ||
+		(d->store == SIFT_COLS_STR && (d->type == SIFT_COLT_UUID || d->type == SIFT_COLT_BYTEA));
+}
+
+/* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval, time, enum or an image */
 static inline bool
 sift_col_def_needs_wide(const SiftColDef *d)
 {
 	return d->lanes > 0 || d->lane > 0 || d->type == SIFT_COLT_MONEY || d->type == SIFT_COLT_INTERVAL || d->type == SIFT_COLT_TIME ||
-		d->type == SIFT_COLT_ENUM || d->type == SIFT_COLT_VARLENA || (d->store == SIFT_COLS_STR && (d->type == SIFT_COLT_UUID || d->type == SIFT_COLT_BYTEA));
+		d->type == SIFT_COLT_ENUM || sift_col_def_is_image(d);
 }
 
 /* a leaf whose value the column engine tests on its stored lanes (numeric, money, interval: sift_col_widescan.c) */

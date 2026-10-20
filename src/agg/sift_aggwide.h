@@ -36,15 +36,16 @@ typedef struct SiftAggWide
 /* The entries of the rows of `lanes` (the lane vectors of def, as sift_col_read_lanes gives them), in the order of their first row */
 extern void sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n);
 
-/* The Datum of an entry of the dictionary of a leaf of type typid (NUMERICOID or INTERVALOID) */
+/* The Datum of an entry of the dictionary of a leaf of a type sift_aggwide_type says: the entry is the datum */
 extern Datum sift_aggwide_datum(Oid typid, const char *bytes, uint32 len);
 
 /* Does the SQL type have its leaf read through such a dictionary? */
 static inline bool
 sift_aggwide_type(Oid typid)
 {
-	return typid == NUMERICOID || typid == INTERVALOID || typid == UUIDOID || typid == BYTEAOID || type_is_array(typid) || type_is_range(typid) ||
-		type_is_multirange(typid);
+	return typid == NUMERICOID || typid == INTERVALOID || typid == UUIDOID || typid == BYTEAOID || typid == INETOID || typid == CIDROID ||
+		typid == MACADDROID || typid == MACADDR8OID || typid == TIMETZOID || typid == BITOID || typid == VARBITOID || type_is_array(typid) ||
+		type_is_range(typid) || type_is_multirange(typid);
 }
 
 #endif							/* SIFT_AGGWIDE_H */
