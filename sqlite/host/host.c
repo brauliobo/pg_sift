@@ -3,6 +3,7 @@
  * ereport, StringInfo, List, dynahash, UTF-8 multibyte helpers and spool files. Only what src/ uses.
  */
 #include "host.h"
+#include "host_utf8.h"
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -789,30 +790,7 @@ pg_wchar2mb_with_len(const pg_wchar *from, char *to, int len)
 	char	   *p = to;
 
 	for (; len > 0 && *from; len--, from++)
-	{
-		pg_wchar	c = *from;
-
-		if (c < 0x80)
-			*p++ = c;
-		else if (c < 0x800)
-		{
-			*p++ = 0xC0 | (c >> 6);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-		else if (c < 0x10000)
-		{
-			*p++ = 0xE0 | (c >> 12);
-			*p++ = 0x80 | ((c >> 6) & 0x3F);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-		else
-		{
-			*p++ = 0xF0 | (c >> 18);
-			*p++ = 0x80 | ((c >> 12) & 0x3F);
-			*p++ = 0x80 | ((c >> 6) & 0x3F);
-			*p++ = 0x80 | (c & 0x3F);
-		}
-	}
+		p = host_utf8_emit(p, *from);
 	*p = '\0';
 	return p - to;
 }
