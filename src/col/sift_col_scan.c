@@ -124,6 +124,17 @@ typedef struct ColUnit
 	ColSelCache selc;
 } ColUnit;
 
+/* The test of a predicate on a dictionary leaf of a stored segment, made once for every unit that shares the dictionary (seg_test) */
+typedef struct ColTest
+{
+	const SiftColSegment *seg;
+	SiftColPred pred;			/* a copy, constants included */
+	SiftColValue *vals;
+	SiftCTest	t;
+} ColTest;
+
+#define COL_TEST_CACHE	16
+
 struct SiftColSource
 {
 	Relation	heap;
@@ -151,6 +162,8 @@ struct SiftColSource
 	uint32		heap_sbs;
 	ColUnit		cu;
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
+	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
+	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
 };
 
@@ -358,10 +371,87 @@ mem_cmp(const void *a, const void *b)
 	return x->id < y->id ? -1 : x->id > y->id;
 }
 
+static void
+make_test(SiftColSource *src, const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
+{
+	src->cnt.tests_made++;
+	sift_ctest_make(def, dict, p, t);
+}
+
+static bool
+same_pred(const SiftColPred *a, const SiftColPred *b)
+{
+	if (a->col != b->col || a->op != b->op || a->nvals != b->nvals)
+		return false;
+	for (int i = 0; i < a->nvals; i++)
+		if (a->vals[i].len != b->vals[i].len || memcmp(a->vals[i].v.s, b->vals[i].v.s, b->vals[i].len) != 0)
+			return false;
+	return true;
+}
+
+static void
+test_drop(ColTest *e)
+{
+	if (e->seg == NULL)
+		return;
+	for (int i = 0; i < e->pred.nvals; i++)
+		pfree((char *) e->vals[i].v.s);
+	pfree(e->vals);
+	if (e->t.lut)
+		pfree((uint64 *) e->t.lut);
+	if (e->t.set)
+		pfree((int64 *) e->t.set);
+}
+
+static ColTest *
+test_copy(SiftColSource *src, const SiftColSegment *seg, const SiftColPred *p)
+{
+	ColTest    *e = &src->tests[src->ntests++ % COL_TEST_CACHE];
+
+	test_drop(e);
+	e->seg = seg;
+	e->pred = *p;
+	e->vals = MemoryContextAlloc(src->mcxt, Max(p->nvals, 1) * sizeof(SiftColValue));
+	for (int i = 0; i < p->nvals; i++)
+	{
+		e->vals[i] = p->vals[i];
+		e->vals[i].v.s = MemoryContextAlloc(src->mcxt, p->vals[i].len + 1);
+		memcpy((char *) e->vals[i].v.s, p->vals[i].v.s, p->vals[i].len);
+	}
+	e->pred.vals = e->vals;
+	return e;
+}
+
+/*
+ * The test of p on the dictionary leaf def of a stored segment, whose codes are the segment's: one test serves every unit and every begin, where each
+ * would else make a LUT over all of it (a numeric of any shape, a text of many values).
+ */
+static void
+seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const SiftColPred *p, SiftCTest *t)
+{
+	ColTest    *e = NULL;
+	MemoryContext old;
+
+	if (p->nvals < 1)
+		return make_test(src, def, sift_cseg_dict(seg, p->col), p, t);
+	for (int i = 0; i < Min(src->ntests, COL_TEST_CACHE) && e == NULL; i++)
+		if (src->tests[i].seg == seg && same_pred(&src->tests[i].pred, p))
+			e = &src->tests[i];
+	if (e == NULL)
+	{
+		old = MemoryContextSwitchTo(src->mcxt);
+		e = test_copy(src, seg, p);
+		make_test(src, def, sift_cseg_dict(seg, p->col), &e->pred, &e->t);
+		MemoryContextSwitchTo(old);
+	}
+	*t = e->t;
+	t->pred = p;
+}
+
 /* ---------- begin / next ---------- */
 
 static void
-prune_segment(ColCursor *c, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
+prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
 {
 	SiftColSegment *seg = c->seg;
 
@@ -378,7 +468,10 @@ prune_segment(ColCursor *c, const SiftColPred *preds, int npreds, uint32 sb_lo, 
 			sift_colw_prune(seg, &preds[i], c->keep);
 			continue;
 		}
-		sift_ctest_make(def, sift_cseg_dict(seg, preds[i].col), &preds[i], &t);
+		if (def->store == SIFT_COLS_STR)
+			seg_test(src, seg, def, &preds[i], &t);
+		else
+			make_test(src, def, NULL, &preds[i], &t);
 		sift_cseg_prune(seg, preds[i].col, &t, c->keep);
 	}
 	c->cur = sift_cseg_find_unit(seg, sb_lo);
@@ -396,7 +489,7 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 		if (preds[i].col < 0 || preds[i].col >= src->schema->ncols)
 			elog(ERROR, "sift_col: predicate on leaf %d of %d", preds[i].col, src->schema->ncols);
 	for (int i = 0; i < src->nseg; i++)
-		prune_segment(&src->seg[i], preds, npreds, sb_lo, sb_hi);
+		prune_segment(src, &src->seg[i], preds, npreds, sb_lo, sb_hi);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
@@ -774,8 +867,10 @@ chunk_filter(ColUnit *cu, const SiftColPred *p, SiftColSel *sel, uint64 *ovf)
 	/* an inline chunk is tested as stored, without a dictionary of its own */
 	if (inl)
 		sift_ctest_make_strs(p, &t);
+	else if (cu->seg && !nulltest && def->store == SIFT_COLS_STR)
+		seg_test(cu->src, cu->seg, def, p, &t);
 	else
-		sift_ctest_make(def, nulltest ? NULL : unit_dict(cu, p->col), p, &t);
+		make_test(cu->src, def, nulltest ? NULL : unit_dict(cu, p->col), p, &t);
 	if (!(inl ? unit_chunk_raw(cu, p->col, &c) : unit_chunk(cu, p->col, &c)))
 	{
 		if (t.kind != SIFT_CT_ISNULL)

@@ -507,8 +507,8 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	TestScan	ts;
 	SiftColUnit unit;
 	TupleDesc	tupdesc;
-	Datum		v[9];
-	bool		nulls[9] = {false};
+	Datum		v[10];
+	bool		nulls[10] = {false};
 	const SiftColCounters *c;
 	int64		rows = 0;
 
@@ -532,6 +532,7 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	v[6] = Int64GetDatum(c->rows_vetted);
 	v[7] = Int64GetDatum(c->heap_pages);
 	v[8] = CStringGetTextDatum(sift_simd_level_name(c->simd));
+	v[9] = Int64GetDatum(c->tests_made);
 	scan_close(&ts);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
