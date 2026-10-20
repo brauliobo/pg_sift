@@ -19,9 +19,9 @@ char_len(const char *s, const char *end)
 }
 
 /* bm25/query.c */
-extern SiftQNode *sift_query_new_node(SiftQKind kind, int loc);
-extern SiftQNode *sift_query_new_not(SiftQNode *child, int loc);
-extern List *sift_query_add_child(List *kids, SiftQNode *c, SiftQKind kind);
-extern int	sift_query_canon_pattern(StringInfo pat, bool *trailing);
+extern SIFT_INTERNAL SiftQNode *sift_query_new_node(SiftQKind kind, int loc);
+extern SIFT_INTERNAL SiftQNode *sift_query_new_not(SiftQNode *child, int loc);
+extern SIFT_INTERNAL List *sift_query_add_child(List *kids, SiftQNode *c, SiftQKind kind);
+extern SIFT_INTERNAL int	sift_query_canon_pattern(StringInfo pat, bool *trailing);
 
 #endif							/* SIFT_QUERY_INT_H */

@@ -32,6 +32,6 @@ static inline size_t ef_lows(uint32_t cnt, uint32_t l) { return ((size_t)cnt * l
 static inline size_t ef_highs(uint64_t u, uint32_t cnt, uint32_t l) { return (cnt + ((u - 1) >> l) + 7) / 8; }
 static inline uint32_t blk_cnt(uint32_t n, uint32_t i) { return n - i < SIFT_LIST_BLOCK ? n - i : SIFT_LIST_BLOCK; }
 
-int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4]);
+extern __attribute__((visibility("hidden"))) int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4]);
 
 #endif

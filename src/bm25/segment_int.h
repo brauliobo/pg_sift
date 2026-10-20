@@ -79,13 +79,13 @@ seg_live(const SiftSegment *seg)
 }
 
 /* segment.c: the docmap of the reader */
-extern DocMap *docmap(SiftSegment *seg);
-extern void index_sb(SiftSegment *seg, DocMap *dm);
-extern void load_sb(SiftSegment *seg, DocMap *dm, int64 i);
-extern int64 sb_search(DocMap *dm, uint32 sb);
-extern DocMap *loaded(SiftSegment *seg, const SiftDocChunk *dc);
-extern DocMap *indexed(SiftSegment *seg, const SiftDocChunk *dc);
-extern void expand_row(DocMap *dm, int page);
+extern SIFT_INTERNAL DocMap *docmap(SiftSegment *seg);
+extern SIFT_INTERNAL void index_sb(SiftSegment *seg, DocMap *dm);
+extern SIFT_INTERNAL void load_sb(SiftSegment *seg, DocMap *dm, int64 i);
+extern SIFT_INTERNAL int64 sb_search(DocMap *dm, uint32 sb);
+extern SIFT_INTERNAL DocMap *loaded(SiftSegment *seg, const SiftDocChunk *dc);
+extern SIFT_INTERNAL DocMap *indexed(SiftSegment *seg, const SiftDocChunk *dc);
+extern SIFT_INTERNAL void expand_row(DocMap *dm, int page);
 
 /* The dl row of a present page of the indexed SB as 16 bits per slot: narrow rows are expanded on the first use */
 static inline const uint16 *
@@ -99,8 +99,8 @@ dl_row(DocMap *dm, int page)
 }
 
 /* liveness.c: the format 2 liveness rows and the dead postings */
-extern Live2 *live2(SiftSegment *seg);
-extern const sift_grp *live2_rows(SiftSegment *seg, uint32 sb);
-extern void count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead);
+extern SIFT_INTERNAL Live2 *live2(SiftSegment *seg);
+extern SIFT_INTERNAL const sift_grp *live2_rows(SiftSegment *seg, uint32 sb);
+extern SIFT_INTERNAL void count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead);
 
 #endif							/* SIFT_SEGMENT_INT_H */
