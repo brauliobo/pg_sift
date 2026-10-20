@@ -531,6 +531,9 @@ typedef struct MapTab
 	uint32		nslot;
 	uint32	   *head;
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
+	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves */
+	bool	   *nokey;			/* keep: the rows with a NULL key, which no tuple matches and are not in the chains */
+	bool	   *hit;			/* keep: the rows some tuple matched */
 } MapTab;
 
 typedef struct ComboEnt
@@ -2230,15 +2233,16 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	size_t		kb = (size_t) m->nrow * m->nkey,
 				cb = (size_t) m->nrow * m->ncol;
 	Datum		kd[SIFT_AGG_MAX_JKEYS];
+	bool		knull[SIFT_AGG_MAX_JKEYS];
+	bool		anynull = false;
 
 	for (int k = 0; k < m->nkey; k++)
 	{
-		bool		isnull;
-
-		kd[k] = slot_getattr(slot, j->keyatt[k], &isnull);
-		if (isnull)
-			return;				/* NULL equals nothing */
+		kd[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
+		anynull |= knull[k];
 	}
+	if (anynull && !m->keep)
+		return;					/* NULL equals nothing */
 	if (m->nrow == m->cap)
 	{
 		m->cap = Max(m->cap * 2, 256);
@@ -2252,10 +2256,20 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum));
 		m->cnull = m->cnull ? repalloc(m->cnull, (size_t) m->cap * Max(m->ncol, 1)) :
 			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1));
+		if (m->keep)
+			m->nokey = m->nokey ? repalloc(m->nokey, m->cap) : MemoryContextAlloc(ex->cxt, m->cap);
 	}
+	if (m->keep)
+		m->nokey[m->nrow] = anynull;
 	for (int k = 0; k < m->nkey; k++)
 	{
-		if (m->ktext[k])
+		if (knull[k])
+		{
+			m->kptr[kb + k] = NULL;
+			m->klen[kb + k] = 0;
+			m->kint[kb + k] = 0;
+		}
+		else if (m->ktext[k])
 		{
 			struct varlena *v = PG_DETOAST_DATUM_COPY(kd[k]);
 
@@ -2366,6 +2380,7 @@ map_new(const SiftAggJoin *j, bool filtered)
 	m->nkey = j->nkey;
 	m->ncol = j->ncol;
 	m->filtered = filtered;
+	m->keep = sift_aggjoin_preserves(j->kind);
 	for (int k = 0; k < j->nkey; k++)
 		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
 	return m;
@@ -2381,10 +2396,14 @@ map_index_rows(MapTab *m)
 	m->head = palloc0(m->nslot * sizeof(uint32));
 	m->next = palloc(Max(m->nrow, 1) * sizeof(uint32));
 	m->hv = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	m->hit = m->keep ? palloc0(Max(m->nrow, 1)) : NULL;
 	for (uint32 r = m->nrow; r-- > 0;)
 	{
-		uint32		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
+		uint32		h;
 
+		if (m->keep && m->nokey[r])
+			continue;
+		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
 		m->hv[r] = h;
 		m->next[r] = m->head[h & (m->nslot - 1)];
 		m->head[h & (m->nslot - 1)] = r + 1;
@@ -2409,7 +2428,8 @@ map_load_table(AggExec *ex, int ci)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
-	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !slot_reads_leaf(cb, j->fslot) ? ex->cs[ci].slot[j->fslot] : NULL;
+	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(cb, j->fslot) ?
+		ex->cs[ci].slot[j->fslot] : NULL;
 	MapTab	   *m;
 	Relation	rel = table_open(j->relid, AccessShareLock);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
@@ -2473,7 +2493,8 @@ map_load_child(AggExec *ex, int ci)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
-	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !slot_reads_leaf(cb, j->fslot) ? ex->cs[ci].slot[j->fslot] : NULL;
+	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(cb, j->fslot) ?
+		ex->cs[ci].slot[j->fslot] : NULL;
 	PlanState  *child = list_nth(ex->css.custom_ps, j->child);
 	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
 	MapTab	   *m = map_new(j, own != NULL);
@@ -2703,8 +2724,10 @@ join_nout(SiftJoinKind kind, int nm)
 	switch (kind)
 	{
 		case SJ_INNER:
+		case SJ_RIGHT:
 			return nm;
 		case SJ_LEFT:
+		case SJ_FULL:
 			return nm > 0 ? nm : 1;
 		case SJ_SEMI:
 			return nm > 0;
@@ -2899,44 +2922,21 @@ combo_val(AggExec *ex, int ci, uint32 row, int sl)
 	return r != COMBO_UNEVAL ? r : combo_eval_slot(ex, ci, row, sl);
 }
 
-/* the output rows of a new entry: with a join its matches, every slot evaluated; without, one row whose slots wait for the tuples that need them */
+/* the output rows of an entry with nm matching rows (none: a row of NULL columns), every slot evaluated; in the combo's work context */
 static void
-combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
+combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint32 nout)
 {
 	SiftAggCombo *cb = &ex->spec->combo[ci];
-	const SiftAggJoin *j = cb->join >= 0 ? &ex->spec->join[cb->join] : NULL;
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	MemoryContext old;
-	uint32	   *rows = NULL;
-	int			nm = 0;
-	uint32		nout;
 
-	if (j == NULL)
-	{
-		combo_grow_out(ex, cs, cb->nslots, 1);
-		ent->nout = 1;
-		ent->base = cs->nout;
-		for (int sl = 0; sl < cb->nslots; sl++)
-			cs->val[(size_t) cs->nout * cb->nslots + sl] = COMBO_UNEVAL;
-		cs->nout++;
-		return;
-	}
-	old = MemoryContextSwitchTo(ex->comcxt);
-	combo_bind_leaves(ex, ci, v);
-	if (j)
-	{
-		nm = combo_matches(ex, ci, v, &rows);
-		if (j->fslot >= 0 && nm > 0)
-			nm = combo_filter_rows(ex, ci, rows, nm);
-	}
-	nout = j == NULL ? 1 : join_nout(j->kind, nm);
 	combo_grow_out(ex, cs, cb->nslots, nout);
 	ent->nout = nout;
 	ent->base = cs->nout;
 	for (uint32 o = 0; o < nout; o++)
 	{
-		for (int c = 0; j && c < j->ncol; c++)
+		for (int c = 0; c < j->ncol; c++)
 			bind_param(ex, cb->nleaves + c, nm > 0 ? m->col[(size_t) rows[o] * m->ncol + c] : (Datum) 0, nm == 0 || m->cnull[(size_t) rows[o] * m->ncol + c]);
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
@@ -2959,8 +2959,60 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 		cs->nout++;
 		ResetExprContext(ex->lutcx);
 	}
+}
+
+/* the output rows of a new entry: with a join its matches, every slot evaluated; without, one row whose slots wait for the tuples that need them */
+static void
+combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = cb->join >= 0 ? &ex->spec->join[cb->join] : NULL;
+	ComboSt    *cs = &ex->cs[ci];
+	MemoryContext old;
+	uint32	   *rows;
+	int			nm;
+
+	if (j == NULL)
+	{
+		combo_grow_out(ex, cs, cb->nslots, 1);
+		ent->nout = 1;
+		ent->base = cs->nout;
+		for (int sl = 0; sl < cb->nslots; sl++)
+			cs->val[(size_t) cs->nout * cb->nslots + sl] = COMBO_UNEVAL;
+		cs->nout++;
+		return;
+	}
+	old = MemoryContextSwitchTo(ex->comcxt);
+	combo_bind_leaves(ex, ci, v);
+	nm = combo_matches(ex, ci, v, &rows);
+	if (j->fslot >= 0 && nm > 0)
+		nm = combo_filter_rows(ex, ci, rows, nm);
+	for (int r = 0; cs->map->keep && r < nm; r++)
+		cs->map->hit[rows[r]] = true;
+	combo_emit(ex, ci, ent, rows, nm, join_nout(j->kind, nm));
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(ex->comcxt);
+}
+
+/* the entry of the tuple of NULL leaves whose output rows are the rows of the preserved side that no tuple matched (their columns, NULL leaves) */
+static ComboEnt
+combo_unmatched(AggExec *ex, int ci)
+{
+	const MapTab *m = ex->cs[ci].map;
+	const uint64 v[SIFT_AGG_MAX_CLEAVES] = {0};
+	ComboEnt	ent;
+	MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
+	uint32	   *rows = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	int			nm = 0;
+
+	for (uint32 r = 0; r < m->nrow; r++)
+		if (!m->hit[r])
+			rows[nm++] = r;
+	combo_bind_leaves(ex, ci, v);
+	combo_emit(ex, ci, &ent, rows, nm, nm);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(ex->comcxt);
+	return ent;
 }
 
 static inline uint32
@@ -10985,6 +11037,60 @@ par_finish(AggExec *ex)
 
 #include "sift_agghost.h"
 
+static const char null_dict_id = 0;
+static const uint32 null_dict_off[1] = {0};
+static const SiftSrcDict null_dict = {&null_dict_id, 0, null_dict_off, ""};
+static const uint64 null_data[SIFT_AGG_PAD] pg_attribute_aligned(SIFT_SIMD_ALIGN);
+static const uint8 null_flags[SIFT_AGG_PAD] = {[0 ... SIFT_AGG_PAD - 1] = 1};
+
+/* a unit of one row whose leaves are all NULL: what a row of the preserved side of an outer join joins to when no row of the scan matched it */
+static void
+null_unit(AggExec *ex)
+{
+	MemoryContextReset(ex->ucxt);
+	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
+	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
+	for (int i = 0; i < ex->spec->npreds_total; i++)
+		ex->ps[i].rowmask_ok = false;
+	for (int leaf = 0; leaf < ex->lay->nleaves; leaf++)
+		ex->uvec[leaf] = (SiftSrcVec) {null_data, null_flags, &null_dict, 1, NULL};
+	memset(ex->uvec_ok, true, ex->lay->nleaves * sizeof(bool));
+	ex->unit.nrow = 1;
+	ex->rsel = NULL;
+	ex->qlevel = 0;
+	ex->cstart = 0;
+	ex->cn = 1;
+}
+
+/* the rows of a preserved side that no tuple of the scan matched, as tuples of NULL leaves through the aggregates (the only join: planned so) */
+static void
+unmatched_tail(AggExec *ex)
+{
+	int			ci;
+	Tup		   *own = &ex->stage[0];
+	ComboEnt	ent;
+
+	if (ex->nj != 1 || !ex->cs[ex->jcombo[0]].map->keep)
+		return;
+	ci = ex->jcombo[0];
+	null_unit(ex);
+	ent = combo_unmatched(ex, ci);
+	for (uint32 e = 0; e < ent.nout;)
+	{
+		int			k = 0;
+
+		for (; k < VEC && e < ent.nout; k++)
+		{
+			own->sel[k] = own->tidx[k] = own->ridx[k] = 0;
+			own->cout[ci][k] = ent.base + e++;
+		}
+		own->n = k;
+		agg_tuples(ex, own);
+	}
+	if (ex->lane_serial)
+		lane_fold(ex);
+}
+
 static void
 run_scan(AggExec *ex)
 {
@@ -11009,6 +11115,7 @@ run_scan(AggExec *ex)
 	if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	backend_finish(ex);
+	unmatched_tail(ex);
 	arms_flush(ex);
 	if (ex->par)
 		par_finish(ex);

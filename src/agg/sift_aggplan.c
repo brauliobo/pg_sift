@@ -145,6 +145,7 @@ typedef struct AggCtx
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
+	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
@@ -734,6 +735,8 @@ nulltest_mutator(Node *n, AggCtx *c)
 static Node *
 normalize_expr(AggCtx *c, Node *n)
 {
+	if (c->nulling)
+		n = remove_nulling_relids(n, c->nulling, NULL);
 #if PG_VERSION_NUM >= 180000
 	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
 	if (c->root->group_rtindex > 0)
@@ -3750,6 +3753,9 @@ typedef struct FromScan
 	List	   *quals;
 	List	   *lefts;			/* LeftJoin */
 	bool		ok;
+	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
+	bool		flippable;		/* a LEFT or FULL JOIN of two tables was met: the scan may be the other one */
+	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
 } FromScan;
 
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
@@ -3759,6 +3765,39 @@ right_table(Node *n)
 	if (IsA(n, FromExpr) && list_length(((FromExpr *) n)->fromlist) == 1)
 		n = linitial(((FromExpr *) n)->fromlist);
 	return IsA(n, RangeTblRef) ? (RangeTblRef *) n : NULL;
+}
+
+/*
+ * A LEFT JOIN with the scanned table on its right (the left side is preserved: flip), or a FULL JOIN of two tables: the table that is
+ * not scanned is the join, with all of its rows kept. The ON clause is the join's; whatever the WHERE says of the scanned table is not.
+ */
+static bool
+scan_preserved(JoinExpr *j, FromScan *f)
+{
+	bool		full = j->jointype == JOIN_FULL;
+	RangeTblRef *l = IsA(j->larg, RangeTblRef) ? (RangeTblRef *) j->larg : NULL,
+			   *r = full ? (IsA(j->rarg, RangeTblRef) ? (RangeTblRef *) j->rarg : NULL) : right_table(j->rarg);
+	LeftJoin   *lj;
+	Index		scanned,
+				dim;
+
+	if ((!full && j->jointype != JOIN_LEFT) || l == NULL || r == NULL)
+		return false;
+	f->flippable = true;
+	if (!full && !f->flip)
+		return false;
+	scanned = f->flip ? r->rtindex : l->rtindex;
+	dim = f->flip ? l->rtindex : r->rtindex;
+	lj = palloc(sizeof(LeftJoin));
+	lj->kind = full ? SJ_FULL : SJ_RIGHT;
+	lj->rti = dim;
+	lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+	if (!full && IsA(j->rarg, FromExpr) && ((FromExpr *) j->rarg)->quals)
+		lj->quals = list_concat(lj->quals, list_copy((List *) ((FromExpr *) j->rarg)->quals));
+	f->rtis = lappend_int(lappend_int(f->rtis, scanned), dim);
+	f->lefts = lappend(f->lefts, lj);
+	f->ojrels = bms_add_member(f->ojrels, j->rtindex);
+	return true;
 }
 
 static void
@@ -3775,6 +3814,8 @@ scan_from(Node *n, FromScan *f)
 		if (((FromExpr *) n)->quals)
 			f->quals = list_concat(f->quals, list_copy((List *) ((FromExpr *) n)->quals));
 	}
+	else if (IsA(n, JoinExpr) && scan_preserved((JoinExpr *) n, f))
+		return;
 	else if (IsA(n, JoinExpr) && (((JoinExpr *) n)->jointype == JOIN_LEFT || ((JoinExpr *) n)->jointype == JOIN_SEMI ||
 								  ((JoinExpr *) n)->jointype == JOIN_ANTI) && right_table(((JoinExpr *) n)->rarg) != NULL)
 	{
@@ -5185,6 +5226,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* semi and anti joins only filter: the tuples that reach the groups are the rows PostgreSQL expects of the join */
 	if (c->joins != NIL && s->group < 0 && semi_joins_only(c))
 		agg_rows = Min(agg_rows, Max(input_rel->rows, 1.0));
+	/* the rows of a preserved side no tuple matches are tuples too */
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (sift_aggjoin_preserves(jc->kind))
+			agg_rows += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
 	rows_out = Min(rows_out, Max(Max(s->nsets, 1) * agg_rows, 1.0));
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
@@ -5380,7 +5425,8 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 		}
 	jc->j.kind = jc->kind;
 	jc->j.desc = psprintf("%s%s", what ? (e->rtekind == RTE_VALUES ? "values" : psprintf("%s (%s)", e->eref->aliasname, what)) : get_rel_name(e->relid),
-						  jc->kind == SJ_LEFT ? " (left)" : jc->kind == SJ_SEMI ? " (semi)" : jc->kind == SJ_ANTI ? " (anti)" : "");
+						  jc->kind == SJ_LEFT ? " (left)" : jc->kind == SJ_SEMI ? " (semi)" : jc->kind == SJ_ANTI ? " (anti)" :
+						  jc->kind == SJ_RIGHT ? " (preserved)" : jc->kind == SJ_FULL ? " (full)" : "");
 	jc->combo = combo_index(c, new_combo(c, list_length(c->joins)));
 	c->joins = lappend(c->joins, jc);
 	return true;
@@ -5396,7 +5442,7 @@ join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
 {
 	SiftAggJoin *j = &jc->j;
 
-	if (jc->cpath != NULL)
+	if (jc->cpath != NULL || sift_aggjoin_preserves(jc->kind))
 		return;
 	foreach_ptr(Node, q, conds)
 	{
@@ -5446,6 +5492,15 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 	return true;
 }
 
+static bool
+preserved_join(AggCtx *c)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (sift_aggjoin_preserves(jc->kind))
+			return true;
+	return false;
+}
+
 /*
  * The conjuncts of the WHERE and of the ON clauses that read a joined table. Those of an inner join are its ON clause (the same rows
  * either way); those of an outer, semi or anti join filter its output rows (*post). In the ON clause of every join an equality of a
@@ -5476,6 +5531,9 @@ setup_joins(AggCtx *c, List **quals, List **post)
 		else
 			*post = lappend(*post, q);
 	}
+	/* a WHERE the scanned table's NULL row can pass is evaluated after the outer join: it is not a filter of the rows the scan reads */
+	if (rest != NIL && preserved_join(c))
+		return false;
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		List	   *conds = NIL;
@@ -5773,6 +5831,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		return false;
 	c->root = root;
 	c->group = -1;
+	c->nulling = fs->ojrels;
 	foreach_int(rti, fs->rtis)
 	{
 		RangeTblEntry *e = rt_fetch(rti, parse->rtable);
@@ -5829,6 +5888,9 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
 	if (c->rel == NULL || !find_source(c, &ii))
 		return false;
+	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
+	if (fs->ojrels && (input_rel == NULL || list_length(c->joins) != 1 || c->func_rti != 0 || c->nparts > 0))
+		return false;
 	build_attexprs(c);
 	if (c->func_rti)
 	{
@@ -5838,6 +5900,19 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		c->used = bms_add_member(c->used, c->group);
 	}
 	return true;
+}
+
+/* agg_base, then the other table of an outer join of two tables as the scanned one when the first did not give a plan (a preserved side) */
+static bool
+agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
+{
+	if (agg_base(c, root, input_rel, fs))
+		return true;
+	if (!fs->flippable)
+		return false;
+	memset(c, 0, sizeof(AggCtx));
+	*fs = (FromScan) {.ok = true, .flip = true};
+	return agg_base(c, root, input_rel, fs);
 }
 
 static SiftAggSpec *
@@ -6500,7 +6575,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 			   *firsts = NIL;
 	bool		lead = true;
 
-	if (!agg_base(c, root, input_rel, &fs))
+	if (!agg_base_either(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
