@@ -42,7 +42,7 @@ LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
 CORE     = col/codec col/codec_policy col/codec_write col/codec_parse col/codec_blob col/codec_kern col/codec_avx2 col/codec_avx512 col/compress col/kern col/kern_avx2 \
-           col/kern_avx512 col/enc col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 \
+           col/kern_avx512 col/enc col/schema col/dict col/batch col/chunk col/ctest col/unit col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 \
            bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/pos bm25/bitmap bm25/blob bm25/topk bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 sift_span
 OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o

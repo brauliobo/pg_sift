@@ -7,6 +7,12 @@ col/kern.c
 col/kern_avx2.c
 col/kern_avx512.c
 col/enc.c
+col/schema.c
+col/dict.c
+col/batch.c
+col/chunk.c
+col/ctest.c
+col/unit.c
 col/codec.c
 col/codec_policy.c
 col/codec_write.c
@@ -39,6 +45,7 @@ col/col.h
 col/kern.h
 col/kern_int.h
 col/enc.h
+col/enc_int.h
 col/seg.h
 col/seg_int.h
 col/ver.h
