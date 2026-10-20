@@ -2190,7 +2190,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	lf = leaf_of(c, leaf);
 	if (lf->kind == SCL_SCALAR && lf->typid == NUMERICOID && lf->vtype == SCV_I64 && type_class(lt) == TC_NUMERIC)
 		return compile_num_in(c, sa, leaf, r);
-	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_I32 || type_class(lf->typid) == TC_NONE ||
+	if (lf->kind != SCL_SCALAR || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64) || type_class(lf->typid) == TC_NONE ||
 		type_class(lf->typid) != type_class(lt) || type_class(lf->typid) != type_class(rt) ||
 		type_class(lf->typid) == TC_FLOAT)
 		return NULL;

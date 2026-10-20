@@ -394,8 +394,8 @@ The array form pushes down for these key types (the element type of the array is
 
 | key column | array | how `SiftAgg` tests it |
 |---|---|---|
-| `int2`, `int4`, `date` | `int2[]`, `int4[]`, `date[]` | one byte per value of the range of the array (a sorted array when the range is wider than 4 MB) |
-| `int8`, `text`, `timestamp`, `timestamptz` | the same type of array | PostgreSQL evaluates `col = ANY($1)` once per distinct value of the column, with a hash table of the array built on the first value |
+| `int2`, `int4`, `date`, `int8`, `timestamp`, `timestamptz` | the same type of array (an `int4[]` for an `int8` column too) | a byte table over the range of the array (up to 4 MB), else a sorted array (32-bit types) or a hash table (64-bit types) |
+| `text` | `text[]` | PostgreSQL evaluates `col = ANY($1)` once per distinct value of the column, with a hash table of the array built on the first value |
 | `uuid`, `bytea` | | not supported: a `sift_col` index refuses these columns, so the query keeps the normal plan |
 
 A `NULL` element matches nothing (`= ANY`) and makes `<> ALL` empty, an empty array keeps no row (`= ANY`) or every row (`<> ALL`), as in SQL. The timings by type are in
