@@ -1,18 +1,15 @@
 # Gap report: pg_sift against ClickHouse and Elasticsearch on the store questions
 
-Internal tooling. The goal for 3.0 is for pg_sift to be faster than ClickHouse and Elasticsearch on the quick aggregation questions of the
+Internal tooling. The aim is for pg_sift to be faster than ClickHouse and Elasticsearch on the quick aggregation questions of the
 online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)). This file says where it is not, where its time goes, and the
-single change that would move each question the most. The tables below are generated; the text under "Findings" was written from the first
-profile (below) and has to be re-read after every regeneration.
+single change that would move each question the most. The tables below are generated; the text under "Reading of the 3.1.0 tables" was written from them and the
+text under "Findings (history)" from an earlier profile, so the second is a baseline and not a description of the current build.
 
-Status: **a snapshot of 2026-10-18 (historical baseline), taken on a 3.0 development build.** The per-unit pre-aggregates (`6681929`), the BM25 match
-sets as the row selection of the aggregate pushdown (`74f771e`), the scan priced by stored bytes (`25e5075`) and the `count(DISTINCT)` bitmaps (`92cf75a`)
-were merged after it, and the 3.0 final pass (2026-10-19, `sift_col`, 3 CPUs, [BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)) measured questions 02 to 04 at
-1,000,000 orders in 0.793, 0.816 and 0.841 ms against the 5.64, 4.69 and 4.45 ms of the first gap table below. The pg_sift profile is measured; the ClickHouse and
-Elasticsearch columns of the gap tables are those of the preliminary run of 2026-10-18 (7 warm runs, 4 CPUs per container, 1,000,000 and 10,000,000 orders: `docs/results/store.json` of
-commit `2699fb1`), which `docs/results/store.json` no longer holds: it now has the final pass of 3.0 at 1,000,000 orders (1 and 3 CPUs), so `bench/bench store gap` on it prints other tables than
-the generated ones below. The engines' own accounting (rows and bytes read, memory, threads) is still to be measured: the owner asked for
-ClickHouse and Elasticsearch to run only once v3 is final (`bench/bench final --docs`, which fills this file in).
+Status: **the generated tables are those of the pass of pg_sift 3.1.0** (tag `v3.1.0`, built from a `git archive` of the tag; `bench/bench final --size standard --docs`, October 2026):
+the gap tables from [docs/results/store.json](results/store.json) (1,000,000 orders, 1 and 3 CPUs per container, medians of 5 timed runs after 2 untimed ones), the
+pg_sift profile from `docs/results/store-gap-1000000.json` (private cluster under a memory cap) and the engines' own accounting from `docs/results/store-stats-1000000.json`.
+The profile and the findings of 2026-10-18 on a 3.0 development build (1,000,000 and 10,000,000 orders, 4 CPUs per container) are kept as a historical baseline in `docs/results/store-gap-10000000.json`
+and in the section "Findings (history)"; they are not regenerated.
 
 ## Re-measuring
 
@@ -22,7 +19,7 @@ ClickHouse and Elasticsearch to run only once v3 is final (`bench/bench final --
 | two runs side by side, ratio of every warm median | `bench/bench store compare A.json B.json` |
 | the gap tables of a results file | `bench/bench store gap [docs/results/store.json]` |
 | the pg_sift profile (private cluster under a memory cap) | `S_SIZES=1000000,10000000 bench/steps/gap.sh` |
-| everything, once the code is final | `bench/bench final --docs` (`--dry-run` prints the plan, time and preconditions) |
+| everything, for a release tag | `SIFT_SRC=ref:v3.1.0 bench/bench final --size standard --docs` (`--dry-run` prints the plan, time and preconditions) |
 
 The results JSON has one format (`meta` and `rows` with `dataset, tier, engine, class, variant, metric, unit, value, min, max, stderr, n, values`); runs are diffed with `compare`.
 
@@ -124,10 +121,21 @@ What ClickHouse and Elasticsearch spend on the same questions (their own account
 | 10 | 1,035,705 | 11.8 MiB | 5.5 MiB | 8 | 9 ms | 8 ms | 5 ms |
 <!-- bench:gap-profile:end -->
 
-## Findings (from the profile above; re-read after a new run)
+## Reading of the 3.1.0 tables
 
-Sources: the gap tables (store.json of 2026-10-18, commit `2699fb1`, 7 warm runs, 4 CPUs per container), the profile tables (private cluster, pg_sift 3.0 built from this checkout, `-O3`, AVX-512 host, the
-store.json settings), `EXPLAIN` plans in `docs/results/store-gap-*.json`. "Estimate" marks a number projected from a measurement, not measured.
+Warm medians of the generated tables above (1,000,000 orders, `sift_col`; a ratio above 1 means pg_sift is slower):
+
+- At 1 CPU every question is faster than ClickHouse and Elasticsearch except question 10 (the 10 newest shipped orders of a search) against Elasticsearch with its request cache on (1.13x).
+  At 3 CPUs the same question is 1.31x of the cached Elasticsearch and 0.73x of the uncached one; all other cells are below 1.
+- The slowest `sift_col` questions are 06 (customers per month, 5.2 ms at 3 CPUs: `dist_update` is 43% of the cycles of the profile, 68.6 instructions per row), 10 (4.6 ms: a heap fetch of every match,
+  then a sort; `EXPLAIN` execution 1.35 ms in the profile) and 09 (1.9 ms: 1,834 instructions per match, 7,143 rows scanned).
+- Questions 02 to 04 take 0.8 to 0.9 ms, from the pre-aggregates of the units (`unit_parse`, `preagg_add`: 0 rows scanned), against 4.6 to 16.6 ms for ClickHouse.
+- Planning in a warm backend is 0.01 to 0.12 ms, at most 4.3% of the `sift_col` median of the question.
+
+## Findings (history: 2026-10-18, a 3.0 development build, not regenerated)
+
+Sources: the gap tables of that day (7 warm runs, 4 CPUs per container, 1,000,000 and 10,000,000 orders), the profile tables (private cluster, a 3.0 development build, `-O3`, AVX-512 host, the
+store.json settings), `EXPLAIN` plans in `docs/results/store-gap-10000000.json`. Several of the changes these findings propose (per-unit pre-aggregates, the BM25 match set as the row selection of the aggregate pushdown, the scan priced by stored bytes and the `count(DISTINCT)` bitmaps) were made afterwards; the tables above are the current numbers. "Estimate" marks a number projected from a measurement, not measured.
 
 ### Planning is not the lever
 
