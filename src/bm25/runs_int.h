@@ -46,7 +46,7 @@ typedef struct Batch
 	uint32		plen[BATCH];
 } Batch;
 
-extern void io_flush(RunIO *io);
+extern SIFT_INTERNAL void io_flush(RunIO *io);
 
 static inline void
 io_put(RunIO *io, const void *p, int n)
@@ -75,8 +75,8 @@ io_varint(RunIO *io, uint64 x)
 }
 
 /* runs.c */
-extern SiftRun *run_new(MemoryContext mcxt, SharedFileSet *fileset, int worker, int id);
-extern void batch_flush(Batch *bt);
-extern void batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 len);
+extern SIFT_INTERNAL SiftRun *run_new(MemoryContext mcxt, SharedFileSet *fileset, int worker, int id);
+extern SIFT_INTERNAL void batch_flush(Batch *bt);
+extern SIFT_INTERNAL void batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 len);
 
 #endif							/* SIFT_RUNS_INT_H */

@@ -29,6 +29,9 @@
 #ifndef SIFT_HOST_H
 #define SIFT_HOST_H
 
+/* A function the files of one module share (a *_int.h header) and that is no symbol of the extension: hidden, as a static one is. */
+#define SIFT_INTERNAL __attribute__((visibility("hidden")))
+
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 
 #include "host.h"

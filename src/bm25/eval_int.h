@@ -357,20 +357,20 @@ cursor_buf(MemoryContext cx)
 }
 
 /* wbind.c */
-extern void bind_wbuf(SiftPlan *p);
-extern void import_wbuf(SiftPlan *p, const SharedBind *h);
-extern void bind_scoring(SiftPlan *p);
-extern void score_wbuf(SiftPlan *p);
-extern const LeafTerm *leaf_weighed(const EvalLeaf *l, const char *term, int len);
+extern SIFT_INTERNAL void bind_wbuf(SiftPlan *p);
+extern SIFT_INTERNAL void import_wbuf(SiftPlan *p, const SharedBind *h);
+extern SIFT_INTERNAL void bind_scoring(SiftPlan *p);
+extern SIFT_INTERNAL void score_wbuf(SiftPlan *p);
+extern SIFT_INTERNAL const LeafTerm *leaf_weighed(const EvalLeaf *l, const char *term, int len);
 
 /* phrase.c */
-extern PosCtx *posctx_create(SiftPlan *p);
-extern bool phrases_hold(PosCtx *c, int s, int page, int off);
-extern sift_cur *phrase_cursor(SiftPlan *p, int s, int ph, sift_cur *kid, const IterCurs *ic, MemoryContext cx);
-extern bool doc_pass(SiftPlan *p, text *doc, float4 *score);
+extern SIFT_INTERNAL PosCtx *posctx_create(SiftPlan *p);
+extern SIFT_INTERNAL bool phrases_hold(PosCtx *c, int s, int page, int off);
+extern SIFT_INTERNAL sift_cur *phrase_cursor(SiftPlan *p, int s, int ph, sift_cur *kid, const IterCurs *ic, MemoryContext cx);
+extern SIFT_INTERNAL bool doc_pass(SiftPlan *p, text *doc, float4 *score);
 
 /* iter.c */
-extern sift_cur *seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *ic, MemoryContext cx);
-extern bool iter_find_sb(SiftMatchIter *it, uint32 *sbp);
+extern SIFT_INTERNAL sift_cur *seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *ic, MemoryContext cx);
+extern SIFT_INTERNAL bool iter_find_sb(SiftMatchIter *it, uint32 *sbp);
 
 #endif							/* SIFT_EVAL_INT_H */
