@@ -42,7 +42,9 @@ case $AM in
 		RANKED="SELECT id FROM soak WHERE $(match "'w' || :w") ORDER BY sift.score(ctid) DESC LIMIT 10;" ;;
 	gin)
 		INDEX="CREATE INDEX soak_idx ON soak USING gin (to_tsvector('simple', body))"
-		VERIFY="SELECT gin_index_check('soak_idx')"
+		# gin_index_check is amcheck 1.5 (PostgreSQL 18+); older servers get the primary key checked, the GIN results are compared with the reference anyway
+		VERIFY="SELECT bt_index_check('soak_pkey')"
+		(($(psql -X -qAt -d postgres -c "SHOW server_version_num") >= 180000)) && VERIFY="SELECT gin_index_check('soak_idx')"
 		match() { echo "to_tsvector('simple', body) @@ to_tsquery('simple', $1)"; }
 		RANKED="SELECT id FROM soak WHERE $(match "'w' || :w") ORDER BY id DESC LIMIT 10;" ;;
 	*) echo "--am sift|gin" >&2; exit 1 ;;
