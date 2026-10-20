@@ -1,0 +1,80 @@
+-- Raw JSON conversion must retain PostgreSQL's parsing and error timing.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int, document jsonb, metrics jsonb);
+INSERT INTO events VALUES
+ (1, '{"entries":[{"value":6.5}]}', '{"overall":7}'),
+ (2, '{"entries":[{"value":"1e1"}]}', '{"overall":"7"}'),
+ (3, '{"entries":[{"value":"+6.5"}]}', '{"overall":true}'),
+ (4, '{"entries":[{"value":" 6.5 "}]}', '{"overall":null}'),
+ (5, '{"entries":[{"value":".5"}]}', '{}'),
+ (6, '{"entries":[{"value":"5."}]}', '{}'),
+ (7, '{"entries":[{"value":"NaN"}]}', '{}'),
+ (8, '{"entries":[{"value":"Infinity"}]}', '{}'),
+ (9, '{"entries":[{}]}', '{}'),
+ (10, '{"entries":[{"value":null}]}', '{}'),
+ (11, '{"entries":[{"value":"bad","bucket":"excluded"}]}', '{}'),
+ (12, '{"entries":[{"value":""}]}', '{}'),
+ (13, '{"entries":[{"value":"1e400"}]}', '{}'),
+ (14, '{"entries":[{"value":true}]}', '{}'),
+ (15, '{"entries":[{"value":{}}]}', '{}'),
+ (16, '{"entries":[{"value":[]}]}', '{}'),
+ (17, '{"entries":null}', '{}'),
+ (18, '{"entries":{}}', '{}'),
+ (19, '{"entries":[null]}', '{}'),
+ (20, '{"entries":[1]}', '{}'),
+ (21, NULL, '{}'), (22, '{}', '{}'), (23, '[]', '{}'),
+ (24, '{"entries":[{"value":2},{"value":2},{"value":8}]}', '{}');
+CREATE INDEX events_col ON events USING sift_col (id, document, metrics)
+ WITH (paths = 'document.entries[]{value astext,bucket text}, metrics.* astext');
+VACUUM (FREEZE, ANALYZE) events;
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  EXECUTE 'SELECT to_jsonb(t)::text FROM (' || q || ') t' INTO result;
+  RETURN coalesce(result, 'no rows');
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE;
+END $$;
+-- Text paths are not automatically equivalent to recordset float fields.
+SELECT id, outcome(q, false) = outcome(q, true) AS same,
+       outcome(q, true) = wanted AS expected
+FROM (
+ SELECT id, format('SELECT count(*) AS n, sum(o.value)::text AS value FROM events f '
+                   'CROSS JOIN LATERAL jsonb_to_recordset(f.document->''entries'') o(value float8) WHERE f.id=%s', id) AS q,
+        CASE WHEN id IN (11,12,14,15,16) THEN '22P02'
+             WHEN id = 13 THEN '22003'
+             WHEN id BETWEEN 17 AND 20 THEN '22023'
+             WHEN id BETWEEN 21 AND 23 THEN '{"n": 0, "value": null}'
+             WHEN id IN (9,10) THEN '{"n": 1, "value": null}'
+             ELSE format('{"n": %s, "value": "%s"}', CASE WHEN id=24 THEN 3 ELSE 1 END,
+                         CASE id WHEN 1 THEN '6.5' WHEN 2 THEN '10' WHEN 3 THEN '6.5' WHEN 4 THEN '6.5'
+                              WHEN 5 THEN '0.5' WHEN 6 THEN '5' WHEN 7 THEN 'NaN' WHEN 8 THEN 'Infinity' WHEN 24 THEN '12' END)
+        END AS wanted
+ FROM events
+) cases ORDER BY id;
+-- Excluded facts must not be cast; a filter on an emitted record follows recordset conversion.
+SELECT outcome($q$SELECT sum(o.value) AS value FROM events f
+ CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8)
+ WHERE f.id=1$q$, false) = outcome($q$SELECT sum(o.value) AS value FROM events f
+ CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8)
+ WHERE f.id=1$q$, true) AND outcome($q$SELECT sum(o.value) AS value FROM events f
+ CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8)
+ WHERE f.id=1$q$, true) = '{"value": 6.5}' AS excluded_fact,
+ outcome($q$SELECT sum(o.value) AS value FROM events f
+ CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8, bucket text)
+ WHERE f.id=11 AND o.bucket <> 'excluded'$q$, true) = '22P02' AS conversion_before_record_filter;
+-- JSONB-to-float and text-to-float have different contracts, including JSON null across server versions.
+SELECT id, outcome(q, false) = outcome(q, true) AS same,
+       outcome(q, true) = wanted AS expected
+FROM (
+ SELECT id, format('SELECT sum(r.value::float8) AS value FROM events f '
+                   'CROSS JOIN LATERAL jsonb_each(f.metrics) r WHERE f.id=%s', id) AS q,
+        CASE WHEN id=1 THEN '{"value": 7}'
+             WHEN id IN (2,3) OR current_setting('server_version_num')::int < 180000 THEN '22023'
+             ELSE '{"value": null}' END AS wanted
+ FROM events WHERE id <= 4
+) cases ORDER BY id;
+DROP FUNCTION outcome(text, bool);
+DROP TABLE events;
+DROP EXTENSION pg_sift;
