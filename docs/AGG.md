@@ -156,9 +156,9 @@ index must answer for (`--scenarios`, default all). They are cumulative and only
 
 | scenario | heap state |
 |---|---|
-| `insert` | 20% more rows (also of `t_jp`) without a `VACUUM` (pages not all-visible) |
-| `update` | an UPDATE of indexed columns (new tuple versions) and of the jsonb documents (also of `t_jp`) |
-| `delete` | hard deletes (also of `t_jp`) and soft deletes (`deleted_at` set) |
+| `insert` | 20% more rows (also of `t_jp` and `t_eo`) without a `VACUUM` (pages not all-visible) |
+| `update` | an UPDATE of indexed columns (new tuple versions) and of the jsonb documents (also of `t_jp` and `t_eo`) |
+| `delete` | hard deletes (also of `t_jp` and `t_eo`) and soft deletes (`deleted_at` set) |
 | `abort` | a rolled-back INSERT, UPDATE and DELETE (dead tuples before any `VACUUM`) |
 | `vacuum` | `VACUUM` after all that |
 | `hot` | UPDATE of columns no index holds: HOT updates (the count is printed) |
@@ -184,6 +184,15 @@ Against a `null` literal: `== null` is true for a JSON null only, `!= null` for 
 other rows. Each form pushed down is equal to the heap in every variant and scenario; a form that is not provable (the last row of the
 table, a number against a float leaf, strict `!()`, `jsonb_path_match`) is a `plain` fixture. A member the leaf cannot hold (an array or
 an object in a leaf of numbers, a number out of range) raises the error of the pushdown, so no `jp_*` fixture can hold one.
+
+### An element against a column of its row
+
+The fixtures `eo_*` read `t_eo`: the members `q` (int4), `q8` (int8) and `f` (float8) of its array against the columns `r4`, `r8` and `rf` of the same row,
+with NULL columns, a NaN and a `-0`, a JSON null and a missing member, empty arrays and a NULL document. Element `j` of row `i` holds the value that
+`r4` has in the row `i + j - 1`, so every row has elements equal to the columns of its neighbours and the rows that must not match are there. An
+element is compared with the column of its own row (`= <> < <= > >=`, either side first), NULL on either side is unknown, and the other tests of the
+same element (`AND`, `OR`, `IS NULL`, a literal) are tested on that element. An expression of the column, a column of another type class (an int4 member
+against a float8 column), `LIMIT` that is not a constant, `OFFSET` and a second array keep the normal plan (`eo_trap_*`).
 
 ### Bench mode
 
