@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -352,6 +352,43 @@ CREATE TABLE orders_part_2024 PARTITION OF orders_part FOR VALUES FROM ('2024-01
 CREATE TABLE orders_part_2025 PARTITION OF orders_part FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
 INSERT INTO orders_part SELECT * FROM orders;
 
+-- a partitioned table of one column index (docs/AGG.md, "Partitioned tables"): range by day, a partition that has other attribute numbers (a dropped column
+-- first, the columns in another order), a branch partitioned again by hash, a default partition that takes the days no range has and an unlogged partition
+CREATE TABLE t_part (id integer NOT NULL, grp integer NOT NULL, d date NOT NULL, qty integer, amount numeric(10,2), tag text, doc jsonb, note text) PARTITION BY RANGE (d);
+CREATE TABLE t_part_q1 PARTITION OF t_part FOR VALUES FROM ('2024-01-01') TO ('2024-04-01');
+CREATE TABLE t_part_q2 (junk text, note text, doc jsonb, tag text, amount numeric(10,2), qty integer, d date NOT NULL, grp integer NOT NULL, id integer NOT NULL);
+ALTER TABLE t_part_q2 DROP COLUMN junk;
+ALTER TABLE t_part ATTACH PARTITION t_part_q2 FOR VALUES FROM ('2024-04-01') TO ('2024-07-01');
+CREATE TABLE t_part_q3 PARTITION OF t_part FOR VALUES FROM ('2024-07-01') TO ('2024-10-01') PARTITION BY HASH (id);
+CREATE TABLE t_part_q3_0 PARTITION OF t_part_q3 FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE t_part_q3_1 PARTITION OF t_part_q3 FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+CREATE UNLOGGED TABLE t_part_q4 PARTITION OF t_part FOR VALUES FROM ('2024-10-01') TO ('2025-01-01');
+CREATE TABLE t_part_rest PARTITION OF t_part DEFAULT;
+CREATE FUNCTION coldiff.fx_part(first_id int, last_id int, seed int DEFAULT 0) RETURNS bigint LANGUAGE sql AS $$
+	WITH ins AS (
+		INSERT INTO t_part
+		SELECT i, 1 + i % 5, date '2023-11-15' + floor(coldiff.u(i, 70, seed) * 460)::int, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7) % 50 END,
+			   CASE WHEN i % 17 = 0 THEN NULL ELSE round((coldiff.u(i, 71, seed) * 1000)::numeric, 2) END, (ARRAY['red', 'green', 'blue', 'plain'])[1 + i % 4],
+			   jsonb_build_object('k', i % 9, 's', (ARRAY['x', 'y', 'z'])[1 + i % 3]), 'n' || i % 7
+		FROM generate_series(first_id, last_id) i RETURNING 1)
+	SELECT count(*) FROM ins $$;
+SELECT coldiff.fx_part(1, :n);
+
+-- the traps: a partition without an index, partitions whose indexes hold other leaves, an inheritance parent
+CREATE TABLE t_part_ni (id integer NOT NULL, grp integer NOT NULL, d date NOT NULL, qty integer) PARTITION BY RANGE (d);
+CREATE TABLE t_part_ni_a PARTITION OF t_part_ni FOR VALUES FROM ('2024-01-01') TO ('2024-07-01');
+CREATE TABLE t_part_ni_b PARTITION OF t_part_ni FOR VALUES FROM ('2024-07-01') TO ('2025-01-01');
+CREATE TABLE t_part_op (id integer NOT NULL, grp integer NOT NULL, d date NOT NULL, qty integer, doc jsonb) PARTITION BY RANGE (d);
+CREATE TABLE t_part_op_a PARTITION OF t_part_op FOR VALUES FROM ('2024-01-01') TO ('2024-07-01');
+CREATE TABLE t_part_op_b PARTITION OF t_part_op FOR VALUES FROM ('2024-07-01') TO ('2025-01-01');
+CREATE TABLE t_inh (id integer NOT NULL, grp integer NOT NULL, d date NOT NULL, qty integer);
+CREATE TABLE t_inh_a (CHECK (d < '2024-07-01')) INHERITS (t_inh);
+CREATE TABLE t_inh_b (CHECK (d >= '2024-07-01')) INHERITS (t_inh);
+INSERT INTO t_part_ni SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 366, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
+INSERT INTO t_part_op SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 366, i % 40, jsonb_build_object('k', i % 6) FROM generate_series(1, greatest(:n / 4, 400)) i;
+INSERT INTO t_inh_a SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 182, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
+INSERT INTO t_inh_b SELECT 100000 + i, 1 + i % 5, date '2024-07-01' + (i * 7) % 184, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
+
 -- ---------- the DML of the scenarios (heap states) ----------
 -- rows of orders with the hash of the id below frac (draw selects the sample)
 CREATE FUNCTION coldiff.sample(id int, draw int, frac float8) RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT coldiff.u(id, draw, 5) < frac $$;
@@ -360,7 +397,9 @@ CREATE FUNCTION coldiff.sample(id int, draw int, frac float8) RETURNS boolean LA
 CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH j AS (INSERT INTO t_jp SELECT i, i % 7, coldiff.jp_doc(i + 3), coldiff.jp_doc(i + 5) FROM (SELECT max(id) AS m FROM t_jp) x,
 			   generate_series(m + 1, m + greatest(1, (frac * m)::int)) i RETURNING 1)
-	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) + (SELECT count(*) FROM j) FROM (SELECT max(id) AS m FROM orders) x $$;
+	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) + (SELECT count(*) FROM j) +
+		   (SELECT coldiff.fx_part(p + 1, p + greatest(1, (frac * p)::int), 7) FROM (SELECT max(id) AS p FROM t_part) y)
+	FROM (SELECT max(id) AS m FROM orders) x $$;
 -- indexed columns (a new tuple version with a new TID) and the jsonb documents
 CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET store_id = 1 + (store_id * 7) % 400, placed_at = placed_at + 1 + id % 3, source = 'web', country_code = 'ZZ'
@@ -371,15 +410,18 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 t AS (UPDATE map_dup SET tag = tag || '2' WHERE category = 'Apparel' RETURNING 1),
 		 g AS (INSERT INTO map_empty VALUES ('Home', 'late'), (NULL, 'late') RETURNING 1),
 		 d AS (DELETE FROM map_part WHERE category = 'Home' RETURNING 1),
-		 p AS (UPDATE t_jp SET doc = coldiff.jp_doc(id + 1), mdoc = coldiff.jp_doc(id + 2) WHERE coldiff.sample(id, 906, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
+		 p AS (UPDATE t_jp SET doc = coldiff.jp_doc(id + 1), mdoc = coldiff.jp_doc(id + 2) WHERE coldiff.sample(id, 906, frac) RETURNING 1),
+		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
 CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM orders WHERE coldiff.sample(id, 903, frac) RETURNING 1),
 		 s AS (UPDATE orders SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 904, frac) AND deleted_at IS NULL RETURNING 1),
-		 p AS (DELETE FROM t_jp WHERE coldiff.sample(id, 907, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
+		 p AS (DELETE FROM t_jp WHERE coldiff.sample(id, 907, frac) RETURNING 1),
+		 pt AS (DELETE FROM t_part WHERE coldiff.sample(id, 909, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
 -- columns that no index holds (no new index entries: a HOT update when the page has room)
 CREATE FUNCTION coldiff.sc_hot(frac float8) RETURNS bigint LANGUAGE sql AS $$
-	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1)
-	SELECT count(*) FROM u $$;
+	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1),
+		 pt AS (UPDATE t_part SET note = 'h' || id % 3 WHERE coldiff.sample(id, 910, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM u) + (SELECT count(*) FROM pt) $$;
