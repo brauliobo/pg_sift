@@ -1,5 +1,5 @@
 /*
- * sqstore.c - core/store.h over SQLite. A "relation" is the page file of one virtual table: the 8 KiB engine
+ * store.c - core/store.h over SQLite. A "relation" is the page file of one virtual table: the 8 KiB engine
  * blocks are laid end to end in the shadow table <name>_chunks, chunk_bytes per row. A unit of the cache is one chunk
  * (or one block when the rows are smaller than a block): a bounded set of 64-byte aligned slots filled straight from the
  * row with sqlite3_blob_read (one copy), evicted by CLOCK, never while pinned. Pointers into pages are handed out
@@ -8,7 +8,7 @@
  * directory and commits with the SQLite transaction, so a rollback drops segments and block allocations with it. The
  * LIVE pages of a segment are edited in place in the cache and written back with sqlite3_blob_write.
  */
-#include "sqapi.h"
+#include "api.h"
 
 #include <sys/mman.h>
 #include <unistd.h>

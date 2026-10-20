@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "host_utf8.h"
+#include "utf8.h"
 
 /* the one thing of the PostgreSQL side we need: regex_t holds a pointer */
 typedef struct pgre
