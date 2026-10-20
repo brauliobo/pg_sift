@@ -900,7 +900,7 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
         result['status'] = verdict(result['initial'])
         if force_confirmation:
             write_report(output,report)
-        if result['status'] == 'suspect' or force_confirmation:
+        if result['status'] == 'suspect' or force_confirmation or (control and inserted):
             result['status'] = 'inconclusive'
             result['phase'] = 'confirmation'
             result['confirmation'] = {}
@@ -998,7 +998,7 @@ def write_report(output, report):
              f"PostgreSQL: {report.get('postgresql','unknown')}. CPU: {report['cpu']}; CPUs: {report['cpus']}.",
              f"Runner: {report['runner']}. Load: {report['load']}.",
              'Metric: monotonic elapsed persistent SQL end-to-end, including planning and result receipt.',
-             'Six initial alternating warmed pairs; one fresh suspect-only confirmation: 16 read pairs or 6 mutation pairs. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
+             'Six initial alternating warmed pairs; one fresh confirmation: 16 read pairs or 6 mutation pairs. Ordinary cases confirm suspects; controlled INSERT and INSERT feasibility always confirm. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
              '', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
              '|---|---|---:|---:|---|---|---|---|']
     if report['config'].get('insert_feasibility'):

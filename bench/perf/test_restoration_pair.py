@@ -268,6 +268,54 @@ class PairedRestoration(unittest.TestCase):
                 self.assertEqual(revisions[1].delays,26*clean['operations'] if acceptance else 0)
 
 
+    def test_control_initial_pass_still_measures_thirteen_pairs_and_reports_fresh_six(self):
+        for fresh_ratio in (1.0,1.3):
+            with self.subTest(fresh_ratio=fresh_ratio), tempfile.TemporaryDirectory() as tmp:
+                events = []
+                revisions = [Revision('A',events),Revision('B',events)]
+                candidate_calls = [0]
+                for rev in revisions: rev.controlled=False
+                def elapsed(conn,case,n,deadline,delay=0,**kwargs):
+                    ratio = 1.0
+                    if conn.controlled:
+                        candidate_calls[0]+=1
+                        conn.delays+=n
+                        # Validation+initial6 consume14 candidate warm/measured streams.
+                        if candidate_calls[0]>14: ratio=fresh_ratio
+                    value = .001*ratio
+                    if kwargs.get('raw') is not None: kwargs['raw'].extend([value]*n)
+                    return value*n
+                def install(conn,maximum): conn.controlled=True
+                footprint = {'totals':{'mutable':8192,'mutable_pk':8192},'forks':{}}
+                report = dict(status='inconclusive',date='unit',size_status='inconclusive',complete=False,
+                              size_complete=False,budget_exhausted=False,baseline_ref='a'*40,candidate_ref='a'*40,
+                              cpu='unit',cpus=1,runner='unit',load=[],config={'verify_control':True},runtime_seconds={},
+                              size_checks=[],cases=[],post_control_costs=self.post_costs())
+                with patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'reset'), patch.object(gate,'configure'), patch.object(gate,'elapsed',side_effect=elapsed), patch.object(gate,'insert_footprint',return_value=footprint), patch.object(gate,'check_insert'), patch.object(gate,'install_insert_control',side_effect=install), patch.object(gate,'calibrate_insert') as pilot, patch.object(gate,'insert_pair',wraps=gate.insert_pair) as owner:
+                    result = gate.measure(revisions,CASE,gate.time.monotonic()+1000,True,
+                                          frozen=self.clean_result(),sink=report['cases'],report=report,output=Path(tmp))
+                self.assertEqual(result['initial']['upper'],1.0)
+                self.assertTrue('confirmation' in result,'controlled INSERT initial PASS must still collect fresh6')
+                self.assertEqual(result['confirmation']['n'],6)
+                self.assertEqual(result['initial']['n'],6)
+                self.assertEqual(owner.call_count,13)
+                self.assertEqual(sum(sql=='CHECKPOINT' for side,sql in events),26)
+                self.assertEqual(revisions[1].delays,26*result['operations'])
+                self.assertEqual(result['control_budget']['controlled_pairs'],13)
+                self.assertEqual(result['control_budget']['candidate_delayed_operations'],26*result['operations'])
+                self.assertTrue(result['validation']['pair']['complete'])
+                self.assertTrue(result['complete'])
+                self.assertTrue(result['control']['removed'])
+                self.assertEqual(result['timing_status'],'regression' if fresh_ratio>1.1 else 'pass')
+                pilot.assert_not_called()
+                gate.write_report(Path(tmp),report)
+                saved = json.loads((Path(tmp)/'results.json').read_text())['cases'][0]
+                summary = (Path(tmp)/'summary.md').read_text()
+                self.assertEqual(saved['confirmation']['expected_pairs'],6)
+                self.assertEqual(len(saved['confirmation']['pairs']),6)
+                self.assertIn('| storage_insert | initial | 6 |',summary)
+                self.assertIn('| storage_insert | confirmation | 6 |',summary)
+
     def test_checkpoint_sql_error_versus_success_crossing_deadline(self):
         for sql_error in (False,True):
             clock = [0.0]
