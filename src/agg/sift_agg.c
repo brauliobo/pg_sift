@@ -3171,6 +3171,18 @@ pred_lut_fill(void *arg, int32 v, void *entry)
 	*(uint8 *) entry = eval_bool(f->ex, st->expr, leaf_datum(st->param->paramtype, v), false);
 }
 
+/* The rows of tmpm, each tested on its own: the values are too far apart for a table (what the statistics did not show) */
+static void
+lut_rows(AggExec *ex, PredState *st, const int32 *vals, int n, uint64 *out)
+{
+	Oid			typ = st->param->paramtype;
+
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+		if ((ex->tmpm[i >> 6] >> (i & 63)) & 1 && eval_bool(ex, st->expr, leaf_datum(typ, vals[i]), false))
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
 static void
 eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
 {
@@ -3209,10 +3221,15 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 		{
 			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-			rt_cover(&st->rt, mn, mx, pred_lut_fill, &f);
+			if (rt_span(&st->rt, mn, mx) > MAX_RANGE)
+				lut_rows(ex, st, vals, n, out);
+			else
+			{
+				rt_cover(&st->rt, mn, mx, pred_lut_fill, &f);
+				/* a null row reads whatever its slot holds: the result is replaced below */
+				sift_aggk->lut_i32(out, vals, n, st->rt.lo, (uint32) ((int64) st->rt.hi - st->rt.lo + 1), (uint8 *) st->rt.tab);
+			}
 			MemoryContextSwitchTo(old);
-			/* a null row reads whatever its slot holds: the result is replaced below */
-			sift_aggk->lut_i32(out, vals, n, st->rt.lo, (uint32) ((int64) st->rt.hi - st->rt.lo + 1), (uint8 *) st->rt.tab);
 		}
 		else
 			clear_words(out, n);

@@ -38,7 +38,7 @@ Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
 `Custom Scan (SiftAgg)` takes them as a lookup table over the leaf: PostgreSQL's own `SubPlan` answers once for every distinct value of the column, so the NULL rule
 of `IN` and `NOT IN` is PostgreSQL's (one NULL in the sub-select makes every `NOT IN` NULL, no row; an empty sub-select makes it true for a NULL value too) and the
 test composes with `AND`, `OR`, `NOT`, `CASE` and `FILTER`. The sub-select runs once, when the scan starts, with the query's snapshot, and `EXPLAIN` shows it as
-`SubPlan` under the node; a rescan keeps the answers, and a prepared statement's parameters are read by the sub-select as in any plan.
+`SubPlan` under the node; an integer column whose values span more than 4 million (the statistics may not show it) is tested row by row instead of through a table; a rescan keeps the answers, and a prepared statement's parameters are read by the sub-select as in any plan.
 
 The normal plan stays when the sub-select is correlated or reads a parameter of the outer query, tests two columns (`(a, b) NOT IN (SELECT x, y ...)`), is not
 hashed (too large for `work_mem` and `hash_mem_multiplier`), reads a volatile function, locks rows (`FOR UPDATE`), holds a sub-select of its own or an expression

@@ -102,6 +102,17 @@ SELECT * FROM same($$SELECT kind, sum(CASE WHEN store_id IN (SELECT id FROM stor
 -- a sub-select that reads a CTE (the CTE is the plan's, the sub-select its reader)
 SELECT * FROM same($$WITH s AS MATERIALIZED (SELECT id FROM stores WHERE id < 20) SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT id FROM s) OR kind = 'b' GROUP BY kind$$);
 
+-- a column whose range is wide, with the values the statistics did not see (a few rows after ANALYZE): the lookup table cannot be dense, the answer is the same
+CREATE TABLE wide (id int PRIMARY KEY, entity_id int, kind text) WITH (autovacuum_enabled = false);
+INSERT INTO wide SELECT i, 1 + (i * 7919) % 300, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_series(1, 6000) i;
+CREATE INDEX wide_col ON wide USING sift_col (entity_id, kind);
+VACUUM (FREEZE, ANALYZE) wide;
+INSERT INTO wide VALUES (10001, -5, 'a'), (10002, 2147483640, 'b'), (10003, 1000000000, 'c'), (10004, NULL, 'a');
+VACUUM (FREEZE) wide;
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM wide WHERE entity_id NOT IN (SELECT entity_id FROM blocked WHERE entity_id IS NOT NULL) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM wide WHERE entity_id IN (SELECT entity_id FROM blocked) OR kind = 'c' GROUP BY kind$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM wide WHERE entity_id NOT IN (SELECT entity_id FROM blocked WHERE entity_id IS NOT NULL)$$);
+
 -- the sub-select runs once: the SubPlan of EXPLAIN ANALYZE is under the node and was started once
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM blocked) GROUP BY kind$$) AS not_in;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE entity_id IN (SELECT entity_id FROM blocked) OR kind = 'c' GROUP BY kind$$) AS in_or;
@@ -221,5 +232,5 @@ DEALLOCATE ALL;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP FUNCTION shape_of(text);
-DROP TABLE ev, stores, blocked, blocked_null, nothing, regions_off, regions_off_null, holidays, dropme, tags;
+DROP TABLE ev, stores, blocked, blocked_null, nothing, regions_off, regions_off_null, holidays, dropme, tags, wide;
 DROP EXTENSION pg_sift;
