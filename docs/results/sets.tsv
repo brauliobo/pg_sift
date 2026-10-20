@@ -1,0 +1,80 @@
+# Set filters: a fact table filtered by 1k, 2k, 5k, 10k and 100k entity ids (bench/steps/sets.sh).
+# date: 2026-10-20
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (93% threads), scope 3 CPUs 12G
+# postgresql: PostgreSQL 18.6
+# build: v3.1.0
+# clickhouse: 26.9.19.9
+# shared_buffers: 2GB
+# bench: sets
+# sift: 3.1
+# host_load_before: load 5.05 5.08 4.98 cpu_psi 0.30%
+# host_load_after: load 5.03 5.33 5.12 cpu_psi 0.00%
+# method: psql \timing of one statement, planning included, one client, 9 timed runs after one untimed, cells interleaved in random order; max_parallel_workers_per_gather 2, jit off
+version	case	arm	metric	value	min	max	n	load	note
+3.1	int4	sift_col_key	supported	1					ok
+3.1	int8	sift_col_key	supported	1					ok
+3.1	text	sift_col_key	supported	1					ok
+3.1	date	sift_col_key	supported	1					ok
+3.1	uuid	sift_col_key	supported	0					ERROR: sift_col does not support the type uuid of column "k" HINT: Supported: smallint, integer, big
+3.1	1k	array_generic	median_ms	8.30	6.78	9.99	9	5.73	SiftAgg
+3.1	1k	array_custom	median_ms	5.53	4.86	6.29	9	5.72	SiftAgg
+3.1	1k	literal_in	median_ms	5.87	5.43	8.72	9	5.76	SiftAgg
+3.1	1k	literal_in_agg	median_ms	5.93	5.19	6.73	9	5.72	SiftAgg
+3.1	1k	normal_plan	median_ms	8.40	7.47	10.55	9	5.79	Index Scan
+3.1	1k	member_in	median_ms	60.19	57.01	62.93	9	5.69	Index Scan
+3.1	1k	member_in_agg	median_ms	66.48	60.37	164.03	9	5.74	SiftAgg
+3.1	1k	array_generic_int8	median_ms	8.68	8.04	8.94	9	5.77	Index Scan
+3.1	1k	normal_plan_int8	median_ms	9.60	8.91	11.58	9	5.78	Index Scan
+3.1	1k	array_generic_text	median_ms	9.03	8.67	9.49	9	5.75	SiftAgg
+3.1	1k	normal_plan_text	median_ms	10.95	9.49	12.01	9	5.79	Index Scan
+3.1	1k	array_generic_date	median_ms	8.64	7.86	9.76	9	5.77	SiftAgg
+3.1	1k	normal_plan_date	median_ms	8.61	8.46	12.04	9	5.73	Index Scan
+3.1	1k	ch_literal_ins	median_ms	10.00	9.00	14.00	9	5.80	ClickHouse
+3.1	1k	ch_literal_tuned	median_ms	15.00	13.00	21.00	9	5.77	ClickHouse
+3.1	1k	ch_member_tuned	median_ms	14.00	13.00	15.00	9	5.73	ClickHouse
+3.1	2k	array_generic	median_ms	12.99	11.51	14.60	9	5.79	SiftAgg
+3.1	2k	array_custom	median_ms	6.93	5.86	9.99	9	5.71	SiftAgg
+3.1	2k	literal_in	median_ms	7.41	6.71	8.19	9	5.80	SiftAgg
+3.1	2k	literal_in_agg	median_ms	7.33	6.75	7.82	9	5.86	SiftAgg
+3.1	2k	normal_plan	median_ms	62.32	57.72	67.05	9	5.64	Index Scan
+3.1	2k	member_in	median_ms	62.10	56.05	76.91	9	5.81	Index Scan
+3.1	2k	member_in_agg	median_ms	79.31	64.49	120.52	9	5.85	SiftAgg
+3.1	2k	ch_literal_ins	median_ms	14.00	13.00	18.00	9	5.69	ClickHouse
+3.1	2k	ch_literal_tuned	median_ms	18.00	15.00	23.00	9	5.84	ClickHouse
+3.1	2k	ch_member_tuned	median_ms	14.00	12.00	22.00	9	5.81	ClickHouse
+3.1	5k	array_generic	median_ms	5.07	4.59	6.87	9	5.73	SiftAgg
+3.1	5k	array_custom	median_ms	10.48	8.99	10.82	9	5.74	SiftAgg
+3.1	5k	literal_in	median_ms	11.16	10.13	11.52	9	5.76	SiftAgg
+3.1	5k	literal_in_agg	median_ms	11.76	10.70	14.38	9	5.73	SiftAgg
+3.1	5k	normal_plan	median_ms	66.01	57.24	69.52	9	5.77	Index Scan
+3.1	5k	member_in	median_ms	63.55	56.47	66.31	9	5.73	Index Scan
+3.1	5k	member_in_agg	median_ms	76.17	58.05	105.72	9	5.77	SiftAgg
+3.1	5k	array_generic_int8	median_ms	1373.52	1339.41	1436.84	9	5.79	Seq Scan
+3.1	5k	normal_plan_int8	median_ms	70.76	64.79	91.52	9	5.76	Index Scan
+3.1	5k	array_generic_text	median_ms	14349.88	14049.71	14699.68	9	5.78	SiftAgg
+3.1	5k	normal_plan_text	median_ms	76.95	68.95	84.90	9	5.68	Index Scan
+3.1	5k	array_generic_date	median_ms	5.72	5.01	6.21	9	5.75	SiftAgg
+3.1	5k	normal_plan_date	median_ms	65.34	61.39	75.51	9	5.75	Index Scan
+3.1	5k	ch_literal_ins	median_ms	22.00	18.00	62.00	9	5.76	ClickHouse
+3.1	5k	ch_literal_tuned	median_ms	26.00	21.00	33.00	9	5.77	ClickHouse
+3.1	5k	ch_member_tuned	median_ms	16.00	13.00	20.00	9	5.71	ClickHouse
+3.1	10k	array_generic	median_ms	5.46	4.83	6.70	9	5.74	SiftAgg
+3.1	10k	array_custom	median_ms	15.87	15.12	18.85	9	5.75	SiftAgg
+3.1	10k	literal_in	median_ms	17.01	16.06	18.68	9	5.84	SiftAgg
+3.1	10k	literal_in_agg	median_ms	17.25	16.11	17.86	9	5.72	SiftAgg
+3.1	10k	normal_plan	median_ms	69.30	60.93	75.14	9	5.78	Index Scan
+3.1	10k	member_in	median_ms	65.59	55.53	80.69	9	5.72	Index Scan
+3.1	10k	member_in_agg	median_ms	68.96	58.51	92.64	9	5.77	SiftAgg
+3.1	10k	ch_literal_ins	median_ms	35.00	29.00	47.00	9	5.83	ClickHouse
+3.1	10k	ch_literal_tuned	median_ms	43.00	30.00	50.00	9	5.79	ClickHouse
+3.1	10k	ch_member_tuned	median_ms	16.00	13.00	23.00	9	5.82	ClickHouse
+3.1	100k	array_generic	median_ms	10.65	9.69	11.40	9	5.67	SiftAgg
+3.1	100k	array_custom	median_ms	115.69	110.03	120.29	9	5.77	SiftAgg
+3.1	100k	literal_in	median_ms	130.71	122.34	139.26	9	5.82	SiftAgg
+3.1	100k	literal_in_agg	median_ms	129.81	127.30	138.12	9	5.79	SiftAgg
+3.1	100k	normal_plan	median_ms	151.64	138.05	160.53	9	5.74	Index Scan
+3.1	100k	member_in	median_ms	79.59	73.08	109.26	9	5.75	SiftAgg
+3.1	100k	member_in_agg	median_ms	88.61	69.18	131.73	9	5.74	SiftAgg
+3.1	100k	ch_literal_ins	median_ms	280.00	216.00	320.00	9	5.78	ClickHouse
+3.1	100k	ch_literal_tuned	median_ms	284.00	226.00	319.00	9	5.73	ClickHouse
+3.1	100k	ch_member_tuned	median_ms	17.00	14.00	21.00	9	5.82	ClickHouse
