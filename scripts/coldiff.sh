@@ -238,7 +238,7 @@ col_index() {
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
-		t_wl) ddl="CREATE INDEX t_wl_col ON t_wl USING $AM (id, entity_id, source_id, product_id, item_date, updated_at, deleted_at, country_code, composition, segment, ratings, comments, (coldiff.wl_norm(doc))) WITH (paths = 'ratings.* astext, comments[]{type text}, wl_norm.lang astext, wl_norm.mapped astext, wl_norm.opinions[]{category astext, subrating astext, polarity astext, score float8}')" ;;
+		t_wl) ddl="CREATE INDEX t_wl_col ON t_wl USING $AM (id, entity_id, source_id, product_id, item_date, updated_at, deleted_at, country_code, composition, segment, ratings, comments, (coldiff.wl_norm(doc)), (coldiff.wl_txt(doc))) WITH (paths = 'ratings.* astext, comments[]{type text}, wl_norm.lang astext, wl_norm.mapped astext, wl_norm.opinions[]{category astext, subrating astext, polarity astext, score float8}, wl_txt.opinions[]{category astext, score astext}')" ;;
 		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
 		t_part) ddl="CREATE INDEX t_part_col ON t_part USING $AM (id, grp, d, qty, amount, tag, doc, note) WITH (paths = 'doc->k int4, doc->s text')" ;;
 		t_part_ni) ddl="CREATE INDEX t_part_ni_a_col ON t_part_ni_a USING $AM (id, grp, d, qty)" ;;

@@ -3181,7 +3181,7 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 		joined |= bms_is_member(jc->rti, pull_varnos(c->root, arg));
 	/* without a join the expression is evaluated for every tuple: its value is added as it comes, the distinct values of count(DISTINCT) get ids */
 	direct = !joined && !(fid == F_COUNT_ANY && a->aggdistinct != NIL);
-	if (ai < 0 || (!direct && (!OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))))
+	if ((ai < 0 && !direct) || (!direct && (!OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))))
 		return false;
 	/* a direct bool_and, bool_or and every are PostgreSQL's own aggregates, not min and max of a boolean: they have a combine function and run in workers */
 	if (direct && (fid == F_BOOL_AND || fid == F_BOOL_OR || fid == F_EVERY))
@@ -6837,6 +6837,12 @@ arm_inner_agg(AggCtx *c, ArmIn *in, Node *e, Oid want_type)
 		case SAA_SUM_INT:
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+			break;
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			/* the expression is evaluated for every tuple of the scan: an arm's own WHERE or a FILTER would keep it off the tuples they drop */
+			if (ia->restype != FLOAT8OID || in->quals != NIL || ia->filter != NULL)
+				return -1;
 			break;
 		default:
 			return -1;

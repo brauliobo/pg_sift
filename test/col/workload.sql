@@ -70,6 +70,12 @@ CREATE OR REPLACE FUNCTION coldiff.wl_norm(doc jsonb) RETURNS jsonb LANGUAGE sql
 			FROM jsonb_array_elements(doc -> 'opinions') WITH ORDINALITY t(o, ord)))
 		END $$;
 
+-- the opinions' scores as text (what a client that keeps the dirty values reads): numbers, numbers as strings and text alike
+CREATE OR REPLACE FUNCTION coldiff.wl_txt(doc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+	SELECT CASE WHEN jsonb_typeof(doc) = 'object' AND jsonb_typeof(doc -> 'opinions') = 'array' THEN jsonb_set(doc, '{opinions}', (
+		SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(o) = 'object' THEN o || jsonb_build_object('score', o ->> 'score') ELSE o END ORDER BY ord), '[]')
+		FROM jsonb_array_elements(doc -> 'opinions') WITH ORDINALITY t(o, ord))) END $$;
+
 CREATE TABLE t_wl_entity (id integer PRIMARY KEY, type text NOT NULL, name text);
 CREATE TABLE t_wl_source (id integer PRIMARY KEY, name text NOT NULL, kind text);
 -- a mapping of (entity type, category, subrating) to a normalized pair; NULL type rows apply to every type

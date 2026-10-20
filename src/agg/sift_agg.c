@@ -7888,7 +7888,8 @@ static void
 arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 {
 	bool		all;
-	const uint32 *idx;
+	const uint32 *idx,
+			   *out;
 	const SiftSrcVec *v;
 
 	agg_selection(ex, ia, ex->cstart, ex->cn, n, &all);
@@ -7912,6 +7913,17 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 				gather_idx(ex, ia->leaf, n, &idx);
 				for (int j = 0; j < n; j++)
 					a->dx[ai][j] = ((const double *) v->data)[idx[j]];
+			}
+			break;
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			out = combo_outs(ex, ia->combo);
+			for (int j = 0; j < n; j++)
+			{
+				uint32		id = out[j] == COMBO_NONE ? 0 : combo_val(ex, ia->combo, out[j], ia->slot);
+
+				a->iok[ai][j] &= id != 0;
+				a->dx[ai][j] = id ? DatumGetFloat8(ex->cs[ia->combo].dat[id - 1]) : 0;
 			}
 			break;
 		default:
@@ -7950,6 +7962,8 @@ cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 			break;
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+		case SAA_X_SUM:
+		case SAA_X_AVG:
 			{
 				double		x = a->dx[ai][j];
 
@@ -7980,11 +7994,13 @@ cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 			*iv = a->i[ai][g];
 			return a->n[ai][g] > 0;
 		case SAA_SUM_F64:
+		case SAA_X_SUM:
 			if (isinf(a->d[ai][g]) && !a->nf[ai][g])
 				float_overflow_error();
 			*dv = a->d[ai][g];
 			return a->n[ai][g] > 0;
 		case SAA_AVG_F64:
+		case SAA_X_AVG:
 			if (a->n[ai][g] == 0)
 				return false;
 			*dv = a->d[ai][g] / (double) a->n[ai][g];
@@ -8236,7 +8252,7 @@ arm_chunk(AggExec *ex, Tup *t)
 	}
 	for (int k = 0; k < s->narms; k++)
 		for (int ai = 0; ai < s->arm[k].ninner; ai++)
-			if (s->arm[k].inner[ai].kind == SAA_AVG_F64 &&
+			if ((s->arm[k].inner[ai].kind == SAA_AVG_F64 || s->arm[k].inner[ai].kind == SAA_X_AVG) &&
 				8.0 * ex->n_tuples * ex->arm[k].amax[ai] * ex->arm[k].amax[ai] >= DBL_MAX)
 				float_overflow_error();
 }

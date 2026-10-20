@@ -8,6 +8,7 @@
 #
 # The cluster is the one of scripts/pgtest.sh (SIFT_TMP, SIFT_PORT).
 set -euo pipefail
+export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 eval "$(SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch} "$REPO/scripts/pgtest.sh" env)"
