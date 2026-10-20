@@ -1,11 +1,11 @@
-# Chunk codec interface (`src/col/sift_colcodec.[ch]`)
+# Chunk codec interface (`src/col/codec.[ch]`)
 
 The codec compresses and reads **one column chunk**: the values of one leaf for the rows (or, for a child of a group, the elements) of one unit
 (`docs/COL.md` 2.2). It serves both users of the column engine, the index AM `sift_col` and the table AM `sift_table`: it sees keys and bytes, never
 pages, a heap, a snapshot or a relation. Why these encodings, the measurements and the cost rule are in `docs/perf/COMPRESSION.md`; this file is the
 contract the engine (L1, `sift_col_enc.[ch]`) is written against.
 
-Files: `sift_colcodec.[ch]` (writer, reader, policy, string and bit blobs), `col/codec_kern.c` (scalar kernels = the specification, dispatch),
+Files: `col/codec.[ch]` (decoding, random access, filters on the encoded form), `col/codec_parse.c` (blob validation and node tree), `col/codec_write.c` (writer), `col/codec_policy.c` (policy parser), `col/codec_blob.c` (string and bit blobs), `col/codec_kern.c` (scalar kernels = the specification, dispatch),
 `col/codec_avx2.c`, `col/codec_avx512.c`, `col/codec_vec.h` (the unpacking written once with vector extensions), `col/codec_int.h` (layout
 helpers shared by those), `sift_colz.[ch]` (the LZ4 / zstd interface and its PostgreSQL implementation), `col/codec_test.c` (`sift._test_cc_*`) with `col/codec_gen.h` (its chunk generators, shared with the standalone test),
 `tools/colcodec/` (standalone test, benchmark and the research harness).

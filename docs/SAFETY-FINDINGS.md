@@ -61,7 +61,7 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 | src/table/sift_table_store.c `sift_tbl_delta_page` | delta header npages=60000 | `seg->page[1024]` overflow on the first fetch | not re-checked; the function is now `sift_tbl_wbuf_page`, which copies the header's `npages` without a bound |
 | src/table/sift_table_store.c `sift_tbl_page_rec` | slot[0]=0xFFF0 in a delta page | read of `rec->len` outside the page; `sift_tbl_rec_flag` and VACUUM write there | not re-checked |
 | src/table/sift_table_store.c `sift_tbl_tomb_sync` | tombstone page nent=0xFFFF | reads 2 MB past the page; a `next` cycle loops forever | not re-checked |
-| src/col/codec.c `parse_node` / `sift_cc_open` | 40-byte tree of CONST children, n=16M | 64-128 MB allocations before the row count is compared | not re-checked |
+| src/col/codec_parse.c `parse_node` / `sift_cc_open` | 40-byte tree of CONST children, n=16M | 64-128 MB allocations before the row count is compared | not re-checked |
 | src/col/seg.c `sift_cseg_unit` | last chunk PACK | `unpack` reads up to 31 bytes past `unitbuf` (no `SIFT_COL_PAD`) | not re-checked |
 
 ## Found by the PostgreSQL 17 container of the 3.0 release gate (open at 3.0.2)
