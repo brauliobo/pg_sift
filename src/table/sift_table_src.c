@@ -43,7 +43,7 @@ typedef struct TblLeafBuf
 	size_t		cap;			/* elements the buffers hold */
 	void	   *data;
 	uint8	   *isnull;
-	uint64	   *ovf;			/* numeric leaves: the NaNs of the table, which the columns cannot hold */
+	uint64	   *ovf;			/* the values the columns cannot hold: the NaNs of a numeric leaf, the values of a path of another type */
 } TblLeafBuf;
 
 /* A conjunct on a wide leaf: decided with the type's own comparison on the exact values */
@@ -92,6 +92,7 @@ typedef struct TblSource
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;
+	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL (tolerate_ovf) */
 } TblSource;
 
 static bool
@@ -142,13 +143,25 @@ generation_expr(Relation rel, Form_pg_attribute att)
 	return (Node *) expression_planner((Expr *) build_column_default(rel, att->attnum));
 }
 
-/* The planner's view of the table: a scalar leaf per column; the exact datum images (SIFT_COLS_VAR) are not values the executor reads */
+/* A leaf of a declared path of a jsonb column, not one of the table's own columns */
+static bool
+leaf_is_path(const SiftColDef *def)
+{
+	return def->attno > 0 && def->path[0];
+}
+
+/*
+ * The planner's view of the table: a scalar leaf per column, the leaves of the declared paths after them (when every segment has them, else the
+ * normal plan reads the jsonb column); the exact datum images (SIFT_COLS_VAR) are not values the executor reads
+ */
 static SiftSrcLayout *
 tbl_layout(Relation rel)
 {
-	const SiftColSchema *cur = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
+	SiftTblRel *st = sift_tbl_rel(rel);
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, st);
 	TupleDesc	desc = RelationGetDescr(rel);
 	SiftSrcLayout *lay = palloc0(sizeof(SiftSrcLayout));
+	int			npath = 0;
 
 	lay->heapoid = RelationGetRelid(rel);
 	lay->is_table = true;
@@ -162,14 +175,22 @@ tbl_layout(Relation rel)
 		lay->attalias = lappend(lay->attalias, generation_expr(rel, att));
 	}
 	lay->nleaves = cur->ncols - 1;	/* the last leaf holds the exceptions */
+	for (int i = 0; i < lay->nleaves; i++)
+		npath += leaf_is_path(&cur->cols[i]);
+	if (npath > 0 && !sift_tbl_paths_complete(rel, st))
+		lay->nleaves -= npath;		/* the path leaves follow the columns */
 	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * lay->nleaves);
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftColDef *def = &cur->cols[i];
-
 		bool		wide = leaf_wide(def);
 		Oid			typid = sift_col_def_typid(desc, def);
 
+		if (leaf_is_path(def))
+		{
+			sift_colsrc_def_leaf(cur->cols, i, desc, &lay->leaf[i]);
+			continue;
+		}
 		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),
 		.typid = wide ? InvalidOid : typid,.wtypid = wide ? typid : InvalidOid,.scale = def->scale,.lossy = !wide && def->store == SIFT_COLS_VAR};
 	}
@@ -196,18 +217,26 @@ exact_share(Relation rel, SiftTblRel *st, double nsb)
 static void
 tbl_stats(Relation rel, SiftSrcStats *st)
 {
-	const SiftColSchema *cur = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
+	SiftTblRel *tr = sift_tbl_rel(rel);
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, tr);
+	SiftColLeafStats ls[SIFT_COL_MAX_COLS];
+	bool		wovf[SIFT_COL_MAX_COLS];
 
 	memset(st, 0, sizeof(*st));
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
-	st->nunits = SIFT_TBL_NEXT_VBLOCK(&sift_tbl_rel(rel)->dir.meta) / SIFT_SB_PAGES + 1;
+	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir.meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
-	st->exact_frac = exact_share(rel, sift_tbl_rel(rel), st->nunits);
+	st->exact_frac = exact_share(rel, tr, st->nunits);
+	sift_tbl_path_stats(rel, tr, ls, wovf);
+	sift_colsrc_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, st);
 	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
 	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
 	{
-		HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(rel)), Int16GetDatum(cur->cols[i].attno), BoolGetDatum(false));
+		HeapTuple	tp;
 
+		if (leaf_is_path(&cur->cols[i]))
+			continue;
+		tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(rel)), Int16GetDatum(cur->cols[i].attno), BoolGetDatum(false));
 		if (!HeapTupleIsValid(tp))
 			continue;
 		st->ndistinct[i] = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
@@ -242,17 +271,26 @@ tbl_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 	return sift_tbl_filter_page_vers(t->rel, t->snapshot, t->vers, blk, offmask);
 }
 
-/* The leaf of schema that holds the column of leaf i of the layout; a store of another kind is a column the table changed the type of */
+/* The leaf of schema that holds leaf `want` of the layout: of the table's column (a store of another kind is a column the table changed the type of) or of a declared path (its def has to be the same) */
 static int
 part_col(const TblPart *p, const SiftColDef *want)
 {
 	for (int j = 0; j < p->schema->ncols; j++)
-		if (p->schema->cols[j].attno == want->attno)
+	{
+		const SiftColDef *have = &p->schema->cols[j];
+
+		if (have->attno != want->attno || strcmp(have->path ? have->path : "", want->path) != 0)
+			continue;
+		if (leaf_is_path(want))
 		{
-			if (p->schema->cols[j].store != want->store)
-				elog(ERROR, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
-			return j;
+			if (have->kind == want->kind && have->store == want->store && have->type == want->type)
+				return j;
+			continue;
 		}
+		if (have->store != want->store)
+			elog(ERROR, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		return j;
+	}
 	return -1;
 }
 
@@ -310,6 +348,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->buf = palloc0(sizeof(TblLeafBuf) * t->lay->nleaves);
+	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
 	cur = sift_tbl_layout_schema(heap, st);
 	t->part = palloc0((t->dir->nsegs + 1) * sizeof(TblPart));
@@ -441,7 +480,7 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(t->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(t->cxt, b->cap);
-		b->ovf = t->lay->leaf[leaf].typid == NUMERICOID ? MemoryContextAlloc(t->cxt, (b->cap / 64 + 1) * sizeof(uint64)) : NULL;
+		b->ovf = MemoryContextAlloc(t->cxt, (b->cap / 64 + 1) * sizeof(uint64));
 	}
 	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
@@ -526,12 +565,6 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 	size_t		n = v.n;
 
 	b = leaf_buf(t, leaf, l->vtype, n);
-	/* the only value a numeric(p <= 18, s) column cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
-	if (v.ovf && b->ovf == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values its column group cannot store"),
-				 errhint("Set sift.enable_agg to off for this query.")));
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -550,7 +583,8 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
-	if (v.ovf)
+	/* the only value a numeric(p <= 18, s) column cannot hold is NaN, which the executor evaluates as the numeric NaN it is; a path's, it raises for */
+	if (v.ovf && !t->tol[leaf])
 	{
 		memcpy(b->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
 		vec->ovf = b->ovf;
@@ -669,6 +703,48 @@ tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 				rows[k] &= ~(UINT64CONST(1) << (r & 63));
 		}
 	return any;
+}
+
+/* ---- the values of a path of another JSON type than its leaf's: the engine sets them aside as overflow, with the tag of their type ---- */
+
+static bool
+tbl_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	TblPart    *p = unit->priv;
+	SiftColZone cz;
+
+	if (p->col[leaf] < 0)
+		return false;
+	sift_col_zone(&p->unit, p->col[leaf], &cz);
+	return cz.has_ovf;
+}
+
+static void
+tbl_tolerate_ovf(void *impl, int leaf)
+{
+	((TblSource *) impl)->tol[leaf] = true;
+}
+
+/* only a path leaf has types, and the layout offers the paths only when every segment has them */
+static bool
+tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
+
+	sift_aggsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
+	return sift_aggsel_rows_left(bits, unit->nrow);
+}
+
+static void
+tbl_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
+
+	sift_aggsel_read_types(&t->sel, &p->unit, p->col[leaf], l->typid, l->astext, unit->nrow, tags);
 }
 
 /* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
@@ -865,6 +941,10 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_hist = tbl_unit_hist,
 	.set_wide = tbl_set_wide,
 	.filter_wide = tbl_filter_wide,
+	.overflow = tbl_overflow,
+	.tolerate_ovf = tbl_tolerate_ovf,
+	.filter_types = tbl_filter_types,
+	.read_types = tbl_read_types,
 };
 
 void

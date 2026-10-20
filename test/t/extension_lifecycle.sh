@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Extension lifecycle with existing indexes: pg_dump | psql and pg_restore round trips, ALTER EXTENSION UPDATE
-# along a multi-step upgrade path (the real pg_sift--1.0--1.1.sql, 1.1--1.2.sql, 1.2--3.0.sql and 3.0--3.1.sql in a private
-# extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 1.0 -> 3.1 with a fresh 3.1 install), installation through extension_control_path and dynamic_library_path
+# along a multi-step upgrade path (the real pg_sift--1.0--1.1.sql, 1.1--1.2.sql, 1.2--3.0.sql, 3.0--3.1.sql and 3.1--3.2.sql in a private
+# extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 1.0 -> 3.2 and 3.1 -> 3.2 with a fresh 3.2 install), installation through extension_control_path and dynamic_library_path
 # alone, and a same-major pg_upgrade that carries the index files over. Every step: sift.verify with
 # heapallindexed and index results equal to a sequential scan.
 . "$(dirname "$0")/lib.bash"
@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((37 + $(wc -w <<<"$DBS")))
+plan $((39 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -87,7 +87,7 @@ check "pg_dump keeps the extension as one object" test "$(pgc life pg_dump src |
 if (( PG_MAJOR >= 18 )); then
 	# extension_control_path and dynamic_library_path are the only install: nothing else makes sift available
 	check "sift is available through extension_control_path" test "$(q life postgres \
-		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 3.1
+		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 3.2
 	check "the library loads through dynamic_library_path" test "$(vq life src \
 		"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'")" == 1
 	check "without the path the extension is not found" test "$(q life postgres "SET extension_control_path = '/nonexistent'" \
@@ -96,7 +96,7 @@ if (( PG_MAJOR >= 18 )); then
 	# upgrade path: the real scripts of every version
 	UPD=$(dir life)/upd
 	mkdir -p "$UPD/extension"
-	cp "$SHAREDIR"/extension/pg_sift--{1.0,1.1,1.2,3.0,3.1}.sql "$SHAREDIR"/extension/pg_sift--{1.0--1.1,1.1--1.2,1.2--3.0,3.0--3.1}.sql "$UPD/extension/"
+	cp "$SHAREDIR"/extension/pg_sift--{1.0,1.1,1.2,3.0,3.1,3.2}.sql "$SHAREDIR"/extension/pg_sift--{1.0--1.1,1.1--1.2,1.2--3.0,3.0--3.1,3.1--3.2}.sql "$UPD/extension/"
 	cp "$SHAREDIR/extension/pg_sift.control" "$UPD/extension/pg_sift.control"
 	PATHSET="SET extension_control_path = '$UPD:\$system'"
 	q life postgres "CREATE DATABASE upg" >/dev/null
@@ -107,8 +107,8 @@ if (( PG_MAJOR >= 18 )); then
 	formats() { q life upg "SELECT coalesce(string_agg(format::text, ',' ORDER BY gen) FILTER (WHERE kind = 'immutable'), '') FROM sift._test_segment_formats('docs_idx')"; }
 	check "the index built before the update has a segment of format 2" test "$(formats)" == 2
 	before=$(q life upg "SELECT fp() || ranked()")
-	check "the update path chains the four steps" test "$(q life upg "$PATHSET" \
-		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '3.1'")" == "1.0--1.1--1.2--3.0--3.1"
+	check "the update path chains the five steps" test "$(q life upg "$PATHSET" \
+		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '3.2'")" == "1.0--1.1--1.2--3.0--3.1--3.2"
 	# the objects of the extension by description, with the definition of the functions
 	MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE classid WHEN 'pg_proc'::regclass THEN pg_get_functiondef(objid) END, '')
 		FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
@@ -139,14 +139,16 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "CREATE INDEX docs_kw ON docs USING sift (((id % 5)::text)) WITH (analyzer = keyword)" >/dev/null
 	check "sift.facets works on the updated 3.0 extension" test "$(q life upg "$FACETS")" == t
 	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
-	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.1
-	q life postgres "CREATE DATABASE fresh31" >/dev/null
-	q life fresh31 "CREATE EXTENSION pg_sift" >/dev/null
-	check "3.0 updated to 3.1 has the objects of a fresh 3.1 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh31 "$MEMBERS")"
+	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.2
+	q life postgres "CREATE DATABASE fresh32" "CREATE DATABASE upg31" >/dev/null
+	q life fresh32 "CREATE EXTENSION pg_sift" >/dev/null
+	check "3.0 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
+	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" "ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null
+	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
-	check "the rollup refresh views exist after a fresh 3.1 install" test "$(q life fresh31 "$ROLLUPSQL")" == t
-	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.1" test "$(q life upg "$ROLLUPSQL")" == t
-	check "sift.facet_counts and sift.field_query exist and answer after ALTER EXTENSION UPDATE 3.0 to 3.1" test "$(q life upg \
+	check "the rollup refresh views exist after a fresh 3.2 install" test "$(q life fresh32 "$ROLLUPSQL")" == t
+	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.2" test "$(q life upg "$ROLLUPSQL")" == t
+	check "sift.facet_counts and sift.field_query exist and answer after ALTER EXTENSION UPDATE 3.0 to 3.2" test "$(q life upg \
 		"SELECT (SELECT string_agg(value || ':' || count, ',' ORDER BY value) FROM sift.facet_counts('docs', 'body', 'gamma', '[{\"name\": \"k\", \"expr\": \"id % 5\"}]'))
 			= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 5)::text k, count(*) c FROM docs WHERE body @@> 'gamma' GROUP BY 1) g)
 			AND sift.field_query('gamma', 'body') IS NOT NULL")" == t
@@ -164,6 +166,12 @@ if (( PG_MAJOR >= 18 )); then
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
+	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does
+	q life upg "CREATE TABLE tblj (id int, doc jsonb) USING sift_table" "INSERT INTO tblj SELECT g, jsonb_build_object('k', g % 7) FROM generate_series(1, 3000) g" \
+		"SELECT sift.table_set_paths('tblj', 'doc', 'doc->k int4')" "VACUUM FULL tblj" >/dev/null
+	check "sift.table_set_paths works on the updated extension" test "$(q life upg "SET sift.enable_agg = on" \
+		"SELECT (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT doc->>'k' k, count(*) c FROM tblj WHERE (doc->>'k')::int >= 0 GROUP BY 1) g)
+			= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 7)::text k, count(*) c FROM tblj GROUP BY 1) g)" | tail -n 1)" == t
 	check "the sift_table written by 3.0 adds up the rows written after the update" test "$(q life upg "$TBLQ" | tail -n 1)" == "$(q life upg \
 		"SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM (SELECT g id, (g % 1000 / 8.0)::numeric(10,2) v FROM generate_series(1, 40000) g) s" | tail -n 1)"
 	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
@@ -180,7 +188,7 @@ if (( PG_MAJOR >= 18 )); then
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 25 "extension_control_path needs PostgreSQL 18"
+	skip 27 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with

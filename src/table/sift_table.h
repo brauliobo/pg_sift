@@ -415,6 +415,8 @@ typedef struct SiftTblGroupScan SiftTblGroupScan;
 extern void sift_tbl_layout_check(Relation rel);
 /* Builds (once) the column layout of the table: errors when it is not representable, as ALTER TABLE ADD COLUMN can make it */
 extern void sift_tbl_layout_ready(Relation rel, SiftTblRel *st);
+/* The layout of the new table of a rewrite: the columns of `rel` with the paths declared for the table it replaces */
+extern void sift_tbl_layout_adopt(Relation rel, SiftTblRel *st, Relation from);
 /* Is there a tombstone entry for a key between lo and hi? */
 extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
@@ -470,6 +472,13 @@ extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const u
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
 extern Datum sift_tbl_leaf_datum(Relation rel, const SiftColDef *def, const SiftColVec *vec, uint32 i);
+/* Does every column segment hold the leaves of the table's declared paths? (a layout of the paths is exposed to the aggregate scan only then) */
+extern bool sift_tbl_paths_complete(Relation rel, SiftTblRel *st);
+/*
+ * The leaves of the declared paths, for the planner (SiftSrcStats): ls[i] what the zones of the column segments say about layout leaf i, wovf[i]
+ * whether a write buffer row holds a value the leaf cannot (decoded once per page, not at every call). Both [ncols of the layout].
+ */
+extern void sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf);
 extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
 /* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */
