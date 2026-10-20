@@ -1,6 +1,6 @@
--- trap: the spine is the preserved side of a LEFT JOIN and the orders are the nullable one: the dates without an order stay, the normal plan keeps them
--- shape: trap
--- expect: plain
+-- the spine is the preserved side of a LEFT JOIN and the orders are the nullable one: the dates without an order stay, as in the normal plan
+-- shape: agg
+-- expect: agg
 -- key: -
 SELECT d.day, count(o.id) AS n, sum(o.total) AS revenue
 FROM (SELECT g::date AS day FROM generate_series(date '2025-03-01', date '2025-03-10', interval '1 day') g OFFSET 0) d

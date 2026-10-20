@@ -1,6 +1,6 @@
--- trap: nine group columns, one more than the limit: the normal plan
--- shape: trap
--- expect: plain
+-- nine group columns: the scan keeps a key mask as wide as its keys
+-- shape: agg
+-- expect: agg
 -- sets: K400
 -- key: -
 SELECT o.source, o.status, o.lang, o.country_code, date_trunc('year', o.placed_at)::date AS yr, o.store_id % 3 AS st3,
