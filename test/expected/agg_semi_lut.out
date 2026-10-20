@@ -360,3 +360,9 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELE
 (1 row)
 
 ROLLBACK;
+DEALLOCATE ALL;
+DROP FUNCTION same_group(int);
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, members, dims, codes, holidays, members8, members_nn, nothing, sparse;
+DROP EXTENSION pg_sift;

@@ -162,3 +162,10 @@ INSERT INTO members SELECT 5, 20000 + i, NULL FROM generate_series(1, 300) i;
 UPDATE members SET deleted_at = now() WHERE group_id = 3 AND entity_id < 100;
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELECT entity_id FROM members WHERE group_id IN (3, 5) AND deleted_at IS NULL) GROUP BY kind$$);
 ROLLBACK;
+
+DEALLOCATE ALL;
+DROP FUNCTION same_group(int);
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, members, dims, codes, holidays, members8, members_nn, nothing, sparse;
+DROP EXTENSION pg_sift;
