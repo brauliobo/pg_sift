@@ -1,0 +1,82 @@
+-- Correlated LIMIT 1 lookups retain native row selection and per-item weighting.
+-- The correlated lookup stays native; independent UNION arms may reduce through SiftAgg.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int, kind text, document jsonb, payload text);
+INSERT INTO events
+SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
+       jsonb_build_object('flag', CASE WHEN i % 3 = 0 THEN NULL ELSE false END,
+                          'entries', CASE WHEN i % 2 = 0
+                            THEN '[{"bucket":"x","value":2}]'::jsonb
+                            ELSE '[{"bucket":"x","value":8},{"bucket":"x","value":10}]'::jsonb END),
+       repeat('payload', 50)
+FROM generate_series(1, 10000) i;
+INSERT INTO events VALUES (10001, 'a', '{"entries":[]}', ''), (10002, NULL, NULL, '');
+CREATE INDEX events_col ON events USING sift_col (id, kind, document)
+ WITH (paths = 'document.flag astext, document.entries[]{bucket text,value float8}');
+CREATE TABLE lookup_values (kind text, bucket text, label text);
+INSERT INTO lookup_values VALUES ('a', 'x', 'first'), ('a', 'x', 'second'), ('b', 'x', 'other');
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE lookup_values;
+CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM
+    ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+  END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+SELECT * FROM check_query($q$
+ SELECT coalesce(m.label, o.bucket) AS bucket, count(*) AS n, avg(o.value) AS value
+ FROM events f CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)
+ LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind=f.kind AND m.bucket=o.bucket LIMIT 1) m ON true
+ WHERE jsonb_exists(f.document, 'flag') AND o.value IS NOT NULL GROUP BY 1
+$q$);
+ pushed | differences 
+--------+-------------
+ f      |           0
+(1 row)
+
+SELECT * FROM check_query($q$
+ WITH entries AS (
+   SELECT f.id, coalesce(m.label, o.bucket) AS bucket, o.value
+   FROM events f CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)
+   LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind=f.kind AND m.bucket=o.bucket LIMIT 1) m ON true
+   WHERE jsonb_exists(f.document, 'flag') AND o.value IS NOT NULL
+ ), levels AS (
+   SELECT id, bucket, avg(value) AS value FROM entries GROUP BY id, bucket
+   UNION ALL SELECT id, 'all-flag', avg(value) FROM entries GROUP BY id
+   UNION ALL SELECT f.id, 'all', avg(o.value) FROM events f
+     CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)
+     WHERE o.value IS NOT NULL GROUP BY f.id
+ )
+ SELECT bucket, avg(value) AS value, count(*) AS n FROM levels GROUP BY bucket
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+-- Averaging per-item means gives 5.5, while averaging all entries gives 20/3.
+-- A flag key whose value is false or null is still present.
+SELECT avg(value) AS item_mean, count(*) AS items FROM (
+ SELECT f.id, avg(o.value) AS value FROM events f
+ CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8)
+ WHERE jsonb_exists(f.document, 'flag') AND o.value IS NOT NULL GROUP BY f.id
+) per_item;
+ item_mean | items 
+-----------+-------
+       5.5 | 10000
+(1 row)
+
+DROP FUNCTION check_query(text);
+DROP TABLE events, lookup_values;
+DROP EXTENSION pg_sift;
