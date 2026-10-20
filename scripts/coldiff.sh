@@ -238,6 +238,7 @@ col_index() {
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
+		t_work) ddl="CREATE INDEX t_work_col ON t_work USING $AM (id, dim_a_id, lookup_id, foreign_id_b, item_date, updated_at, deleted_at, country_code, label_a, segment, metrics_a, tags_a, (coldiff.doc_norm(doc))) WITH (paths = 'metrics_a.* astext, tags_a[]{type text}, doc_norm.lang astext, doc_norm.flag_a astext, doc_norm.parts[]{category astext, value_num astext, tone astext, score float8}')" ;;
 		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
 		t_part) ddl="CREATE INDEX t_part_col ON t_part USING $AM (id, grp, d, qty, amount, tag, doc, note) WITH (paths = 'doc->k int4, doc->s text')" ;;
 		t_part_ni) ddl="CREATE INDEX t_part_ni_a_col ON t_part_ni_a USING $AM (id, grp, d, qty)" ;;
@@ -251,7 +252,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_work t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
