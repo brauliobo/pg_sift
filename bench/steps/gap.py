@@ -219,7 +219,7 @@ def profile_block(P, R, tier, S):
                      f'{a.get("Units", 0)} ({a.get("Units Pruned", 0)})' if a else 'n/a', f'{a["Rows Scanned"]:,}' if a else 'n/a', f'{a["Groups"]:,}' if a else 'n/a',
                      f'{r["perf"]["instructions"] / rows:.1f}', f'{r["perf"]["cycles"] / rows:.1f}', top_symbols(r['perf'])])
     f, f0 = P['floor'], P['floor_no_workers']
-    out = [f'#### {P["rows"]:,} orders (ms)', '', f'A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes {f["execution_ms"]:.2f} ms with {f["siftagg"]["Workers Launched"]} workers launched and '
+    out = [f'#### {P["rows"]:,} orders (ms)', '', f'A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes {f["execution_ms"]:.2f} ms with {f["siftagg"].get("Workers Launched", 0)} workers launched and '
            f'{f0["execution_ms"]:.2f} ms without: that difference is the cost of starting the workers, and the second number is the executor start-up and finalization.', ''] + store.md_table(head, body, ['---:'] * 10 + ['---']) + ['']
     if S:
         head = ['q', 'ClickHouse rows read', 'bytes read', 'memory', 'peak threads', 'duration (query_log)', 'clickhouse-client --time', 'Elasticsearch `took`']
@@ -232,9 +232,9 @@ def profile_block(P, R, tier, S):
 def cmd_render(args):
     import readme
     R = store.Results(args.store)
-    profiles = [json.load(open(p)) for p in args.profile]
-    stats = {json.load(open(p))['rows']: json.load(open(p)) for p in args.stats}
     tiers = {R.meta['tiers'][t]['rows']: t for t in R.tiers}
+    profiles = [P for P in (json.load(open(p)) for p in args.profile) if P['rows'] in tiers]   # a profile of a size the store results no longer hold is history, not rendered
+    stats = {S['rows']: S for S in (json.load(open(p)) for p in args.stats)}
     readme.replace_block(args.doc, 'gap-table', store.gap_table(R))
     readme.replace_block(args.doc, 'gap-planning', sum((planning_block(P, R, tiers[P['rows']]) for P in profiles), []))
     readme.replace_block(args.doc, 'gap-profile', sum((profile_block(P, R, tiers[P['rows']], stats.get(P['rows'])) for P in profiles), []))
