@@ -8,6 +8,10 @@ col/kern_avx2.c
 col/kern_avx512.c
 col/enc.c
 col/codec.c
+col/codec_policy.c
+col/codec_write.c
+col/codec_parse.c
+col/codec_blob.c
 col/codec_kern.c
 col/codec_avx2.c
 col/codec_avx512.c

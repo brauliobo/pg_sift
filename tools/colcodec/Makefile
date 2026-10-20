@@ -23,7 +23,7 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/compress.c \
+CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/compress.c \
                                bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
                                col/kern.c col/kern_avx2.c col/kern_avx512.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c) $(KT)/shim.c
 OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o $(OUT)/pgshim.o
