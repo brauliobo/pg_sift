@@ -95,7 +95,44 @@ INSERT INTO ct_q VALUES
 	('seq_plain',  $q$SELECT id, seq FROM ct WHERE status = 'paid' ORDER BY seq DESC LIMIT 10$q$),
 	('text_key',   $q$SELECT id, status FROM ct WHERE memo @@> 'gift' ORDER BY status, id LIMIT 10$q$),
 	('col_or',     $q$SELECT id, ts FROM ct WHERE (status = 'paid' OR store < 10) AND memo @@> 'wifi' ORDER BY ts, id LIMIT 10$q$),
-	('in_or',      $q$SELECT id, ts FROM ct WHERE memo @@> 'wifi' OR status = 'paid' ORDER BY ts, id LIMIT 10$q$);
+	('in_or',      $q$SELECT id, ts FROM ct WHERE memo @@> 'wifi' OR status = 'paid' ORDER BY ts, id LIMIT 10$q$),
+	('or_two',     $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' OR memo @@> 'wifi' ORDER BY ts DESC, id DESC LIMIT 10$q$),
+	('or_three',   $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' OR memo @@> 'wifi' OR memo @@> 'label' ORDER BY ts, id LIMIT 12 OFFSET 4$q$),
+	('or_same',    $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' OR memo @@> 'gift' ORDER BY ts DESC, id LIMIT 10$q$),
+	('or_phrase',  $q$SELECT id, ts FROM ct WHERE memo @@> '"clean wifi"' OR memo @@> 'gift NOT wifi' ORDER BY ts DESC, id LIMIT 10$q$),
+	('or_filters', $q$SELECT id, ts FROM ct WHERE (memo @@> 'gift' OR memo @@> 'label') AND status = 'paid' AND store > 5 ORDER BY amount DESC NULLS LAST, id LIMIT 10$q$),
+	('or_none',    $q$SELECT id, ts FROM ct WHERE memo @@> 'zzzzzz' OR memo @@> 'yyyyyy' ORDER BY ts DESC, id LIMIT 10$q$),
+	('or_column',  $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' OR store = 3 ORDER BY ts DESC, id LIMIT 10$q$),
+	('or_and',     $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' AND (memo @@> 'wifi' OR memo @@> 'label') ORDER BY ts DESC, id LIMIT 10$q$);
+
+-- A generic plan of q (a PREPARE of the types) executed with args, against the plain plan of the same statement: the plan of each mode is
+-- made again (a cached generic plan does not follow the settings). 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan,
+-- the rows that went to the sort ('sort N') or 'heap', and the number of rows
+CREATE FUNCTION ct_generic(types text, q text, args text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text; res text;
+BEGIN
+	DROP TABLE IF EXISTS ct_a, ct_b;
+	PERFORM set_config('plan_cache_mode', 'force_generic_plan', true);
+	PERFORM ct_mode(true);
+	DEALLOCATE ALL;
+	EXECUTE format('PREPARE ct_g (%s) AS %s', types, q);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE ct_g(' || args || ')' LOOP plan := plan || line || E'\n'; END LOOP;
+	DEALLOCATE ct_g;
+	EXECUTE format('PREPARE ct_g (%s) AS %s', types, q);
+	EXECUTE 'CREATE TEMP TABLE ct_a0 AS EXECUTE ct_g(' || args || ')';
+	CREATE TEMP TABLE ct_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM ct_a0 x;
+	PERFORM ct_mode(false);
+	DEALLOCATE ct_g;
+	EXECUTE format('PREPARE ct_g (%s) AS %s', types, q);
+	EXECUTE 'CREATE TEMP TABLE ct_b0 AS EXECUTE ct_g(' || args || ')';
+	CREATE TEMP TABLE ct_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM ct_b0 x;
+	DEALLOCATE ct_g;
+	DROP TABLE ct_a0, ct_b0;
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM ct_a EXCEPT ALL SELECT pos, r FROM ct_b) UNION ALL (SELECT pos, r FROM ct_b EXCEPT ALL SELECT pos, r FROM ct_a)) d;
+	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END;
+	RETURN res || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM ct_b) ||
+		CASE WHEN plan ~ 'Top-N: ' THEN CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sort ' || (regexp_match(plan, 'Top-N Sorted Rows: (\d+)'))[1] ELSE ' heap' END ELSE '' END;
+END $$;
 
 CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
 	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;
@@ -107,6 +144,34 @@ RESET sift.test_search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'clean wifi') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
+
+-- LIMIT and OFFSET as parameters of one generic plan: the plan does not know the value, the scan reads it when it starts and keeps a heap
+-- of that many rows up to 100000, and every row that passes in a sort above it (or when there is no limit)
+SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT $1', v) AS generic_limit, v
+FROM (VALUES ('0'), ('1'), ('10'), ('100000'), ('100001'), ('NULL'), ('9223372036854775807')) x(v);
+SELECT ct_generic('bigint, bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts, id LIMIT $1 OFFSET $2', v) AS generic_offset, v
+FROM (VALUES ('10, 5'), ('10, NULL'), ('NULL, 5'), ('NULL, NULL'), ('5, 99999'), ('5, 100000'), ('9223372036854775807, 9223372036854775807')) x(v);
+SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' OR memo @@> ''label'' ORDER BY amount, id LIMIT $1', v) AS generic_or, v
+FROM (VALUES ('7'), ('NULL')) x(v);
+SELECT ct_generic('bigint', 'SELECT id, ts FROM ct ORDER BY ts DESC, id LIMIT $1', v) AS generic_no_filter, v FROM (VALUES ('3'), ('100001')) x(v);
+-- the Limit node above keeps its own rules: the error of a negative value
+DO $$ BEGIN PERFORM ct_generic('bigint', 'SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts, id LIMIT $1', '-1');
+EXCEPTION WHEN OTHERS THEN RAISE NOTICE '% %', SQLSTATE, SQLERRM; END $$;
+-- a scroll cursor over a generic plan reads the rows forward and back
+DO $$
+DECLARE
+	c SCROLL CURSOR (n bigint) FOR SELECT id FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id LIMIT n;
+	want int[]; got int[] := '{}'; r int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	want := ARRAY(SELECT id FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id LIMIT 1000000);
+	PERFORM set_config('sift.enable_agg', 'on', true), set_config('plan_cache_mode', 'force_generic_plan', true);
+	OPEN c(1000000);
+	LOOP FETCH c INTO r; EXIT WHEN NOT FOUND; got := got || r; END LOOP;
+	LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; got := got || r; END LOOP;
+	CLOSE c;
+	RAISE NOTICE 'cursor % %', cardinality(want), got = want || ARRAY(SELECT x FROM unnest(want) WITH ORDINALITY u(x, o) ORDER BY o DESC);
+END $$;
 
 -- the heap is read for the rows of the result only, and a column that grows with the table lets the scan skip superblocks
 SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches, ct_stat(q, 'Search Matches') > 100 AS many_matches
@@ -129,6 +194,12 @@ BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
 	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' WHEN plan ~ 'Index Scan' THEN 'btree' ELSE 'other' END;
 END $$;
+-- no plan is a top-N when the limit is a sub-select or a volatile function, or has ties, or a constant past the cap
+SELECT ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') AS limit_const,
+	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT (SELECT 10)') AS limit_subquery,
+	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT (random() * 0 + 10)::int') AS limit_volatile,
+	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id FETCH FIRST 10 ROWS WITH TIES') AS limit_ties,
+	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 100001') AS limit_past_cap;
 -- the GUC
 SET sift.enable_topn = off;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
@@ -213,5 +284,5 @@ ROLLBACK;
 DROP TABLE cb;
 
 DROP TABLE ct_q, ct_t, ct;
-DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
+DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_generic(text, text, text), ct_stat(text, text), ct_stage(text);
 DROP EXTENSION pg_sift;
