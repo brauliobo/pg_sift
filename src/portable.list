@@ -25,6 +25,7 @@ bm25/walk.c
 bm25/livestream.c
 core/sift_live.c
 bm25/runs.c
+bm25/inv.c
 core/sift_stream.c
 bm25/merge.c
 bm25/prefix.c
@@ -54,6 +55,7 @@ bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h
 bm25/runs.h
+bm25/runs_int.h
 bm25/query.h
 bm25/merge.h
 core/sift_live.h
