@@ -243,3 +243,523 @@ diff -U3 <checkout>/test/expected/store_space.out <scratch>/negative/regress/sto
 
 
 Final packaging: focused verification used main 36b7999 plus the storage change. Clean rebase onto d32061d picked up shared UTF-8 emitter and analyzer index-lookup refactors. No further local build/test/benchmark after the quiet-host handoff; GitHub CI remains the gate.
+
+Post-review publication/error-cleanup repair verification
+
+review-maint-before.log
+# using postmaster on <scratch>/test/sock, port 56190
+not ok 1     - maint_failure                            1429 ms
+1..1
+# 1 of 1 tests failed.
+# The differences that caused some tests to fail can be viewed in the file "<scratch>/test/regress/maint_failure/regression.diffs".
+# A copy of the test summary that you see above is saved in the file "<scratch>/test/regress/maint_failure/regression.out".
+diff -U3 <checkout>/test/expected/maint_failure.out <scratch>/test/regress/maint_failure/results/maint_failure.out
+--- <checkout>/test/expected/maint_failure.out	2026-10-20 09:06:01.603638876 -0300
++++ <scratch>/test/regress/maint_failure/results/maint_failure.out	2026-10-20 12:03:06.747889327 -0300
+@@ -95,6 +95,8 @@
+ VACUUM mf;
+ WARNING:  maintenance of sift index "mf_idx" failed: sift test: injected failure after 3 pages
+ DETAIL:  It is retried later, after a growing delay.
++ERROR:  sift test: injected failure after 3 pages
++CONTEXT:  while cleaning up index "mf_idx" of relation "public.mf"
+ RESET sift.test_fail_pages;
+ SELECT sift._test_maint_failures('mf_idx') AS failures;
+  failures 
+@@ -105,7 +107,7 @@
+ SELECT sift._test_check('mf_idx') AS orphans;
+  orphans 
+ ---------
+-       0
++      28
+ (1 row)
+ 
+ VACUUM mf;
+
+review-cache-before-detail.log
+Name: space_cache
+Version: 18.6
+Data directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata
+Backup directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/backup
+Archive directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/archives
+Connection string: port=56191 host=/tmp/icElQbQh0P
+Log file: <scratch>/test/tap/log/016_space_cache_space_cache.log
+[12:05:12.679](0.009s) # initializing database system by running initdb
+# Running: initdb --no-sync --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --auth trust
+The files belonging to this database system will be owned by user "braulio".
+This user must also own the server process.
+
+The database cluster will be initialized with this locale configuration:
+  locale provider:   libc
+  LC_COLLATE:  C.UTF-8
+  LC_CTYPE:    C.UTF-8
+  LC_MESSAGES: C
+  LC_MONETARY: C.UTF-8
+  LC_NUMERIC:  C.UTF-8
+  LC_TIME:     C.UTF-8
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are enabled.
+
+creating directory <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default "max_connections" ... 100
+selecting default "shared_buffers" ... 128MB
+selecting default time zone ... America/Recife
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+
+Sync to disk skipped.
+The data directory might become corrupt if the operating system crashes.
+
+Success. You can now start the database server using:
+
+    pg_ctl -D <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata -l logfile start
+
+# Running: /usr/lib/postgresql/pgxs/src/makefiles/../test/regress/pg_regress --config-auth <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata
+### Starting node "space_cache"
+# Running: pg_ctl --wait --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --log <scratch>/test/tap/log/016_space_cache_space_cache.log --options --cluster-name=space_cache start
+waiting for server to start.... done
+server started
+# Postmaster PID for node "space_cache" is 2004627
+[12:05:13.180](0.501s) # Subtest: bm25 cached writer after publication ERROR without truncate
+[12:05:13.396](0.215s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:05:13.396](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:05:13.398](0.002s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:05:13.425](0.028s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:05:13.435](0.010s)     ok 2 - replacement directory survives ERROR
+[12:05:13.445](0.009s)     ok 3 - physical truncation did not send an invalidation
+[12:05:13.445](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:05:13.460](0.015s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:05:13.475](0.015s)     not ok 4 - fresh directory-backed scan finds the persistent writer sentinel
+[12:05:13.475](0.000s) 
+[12:05:13.475](0.000s)     #   Failed test 'fresh directory-backed scan finds the persistent writer sentinel'
+    #   at t/016_space_cache.pl line 41.
+[12:05:13.475](0.000s)     #          got: '0'
+    #     expected: '1'
+psql:<stdin>:1: ERROR:  sift index "idx" is corrupted
+DETAIL:  Heap tuple (0,10) has no entry in the index.
+[12:05:13.504](0.029s)     not ok 5 - BM25 verification succeeds
+[12:05:13.504](0.000s) 
+[12:05:13.504](0.000s)     #   Failed test 'BM25 verification succeeds'
+    #   at t/016_space_cache.pl line 42.
+[12:05:13.504](0.000s)     #          got: '3'
+    #     expected: '0'
+[12:05:13.514](0.010s)     ok 6 - all allocated pages still have one owner
+[12:05:13.531](0.016s)     1..6
+[12:05:13.531](0.000s)     # Looks like you failed 2 tests of 6.
+[12:05:13.531](0.000s) not ok 1 - bm25 cached writer after publication ERROR without truncate
+[12:05:13.532](0.000s) 
+[12:05:13.532](0.000s) #   Failed test 'bm25 cached writer after publication ERROR without truncate'
+#   at t/016_space_cache.pl line 46.
+[12:05:13.532](0.000s) # Subtest: col cached writer after publication ERROR without truncate
+[12:05:13.747](0.215s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:05:13.747](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:05:13.749](0.002s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:05:13.777](0.028s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:05:13.786](0.010s)     ok 2 - replacement directory survives ERROR
+[12:05:13.796](0.010s)     ok 3 - physical truncation did not send an invalidation
+[12:05:13.796](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:05:13.798](0.001s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:05:13.813](0.015s)     not ok 4 - fresh directory-backed scan finds the persistent writer sentinel
+[12:05:13.813](0.000s) 
+[12:05:13.813](0.000s)     #   Failed test 'fresh directory-backed scan finds the persistent writer sentinel'
+    #   at t/016_space_cache.pl line 41.
+[12:05:13.813](0.000s)     #          got: '0'
+    #     expected: '1'
+psql:<stdin>:1: ERROR:  sift index "idx" is corrupted
+DETAIL:  Heap tuple (0,10) is not in the index.
+[12:05:13.840](0.027s)     not ok 5 - column verification succeeds
+[12:05:13.841](0.001s) 
+[12:05:13.841](0.000s)     #   Failed test 'column verification succeeds'
+    #   at t/016_space_cache.pl line 43.
+[12:05:13.841](0.000s)     #          got: '3'
+    #     expected: '0'
+[12:05:13.852](0.011s)     ok 6 - all allocated pages still have one owner
+[12:05:13.868](0.016s)     1..6
+[12:05:13.868](0.000s)     # Looks like you failed 2 tests of 6.
+[12:05:13.868](0.000s) not ok 2 - col cached writer after publication ERROR without truncate
+[12:05:13.868](0.000s) 
+[12:05:13.868](0.000s) #   Failed test 'col cached writer after publication ERROR without truncate'
+#   at t/016_space_cache.pl line 46.
+[12:05:13.868](0.000s) # Subtest: tbl cached writer after publication ERROR without truncate
+[12:05:14.097](0.228s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:05:14.097](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:05:14.099](0.002s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:05:14.123](0.024s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:05:14.132](0.009s)     ok 2 - replacement directory survives ERROR
+[12:05:14.141](0.009s)     ok 3 - physical truncation did not send an invalidation
+[12:05:14.142](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:05:14.142](0.001s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:05:14.152](0.009s)     not ok 4 - fresh directory-backed scan finds the persistent writer sentinel
+[12:05:14.152](0.000s) 
+[12:05:14.152](0.000s)     #   Failed test 'fresh directory-backed scan finds the persistent writer sentinel'
+    #   at t/016_space_cache.pl line 41.
+[12:05:14.152](0.000s)     #          got: '0'
+    #     expected: '1'
+[12:05:14.161](0.008s)     ok 5 - all allocated pages still have one owner
+[12:05:14.176](0.016s)     1..5
+[12:05:14.177](0.000s)     # Looks like you failed 1 test of 5.
+[12:05:14.177](0.000s) not ok 3 - tbl cached writer after publication ERROR without truncate
+[12:05:14.177](0.000s) 
+[12:05:14.177](0.000s) #   Failed test 'tbl cached writer after publication ERROR without truncate'
+#   at t/016_space_cache.pl line 46.
+### Stopping node "space_cache" using mode fast
+# Running: pg_ctl --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --mode fast stop
+waiting for server to shut down.... done
+server stopped
+# No postmaster PID for node "space_cache"
+[12:05:14.280](0.103s) 1..3
+[12:05:14.281](0.001s) # Looks like you failed 3 tests of 3.
+
+review-final-regress.log
+# using postmaster on <scratch>/test/sock, port 56190
+ok 1         - maint_failure                            1280 ms
+ok 2         - col_index_dml                            1106 ms
+ok 3         - agg_preagg_elem                          9537 ms
+ok 4         - store_space                               137 ms
+ok 5         - col_space                                1545 ms
+1..5
+# All 5 tests passed.
+
+review-final-tap-detail.log
+t/015_space.pl ........ ok
+t/016_space_cache.pl .. ok
+All tests successful.
+Files=2, Tests=20, 15 wallclock secs ( 0.04 usr  0.00 sys +  1.77 cusr  1.57 csys =  3.38 CPU)
+Result: PASS
+
+review-compat2x-before.log
+test/t/compat_2x_fixture.sh .. 
+1..11
+ok 1 - the sift index of the 2.x files is verified
+ok 2 - the old segments are of a format before 3 and the metapage was not raised
+ok 3 - queries use the index
+ok 4 - the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)
+ok 5 - the counts, sums, ranked ids and verify equal the 2.x results
+ok 6 - the counts equal the heap's, the dead documents of the dirty segment stay out
+# no segment 4|immutable|1400|t|140 in 1|immutable|1500|t|300 5|immutable|1400|t|140 6|buffer|100|f| 
+not ok 7 - VACUUM marks more documents dead in the 2.x segments (segments, verify, counts)
+ok 8 - the 2.x segments and a new one are read together (segments, verify, counts)
+ok 9 - a forced merge of the 2.x segments leaves one clean immutable segment of the live rows (segments, verify, counts)
+ok 10 - the merged segment takes more DML (verify, counts)
+ok 11 - the index survives a checkpoint and a restart (verify, counts)
+# 1 of 11 failed
+Dubious, test returned 1 (wstat 256, 0x100)
+Failed 1/11 subtests 
+
+Test Summary Report
+-------------------
+test/t/compat_2x_fixture.sh (Wstat: 256 (exited 1) Tests: 11 Failed: 1)
+  Failed test:  7
+  Non-zero exit status: 1
+Files=1, Tests=11,  3 wallclock secs ( 0.01 usr  0.00 sys +  0.72 cusr  0.65 csys =  1.38 CPU)
+Result: FAIL
+
+review-compat30-before.log
+test/t/compat_30_fixture.sh .. 
+1..11
+ok 1 - the sift index of the 2.x files is verified
+ok 2 - the old segments are of a format before 3 and the metapage was not raised
+ok 3 - queries use the index
+ok 4 - the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)
+ok 5 - the counts, sums, ranked ids and verify equal the 2.x results
+ok 6 - the counts equal the heap's, the dead documents of the dirty segment stay out
+# no segment 4|immutable|1400|t|140 in 1|immutable|1500|t|300 5|immutable|1400|t|140 6|buffer|100|f| 
+not ok 7 - VACUUM marks more documents dead in the 2.x segments (segments, verify, counts)
+ok 8 - the 2.x segments and a new one are read together (segments, verify, counts)
+ok 9 - a forced merge of the 2.x segments leaves one clean immutable segment of the live rows (segments, verify, counts)
+ok 10 - the merged segment takes more DML (verify, counts)
+ok 11 - the index survives a checkpoint and a restart (verify, counts)
+# 1 of 11 failed
+Dubious, test returned 1 (wstat 256, 0x100)
+Failed 1/11 subtests 
+
+Test Summary Report
+-------------------
+test/t/compat_30_fixture.sh (Wstat: 256 (exited 1) Tests: 11 Failed: 1)
+  Failed test:  7
+  Non-zero exit status: 1
+Files=1, Tests=11,  2 wallclock secs ( 0.01 usr  0.00 sys +  0.63 cusr  0.58 csys =  1.22 CPU)
+Result: FAIL
+
+review-compat2x-after.log
+test/t/compat_2x_fixture.sh .. 
+1..11
+ok 1 - the sift index of the 2.x files is verified
+ok 2 - the old segments are of a format before 3 and the metapage was not raised
+ok 3 - queries use the index
+ok 4 - the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)
+ok 5 - the counts, sums, ranked ids and verify equal the 2.x results
+ok 6 - the counts equal the heap's, the dead documents of the dirty segment stay out
+ok 7 - VACUUM marks more documents dead in the 2.x segments (segments, verify, counts)
+ok 8 - the 2.x segments and a new one are read together (segments, verify, counts)
+ok 9 - a forced merge of the 2.x segments leaves one clean immutable segment of the live rows (segments, verify, counts)
+ok 10 - the merged segment takes more DML (verify, counts)
+ok 11 - the index survives a checkpoint and a restart (verify, counts)
+ok
+All tests successful.
+Files=1, Tests=11,  3 wallclock secs ( 0.01 usr  0.00 sys +  0.69 cusr  0.60 csys =  1.30 CPU)
+Result: PASS
+
+review-compat30-after.log
+test/t/compat_30_fixture.sh .. 
+1..11
+ok 1 - the sift index of the 2.x files is verified
+ok 2 - the old segments are of a format before 3 and the metapage was not raised
+ok 3 - queries use the index
+ok 4 - the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)
+ok 5 - the counts, sums, ranked ids and verify equal the 2.x results
+ok 6 - the counts equal the heap's, the dead documents of the dirty segment stay out
+ok 7 - VACUUM marks more documents dead in the 2.x segments (segments, verify, counts)
+ok 8 - the 2.x segments and a new one are read together (segments, verify, counts)
+ok 9 - a forced merge of the 2.x segments leaves one clean immutable segment of the live rows (segments, verify, counts)
+ok 10 - the merged segment takes more DML (verify, counts)
+ok 11 - the index survives a checkpoint and a restart (verify, counts)
+ok
+All tests successful.
+Files=1, Tests=11,  2 wallclock secs ( 0.01 usr  0.00 sys +  0.61 cusr  0.54 csys =  1.16 CPU)
+Result: PASS
+
+review-areas.log
+neutral-selftest: 22 words flagged, a neutral sample and the repository pass
+plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv
+
+review-portable.log
+check-portable: ok, 87 files include only sift_host.h, the C library and each other
+
+Persistent writer and error cleanup verification
+Name: space_cache
+Version: 18.6
+Data directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata
+Backup directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/backup
+Archive directory: <scratch>/test/tap/data/t_016_space_cache_space_cache_data/archives
+Connection string: port=56191 host=/tmp/HhPPN3e8q8
+Log file: <scratch>/test/tap/log/016_space_cache_space_cache.log
+[12:09:12.621](0.010s) # initializing database system by running initdb
+# Running: initdb --no-sync --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --auth trust
+The files belonging to this database system will be owned by user "braulio".
+This user must also own the server process.
+
+The database cluster will be initialized with this locale configuration:
+  locale provider:   libc
+  LC_COLLATE:  C.UTF-8
+  LC_CTYPE:    C.UTF-8
+  LC_MESSAGES: C
+  LC_MONETARY: C.UTF-8
+  LC_NUMERIC:  C.UTF-8
+  LC_TIME:     C.UTF-8
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are enabled.
+
+creating directory <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default "max_connections" ... 100
+selecting default "shared_buffers" ... 128MB
+selecting default time zone ... America/Recife
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+
+Sync to disk skipped.
+The data directory might become corrupt if the operating system crashes.
+
+Success. You can now start the database server using:
+
+    pg_ctl -D <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata -l logfile start
+
+# Running: /usr/lib/postgresql/pgxs/src/makefiles/../test/regress/pg_regress --config-auth <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata
+### Starting node "space_cache"
+# Running: pg_ctl --wait --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --log <scratch>/test/tap/log/016_space_cache_space_cache.log --options --cluster-name=space_cache start
+waiting for server to start.... done
+server started
+# Postmaster PID for node "space_cache" is 2035705
+[12:09:13.129](0.508s) # Subtest: bm25 cached writer after publication ERROR without truncate
+[12:09:13.344](0.215s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:09:13.344](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:09:13.346](0.001s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:09:13.367](0.022s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:09:13.367](0.000s)     ok 2 - open buffer header moved before the error
+[12:09:13.378](0.011s)     ok 3 - replacement directory survives ERROR
+[12:09:13.398](0.020s)     ok 4 - physical truncation did not send an invalidation
+[12:09:13.398](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:09:13.413](0.015s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:09:13.421](0.008s)     ok 5 - fresh directory-backed scan finds the persistent writer sentinel
+
+[12:09:13.454](0.033s)     ok 6 - BM25 verification succeeds
+[12:09:13.462](0.007s)     ok 7 - all allocated pages still have one owner
+[12:09:13.472](0.011s)     1..7
+[12:09:13.473](0.000s) ok 1 - bm25 cached writer after publication ERROR without truncate
+[12:09:13.473](0.000s) # Subtest: col cached writer after publication ERROR without truncate
+[12:09:13.675](0.203s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:09:13.676](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:09:13.679](0.003s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:09:13.710](0.031s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:09:13.710](0.000s)     ok 2 - open buffer header moved before the error
+[12:09:13.718](0.008s)     ok 3 - replacement directory survives ERROR
+[12:09:13.724](0.006s)     ok 4 - physical truncation did not send an invalidation
+[12:09:13.724](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:09:13.725](0.001s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:09:13.732](0.007s)     ok 5 - fresh directory-backed scan finds the persistent writer sentinel
+
+[12:09:13.756](0.024s)     ok 6 - column verification succeeds
+[12:09:13.763](0.007s)     ok 7 - all allocated pages still have one owner
+[12:09:13.771](0.009s)     1..7
+[12:09:13.772](0.000s) ok 2 - col cached writer after publication ERROR without truncate
+[12:09:13.772](0.000s) # Subtest: tbl cached writer after publication ERROR without truncate
+[12:09:14.021](0.249s)     # connect output:
+    # {
+    #   'stderr' => 'background_psql: ready
+    # ',
+    #   'stdout' => 'background_psql: ready
+    # '
+    # }
+[12:09:14.021](0.000s)     # issuing query 1 via background psql: INSERT INTO s VALUES (100001, 7, 'primed cached writer')
+[12:09:14.022](0.001s)     # results query 1:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 1:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 1:
+    # '
+    # }
+[12:09:14.041](0.019s)     ok 1 - ordinary ERROR after publishing the open buffer
+[12:09:14.041](0.000s)     ok 2 - open buffer header moved before the error
+[12:09:14.048](0.007s)     ok 3 - replacement directory survives ERROR
+[12:09:14.052](0.005s)     ok 4 - physical truncation did not send an invalidation
+[12:09:14.053](0.000s)     # issuing query 2 via background psql: INSERT INTO s VALUES (100002, 11, 'uniquesentinel cached writer')
+[12:09:14.053](0.001s)     # results query 2:
+    # {
+    #   'stderr' => 'background_psql: QUERY_SEPARATOR 2:
+    # ',
+    #   'stdout' => 'background_psql: QUERY_SEPARATOR 2:
+    # '
+    # }
+[12:09:14.059](0.005s)     ok 5 - fresh directory-backed scan finds the persistent writer sentinel
+[12:09:14.065](0.007s)     ok 6 - all allocated pages still have one owner
+[12:09:14.079](0.014s)     1..6
+[12:09:14.079](0.000s) ok 3 - tbl cached writer after publication ERROR without truncate
+[12:09:14.080](0.000s) # Subtest: bm25 unpublished copy error cleanup
+[12:09:14.352](0.272s)     ok 1 - automatic relocation failure does not fail VACUUM
+[12:09:14.352](0.000s)     ok 2 - copy actually failed under the maintenance error contract
+[12:09:14.361](0.009s)     ok 3 - unpublished replacement never entered the directory
+[12:09:14.368](0.007s)     ok 4 - aborted target returned every allocated extent
+[12:09:14.384](0.016s)     ok 5 - rows survive the failed copy
+[12:09:14.419](0.035s)     1..5
+[12:09:14.420](0.000s) ok 4 - bm25 unpublished copy error cleanup
+[12:09:14.420](0.000s) # Subtest: col unpublished copy error cleanup
+[12:09:14.661](0.241s)     ok 1 - automatic relocation failure does not fail VACUUM
+[12:09:14.661](0.000s)     ok 2 - copy actually failed under the maintenance error contract
+[12:09:14.670](0.008s)     ok 3 - unpublished replacement never entered the directory
+[12:09:14.715](0.046s)     ok 4 - aborted target returned every allocated extent
+[12:09:14.728](0.013s)     ok 5 - rows survive the failed copy
+[12:09:14.740](0.012s)     1..5
+[12:09:14.740](0.000s) ok 5 - col unpublished copy error cleanup
+[12:09:14.741](0.000s) # Subtest: tbl unpublished copy error cleanup
+[12:09:15.034](0.294s)     ok 1 - automatic relocation failure does not fail VACUUM
+[12:09:15.034](0.000s)     ok 2 - copy actually failed under the maintenance error contract
+[12:09:15.044](0.009s)     ok 3 - unpublished replacement never entered the directory
+[12:09:15.050](0.007s)     ok 4 - aborted target returned every allocated extent
+[12:09:15.059](0.008s)     ok 5 - rows survive the failed copy
+[12:09:15.069](0.010s)     1..5
+[12:09:15.069](0.000s) ok 6 - tbl unpublished copy error cleanup
+### Stopping node "space_cache" using mode fast
+# Running: pg_ctl --pgdata <scratch>/test/tap/data/t_016_space_cache_space_cache_data/pgdata --mode fast stop
+waiting for server to shut down.... done
+server stopped
+# No postmaster PID for node "space_cache"
+[12:09:15.172](0.102s) 1..6

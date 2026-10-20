@@ -1309,6 +1309,35 @@ space_entry(const SiftDirSnapshot *snap, uint64 gen)
  * and a few live segments among free blocks would hold the file at its size for good. A second look follows each round, as the blocks
  * a segment was copied into are reserved by exact extent length, which can reject a coarse candidate. Every completed copy consumes the remaining allowance.
  */
+typedef struct SpaceMove
+{
+	const SiftSegEntry *entry;
+	SiftExtent *release;
+	int			nrelease;
+	BlockNumber limit;
+	uint64		budget;
+	uint64		written;
+	BlockNumber header;
+	SiftRelocatePage relocate_page;
+} SpaceMove;
+
+static void
+space_move(Relation rel, SiftWriteTarget *wt, const void *arg)
+{
+	SpaceMove  *move = (SpaceMove *) arg;
+	SiftSegEntry fresh;
+	SiftMaintSwitch sw = {.old = &move->entry->gen,.nold = 1,.neu = &fresh};
+
+	move->written = sift_store_relocate(rel, wt, move->entry, move->release, move->nrelease,
+									 move->limit, move->budget, &fresh, move->relocate_page);
+	if (move->written == 0)
+		return;
+	move->header = fresh.header_blk;
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,
+					.release = move->release,.nrelease = move->nrelease,.extra = InvalidBuffer});
+	sift_log_maint(rel, "relocated", GetCurrentTimestamp(), move->entry->ndocs, fresh.bytes);
+}
+
 static void
 space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 {
@@ -1322,30 +1351,35 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 		int			n;
 
 		sift_dir_read(rel, snap);
+		/* Relocation follows the same failure backoff as other automatic writes. Tail truncation remains available. */
+		if (in_backoff(&snap->meta))
+			break;
 		n = space_plan(rel, snap, budget, seg, &gain, &limit);
 		if (n == 0)
 			break;
 		for (int i = 0; i < n; i++)
 		{
 			const SiftSegEntry *e;
-			SiftSegEntry fresh;
 			int nrelease;
 			SiftExtent *release;
-			uint64 written;
+			SpaceMove move;
 
 			sift_dir_read(rel, snap);
 			if ((e = space_entry(snap, seg[i].gen)) == NULL)
 				continue;
 			release = e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, &nrelease) : sift_lane_extents(rel, e, &nrelease);
-			written = sift_store_relocate(rel, e, release, nrelease, limit, budget, &fresh, relocate_page);
-			if (written == 0)
+			move = (SpaceMove) {.entry = e,.release = release,.nrelease = nrelease,.limit = limit,.budget = budget,.relocate_page = relocate_page};
+			if (run_step(rel, false, space_move, &move) != SIFT_STEP_DONE || move.written == 0)
 			{
 				pfree(release);
 				goto done;
 			}
-			sift_maint_replace(rel, &e->gen, 1, &fresh, release, nrelease, "relocated", GetCurrentTimestamp(), e->ndocs);
+#ifdef SIFT_TESTING
+			if (sift_test_space_error && e->kind == SIFT_SEG_WBUF_OPEN && !(e->flags & SIFT_TBL_SEG_TOMB))
+				elog(ERROR, "sift test: error after open buffer relocation publication (header %u to %u)", e->header_blk, move.header);
+#endif
 			SIFT_SPACE_TEST_POINT(2);
-			budget -= written;
+			budget -= move.written;
 			pfree(release);
 			CHECK_FOR_INTERRUPTS();
 		}
