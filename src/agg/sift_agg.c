@@ -593,7 +593,6 @@ typedef struct AggExec
 	SiftSrcSource *src;
 	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
 	SiftTopN   *topn;			/* ORDER BY .. LIMIT n: the scan keeps the best rows instead of groups (spec->topn) */
-	int			topn_n;			/* rows of the result */
 	const SiftSrcLayout *lay;
 	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
 	struct
@@ -10474,6 +10473,8 @@ topn_run(AggExec *ex)
 	scan_buffers(ex);
 	table_init(ex);
 	t = ex->topn;
+	if (sift_topn_empty(t))
+		return;
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
 		for (int i = 0; i < sift_topn_nprobes(); i++)
@@ -10486,7 +10487,7 @@ topn_run(AggExec *ex)
 			continue;
 		topn_scan(ex, lo, hi, nsb, &ch);
 	}
-	ex->topn_n = sift_topn_finish(t);
+	sift_topn_finish(t);
 }
 
 static TupleTableSlot *
@@ -10494,10 +10495,7 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 {
 	if (!ex->started)
 		topn_run(ex);
-	if (ex->gpos >= ex->topn_n)
-		return NULL;
-	sift_topn_fetch(ex->topn, ex->gpos++, slot);
-	return slot;
+	return !sift_topn_empty(ex->topn) && sift_topn_next(ex->topn, slot) ? slot : NULL;
 }
 
 static TupleTableSlot *
@@ -10582,7 +10580,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
-		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->cxt);
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	init_states(ex);
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
@@ -10671,6 +10669,8 @@ agg_rescan(CustomScanState *node)
 
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
 	ex->gpos = 0;
+	if (ex->topn)
+		sift_topn_rewind(ex->topn);
 }
 
 /* the dims and measures of the rollup that answers the scan */
@@ -10709,7 +10709,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (s->search)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	if (s->topn)
-		ExplainPropertyText("Top-N", psprintf("%s (limit %d)", s->desc_topn, sift_topn_limit(s->topn)), es);
+		ExplainPropertyText("Top-N", psprintf("%s (limit %s)", s->desc_topn, sift_topn_limit_text(s->topn)), es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
 		if (j < h0 || j >= h1)
@@ -10760,6 +10760,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		{
 			ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
 			ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
+			if (sift_topn_sorted(ex->topn) >= 0)
+				ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);
 		}
 		if (c->nfilter > 0)
 			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);

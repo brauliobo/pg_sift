@@ -54,8 +54,8 @@ operand_walker(Node *n, void *ctx)
 }
 
 /* The query operand is the same at every execution of the plan: a constant, a parameter of the statement, a stable function of them */
-static bool
-operand_ok(Node *e)
+bool
+sift_operand_ok(Node *e)
 {
 	return !operand_walker(e, NULL);
 }
@@ -75,31 +75,78 @@ const_texts(List *queries, text ***texts, int *n)
 	return true;
 }
 
-static SiftSearchPlan *
-search_plan(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, List *mine, List *queries)
+static bool
+estimate_arm(Relation index, List *arm, SiftEstimate *est)
 {
-	SiftSearchPlan *sp = palloc0(sizeof(SiftSearchPlan));
 	text	  **texts;
 	int			n;
 
-	sp->spec = (Node *) lcons(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(ii->indexoid), false, true), list_copy(queries));
-	sp->sel = clauselist_selectivity(root, mine, rel->relid, JOIN_INNER, NULL);
-	sp->docs = Max(rel->tuples * sp->sel, 1.0);
-	if (const_texts(queries, &texts, &n))
+	if (!const_texts(arm, &texts, &n))
+		return false;
+	sift_estimate_cached(index, texts, n, est);
+	return true;
+}
+
+/* The postings and terms the arms read when every operand is a constant, else both stay 0 (not known) */
+static void
+estimate_arms(Oid indexoid, List *arms, SiftSearchPlan *sp)
+{
+	Relation	index = index_open(indexoid, AccessShareLock);
+	double		postings = 0,
+				terms = 0;
+	bool		known = true;
+
+	foreach_node(List, arm, arms)
 	{
 		SiftEstimate est;
-		Relation	index = index_open(ii->indexoid, AccessShareLock);
 
-		sift_estimate_cached(index, texts, n, &est);
-		index_close(index, AccessShareLock);
-		sp->postings = est.postings;
-		sp->terms = est.terms;
+		if (!(known = estimate_arm(index, arm, &est)))
+			break;
+		postings += est.postings;
+		terms += est.terms;
 	}
+	index_close(index, AccessShareLock);
+	if (known)
+	{
+		sp->postings = postings;
+		sp->terms = terms;
+	}
+}
+
+/* arms: the operand lists of the arms, ORed; the operands of an arm are ANDed. mine: the clauses of the WHERE they stand for */
+static SiftSearchPlan *
+search_plan(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, List *mine, List *arms)
+{
+	SiftSearchPlan *sp = palloc0(sizeof(SiftSearchPlan));
+
+	sp->spec = (Node *) lcons(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(ii->indexoid), false, true), list_copy(arms));
+	sp->sel = clauselist_selectivity(root, mine, rel->relid, JOIN_INNER, NULL);
+	sp->docs = Max(rel->tuples * sp->sel, 1.0);
+	estimate_arms(ii->indexoid, arms, sp);
 	return sp;
 }
 
+/* The arms of `key @@> a OR key @@> b ...` of the index, one operand each; NIL when a branch is anything else */
+static List *
+or_arms(Node *q, IndexOptInfo *ii)
+{
+	List	   *arms = NIL;
+
+	if (!IsA(q, BoolExpr) || ((BoolExpr *) q)->boolop != OR_EXPR)
+		return NIL;
+	foreach_ptr(Node, branch, ((BoolExpr *) q)->args)
+	{
+		Expr	   *query;
+
+		if (!sift_match_clause(branch, ii, &query) || !sift_operand_ok((Node *) query))
+			return NIL;
+		arms = lappend(arms, list_make1(query));
+	}
+	return arms;
+}
+
 SiftSearchPlan *
-sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexoid, Oid heapoid)
+sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexoid, Oid heapoid, bool allow_or)
 {
 	bool		can_select = OidIsValid(indexoid) ? sift_colsrc_can_select(get_rel_relam(indexoid), true) :
 		sift_colsrc_can_select(get_rel_relam(heapoid), false);
@@ -110,7 +157,9 @@ sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexo
 	{
 		List	   *mine = NIL,
 				   *rest = NIL,
-				   *queries = NIL;
+				   *queries = NIL,
+				   *arms = NIL;
+		Node	   *orq = NULL;
 
 		if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 			continue;
@@ -118,18 +167,21 @@ sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexo
 		{
 			Expr	   *query;
 
-			if (sift_match_clause(q, ii, &query) && operand_ok((Node *) query))
+			if (sift_match_clause(q, ii, &query) && sift_operand_ok((Node *) query))
 			{
 				mine = lappend(mine, q);
 				queries = lappend(queries, query);
+				continue;
 			}
-			else
-				rest = lappend(rest, q);
+			rest = lappend(rest, q);
+			if (allow_or && orq == NULL && (arms = or_arms(q, ii)) != NIL)
+				orq = q;
 		}
-		if (mine == NIL)
+		if (mine == NIL && orq == NULL)
 			continue;
-		*quals = rest;
-		return search_plan(root, rel, ii, mine, queries);
+		/* an OR group stands alone: next to plain conjuncts it stays a condition of the scan, which the scan cannot evaluate */
+		*quals = mine != NIL ? rest : list_delete_ptr(rest, orq);
+		return mine != NIL ? search_plan(root, rel, ii, mine, list_make1(queries)) : search_plan(root, rel, ii, list_make1(orq), arms);
 	}
 	return NULL;
 }
@@ -157,17 +209,21 @@ sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *
 	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE;
 }
 
-/* "orders_title @@> 'a' AND ..." */
+/* "orders_title @@> 'a' AND orders_title @@> 'b' OR orders_title @@> 'c'": the operands of an arm ANDed, the arms ORed */
 char *
 sift_search_describe(Node *spec)
 {
 	List	   *l = (List *) spec;
+	const char *name = get_rel_name(DatumGetObjectId(((Const *) linitial(l))->constvalue));
 	StringInfoData buf;
 
 	initStringInfo(&buf);
-	for (int i = 1; i < list_length(l); i++)
-		appendStringInfo(&buf, "%s%s @@> %s", i > 1 ? " AND " : "", get_rel_name(DatumGetObjectId(((Const *) linitial(l))->constvalue)),
-						 deparse_expression(list_nth(l, i), NIL, false, false));
+	for (int a = 1; a < list_length(l); a++)
+	{
+		appendStringInfoString(&buf, a > 1 ? " OR " : "");
+		foreach_ptr(Node, q, list_nth_node(List, l, a))
+			appendStringInfo(&buf, "%s%s @@> %s", foreach_current_index(q) ? " AND " : "", name, deparse_expression(q, NIL, false, false));
+	}
 	return buf.data;
 }
 
@@ -182,6 +238,19 @@ sift_search_init(void)
 							&sift_search_chunk_sbs, 32, 1, 1 << 20, PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
+struct SiftSearch;
+
+/* One arm of the search: the AND of its queries. The match set is the union of the arms' */
+typedef struct SearchArm
+{
+	struct SiftSearch *s;
+	SiftPlan   *plan;			/* NULL: a query is NULL, nothing matches */
+	SiftMatchIter *it;
+	SiftPageMatch pm;			/* the arm's next page, when has */
+	bool		has;
+	bool		served;
+} SearchArm;
+
 struct SiftSearch
 {
 	MemoryContext cxt;
@@ -189,13 +258,12 @@ struct SiftSearch
 	Relation	index;
 	Snapshot	snapshot;
 	SiftIndexState *st;
-	SiftPlan   *plan;			/* NULL: a query is NULL, nothing matches */
-	SiftMatchIter *it;
+	int			narms;
+	SearchArm  *arm;
 	SiftFilter *filter;
 	uint32		want_lo,
 				want_hi,
 				done_hi;
-	bool		served;
 	/* the phrases the index leaves to the text of the row */
 	bool		heap_ready;
 	SiftVis		vis;
@@ -209,18 +277,19 @@ struct SiftSearch
 static bool
 next_range(void *arg, uint32 *lo, uint32 *hi)
 {
-	SiftSearch *s = arg;
+	SearchArm  *a = arg;
 
-	if (s->served)
+	if (a->served)
 		return false;
-	*lo = s->want_lo;
-	*hi = s->want_hi;
-	return s->served = true;
+	*lo = a->s->want_lo;
+	*hi = a->s->want_hi;
+	return a->served = true;
 }
 
 static void
-bind_queries(SiftSearch *s, List *operands, ExprContext *econtext, PlanState *parent)
+bind_queries(SearchArm *a, List *operands, ExprContext *econtext, PlanState *parent)
 {
+	SiftSearch *s = a->s;
 	int			n = list_length(operands),
 				i = 0;
 	SiftQuery **queries = palloc(n * sizeof(SiftQuery *));
@@ -237,7 +306,7 @@ bind_queries(SiftSearch *s, List *operands, ExprContext *econtext, PlanState *pa
 		q = DatumGetTextPP(d);
 		queries[i++] = sift_state_query(s->st, VARDATA_ANY(q), VARSIZE_ANY_EXHDR(q));
 	}
-	s->plan = sift_plan_bind(s->st, queries, n, 0);
+	a->plan = sift_plan_bind(s->st, queries, n, 0);
 }
 
 SiftSearch *
@@ -253,7 +322,13 @@ sift_search_open(Node *spec, Relation heap, Snapshot snapshot, ExprContext *econ
 	s->index = index_open(DatumGetObjectId(((Const *) linitial(l))->constvalue), AccessShareLock);
 	s->st = sift_state_open(s->index, cxt);
 	s->filter = sift_filter_create(cxt);
-	bind_queries(s, list_delete_first(list_copy(l)), econtext, parent);
+	s->narms = list_length(l) - 1;
+	s->arm = palloc0(s->narms * sizeof(SearchArm));
+	for (int i = 0; i < s->narms; i++)
+	{
+		s->arm[i].s = s;
+		bind_queries(&s->arm[i], list_nth_node(List, l, i + 1), econtext, parent);
+	}
 	MemoryContextSwitchTo(old);
 	return s;
 }
@@ -261,8 +336,9 @@ sift_search_open(Node *spec, Relation heap, Snapshot snapshot, ExprContext *econ
 void
 sift_search_close(SiftSearch *s)
 {
-	if (s->plan && s->it)
-		sift_iter_end(s->it);
+	for (int i = 0; i < s->narms; i++)
+		if (s->arm[i].it)
+			sift_iter_end(s->arm[i].it);
 	if (s->heap_ready)
 	{
 		sift_vis_end(&s->vis);
@@ -303,7 +379,7 @@ heap_setup(SiftSearch *s)
 
 /* The indexed text of the row at tid decides: the visible version's (the same along a HOT chain) */
 static bool
-text_matches(SiftSearch *s, BlockNumber blk, int off)
+text_matches(SiftSearch *s, SiftPlan *plan, BlockNumber blk, int off)
 {
 	ItemPointerData tid;
 	Datum		value;
@@ -318,7 +394,7 @@ text_matches(SiftSearch *s, BlockNumber blk, int off)
 		ResetPerTupleExprContext(s->estate);
 		GetPerTupleExprContext(s->estate)->ecxt_scantuple = s->slot;
 		FormIndexDatum(s->iinfo, s->slot, s->estate, &value, &isnull);
-		ok = !isnull && sift_plan_recheck(s->plan, DatumGetTextPP(value));
+		ok = !isnull && sift_plan_recheck(plan, DatumGetTextPP(value));
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(s->tmpcx);
@@ -327,7 +403,7 @@ text_matches(SiftSearch *s, BlockNumber blk, int off)
 
 /* Keeps in the page the candidates whose text matches (the rows `sure` already decided stay); false when none is left */
 static bool
-recheck_page(SiftSearch *s, SiftPageMatch *pm)
+recheck_page(SiftSearch *s, SiftPlan *plan, SiftPageMatch *pm)
 {
 	bool		any = false;
 
@@ -336,39 +412,83 @@ recheck_page(SiftSearch *s, SiftPageMatch *pm)
 	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 	{
 		for (uint64 m = pm->offmask[wd] & ~pm->sure[wd]; m; m &= m - 1)
-			if (!text_matches(s, pm->blk, wd * 64 + pg_rightmost_one_pos64(m) + 1))
+			if (!text_matches(s, plan, pm->blk, wd * 64 + pg_rightmost_one_pos64(m) + 1))
 				pm->offmask[wd] &= ~(m & -m);
 		any |= pm->offmask[wd] != 0;
 	}
 	return any;
 }
 
+/* The arm's next page that its queries decide, the text of the rows they leave undecided included */
+static void
+arm_next(SearchArm *a)
+{
+	a->has = false;
+	while (!a->has && sift_iter_next(a->it, &a->pm))
+	{
+		CHECK_FOR_INTERRUPTS();
+		a->has = !a->pm.recheck || recheck_page(a->s, a->plan, &a->pm);
+	}
+}
+
+/* The arms look at the range from its start: a new iterator when they have passed it */
+static void
+arm_start(SearchArm *a)
+{
+	if (a->plan == NULL)
+		return;
+	if (a->it == NULL || a->s->want_lo < a->s->done_hi)
+	{
+		if (a->it)
+			sift_iter_end(a->it);
+		a->it = sift_iter_begin(a->plan);
+		sift_iter_ranges(a->it, next_range, a);
+	}
+	a->served = false;
+	arm_next(a);
+}
+
+/* The next page of the union of the arms in heap order: the offsets that any arm having the page matches */
+static bool
+union_page(SiftSearch *s, BlockNumber *blk, uint64 *mask)
+{
+	bool		found = false;
+
+	for (int i = 0; i < s->narms; i++)
+		if (s->arm[i].has && (!found || s->arm[i].pm.blk < *blk))
+		{
+			*blk = s->arm[i].pm.blk;
+			found = true;
+		}
+	if (!found)
+		return false;
+	memset(mask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
+	for (int i = 0; i < s->narms; i++)
+		if (s->arm[i].has && s->arm[i].pm.blk == *blk)
+		{
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				mask[k] |= s->arm[i].pm.offmask[k];
+			arm_next(&s->arm[i]);
+		}
+	return true;
+}
+
 const SiftFilter *
 sift_search_range(SiftSearch *s, uint32 lo, uint32 hi)
 {
-	SiftPageMatch pm;
+	BlockNumber blk;
+	uint64		mask[SIFT_OFFMASK_WORDS];
 
 	sift_filter_reset(s->filter);
-	if (s->plan == NULL)
-		return s->filter;
-	if (s->it == NULL || lo < s->done_hi)
-	{
-		if (s->it)
-			sift_iter_end(s->it);
-		s->it = sift_iter_begin(s->plan);
-		sift_iter_ranges(s->it, next_range, s);
-	}
 	s->want_lo = lo;
 	s->want_hi = hi;
-	s->served = false;
-	while (sift_iter_next(s->it, &pm))
+	for (int i = 0; i < s->narms; i++)
+		arm_start(&s->arm[i]);
+	while (union_page(s, &blk, mask))
 	{
-		CHECK_FOR_INTERRUPTS();
-		if (pm.recheck && !recheck_page(s, &pm))
-			continue;
-		sift_filter_add_page(s->filter, pm.blk, pm.offmask);
+		sift_filter_add_page(s->filter, blk, mask);
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-			s->matches += pg_popcount64(pm.offmask[k]);
+			s->matches += pg_popcount64(mask[k]);
 	}
 	s->done_hi = hi;
 	return s->filter;

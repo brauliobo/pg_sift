@@ -19,7 +19,7 @@
 
 typedef struct SiftSearchPlan
 {
-	Node	   *spec;			/* List: the Oid (OIDOID Const) of the BM25 index, then the query operands; what SiftAggSpec.search carries */
+	Node	   *spec;			/* List: the Oid (OIDOID Const) of the BM25 index, then the arms, each a List of query operands (ANDed); the arms are ORed. What SiftAggSpec.search carries */
 	double		sel;			/* selectivity of the conjuncts taken out of the WHERE */
 	double		docs;			/* matches expected (rows of the table times sel) */
 	double		postings;		/* postings the index reads for them (0: not known, a query that is not a constant) */
@@ -31,8 +31,13 @@ typedef struct SiftSearchPlan
  * The conjuncts of *quals that are `key @@> q` of one BM25 index of rel (q free of Vars, volatile functions and sub-plans) leave *quals,
  * and the plan to evaluate them in the index is returned. NULL when there is none, or when the column source (the sift_col index
  * indexoid, or the sift_table heapoid when there is no index) cannot be restricted to a match set.
+ * allow_or: with no such conjunct, one conjunct `key @@> a OR key @@> b ...` of one index (every branch a match of it) leaves *quals too
+ * and the plan is the union of the arms: the match set of the OR, as a set.
  */
-extern SiftSearchPlan *sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexoid, Oid heapoid);
+extern SiftSearchPlan *sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexoid, Oid heapoid, bool allow_or);
+
+/* Is the operand (a query text, a limit) the same at every execution of the plan: no sub-plan, no executor parameter */
+extern bool sift_operand_ok(Node *e);
 
 /* EXPLAIN: "orders_title @@> 'wireless headphones'" */
 extern char *sift_search_describe(Node *spec);

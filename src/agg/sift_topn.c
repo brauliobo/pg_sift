@@ -6,11 +6,17 @@
 #include <math.h>
 
 #include "access/relation.h"
+#include "access/stratnum.h"
 #include "access/tableam.h"
+#include "catalog/pg_opfamily_d.h"
 #include "executor/executor.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/tuplesort.h"
 
 #include "sift_topn.h"
 
@@ -46,22 +52,32 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int limit, int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno, Node *count, Node *offset)
 {
-	List	   *l = list_make2_int(limit, nkey);
+	List	   *l = list_make1_int(nkey);
 
 	for (int j = 0; j < nkey; j++)
 		l = lappend_int(lappend_int(l, leaf[j]), (desc[j] ? 1 : 0) | (nulls_first[j] ? 2 : 0));
 	l = lappend_int(l, nout);
 	for (int c = 0; c < nout; c++)
 		l = lappend_int(l, attno[c]);
-	return (Node *) l;
+	return (Node *) list_make3(l, count, offset);
 }
 
-int
-sift_topn_limit(Node *spec)
+#define SPEC_KEYS(spec)		((List *) linitial((List *) (spec)))
+#define SPEC_COUNT(spec)	((Node *) lsecond((List *) (spec)))
+#define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
+
+/* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants */
+char *
+sift_topn_limit_text(Node *spec)
 {
-	return linitial_int((List *) spec);
+	Node	   *count = SPEC_COUNT(spec),
+			   *offset = SPEC_OFFSET(spec);
+
+	if (IsA(count, Const) && (offset == NULL || IsA(offset, Const)))
+		return psprintf("%d", (int) (DatumGetInt64(((Const *) count)->constvalue) + (offset ? DatumGetInt64(((Const *) offset)->constvalue) : 0)));
+	return pstrdup("by parameter");
 }
 
 /* ---------- executor ---------- */
@@ -85,7 +101,12 @@ typedef struct TopEnt
 
 struct SiftTopN
 {
-	int			limit;
+	int			limit;			/* rows the heap holds; 0: none wanted (a LIMIT that leaves nothing) */
+	Tuplesortstate *sort;		/* all the rows that pass, when there is no bound the heap can hold (NULL, past the cap): sorted by the keys and the TID */
+	TupleTableSlot *sin,
+			   *sout;			/* the rows going in and out of sort: the keys, then the TID as a number */
+	int64		nsort;
+	int			pos;			/* the next row of res */
 	int			nkey;
 	TopKey		key[SIFT_TOPN_MAX_KEYS];
 	int			nout;
@@ -101,7 +122,7 @@ struct SiftTopN
 	TopEnt	   *ce;				/* the rows whose first key is not worse than the n-th of the unit's and of the heap */
 	uint32	   *cand;			/* the rows of ce */
 	uint32	   *rows;
-	ItemPointerData *tids;
+	ItemPointerData *tids;		/* the TIDs of the rows of a unit (sort), or of the heap rows of a unit */
 	TopEnt	   *res;			/* after sift_topn_finish: the heap in order */
 	/* the visit order */
 	uint32		nsb;
@@ -122,15 +143,66 @@ struct SiftTopN
 	int64		fetched;
 };
 
+/* The value of a LIMIT or OFFSET expression of the plan, evaluated as the Limit node does when it starts */
+static int64
+eval_bound(Node *e, ExprContext *econtext, PlanState *parent, bool *isnull)
+{
+	return DatumGetInt64(ExecEvalExprSwitchContext(ExecInitExpr((Expr *) e, parent), econtext, isnull));
+}
+
+/*
+ * LIMIT + OFFSET, whatever the values the plan was made for: false when no heap can hold them (no limit, past the cap, an overflow).
+ * A negative sum is a rows-wanted of zero: the Limit node above raises its error before it asks for a row.
+ */
+static bool
+bound_rows(Node *spec, ExprContext *econtext, PlanState *parent, int *rows)
+{
+	bool		isnull,
+				offnull = true;
+	int64		count = eval_bound(SPEC_COUNT(spec), econtext, parent, &isnull),
+				offset = SPEC_OFFSET(spec) ? eval_bound(SPEC_OFFSET(spec), econtext, parent, &offnull) : 0,
+				n;
+
+	if (isnull || pg_add_s64_overflow(count, offnull ? 0 : offset, &n) || n > SIFT_TOPN_MAX_ROWS)
+		return false;
+	*rows = Max(n, 0);
+	return true;
+}
+
+/* The rows ordered by the keys (in the direction of each, the NULLs where it says), then by the TID: the order of the heap */
+static Tuplesortstate *
+sort_begin(SiftTopN *t)
+{
+	int			n = t->nkey + 1;
+	TupleDesc	desc = CreateTemplateTupleDesc(n);
+	AttrNumber	att[SIFT_TOPN_MAX_KEYS + 1];
+	Oid			op[SIFT_TOPN_MAX_KEYS + 1],
+				coll[SIFT_TOPN_MAX_KEYS + 1] = {InvalidOid};
+	bool		nf[SIFT_TOPN_MAX_KEYS + 1];
+
+	for (int j = 0; j < n; j++)
+	{
+		bool		key = j < t->nkey;
+
+		TupleDescInitEntry(desc, j + 1, NULL, INT8OID, -1, 0);
+		att[j] = j + 1;
+		op[j] = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, key && t->key[j].desc ? BTGreaterStrategyNumber : BTLessStrategyNumber);
+		nf[j] = key && t->key[j].nulls_first;
+	}
+	t->sin = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	t->sout = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	return tuplesort_begin_heap(desc, n, att, op, coll, nf, work_mem, NULL, TUPLESORT_RANDOMACCESS);
+}
+
 SiftTopN *
-sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, MemoryContext cxt)
+sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftTopN   *t = palloc0(sizeof(SiftTopN));
-	List	   *l = (List *) spec;
+	List	   *l = SPEC_KEYS(spec);
 	int			i = 0;
+	bool		bounded;
 
-	t->limit = list_nth_int(l, i++);
 	t->nkey = list_nth_int(l, i++);
 	for (int j = 0; j < t->nkey; j++)
 	{
@@ -143,10 +215,16 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 	t->attno = palloc(Max(t->nout, 1) * sizeof(int));
 	for (int c = 0; c < t->nout; c++)
 		t->attno[c] = list_nth_int(l, i++);
-	t->heap = palloc(t->limit * sizeof(TopEnt));
-	t->lh = palloc(t->limit * sizeof(TopEnt));
-	t->rows = palloc(t->limit * sizeof(uint32));
-	t->tids = palloc(t->limit * sizeof(ItemPointerData));
+	bounded = bound_rows(spec, econtext, parent, &t->limit);
+	if (!bounded)
+		t->sort = sort_begin(t);
+	else if (t->limit > 0)
+	{
+		t->heap = palloc(t->limit * sizeof(TopEnt));
+		t->lh = palloc(t->limit * sizeof(TopEnt));
+		t->rows = palloc(t->limit * sizeof(uint32));
+		t->tids = palloc(t->limit * sizeof(ItemPointerData));
+	}
 	t->rel = heap;
 	t->snap = snapshot;
 	t->fslot = table_slot_create(heap, NULL);
@@ -159,6 +237,18 @@ sift_topn_close(SiftTopN *t)
 {
 	if (t->fslot)
 		ExecDropSingleTupleTableSlot(t->fslot);
+	if (t->sort)
+	{
+		ExecDropSingleTupleTableSlot(t->sin);
+		ExecDropSingleTupleTableSlot(t->sout);
+		tuplesort_end(t->sort);
+	}
+}
+
+bool
+sift_topn_empty(const SiftTopN *t)
+{
+	return t->sort == NULL && t->limit == 0;
 }
 
 int
@@ -331,13 +421,14 @@ grow_unit_buffers(SiftTopN *t, int nrow)
 	t->cnul = grow(t, t->cnul, t->ccap);
 	t->cand = grow(t, t->cand, t->ccap * sizeof(uint32));
 	t->ce = grow(t, t->ce, t->ccap * sizeof(TopEnt));
+	if (t->sort)
+		t->tids = grow(t, t->tids, t->ccap * sizeof(ItemPointerData));
 }
 
-/* The rows cand[0..nc) (ascending) with their first key in ce: the other keys by position, the best n by all of them to the heap with their TIDs */
+/* The rows cand[0..nc) (ascending) with their first key in ce: the other keys, by position */
 static void
-finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
+read_other_keys(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
-	t->ln = 0;
 	for (int j = 1; j < t->nkey; j++)
 	{
 		SiftSrcVec	v;
@@ -347,6 +438,14 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 			if (!row_key(&t->key[j], &v, x, &t->ce[x].k[j]))
 				t->ce[x].nul |= 1 << j;
 	}
+}
+
+/* The best n of those rows by all the keys go to the heap with their TIDs */
+static void
+finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
+{
+	t->ln = 0;
+	read_other_keys(t, src, unit, nc);
 	for (int x = 0; x < nc; x++)
 		heap_push(t, t->lh, &t->ln, &t->ce[x]);
 	if (t->ln == 0)
@@ -395,6 +494,42 @@ ent_rank(const SiftTopN *t, const TopEnt *e)
 	return rank_of(&t->key[0], e->nul & 1, e->k[0]);
 }
 
+/* With no bound for the heap: every row that passes goes to the sort, with its keys and its TID */
+static void
+sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+{
+	int			nc = 0;
+
+	grow_unit_buffers(t, nrow);
+	for (int w = 0; w < (nrow + 63) / 64; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			TopEnt	   *e = &t->ce[nc];
+
+			memset(e, 0, sizeof(TopEnt));
+			t->cand[nc] = w * 64 + pg_rightmost_one_pos64(b);
+			e->nul = !row_key(&t->key[0], key0, t->cand[nc++], &e->k[0]);
+		}
+	if (nc == 0)
+		return;
+	read_other_keys(t, src, unit, nc);
+	sift_colsrc_tids(src, unit, t->cand, nc, t->tids);
+	for (int x = 0; x < nc; x++)
+	{
+		ExecClearTuple(t->sin);
+		for (int j = 0; j < t->nkey; j++)
+		{
+			t->sin->tts_values[j] = Int64GetDatum(t->ce[x].k[j]);
+			t->sin->tts_isnull[j] = (t->ce[x].nul >> j) & 1;
+		}
+		t->sin->tts_values[t->nkey] = Int64GetDatum(tid_key(&t->tids[x]));
+		t->sin->tts_isnull[t->nkey] = false;
+		ExecStoreVirtualTuple(t->sin);
+		tuplesort_puttupleslot(t->sort, t->sin);
+	}
+	t->nsort += nc;
+}
+
 /*
  * The rows of the unit are cut in two steps, so that the leaves of the other sort keys are read for a handful of rows and not for all of
  * them. First the first key of every row that passes: a row strictly worse on it than the n-th of the heap, or than the n-th of the unit
@@ -412,6 +547,11 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 				m = 0,
 				nc = 0;
 
+	if (t->sort)
+	{
+		sort_unit(t, src, unit, key0, rmask, nrow);
+		return;
+	}
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
 	if (t->n == t->limit)
@@ -485,7 +625,7 @@ sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
 	bool		wnull;
 	int64		best;
 
-	if (t->n < t->limit || z->inexact)
+	if (t->sort || t->n < t->limit || z->inexact)
 		return true;
 	w = &t->heap[0];
 	wnull = w->nul & 1;
@@ -578,19 +718,47 @@ sift_topn_skip(SiftTopN *t)
 
 /* ---------- the result ---------- */
 
-int
+void
 sift_topn_finish(SiftTopN *t)
 {
-	t->res = t->heap;
-	qsort_arg(t->res, t->n, sizeof(TopEnt), ent_cmp_arg, t);
-	return t->n;
+	t->pos = 0;
+	if (t->sort)
+		tuplesort_performsort(t->sort);
+	else
+	{
+		t->res = t->heap;
+		qsort_arg(t->res, t->n, sizeof(TopEnt), ent_cmp_arg, t);
+	}
+}
+
+/* The next row of the result: the TID of the sort, or of the heap in order */
+static bool
+next_tid(SiftTopN *t, ItemPointerData *tid)
+{
+	bool		isnull;
+	int64		tie;
+
+	if (t->sort == NULL)
+	{
+		if (t->pos >= t->n)
+			return false;
+		*tid = t->res[t->pos++].tid;
+		return true;
+	}
+	if (!tuplesort_gettupleslot(t->sort, true, false, t->sout, NULL))
+		return false;
+	tie = DatumGetInt64(slot_getattr(t->sout, t->nkey + 1, &isnull));
+	ItemPointerSet(tid, tie >> 16, tie & 0xFFFF);
+	return true;
 }
 
 bool
-sift_topn_fetch(SiftTopN *t, int i, TupleTableSlot *slot)
+sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 {
-	ItemPointerData tid = t->res[i].tid;
+	ItemPointerData tid;
 
+	if (!next_tid(t, &tid))
+		return false;
 	if (!table_tuple_fetch_row_version(t->rel, &tid, t->snap, t->fslot))
 		elog(ERROR, "sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
 	t->fetched++;
@@ -600,4 +768,18 @@ sift_topn_fetch(SiftTopN *t, int i, TupleTableSlot *slot)
 	ExecStoreVirtualTuple(slot);
 	ExecMaterializeSlot(slot);
 	return true;
+}
+
+void
+sift_topn_rewind(SiftTopN *t)
+{
+	t->pos = 0;
+	if (t->sort)
+		tuplesort_rescan(t->sort);
+}
+
+int64
+sift_topn_sorted(const SiftTopN *t)
+{
+	return t->sort ? t->nsort : -1;
 }

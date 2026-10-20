@@ -12,30 +12,43 @@
 
 #include "access/tableam.h"
 #include "executor/tuptable.h"
+#include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
 #include "nodes/pathnodes.h"
 
 #include "sift_colsrc.h"
 
 #define SIFT_TOPN_MAX_KEYS	4
-#define SIFT_TOPN_MAX_ROWS	100000		/* LIMIT + OFFSET above this keeps the normal plan */
+#define SIFT_TOPN_MAX_ROWS	100000		/* LIMIT + OFFSET of a plan above this keeps the normal plan; the heap holds no more: past it at run time the rows go to a sort */
 
 /* ---- planner ---- */
 
 /* Can the leaf be an ORDER BY key: an integer-like, date, timestamp, numeric (scaled integer) or float leaf, whose order is the type's */
 extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
 
-/* The spec the plan carries (an integer list, SiftAggSpec.topn): limit rows; keys: leaf, descending, nulls first; out: the heap attribute of each column of the scan tuple */
-extern Node *sift_topn_spec(int limit, int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno);
+/*
+ * The spec the plan carries (SiftAggSpec.topn): a List of the keys (an integer list: keys: leaf, descending, nulls first; out: the heap
+ * attribute of each column of the scan tuple), the LIMIT and the OFFSET (NULL: none) as the expressions of the query, int8 with no
+ * Var, volatile function or sub-plan: constants, or parameters of the statement that the scan evaluates when it starts.
+ */
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno, Node *count, Node *offset);
 
-extern int	sift_topn_limit(Node *spec);
+/* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
+extern char *sift_topn_limit_text(Node *spec);
 
 /* ---- executor ---- */
 
 typedef struct SiftTopN SiftTopN;
 
-extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, MemoryContext cxt);
+/*
+ * LIMIT + OFFSET are evaluated here (econtext, parent: as for the search operands), and whatever they are the scan answers as the
+ * normal plan does, the Limit node above deciding what it takes: up to SIFT_TOPN_MAX_ROWS the best rows are kept in a heap; NULL
+ * (all rows), more rows or an overflow keep every row that passes in a sort of keys and TIDs (work_mem, then disk), which still
+ * fetches from the heap only the rows the Limit takes; nothing wanted (zero or negative) reads nothing.
+ */
+extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
 extern void sift_topn_close(SiftTopN *t);
+extern bool sift_topn_empty(const SiftTopN *t);
 
 extern int	sift_topn_nkey(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
@@ -60,11 +73,13 @@ extern void sift_topn_skip(SiftTopN *t);
 /* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */
 extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
 
-/* After the scan: the rows in order; sift_topn_fetch stores row i (all its attributes, copied) in slot, a virtual slot of the scan tuple */
-extern int	sift_topn_finish(SiftTopN *t);
-extern bool sift_topn_fetch(SiftTopN *t, int i, TupleTableSlot *slot);
+/* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
+extern void sift_topn_finish(SiftTopN *t);
+extern bool sift_topn_next(SiftTopN *t, TupleTableSlot *slot);
+extern void sift_topn_rewind(SiftTopN *t);
 
 extern int64 sift_topn_skipped(const SiftTopN *t);
 extern int64 sift_topn_fetched(const SiftTopN *t);
+extern int64 sift_topn_sorted(const SiftTopN *t);	/* rows that went to the sort; -1: the heap holds the rows */
 
 #endif							/* SIFT_TOPN_H */
