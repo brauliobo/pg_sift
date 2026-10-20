@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/parallel.h"
 #include "access/table.h"
 #include "access/xact.h"
