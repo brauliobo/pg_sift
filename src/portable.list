@@ -14,6 +14,8 @@ bm25/kernels_avx512.c
 bm25/analyze.c
 bm25/analyze_stem.c
 bm25/query.c
+bm25/query_analyze.c
+bm25/query_match.c
 bm25/posting.c
 bm25/postw.c
 bm25/pos.c
@@ -64,6 +66,7 @@ bm25/prefix.h
 bm25/runs.h
 bm25/runs_int.h
 bm25/query.h
+bm25/query_int.h
 bm25/merge.h
 core/sift_live.h
 bm25/segment.h
