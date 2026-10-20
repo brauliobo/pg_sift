@@ -10,6 +10,7 @@ static const sift_kernels *const kern_by_isa[SIFT_NISA] = { &sift_kern_scalar, &
 
 static int isa_ok(int isa)
 {
+#if defined(__x86_64__)
 	__builtin_cpu_init();
 	int v3 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") && __builtin_cpu_supports("bmi2") &&
 		 __builtin_cpu_supports("popcnt");
@@ -22,6 +23,9 @@ static int isa_ok(int isa)
 		       __builtin_cpu_supports("avx512vpopcntdq");
 	}
 	return 0;
+#else
+	return isa == SIFT_ISA_SCALAR;
+#endif
 }
 
 int sift_set_isa(int isa)
