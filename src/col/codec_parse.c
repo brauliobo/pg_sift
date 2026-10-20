@@ -1,7 +1,7 @@
 /*
  * col/codec_parse.c - the reader's entry: validates a chunk blob and parses it into its node tree, opens and closes it.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/analyze.h"
 #include "col/codec_int.h"

@@ -2,12 +2,12 @@
  * col/codec_write.c - the writer of the chunk codec: statistics, the exact-size choice of the lightweight cascade, the general-purpose
  * layer under the cost rule.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 
 #include "bm25/analyze.h"
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "col/codec_int.h"
 #include "col/compress.h"
 

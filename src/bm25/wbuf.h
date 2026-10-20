@@ -1,14 +1,14 @@
 /*
  * bm25/wbuf.h - write buffers: lane appends, sealing, reading and
- * deletion. Records follow SiftWbufDocData in sift_page.h.
+ * deletion. Records follow SiftWbufDocData in core/page.h.
  */
 #ifndef SIFT_WBUF_H
 #define SIFT_WBUF_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/analyze.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 /*
  * Appends one doc to the open write buffer (creating it if none) on

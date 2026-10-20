@@ -9,10 +9,10 @@
  * its data; blobs start 8-byte aligned (the engine's chunks do), so all loads below are aligned. Little-endian hosts only, as every
  * on-disk format of pg_sift.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/codec_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 void
 sift_cc_set_ones(uint64 *bits, uint32 n)

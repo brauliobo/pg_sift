@@ -1,7 +1,7 @@
 /*
  * bm25/merge.c - the tiered merge policy shared by the hosts: segments of similar size merge together.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/merge.h"
 

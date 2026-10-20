@@ -1,17 +1,17 @@
 /*
  * sqapi.h - the interface between the SQLite virtual table (sqvtab.c), the segment builder (sqbuild.c), the streaming
- * merge (sqmerge.c) and the page store (sqstore.c), which stands in for sift_store.c.
+ * merge (sqmerge.c) and the page store (sqstore.c), which stands in for core/store.c.
  */
 #ifndef SQAPI_H
 #define SQAPI_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <sqlite3ext.h>
 
-#include "sift.h"
-#include "sift_page.h"
-#include "sift_store.h"
+#include "core/sift.h"
+#include "core/page.h"
+#include "core/store.h"
 #include "bm25/analyze.h"
 #include "bm25/posting.h"
 #include "bm25/segment.h"

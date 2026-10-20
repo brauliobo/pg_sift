@@ -35,7 +35,7 @@
 #
 # hardened (scripts/hardened.sh) builds the tree with SIFT_HARDEN=1 (docs/SAFETY.md: stack protector, FORTIFY_SOURCE=3, zero-initialized locals, trap-mode
 # UBSan) in a private copy and runs the regression tests of the decoders on it (quick: six; full: all of them); span-test runs the unit tests of
-# the bounds-checked reader (src/core/sift_span.h) plain and under ASan+UBSan; static (full only, scripts/static.sh) runs clang-tidy, the gcc and
+# the bounds-checked reader (src/core/span.h) plain and under ASan+UBSan; static (full only, scripts/static.sh) runs clang-tidy, the gcc and
 # clang analyzers and cppcheck where installed, and reports the findings that are not in scripts/static.baseline without failing the run.
 #
 # assert (scripts/assert.sh) and valgrind (scripts/valgrind.sh) are not part of quick or full: they run a PostgreSQL built from source with assertions and
@@ -130,7 +130,7 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
-	for f in src/core/sift_ops.c "$REPO"/sql/*.sql; do
+	for f in src/core/ops.c "$REPO"/sql/*.sql; do
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done

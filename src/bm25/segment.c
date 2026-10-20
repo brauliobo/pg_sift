@@ -1,15 +1,15 @@
 /*
  * bm25/segment.c - immutable segment reader: open, docmap, doc pages (layout in
- * bm25/segment.h and sift_page.h).
+ * bm25/segment.h and core/page.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
 #endif
 #include "bm25/kernels.h"
-#include "sift_live.h"
-#include "sift_popcount.h"
+#include "core/live.h"
+#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"

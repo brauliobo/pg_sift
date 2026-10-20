@@ -26,14 +26,14 @@
 
 #include "bm25/am.h"
 #include "bm25/build.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
-#include "sift_ops.h"
-#include "sift_sql.h"
-#include "sift_visibility.h"
+#include "core/ops.h"
+#include "core/sql.h"
+#include "core/visibility.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
 

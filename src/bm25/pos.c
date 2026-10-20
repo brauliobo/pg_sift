@@ -2,7 +2,7 @@
  * bm25/pos.c - position records of a term blob: the checkpoints, the windowed reads and the record decoder
  * (layout in bm25/posting.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
 #include "bm25/posting.h"

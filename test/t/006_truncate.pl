@@ -1,4 +1,4 @@
-# VACUUM giving the free blocks at the end of the index file back (sift_store.h P7):
+# VACUUM giving the free blocks at the end of the index file back (core/store.h P7):
 #  - a hot standby replays the truncation (generic WAL of the metapage and free list, then the file truncation) to a file of the
 #    same size, with wal_consistency_checking = 'generic' comparing every page it rebuilds, and cancels a query that holds the index
 #    when it replays the exclusive lock the truncation took, instead of letting it read blocks that are gone

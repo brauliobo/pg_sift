@@ -4,7 +4,7 @@
 #ifndef SIFT_RUNS_INT_H
 #define SIFT_RUNS_INT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/runs.h"
 

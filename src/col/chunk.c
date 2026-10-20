@@ -1,11 +1,11 @@
 /*
  * col/chunk.c - L1 of the column engine: reading a column chunk, its validation, tags and decoding.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 /* ---------------------------------------------------------------------------
  * 5. Codec seam: the plain FOR and PACK encodings of the design notes. col-compress replaces this section (what a chunk of a given span

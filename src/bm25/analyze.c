@@ -4,7 +4,7 @@
  * token stream, the streaming cursor and the document bag, so index and query
  * analysis cannot diverge.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
@@ -14,7 +14,7 @@
 
 #include "bm25/analyze.h"
 #include "bm25/analyze_tables.h"
-#include "sift_varint.h"
+#include "core/varint.h"
 
 /* Code point classes (bm25/analyze_tables.h entries >> 13) */
 enum

@@ -26,7 +26,7 @@
 #ifndef SIFT_TABLE_H
 #define SIFT_TABLE_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "access/tableam.h"
 #include "storage/read_stream.h"
@@ -34,7 +34,7 @@
 
 #include "col/enc.h"
 #include "col/seg.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
 #if PG_VERSION_NUM >= 180000

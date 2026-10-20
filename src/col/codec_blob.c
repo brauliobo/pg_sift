@@ -1,11 +1,11 @@
 /*
  * col/codec_blob.c - the string list and bit vector blobs of the chunk codec.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/codec_int.h"
 #include "col/compress.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 /* ======================================================================== */
 /* string lists and bit vectors                                             */

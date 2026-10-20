@@ -6,7 +6,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 
 #define corrupt(...) \
 	ereport(ERROR, \

@@ -7,8 +7,8 @@
 
 #include "postgres.h"
 
-#include "sift.h"
-#include "sift_cpu.h"
+#include "core/sift.h"
+#include "core/cpu.h"
 #include "bm25/kernels.h"
 #include "../../tools/pgshim.h"
 

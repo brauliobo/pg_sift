@@ -26,7 +26,7 @@ extern PGDLLIMPORT int sift_test_room_segments;
 extern PGDLLIMPORT int64 sift_maint_wait_max_us;
 #endif
 
-#include "sift_store.h"
+#include "core/store.h"
 
 /* The maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO), shared by the BM25 and the column maintenance: wait = false returns false when busy */
 extern bool sift_maint_lock(Relation index, bool wait);
@@ -141,14 +141,14 @@ extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool for
 extern int64 sift_maint_orphan_sweep(Relation index);
 
 /*
- * Truncation of the free blocks at the end of the file (sift_store.h P7), if they are worth it and
+ * Truncation of the free blocks at the end of the file (core/store.h P7), if they are worth it and
  * AccessExclusiveLock on the index can be had without waiting. Holds the maintenance lock exclusively.
  * Reports at elevel what it did.
  */
 extern void sift_maint_truncate(Relation index, int elevel);
 
 /*
- * VACUUM's space step (sift_store.h P7): the free blocks of the relation are worth giving back (a heap's thresholds), AccessExclusiveLock is
+ * VACUUM's space step (core/store.h P7): the free blocks of the relation are worth giving back (a heap's thresholds), AccessExclusiveLock is
  * free right now, and then, with that lock keeping every reader and writer out and every released extent reusable at once
  * (sift_store_space_exclusive), the segments that end the file are written again into the free blocks below them (at most sift.vacuum_rewrite_limit megabytes in all, so the writes under the lock are bounded) and the free end of the file is cut.
  * The caller holds the maintenance lock exclusively. Reports at elevel what it did.

@@ -11,7 +11,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/estimate.h"
 
 #define ESTIMATE_MEMO	8

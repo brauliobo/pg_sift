@@ -4,7 +4,7 @@
  */
 #include "postgres.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "harness.h"
 #include "ccshim.h"
 

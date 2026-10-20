@@ -2,4 +2,4 @@
 # run goes on to the next finding; delete the line when the fix lands (FZ_SKIP does the same for the checks of the targets themselves).
 #
 # F-BM25-1: sift_get_varint (unbounded decode) shifts by 70 on a corrupt blob of continuation bytes; the 64 zero bytes behind a blob end the loop
-shift-base:sift_varint.h
+shift-base:core/varint.h

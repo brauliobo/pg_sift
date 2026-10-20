@@ -35,7 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 #define SIFT_GROUP_SHIFT 8
 #define SIFT_GROUP_PAGES 256
@@ -172,7 +172,7 @@ static inline float sift_blk_ub(const sift_cur *c, int b)
  * standalone container: u32 (count << 8 | ctype), then the GROUPED payload.
  * Canonical masks: u64[4] page mask, u64[8] offset mask per page.
  */
-#ifndef SIFT_PAGEMASK_WORDS		/* sift.h defines it too, as SIFT_SB_PAGES / 64 */
+#ifndef SIFT_PAGEMASK_WORDS		/* core/sift.h defines it too, as SIFT_SB_PAGES / 64 */
 #define SIFT_PAGEMASK_WORDS 4
 #endif
 #define SIFT_OFFMASK_WORDS  8

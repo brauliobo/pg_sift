@@ -18,12 +18,12 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
 #include "bm25/estimate.h"
 #include "col/seg.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 #include "col/scan_int.h"
 
 /* ---------- reading ---------- */

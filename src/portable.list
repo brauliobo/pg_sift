@@ -1,7 +1,7 @@
 # The portable core: the files of src/ that every host compiles (PostgreSQL, SQLite, ...). They include the C library,
-# compiler intrinsics, col/*.h headers of this list and sift_host.h, and nothing else: scripts/check-portable.sh enforces it
+# compiler intrinsics, col/*.h headers of this list and core/host.h, and nothing else: scripts/check-portable.sh enforces it
 # (CI, both jobs), sqlite/Makefile builds the .c files of this list into the SQLite extension. Add a file here when it
-# needs no host API beyond src/core/sift_host.h; a file that needs more belongs to a host (src/ for PostgreSQL, sqlite/).
+# needs no host API beyond src/core/host.h; a file that needs more belongs to a host (src/ for PostgreSQL, sqlite/).
 #
 # sources
 bm25/bitmap.c
@@ -28,13 +28,13 @@ bm25/writer.c
 bm25/liveness.c
 bm25/walk.c
 bm25/livestream.c
-core/sift_live.c
+core/live.c
 bm25/runs.c
 bm25/inv.c
-core/sift_stream.c
+core/stream.c
 bm25/merge.c
 bm25/prefix.c
-core/sift_filter.c
+core/filter.c
 bm25/eval.c
 bm25/wbind.c
 bm25/phrase.c
@@ -43,8 +43,8 @@ bm25/bounds.c
 bm25/rank.c
 bm25/count.c
 bm25/parallel.c
-core/sift_cpu.c
-core/sift_span.c
+core/cpu.c
+core/span.c
 # headers (the data tables and kernels included by the sources above come with them)
 core/sift.h
 bm25/analyze.h
@@ -52,18 +52,18 @@ bm25/analyze_tables.h
 bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
-core/sift_cmp.h
-core/sift_cpu.h
+core/cmp.h
+core/cpu.h
 bm25/dict.h
 bm25/eval.h
 bm25/eval_int.h
-core/sift_filter.h
+core/filter.h
 bm25/kernels.h
 bm25/kernels_int.h
 bm25/wbuf.h
-core/sift_page.h
+core/page.h
 bm25/parallel.h
-core/sift_popcount.h
+core/popcount.h
 bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h
@@ -72,10 +72,10 @@ bm25/runs_int.h
 bm25/query.h
 bm25/query_int.h
 bm25/merge.h
-core/sift_live.h
+core/live.h
 bm25/segment.h
 bm25/segment_int.h
-core/sift_span.h
-core/sift_store.h
-core/sift_varint.h
-core/sift_visibility.h
+core/span.h
+core/store.h
+core/varint.h
+core/visibility.h

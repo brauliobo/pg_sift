@@ -1,15 +1,15 @@
 /*
  * col/wbuf.h - L3 of the column engine: the write buffers of a column index. The lane structure, locking,
  * sealing and WAL of bm25/wbuf.c, with row records instead of term records. Page types SIFT_PT_WBUFHEADER / SIFT_PT_WBUFDATA, the
- * SiftWbufHeaderData / SiftLaneData of sift_page.h; the data page header and the record are private to col/wbuf.c.
+ * SiftWbufHeaderData / SiftLaneData of core/page.h; the data page header and the record are private to col/wbuf.c.
  */
 #ifndef SIFT_COL_WBUF_H
 #define SIFT_COL_WBUF_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 /* Per-relation state the caller keeps (the relcache entry's rd_amcache holds it for the AM): the active segment and lane tails last seen */
 typedef struct SiftCWbufHint

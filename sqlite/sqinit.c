@@ -8,7 +8,7 @@
 #include <pthread.h>
 
 #include "bm25/bitmap.h"
-#include "sift_cpu.h"
+#include "core/cpu.h"
 #include "bm25/kernels.h"
 #include "bm25/prefix.h"
 

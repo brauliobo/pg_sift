@@ -6,7 +6,7 @@
  * shredder walks the document as events; the top frame says which node the next value binds to.
  * The spec parser is col/shred_spec.c; the node tree they share is col/shred_int.h.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <errno.h>
 #include <math.h>

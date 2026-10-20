@@ -37,10 +37,10 @@
 #ifndef SIFT_POSTING_H
 #define SIFT_POSTING_H
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/bitmap.h"
 #include "bm25/dict.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 #define SIFT_BLKBOUND_MIN		32	/* postings in a group to store blk_bound[] */
 #define SIFT_SPAN_MIN_DF		1024	/* LIST postings from which sift_post_bounds may skip decoding */

@@ -33,7 +33,7 @@
 #include "col/seg.h"
 #include "sift_colsrc.h"
 #include "table/table.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 #include "table/src_int.h"
 
 /* ---- a wide leaf: the dictionary of the exact datum images of the rows read, an entry the datum itself (sift_aggwide.h) ---- */

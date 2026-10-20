@@ -20,7 +20,7 @@
 #include "utils/wait_event.h"
 
 #include "col/build.h"
-#include "sift_parbuild.h"
+#include "core/parbuild.h"
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15

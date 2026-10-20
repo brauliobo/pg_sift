@@ -9,9 +9,9 @@
 #ifndef SIFT_SHRED_H
 #define SIFT_SHRED_H
 
-#include "sift.h"
+#include "core/sift.h"
 #include "col/enc.h"
-#include "sift_cpu.h"
+#include "core/cpu.h"
 
 #define SIFT_SHRED_MAX_SPEC_BYTES	(64 * 1024)
 #define SIFT_SHRED_MAX_COLS			256

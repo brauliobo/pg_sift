@@ -1,7 +1,7 @@
 /*
  * bm25/iter.c - the cursor tree of a bound plan per segment and the iterator over its matches in heap order.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

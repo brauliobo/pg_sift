@@ -3,7 +3,7 @@
  * the document; a container no declared path reaches is not entered (skipNested), an object is left as soon as its last
  * declared key was seen, and a wide object is searched key by key.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "fmgr.h"
 #include "utils/fmgrprotos.h"

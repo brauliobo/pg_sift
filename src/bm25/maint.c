@@ -10,7 +10,7 @@
  * the orphan sweep and the SQL functions hold it exclusive: nothing else is then at work on the index.
  * A claimed segment can only be changed by its holder. Readers are safe through the store's
  * Promotion and merge steps are in step.c; the orphan sweep, truncation and the space step in space.c.
- * safexid protocol (sift_store.h P4).
+ * safexid protocol (core/store.h P4).
  */
 #include "postgres.h"
 
@@ -36,14 +36,14 @@
 
 #include "bm25/am.h"
 #include "bm25/build.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
-#include "sift_ops.h"
-#include "sift_sql.h"
-#include "sift_visibility.h"
+#include "core/ops.h"
+#include "core/sql.h"
+#include "core/visibility.h"
 
 #define BACKOFF_MAX_MS		3600000
 

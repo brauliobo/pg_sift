@@ -1,9 +1,9 @@
 /*
  * col/ctest.c - L1 of the column engine: chunk tests, a predicate as a test in the key domain, run on a chunk or its zone.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "col/enc.h"
 #include "col/enc_int.h"
 

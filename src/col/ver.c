@@ -1,7 +1,7 @@
 /*
  * col/ver.c - the codec of the version vectors of a column segment (col/ver.h, docs/COL-TAM.md section 7).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/ver.h"
 

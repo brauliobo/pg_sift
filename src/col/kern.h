@@ -15,10 +15,10 @@
 #ifndef SIFT_COL_KERN_H
 #define SIFT_COL_KERN_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift.h"
-#include "sift_cpu.h"
+#include "core/sift.h"
+#include "core/cpu.h"
 
 #define SIFT_COL_PAD			64
 #define SIFT_COL_SELWORDS		8	/* bit vectors are padded to 512 bits */

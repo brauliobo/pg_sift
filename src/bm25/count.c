@@ -1,7 +1,7 @@
 /*
  * bm25/count.c - count(*) of the visible matches and their pages.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

@@ -2,7 +2,7 @@
  * bm25/query.c - SiftQL parser, analysis/normalization, canonical deparse
  * and document evaluation.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <ctype.h>
 

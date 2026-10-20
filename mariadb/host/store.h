@@ -1,6 +1,6 @@
 /*
  * store.h - the "relation" of an index: a directory of immutable segment files that store.c maps into a reserved address
- * range, so that the block numbers of the page layout (src/core/sift_page.h) address them.
+ * range, so that the block numbers of the page layout (src/core/page.h) address them.
  *
  * A segment is mapped MAP_PRIVATE at a slot of 4 GiB of the range; the block number of a page is slot << SIFT_SLOT_SHIFT | the
  * block of the file, so the Buffer of a block (host_store.h) is the pointer to its page and nothing is pinned or locked. A merge
@@ -10,10 +10,10 @@
 #ifndef SIFT_MDB_STORE_H
 #define SIFT_MDB_STORE_H
 
-#include "sift.h"
-#include "sift_filter.h"
-#include "sift_page.h"
-#include "sift_store.h"
+#include "core/sift.h"
+#include "core/filter.h"
+#include "core/page.h"
+#include "core/store.h"
 
 #define SIFT_SLOT_SHIFT		19
 #define SIFT_NSLOTS			256		/* segment slots of one index (the block numbers in its manifest) */

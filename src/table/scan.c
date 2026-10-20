@@ -4,7 +4,7 @@
  *
  * A scan reads, in order, the write buffers (a page copy at a time, rows in slot order) and the column groups (a unit of the
  * engine at a time, table/gscan.c). It works on a private copy of the directory taken at begin, protected by its registered
- * snapshot (P4 of sift_store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
+ * snapshot (P4 of core/store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
  * (visibility, index build verdict) is the caller's.
  */
 #include "postgres.h"
@@ -33,7 +33,7 @@
 #include "col/kern.h"
 #include "table/table.h"
 #include "table/scan_int.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 
 /* ---------- parallel scans ---------- */
 

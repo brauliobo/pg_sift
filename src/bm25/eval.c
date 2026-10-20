@@ -10,7 +10,7 @@
  * ranker walks the same trees in score-bound order and the count reuses the
  * iterator.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

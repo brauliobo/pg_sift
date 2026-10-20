@@ -4,7 +4,7 @@
 #ifndef SIFT_COL_PREAGG_INT_H
 #define SIFT_COL_PREAGG_INT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 

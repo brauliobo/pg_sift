@@ -1,7 +1,7 @@
 /*
  * bm25/rank.c - the ranked search: best-first over units and blocks, scoring, verification and the top-k.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

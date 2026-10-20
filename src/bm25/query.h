@@ -34,7 +34,7 @@
 #ifndef SIFT_QUERY_H
 #define SIFT_QUERY_H
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/analyze.h"
 
 #define SIFT_QUERY_MAX_BYTES	(256 * 1024)

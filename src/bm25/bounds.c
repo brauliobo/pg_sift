@@ -1,7 +1,7 @@
 /*
  * bm25/bounds.c - opens the ranker: the score bounds of the leaves per superblock and the units in descending bound order.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

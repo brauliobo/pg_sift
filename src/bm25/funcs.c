@@ -22,13 +22,13 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 #include "bm25/planner.h"
 #include "bm25/query.h"
-#include "sift_sql.h"
+#include "core/sql.h"
 
 /* Analyzer config of a sift index, or the default one for InvalidOid */
 static void

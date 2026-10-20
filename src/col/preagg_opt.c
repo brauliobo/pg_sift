@@ -2,7 +2,7 @@
  * col/preagg_opt.c - the pre-aggregates option: the leaves that can be dims and measures, the default spec, the parser (docs/COL-PREAGG.md).
  */
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 

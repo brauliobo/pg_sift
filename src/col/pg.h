@@ -60,7 +60,7 @@ extern struct SiftShredRecheck *sift_col_shred_recheck_create(MemoryContext mcxt
 extern void sift_col_shred_recheck_set(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode);
 
 /* ---------------------------------------------------------------------------
- * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in sift_handler.c)
+ * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
  * ------------------------------------------------------------------------- */
 
 typedef struct SiftColOptions

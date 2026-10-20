@@ -1,6 +1,6 @@
 /*
  * col/preagg.h - pre-aggregates of a unit (docs/COL-PREAGG.md): what the segment writer computes once, when a unit is built, merged
- * or rewritten, and what a reader may answer from it without reading the unit's chunks. Portable (sift_host.h only).
+ * or rewritten, and what a reader may answer from it without reading the unit's chunks. Portable (core/host.h only).
  *
  *   - per INT leaf: the exact sum and the sum of squares as 128-bit integers (the zone's int64 sum overflows, this does not);
  *   - per unit: a mini cube, GROUP BY dim -> count and, for the configured measures, (non-NULL count, sum). A dim is a scalar leaf of
@@ -18,7 +18,7 @@
 #ifndef SIFT_COL_PREAGG_H
 #define SIFT_COL_PREAGG_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/col.h"
 #include "col/enc.h"

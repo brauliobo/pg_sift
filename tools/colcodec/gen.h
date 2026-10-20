@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sift_testrng.h"
+#include "core/testrng.h"
 
 typedef uint8_t u8;
 typedef uint16_t u16;
