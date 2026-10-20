@@ -10,9 +10,21 @@ one of the normal plan (`EXPLAIN ANALYZE` has `Lookup Rows Read`). A rescan repl
 by the child plan as in any plan.
 
 The normal plan stays when the right side is lateral or reads a volatile function, the join has no equality with the table (`ON true`, `<`), the right side is
-estimated above `sift.agg_lookup_max_rows` rows, a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there), the
-table is on the nullable side of an outer join. A scan with such a join runs without workers.
+estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there).
+A scan with such a join runs without workers.
 Fixtures `pt_*`, test `agg_plan_tables`.
+
+## Outer joins that keep the other table
+
+A `RIGHT JOIN` or `FULL JOIN` to a table, and a `LEFT JOIN` whose right side is the indexed table, aggregate over the table that keeps its rows (`EXPLAIN`
+shows it as `Lookup Joins: stores (preserved)` or `(full)`). The scan reads the table when it starts and marks the rows the tuples of the index match;
+when the index is read, the rows nothing matched are tuples of NULL leaves that go through the same keys, combos and aggregates (`count(o.id)` adds 0,
+`count(*)` 1, a `FILTER (WHERE o.id IS NULL)` is true). A `FULL JOIN` also keeps the tuples with no match, with NULL columns. The `ON` clause only decides
+the matches: a condition on the table's own columns, a NULL key and a duplicate key leave its rows unmatched or multiply the tuples, as in the normal plan.
+
+The normal plan stays when a `WHERE` conjunct is one the NULL row of the indexed table passes (`o.id IS NULL`: it is evaluated after the join), the query has
+another join, or the indexed table is partitioned. A scan with such a join runs without workers: one scan sees every row.
+Fixtures `ps_*`, rows J06 and J07 of the coverage table.
 
 ## Partitioned tables
 
