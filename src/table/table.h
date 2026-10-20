@@ -6,7 +6,14 @@
  *   table/mvcc.c    visibility of a row version under every snapshot type
  *   table/scan.c    scans, TID fetches, bitmap, analyze, index build
  *   table/vacuum.c  VACUUM, promotion, rewrites
- *   table/seg.c     the column groups: the engine glue (stubs until the column engine lands)
+ *   table/seg.c     the column groups: the layout of a table, datum <-> leaf values, the engine glue
+ *   table/gscan.c   the group scan: rows of the column groups in order, a vblock, TID fetches
+ *   table/vers.c    versions of the rows of the groups with unfrozen rows
+ *   table/feed.c    what the groups give the aggregate scan: schemas, write buffer batches, path statistics
+ *   table/promote.c promotion of the sealed write buffers into column segments
+ *   table/freeze.c  freezing, aborted rows, live rows, merges of the column segments
+ *   table/bulk.c    the new table of a rewrite written as column segments
+ *   table/funcs.c   SQL functions that show the segments and the space
  *
  * A TID is (vblock, offset), offset 1..SIFT_TBL_MAX_OFF, vblock from the metapage counter, never reused.
  */
@@ -404,7 +411,7 @@ extern bool sift_tbl_check_publication(Relation rel);
 /* newrow: the row after the change (NULL for DELETE); old: the row before it (NULL for INSERT), reduced to its replica identity */
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
 
-/* ---------- column groups: the engine glue (table/seg.c) ---------- */
+/* ---------- column groups: the engine glue (table/seg.c, table/gscan.c) ---------- */
 
 typedef struct SiftTblLayout SiftTblLayout;
 typedef struct SiftTblGroupScan SiftTblGroupScan;
@@ -530,7 +537,7 @@ extern PGDLLIMPORT char *sift_tbl_compression_spec;
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
 
-/* ---------- rewrites and dead rows (table/seg.c) ---------- */
+/* ---------- rewrites and dead rows (table/bulk.c, table/freeze.c) ---------- */
 
 /*
  * The new table of a rewrite written as column segments directly: the rows get dense TIDs in the order they are added; finish
