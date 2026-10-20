@@ -661,7 +661,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 | codec | `bm25/bitmap.h`, `bm25/bitmap*.c`, `docs/CODEC.md` | Term blob encoding (LIST/GROUPED), group cursors and AND/OR/ANDNOT cursor trees, set and count kernels, its own ISA dispatch. | — |
 | kernels | `bm25/kernels.h/.c` | Scoring SIMD kernels + scalar references | cpu |
 | analyze | `bm25/analyze.h/.c` | Tokenizer, folding, stemming, term hashing | core |
-| query | `bm25/query.h/.c` | SiftQL parse, analyze, deparse, document evaluation | analyze |
+| query | `bm25/query.h`, `bm25/query.c`, `bm25/query_analyze.c`, `bm25/query_match.c` | SiftQL parse, analyze, deparse, document evaluation | analyze |
 | store | `sift_page.h`, `sift_store.h/.c` | Page formats, metapage and directory IO, extent alloc and free, byte streams, WAL helpers | core |
 | dict | `bm25/dict.h/.c` | Dictionary writer, reader, term matchers | store, query |
 | posting | `bm25/posting.h/.c` | Term blob writer and reader: chunks, tf stream, bounds, sparse and inline | store, codec, kernels |
@@ -672,7 +672,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 | visibility | `sift_visibility.h/.c` | VM masks, heap checks, fetch | core |
 | eval | `bm25/eval.h/.c`, `eval_int.h`, `wbind.c`, `phrase.c`, `iter.c`, `bounds.c`, `rank.c`, `count.c` | Bind, iterate, rank, count, estimate | segment, wbuf, query, dict, kernels, visibility |
 | amscan | `bm25/amscan.c` (`bm25/am.h`) | `ambeginscan`, `amrescan`, `amgetbitmap`, `amendscan` | eval |
-| planner | `bm25/planner.h`, `bm25/planner.c`, `bm25/cscan.c` | Hooks, paths, costs, `amcostestimate`, SiftScan / SiftCount exec, EXPLAIN | eval |
+| planner | `bm25/planner.h`, `bm25/planner.c`, `bm25/planner_match.c`, `bm25/planner_path.c`, `bm25/planner_plan.c`, `bm25/cscan.c` | Hooks, paths, costs, `amcostestimate`, SiftScan / SiftCount exec, EXPLAIN | eval |
 | sql | `sift_sql.h`, `bm25/funcs.c` | `sift.match`, `match_idx`, support, `matchsel`, highlight, tokenize, `parse_query`, score stubs | query, analyze, planner |
 
 ### Cross-module contracts (binding)
