@@ -322,7 +322,7 @@ a path of the jsonb value (`->`, `#>`, nested), not its text, and it names a sca
   leaf cannot give the strings among its numbers and only a conjunct (the form above) guards the read, so the scan would raise where PostgreSQL's
   guard skips them; the plan is the normal one, which `k_typeof_not_pushed` checks. Also a path of an element of a list or map, and a
   `sift_table`: it keeps a jsonb column as one opaque leaf, so there is no leaf of the path to give the types (the table needs declared paths,
-  `docs/COL-JSONB-31.md` section 4; the provider then only forwards `filter_types`, `read_types` and `tolerate_ovf`), and the stub source.
+  `docs/COL-TAM.md` section 11; the provider then only forwards `filter_types`, `read_types` and `tolerate_ovf`), and the stub source.
 - **Where it runs.** `process_unit` calls the source before the integer filters (`type_filters`), the rows left are read as for those filters
   (a sparse selection decodes the leaf at those rows only), a worker does the same on its units, and a match set from a BM25 conjunct is
   expanded to the stored rows like the other filters. A unit's pre-aggregates do not answer a query with it. `EXPLAIN` shows the conjunct in

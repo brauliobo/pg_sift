@@ -50,7 +50,7 @@ A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.
 | 5 | 3.2: a schema with wide leaves (`SiftColDef.lanes`: numeric of any precision as lanes or an image, `money`, `interval`; docs/COL-LEAFTYPES-32.md); written only for such an index | 3.2 |
 
 `SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. 3.2 also reads 5 (`SIFT_COL_FORMAT_MAX_READ`), which a 3.1 library refuses. A `sift_table` follows `sift.col_format_minor` too,
-except that a group with a version section (unfrozen rows) is always `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. The chunk
+except that a group with a version section (unfrozen rows) is always `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. A `sift_col` index goes back to 3.0.x by `REINDEX` there; a `sift_table`, which cannot be reindexed, stays readable by 3.0.x (a standby on 3.0.x included) when `sift.col_format_minor = 3` (superuser) is set before its first write or before an `ALTER TABLE ... SET ACCESS METHOD` rewrite. `pg_upgrade` copies the files as they are. The chunk
 flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIFT_COLC_KINDS` 0x8 (`src/col/sift_col_enc.h`).
 
 ## 5. Segment entry flags (`SiftSegEntry.flags`)
