@@ -380,6 +380,27 @@ A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stor
 
 The chunk codec compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
+### Set filters
+
+A filter on a set of ids (the members of a group, the entities that have an attribute) runs in `Custom Scan (SiftAgg)` as an array parameter, a literal `IN` list, or a
+join to the table that holds the set. [docs/SET-FILTERS.md](SET-FILTERS.md) has the measurements and the settings; the array parameter is the fast one: send the ids as one
+`int4[]` of a prepared statement on a generic plan (`SET LOCAL plan_cache_mode = force_generic_plan`), and keep a small set (about 100 ids) on a custom plan.
+
+```c
+/* libpq: one text parameter of type int4[] (OID 1007) */
+Oid         types[1] = {1007};
+const char *vals[1] = {"{101,102,103}"};
+PGresult   *r = PQexecParams(conn, "SELECT channel_id, count(*) FROM events WHERE dim_a_id = ANY($1::int4[]) GROUP BY 1", 1, types, vals, NULL, NULL, 0);
+```
+
+```ruby
+
+# Sequel: the pg_array extension binds the array as one parameter of a server-side prepared statement
+DB.extension :pg_array
+ps = DB[:events].where(Sequel.lit('dim_a_id = ANY(?::int4[])', :$ids)).select_group(:channel_id).select_append { count.function.* }.prepare(:select, :by_set)
+DB.transaction { DB.run 'SET LOCAL plan_cache_mode = force_generic_plan'; ps.call(ids: Sequel.pg_array(ids, :int4)) }
+```
+
 ## Replication
 
 **Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,

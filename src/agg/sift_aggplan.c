@@ -5295,6 +5295,95 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	return true;
 }
 
+/*
+ * A set filter bound as one array parameter (`col = ANY($1)`) has no length in a generic plan: PostgreSQL assumes 10 elements and prices an
+ * index or bitmap scan for them, while the scan of this node takes the whole array into a byte table when it starts and costs the same
+ * for 10 or 100,000 elements. The paths that fetch the rows of such a set one by one are charged the elements sift.agg_param_set_size
+ * assumes (their cost grows with the set), and only when this node can run the query, so that a query it cannot take keeps the plan it
+ * has. A custom plan sees the array and needs none of this.
+ */
+int			sift_agg_param_set_size = 1000;
+
+static double
+param_set_ratio(AggCtx *c)
+{
+	double		f = 1.0;
+
+	if (sift_agg_param_set_size <= 0)
+		return 1.0;
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+	{
+		ScalarArrayOpExpr *sa;
+		Node	   *arr;
+		double		n0;
+
+		if (!IsA(ri->clause, ScalarArrayOpExpr))
+			continue;
+		sa = (ScalarArrayOpExpr *) ri->clause;
+		if (!sa->useOr || list_length(sa->args) != 2)
+			continue;
+		arr = strip_relabel(lsecond(sa->args));
+		if (!IsA(arr, Param) || ((Param *) arr)->paramkind != PARAM_EXTERN || !IsA(strip_relabel(linitial(sa->args)), Var) ||
+			match_leaf(c, linitial(sa->args)) < 0)
+			continue;
+		n0 = estimate_array_length(c->root, arr);
+		if (sift_agg_param_set_size > n0)
+			f *= sift_agg_param_set_size / n0;
+	}
+	return Min(f, Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
+}
+
+/* the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers */
+static Path *
+row_scan_of(Path *p)
+{
+	for (;;)
+		switch (nodeTag(p))
+		{
+			case T_IndexPath:
+			case T_BitmapHeapPath:
+				return p;
+			case T_AggPath:
+				p = ((AggPath *) p)->subpath;
+				break;
+			case T_GroupPath:
+				p = ((GroupPath *) p)->subpath;
+				break;
+			case T_SortPath:
+				p = ((SortPath *) p)->subpath;
+				break;
+			case T_IncrementalSortPath:
+				p = ((IncrementalSortPath *) p)->spath.subpath;
+				break;
+			case T_GatherPath:
+				p = ((GatherPath *) p)->subpath;
+				break;
+			case T_GatherMergePath:
+				p = ((GatherMergePath *) p)->subpath;
+				break;
+			case T_ProjectionPath:
+				p = ((ProjectionPath *) p)->subpath;
+				break;
+			default:
+				return NULL;
+		}
+}
+
+static void
+param_set_penalty(AggCtx *c, RelOptInfo *output_rel)
+{
+	double		f = param_set_ratio(c);
+
+	if (f <= 1.0)
+		return;
+	foreach_ptr(Path, p, output_rel->pathlist)
+		if (row_scan_of(p) != NULL)
+		{
+			p->startup_cost *= f;
+			p->total_cost *= f;
+		}
+}
+
 /* the cost; adds the paths to output_rel */
 static void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
@@ -5303,6 +5392,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
+	param_set_penalty(c, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
 	if (nworkers > 0)

@@ -113,6 +113,10 @@ sift_agg_init(void)
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_param_set_size",
+							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
+							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,
@@ -337,6 +341,7 @@ typedef struct PredState
 	int64		ci;
 	double		cd;
 	bool		in_hasnull;
+	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
 	int32		in_lo;
 	uint32		in_nlut;
 	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
@@ -1578,6 +1583,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 
 		get_typlenbyvalalign(p->argtype, &len, &byval, &align);
 		deconstruct_array(arr, p->argtype, len, byval, align, &el, &nl, &ne);
+		st->in_empty = ne == 0;
 		vals = palloc(Max(ne, 1) * sizeof(int32));
 		for (int i = 0; i < ne; i++)
 		{
@@ -1820,6 +1826,11 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 	if (st->cnull || (p->op && st->in_hasnull))
 	{
 		clear_words(out, n);	/* x IN NULL, x NOT IN (.., NULL): never true */
+		return;
+	}
+	if (p->op && st->in_empty)
+	{
+		fill_ones(out, n);
 		return;
 	}
 	if (st->in_sorted)
