@@ -1,5 +1,5 @@
 /*
- * regex_test.c - drives mariadb/host/host_regex.c the way src/bm25/query_analyze.c does (see regex_check.sh).
+ * regex_test.c - drives mariadb/host/regex.c the way src/bm25/query_analyze.c does (see regex_check.sh).
  *
  *   regex_test match nosub|sub     stdin: PATTERN<TAB>WORD per line; prints 1, 0 or error per line
  *   regex_test info                stdin: PATTERN per line; prints 1 when re_info says the pattern has a back-reference, else 0 (error
