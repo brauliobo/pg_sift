@@ -56,7 +56,9 @@ The 16 PR cases in `bench/perf/catalog.py` cover BM25 top ten and counts for com
 rare, and filtered terms; aggregate scan, group, distinct, filter, and table
 paths; and table point lookup, insert, update, and VACUUM space behavior.
 `smoke` selects three fixed cases: common BM25 top ten, aggregate scan, and table
-point lookup. These run on every code PR regardless of selected groups. `bm25`,
+point lookup. These run on every PR that can change the built extension regardless of
+selected groups; the gate, its selector, the CI machinery and documentation select nothing,
+because both revisions would build the same extension. `bm25`,
 `agg`, and `storage` add their cases; `--tier nightly` uses 32,768 rows
 (PR: 8,192) and adds phrase-count and high-cardinality group workloads, for 18 cases.
 This is a representative warm workload, not exhaustive feature or size coverage.

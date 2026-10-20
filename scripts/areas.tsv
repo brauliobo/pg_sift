@@ -17,7 +17,9 @@
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 
 # the whole build and every harness: a change here can break anything
-^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|areas\.mk)|scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats)\.|scripts/(lsan\.supp|harden\.mk|areas\.tsv)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.
+^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
+# the CI machinery: it runs every job, and builds nothing the focused performance gate measures
+^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas)\.|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$
@@ -48,10 +50,9 @@
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 
-# Focused performance uses the groups above; shared build/SQL and its own harness cover every group.
+# Focused performance uses the groups above; shared build/SQL cover every group. {perf} marks what cannot change the extension it builds twice
+# (the gate, its selector, the CI machinery): identical builds measure only noise, so they select nothing (the nightly run still measures everything).
 =perf	^gh:perf$
 ^sql/.*\.sql$	.
 ^scripts/(perf-select\.py|test-perf-select\.py)$	{perf}
 ^(bench/steps/perf_gate\.py|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
-
-^scripts/areas\.sh$	.

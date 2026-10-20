@@ -50,18 +50,20 @@ areas_regex() {
 # One batch: jobs on NUL-delimited stdin, paths in argv, owner keys before --.
 areas_owners() {
 	local -a AREA_OWNERS=() AREA_CAPTURES JOBS=()
-	local f row value g job hit AREA_JOBS AREA_OWNER_MODE=1
+	local f row value g job hit live AREA_JOBS AREA_OWNER_MODE=1
 	while [[ $1 != -- ]]; do AREA_OWNERS+=("$1"); shift; done
 	shift
 	mapfile -d '' -t JOBS
 	for f in "$@"; do
-		hit=
+		hit='' live=''
 		for row in "${ROWS[@]}"; do
 			areas_match "$f" "${row%%$'\t'*}" || continue
 			AREA_CAPTURES=("${BASH_REMATCH[@]}")
 			hit=1 value=${row#*$'\t'}
-			if [[ $value == . || $value == *'{perf}'* ]]; then echo '*'; continue; fi
-			[[ $value == - ]] && continue
+			# `-` and {perf} (the perf harness and CI machinery) never change the extension a paired run builds.
+			[[ $value == - || $value == *'{perf}'* ]] && continue
+			live=1
+			if [[ $value == . ]]; then echo '*'; continue; fi
 			for g in "${AREA_OWNERS[@]}"; do [[ $value == *"{$g}"* ]] && echo "$g"; done
 			areas_expand "$value"
 			for job in "${JOBS[@]}"; do
@@ -69,7 +71,8 @@ areas_owners() {
 				for g in "${AREA_OWNERS[@]}"; do areas_match "$job" "${GROUP[$g]}" && echo "$g"; done
 			done
 		done
-		[[ -n $hit ]] || echo '*'
+		[[ -z $hit ]] && echo '*'
+		[[ -n $hit && -z $live ]] && echo '-'
 	done
 	return 0
 }
