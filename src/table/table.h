@@ -4,7 +4,9 @@
  *   table/am.c         handler, the TableAmRoutine callbacks, DML
  *   table/store.c   layout, per-relation cache, write buffers (row format), tombstone segment
  *   table/mvcc.c    visibility of a row version under every snapshot type
- *   table/scan.c    scans, TID fetches, bitmap, analyze, index build
+ *   table/scan.c    sequential, TID range and parallel scans
+ *   table/fetch.c   TID fetches, bitmap scans, TABLESAMPLE
+ *   table/analyze.c ANALYZE sampling, index build
  *   table/vacuum.c  VACUUM, promotion, rewrites
  *   table/seg.c     the column groups: the layout of a table, datum <-> leaf values, the engine glue
  *   table/gscan.c   the group scan: rows of the column groups in order, a vblock, TID fetches
