@@ -2,6 +2,7 @@
 """Exact-revision PostgreSQL 18 paired elapsed-time performance gate."""
 import argparse
 import ctypes
+import contextlib
 import datetime
 import hashlib
 import json
@@ -33,8 +34,9 @@ MATERIAL = 1.10
 T95 = {6:  2.570581835636305,
        16: 2.131449545559323}
 DEADLINE = math.inf
+PROCESS_ORIGIN = time.monotonic()
 BATCH_WALL_LIMIT = 1.0
-INSERT_PILOT = 256
+INSERT_PILOT = 2048
 INSERT_GROWTH_CAP = 2048
 INSERT_CONTROL_DELAY = .001
 SETTINGS = '''SET statement_timeout='30s'; SET max_parallel_workers_per_gather=0;
@@ -595,69 +597,120 @@ def remove_insert_control(conn, sink, primary):
                                     'DROP FUNCTION perf_gate_insert_delay()'],sink,primary)
 
 
-def insert_visit(conn, case, identity, operations, deadline, sink, *, pilot=False, control=False):
-    """One independent side visit: restore, N warm commits, restore, N measured commits."""
-    statements = case.statements(identity['seed_max_id'],operations)
-    started = time.monotonic()
-    sink.update(operations=operations,phase='warm_reset',complete=False,started_at=utc_now(),
-                operation_seconds=[],warm_operation_seconds=[])
-    counts = []
-    if control:
-        sink['control_counts'] = counts
-        counts.append(insert_control_count(conn))
+INSERT_PHASES = ('warm_reset','warm','final_reset','preprobes','checkpoint','stream','postcheck')
+POST_CONTROL_PHASES = ('fault_removal','churn_normal_sizes','bm25_alter_reindex',
+                       'size_control_logical_and_forks','final_report','cluster_teardown')
+
+
+@contextlib.contextmanager
+def insert_phase(side, name, deadline):
+    start = time.monotonic()
+    phase = dict(started_at=utc_now(),start_offset_seconds=start-PROCESS_ORIGIN,complete=False)
+    side['phases'][name] = phase
     try:
-        start = time.monotonic()
-        prepare(conn,case)  # first restoration, solely for disposable warm history
-        sink['warm_reset_seconds'] = time.monotonic()-start
-        if control: counts.append(insert_control_count(conn))
-        sink['phase'] = 'warm'
-        sink['warm_sql_seconds'] = elapsed(conn,case,operations,deadline,statements=statements,raw=sink['warm_operation_seconds'])
-        if control: counts.append(insert_control_count(conn))
-        sink['phase'] = 'measured_reset'
-        start = time.monotonic()
-        reset(conn,case)  # second restoration, no reset inside the measured stream
-        sink['reset_seconds'] = time.monotonic()-start
-        if control: counts.append(insert_control_count(conn))
-        if not pilot:
-            sink['before'] = insert_footprint(conn)
-        sink['phase'] = 'point_stream'
-        sink['measured_started_at'] = utc_now()
-        start = time.monotonic()
-        sink['sql_seconds'] = elapsed(conn,case,operations,deadline,statements=statements,raw=sink['operation_seconds'])
-        sink['loop_wall_seconds'] = time.monotonic()-start
-        sink['measured_finished_at'] = utc_now()
-        if control:
-            counts.append(insert_control_count(conn))
-            first = counts[0]
-            require_equal(counts,[first,first,first+operations,first+operations,first+2*operations],
-                          'real per-new-row delay counts; seed reset must not delay')
-        if not pilot:
-            sink['phase'] = 'check'
-            start = time.monotonic()
-            sink['oracle'] = {}
-            check_insert(conn,identity,operations,sink['oracle'])
-            sink['after'] = insert_footprint(conn)
-            sink['check_seconds'] = time.monotonic()-start
-        sink.update(phase='complete',complete=True)
-        return sink['sql_seconds']
+        if start>=deadline:
+            raise BudgetExpired('global budget exhausted before INSERT '+name)
+        yield
+        if time.monotonic()>=deadline:
+            raise BudgetExpired('global budget exhausted after INSERT '+name)
+        phase['complete'] = True
+    except Exception as exc:
+        phase['error'] = dict(type=type(exc).__name__,error=str(exc))
+        raise
     finally:
-        sink.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-started)
+        end = time.monotonic()
+        phase.update(finished_at=utc_now(),end_offset_seconds=end-PROCESS_ORIGIN,seconds=end-start)
+
+
+def insert_pair(revisions, case, identity, operations, deadline, sink, *, order=(0,1), role='verdict', control=False):
+    """One finite paired restoration -> barrier -> streams -> deferred checks owner."""
+    origin = time.monotonic()
+    sides = [dict(phases={},operation_seconds=[],warm_operation_seconds=[]),
+             dict(phases={},operation_seconds=[],warm_operation_seconds=[])]
+    sink.update(operations=operations,order=list(order),role=role,clean=not control,
+                workload_version=case.workload_version,sides=sides,complete=False,started_at=utc_now(),
+                before_observation='pre_finalization',after_observation='pair_end',
+                start_offset_seconds=origin-PROCESS_ORIGIN,phase='warm')
+    try:
+        statements = case.statements(identity['seed_max_id'],operations)
+        for index in order:
+            conn,side = revisions[index].conn,sides[index]
+            if control and index==1:
+                side['control_counts'] = []
+            with insert_phase(side,'warm_reset',deadline):
+                if control and index==1: side['control_counts'].append(insert_control_count(conn))
+                prepare(conn,case)
+                if control and index==1: side['control_counts'].append(insert_control_count(conn))
+            with insert_phase(side,'warm',deadline):
+                side['warm_sql_seconds'] = elapsed(conn,case,operations,deadline,statements=statements,raw=side['warm_operation_seconds'])
+                if control and index==1: side['control_counts'].append(insert_control_count(conn))
+        sink['phase'] = 'final_restore_and_preprobes'
+        for index in order:
+            conn,side = revisions[index].conn,sides[index]
+            with insert_phase(side,'final_reset',deadline):
+                reset(conn,case)
+            with insert_phase(side,'preprobes',deadline):
+                if control and index==1: side['control_counts'].append(insert_control_count(conn))
+                side['before'] = insert_footprint(conn)
+        sink['phase'] = 'checkpoint'
+        for index in order:
+            with insert_phase(sides[index],'checkpoint',deadline):
+                revisions[index].conn.exec('CHECKPOINT')
+        sink.update(paired_ready_at=utc_now(),paired_ready_offset_seconds=time.monotonic()-PROCESS_ORIGIN)
+        sink['phase'] = 'streams'
+        for index in order:
+            side = sides[index]
+            with insert_phase(side,'stream',deadline):
+                # No SQL other than the two point streams until BOTH streams return.
+                start = time.monotonic()
+                side['sql_seconds'] = elapsed(revisions[index].conn,case,operations,deadline,
+                                              statements=statements,raw=side['operation_seconds'])
+                side['loop_wall_seconds'] = time.monotonic()-start
+        sink['phase'] = 'deferred_checks'
+        for index in order:
+            conn,side = revisions[index].conn,sides[index]
+            with insert_phase(side,'postcheck',deadline):
+                if control and index==1:
+                    counts = side['control_counts']
+                    counts.append(insert_control_count(conn))
+                    first = counts[0]
+                    require_equal(counts,[first,first,first+operations,first+operations,first+2*operations],
+                                  'real per-new-row delay counts; seed reset must not delay')
+                side['oracle'] = {}
+                check_insert(conn,identity,operations,side['oracle'])
+                side['after'] = insert_footprint(conn)
+        for side in sides:
+            phases = side['phases']
+            stream_start = phases['stream']['start_offset_seconds']
+            side.update(warm_age_seconds=stream_start-phases['warm']['end_offset_seconds'],
+                        final_reset_age_seconds=stream_start-phases['final_reset']['end_offset_seconds'],
+                        checkpoint_age_seconds=stream_start-phases['checkpoint']['end_offset_seconds'],
+                        paired_ready_age_seconds=stream_start-sink['paired_ready_offset_seconds'],
+                        deferred_check_age_seconds=phases['postcheck']['start_offset_seconds']-phases['stream']['end_offset_seconds'])
+        sink.update(samples=[side['sql_seconds'] for side in sides],complete=True,phase='complete')
+        return sink['samples']
+    finally:
+        phase_sum = sum(p['seconds'] for side in sides for p in side['phases'].values())
+        finished_at = utc_now()
+        end = time.monotonic()
+        wall = end-origin
+        sink.update(finished_at=finished_at,end_offset_seconds=end-PROCESS_ORIGIN,
+                    wall_seconds=wall,phase_seconds=phase_sum,residual_seconds=wall-phase_sum)
 
 
 def calibrate_insert(revisions, case, identity, deadline, sink):
-    pilots = []
     sink.update(pilot_operations=INSERT_PILOT,growth_cap_operations=INSERT_GROWTH_CAP,
-                target_seconds=TARGET,predicted_wall_limit_seconds=BATCH_WALL_LIMIT,pilots=pilots)
-    for rev in revisions:  # fixed AB, once, no fault installed
-        pilot = {}
-        pilots.append(pilot)
-        insert_visit(rev.conn,case,identity,INSERT_PILOT,deadline,pilot,pilot=True)
-    costs = [p['sql_seconds']/INSERT_PILOT for p in pilots]
-    walls = [p['loop_wall_seconds']/INSERT_PILOT for p in pilots]
-    if any(not math.isfinite(v) or v<=0 for v in costs+walls) or any(not math.isfinite(p['reset_seconds']) or p['reset_seconds']<0 for p in pilots):
+                target_seconds=TARGET,predicted_wall_limit_seconds=BATCH_WALL_LIMIT,pilot_pair={},
+                wall_cap_scope='FINAL reset + measured loop only; warm/probes/both checkpoints/waits/checks excluded')
+    insert_pair(revisions,case,identity,INSERT_PILOT,deadline,sink['pilot_pair'],role='pilot')
+    sides = sink['pilot_pair']['sides']
+    costs = [side['sql_seconds']/INSERT_PILOT for side in sides]
+    walls = [side['loop_wall_seconds']/INSERT_PILOT for side in sides]
+    resets = [side['phases']['final_reset']['seconds'] for side in sides]
+    if any(not math.isfinite(v) or v<=0 for v in costs+walls) or any(not math.isfinite(r) or r<0 for r in resets):
         raise ValueError('invalid INSERT pilot elapsed')
     desired = math.ceil(TARGET/min(costs))
-    wall_cap = math.floor(min((BATCH_WALL_LIMIT-p['reset_seconds'])/w for p,w in zip(pilots,walls)))
+    wall_cap = math.floor(min((BATCH_WALL_LIMIT-r)/w for r,w in zip(resets,walls)))
     sink.update(desired_operations=desired,wall_cap_operations=wall_cap,
                 sql_seconds_per_operation=costs,loop_wall_seconds_per_operation=walls)
     if wall_cap<1:
@@ -666,46 +719,82 @@ def calibrate_insert(revisions, case, identity, deadline, sink):
     sink.update(operations=operations,limited_by_wall=operations<desired and wall_cap==operations,
                 limited_by_growth=operations<desired and INSERT_GROWTH_CAP==operations,
                 predicted_sql_seconds=[operations*c for c in costs],
-                predicted_reset_loop_seconds=[p['reset_seconds']+operations*w for p,w in zip(pilots,walls)])
+                predicted_reset_loop_seconds=[r+operations*w for r,w in zip(resets,walls)])
     return sink
 
 
 def validate_insert(revisions, case, identity, operations, deadline, sink, *, control=False):
-    visits = []
-    sink.update(visits=visits,size_checks=None,complete=False)
-    for side,rev in enumerate(revisions):
-        visit = {}
-        visits.append(visit)
-        insert_visit(rev.conn,case,identity,operations,deadline,visit,control=control and side==1)
-    sink['size_checks'] = dict(compare_sizes([v['after']['totals'] for v in visits],
+    sink.update(pair={},size_checks=None,complete=False)
+    insert_pair(revisions,case,identity,operations,deadline,sink['pair'],role='validation',control=control)
+    sides = sink['pair']['sides']
+    sink['size_checks'] = dict(compare_sizes([side['after']['totals'] for side in sides],
                                             'mutable_insert_trajectory',MUTABLE_RELATIONS),
-                               forks=[v['after']['forks'] for v in visits])
+                               forks=[side['after']['forks'] for side in sides])
     sink['complete'] = True
     return sink
 
 
-def insert_control_budget(unchanged, deadline):
-    """Predeclared worst-case 6+6 pairs, both sides, plus full validation; no new pilot."""
-    calibration = unchanged['calibration']
-    operations = calibration['operations']
-    visits = INITIAL_PAIRS+MUTATION_CONFIRMATION_PAIRS
-    clean = sum(visits*(2*p['reset_seconds']+2*operations*w)
-                for p,w in zip(calibration['pilots'],calibration['loop_wall_seconds_per_operation']))
-    checks = sum(visits*statistics.mean(v[side]['check_seconds'] for v in unchanged['initial']['visits'])
-                 for side in (0,1))
-    validation = unchanged['phase_runtime_seconds']['validation']
-    slowed_operations = 2*operations*(visits+1)  # excluded warms AND measured streams, including validation
-    sleep = slowed_operations*INSERT_CONTROL_DELAY
-    return dict(initial_pairs=INITIAL_PAIRS,confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
-                candidate_delayed_operations=slowed_operations,configured_delay_seconds=INSERT_CONTROL_DELAY,
-                predicted_clean_stream_reset_seconds=clean,predicted_check_seconds=checks,
-                validation_seconds=validation,minimum_added_sleep_seconds=sleep,
-                predicted_seconds=clean+checks+validation+sleep,remaining_seconds=deadline-time.monotonic(),
-                cost_scope=dict(startup='already elapsed; deducted from remaining global budget',
-                                reset='clean pilot reset costs included; trigger predicate overhead excluded',
-                                fault_setup='trigger DDL, preflight report write and removal overhead excluded',
-                                sleep='26*N*configured delay minimum; counter/scheduler overhead excluded'),
-                limitations='prefix pilot may miss later costs; prediction is not a full runtime bound')
+def clean_full_n_pair_cost(pair, operations, role):
+    """Only complete, finite full-N validation/verdict evidence can fund controls."""
+    if (pair.get('workload_version')!=next(c.workload_version for c in CASES if c.lifecycle=='insert_trajectory')
+            or not pair.get('complete') or not pair.get('clean') or pair.get('operations')!=operations
+            or pair.get('role')!=role or len(pair.get('sides',[]))!=2):
+        raise Inconclusive('missing completed clean full-N '+role+' pair cost evidence')
+    for side in pair['sides']:
+        if any(len(side.get(key,[]))!=operations or any(not math.isfinite(v) or v<=0 for v in side[key])
+               for key in ('operation_seconds','warm_operation_seconds')):
+            raise Inconclusive('missing complete full-N raw operation evidence')
+        if set(side.get('phases',{}))!=set(INSERT_PHASES):
+            raise Inconclusive('missing full-N phase cost evidence')
+        for phase in side['phases'].values():
+            if not phase.get('complete') or any(not math.isfinite(phase.get(key,math.nan)) for key in
+                                               ('seconds','start_offset_seconds','end_offset_seconds')) or phase['seconds']<0 or not math.isclose(phase['end_offset_seconds']-phase['start_offset_seconds'],phase['seconds'],abs_tol=1e-9):
+                raise Inconclusive('incomplete/nonfinite full-N phase cost evidence')
+    wall,phases,residual = (pair.get(key,math.nan) for key in ('wall_seconds','phase_seconds','residual_seconds'))
+    actual = sum(p['seconds'] for side in pair['sides'] for p in side['phases'].values())
+    if (not all(math.isfinite(v) for v in (wall,phases,residual)) or wall<=0 or residual<0
+            or not math.isclose(actual,phases,abs_tol=1e-9) or not math.isclose(wall,phases+residual,abs_tol=1e-9)):
+        raise Inconclusive('invalid complete full-N wall/phase/residual evidence')
+    return wall
+
+
+def insert_control_budget(unchanged, deadline, post_control_costs):
+    operations = unchanged['calibration']['operations']
+    population = []
+    try:
+        population.append(dict(source='validation',wall_seconds=clean_full_n_pair_cost(
+            unchanged.get('validation',{}).get('pair',{}),operations,'validation')))
+        for block_name in ('initial','confirmation'):
+            for index,pair in enumerate(unchanged.get(block_name,{}).get('pairs',[])):
+                if pair.get('complete'):
+                    population.append(dict(source=f'{block_name}.pairs[{index}]',wall_seconds=clean_full_n_pair_cost(pair,operations,'verdict')))
+    except Inconclusive as exc:
+        clean_error = str(exc)
+    else:
+        clean_error = None
+    missing = []
+    post = []
+    for name in POST_CONTROL_PHASES:
+        entry = post_control_costs.get(name)
+        if (not entry or not entry.get('complete') or not entry.get('provenance')
+                or not math.isfinite(entry.get('seconds',math.nan)) or entry['seconds']<=0):
+            missing.append(name)
+        else:
+            post.append(dict(phase=name,**entry))
+    visits = INITIAL_PAIRS+MUTATION_CONFIRMATION_PAIRS+1
+    sleep = 2*operations*visits*INSERT_CONTROL_DELAY
+    maximum = max(p['wall_seconds'] for p in population) if population and clean_error is None else None
+    post_seconds = sum(p['seconds'] for p in post) if not missing else None
+    demand = visits*maximum+sleep+post_seconds if maximum is not None and post_seconds is not None else None
+    return dict(controlled_pairs=visits,expected_checkpoint_calls=2*visits,
+                candidate_delayed_operations=2*operations*visits,configured_delay_seconds=INSERT_CONTROL_DELAY,
+                clean_full_N_population=population,clean_evidence_error=clean_error,
+                max_clean_full_N_pair_wall=maximum,predicted_clean_pair_seconds=visits*maximum if maximum is not None else None,
+                minimum_added_sleep_seconds=sleep,required_post_control_costs=list(POST_CONTROL_PHASES),
+                post_control_cost_evidence=post,missing_post_control_costs=missing,post_control_seconds=post_seconds,
+                predicted_seconds=demand,evidence_complete=demand is not None,remaining_seconds=deadline-time.monotonic(),
+                cost_scope='13 * observed full-pair maximum includes all phases/waits/residual once; pilot excluded; post-control phases disjoint',
+                limitations='observed maximum is not a bound; extra trigger seed/counter/scheduler/DDL variability unmeasured; startup already spent')
 
 
 def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None):
@@ -716,21 +805,20 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     saved = sink if sink is not None else {}
     saved.update(samples=pairs,expected_pairs=pair_count,started_at=utc_now())
     if case.lifecycle=='insert_trajectory':
-        saved['visits'] = []
+        saved['pairs'] = []
     try:
         for round_no in range(pair_count):
             pair = [None,None]
             pairs.append(pair)
-            if case.lifecycle=='insert_trajectory':
-                visits = [{},{}]
-                saved['visits'].append(visits)
             order = [0,1] if round_no%2 == 0 else [1,0]
-            for side in order:
-                conn = revisions[side].conn
-                if case.lifecycle=='insert_trajectory':
-                    value = insert_visit(conn,case,identity,operations,deadline,visits[side],control=control and side==1)
-                    pair[side] = value  # publish only after the complete trajectory and checks
-                else:
+            if case.lifecycle=='insert_trajectory':
+                evidence = {}
+                saved['pairs'].append(evidence)
+                values = insert_pair(revisions,case,identity,operations,deadline,evidence,order=order,control=control)
+                pair[:] = values  # valid only after BOTH deferred checks
+            else:
+                for side in order:
+                    conn = revisions[side].conn
                     prepare(conn,case)
                     elapsed(conn,case,1,deadline)  # independent warmed batch, excluded
                     pair[side] = elapsed(conn,case,operations,deadline,0.075 if control and side else 0)
@@ -740,7 +828,7 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     return saved
 
 
-def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None):
+def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False):
     start = time.monotonic()
     result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
@@ -768,16 +856,21 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             if control:
                 result['operations'] = calibration['operations']
                 result['phase'] = 'control_preflight'
-                result['control_budget'] = insert_control_budget(frozen,deadline)
+                result['control_budget'] = insert_control_budget(frozen,deadline,report.get('post_control_costs',{}))
                 report['mutation_control_preflight'] = dict(
                     recorded_at=utc_now(),phase='before_fault',fault_installed=False,
                     workload_version=case.workload_version,identity=identity,
                     operations=calibration['operations'],calibration=calibration,
-                    control_budget=result['control_budget'])
+                    control_budget=result['control_budget'],
+                    clean_validation=frozen['validation'],clean_blocks={name:frozen[name] for name in ('initial','confirmation') if name in frozen})
                 # Existing artifacts must be closed on disk before the first fault DDL.
                 write_report(output,report)
-                if result['control_budget']['predicted_seconds']>result['control_budget']['remaining_seconds']:
-                    raise BudgetExpired('insufficient remaining budget for fixed full mutation control')
+                fresh_remaining = deadline-time.monotonic()
+                result['control_admission'] = dict(remaining_after_persistence_seconds=fresh_remaining)
+                if not result['control_budget']['evidence_complete']:
+                    raise Inconclusive('control not admitted: required clean/post-control cost evidence is incomplete')
+                if result['control_budget']['predicted_seconds']>fresh_remaining:
+                    raise BudgetExpired('insufficient fresh remaining budget after control preflight persistence')
                 result['control'] = dict(kind='per_new_row_trigger',delay_seconds=INSERT_CONTROL_DELAY,
                                          seed_max_id=identity['seed_max_id'],counter='perf_gate.delayed_rows')
                 result['phase'] = 'control_setup'
@@ -798,12 +891,16 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             result['calibration'] = calibration
         operations = calibration['operations']
         result['operations'] = operations
+        if force_confirmation:
+            write_report(output,report)
         result['phase'] = 'initial'
         result['initial'] = {}
         options = {'identity':identity} if inserted else {}
         result['initial'].update(block(revisions,case,operations,deadline,control,sink=result['initial'],**options))
         result['status'] = verdict(result['initial'])
-        if result['status'] == 'suspect':
+        if force_confirmation:
+            write_report(output,report)
+        if result['status'] == 'suspect' or force_confirmation:
             result['status'] = 'inconclusive'
             result['phase'] = 'confirmation'
             result['confirmation'] = {}
@@ -811,6 +908,8 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             result['confirmation'].update(block(revisions,case,operations,deadline,control,
                                                 sink=result['confirmation'],pair_count=pair_count,**options))
             result['status'] = verdict(result['confirmation'],True)
+            if force_confirmation:
+                write_report(output,report)
         result['timing_status'] = result['status']
         if result['validation']['size_checks'] is not None:
             result['space_status'] = result['validation']['size_checks']['status']
@@ -851,9 +950,48 @@ def reduce_report(report):
                         'inconclusive' if not report['complete'] or statuses!={'pass'} or report['size_status']!='pass' else 'pass')
 
 
+def reduce_insert_feasibility(report):
+    """Scoped unchanged diagnostic; neither normal coverage nor acceptance is evaluated."""
+    report.update(normal_gate_evaluated=False,acceptance_evaluated=False,
+                  diagnostic_complete=report['complete'] and report['status']!='error',complete=False,size_complete=False,
+                  size_status='not_evaluated')
+    if report['status']=='error':
+        report['diagnostic_status'],report['status'] = 'error','diagnostic_error'
+        return
+    case = report['cases'][0] if report['cases'] else {}
+    sizes = case.get('validation',{}).get('size_checks')
+    report['diagnostic_size_status'] = sizes['status'] if sizes else 'inconclusive'
+    initial,confirmation = case.get('initial',{}),case.get('confirmation',{})
+    costs = []
+    try:
+        operations = case.get('operations')
+        clean_full_n_pair_cost(case.get('calibration',{}).get('pilot_pair',{}),INSERT_PILOT,'pilot')
+        costs.append(clean_full_n_pair_cost(case.get('validation',{}).get('pair',{}),operations,'validation'))
+        for block in (initial,confirmation):
+            if len(block.get('pairs',[]))!=6:
+                raise Inconclusive('diagnostic requires six complete pair evidence records in each block')
+            costs.extend(clean_full_n_pair_cost(pair,operations,'verdict') for pair in block['pairs'])
+    except Inconclusive as exc:
+        report['diagnostic_complete'],report['diagnostic_evidence_error'] = False,str(exc)
+    else:
+        report['clean_full_N_cost_evidence'] = dict(max_clean_full_N_pair_wall=max(costs),pair_walls=costs,
+                                                  provenance='complete clean full-N validation and verdict pairs; pilot excluded')
+    report['required_post_control_costs'] = {name:'NOT_MEASURED' for name in POST_CONTROL_PHASES}
+    known_regression = (sizes and sizes['status']=='regression') or (
+        'lower' in confirmation and confirmation['lower']>MATERIAL)
+    both_pass = all(block.get('n')==6 and block['upper']<=MATERIAL for block in (initial,confirmation))
+    status = ('regression' if known_regression else 'pass' if report['diagnostic_complete'] and both_pass
+              and report['diagnostic_size_status']=='pass' else 'inconclusive')
+    report['diagnostic_status'],report['status'] = status,'diagnostic_'+status
+    report['achieved_windows'] = {name:dict(baseline_seconds=b['baseline_median'],candidate_seconds=b['candidate_median'],
+                                          target_seconds=TARGET,target_fractions=[b['baseline_median']/TARGET,b['candidate_median']/TARGET],
+                                          target_attained=min(b['baseline_median'],b['candidate_median'])>=TARGET)
+                                  for name,b in (('initial',initial),('confirmation',confirmation)) if 'n' in b}
+
+
 def write_report(output, report):
     (output/'results.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
-    lines = ['# Focused performance gate', '', f"Status: **{report['status']}**. {report['date']}.",
+    lines = ['# INSERT feasibility diagnostic' if report['config'].get('insert_feasibility') else '# Focused performance gate', '', f"Status: **{report['status']}**. {report['date']}.",
              f"Normal size gate: **{report['size_status']}**.",
              f"Complete: **{report['complete']}**. Size coverage complete: **{report['size_complete']}**. Budget exhausted: **{report['budget_exhausted']}**.",
              f"Baseline: `{report['baseline_ref']}`. Candidate: `{report['candidate_ref']}`.",
@@ -863,6 +1001,11 @@ def write_report(output, report):
              'Six initial alternating warmed pairs; one fresh suspect-only confirmation: 16 read pairs or 6 mutation pairs. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
              '', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
              '|---|---|---:|---:|---|---|---|---|']
+    if report['config'].get('insert_feasibility'):
+        lines.extend(['', 'Scope: INSERT PR geometry only. Normal gate and acceptance NOT evaluated.',
+                      'Diagnostic coverage: `'+json.dumps(report.get('coverage',{}))+'`.',
+                      'Achieved windows: `'+json.dumps(report.get('achieved_windows',{}))+'`.',
+                      'A diagnostic pass does not establish adequate SQL window, power or gate readiness.'])
     for case in report['cases']:
         for phase in ('initial','confirmation'):
             if phase in case and 'n' in case[phase]:
@@ -902,7 +1045,8 @@ def parser():
     p.add_argument('--candidate-ref',required=True)
     p.add_argument('--baseline-tree')
     p.add_argument('--candidate-tree')
-    p.add_argument('--groups',default='')
+    p.add_argument('--groups',default=None)
+    p.add_argument('--insert-feasibility',action='store_true',help='experimental equal-source INSERT PR-only diagnostic; always fixed6+6, no controls/normal gate')
     p.add_argument('--output',required=True,type=Path)
     p.add_argument('--tier',choices=['pr','nightly'],default='pr')
     p.add_argument('--verify-control',action='store_true',help='acceptance only: unchanged and SQL-visible slowdown; requires equal SHAs')
@@ -918,13 +1062,15 @@ def parser():
 def main(argv=None):
     global DEADLINE
     args = parser().parse_args(argv)
+    groups_supplied = args.groups is not None
+    args.groups = args.groups or ''
     args.output = args.output.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
-    report = dict(schema_version=2,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    report = dict(schema_version=3,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
-                  config=dict(tier=args.tier,groups=args.groups,initial_pairs=INITIAL_PAIRS,
+                  config=dict(tier=args.tier,groups=args.groups,insert_feasibility=args.insert_feasibility,initial_pairs=INITIAL_PAIRS,
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
@@ -940,6 +1086,16 @@ def main(argv=None):
         DEADLINE = start+report['budget']['measurement_budget_seconds']
         if time.monotonic()>=DEADLINE:
             raise BudgetExpired('workflow budget exhausted before source/build setup')
+        if args.insert_feasibility:
+            if (groups_supplied or args.verify_control or args.tier!='pr' or args.baseline_tree or args.candidate_tree):
+                raise ValueError('insert-feasibility requires PR tier without groups, controls or tree overrides')
+            require_equal(args.baseline_ref,args.candidate_ref,'insert-feasibility requires equal exact revisions')
+            report.update(mode='insert_feasibility',normal_gate_evaluated=False,acceptance_evaluated=False,
+                          coverage_scope='storage_insert_pr_only',
+                          coverage=dict(requested_cases=['storage_insert'],omitted_cases=[c.name for c in CASES if c.name!='storage_insert'],
+                                        normal_size_states='not_evaluated',pilot_pairs=1,validation_pairs=1,
+                                        initial_pairs=6,confirmation_pairs=6,expected_insert_pairs=14,
+                                        expected_restoration_checkpoints=28,expected_resets=56))
         exact_sha(args.baseline_ref)
         exact_sha(args.candidate_ref)
         if args.verify_control:
@@ -951,11 +1107,23 @@ def main(argv=None):
             state for lifecycle,state in (('insert_trajectory','mutable_insert_trajectory'),
                                           ('reset_each_operation','mutable_vacuum'))
             if (args.verify_control or any(c.lifecycle==lifecycle and (lifecycle=='insert_trajectory' or c.name=='storage_vacuum_space') for c in selected))]
+        if args.insert_feasibility:
+            report['required_size_states'] = ['mutable_insert_trajectory']
         report['postgresql'] = command([args.pg_config,'--version'])
         if not report['postgresql'].startswith('PostgreSQL 18.'):
             raise ValueError('performance gate requires PostgreSQL 18')
         report['compiler'] = command(['cc','--version']).splitlines()[0]
         report['pg_config'] = command([args.pg_config,'--configure'])
+        if args.insert_feasibility:
+            files = ('bench/steps/perf_gate.py','bench/perf/catalog.py','bench/perf/fixture.sql')
+            blobs = {}
+            for name in files:
+                blobs[name] = command(['git','rev-parse',args.candidate_ref+':'+name],cwd=ROOT)
+                require_equal(command(['git','hash-object',name],cwd=ROOT),blobs[name],'committed feasibility harness '+name)
+            report['source_identity'] = dict(commit=args.candidate_ref,tree=command(['git','rev-parse',args.candidate_ref+'^{tree}'],cwd=ROOT),
+                                             harness_blobs=blobs,harness_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in files},
+                                             fixture_owner='candidate harness, loaded identically into both isolated exact-SHA builds')
+            write_report(args.output,report)
         args.scratch_root.mkdir(parents=True,exist_ok=True)
         scratch = Path(tempfile.mkdtemp(prefix='perf-gate-',dir=args.scratch_root))
         for i, (name,sha,tree) in enumerate([('baseline',args.baseline_ref,args.baseline_tree),('candidate',args.candidate_ref,args.candidate_tree)]):
@@ -983,12 +1151,20 @@ def main(argv=None):
             geometry = report['table_geometry'][rev.name]
             if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
                 raise ValueError('actual sift_table fixture fails segment/page boundary')
-        report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
-        report['size_checks'].append(size_snapshot(revisions,'settled_build'))
+        if not args.insert_feasibility:
+            report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
+            report['size_checks'].append(size_snapshot(revisions,'settled_build'))
         phase = time.monotonic()
         measurement_start = phase
         deadline = DEADLINE
-        if args.verify_control:
+        if args.insert_feasibility:
+            insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
+            write_report(args.output,report)
+            measure(revisions,insert,deadline,sink=report['cases'],force_confirmation=True,report=report,output=args.output)
+        elif args.verify_control:
+            report['post_control_costs'] = {name:dict(state='NOT_MEASURED',complete=False,seconds=None,
+                                                     provenance='required after control in this invocation; no measurement available before admission')
+                                            for name in POST_CONTROL_PHASES}
             report['acceptance_catalog_validation'] = {}
             for catalog_case in CASES:
                 if catalog_case.lifecycle=='insert_trajectory':
@@ -1051,10 +1227,14 @@ def main(argv=None):
             shutil.rmtree(scratch)
         report['runtime_seconds']['cleanup'] = time.monotonic()-phase
         report['runtime_seconds']['total'] = time.monotonic()-start
-        reduce_report(report)
+        if args.insert_feasibility:
+            reduce_insert_feasibility(report)
+        else:
+            reduce_report(report)
         write_report(args.output,report)
     print(f"{report['status']}: {args.output/'summary.md'}")
-    return {'pass':0,'regression':1,'inconclusive':2,'error':3}[report['status']]
+    return {'pass':0,'regression':1,'inconclusive':2,'error':3,
+            'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]
 
 
 if __name__=='__main__':
