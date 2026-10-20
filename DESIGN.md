@@ -637,9 +637,9 @@ folder (`bm25/eval.c` binds a query to its segments, `bm25/rank.c` ranks, ...); 
 
 | Folder | Holds | Includes from |
 |---|---|---|
-| `core/` | what every area shares: the module shell (`core/handler.c`: `_PG_init`, GUCs, reloptions, catalog cache, SQL entry points), the page and extent store (`core/page.h`, `sift_store.*`, `core/stream.c`), the lane chains of a write buffer (`sift_lane.*`), liveness pages, visibility, the context of a parallel build, the checked reader and varints, CPU dispatch, `core/host.h` | the other areas only in `core/handler.c`, which registers them |
+| `core/` | what every area shares: the module shell (`core/handler.c`: `_PG_init`, GUCs, reloptions, catalog cache, SQL entry points), the page and extent store (`core/page.h`, `core/store.*`, `core/stream.c`), the lane chains of a write buffer (`core/lane.*`), liveness pages, visibility, the context of a parallel build, the checked reader and varints, CPU dispatch, `core/host.h` | the other areas only in `core/handler.c`, which registers them |
 | `bm25/` | the BM25 index access method `sift` and its engine: analyzer, SiftQL, bitmap codec, scoring kernels, term blobs, dictionary, segments, sorted runs, merge policy, its write buffer (`sift_wbuf.*`), maintenance, build, evaluator, planner and the SiftScan and SiftCount nodes, facets | `core/` |
-| `col/` | the column engine and the `sift_col` access method: chunk codec, column kernels, shredder, unit encoding, segments, build, its write buffer (`sift_col_wbuf*`), maintenance, column source, verify | `core/`; `bm25/` (maintenance, merge policy and kernel infrastructure it reuses) |
+| `col/` | the column engine and the `sift_col` access method: chunk codec, column kernels, shredder, unit encoding, segments, build, its write buffer (`col/wbuf*`), maintenance, column source, verify | `core/`; `bm25/` (maintenance, merge policy and kernel infrastructure it reuses) |
 | `agg/` | SiftAgg, the aggregate pushdown: planner, spec, executor, aggregation kernels, the column source seam (`sift_colsrc.h`) with its providers, a BM25 match set as the row selection, Top-N, the `sift_colstub` access method | `core/`, `col/`, `bm25/` |
 | `table/` | the `sift_table` table access method (docs/COL-TAM.md) | `core/`, `col/`, `agg/` (its column source), `bm25/` (maintenance) |
 
