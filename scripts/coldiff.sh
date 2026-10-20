@@ -276,11 +276,11 @@ col_paths() {
 # fixture_tables: the fixture tables (and the partitions) rewritten into sift_table, the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd orders_part_2022 orders_part_2023 orders_part_2024 orders_part_2025 t_int t_float t_num t_nan t_text t_dist t_wide t_jp; do
+	for t in orders orders_odd orders_part_2022 orders_part_2023 orders_part_2024 orders_part_2025 t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
-		[[ $t == orders* || $t == t_jp ]] || continue
-		for c in $([[ $t == t_jp ]] && echo doc mdoc || echo attributes metrics items notes); do
-			spec=$([[ $t == t_jp ]] && echo "$c[]{s text, n int4, b bool}" || col_paths $c)
+		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_tags) set -- tags ;; *) continue ;; esac
+		for c in "$@"; do
+			case $t in t_jp) spec="$c[]{s text, n int4, b bool}" ;; t_tags) spec="tags[] text" ;; *) spec=$(col_paths $c) ;; esac
 			[[ -z $spec ]] || printf '%s\n' "SELECT sift.table_set_paths('$t', '$c', :'spec')" | sql -v spec="$spec" >/dev/null || return 1
 		done
 		sql -c "VACUUM FULL $t" || return 1

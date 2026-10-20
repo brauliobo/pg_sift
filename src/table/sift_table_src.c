@@ -17,11 +17,13 @@
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
+#include "common/hashfn.h"
 #include "nodes/bitmapset.h"
 #include "pgstat.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/planner.h"
 #include "rewrite/rewriteHandler.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -30,6 +32,7 @@
 #include "sift_aggkern.h"
 #include "sift_aggpre.h"
 #include "sift_aggsel.h"
+#include "sift_aggwide.h"
 #include "sift_col.h"
 #include "sift_col_am.h"
 #include "sift_col_pagg.h"
@@ -93,6 +96,8 @@ typedef struct TblSource
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;
 	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL (tolerate_ovf) */
+	MemoryContext *wcxt;		/* per wide leaf: the dictionary of its last read */
+	uint64		wseq;			/* the id of the next wide dictionary */
 } TblSource;
 
 static bool
@@ -109,14 +114,14 @@ tbl_owns_table(Oid tablerelam)
 	return OidIsValid(am) && tablerelam == am;
 }
 
+/* the layout keeps the tag of a type the table stores by size (money, time, enum, oid) as OTHER: an integer leaf is as wide as its column */
 static SiftSrcVecType
-leaf_vtype(const SiftColDef *def)
+leaf_vtype(const SiftColDef *def, TupleDesc desc)
 {
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ ||
-					def->type == SIFT_COLT_NUMERIC) ? SCV_I64 : SCV_I32;
+			return def->type == SIFT_COLT_NUMERIC || TupleDescAttr(desc, def->attno - 1)->attlen == 8 ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -127,11 +132,18 @@ leaf_vtype(const SiftColDef *def)
 	}
 }
 
-/* numeric of any other shape than the narrow integer leaf, money and interval: only a WHERE conjunct tests them (SAP_WIDE), on the exact values */
+/* numeric of any other shape than the narrow integer leaf, money and interval: a WHERE conjunct tests them on the exact values (SAP_WIDE) */
 static bool
-leaf_wide(const SiftColDef *def)
+leaf_tested(const SiftColDef *def, Oid typid)
 {
-	return def->type == SIFT_COLT_MONEY || def->type == SIFT_COLT_INTERVAL || (def->type == SIFT_COLT_NUMERIC && def->store == SIFT_COLS_VAR);
+	return typid == CASHOID || typid == INTERVALOID || (typid == NUMERICOID && def->store == SIFT_COLS_VAR);
+}
+
+/* a leaf the executor reads through a dictionary of the datum images (sift_aggwide.h): the exact image of a column the table keeps by value as a size */
+static bool
+leaf_dict(const SiftColDef *def, Oid typid)
+{
+	return sift_aggwide_type(typid) && def->store != SIFT_COLS_INT;
 }
 
 /* The expression of a stored generated column, as the planner sees it in a query: a query that writes it reads the column (always the value the row holds) */
@@ -183,16 +195,16 @@ tbl_layout(Relation rel)
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftColDef *def = &cur->cols[i];
-		bool		wide = leaf_wide(def);
 		Oid			typid = sift_col_def_typid(desc, def);
+		bool		wide = leaf_dict(def, typid);
 
 		if (leaf_is_path(def))
 		{
 			sift_colsrc_def_leaf(cur->cols, i, desc, &lay->leaf[i]);
 			continue;
 		}
-		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),
-		.typid = wide ? InvalidOid : typid,.wtypid = wide ? typid : InvalidOid,.scale = def->scale,.lossy = !wide && def->store == SIFT_COLS_VAR};
+		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = wide ? SCV_CODE : leaf_vtype(def, desc),
+		.typid = typid,.wide = wide,.wtypid = leaf_tested(def, typid) ? typid : InvalidOid,.scale = def->scale,.lossy = !wide && def->store == SIFT_COLS_VAR};
 	}
 	return lay;
 }
@@ -349,6 +361,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->buf = palloc0(sizeof(TblLeafBuf) * t->lay->nleaves);
 	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
+	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
 	cur = sift_tbl_layout_schema(heap, st);
 	t->part = palloc0((t->dir->nsegs + 1) * sizeof(TblPart));
@@ -486,6 +499,8 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 	return b;
 }
 
+static void wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t n, Datum dflt, bool dnull, SiftSrcVec *vec);
+
 /* The one-entry dictionary of the text default of a column that older segments lack; its id is stable for the life of the source */
 static const SiftSrcDict *
 absent_dict(TblSource *t, int leaf, Datum d)
@@ -513,8 +528,14 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
 	bool		isnull;
 	Datum		d = getmissingattr(RelationGetDescr(t->rel), l->attno, &isnull);
-	TblLeafBuf *b = leaf_buf(t, leaf, l->vtype, n);
+	TblLeafBuf *b;
 
+	if (l->wide)
+	{
+		wide_read(t, leaf, NULL, NULL, n, d, isnull, vec);
+		return;
+	}
+	b = leaf_buf(t, leaf, l->vtype, n);
 	memset(b->data, 0, n * vtype_size[l->vtype]);
 	*vec = (SiftSrcVec) {.data = b->data,.n = n};
 	if (isnull)
@@ -539,6 +560,8 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 			case INT8OID:
 			case TIMESTAMPOID:
 			case TIMESTAMPTZOID:
+			case TIMEOID:
+			case CASHOID:
 				((int64 *) b->data)[i] = DatumGetInt64(d);
 				break;
 			case NUMERICOID:
@@ -550,9 +573,119 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 			case FLOAT8OID:
 				((double *) b->data)[i] = DatumGetFloat8(d);
 				break;
+			default:
+				if (l->vtype == SCV_I32)	/* an enum */
+					((int32 *) b->data)[i] = (int32) DatumGetObjectId(d);
 		}
 	if (l->vtype == SCV_CODE)
 		vec->dict = absent_dict(t, leaf, d);
+}
+
+/* ---- a wide leaf: the dictionary of the exact datum images of the rows read, an entry the datum itself (sift_aggwide.h) ---- */
+
+typedef struct WideBuild
+{
+	uint32		nd;
+	uint32		dcap;
+	uint32	   *off;			/* nd + 1: the entries start on 8 bytes */
+	uint32	   *len;			/* nd: the size of the image */
+	char	   *bytes;
+	size_t		bcap;
+	uint32		nslot;
+	uint32	   *slot;			/* the entry + 1 of a hash of an image */
+} WideBuild;
+
+/* the entry of an image, added when new */
+static uint32
+wide_entry(WideBuild *w, const char *img, uint32 len)
+{
+	uint32		mask = w->nslot - 1,
+				s = hash_bytes((const unsigned char *) img, len) & mask,
+				e;
+	size_t		end;
+
+	for (; (e = w->slot[s]) != 0; s = (s + 1) & mask)
+		if (w->len[e - 1] == len && memcmp(w->bytes + w->off[e - 1], img, len) == 0)
+			return e - 1;
+	end = (size_t) w->off[w->nd] + MAXALIGN(Max(len, 1));
+	if (w->nd == w->dcap)
+	{
+		w->dcap *= 2;
+		w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));
+		w->len = repalloc(w->len, w->dcap * sizeof(uint32));
+	}
+	if (end > w->bcap)
+	{
+		w->bcap = Max(end, w->bcap * 2);
+		w->bytes = repalloc(w->bytes, w->bcap);
+	}
+	memcpy(w->bytes + w->off[w->nd], img, len);
+	w->len[w->nd] = len;
+	w->off[w->nd + 1] = end;
+	w->slot[s] = ++w->nd;
+	return w->nd - 1;
+}
+
+/* the image of a datum of a wide leaf: a varlena in its plain form, or the bytes of a fixed size */
+static const char *
+datum_image(Datum d, int16 typlen, uint32 *len)
+{
+	if (typlen > 0)
+	{
+		*len = typlen;
+		return DatumGetPointer(d);
+	}
+	d = PointerGetDatum(PG_DETOAST_DATUM(d));
+	*len = VARSIZE(DatumGetPointer(d));
+	return DatumGetPointer(d);
+}
+
+/*
+ * The leaf of the n rows `v` holds (NULL: the rows of a column the segment lacks, all the default `dflt`) as codes into a dictionary of their images,
+ * made in a context of its own that the next read of the leaf resets: the dictionary and codes are valid until then.
+ */
+static void
+wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t n, Datum dflt, bool dnull, SiftSrcVec *vec)
+{
+	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
+	int16		typlen = TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attlen;
+	TblLeafBuf *b = leaf_buf(t, leaf, SCV_CODE, n);
+	MemoryContext old;
+	WideBuild	w = {0};
+	bool		has_null = false;
+
+	if (t->wcxt[leaf] == NULL)
+		t->wcxt[leaf] = AllocSetContextCreate(t->cxt, "sift table wide leaf", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextReset(t->wcxt[leaf]);
+	old = MemoryContextSwitchTo(t->wcxt[leaf]);
+	w.dcap = 64;
+	w.off = palloc0((w.dcap + 1) * sizeof(uint32));
+	w.len = palloc(w.dcap * sizeof(uint32));
+	w.bcap = 4096;
+	w.bytes = palloc(w.bcap);
+	for (w.nslot = 64; w.nslot < 2 * Max(n, 1); w.nslot *= 2)
+		;
+	w.slot = palloc0(w.nslot * sizeof(uint32));
+	for (size_t i = 0; i < n; i++)
+	{
+		bool		isnull = v ? v->nulls && sift_colsrc_bit(v->nulls, i) : dnull;
+		uint32		len;
+		const char *img;
+
+		((uint32 *) b->data)[i] = 0;
+		b->isnull[i] = isnull;
+		if (isnull)
+		{
+			has_null = true;
+			continue;
+		}
+		img = datum_image(v ? sift_tbl_leaf_datum(t->rel, &p->schema->cols[p->col[leaf]], v, i) : dflt, typlen, &len);
+		((uint32 *) b->data)[i] = wide_entry(&w, img, len);
+	}
+	MemoryContextSwitchTo(old);
+	memset((uint32 *) b->data + n, 0, SIFT_AGG_PAD * sizeof(uint32));
+	t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++t->wseq), w.nd, w.off, w.bytes};
+	*vec = (SiftSrcVec) {.data = b->data,.isnull = has_null ? b->isnull : NULL,.dict = &t->dict[leaf],.n = n};
 }
 
 /* The engine's vector of a leaf as the executor's, in the leaf's buffers */
@@ -611,7 +744,10 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 		return;
 	}
 	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
-	fill_vec(t, leaf, &v, vec);
+	if (t->lay->leaf[leaf].wide)
+		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
+	else
+		fill_vec(t, leaf, &v, vec);
 }
 
 /* ---- the conjuncts on wide leaves: the type's own comparison over the values of the column (no format of lanes for a table, no zone) ---- */
