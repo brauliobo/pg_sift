@@ -14,6 +14,24 @@ estimated above `sift.agg_lookup_max_rows` rows, a condition on a column nothing
 table is on the nullable side of an outer join. A scan with such a join runs without workers.
 Fixtures `pt_*`, test `agg_plan_tables`.
 
+## Partitioned tables
+
+A partitioned table is one source of `Custom Scan (SiftAgg)` when every partition left after PostgreSQL's pruning (plan-time, at every level) has a
+`sift_col` index of the same layout: the same columns and expressions in the same order, the same `paths`, and the same pre-aggregate options. The
+attribute numbers may differ (a dropped column), and a sub-partitioned branch, a default partition and an unlogged partition are partitions like the rest.
+The query is compiled once against the partitioned table's columns; the scan reads the units (segment by superblock) of each partition's index one
+after the other, each with its own dictionaries, so the groups, `DISTINCT` sets and the parallel workers (which take units across all the partitions)
+work as on one table, and the result is the normal plan's. `EXPLAIN` shows `Index: (partitions)` and `Partitions: a, b, ..`; the cost is the sum of the
+partitions' pages and rows. Pre-aggregates answer per unit as on a plain table. Privileges and row security are checked on the partitioned table, as in
+PostgreSQL (a role without access to the partitions reads through the parent).
+
+The normal plan stays when a partition has no `sift_col` index, has an index with other columns or options, is not a heap table (`sift_table`, a foreign
+table), is read with `ONLY`, or the table is an inheritance parent (a mixed tree too); when a parameter of the query compares the partition key and so
+prunes partitions when the plan runs (`$1` in a generic plan: the normal plan prunes, the scan would read every partition); and for the shapes the scan
+reads one index for (a ranked search with `sift.score`, a top-N, a time series of unions). A plan is invalidated when a partition or its index is
+attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
+Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
+
 ## Differential suite
 
 `scripts/coldiff.sh` is the referee of the aggregate pushdown (`Custom Scan (SiftAgg)`): it runs a corpus of plain SQL aggregate queries
@@ -129,7 +147,7 @@ same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates 
 a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), group keys up to the limit of 8, rollups and cubes of up to 7 columns (`k_keys_*`, `k_rollup_*`, `k_cube_*`) and the plain traps one past each limit (9 keys, 9 joined tables, 17 combos), lookup joins of up to 8 tables and 16 combos (`j_joins_*`, `j_combos_*`), generic aggregates (`g_*`: the variance family, `DISTINCT` forms over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine, `x_bool_*`: `bool_and`, `bool_or` and `every` merged from two workers) with their traps (a volatile transition function, a float read into text with `-0`), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
 that are not numbers, `DISTINCT ON`, outer joins, a set-returning function in the select
-list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE`, a partitioned table and `SERIALIZABLE`.
+list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE` and `SERIALIZABLE`; partitioned tables (`pa_*`: pruning at every level, a dropped column before the index, a default and an unlogged partition, `ONLY`, partitions without the index or with other options, inheritance, run-time pruning) run DML through the parent in the scenarios.
 
 ### Scenarios
 
