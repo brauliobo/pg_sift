@@ -25,7 +25,7 @@ files ([CHANGELOG.md](../CHANGELOG.md), 2.0.0).
   temporary files (about 1.9x), and `CREATE INDEX` writes its sorted runs there too, so `temp_file_limit` and the free space of the
   `temp_tablespaces` must cover them. With `maintenance_work_mem` of 64MB a build of the test corpus wrote 206 MB, with 1MB 1127 MB (and
   left 11 segments instead of 1). *(changes: the streaming merge stages nothing.)*
-- **`positions = on`** (the default) makes the index about 2.5x larger than `positions = off` ([USAGE.md](USAGE.md#limits)): 130.9 against 52.5 MiB on the 218,058 articles (2.49x; an earlier build of 2026-10-16 measured 126 against 48 MB, 2.6x), 31.1 against 12.9 MiB on the 50,000 of the slim tier (2.4x).
+- **`positions = on`** (the default) makes the index about 2.5x larger than `positions = off` ([USAGE.md](USAGE.md#limits)): 130.9 against 52.5 MiB on the 218,058 articles (2.49x; an earlier build of 2026-10-16 measured 126 against 48 MB, 2.6x), 31.1 against 12.9 MiB on the 50,000 of the slim tier (2.4x). These are the sizes of the 3.0 series; pg_sift 3.1.0 writes a smaller segment (format 3), measured with the date and the host in [BENCHMARKS.md](BENCHMARKS.md#bm25-index-size).
 
 ## Memory
 

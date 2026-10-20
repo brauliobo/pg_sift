@@ -52,6 +52,8 @@ Differences that matter: a unit is immutable, so there are no mutations to maint
 
   The default rule keeps `kind, flag` of the three dims (1,440 combinations a unit against a cap of 432 tuples at 100,000 documents): +1.7 kB a unit, 2% of the index. Naming all three dims costs 43 kB a unit (1,440 tuples of about 30 bytes), +49% of the index: the dims are for a question that needs them.
 
+The next table is the design record of the rollups: medians of a 3.1 development build in October 2026 on a busy shared host. The release figures (pg_sift 3.1.0, the three arms as separate columns, 100,000, 1,000,000 and 10,000,000 documents, the index size and the build cost) are in [BENCHMARKS.md](BENCHMARKS.md#element-rollups).
+
 | query (median ms; normal plan / every unit scanned / from the rollups) | 100,000 documents | 1,000,000 documents |
 |---|---|---|
 | j02 `GROUP BY kind`, `count`, `avg(score)`, base | 275 / 3.1 / **0.09** | 1,579 / 27.5 / **0.57** to 1.81 |
