@@ -57,29 +57,14 @@ if [[ $MODE == --times ]]; then
 	exit
 fi
 # ---------- scripts/areas.tsv: the files a change touched -> the jobs it can break (the CI workflow and `affected` share it)
-declare -A GROUP
-ROWS=()
-while IFS=$'\t' read -r k v; do
-	[[ -z $k || $k == '#'* ]] && continue
-	if [[ $k == =* ]]; then GROUP[${k#=}]=$v; else ROWS+=("$k"$'\t'"$v"); fi
-done <"$REPO/scripts/areas.tsv"
-# areas_regex FILE...: the ERE of the job names the files can break; a file no row maps (--selftest finds those) runs every job
-areas_regex() {
-	local f row jobs g n out=() hit
-	for f in "$@"; do
-		hit=
-		for row in "${ROWS[@]}"; do
-			[[ $f =~ ${row%%$'\t'*} ]] || continue
-			jobs=${row#*$'\t'} hit=1
-			for g in "${!GROUP[@]}"; do jobs=${jobs//\{$g\}/(${GROUP[$g]})}; done
-			[[ $jobs == *\\* ]] && for n in 1 2 3; do jobs=${jobs//\\$n/${BASH_REMATCH[$n]-}}; done
-			[[ $jobs == - ]] || out+=("$jobs")
-		done
-		[[ -n $hit ]] || { echo "areas: $f is in no row of scripts/areas.tsv" >&2; out+=(.); }
-	done
-	local IFS='|'
-	echo "^\$${out[*]:+|${out[*]}}"
-}
+source "$REPO/scripts/areas.sh"
+areas_load "$REPO/scripts/areas.tsv"
+# Static map API, also used by parity fixtures; never starts a suite.
+if [[ $MODE == --areas-regex ]]; then
+	areas_load "$2"
+	areas_regex "${@:3}"
+	exit
+fi
 # --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in two), full (it is all of it)
 if [[ $MODE == affected ]]; then
 	shift
@@ -87,11 +72,11 @@ if [[ $MODE == affected ]]; then
 	[[ ${1:-} == --list || ${1:-} == --github ]] && { OUT=${1#--}; shift; }
 	BASE=${1:-origin/main}
 	if [[ $BASE == all ]]; then RE=.
-	elif [[ $BASE == --files ]]; then RE=$(areas_regex "${@:2}")   # for tests of the map: the jobs of named files
+	elif [[ $BASE == --files ]]; then RE=$(areas_regex "${@:2}") || exit $?   # for tests of the map: the jobs of named files
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
 		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
-		RE=$(areas_regex "${FILES[@]}")
+		RE=$(areas_regex "${FILES[@]}") || exit $?
 	fi
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()

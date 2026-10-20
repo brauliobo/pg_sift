@@ -8,7 +8,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,19 +19,6 @@ OWNERS = {
     'agg':  ('agg',),
     'tbl':  ('storage',),
 }
-
-
-def read_map(path):
-    groups, rows = {}, []
-    for line in path.read_text().splitlines():
-        if not line or line.startswith('#'):
-            continue
-        key, value = line.split('\t', 1)
-        if key.startswith('='):
-            groups[key[1:]] = value
-        else:
-            rows.append((re.compile(key), value))
-    return groups, rows
 
 
 def job_names(root):
@@ -49,37 +35,16 @@ def documentation(path):
     return path.startswith('docs/') or path.endswith('.md') or path in ('LICENSE', 'NOTICE')
 
 
-def select(paths, groups, rows, jobs):
-    picked = set()
-    for path in paths:
-        if documentation(path):
-            continue
-        picked.add('smoke')
-        matches = [(pattern.search(path), value) for pattern, value in rows]
-        matches = [(match, value) for match, value in matches if match]
-        if not matches:
-            picked.update(ALL)
-        for match, value in matches:
-            if value == '.' or '{perf}' in value:
-                picked.update(ALL)
-                continue
-            if value == '-':
-                continue
-            # Resolve explicit owners directly: intersecting their job patterns
-            # would falsely connect every owner through shared lifecycle tests.
-            def expand(token):
-                owner = token[1]
-                if owner in OWNERS:
-                    picked.update(OWNERS[owner])
-                    return '(?!)'
-                return '(' + groups[owner] + ')'
-
-            expanded = re.sub(r'\{([^}]+)\}', expand, value)
-            expanded = re.sub(r'\\([1-3])', lambda m: match[int(m[1])] or '', expanded)
-            affected = [job for job in jobs if re.search(expanded, job)]
-            for owner, benchmarks in OWNERS.items():
-                if any(re.search(groups[owner], job) for job in affected):
-                    picked.update(benchmarks)
+def select(paths, map_path, jobs):
+    paths = [path for path in paths if not documentation(path)]
+    if not paths:
+        return []
+    owners = subprocess.check_output(
+        ['bash', str(ROOT / 'scripts/areas.sh'), '--owners', str(map_path),
+         *OWNERS, '--', *paths], input=''.join(job+'\0' for job in sorted(jobs)), text=True).splitlines()
+    picked = {'smoke'}
+    for owner in owners:
+        picked.update(ALL if owner=='*' else OWNERS[owner])
     return [group for group in ALL if group in picked]
 
 
@@ -97,8 +62,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     paths = changed_paths(ROOT, args.baseline_ref, args.candidate_ref)
-    groups, rows = read_map(ROOT / 'scripts/areas.tsv')
-    selected = list(ALL) if args.tier == 'nightly' else select(paths, groups, rows, job_names(ROOT))
+    selected = list(ALL) if args.tier == 'nightly' else select(paths, ROOT / 'scripts/areas.tsv', job_names(ROOT))
     result = {'baseline_ref': args.baseline_ref, 'candidate_ref': args.candidate_ref,
               'tier': args.tier, 'paths': paths, 'groups': selected}
     args.output.parent.mkdir(parents=True, exist_ok=True)
