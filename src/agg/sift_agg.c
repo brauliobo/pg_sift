@@ -641,7 +641,8 @@ typedef struct AggExec
 	uint32		gcap;			/* allocated groups */
 	int64	   *seen;
 	AggAcc	   *acc;
-	uint32	   *hkey;			/* hash mode: SIFT_AGG_MAX_KEYS ids per group */
+	uint32	   *hkey;			/* hash mode: nkeys ids per group */
+	uint32		(*hashg) (struct AggExec *, const uint32 *);	/* hash mode: the probe for nkeys ids */
 	uint32		hkcap;
 	uint32	   *hslot;
 	uint32		nhslot;
@@ -3977,11 +3978,11 @@ direct_layout(AggExec *ex)
 }
 
 static inline uint32
-ids_hash(const uint32 *ids, uint32 nslot)
+ids_hash(const uint32 *ids, int nk, uint32 nslot)
 {
 	uint64		h = 0;
 
-	for (int j = 0; j < SIFT_AGG_MAX_KEYS; j++)
+	for (int j = 0; j < nk; j++)
 	{
 		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
 		h ^= h >> 32;
@@ -3989,29 +3990,20 @@ ids_hash(const uint32 *ids, uint32 nslot)
 	return (uint32) h & (nslot - 1);
 }
 
-/* the group of an id tuple in hash mode */
-static uint32
-hash_group(AggExec *ex, const uint32 *ids)
+/* a new group of an id tuple in hash mode, in slot `pos` of its probe */
+static pg_noinline uint32
+hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 {
-	uint32		pos = ids_hash(ids, ex->nhslot),
-				g;
+	int			nk = ex->spec->nkeys;
+	uint32		g = ex->ngroups++;
 
-	while (ex->hslot[pos])
-	{
-		const uint32 *k = &ex->hkey[(ex->hslot[pos] - 1) * SIFT_AGG_MAX_KEYS];
-
-		if (memcmp(k, ids, SIFT_AGG_MAX_KEYS * sizeof(uint32)) == 0)
-			return ex->hslot[pos] - 1;
-		pos = (pos + 1) & (ex->nhslot - 1);
-	}
-	g = ex->ngroups++;
 	if (g >= ex->hkcap)
 	{
 		ex->hkcap = Max(ex->hkcap * 2, 1024);
-		ex->hkey = ex->hkey ? repalloc(ex->hkey, (Size) ex->hkcap * SIFT_AGG_MAX_KEYS * sizeof(uint32)) :
-			MemoryContextAlloc(ex->tcxt, (Size) ex->hkcap * SIFT_AGG_MAX_KEYS * sizeof(uint32));
+		ex->hkey = ex->hkey ? repalloc(ex->hkey, (Size) ex->hkcap * nk * sizeof(uint32)) :
+			MemoryContextAlloc(ex->tcxt, (Size) ex->hkcap * nk * sizeof(uint32));
 	}
-	memcpy(&ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS], ids, SIFT_AGG_MAX_KEYS * sizeof(uint32));
+	memcpy(&ex->hkey[(Size) g * nk], ids, nk * sizeof(uint32));
 	ex->hslot[pos] = g + 1;
 	if ((uint64) ex->ngroups * 2 > ex->nhslot)
 	{
@@ -4020,7 +4012,7 @@ hash_group(AggExec *ex, const uint32 *ids)
 
 		for (uint32 x = 0; x < ex->ngroups; x++)
 		{
-			uint32		p = ids_hash(&ex->hkey[(Size) x * SIFT_AGG_MAX_KEYS], nn);
+			uint32		p = ids_hash(&ex->hkey[(Size) x * nk], nk, nn);
 
 			while (ns[p])
 				p = (p + 1) & (nn - 1);
@@ -4033,11 +4025,45 @@ hash_group(AggExec *ex, const uint32 *ids)
 	return g;
 }
 
+/* the probe for `nk` ids, a constant where it is inlined: the hash and the comparison unroll */
+static pg_attribute_always_inline uint32
+hash_probe(AggExec *ex, const uint32 *ids, const int nk)
+{
+	uint32		pos = ids_hash(ids, nk, ex->nhslot);
+
+	for (; ex->hslot[pos]; pos = (pos + 1) & (ex->nhslot - 1))
+		if (memcmp(&ex->hkey[(Size) (ex->hslot[pos] - 1) * nk], ids, nk * sizeof(uint32)) == 0)
+			return ex->hslot[pos] - 1;
+	return hash_add(ex, ids, pos);
+}
+
+/* one probe function per number of keys (`ex->hashg`): the hash and the comparison of the ids are unrolled, as the hot loop wants */
+#define HASH_GROUP_FN(n) \
+	static uint32 hash_group_##n(AggExec *ex, const uint32 *ids) { return hash_probe(ex, ids, n); }
+HASH_GROUP_FN(1)
+HASH_GROUP_FN(2)
+HASH_GROUP_FN(3)
+HASH_GROUP_FN(4)
+HASH_GROUP_FN(5)
+HASH_GROUP_FN(6)
+HASH_GROUP_FN(7)
+HASH_GROUP_FN(8)
+
+static uint32 (*const hash_group_fns[SIFT_AGG_MAX_KEYS]) (AggExec *, const uint32 *) =
+{hash_group_1, hash_group_2, hash_group_3, hash_group_4, hash_group_5, hash_group_6, hash_group_7, hash_group_8};
+
+/* the group of an id tuple in hash mode */
+static inline uint32
+hash_group(AggExec *ex, const uint32 *ids)
+{
+	return ex->hashg(ex, ids);
+}
+
 /* the id of key j in group g (0: NULL) */
 static uint32
 key_id(AggExec *ex, int j, uint32 g)
 {
-	return ex->hash ? ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
+	return ex->hash ? ex->hkey[(Size) g * ex->spec->nkeys + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
 }
 
 static uint32
@@ -4072,6 +4098,7 @@ direct_grow(AggExec *ex)
 	{
 		/* the existing groups keep their ids in the hash table */
 		ex->hash = true;
+		ex->hashg = hash_group_fns[nk - 1];
 		ex->nhslot = 1024;
 		ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 		ex->ngroups = 0;
@@ -9037,7 +9064,7 @@ renumber(uint32 *ids, uint32 n, uint32 nold, uint32 *nused)
 static uint32
 group_key_id(AggExec *ex, int j, uint32 g)
 {
-	return ex->hash ? ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
+	return ex->hash ? ex->hkey[(Size) g * ex->spec->nkeys + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
 }
 
 static void
@@ -10320,9 +10347,9 @@ static bool
 fuse_start(AggExec *ex)
 {
 	FuseReg    *r = fuse_reg(ex->css.ss.ps.state, false);
-	AggExec    *m[SIFT_AGG_MAX_KEYS];
-	SiftAggSpec *specs[SIFT_AGG_MAX_KEYS];
-	int			keyoff[SIFT_AGG_MAX_KEYS],
+	AggExec    *m[SIFT_AGG_MAX_FUSE];
+	SiftAggSpec *specs[SIFT_AGG_MAX_FUSE];
+	int			keyoff[SIFT_AGG_MAX_FUSE],
 				n = 0,
 				nk = 1;
 	EState	   *estate = ex->css.ss.ps.state;
@@ -10336,7 +10363,7 @@ fuse_start(AggExec *ex)
 	specs[n++] = ex->spec;
 	nk += ex->spec->nkeys;
 	foreach_ptr(AggExec, o, r->nodes)
-		if (o != ex && !o->started && nk + o->spec->nkeys <= SIFT_AGG_MAX_KEYS && sift_aggspec_fusable(ex->spec, o->spec))
+		if (o != ex && !o->started && nk + o->spec->nkeys <= SIFT_AGG_MAX_FUSE && sift_aggspec_fusable(ex->spec, o->spec))
 		{
 			m[n] = o;
 			specs[n++] = o->spec;
