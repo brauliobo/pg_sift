@@ -12,7 +12,7 @@ SETUP = "set max_parallel_workers_per_gather = 2; set jit = off; set plan_cache_
 
 
 def psql(sql):
-	p = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-d', DB], input=sql, capture_output=True, text=True)
+	p = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-d', DB], input=sql, env=dict(os.environ, LC_ALL='C'), capture_output=True, text=True)
 	if p.returncode:
 		sys.exit(p.stderr)
 	return p.stdout

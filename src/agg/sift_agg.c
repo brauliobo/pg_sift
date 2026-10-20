@@ -366,11 +366,14 @@ typedef struct PredState
 	bool		in_hasnull;
 	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
-	int32		in_lo;
+	int64		in_lo;
 	uint32		in_nlut;
 	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
-	int32	   *in_sorted;		/* ... or, when the values are too far apart for one, the sorted values */
+	int32	   *in_sorted;		/* ... or, when the values are too far apart for one, the sorted values (an integer leaf) ... */
 	uint32		in_nsorted;
+	int64	   *in_htab;		/* ... or a hash table of the values (a 64-bit leaf), in_hmask + 1 slots, in_hused marks the full ones */
+	uint8	   *in_hused;
+	uint64		in_hmask;
 	ExprState  *expr;			/* SAP_LUT */
 	Param	   *param;
 	bool		null_result;	/* SAP_LUT: the expression for a NULL input */
@@ -1571,6 +1574,46 @@ nan_compares(int op, bool cnan)
 	}
 }
 
+static inline uint64
+in_hash64(uint64 x)
+{
+	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	return x ^ (x >> 32);
+}
+
+/* the values of a 64-bit IN list in an open-addressing table of at most half full slots */
+static void
+in_hash_build(PredState *st, const int64 *vals, int nv)
+{
+	uint64		cap = 16;
+
+	while (cap < (uint64) nv * 2)
+		cap <<= 1;
+	st->in_hmask = cap - 1;
+	st->in_htab = palloc(cap * sizeof(int64));
+	st->in_hused = palloc0(cap);
+	for (int i = 0; i < nv; i++)
+	{
+		uint64		h = in_hash64((uint64) vals[i]) & st->in_hmask;
+
+		while (st->in_hused[h] && st->in_htab[h] != vals[i])
+			h = (h + 1) & st->in_hmask;
+		st->in_hused[h] = 1;
+		st->in_htab[h] = vals[i];
+	}
+}
+
+static bool
+in_hash_has(const PredState *st, int64 x)
+{
+	uint64		h = in_hash64((uint64) x) & st->in_hmask;
+
+	for (; st->in_hused[h]; h = (h + 1) & st->in_hmask)
+		if (st->in_htab[h] == x)
+			return true;
+	return false;
+}
+
 static void
 eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 {
@@ -1613,12 +1656,13 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 		char		align;
 		int64		lo = PG_INT64_MAX,
 					hi = PG_INT64_MIN;
-		int32	   *vals;
+		int64	   *vals;
+		bool		wide = ex->lay->leaf[p->leaf].vtype == SCV_I64;
 
 		get_typlenbyvalalign(p->argtype, &len, &byval, &align);
 		deconstruct_array(arr, p->argtype, len, byval, align, &el, &nl, &ne);
 		st->in_empty = ne == 0;
-		vals = palloc(Max(ne, 1) * sizeof(int32));
+		vals = palloc(Max(ne, 1) * sizeof(int64));
 		for (int i = 0; i < ne; i++)
 		{
 			int64		v;
@@ -1629,37 +1673,39 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 				continue;
 			}
 			v = sift_aggspec_operand_int(p->argtype, el[i]);
-			if (v < PG_INT32_MIN || v > PG_INT32_MAX)
+			if (!wide && (v < PG_INT32_MIN || v > PG_INT32_MAX))
 				continue;		/* no int4 value equals it */
-			vals[nv++] = (int32) v;
+			vals[nv++] = v;
 			lo = Min(lo, v);
 			hi = Max(hi, v);
 		}
+		st->in_lut = palloc0(SIFT_AGG_PAD);
 		if (nv > 0)
 		{
-			int64		span = hi - lo + 1;
+			uint64		span = (uint64) hi - (uint64) lo + 1;	/* 0: all the 2^64 values */
 
-			if (span > MAX_RANGE)
+			if (span == 0 || span > MAX_RANGE)
 			{
-				qsort(vals, nv, sizeof(int32), int32_cmp_asc);
-				st->in_sorted = vals;
-				st->in_nsorted = nv;
+				if (wide)
+					in_hash_build(st, vals, nv);
+				else
+				{
+					st->in_sorted = palloc(nv * sizeof(int32));
+					for (int i = 0; i < nv; i++)
+						st->in_sorted[i] = (int32) vals[i];
+					qsort(st->in_sorted, nv, sizeof(int32), int32_cmp_asc);
+					st->in_nsorted = nv;
+				}
 			}
 			else
 			{
-			st->in_lo = (int32) lo;
-			st->in_nlut = (uint32) span;
-			st->in_lut = palloc0(span + SIFT_AGG_PAD);
-			for (int i = 0; i < nv; i++)
-				st->in_lut[vals[i] - lo] = 1;
-			st->in_dense = memchr(st->in_lut, 0, span) == NULL;
+				st->in_lo = lo;
+				st->in_nlut = (uint32) span;
+				st->in_lut = palloc0(span + SIFT_AGG_PAD);
+				for (int i = 0; i < nv; i++)
+					st->in_lut[vals[i] - lo] = 1;
+				st->in_dense = memchr(st->in_lut, 0, span) == NULL;
 			}
-		}
-		else
-		{
-			st->in_lo = 0;
-			st->in_nlut = 0;
-			st->in_lut = palloc0(SIFT_AGG_PAD);
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -1868,7 +1914,23 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 		fill_ones(out, n);
 		return;
 	}
-	if (st->in_sorted)
+	if (ex->lay->leaf[p->leaf].vtype == SCV_I64)
+	{
+		const int64 *x = (const int64 *) v->data + start;
+
+		clear_words(out, n);
+		if (st->in_htab)
+			for (int i = 0; i < n; i++)
+				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+		else
+			for (int i = 0; i < n; i++)
+			{
+				uint64		u = (uint64) x[i] - (uint64) st->in_lo;
+
+				out[i >> 6] |= (uint64) (u < st->in_nlut && st->in_lut[u]) << (i & 63);
+			}
+	}
+	else if (st->in_sorted)
 	{
 		const int32 *x = (const int32 *) v->data + start;
 
@@ -1878,7 +1940,7 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 				out[i >> 6] |= UINT64CONST(1) << (i & 63);
 	}
 	else
-		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, st->in_lo, st->in_nlut, st->in_lut);
+		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, (int32) st->in_lo, st->in_nlut, st->in_lut);
 	if (p->op)
 		negate(ex, out, n);
 	clear_nulls(ex, v, start, n, out);
