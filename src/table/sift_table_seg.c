@@ -361,6 +361,13 @@ value_out(const SiftColDef *def, Form_pg_attribute att, const SiftColVec *vec, u
 	}
 }
 
+/* The datum of the non-NULL row i of the vector of a leaf, as the table's column holds it */
+Datum
+sift_tbl_leaf_datum(Relation rel, const SiftColDef *def, const SiftColVec *vec, uint32 i)
+{
+	return value_out(def, TupleDescAttr(RelationGetDescr(rel), def->attno - 1), vec, i);
+}
+
 /* The leaves of a row (values/isnull as heap_deform_tuple gives them) */
 static void
 row_in(const SiftTblLayout *l, TupleDesc desc, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row)
