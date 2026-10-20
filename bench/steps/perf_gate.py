@@ -529,6 +529,23 @@ def insert_footprint(conn):
                 totals={name:fork_totals(forks)[name] for name in MUTABLE_RELATIONS})
 
 
+def cleanup_insert_sql(conn, statements, sink, primary):
+    """Restore temporary INSERT SQL state without demoting a known primary error."""
+    if primary is not None:
+        sink['primary_error'] = dict(type=type(primary).__name__,error=str(primary))
+    for statement in statements:
+        try:
+            conn.exec(statement)
+        except Exception as cleanup:
+            detail = dict(statement=statement,type=type(cleanup).__name__,error=str(cleanup))
+            sink.setdefault('cleanup_errors',[]).append(detail)
+            if primary is None or (isinstance(primary,Inconclusive) and not isinstance(cleanup,Inconclusive)):
+                raise
+            primary.add_note(f"INSERT SQL cleanup failed ({statement}): {type(cleanup).__name__}: {cleanup}")
+            return False
+    return True
+
+
 def check_insert(conn, identity, operations, sink):
     require_equal(conn.rows(SEED_IDENTITY),[[str(identity['seed_count']),str(identity['seed_max_id']),identity['seed_digest']]],
                   'INSERT seed unchanged')
@@ -546,13 +563,13 @@ def check_insert(conn, identity, operations, sink):
     conn.exec('SET sift.enable_agg=off')
     try:
         count,digest,actual_count,actual_digest,difference = conn.rows(query)[0]
+        sink.update(expected_count=int(count),expected_digest=digest,actual_count=int(actual_count),
+                    actual_digest=actual_digest,multiset_difference=int(difference))
+        require_equal(int(count),identity['seed_count']+operations,'INSERT expected count')
+        require_equal((actual_count,actual_digest,difference),(count,digest,'0'),'INSERT full multiset')
+        return sink
     finally:
-        conn.exec('SET sift.enable_agg=on')
-    sink.update(expected_count=int(count),expected_digest=digest,actual_count=int(actual_count),
-                actual_digest=actual_digest,multiset_difference=int(difference))
-    require_equal(int(count),identity['seed_count']+operations,'INSERT expected count')
-    require_equal((actual_count,actual_digest,difference),(count,digest,'0'),'INSERT full multiset')
-    return sink
+        cleanup_insert_sql(conn,['SET sift.enable_agg=on'],sink,sys.exc_info()[1])
 
 
 def insert_control_count(conn):
@@ -573,9 +590,9 @@ def install_insert_control(conn, seed_max):
     conn.exec("SET perf_gate.delayed_rows='0'")
 
 
-def remove_insert_control(conn):
-    conn.exec('DROP TRIGGER perf_gate_insert_delay ON mutable')
-    conn.exec('DROP FUNCTION perf_gate_insert_delay()')
+def remove_insert_control(conn, sink, primary):
+    return cleanup_insert_sql(conn,['DROP TRIGGER perf_gate_insert_delay ON mutable',
+                                    'DROP FUNCTION perf_gate_insert_delay()'],sink,primary)
 
 
 def insert_visit(conn, case, identity, operations, deadline, sink, *, pilot=False, control=False):
@@ -684,7 +701,11 @@ def insert_control_budget(unchanged, deadline):
                 predicted_clean_stream_reset_seconds=clean,predicted_check_seconds=checks,
                 validation_seconds=validation,minimum_added_sleep_seconds=sleep,
                 predicted_seconds=clean+checks+validation+sleep,remaining_seconds=deadline-time.monotonic(),
-                limitations='prefix pilot, scheduler rounding, trigger/reset predicate/counter and setup overhead may exceed prediction')
+                cost_scope=dict(startup='already elapsed; deducted from remaining global budget',
+                                reset='clean pilot reset costs included; trigger predicate overhead excluded',
+                                fault_setup='trigger DDL, preflight report write and removal overhead excluded',
+                                sleep='26*N*configured delay minimum; counter/scheduler overhead excluded'),
+                limitations='prefix pilot may miss later costs; prediction is not a full runtime bound')
 
 
 def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None):
@@ -719,7 +740,7 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     return saved
 
 
-def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None):
+def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None):
     start = time.monotonic()
     result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
@@ -745,13 +766,21 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None)
             result['phase_runtime_seconds']['calibration'] = time.monotonic()-calibration_start
             calibration = result['calibration']
             if control:
+                result['operations'] = calibration['operations']
+                result['phase'] = 'control_preflight'
                 result['control_budget'] = insert_control_budget(frozen,deadline)
+                report['mutation_control_preflight'] = dict(
+                    recorded_at=utc_now(),phase='before_fault',fault_installed=False,
+                    workload_version=case.workload_version,identity=identity,
+                    operations=calibration['operations'],calibration=calibration,
+                    control_budget=result['control_budget'])
+                # Existing artifacts must be closed on disk before the first fault DDL.
+                write_report(output,report)
                 if result['control_budget']['predicted_seconds']>result['control_budget']['remaining_seconds']:
                     raise BudgetExpired('insufficient remaining budget for fixed full mutation control')
                 result['control'] = dict(kind='per_new_row_trigger',delay_seconds=INSERT_CONTROL_DELAY,
                                          seed_max_id=identity['seed_max_id'],counter='perf_gate.delayed_rows')
-                # Install only after clean frozen calibration and the control budget plan.
-
+                result['phase'] = 'control_setup'
                 install_insert_control(revisions[1].conn,identity['seed_max_id'])
                 installed = True
             validation_start = time.monotonic()
@@ -790,10 +819,11 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None)
         result['complete'],result['phase'] = True,'complete'
         return result
     finally:
-        if installed:
-            remove_insert_control(revisions[1].conn)
-            result['control']['removed'] = True
-        result['runtime_seconds'] = time.monotonic()-start
+        try:
+            if installed:
+                result['control']['removed'] = remove_insert_control(revisions[1].conn,result,sys.exc_info()[1])
+        finally:
+            result['runtime_seconds'] = time.monotonic()-start
 
 
 def normal_size_checks(report):
@@ -856,6 +886,11 @@ def write_report(output, report):
                   'Budget envelope: `'+json.dumps(report.get('budget',{}))+'`. Cleanup/report reserve is an allowance, not a hard deadline.',
                   'Fixture checkpoint barrier: `'+json.dumps(report.get('fixture_checkpoint_barrier',{}))+'`.',
                   'This is a small warm serial workload on the recorded host; no hardware-counter or release throughput claim.'])
+    if 'mutation_control_preflight' in report:
+        preflight = report['mutation_control_preflight']
+        lines.extend(['', 'Mutation control preflight (persisted before fault setup):',
+                      f"N={preflight['operations']}; clean calibration, raw pilots and caps: `mutation_control_preflight.calibration` in results.json.",
+                      'Budget: `'+json.dumps(preflight['control_budget'])+'`.'])
     if 'error' in report:
         lines.extend(['', 'Error: '+report['error']])
     (output/'summary.md').write_text('\n'.join(lines)+'\n')
@@ -971,7 +1006,8 @@ def main(argv=None):
             unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'])
             unchanged_insert['name'] = 'control_insert_unchanged'
             report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
-            slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert)
+            slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert,
+                                    report=report,output=args.output)
             slowed_insert['name'] = 'control_insert_per_row_slowdown'
             report['size_checks'].append(churn_sizes(revisions))
             before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
@@ -998,6 +1034,8 @@ def main(argv=None):
         report['budget_exhausted'],report['error'] = isinstance(exc,BudgetExpired),str(exc)
     except Exception as exc:
         report['status'],report['error'] = 'error',f'{type(exc).__name__}: {exc}'
+        if getattr(exc,'__notes__',None):
+            report['error'] += '; '+'; '.join(exc.__notes__)
     finally:
         if 'fixture_checkpoint_barrier' in report:
             report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']

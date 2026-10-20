@@ -1,5 +1,10 @@
 """NoDB behavioral contracts for bounded, separately committed insert trajectories."""
 import math
+import contextlib
+import io
+import json
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 from test_perf_gate import gate
@@ -240,6 +245,164 @@ class InsertTrajectory(unittest.TestCase):
                 gate.block([Rev(),Rev()],CASE,5,math.inf,sink=saved,identity={})
         self.assertEqual(saved['samples'],[[1,1],[None,None]])
         self.assertNotIn('n',saved)
+
+
+    def test_oracle_primary_error_survives_expired_aggregate_restore(self):
+        identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed'}
+        class Conn(gate.SQL):
+            def __init__(self): pass
+            def run(self,sql): pass
+            def rows(self,sql):
+                if sql==gate.SEED_IDENTITY: return [['8192','8192','seed']]
+                gate.DEADLINE = -math.inf
+                raise RuntimeError('full multiset SQL failed')
+        saved = {}
+        gate.DEADLINE = math.inf
+        try:
+            with self.assertRaisesRegex(RuntimeError,'full multiset SQL failed'):
+                gate.check_insert(Conn(),identity,5,saved)
+            self.assertIn('before SQL operation',saved['cleanup_errors'][0]['error'])
+        finally:
+            gate.DEADLINE = math.inf
+
+    def test_control_primary_error_survives_expired_trigger_removal(self):
+        class Conn(gate.SQL):
+            def __init__(self): pass
+            def run(self,sql): pass
+        class Rev: conn=Conn()
+        identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed'}
+        frozen = {'name':'clean','identity':identity,'calibration':{'operations':5}}
+        saved = []
+        def invalid(*args,**kwargs):
+            gate.DEADLINE = -math.inf
+            raise ValueError('original correctness error')
+        gate.DEADLINE = math.inf
+        try:
+            with patch.object(gate,'insert_identity',return_value=identity), \
+                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100}), \
+                 patch.object(gate,'validate_insert',side_effect=invalid), patch.object(gate,'write_report'):
+                with self.assertRaisesRegex(ValueError,'original correctness error'):
+                    gate.measure([Rev(),Rev()],CASE,math.inf,True,sink=saved,frozen=frozen,report={})
+            self.assertIn('before SQL operation',saved[0]['cleanup_errors'][0]['error'])
+            self.assertIn('runtime_seconds',saved[0])
+        finally:
+            gate.DEADLINE = math.inf
+
+
+    def main_cleanup_scenario(self, mode):
+        identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed','first_id':8193}
+        calibration = {'operations':5,'pilot_operations':256,'growth_cap_operations':2048,
+                       'predicted_wall_limit_seconds':1,'predicted_reset_loop_seconds':[.105,.105],
+                       'loop_wall_seconds_per_operation':[.001,.001],
+                       'pilots':[{'reset_seconds':.1,'operation_seconds':[.001]*256},
+                                 {'reset_seconds':.1,'operation_seconds':[.002]*256}]}
+        observed = []
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            class Conn(gate.SQL):
+                def __init__(self): self.control=False
+                def run(self,raw):
+                    sql = raw.decode()
+                    if sql.startswith('CREATE FUNCTION'):
+                        path = output/'results.json'
+                        # Inspect the actual persisted report at the first fault statement.
+                        assert path.exists(), 'pre-fault results.json missing'
+                        snapshot = json.loads(path.read_text())
+                        assert 'mutation_control_preflight' in snapshot, 'preflight evidence missing'
+                        observed.append(snapshot['mutation_control_preflight'])
+                        assert snapshot['cases'][-1]['phase']=='control_preflight'
+                        if mode=='setup_error': raise RuntimeError('trigger setup SQL failed')
+                        if mode=='setup_budget': raise gate.BudgetExpired('fault setup interrupted')
+                        self.control=True
+                    if sql.startswith('DROP TRIGGER') and mode in ('cleanup','budget_cleanup_error'):
+                        raise RuntimeError('trigger removal SQL failed')
+                def rows(self,sql):
+                    if sql==gate.SEED_IDENTITY: return [['8192','8192','seed']]
+                    if sql.startswith('WITH expected'):
+                        gate.DEADLINE = -math.inf
+                        if mode=='oracle_sql': raise RuntimeError('full multiset SQL failed')
+                        return [['8197','expected','8197','corrupt','2']]
+                    return [['3']]
+            class Revision:
+                def __init__(self,name,*args):
+                    self.name,self.conn,self.timings,self.versions,self.started = name,Conn(),{},[],False
+                def setup(self,rows): return ''
+                def stop(self,output): pass
+            def calibrate(*args): args[-1].update(calibration)
+            def validate(revisions,case,identity,n,deadline,sink,**kwargs):
+                sink.update(visits=[{'oracle':{}}],size_checks=None)
+                if mode.startswith('oracle_'):
+                    gate.check_insert(revisions[0].conn,identity,n,sink['visits'][0]['oracle'])
+                if kwargs.get('control'):
+                    if mode=='control_error':
+                        gate.DEADLINE = -math.inf
+                        raise ValueError('original correctness error')
+                    if mode=='budget':
+                        gate.DEADLINE = -math.inf
+                        raise gate.BudgetExpired('primary measurement budget')
+                    if mode=='budget_cleanup_error':
+                        raise gate.BudgetExpired('primary measurement budget')
+                sink['size_checks'] = {'state':'mutable_insert_trajectory','status':'pass','relations':[]}
+            def block(*args,**kwargs):
+                count = kwargs.get('pair_count',6)
+                return dict(gate.interval([(1,1.3 if args[4] else 1)]*count),
+                            visits=[[{'check_seconds':.001},{'check_seconds':.001}]]*count)
+            args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
+                    '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
+            with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+                 patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
+                 patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
+                 patch.object(gate,'sizes',return_value=[]), \
+                 patch.object(gate,'size_snapshot',return_value={'state':'settled_build','status':'pass','relations':[]}), \
+                 patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+                 patch.object(gate,'calibrate',return_value={'operations':5}), patch.object(gate,'block',side_effect=block), \
+                 patch.object(gate,'insert_identity',return_value=identity), \
+                 patch.object(gate,'calibrate_insert',side_effect=calibrate), patch.object(gate,'validate_insert',side_effect=validate), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    code = gate.main(args)
+                finally:
+                    gate.DEADLINE = math.inf
+            return code,json.loads((output/'results.json').read_text()),(output/'summary.md').read_text(),observed,calibration
+
+    def test_prefault_snapshot_is_written_and_survives_fault_setup_failure(self):
+        for mode,expected in (('setup_error',3),('setup_budget',2)):
+            with self.subTest(mode=mode):
+                code,report,summary,observed,calibration = self.main_cleanup_scenario(mode)
+                self.assertEqual(code,expected)
+                self.assertEqual(len(observed),1)
+                record = report['mutation_control_preflight']
+                self.assertEqual(record,observed[0])
+                self.assertEqual(record['calibration'],calibration)
+                self.assertEqual([len(p['operation_seconds']) for p in record['calibration']['pilots']],[256,256])
+                self.assertEqual(record['calibration']['growth_cap_operations'],2048)
+                self.assertEqual(record['calibration']['predicted_wall_limit_seconds'],1)
+                self.assertFalse(record['fault_installed'])
+                self.assertIn('already elapsed',record['control_budget']['cost_scope']['startup'])
+                self.assertEqual(record['operations'],5)
+                self.assertEqual(record['control_budget']['candidate_delayed_operations'],130)
+                self.assertIn('Mutation control preflight',summary)
+                self.assertIn('runtime_seconds',report['cases'][-1])
+
+    def test_actual_main_preserves_primary_and_cleanup_error_precedence(self):
+        for mode,expected,primary in (
+            ('oracle_sql',3,'full multiset SQL failed'),
+            ('oracle_correctness',3,'INSERT full multiset'),
+            ('control_error',3,'original correctness error'),
+            ('budget',2,'primary measurement budget'),
+            ('cleanup',3,'trigger removal SQL failed'),
+            ('budget_cleanup_error',3,'trigger removal SQL failed')):
+            with self.subTest(mode=mode):
+                code,report,summary,observed,calibration = self.main_cleanup_scenario(mode)
+                self.assertEqual(code,expected)
+                self.assertIn(primary,report['error'])
+                self.assertIn(primary,summary)
+                case = report['cases'][-1]
+                saved = case['validation']['visits'][0]['oracle'] if mode.startswith('oracle_') else case
+                self.assertTrue(saved['cleanup_errors'])
+                self.assertIn('runtime_seconds',case)
+                if mode=='budget_cleanup_error':
+                    self.assertIn('primary measurement budget',saved['primary_error']['error'])
 
 
 
