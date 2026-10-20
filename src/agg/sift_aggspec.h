@@ -377,7 +377,8 @@ typedef struct SiftAggSlot
 } SiftAggSlot;
 
 /*
- * A combo evaluates expressions of up to SIFT_AGG_MAX_CLEAVES leaves (and, with a join, of the columns of the matching row) with
+ * A combo evaluates expressions of up to SIFT_AGG_MAX_CLEAVES inputs (source leaves or columns of earlier lookup outputs)
+ * and, with a join, of the columns of the matching row with
  * PostgreSQL's own evaluator, once per distinct tuple of the leaves' values (dictionary entries are compared by value). A combo
  * with a join gives the slots of every output row of a tuple: its matches, or one row of NULLs.
  */
@@ -385,6 +386,8 @@ typedef struct SiftAggCombo
 {
 	int			nleaves;
 	int			leaf[SIFT_AGG_MAX_CLEAVES];
+	int			refcombo[SIFT_AGG_MAX_CLEAVES]; /* leaf -1: an earlier lookup output */
+	int			refcol[SIFT_AGG_MAX_CLEAVES];
 	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
 	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
 	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];

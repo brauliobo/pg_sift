@@ -2,7 +2,7 @@
 
 ## Joins to plans
 
-The right side of a lookup join of `Custom Scan (SiftAgg)` is a table, or a plan: a `VALUES` list, a function (`generate_series`) or a sub-select that
+The right side of a lookup join of `Custom Scan (SiftAgg)` is a table, or a plan: a materialized CTE, a `VALUES` list, a function (`generate_series`) or a sub-select that
 PostgreSQL keeps (`GROUP BY`, `LIMIT`, `DISTINCT`, a set operation, a ranked scan with `LIMIT`) in an inner, `LEFT`, `IN` or `NOT EXISTS` join.
 PostgreSQL's plan of the right side is the child of the node (`EXPLAIN` shows it under `Lookup Joins: s (subquery)`); the scan runs it once when it
 starts, with the query's snapshot, and its rows are the lookup table, so duplicate keys multiply the rows, a NULL key matches nothing, and the result is the
@@ -13,7 +13,8 @@ The normal plan stays when the right side is lateral or reads a volatile functio
 estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there).
 A scan with such a join runs without workers.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
-Fixtures `pt_*`, tests `agg_plan_tables` and `agg_child_predicates`.
+Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
+Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates` and `agg_lookup_dependencies`.
 
 ## Outer joins that keep the other table
 

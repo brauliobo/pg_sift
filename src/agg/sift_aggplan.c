@@ -107,6 +107,8 @@ typedef struct ComboCtx
 	int			join;			/* index in AggCtx.joins, -1 none */
 	int			nl;
 	int			leaf[SIFT_AGG_MAX_CLEAVES];
+	int			refcombo[SIFT_AGG_MAX_CLEAVES];
+	int			refcol[SIFT_AGG_MAX_CLEAVES];
 	bool		typed[SIFT_AGG_MAX_CLEAVES];
 	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
 	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
@@ -1476,8 +1478,35 @@ combo_level(AggCtx *c, ComboCtx *cb)
 	int			lvl = 0;
 
 	for (int p = 0; p < cb->nl; p++)
-		lvl = Max(lvl, leaf_level(c, cb->leaf[p]));
+		lvl = Max(lvl, cb->leaf[p] >= 0 ? leaf_level(c, cb->leaf[p]) : combo_level(c, list_nth(c->combos, cb->refcombo[p])));
 	return lvl;
+}
+
+/* An input from an earlier lookup is identified by that output row, including its NULL extension. */
+static int
+combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
+{
+	int			col = join_col(jc, v),
+				p = 0;
+
+	if (col < 0 || jc->combo >= combo_index(c, cb))
+		return -1;
+	while (p < cb->nl && !(cb->leaf[p] == -1 && cb->refcombo[p] == jc->combo && cb->refcol[p] == col))
+		p++;
+	if (p == cb->nl)
+	{
+		if (p == SIFT_AGG_MAX_CLEAVES)
+			return -1;
+		cb->leaf[p] = -1;
+		cb->refcombo[p] = jc->combo;
+		cb->refcol[p] = col;
+		cb->ptype[p] = v->vartype;
+		cb->ptypmod[p] = v->vartypmod;
+		cb->pcoll[p] = v->varcollid;
+		cb->typed[p] = true;
+		cb->nl++;
+	}
+	return p;
 }
 
 /* `column = leaf` of the joined table: the equality of a dictionary leaf with a text column, of an integer leaf with an integer column */
@@ -1568,9 +1597,8 @@ combo_walker(Node *n, ComboWalk *w)
 	{
 		if ((jc = join_of_var(w->c, n)) != NULL)
 		{
-			if (w->jc != NULL && w->jc != jc)
-				w->bad = true;
-			w->jc = jc;
+			if (w->jc == NULL || jc->combo > w->jc->combo)
+				w->jc = jc;
 			w->vars = lappend(w->vars, n);
 			return false;
 		}
@@ -1761,13 +1789,16 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	else if ((tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) || tc != type_class(et))
 		return false;
 	combo_walker(e, &w);
-	if (w.bad || w.jc != NULL || w.nl == 0)
+	if (w.bad || (w.jc != NULL && w.jc->combo >= jc->combo) || (w.nl == 0 && w.vars == NIL))
 		return false;
 	for (int p = 0; p < w.nl; p++)
 		if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
 			return false;
 	for (int p = 0; p < w.nl; p++)
 		use_leaf(c, w.leaf[p]);
+	foreach_ptr(Var, v, w.vars)
+		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+			return false;
 	join_var(jc, (Var *) m);
 	j->keyatt[j->nkey] = ((Var *) m)->varattno;
 	j->keytype[j->nkey] = mt;
@@ -1791,7 +1822,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 	if (contain_volatile_functions(expr))
 		return false;
 	combo_walker(expr, &w);
-	if (force && w.jc != NULL && w.jc != force)
+	if (force && w.jc != NULL && w.jc->combo > force->combo)
 		return false;
 	if (force)
 		w.jc = force;
@@ -1821,8 +1852,12 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 		if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
 			return false;
 	foreach_ptr(Var, v, w.vars)
-		if (join_col(w.jc, v) < 0)
+	{
+		JoinCtx    *jc = join_of_var(c, (Node *) v);
+
+		if ((jc == w.jc ? join_col(jc, v) : combo_reference(c, cb, jc, v)) < 0)
 			return false;
+	}
 	for (int p = 0; p < w.nl; p++)
 		use_leaf(c, w.leaf[p]);
 	rq = palloc0(sizeof(SlotReq));
@@ -1879,6 +1914,17 @@ combo_sub_mutator(Node *n, ComboSub *s)
 			p->paramcollid = v->varcollid;
 			return (Node *) p;
 		}
+		if (join_of_var(s->c, n) != NULL)
+		{
+			Var		   *v = (Var *) n;
+
+			p->paramid = combo_reference(s->c, s->cb, join_of_var(s->c, n), v);
+			Assert(p->paramid >= 0);
+			p->paramtype = v->vartype;
+			p->paramtypmod = v->vartypmod;
+			p->paramcollid = v->varcollid;
+			return (Node *) p;
+		}
 		if ((id = match_leaf(s->c, n)) >= 0)
 		{
 			int			pos = combo_leaf(s->cb, id, false, 0, 0, 0);
@@ -1914,11 +1960,13 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 		for (int p = 0; p < cb->nl; p++)
 		{
 			o->leaf[p] = cb->leaf[p];
+			o->refcombo[p] = cb->refcombo[p];
+			o->refcol[p] = cb->refcol[p];
 			o->ptype[p] = cb->ptype[p];
 			o->ptypmod[p] = cb->ptypmod[p];
 			o->pcoll[p] = cb->pcoll[p];
-			o->level = Max(o->level, leaf_level(c, cb->leaf[p]));
 		}
+		o->level = combo_level(c, cb);
 		for (int k = 0; sub.jc && k < sub.jc->j.nkey; k++)
 			if (sub.jc->kexpr[k])
 				s->join[cb->join].keyexpr[k] = combo_sub_mutator(sub.jc->kexpr[k], &sub);
@@ -1946,7 +1994,7 @@ combo_text(AggCtx *c, int ci, Node *expr)
 
 	initStringInfo(&s);
 	for (int p = 0; p < cb->nl; p++)
-		appendStringInfo(&s, "%s%s", p ? ", " : "", leaf_name(c, cb->leaf[p]));
+		appendStringInfo(&s, "%s%s", p ? ", " : "", cb->leaf[p] >= 0 ? leaf_name(c, cb->leaf[p]) : "lookup output");
 	return psprintf("%s: %s", s.data, expr_text(c, expr));
 }
 
@@ -5379,7 +5427,8 @@ child_path(RelOptInfo *rel)
 	Path	   *best = NULL;
 
 	foreach_ptr(Path, p, rel->pathlist)
-		if (p->param_info == NULL && (IsA(p, SubqueryScanPath) || p->pathtype == T_ValuesScan || p->pathtype == T_FunctionScan) &&
+		if (p->param_info == NULL && (IsA(p, SubqueryScanPath) || p->pathtype == T_ValuesScan || p->pathtype == T_FunctionScan ||
+			p->pathtype == T_CteScan) &&
 			(best == NULL || p->total_cost < best->total_cost))
 			best = p;
 	return best;
@@ -5399,6 +5448,12 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 
 	switch (e->rtekind)
 	{
+		case RTE_CTE:
+			*what = "cte";
+			if (e->ctelevelsup != 0 || e->self_reference)
+				return false;
+			outer = false;
+			break;
 		case RTE_SUBQUERY:
 			*what = "subquery";
 			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
@@ -5549,8 +5604,6 @@ setup_joins(AggCtx *c, List **quals, List **post)
 		foreach_ptr(JoinCtx, jc, c->joins)
 			if (bms_is_member(jc->rti, v))
 			{
-				if (owner != NULL)
-					return false;
 				owner = jc;
 			}
 		if (owner == NULL)
@@ -5888,7 +5941,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if (c->func_kind == FK_NONE)
 				return false;
 		}
-		else if (input_rel == NULL || (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION) ||
+		else if (input_rel == NULL || (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE) ||
 				 !add_join(c, fs, rti))
 			return false;
 	}

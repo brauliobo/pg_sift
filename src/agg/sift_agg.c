@@ -601,6 +601,7 @@ typedef struct ComboSt
 	uint32		nout;
 	uint32		outcap;
 	uint32	   *val;			/* [out * nslots + slot]: key id (0 NULL) or boolean */
+	uint32	   *maprow;		/* output row -> lookup row, UINT32_MAX for a NULL extension */
 } ComboSt;
 
 /* the tuples of a chunk that reach the aggregates: positions in the chunk, element and row ordinals, and the output row of every join combo */
@@ -2635,7 +2636,19 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
-		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
+		const SiftSrcLeaf *lf;
+
+		if (cb->leaf[p] < 0)
+		{
+			ComboSt    *prior = &ex->cs[cb->refcombo[p]];
+			uint32		row = prior->maprow[v[p] - 1];
+			size_t		col = (size_t) row * prior->map->ncol + cb->refcol[p];
+
+			bind_param(ex, p, row == UINT32_MAX ? (Datum) 0 : prior->map->col[col],
+					   row == UINT32_MAX || prior->map->cnull[col]);
+			continue;
+		}
+		lf = &ex->lay->leaf[cb->leaf[p]];
 
 		if (v[p] == 0)
 			bind_param(ex, p, (Datum) 0, true);
@@ -2745,6 +2758,8 @@ combo_grow_out(AggExec *ex, ComboSt *cs, int nslots, uint32 add)
 		cs->outcap = Max(Max(cs->outcap * 2, cs->nout + add), 64);
 		cs->val = cs->val ? repalloc(cs->val, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32)) :
 			MemoryContextAlloc(cs->cxt, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
+		cs->maprow = cs->maprow ? repalloc(cs->maprow, cs->outcap * sizeof(uint32)) :
+			MemoryContextAlloc(cs->cxt, cs->outcap * sizeof(uint32));
 	}
 }
 
@@ -2936,6 +2951,7 @@ combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint3
 	ent->base = cs->nout;
 	for (uint32 o = 0; o < nout; o++)
 	{
+		cs->maprow[cs->nout] = nm > 0 ? rows[o] : UINT32_MAX;
 		for (int c = 0; c < j->ncol; c++)
 			bind_param(ex, cb->nleaves + c, nm > 0 ? m->col[(size_t) rows[o] * m->ncol + c] : (Datum) 0, nm == 0 || m->cnull[(size_t) rows[o] * m->ncol + c]);
 		for (int sl = 0; sl < cb->nslots; sl++)
@@ -3113,6 +3129,7 @@ combo_reset(AggExec *ex, int ci)
 	cs->vid = NULL;
 	cs->ent = NULL;
 	cs->val = NULL;
+	cs->maprow = NULL;
 	cs->dat = NULL;
 	cs->dnum = NULL;
 	cs->arena = NULL;
@@ -3121,7 +3138,7 @@ combo_reset(AggExec *ex, int ci)
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)
-		if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
+		if (cb->leaf[p] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
 			id64_init(&cs->id64[p]);
 	MemoryContextSwitchTo(old);
 }
@@ -3148,7 +3165,7 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
  * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
  */
 static void
-combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive)
+combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
 {
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	ComboSt    *cs = &ex->cs[ci];
@@ -3163,6 +3180,12 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		{
 			memset(vid, 0, n * sizeof(uint64));
 			continue;
+		}
+		else if (cb->leaf[p] < 0)
+		{
+			Assert(tuples != NULL);
+			for (int i = 0; i < n; i++)
+				vid[i] = (uint64) tuples->cout[cb->refcombo[p]][i] + 1;
 		}
 		else
 		{
@@ -3205,7 +3228,7 @@ combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o)
 {
 	ComboSt    *cs = &ex->cs[ci];
 
-	combo_resolve(ex, ci, ex->qlevel, ex->cur->n, ex->tidx, ex->ridx, o, alive);
+	combo_resolve(ex, ci, ex->qlevel, ex->cur->n, ex->tidx, ex->ridx, o, alive, ex->cur);
 	for (int i = 0; i < ex->cur->n; i++)
 		if (o[i] != COMBO_NONE)
 			o[i] = cs->ent[o[i]].base;
@@ -3240,7 +3263,7 @@ eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *ou
 		ex->pti[i] = start + i;
 		ex->pri[i] = qlevel ? par[start + i] : start + i;
 	}
-	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive);
+	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive, NULL);
 	clear_words(out, n);
 	for (int i = 0; i < n; i++)
 		if (ex->peid[i] != COMBO_NONE && combo_val(ex, p->leaf, cs->ent[ex->peid[i]].base, p->op))
@@ -7613,7 +7636,7 @@ semi_lut_build(AggExec *ex, int ci)
 	bool	   *keep;
 
 	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
-		cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut ||
+		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut ||
 		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;
 	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
@@ -7716,7 +7739,7 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 	own = &ex->stage[s];
 	eid = ex->peid;
-	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL);
+	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL, in);
 	for (int i = 0; i < n; i++)
 		plain &= cs->ent[eid[i]].nout == 1;
 	if (plain)
@@ -9728,7 +9751,14 @@ register_combos(AggExec *ex)
 		}
 		for (int p = 0; p < cb->nleaves; p++)
 		{
-			const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
+			const SiftSrcLeaf *lf;
+
+			if (cb->leaf[p] < 0)
+			{
+				cs->resettable = false;
+				continue;
+			}
+			lf = &ex->lay->leaf[cb->leaf[p]];
 
 			cs->resettable &= lf->vtype != SCV_CODE;
 			if (lf->typid == NUMERICOID && lf->vtype == SCV_I64 && lf->scale > 0)

@@ -41,6 +41,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: SiftAgg lookup keys and expressions may read earlier lookup outputs, retaining duplicate matches and NULL extensions. Materialized CTEs can supply lookup rows through their PostgreSQL plans.
+
 - Added: SiftAgg predicate-only joins to child plans, including overlapping date ranges, and preserved date buckets over a nullable JSON expansion. Duplicate matches and empty-bucket NULL inputs keep PostgreSQL semantics.
 
 - Added: pg_sift: SiftAgg pushes down jsonpath `!=` and constant variables where the result equals the heap's. The same forms push down with `!()`, a `null` literal, `@>` with a JSON null member and a strict path without `!()`; a JSON null member is told from a missing key by the complete kinds of column format minor 6; older units keep the normal plan when their kinds are uncertain. What stays on the normal plan: a literal of another JSON type than the member's, a number against a `float4` / `float8` member, strict `!()`, `jsonb_path_match` / `@@`, `@>` with a float or `{}`.

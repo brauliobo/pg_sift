@@ -985,6 +985,8 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		for (int k = 0; k < c->nleaves; k++)
 		{
 			put_int(p, c->leaf[k]);
+			put_int(p, c->refcombo[k]);
+			put_int(p, c->refcol[k]);
 			put_int(p, (int) c->ptype[k]);
 			put_int(p, c->ptypmod[k]);
 			put_int(p, (int) c->pcoll[k]);
@@ -1315,6 +1317,8 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		for (int k = 0; k < c->nleaves; k++)
 		{
 			c->leaf[k] = get_int(u);
+			c->refcombo[k] = get_int(u);
+			c->refcol[k] = get_int(u);
 			c->ptype[k] = (Oid) get_int(u);
 			c->ptypmod[k] = get_int(u);
 			c->pcoll[k] = (Oid) get_int(u);
