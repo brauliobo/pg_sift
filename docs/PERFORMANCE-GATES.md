@@ -201,17 +201,31 @@ counter and scheduler rounding add control overhead and are not subtracted.
 The trigger is removed before unrelated lifecycle work. Normal comparisons have
 no injection flags or environment controls.
 
-Before installing the trigger, artifacts record a control budget using the clean
+Before installing the trigger, the existing report writer persists
+`mutation_control_preflight` in `results.json` and `summary.md`: seed identity,
+frozen N, full clean calibration with raw 256-operation pilots from both sides,
+growth/wall caps and the complete control budget. This snapshot is written before
+fault DDL and retained in the final report if setup or measurement fails.
+
+The control budget uses the clean
 pilot reset/loop costs, observed checks/validation, worst-case fixed6+6 blocks,
 and all candidate warm AND measured delays, including validation:26*N*.001s
 minimum added sleep. Insufficient predicted remaining allowance is nonzero,
 without shortening N. This estimate excludes unobserved trigger/setup/scheduler
-overhead and is not a hard guarantee. Existing global deadline/reserve still
-applies. Acceptance requires a complete fresh mutation confirmation with lower
-CI>1.10, correct full-state/geometry, all normal size states PASS, both unchanged
+overhead and is not a full runtime bound. Build/cluster startup has already
+consumed the global budget; clean reset costs are included in the prediction,
+while added trigger predicate/function work during resets, fault DDL/removal,
+preflight reporting, counter and scheduler overhead are excluded. Existing global
+deadline/reserve still applies. Acceptance requires a complete fresh mutation
+confirmation with lower CI>1.10, correct full-state/geometry, all normal size states PASS, both unchanged
 controls PASS, confirmed read slowdown and rejected real BM25 size fault. An
 incomplete acceptance never passes. This tests sensitivity to a large actual
 per-row effect, not power at an11% regression. All deliberate faults remain
 labeled; acceptance success does not make their regression records normal passes.
 Final-head real acceptance, selected gate, hosted duration and larger-nightly
 feasibility still require separate measured evidence.
+
+Temporary INSERT SQL restoration/removal preserves any existing SQL/correctness
+error if cleanup also expires; both failures remain in case/oracle evidence. A
+standalone cleanup SQL error remains exit3, and ordinary deadline-only interruption
+remains incomplete/nonzero. Cluster teardown remains the final cleanup owner.
