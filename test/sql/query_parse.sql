@@ -81,6 +81,8 @@ SELECT q, pq(q) = pq(pq(q)) AS fixpoint FROM (VALUES
 
 -- index argument
 SELECT sift.parse_query('a', NULL), sift.parse_query(NULL);
+-- InvalidOid selects the default analyzer, including a non-NULL zero OID
+SELECT sift.parse_query('Hello', 0::oid::regclass);
 SELECT sift.parse_query('a', 'pg_class'::regclass);
 SELECT sift.parse_query('a', 'pg_class_oid_index'::regclass);
 

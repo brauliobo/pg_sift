@@ -12,21 +12,27 @@
 #include "sift_analyze.h"
 #include "sift_sql.h"
 
-/* Config of a sift index, or the default when index is NULL */
-static void
-config_for(FunctionCallInfo fcinfo, SiftAnalyzerConfig *cfg)
+/* Required-index lookup; callers decide when to use the default analyzer. */
+void
+sift_analyzer_config_lookup_index(Oid indexoid, SiftAnalyzerConfig *cfg)
 {
-	Relation	index;
+	Relation	index = index_open(indexoid, AccessShareLock);
 
-	if (PG_ARGISNULL(1))
-		return sift_analyzer_config_default(cfg);
-	index = index_open(PG_GETARG_OID(1), AccessShareLock);
 	if (index->rd_rel->relam != sift_catalog()->am)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
 	sift_analyzer_config_from_index(index, cfg);
 	index_close(index, AccessShareLock);
+}
+
+/* Config of a sift index, or the default when index is NULL */
+static void
+config_for(FunctionCallInfo fcinfo, SiftAnalyzerConfig *cfg)
+{
+	if (PG_ARGISNULL(1))
+		return sift_analyzer_config_default(cfg);
+	sift_analyzer_config_lookup_index(PG_GETARG_OID(1), cfg);
 }
 
 /*

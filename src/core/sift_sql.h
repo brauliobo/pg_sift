@@ -8,6 +8,10 @@
 
 #include "fmgr.h"
 
+/* sift_analyze_sql.c: requires an index OID, with no default selection */
+struct SiftAnalyzerConfig;
+extern void sift_analyzer_config_lookup_index(Oid indexoid, struct SiftAnalyzerConfig *cfg);
+
 /* sift_handler.c */
 extern PGDLLEXPORT Datum sift_handler(PG_FUNCTION_ARGS);
 
