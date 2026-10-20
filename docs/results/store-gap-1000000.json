@@ -2,12 +2,12 @@
  "rows": 1000000,
  "settings": "huge_pages=try jit=off max_parallel_workers_per_gather=4 shared_buffers=2621448kB work_mem=65536kB",
  "version": "18.6",
- "sift": "3.0",
+ "sift": "3.1",
  "queries": {
   "01": {
    "title": "Find one order by its id",
    "explain": {
-    "planning_first_ms": 0.535,
+    "planning_first_ms": 0.706,
     "planning_ms": 0.005,
     "execution_ms": 0.002,
     "top": "Index Scan",
@@ -19,9 +19,9 @@
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.567,
-    "planning_ms": 0.006,
-    "execution_ms": 0.002,
+    "planning_first_ms": 0.593,
+    "planning_ms": 0.009,
+    "execution_ms": 0.004,
     "top": "Index Scan",
     "siftagg": null,
     "siftagg_ms": null,
@@ -31,66 +31,51 @@
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.017,
+    "plain, no sift library": 0.015,
     "plain table, hook loaded": 0.016,
-    "sift table, sift.enable_agg=off": 0.018,
-    "sift table, sift.enable_agg=on": 0.019
+    "sift table, sift.enable_agg=off": 0.015,
+    "sift table, sift.enable_agg=on": 0.016
    },
    "perf": {
-    "wall_ms": 0.04,
-    "instructions": 138983.5,
-    "cycles": 89183.9,
-    "task_ms": 0.024,
+    "wall_ms": 0.05,
+    "instructions": 138984.55,
+    "cycles": 115624.15,
+    "task_ms": 0.0295,
     "top": [
      {
-      "pct": 57.35,
-      "dso": "postgres",
-      "symbol": "LockReleaseAll"
-     },
-     {
-      "pct": 34.7,
+      "pct": 78.76,
       "dso": "postgres",
       "symbol": "ReleasePredicateLocks"
      },
      {
-      "pct": 6.24,
+      "pct": 16.46,
       "dso": "postgres",
-      "symbol": "ScanKeywordLookup"
+      "symbol": "add_path"
      },
      {
-      "pct": 1.34,
+      "pct": 3.93,
       "dso": "postgres",
-      "symbol": "base_yyparse"
+      "symbol": "0x00000000006fff6a"
      },
      {
-      "pct": 0.3,
-      "dso": "libc.so.6",
-      "symbol": "__errno_location"
+      "pct": 0.61,
+      "dso": "postgres",
+      "symbol": "0x0000000000a12685"
      },
      {
-      "pct": 0.05,
-      "dso": "libc.so.6",
-      "symbol": "recv"
-     },
-     {
-      "pct": 0.02,
+      "pct": 0.22,
       "dso": "postgres",
       "symbol": "secure_read"
      },
      {
-      "pct": 0.0,
-      "dso": "postgres",
-      "symbol": "0x000000000070753e"
+      "pct": 0.02,
+      "dso": "libc.so.6",
+      "symbol": "recv"
      },
      {
       "pct": 0.0,
       "dso": "postgres",
-      "symbol": "0x00000000007074c1"
-     },
-     {
-      "pct": 0.0,
-      "dso": "postgres",
-      "symbol": "0x0000000000707550"
+      "symbol": "secure_raw_read"
      },
      {
       "pct": 0.0,
@@ -100,7 +85,22 @@
      {
       "pct": 0.0,
       "dso": "postgres",
-      "symbol": "0x0000000000707681"
+      "symbol": "0x000000000070753e"
+     },
+     {
+      "pct": 0.0,
+      "dso": "postgres",
+      "symbol": "0x0000000000707540"
+     },
+     {
+      "pct": 0.0,
+      "dso": "postgres",
+      "symbol": "0x00000000007078f2"
+     },
+     {
+      "pct": 0.0,
+      "dso": "postgres",
+      "symbol": "0x0000000000707931"
      }
     ]
    }
@@ -108,133 +108,130 @@
   "02": {
    "title": "How many orders per country",
    "explain": {
-    "planning_first_ms": 0.978,
-    "planning_ms": 0.076,
-    "execution_ms": 4.896,
+    "planning_first_ms": 0.865,
+    "planning_ms": 0.02,
+    "execution_ms": 0.269,
     "top": "Custom Scan",
     "siftagg": {
-     "Workers Planned": 3,
-     "Workers Launched": 3,
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 30,
      "Heap Pages": 0
     },
-    "siftagg_ms": 5.183,
+    "siftagg_ms": 0.289,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=6191.11..6191.41 rows=30 width=11)",
+     "Custom Scan (SiftAgg)  (cost=1537.50..1537.80 rows=30 width=11)",
      "  Index: orders_col",
      "  Group Keys: country",
-     "  Pushed Aggregates: count(*)",
-     "  Workers Planned: 3"
+     "  Pushed Aggregates: count(*)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.958,
-    "planning_ms": 0.041,
-    "execution_ms": 2.524,
+    "planning_first_ms": 0.708,
+    "planning_ms": 0.012,
+    "execution_ms": 0.225,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 30,
      "Heap Pages": 0
     },
-    "siftagg_ms": 2.449,
+    "siftagg_ms": 0.207,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=15350.00..15350.30 rows=30 width=11)",
+     "Custom Scan (SiftAgg)  (cost=1537.50..1537.80 rows=30 width=11)",
      "  Index: orders_col",
      "  Group Keys: country",
      "  Pushed Aggregates: count(*)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.021,
-    "plain table, hook loaded": 0.025,
-    "sift table, sift.enable_agg=off": 0.02,
-    "sift table, sift.enable_agg=on": 0.018
+    "plain, no sift library": 0.017,
+    "plain table, hook loaded": 0.015,
+    "sift table, sift.enable_agg=off": 0.016,
+    "sift table, sift.enable_agg=on": 0.017
    },
    "perf": {
-    "wall_ms": 2.77,
-    "instructions": 33065277.5,
-    "cycles": 12116835.65,
-    "task_ms": 2.7205,
+    "wall_ms": 0.29,
+    "instructions": 2198032.85,
+    "cycles": 1007300.9,
+    "task_ms": 0.273,
     "top": [
      {
-      "pct": 23.36,
+      "pct": 24.03,
       "dso": "pg_sift.so",
-      "symbol": "agk_count_gid_scalar"
+      "symbol": "unit_parse.part.0"
      },
      {
-      "pct": 15.37,
+      "pct": 9.8,
+      "dso": "postgres",
+      "symbol": "AllocSetAlloc"
+     },
+     {
+      "pct": 9.15,
       "dso": "pg_sift.so",
-      "symbol": "agg_chunk"
+      "symbol": "ot_id"
      },
      {
-      "pct": 12.31,
-      "dso": "pg_sift.so",
-      "symbol": "gid_code_avx512"
-     },
-     {
-      "pct": 9.76,
-      "dso": "pg_sift.so",
-      "symbol": "read_positions"
-     },
-     {
-      "pct": 8.95,
-      "dso": "pg_sift.so",
-      "symbol": "gather_u32_avx512"
-     },
-     {
-      "pct": 7.35,
-      "dso": "pg_sift.so",
-      "symbol": "unit_page"
-     },
-     {
-      "pct": 2.26,
-      "dso": "pg_sift.so",
-      "symbol": "bits_to_idx_avx512"
-     },
-     {
-      "pct": 2.03,
-      "dso": "pg_sift.so",
-      "symbol": "cc_unpack32_avx512"
-     },
-     {
-      "pct": 1.89,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
-     },
-     {
-      "pct": 1.88,
-      "dso": "pg_sift.so",
-      "symbol": "for_i64_u32_avx512"
-     },
-     {
-      "pct": 1.4,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
-     },
-     {
-      "pct": 0.88,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7d10"
-     },
-     {
-      "pct": 0.78,
-      "dso": "pg_sift.so",
-      "symbol": "sift_col_vet"
-     },
-     {
-      "pct": 0.76,
+      "pct": 6.86,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b7cef"
+     },
+     {
+      "pct": 6.7,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7d24"
+     },
+     {
+      "pct": 4.41,
+      "dso": "postgres",
+      "symbol": "0x00000000006ce714"
+     },
+     {
+      "pct": 3.96,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7cdb"
+     },
+     {
+      "pct": 3.87,
+      "dso": "postgres",
+      "symbol": "markTargetListOrigins"
+     },
+     {
+      "pct": 3.8,
+      "dso": "postgres",
+      "symbol": "0x000000000099e313"
+     },
+     {
+      "pct": 3.72,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b8340"
+     },
+     {
+      "pct": 3.65,
+      "dso": "postgres",
+      "symbol": "0x0000000000717874"
+     },
+     {
+      "pct": 3.58,
+      "dso": "postgres",
+      "symbol": "base_yyparse"
+     },
+     {
+      "pct": 2.48,
+      "dso": "libc.so.6",
+      "symbol": "0x000000000006bd3c"
+     },
+     {
+      "pct": 0.34,
+      "dso": "postgres",
+      "symbol": "0x00000000007333ee"
      }
     ]
    }
@@ -242,130 +239,130 @@
   "03": {
    "title": "Revenue per month",
    "explain": {
-    "planning_first_ms": 0.731,
-    "planning_ms": 0.08,
-    "execution_ms": 4.442,
+    "planning_first_ms": 0.78,
+    "planning_ms": 0.02,
+    "execution_ms": 0.242,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 36,
      "Heap Pages": 0
     },
-    "siftagg_ms": 4.38,
+    "siftagg_ms": 0.218,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=17100.00..17100.36 rows=36 width=36)",
+     "Custom Scan (SiftAgg)  (cost=1725.00..1725.36 rows=36 width=36)",
      "  Index: orders_col",
      "  Group Keys: (date_trunc('month'::text, orders.created_at))::date",
      "  Pushed Aggregates: sum(orders.amount)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.687,
-    "planning_ms": 0.042,
-    "execution_ms": 4.372,
+    "planning_first_ms": 0.654,
+    "planning_ms": 0.014,
+    "execution_ms": 0.235,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 36,
      "Heap Pages": 0
     },
-    "siftagg_ms": 4.187,
+    "siftagg_ms": 0.216,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=17100.00..17100.36 rows=36 width=36)",
+     "Custom Scan (SiftAgg)  (cost=1725.00..1725.36 rows=36 width=36)",
      "  Index: orders_col",
      "  Group Keys: (date_trunc('month'::text, orders.created_at))::date",
      "  Pushed Aggregates: sum(orders.amount)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.018,
-    "plain table, hook loaded": 0.02,
-    "sift table, sift.enable_agg=off": 0.024,
-    "sift table, sift.enable_agg=on": 0.028
+    "plain, no sift library": 0.016,
+    "plain table, hook loaded": 0.018,
+    "sift table, sift.enable_agg=off": 0.02,
+    "sift table, sift.enable_agg=on": 0.02
    },
    "perf": {
-    "wall_ms": 4.83,
-    "instructions": 71900049.95,
-    "cycles": 20989829.15,
-    "task_ms": 4.7455,
+    "wall_ms": 0.36,
+    "instructions": 2542114.85,
+    "cycles": 1185922.0,
+    "task_ms": 0.3375,
     "top": [
      {
-      "pct": 26.55,
-      "dso": "pg_sift.so",
-      "symbol": "join_stage"
-     },
-     {
-      "pct": 9.23,
-      "dso": "pg_sift.so",
-      "symbol": "gid_i32_avx512"
-     },
-     {
-      "pct": 8.88,
-      "dso": "pg_sift.so",
-      "symbol": "agg_chunk"
-     },
-     {
-      "pct": 6.65,
-      "dso": "pg_sift.so",
-      "symbol": "sift_colk_for_sel_u64_scalar"
-     },
-     {
-      "pct": 6.64,
-      "dso": "pg_sift.so",
-      "symbol": "agk_count_gid_scalar"
-     },
-     {
-      "pct": 5.61,
-      "dso": "pg_sift.so",
-      "symbol": "eval_nx"
-     },
-     {
-      "pct": 4.1,
-      "dso": "pg_sift.so",
-      "symbol": "gather_u32_avx512"
-     },
-     {
-      "pct": 3.82,
-      "dso": "pg_sift.so",
-      "symbol": "col_read"
-     },
-     {
-      "pct": 3.05,
-      "dso": "pg_sift.so",
-      "symbol": "unit_page"
-     },
-     {
-      "pct": 2.17,
+      "pct": 8.07,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cdb"
+      "symbol": "0x00000000001b7cfd"
      },
      {
-      "pct": 2.17,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
-     },
-     {
-      "pct": 1.93,
+      "pct": 7.0,
       "dso": "pg_sift.so",
-      "symbol": "minmax_i32_avx512"
+      "symbol": "unit_parse.part.0"
      },
      {
-      "pct": 1.63,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cef"
+      "pct": 6.36,
+      "dso": "postgres",
+      "symbol": "SearchCatCache1"
      },
      {
-      "pct": 1.42,
+      "pct": 6.06,
+      "dso": "postgres",
+      "symbol": "0x00000000004ef949"
+     },
+     {
+      "pct": 5.95,
+      "dso": "postgres",
+      "symbol": "AllocSetAlloc"
+     },
+     {
+      "pct": 5.44,
+      "dso": "pg_sift.so",
+      "symbol": "page_block"
+     },
+     {
+      "pct": 5.27,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
+      "symbol": "0x00000000000bc9da"
+     },
+     {
+      "pct": 4.79,
+      "dso": "postgres",
+      "symbol": "make_pathtarget_from_tlist"
+     },
+     {
+      "pct": 4.02,
+      "dso": "postgres",
+      "symbol": "0x00000000006ce600"
+     },
+     {
+      "pct": 3.7,
+      "dso": "pg_sift.so",
+      "symbol": "process_unit"
+     },
+     {
+      "pct": 3.57,
+      "dso": "postgres",
+      "symbol": "ResourceOwnerForget"
+     },
+     {
+      "pct": 3.39,
+      "dso": "postgres",
+      "symbol": "numeric_in"
+     },
+     {
+      "pct": 3.22,
+      "dso": "pg_sift.so",
+      "symbol": "get_zz128"
+     },
+     {
+      "pct": 3.13,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7ccd"
      }
     ]
    }
@@ -373,136 +370,136 @@
   "04": {
    "title": "The 10 categories with the most revenue",
    "explain": {
-    "planning_first_ms": 0.861,
-    "planning_ms": 0.081,
-    "execution_ms": 4.401,
+    "planning_first_ms": 0.898,
+    "planning_ms": 0.037,
+    "execution_ms": 0.29,
     "top": "Limit",
     "siftagg": {
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 40,
      "Heap Pages": 0
     },
-    "siftagg_ms": 4.266,
+    "siftagg_ms": 0.24,
     "plan": [
-     "Limit  (cost=17101.26..17101.29 rows=10 width=39)",
-     "  ->  Sort  (cost=17101.26..17101.36 rows=40 width=39)",
+     "Limit  (cost=1851.26..1851.29 rows=10 width=39)",
+     "  ->  Sort  (cost=1851.26..1851.36 rows=40 width=39)",
      "        Sort Key: (sum(amount)) DESC, category",
-     "        ->  Custom Scan (SiftAgg)  (cost=17100.00..17100.40 rows=40 width=39)",
+     "        ->  Custom Scan (SiftAgg)  (cost=1850.00..1850.40 rows=40 width=39)",
      "              Index: orders_col",
      "              Group Keys: category",
      "              Pushed Aggregates: sum(orders.amount)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 1.029,
-    "planning_ms": 0.095,
-    "execution_ms": 6.061,
+    "planning_first_ms": 0.784,
+    "planning_ms": 0.02,
+    "execution_ms": 0.256,
     "top": "Limit",
     "siftagg": {
      "Units": 52,
      "Units Pruned": 0,
-     "Rows Scanned": 1000000,
-     "Tuples Aggregated": 1000000,
+     "Rows Scanned": 0,
+     "Tuples Aggregated": 0,
      "Rows Vetted By Heap": 0,
      "Groups": 40,
      "Heap Pages": 0
     },
-    "siftagg_ms": 5.906,
+    "siftagg_ms": 0.224,
     "plan": [
-     "Limit  (cost=17101.26..17101.29 rows=10 width=39)",
-     "  ->  Sort  (cost=17101.26..17101.36 rows=40 width=39)",
+     "Limit  (cost=1851.26..1851.29 rows=10 width=39)",
+     "  ->  Sort  (cost=1851.26..1851.36 rows=40 width=39)",
      "        Sort Key: (sum(amount)) DESC, category",
-     "        ->  Custom Scan (SiftAgg)  (cost=17100.00..17100.40 rows=40 width=39)",
+     "        ->  Custom Scan (SiftAgg)  (cost=1850.00..1850.40 rows=40 width=39)",
      "              Index: orders_col",
      "              Group Keys: category",
      "              Pushed Aggregates: sum(orders.amount)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.031,
-    "plain table, hook loaded": 0.025,
-    "sift table, sift.enable_agg=off": 0.023,
-    "sift table, sift.enable_agg=on": 0.024
+    "plain, no sift library": 0.02,
+    "plain table, hook loaded": 0.026,
+    "sift table, sift.enable_agg=off": 0.022,
+    "sift table, sift.enable_agg=on": 0.021
    },
    "perf": {
-    "wall_ms": 4.45,
-    "instructions": 62366667.5,
-    "cycles": 19305406.65,
-    "task_ms": 4.3505,
+    "wall_ms": 0.37,
+    "instructions": 2718493.15,
+    "cycles": 1287457.45,
+    "task_ms": 0.3465,
     "top": [
      {
-      "pct": 21.28,
-      "dso": "pg_sift.so",
-      "symbol": "join_stage"
+      "pct": 14.33,
+      "dso": "postgres",
+      "symbol": "0x0000000000a1d8d3"
      },
      {
-      "pct": 11.19,
+      "pct": 13.48,
       "dso": "pg_sift.so",
-      "symbol": "gid_code_avx512"
+      "symbol": "preagg_add"
      },
      {
-      "pct": 10.04,
-      "dso": "pg_sift.so",
-      "symbol": "agg_chunk"
+      "pct": 10.91,
+      "dso": "postgres",
+      "symbol": "core_yylex"
      },
      {
-      "pct": 8.34,
-      "dso": "pg_sift.so",
-      "symbol": "eval_nx"
-     },
-     {
-      "pct": 7.71,
-      "dso": "pg_sift.so",
-      "symbol": "gather_u32_avx512"
-     },
-     {
-      "pct": 5.07,
-      "dso": "pg_sift.so",
-      "symbol": "agk_count_gid_scalar"
-     },
-     {
-      "pct": 4.26,
-      "dso": "pg_sift.so",
-      "symbol": "read_positions"
-     },
-     {
-      "pct": 3.21,
+      "pct": 8.95,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b7cef"
      },
      {
-      "pct": 3.15,
+      "pct": 7.64,
+      "dso": "postgres",
+      "symbol": "AllocSetAlloc"
+     },
+     {
+      "pct": 7.36,
+      "dso": "postgres",
+      "symbol": "ResourceOwnerForget"
+     },
+     {
+      "pct": 6.83,
       "dso": "pg_sift.so",
-      "symbol": "unit_page"
+      "symbol": "decode_dim.constprop.0"
      },
      {
-      "pct": 2.51,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cd4"
-     },
-     {
-      "pct": 2.06,
+      "pct": 4.62,
       "dso": "pg_sift.so",
-      "symbol": "for_i64_u32_avx512"
+      "symbol": "ids_to_gids"
      },
      {
-      "pct": 2.06,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83ce"
+      "pct": 4.62,
+      "dso": "postgres",
+      "symbol": "ReleaseBuffer"
      },
      {
-      "pct": 2.05,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
+      "pct": 0.55,
+      "dso": "postgres",
+      "symbol": "cost_seqscan"
      },
      {
-      "pct": 1.4,
+      "pct": 0.45,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
+      "symbol": "0x00000000001b2c22"
+     },
+     {
+      "pct": 0.37,
+      "dso": "postgres",
+      "symbol": "base_yyparse"
+     },
+     {
+      "pct": 0.02,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b8b34"
+     },
+     {
+      "pct": 0.02,
+      "dso": "postgres",
+      "symbol": "0x00000000004c9ce9"
      }
     ]
    }
@@ -510,9 +507,9 @@
   "05": {
    "title": "Average value of the shipped orders of one country in one year",
    "explain": {
-    "planning_first_ms": 1.021,
-    "planning_ms": 0.1,
-    "execution_ms": 3.722,
+    "planning_first_ms": 0.815,
+    "planning_ms": 0.051,
+    "execution_ms": 0.862,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
@@ -523,18 +520,18 @@
      "Groups": 1,
      "Heap Pages": 0
     },
-    "siftagg_ms": 4.091,
+    "siftagg_ms": 0.816,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=12738.68..12738.69 rows=1 width=32)",
+     "Custom Scan (SiftAgg)  (cost=13716.15..13716.16 rows=1 width=32)",
      "  Index: orders_col",
      "  Filters: status: (orders.status = 'shipped'::text) AND country: (orders.country = 'DE'::text) AND created_at >= '2025-01-01 00:00:00'::timestamp without time zone AND created_at < '2026-01-01 00:00:00'::timestamp without time zone",
      "  Pushed Aggregates: avg(orders.amount)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.748,
-    "planning_ms": 0.071,
-    "execution_ms": 3.771,
+    "planning_first_ms": 0.759,
+    "planning_ms": 0.041,
+    "execution_ms": 0.885,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
@@ -545,95 +542,95 @@
      "Groups": 1,
      "Heap Pages": 0
     },
-    "siftagg_ms": 3.69,
+    "siftagg_ms": 0.815,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=12738.68..12738.69 rows=1 width=32)",
+     "Custom Scan (SiftAgg)  (cost=13716.15..13716.16 rows=1 width=32)",
      "  Index: orders_col",
      "  Filters: status: (orders.status = 'shipped'::text) AND country: (orders.country = 'DE'::text) AND created_at >= '2025-01-01 00:00:00'::timestamp without time zone AND created_at < '2026-01-01 00:00:00'::timestamp without time zone",
      "  Pushed Aggregates: avg(orders.amount)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.031,
-    "plain table, hook loaded": 0.034,
-    "sift table, sift.enable_agg=off": 0.026,
-    "sift table, sift.enable_agg=on": 0.034
+    "plain, no sift library": 0.024,
+    "plain table, hook loaded": 0.024,
+    "sift table, sift.enable_agg=off": 0.023,
+    "sift table, sift.enable_agg=on": 0.029
    },
    "perf": {
-    "wall_ms": 4.34,
-    "instructions": 37540361.55,
-    "cycles": 18165524.3,
-    "task_ms": 4.2455,
+    "wall_ms": 1.9,
+    "instructions": 11323312.4,
+    "cycles": 7559689.3,
+    "task_ms": 1.81,
     "top": [
      {
-      "pct": 16.43,
+      "pct": 9.82,
       "dso": "pg_sift.so",
-      "symbol": "lut_u32_avx512"
+      "symbol": "unpack_range32_avx512"
      },
      {
-      "pct": 12.73,
-      "dso": "pg_sift.so",
-      "symbol": "read_positions"
+      "pct": 9.69,
+      "dso": "postgres",
+      "symbol": "ResourceOwnerForget"
      },
      {
-      "pct": 8.18,
-      "dso": "pg_sift.so",
-      "symbol": "nd_i64"
-     },
-     {
-      "pct": 7.14,
-      "dso": "pg_sift.so",
-      "symbol": "unit_page"
-     },
-     {
-      "pct": 6.85,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
-     },
-     {
-      "pct": 6.46,
-      "dso": "pg_sift.so",
-      "symbol": "for_i64_u32_avx512"
-     },
-     {
-      "pct": 4.9,
-      "dso": "pg_sift.so",
-      "symbol": "cc_unpack32_avx512"
-     },
-     {
-      "pct": 3.46,
+      "pct": 7.18,
       "dso": "postgres",
       "symbol": "LWLockRelease"
      },
      {
-      "pct": 3.07,
+      "pct": 6.9,
       "dso": "pg_sift.so",
       "symbol": "bits_to_idx_avx512"
      },
      {
-      "pct": 2.66,
+      "pct": 5.88,
+      "dso": "pg_sift.so",
+      "symbol": "for_i64_u32_avx512"
+     },
+     {
+      "pct": 4.6,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b7cef"
      },
      {
-      "pct": 2.38,
+      "pct": 3.08,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b83c7"
+      "symbol": "0x00000000001b7cd4"
      },
      {
-      "pct": 2.03,
+      "pct": 2.59,
+      "dso": "pg_sift.so",
+      "symbol": "sift_cchunk_parse"
+     },
+     {
+      "pct": 2.53,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7cdb"
+     },
+     {
+      "pct": 2.41,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7cc6"
+     },
+     {
+      "pct": 1.96,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b7ccd"
      },
      {
-      "pct": 1.93,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
+      "pct": 1.94,
+      "dso": "postgres",
+      "symbol": "0x00000000006ce714"
      },
      {
-      "pct": 1.88,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83ce"
+      "pct": 1.59,
+      "dso": "pg_sift.so",
+      "symbol": "agg_chunk"
+     },
+     {
+      "pct": 1.57,
+      "dso": "pg_sift.so",
+      "symbol": "unit_parse.part.0"
      }
     ]
    }
@@ -641,13 +638,11 @@
   "06": {
    "title": "How many different customers ordered each month",
    "explain": {
-    "planning_first_ms": 1.065,
-    "planning_ms": 0.125,
-    "execution_ms": 37.433,
+    "planning_first_ms": 0.869,
+    "planning_ms": 0.117,
+    "execution_ms": 5.001,
     "top": "Custom Scan",
     "siftagg": {
-     "Workers Planned": 3,
-     "Workers Launched": 3,
      "Units": 52,
      "Units Pruned": 0,
      "Rows Scanned": 1000000,
@@ -656,19 +651,18 @@
      "Groups": 36,
      "Heap Pages": 0
     },
-    "siftagg_ms": 34.463,
+    "siftagg_ms": 4.896,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=6756.11..6756.47 rows=36 width=12)",
+     "Custom Scan (SiftAgg)  (cost=17665.25..17665.61 rows=36 width=12)",
      "  Index: orders_col",
      "  Group Keys: (date_trunc('month'::text, orders.created_at))::date",
-     "  Pushed Aggregates: count(DISTINCT customer_id)",
-     "  Workers Planned: 3"
+     "  Pushed Aggregates: count(DISTINCT customer_id)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 1.023,
-    "planning_ms": 0.095,
-    "execution_ms": 45.296,
+    "planning_first_ms": 0.934,
+    "planning_ms": 0.106,
+    "execution_ms": 5.065,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
@@ -679,95 +673,95 @@
      "Groups": 36,
      "Heap Pages": 0
     },
-    "siftagg_ms": 45.394,
+    "siftagg_ms": 4.912,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=17100.00..17100.36 rows=36 width=12)",
+     "Custom Scan (SiftAgg)  (cost=17665.25..17665.61 rows=36 width=12)",
      "  Index: orders_col",
      "  Group Keys: (date_trunc('month'::text, orders.created_at))::date",
      "  Pushed Aggregates: count(DISTINCT customer_id)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.029,
-    "plain table, hook loaded": 0.033,
-    "sift table, sift.enable_agg=off": 0.035,
-    "sift table, sift.enable_agg=on": 0.034
+    "plain, no sift library": 0.018,
+    "plain table, hook loaded": 0.019,
+    "sift table, sift.enable_agg=off": 0.019,
+    "sift table, sift.enable_agg=on": 0.023
    },
    "perf": {
-    "wall_ms": 45.76,
-    "instructions": 141498390.1,
-    "cycles": 175297143.1,
-    "task_ms": 45.5695,
+    "wall_ms": 4.55,
+    "instructions": 68622770.3,
+    "cycles": 21830214.6,
+    "task_ms": 4.4865,
     "top": [
      {
-      "pct": 53.27,
+      "pct": 42.77,
       "dso": "pg_sift.so",
-      "symbol": "dset_add"
+      "symbol": "dist_update"
      },
      {
-      "pct": 22.13,
-      "dso": "pg_sift.so",
-      "symbol": "dset_grow"
-     },
-     {
-      "pct": 9.82,
-      "dso": "pg_sift.so",
-      "symbol": "join_stage"
-     },
-     {
-      "pct": 1.64,
+      "pct": 19.56,
       "dso": "pg_sift.so",
       "symbol": "gather_u32_avx512"
      },
      {
-      "pct": 1.36,
-      "dso": "pg_sift.so",
-      "symbol": "col_read"
-     },
-     {
-      "pct": 1.03,
+      "pct": 6.92,
       "dso": "pg_sift.so",
       "symbol": "agg_chunk"
      },
      {
-      "pct": 1.0,
-      "dso": "pg_sift.so",
-      "symbol": "gid_i32_avx512"
-     },
-     {
-      "pct": 0.83,
-      "dso": "pg_sift.so",
-      "symbol": "sift_colk_for_sel_u64_scalar"
-     },
-     {
-      "pct": 0.79,
+      "pct": 4.92,
       "dso": "pg_sift.so",
       "symbol": "agk_count_gid_scalar"
      },
      {
-      "pct": 0.76,
+      "pct": 4.01,
       "dso": "pg_sift.so",
-      "symbol": "unit_page"
+      "symbol": "gid_i32_avx512"
      },
      {
-      "pct": 0.58,
+      "pct": 3.27,
+      "dso": "pg_sift.so",
+      "symbol": "cc_unpack32_avx512"
+     },
+     {
+      "pct": 1.92,
+      "dso": "pg_sift.so",
+      "symbol": "bits_to_idx_avx512"
+     },
+     {
+      "pct": 1.34,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b83c7"
+      "symbol": "0x00000000001b7cef"
      },
      {
-      "pct": 0.5,
+      "pct": 1.01,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
+      "symbol": "0x00000000001b7cc6"
      },
      {
-      "pct": 0.49,
+      "pct": 0.92,
+      "dso": "postgres",
+      "symbol": "0x00000000006ce714"
+     },
+     {
+      "pct": 0.92,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b83ce"
      },
      {
-      "pct": 0.29,
+      "pct": 0.83,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
+      "symbol": "0x00000000001b7ccd"
+     },
+     {
+      "pct": 0.7,
+      "dso": "postgres",
+      "symbol": "ResourceOwnerForget"
+     },
+     {
+      "pct": 0.69,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7cdb"
      }
     ]
    }
@@ -775,13 +769,11 @@
   "07": {
    "title": "How many orders over $100 in the last 30 days",
    "explain": {
-    "planning_first_ms": 1.107,
-    "planning_ms": 0.14,
-    "execution_ms": 5.921,
+    "planning_first_ms": 0.878,
+    "planning_ms": 0.033,
+    "execution_ms": 0.568,
     "top": "Custom Scan",
     "siftagg": {
-     "Workers Planned": 3,
-     "Workers Launched": 3,
      "Units": 52,
      "Units Pruned": 0,
      "Rows Scanned": 1000000,
@@ -790,19 +782,18 @@
      "Groups": 1,
      "Heap Pages": 0
     },
-    "siftagg_ms": 5.972,
+    "siftagg_ms": 0.522,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=3451.42..3451.43 rows=1 width=8)",
+     "Custom Scan (SiftAgg)  (cost=631.25..631.26 rows=1 width=8)",
      "  Index: orders_col",
      "  Filters: amount > '100'::numeric AND created_at >= '2025-12-02 00:00:00'::timestamp without time zone",
-     "  Pushed Aggregates: count(*)",
-     "  Workers Planned: 3"
+     "  Pushed Aggregates: count(*)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.997,
-    "planning_ms": 0.094,
-    "execution_ms": 2.851,
+    "planning_first_ms": 0.726,
+    "planning_ms": 0.032,
+    "execution_ms": 0.572,
     "top": "Custom Scan",
     "siftagg": {
      "Units": 52,
@@ -813,95 +804,95 @@
      "Groups": 1,
      "Heap Pages": 0
     },
-    "siftagg_ms": 2.651,
+    "siftagg_ms": 0.535,
     "plan": [
-     "Custom Scan (SiftAgg)  (cost=6864.16..6864.17 rows=1 width=8)",
+     "Custom Scan (SiftAgg)  (cost=631.25..631.26 rows=1 width=8)",
      "  Index: orders_col",
      "  Filters: amount > '100'::numeric AND created_at >= '2025-12-02 00:00:00'::timestamp without time zone",
      "  Pushed Aggregates: count(*)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.033,
-    "plain table, hook loaded": 0.033,
-    "sift table, sift.enable_agg=off": 0.025,
-    "sift table, sift.enable_agg=on": 0.028
+    "plain, no sift library": 0.018,
+    "plain table, hook loaded": 0.019,
+    "sift table, sift.enable_agg=off": 0.021,
+    "sift table, sift.enable_agg=on": 0.025
    },
    "perf": {
-    "wall_ms": 2.58,
-    "instructions": 20731231.2,
-    "cycles": 10097666.8,
-    "task_ms": 2.5315000000000003,
+    "wall_ms": 0.74,
+    "instructions": 7115360.2,
+    "cycles": 3037065.6,
+    "task_ms": 0.714,
     "top": [
      {
-      "pct": 23.39,
-      "dso": "pg_sift.so",
-      "symbol": "nd_i64"
-     },
-     {
-      "pct": 11.21,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7cc6"
-     },
-     {
-      "pct": 6.67,
-      "dso": "pg_sift.so",
-      "symbol": "unit_page"
-     },
-     {
-      "pct": 5.6,
-      "dso": "pg_sift.so",
-      "symbol": "for_i64_u32_avx512"
-     },
-     {
-      "pct": 5.3,
-      "dso": "postgres",
-      "symbol": "LWLockRelease"
-     },
-     {
-      "pct": 4.86,
-      "dso": "pg_sift.so",
-      "symbol": "cc_unpack32_avx512"
-     },
-     {
-      "pct": 3.22,
-      "dso": "pg_sift.so",
-      "symbol": "range_u64_avx512"
-     },
-     {
-      "pct": 2.71,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83dc"
-     },
-     {
-      "pct": 2.66,
+      "pct": 14.43,
       "dso": "pg_sift.so",
       "symbol": "bits_to_idx_avx512"
      },
      {
-      "pct": 2.51,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83ce"
+      "pct": 12.53,
+      "dso": "pg_sift.so",
+      "symbol": "unpack_range32_avx512"
      },
      {
-      "pct": 2.08,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b83c7"
+      "pct": 7.61,
+      "dso": "postgres",
+      "symbol": "LWLockRelease"
      },
      {
-      "pct": 1.98,
+      "pct": 5.56,
       "dso": "postgres",
       "symbol": "hash_bytes"
      },
      {
-      "pct": 1.88,
+      "pct": 4.64,
+      "dso": "postgres",
+      "symbol": "ReadyForQuery"
+     },
+     {
+      "pct": 4.53,
+      "dso": "postgres",
+      "symbol": "ResourceOwnerForget"
+     },
+     {
+      "pct": 4.49,
+      "dso": "postgres",
+      "symbol": "AllocSetRealloc"
+     },
+     {
+      "pct": 4.27,
       "dso": "libc.so.6",
       "symbol": "0x00000000001b7cef"
      },
      {
-      "pct": 1.71,
+      "pct": 4.21,
       "dso": "postgres",
-      "symbol": "0x00000000006ce714"
+      "symbol": "0x000000000071788d"
+     },
+     {
+      "pct": 3.16,
+      "dso": "pg_sift.so",
+      "symbol": "unit_parse.part.0"
+     },
+     {
+      "pct": 2.65,
+      "dso": "postgres",
+      "symbol": "0x000000000099e313"
+     },
+     {
+      "pct": 2.39,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7ccd"
+     },
+     {
+      "pct": 1.58,
+      "dso": "postgres",
+      "symbol": "0x000000000099e301"
+     },
+     {
+      "pct": 1.58,
+      "dso": "pg_sift.so",
+      "symbol": "sift_col_zone"
      }
     ]
    }
@@ -909,9 +900,9 @@
   "08": {
    "title": "Search \"wireless headphones\": how many orders match",
    "explain": {
-    "planning_first_ms": 0.811,
-    "planning_ms": 0.016,
-    "execution_ms": 0.123,
+    "planning_first_ms": 0.913,
+    "planning_ms": 0.011,
+    "execution_ms": 0.102,
     "top": "Custom Scan",
     "siftagg": null,
     "siftagg_ms": null,
@@ -922,9 +913,9 @@
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.583,
-    "planning_ms": 0.01,
-    "execution_ms": 0.119,
+    "planning_first_ms": 0.547,
+    "planning_ms": 0.013,
+    "execution_ms": 0.106,
     "top": "Custom Scan",
     "siftagg": null,
     "siftagg_ms": null,
@@ -935,86 +926,86 @@
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.022,
-    "plain table, hook loaded": 0.022,
-    "sift table, sift.enable_agg=off": 0.021,
-    "sift table, sift.enable_agg=on": 0.029
+    "plain, no sift library": 0.018,
+    "plain table, hook loaded": 0.02,
+    "sift table, sift.enable_agg=off": 0.015,
+    "sift table, sift.enable_agg=on": 0.019
    },
    "perf": {
-    "wall_ms": 0.24,
-    "instructions": 1820630.5,
-    "cycles": 826081.05,
-    "task_ms": 0.2205,
+    "wall_ms": 0.25,
+    "instructions": 1605873.9,
+    "cycles": 767908.25,
+    "task_ms": 0.1805,
     "top": [
      {
-      "pct": 39.88,
+      "pct": 41.66,
       "dso": "pg_sift.so",
       "symbol": "gr_seek"
      },
      {
-      "pct": 21.85,
+      "pct": 15.0,
+      "dso": "postgres",
+      "symbol": "0x000000000099e313"
+     },
+     {
+      "pct": 12.26,
+      "dso": "postgres",
+      "symbol": "0x0000000000733694"
+     },
+     {
+      "pct": 10.43,
+      "dso": "pg_sift.so",
+      "symbol": "and2_v"
+     },
+     {
+      "pct": 2.04,
       "dso": "postgres",
       "symbol": "LWLockRelease"
      },
      {
-      "pct": 18.78,
+      "pct": 1.83,
+      "dso": "libc.so.6",
+      "symbol": "0x00000000001b7cc6"
+     },
+     {
+      "pct": 1.63,
+      "dso": "postgres",
+      "symbol": "0x000000000099e34c"
+     },
+     {
+      "pct": 1.63,
+      "dso": "postgres",
+      "symbol": "genericcostestimate"
+     },
+     {
+      "pct": 1.54,
+      "dso": "postgres",
+      "symbol": "0x0000000000732f54"
+     },
+     {
+      "pct": 0.17,
       "dso": "postgres",
       "symbol": "base_yyparse"
      },
      {
-      "pct": 9.46,
+      "pct": 0.07,
       "dso": "postgres",
-      "symbol": "ResourceOwnerForget"
+      "symbol": "AllocSetAlloc"
      },
      {
-      "pct": 6.14,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001b7b8b"
-     },
-     {
-      "pct": 1.97,
+      "pct": 0.06,
       "dso": "pg_sift.so",
-      "symbol": "agg_quals.isra.0"
+      "symbol": "sift_query_analyze"
      },
      {
-      "pct": 0.88,
+      "pct": 0.06,
       "dso": "postgres",
-      "symbol": "AllocSetFree"
-     },
-     {
-      "pct": 0.42,
-      "dso": "postgres",
-      "symbol": "0x00000000003155a7"
-     },
-     {
-      "pct": 0.41,
-      "dso": "postgres",
-      "symbol": "ScanKeywordLookup"
-     },
-     {
-      "pct": 0.09,
-      "dso": "postgres",
-      "symbol": "pg_parse_query"
-     },
-     {
-      "pct": 0.05,
-      "dso": "postgres",
-      "symbol": "0x0000000000451858"
-     },
-     {
-      "pct": 0.04,
-      "dso": "libc.so.6",
-      "symbol": "__sigsetjmp"
+      "symbol": "0x0000000000a12585"
      },
      {
       "pct": 0.02,
       "dso": "libc.so.6",
       "symbol": "recv"
-     },
-     {
-      "pct": 0.02,
-      "dso": "postgres",
-      "symbol": "0x00000000007074c1"
      }
     ]
    }
@@ -1022,122 +1013,140 @@
   "09": {
    "title": "Search \"wireless headphones\", shipped orders of $50 or more: orders per category",
    "explain": {
-    "planning_first_ms": 0.831,
-    "planning_ms": 0.069,
-    "execution_ms": 2.031,
+    "planning_first_ms": 0.889,
+    "planning_ms": 0.06,
+    "execution_ms": 1.004,
     "top": "Limit",
-    "siftagg": null,
-    "siftagg_ms": null,
+    "siftagg": {
+     "Units": 52,
+     "Units Pruned": 0,
+     "Rows Scanned": 7143,
+     "Tuples Aggregated": 2699,
+     "Rows Vetted By Heap": 0,
+     "Groups": 40,
+     "Heap Pages": 0
+    },
+    "siftagg_ms": 0.976,
     "plan": [
-     "Limit  (cost=11657.37..11657.39 rows=10 width=15)",
-     "  ->  Sort  (cost=11657.37..11657.47 rows=40 width=15)",
+     "Limit  (cost=2672.92..2672.94 rows=10 width=15)",
+     "  ->  Sort  (cost=2672.92..2673.02 rows=40 width=15)",
      "        Sort Key: (count(*)) DESC, category",
-     "        ->  HashAggregate  (cost=11656.11..11656.51 rows=40 width=15)",
-     "              Group Key: category",
-     "              ->  Custom Scan (SiftScan) on orders  (cost=104.45..11642.24 rows=2773 width=7)",
-     "                    Index: orders_title",
-     "                    Query: 'wireless headphones'::text"
+     "        ->  Custom Scan (SiftAgg)  (cost=2671.65..2672.05 rows=40 width=15)",
+     "              Index: orders_col",
+     "              Filters: status: (orders.status = 'shipped'::text) AND amount >= '50'::numeric",
+     "              Search: orders_title @@> 'wireless headphones'::text",
+     "              Group Keys: category",
+     "              Pushed Aggregates: count(*)"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 0.83,
-    "planning_ms": 0.059,
-    "execution_ms": 3.033,
+    "planning_first_ms": 0.789,
+    "planning_ms": 0.063,
+    "execution_ms": 1.092,
     "top": "Limit",
-    "siftagg": null,
-    "siftagg_ms": null,
+    "siftagg": {
+     "Units": 52,
+     "Units Pruned": 0,
+     "Rows Scanned": 7143,
+     "Tuples Aggregated": 2699,
+     "Rows Vetted By Heap": 0,
+     "Groups": 40,
+     "Heap Pages": 0
+    },
+    "siftagg_ms": 1.05,
     "plan": [
-     "Limit  (cost=11657.37..11657.39 rows=10 width=15)",
-     "  ->  Sort  (cost=11657.37..11657.47 rows=40 width=15)",
+     "Limit  (cost=2672.92..2672.94 rows=10 width=15)",
+     "  ->  Sort  (cost=2672.92..2673.02 rows=40 width=15)",
      "        Sort Key: (count(*)) DESC, category",
-     "        ->  HashAggregate  (cost=11656.11..11656.51 rows=40 width=15)",
-     "              Group Key: category",
-     "              ->  Custom Scan (SiftScan) on orders  (cost=104.45..11642.24 rows=2773 width=7)",
-     "                    Index: orders_title",
-     "                    Query: 'wireless headphones'::text"
+     "        ->  Custom Scan (SiftAgg)  (cost=2671.65..2672.05 rows=40 width=15)",
+     "              Index: orders_col",
+     "              Filters: status: (orders.status = 'shipped'::text) AND amount >= '50'::numeric",
+     "              Search: orders_title @@> 'wireless headphones'::text",
+     "              Group Keys: category",
+     "              Pushed Aggregates: count(*)"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.049,
-    "plain table, hook loaded": 0.073,
-    "sift table, sift.enable_agg=off": 0.03,
-    "sift table, sift.enable_agg=on": 0.036
+    "plain, no sift library": 0.041,
+    "plain table, hook loaded": 0.039,
+    "sift table, sift.enable_agg=off": 0.029,
+    "sift table, sift.enable_agg=on": 0.037
    },
    "perf": {
-    "wall_ms": 2.29,
-    "instructions": 21590519.8,
-    "cycles": 10097758.45,
-    "task_ms": 2.241,
+    "wall_ms": 1.28,
+    "instructions": 13096478.9,
+    "cycles": 5521122.55,
+    "task_ms": 1.249,
     "top": [
      {
-      "pct": 19.3,
-      "dso": "postgres",
-      "symbol": "LWLockRelease"
-     },
-     {
-      "pct": 7.89,
-      "dso": "postgres",
-      "symbol": "ResourceOwnerForget"
-     },
-     {
-      "pct": 7.51,
+      "pct": 9.71,
       "dso": "pg_sift.so",
-      "symbol": "scan_next"
+      "symbol": "sift_iter_next"
      },
      {
-      "pct": 7.1,
-      "dso": "postgres",
-      "symbol": "0x000000000099e34c"
+      "pct": 8.44,
+      "dso": "pg_sift.so",
+      "symbol": "unpack_range32_avx512"
      },
      {
-      "pct": 4.82,
-      "dso": "postgres",
-      "symbol": "hash_bytes"
-     },
-     {
-      "pct": 4.54,
-      "dso": "postgres",
-      "symbol": "heap_hot_search_buffer"
-     },
-     {
-      "pct": 4.02,
-      "dso": "postgres",
-      "symbol": "0x000000000099e313"
-     },
-     {
-      "pct": 3.38,
+      "pct": 8.23,
       "dso": "pg_sift.so",
       "symbol": "gr_seek"
      },
      {
-      "pct": 2.33,
+      "pct": 5.82,
+      "dso": "pg_sift.so",
+      "symbol": "select_page"
+     },
+     {
+      "pct": 5.37,
+      "dso": "pg_sift.so",
+      "symbol": "bits_to_idx_avx512"
+     },
+     {
+      "pct": 3.57,
+      "dso": "pg_sift.so",
+      "symbol": "sift_sr_unlock"
+     },
+     {
+      "pct": 3.51,
       "dso": "libc.so.6",
-      "symbol": "0x00000000001ae480"
+      "symbol": "0x00000000001b7cd4"
      },
      {
-      "pct": 2.06,
-      "dso": "libc.so.6",
-      "symbol": "0x00000000001ae4a5"
-     },
-     {
-      "pct": 1.34,
+      "pct": 3.49,
       "dso": "postgres",
-      "symbol": "PredicateLockTID"
+      "symbol": "LWLockRelease"
      },
      {
-      "pct": 1.25,
+      "pct": 3.47,
       "dso": "postgres",
-      "symbol": "0x000000000042f62e"
+      "symbol": "0x0000000000a109e0"
      },
      {
-      "pct": 1.2,
-      "dso": "postgres",
-      "symbol": "HeapTupleSatisfiesVisibility"
+      "pct": 3.18,
+      "dso": "pg_sift.so",
+      "symbol": "nd_get"
      },
      {
-      "pct": 1.08,
-      "dso": "postgres",
-      "symbol": "heap_page_prune_opt"
+      "pct": 2.93,
+      "dso": "pg_sift.so",
+      "symbol": "sift_cc_decode_sel"
+     },
+     {
+      "pct": 2.71,
+      "dso": "pg_sift.so",
+      "symbol": "sift_cunit_page_offmask_at"
+     },
+     {
+      "pct": 2.48,
+      "dso": "pg_sift.so",
+      "symbol": "sift_search_range"
+     },
+     {
+      "pct": 2.03,
+      "dso": "pg_sift.so",
+      "symbol": "popcount_v"
      }
     ]
    }
@@ -1145,131 +1154,129 @@
   "10": {
    "title": "Search \"wireless headphones\", shipped orders: the 10 newest",
    "explain": {
-    "planning_first_ms": 0.854,
-    "planning_ms": 0.077,
-    "execution_ms": 5.588,
+    "planning_first_ms": 0.842,
+    "planning_ms": 0.051,
+    "execution_ms": 1.347,
     "top": "Limit",
     "siftagg": null,
     "siftagg_ms": null,
     "plan": [
-     "Limit  (cost=11709.46..11709.48 rows=10 width=39)",
-     "  ->  Sort  (cost=11709.46..11719.30 rows=3939 width=39)",
+     "Limit  (cost=11709.61..11709.63 rows=10 width=39)",
+     "  ->  Sort  (cost=11709.61..11719.47 rows=3946 width=39)",
      "        Sort Key: created_at DESC, id DESC",
-     "        ->  Custom Scan (SiftScan) on orders  (cost=104.45..11624.34 rows=3939 width=39)",
+     "        ->  Custom Scan (SiftScan) on orders  (cost=104.45..11624.34 rows=3946 width=39)",
      "              Index: orders_title",
      "              Query: 'wireless headphones'::text"
     ]
    },
    "explain_no_workers": {
-    "planning_first_ms": 1.045,
-    "planning_ms": 0.034,
-    "execution_ms": 1.556,
+    "planning_first_ms": 0.823,
+    "planning_ms": 0.039,
+    "execution_ms": 1.327,
     "top": "Limit",
     "siftagg": null,
     "siftagg_ms": null,
     "plan": [
-     "Limit  (cost=11709.46..11709.48 rows=10 width=39)",
-     "  ->  Sort  (cost=11709.46..11719.30 rows=3939 width=39)",
+     "Limit  (cost=11709.61..11709.63 rows=10 width=39)",
+     "  ->  Sort  (cost=11709.61..11719.47 rows=3946 width=39)",
      "        Sort Key: created_at DESC, id DESC",
-     "        ->  Custom Scan (SiftScan) on orders  (cost=104.45..11624.34 rows=3939 width=39)",
+     "        ->  Custom Scan (SiftScan) on orders  (cost=104.45..11624.34 rows=3946 width=39)",
      "              Index: orders_title",
      "              Query: 'wireless headphones'::text"
     ]
    },
    "planning_by_hook": {
-    "plain, no sift library": 0.036,
-    "plain table, hook loaded": 0.035,
-    "sift table, sift.enable_agg=off": 0.031,
-    "sift table, sift.enable_agg=on": 0.028
+    "plain, no sift library": 0.024,
+    "plain table, hook loaded": 0.025,
+    "sift table, sift.enable_agg=off": 0.02,
+    "sift table, sift.enable_agg=on": 0.032
    },
    "perf": {
-    "wall_ms": 2.11,
-    "instructions": 21678299.95,
-    "cycles": 9199663.5,
-    "task_ms": 2.0665,
+    "wall_ms": 2.36,
+    "instructions": 21772878.45,
+    "cycles": 11578895.8,
+    "task_ms": 2.3005,
     "top": [
      {
-      "pct": 14.4,
+      "pct": 18.71,
       "dso": "postgres",
       "symbol": "LWLockRelease"
      },
      {
-      "pct": 10.62,
+      "pct": 10.76,
       "dso": "postgres",
       "symbol": "ResourceOwnerForget"
      },
      {
-      "pct": 8.89,
-      "dso": "postgres",
-      "symbol": "heap_hot_search_buffer"
-     },
-     {
-      "pct": 7.35,
+      "pct": 9.27,
       "dso": "pg_sift.so",
       "symbol": "scan_next"
      },
      {
-      "pct": 5.36,
-      "dso": "pg_sift.so",
-      "symbol": "gr_seek"
-     },
-     {
-      "pct": 3.02,
+      "pct": 7.45,
       "dso": "postgres",
       "symbol": "0x000000000099e34c"
      },
      {
-      "pct": 2.48,
-      "dso": "pg_sift.so",
-      "symbol": "fill_scan_slot"
-     },
-     {
-      "pct": 2.47,
-      "dso": "pg_sift.so",
-      "symbol": "and2_v"
-     },
-     {
-      "pct": 2.44,
+      "pct": 7.36,
       "dso": "postgres",
-      "symbol": "ReleaseAndReadBuffer"
+      "symbol": "heap_hot_search_buffer"
      },
      {
-      "pct": 2.02,
+      "pct": 3.63,
       "dso": "postgres",
-      "symbol": "0x000000000044c008"
+      "symbol": "0x000000000099e313"
      },
      {
-      "pct": 1.7,
+      "pct": 3.51,
+      "dso": "pg_sift.so",
+      "symbol": "gr_seek"
+     },
+     {
+      "pct": 2.25,
+      "dso": "postgres",
+      "symbol": "slot_getsomeattrs_int"
+     },
+     {
+      "pct": 1.77,
+      "dso": "postgres",
+      "symbol": "StartReadBuffer"
+     },
+     {
+      "pct": 1.58,
+      "dso": "postgres",
+      "symbol": "texteq"
+     },
+     {
+      "pct": 1.45,
+      "dso": "postgres",
+      "symbol": "hash_bytes"
+     },
+     {
+      "pct": 1.35,
       "dso": "postgres",
       "symbol": "heap_compute_data_size"
      },
      {
-      "pct": 1.56,
-      "dso": "postgres",
-      "symbol": "0x00000000006ce714"
+      "pct": 1.34,
+      "dso": "pg_sift.so",
+      "symbol": "load_page"
      },
      {
-      "pct": 1.51,
+      "pct": 1.08,
       "dso": "postgres",
-      "symbol": "AllocSetFree"
-     },
-     {
-      "pct": 1.49,
-      "dso": "postgres",
-      "symbol": "0x000000000044c0e3"
+      "symbol": "0x000000000044b951"
      }
     ]
    }
   }
  },
  "floor": {
-  "planning_first_ms": 0.979,
-  "planning_ms": 0.083,
-  "execution_ms": 3.133,
+  "planning_first_ms": 0.937,
+  "planning_ms": 0.024,
+  "execution_ms": 0.023,
   "top": "Custom Scan",
   "siftagg": {
-   "Workers Planned": 3,
-   "Workers Launched": 3,
    "Units": 0,
    "Units Pruned": 52,
    "Rows Scanned": 0,
@@ -1278,20 +1285,19 @@
    "Groups": 0,
    "Heap Pages": 0
   },
-  "siftagg_ms": 3.096,
+  "siftagg_ms": 0.02,
   "plan": [
-   "Custom Scan (SiftAgg)  (cost=2965.28..2965.57 rows=29 width=11)",
+   "Custom Scan (SiftAgg)  (cost=1506.25..1506.54 rows=29 width=11)",
    "  Index: orders_col",
    "  Filters: created_at > '2100-01-01 00:00:00'::timestamp without time zone",
    "  Group Keys: country",
-   "  Pushed Aggregates: count(*)",
-   "  Workers Planned: 3"
+   "  Pushed Aggregates: count(*)"
   ]
  },
  "floor_no_workers": {
-  "planning_first_ms": 0.574,
-  "planning_ms": 0.013,
-  "execution_ms": 0.011,
+  "planning_first_ms": 0.702,
+  "planning_ms": 0.028,
+  "execution_ms": 0.028,
   "top": "Custom Scan",
   "siftagg": {
    "Units": 0,
@@ -1302,9 +1308,9 @@
    "Groups": 0,
    "Heap Pages": 0
   },
-  "siftagg_ms": 0.009,
+  "siftagg_ms": 0.022,
   "plan": [
-   "Custom Scan (SiftAgg)  (cost=5351.17..5351.46 rows=29 width=11)",
+   "Custom Scan (SiftAgg)  (cost=1506.25..1506.54 rows=29 width=11)",
    "  Index: orders_col",
    "  Filters: created_at > '2100-01-01 00:00:00'::timestamp without time zone",
    "  Group Keys: country",

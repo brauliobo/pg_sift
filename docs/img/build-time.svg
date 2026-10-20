@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="488" viewBox="0 0 860 488" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Index build time (CREATE INDEX)</title>
-<desc id="d">articles: sift 0.6, sift (positions off) 0.5, Elasticsearch 4.3, pg_search 1.2, pg_textsearch 4.8, rum 3.0, pgx-bm25 2.8; places: sift 0.6, sift (positions off) 0.6, Elasticsearch 3.7, pg_search 2.3, pg_textsearch 0.7, rum 0.8, pgx-bm25 0.8</desc>
+<desc id="d">articles: sift 0.7, sift (positions off) 0.5, Elasticsearch 2.7, pg_search 0.6, pg_textsearch 5.0, rum 3.8, pgx-bm25 3.0; places: sift 0.5, sift (positions off) 0.5, Elasticsearch 2.2, pg_search 2.0, pg_textsearch 0.6, rum 0.7, pgx-bm25 0.7</desc>
 <rect x="0.5" y="0.5" width="859" height="487" rx="6" fill="#ffffff" stroke="#d0d7de"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Index build time (CREATE INDEX)</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">lower is better</text>
@@ -33,41 +33,41 @@
 <line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
 <text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">6</text>
 <text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">seconds</text>
-<rect x="160.5" y="343" width="28" height="27" fill="#0072B2"/>
-<text x="174.5" y="338" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6</text>
+<rect x="160.5" y="338.5" width="28" height="31.5" fill="#0072B2"/>
+<text x="174.5" y="333.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.7</text>
 <rect x="190.5" y="347.5" width="28" height="22.5" fill="#56B4E9"/>
 <text x="204.5" y="342.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.5</text>
-<rect x="220.5" y="176.5" width="28" height="193.5" fill="#6A3D9A"/>
-<text x="234.5" y="171.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.3</text>
-<rect x="250.5" y="316" width="28" height="54" fill="#D55E00"/>
-<text x="264.5" y="311" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.2</text>
-<rect x="280.5" y="154" width="28" height="216" fill="#CC79A7"/>
-<text x="294.5" y="149" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.8</text>
-<rect x="310.5" y="235" width="28" height="135" fill="#7f7f7f"/>
-<text x="324.5" y="230" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.0</text>
-<rect x="340.5" y="244" width="28" height="126" fill="#E69F00"/>
-<text x="354.5" y="239" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.8</text>
+<rect x="220.5" y="248.5" width="28" height="121.5" fill="#6A3D9A"/>
+<text x="234.5" y="243.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.7</text>
+<rect x="250.5" y="343" width="28" height="27" fill="#D55E00"/>
+<text x="264.5" y="338" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6</text>
+<rect x="280.5" y="145" width="28" height="225" fill="#CC79A7"/>
+<text x="294.5" y="140" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">5.0</text>
+<rect x="310.5" y="199" width="28" height="171" fill="#7f7f7f"/>
+<text x="324.5" y="194" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.8</text>
+<rect x="340.5" y="235" width="28" height="135" fill="#E69F00"/>
+<text x="354.5" y="230" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.0</text>
 <text x="264.5" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">articles</text>
 <text x="264.5" y="402" font-size="10" text-anchor="middle" fill="#57606a">Simple English Wikipedia, 50,000 articles</text>
-<rect x="541.5" y="343" width="28" height="27" fill="#0072B2"/>
-<text x="555.5" y="338" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6</text>
-<rect x="571.5" y="343" width="28" height="27" fill="#56B4E9"/>
-<text x="585.5" y="338" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6</text>
-<rect x="601.5" y="203.5" width="28" height="166.5" fill="#6A3D9A"/>
-<text x="615.5" y="198.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.7</text>
-<rect x="631.5" y="266.5" width="28" height="103.5" fill="#D55E00"/>
-<text x="645.5" y="261.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.3</text>
-<rect x="661.5" y="338.5" width="28" height="31.5" fill="#CC79A7"/>
-<text x="675.5" y="333.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.7</text>
-<rect x="691.5" y="334" width="28" height="36" fill="#7f7f7f"/>
-<text x="705.5" y="329" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.8</text>
-<rect x="721.5" y="334" width="28" height="36" fill="#E69F00"/>
-<text x="735.5" y="329" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.8</text>
+<rect x="541.5" y="347.5" width="28" height="22.5" fill="#0072B2"/>
+<text x="555.5" y="342.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.5</text>
+<rect x="571.5" y="347.5" width="28" height="22.5" fill="#56B4E9"/>
+<text x="585.5" y="342.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.5</text>
+<rect x="601.5" y="271" width="28" height="99" fill="#6A3D9A"/>
+<text x="615.5" y="266" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.2</text>
+<rect x="631.5" y="280" width="28" height="90" fill="#D55E00"/>
+<text x="645.5" y="275" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.0</text>
+<rect x="661.5" y="343" width="28" height="27" fill="#CC79A7"/>
+<text x="675.5" y="338" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6</text>
+<rect x="691.5" y="338.5" width="28" height="31.5" fill="#7f7f7f"/>
+<text x="705.5" y="333.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.7</text>
+<rect x="721.5" y="338.5" width="28" height="31.5" fill="#E69F00"/>
+<text x="735.5" y="333.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.7</text>
 <text x="645.5" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">places</text>
 <text x="645.5" y="402" font-size="10" text-anchor="middle" fill="#57606a">GeoNames cities15000, 34,165 places</text>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
 <text x="20" y="454" font-size="11" text-anchor="start" fill="#57606a">Elasticsearch: bulk load and refresh; its force-merge to one segment is not in the build time.</text>
 <text x="20" y="436" font-size="11" text-anchor="start" fill="#57606a">places: pgx-bm25 also stores two generated columns, the table grows (docs/BENCHMARKS.md).</text>
 <text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">places: pg_textsearch and rum show the native index; their emulated workloads add indexes (docs/BENCHMARKS.md).</text>
-<text x="20" y="472" font-size="11" text-anchor="start" fill="#57606a">Slim tier, one build per engine; AMD Ryzen 7 9700X, 16 threads (load avg 6-9); Oct 2026.</text>
+<text x="20" y="472" font-size="11" text-anchor="start" fill="#57606a">Slim tier, one build per engine; AMD Ryzen 7 9700X, 16 threads (load avg 4-12); Oct 2026.</text>
 </svg>
