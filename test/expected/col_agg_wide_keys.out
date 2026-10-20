@@ -58,6 +58,36 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
 END $$;
+-- the numeric a decimal of two lanes becomes, for every scale and size: the digits of a group of 10000, the weight and the display scale
+CREATE TABLE ws (id int, n0 numeric(38, 0), n1 numeric(38, 1), n3 numeric(38, 3), n4 numeric(38, 4), n5 numeric(38, 5), n19 numeric(38, 19),
+				 n38 numeric(38, 38), n20 numeric(20, 20), n30 numeric(30, 25), nz numeric(19, 0)) WITH (autovacuum_enabled = false);
+INSERT INTO ws
+SELECT row_number() OVER (), mod(x, 10::numeric ^ 38) * sgn, mod(x, 10::numeric ^ 38) * sgn * 1e-1, mod(x, 10::numeric ^ 38) * sgn * 1e-3, mod(x, 10::numeric ^ 38) * sgn * 1e-4,
+	   mod(x, 10::numeric ^ 38) * sgn * 1e-5, mod(x, 10::numeric ^ 38) * sgn * 1e-19, mod(x, 10::numeric ^ 38) * sgn * 1e-38, mod(x, 10::numeric ^ 20) * sgn * 1e-20,
+	   mod(x, 10::numeric ^ 30) * sgn * 1e-25, mod(x, 10::numeric ^ 19) * sgn
+FROM (SELECT (10::numeric ^ i * c + d) AS x, s AS sgn FROM generate_series(0, 38) i, unnest(ARRAY[1, 7, 9999, 12345]) c, unnest(ARRAY[-1, 0, 1]) d,
+			 unnest(ARRAY[1, -1]) s) g;
+INSERT INTO ws SELECT 10000 + i, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 5) i;
+CREATE INDEX ws_col ON ws USING sift_col (id, n0, n1, n3, n4, n5, n19, n38, n20, n30, nz);
+VACUUM (FREEZE, ANALYZE) ws;
+SELECT chk($$SELECT n0 AS k, count(*) AS c FROM ws GROUP BY n0$$) AS s0, chk($$SELECT n1 AS k, count(*) AS c FROM ws GROUP BY n1$$) AS s1,
+       chk($$SELECT n3 AS k, count(*) AS c FROM ws GROUP BY n3$$) AS s3, chk($$SELECT n4 AS k, count(*) AS c FROM ws GROUP BY n4$$) AS s4,
+       chk($$SELECT n5 AS k, count(*) AS c FROM ws GROUP BY n5$$) AS s5, chk($$SELECT n19 AS k, count(*) AS c FROM ws GROUP BY n19$$) AS s19,
+       chk($$SELECT n38 AS k, count(*) AS c FROM ws GROUP BY n38$$) AS s38, chk($$SELECT n20 AS k, count(*) AS c FROM ws GROUP BY n20$$) AS p20,
+       chk($$SELECT n30 AS k, count(*) AS c FROM ws GROUP BY n30$$) AS p30, chk($$SELECT nz AS k, count(*) AS c FROM ws GROUP BY nz$$) AS p19;
+    s0     |    s1     |    s3     |    s4     |    s5     |    s19    |    s38    |    p20    |    p30    |    p19    
+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------
+ scan same | scan same | scan same | scan same | scan same | scan same | scan same | scan same | scan same | scan same
+(1 row)
+
+SELECT chk($$SELECT sum(n1) AS a, min(n3) AS b, max(n19) AS c, avg(n38) AS d, sum(n20) AS e, min(n30) AS f, max(nz) AS g FROM ws$$) AS aggs,
+       chk($$SELECT n0 > 0 AS k, sum(n5) AS a, count(DISTINCT n4) AS b FROM ws GROUP BY 1$$) AS grouped;
+   aggs    |  grouped  
+-----------+-----------
+ scan same | scan same
+(1 row)
+
+DROP TABLE ws;
 -- keys
 SELECT chk($$SELECT n38 AS k, count(*) AS c FROM wa GROUP BY n38$$) AS n38_key,
        chk($$SELECT n19 AS k, count(*) AS c, sum(qty) AS s FROM wa GROUP BY n19$$) AS n19_key,

@@ -1,8 +1,8 @@
 /*
- * sift_aggwide.c - the dictionary of a wide leaf (sift_aggwide.h). An entry is the value as PostgreSQL holds it: the decimal text with its
- * display scale for a numeric (numeric_in gives the number back, 1.00 stays 1.00), the 16 bytes of the Interval for an interval. Two values
- * that are equal but spelled differently (1.0 and 1.00, 1 month and 30 days) are two entries, so that the datum is exact; the executor
- * decides what equal values mean with the type's own equality.
+ * sift_aggwide.c - the dictionary of a wide leaf (sift_aggwide.h). An entry is the datum as PostgreSQL holds it, display scale included
+ * (1.00 stays 1.00): the varlena of the numeric, the 16 bytes of the Interval, each padded to 8 bytes so that an entry is the datum itself.
+ * Two values that are equal but spelled differently (1.0 and 1.00, 1 month and 30 days) are two entries; the executor decides what
+ * equal values mean with the type's own equality.
  */
 #include "postgres.h"
 
@@ -93,18 +93,72 @@ add(SiftAggWide *w, const uint64 *k, uint32 at, const char *bytes, uint32 len)
 		w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));
 		w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));
 	}
-	if (w->blen + len > w->bcap)
+	if (w->blen + len + 8 > w->bcap)
 	{
-		while (w->blen + len > w->bcap)
+		while (w->blen + len + 8 > w->bcap)
 			w->bcap *= 2;
 		w->bytes = repalloc(w->bytes, w->bcap);
 	}
 	memcpy(w->bytes + w->blen, bytes, len);
-	w->blen += len;
+	memset(w->bytes + w->blen + len, 0, -len & 7);
+	w->blen += TYPEALIGN(8, len);
 	memcpy(&w->key[(size_t) w->nd * 3], k, 3 * sizeof(uint64));
 	w->off[w->nd + 1] = (uint32) w->blen;
 	w->slot[at] = ++w->nd;
 	return w->nd;
+}
+
+static const uint32 pow10_pad[4] = {1, 10, 100, 1000};
+
+/* the numeric v / 10^scale in the short format numeric_in gives it (4 bytes of length, a 2 byte header, the base 10000 digits), 0 when it needs the long one */
+static uint32
+w128_numeric(sift_w128 v, int scale, uint8 *out)
+{
+	sift_wu128	u = v < 0 ? 0 - (sift_wu128) v : (sift_wu128) v;
+	int			frac = (scale + 3) / 4,
+				pad = frac * 4 - scale,
+				n = 0,
+				top,
+				lo = 0,
+				weight;
+	uint16		dig[16],
+				hdr;
+
+	if (scale < 0 || scale > 63 || u > ~(sift_wu128) 0 / pow10_pad[pad])
+		return 0;
+	u *= pow10_pad[pad];
+	do
+	{
+		dig[n++] = (uint16) (u % 10000);
+		u /= 10000;
+	} while (u != 0);
+	while (n < frac)
+		dig[n++] = 0;
+	for (top = n; top > 0 && dig[top - 1] == 0; top--)
+		;
+	while (lo < top && dig[lo] == 0)
+		lo++;
+	weight = top == lo ? 0 : top - 1 - frac;
+	if (weight < -64 || weight > 63)
+		return 0;
+	hdr = (uint16) (0x8000 | (v < 0 && top > lo ? 0x2000 : 0) | scale << 7 | (weight < 0 ? 0x0040 : 0) | (weight & 0x003F));
+	SET_VARSIZE(out, VARHDRSZ + sizeof(uint16) + (top - lo) * sizeof(uint16));
+	memcpy(out + VARHDRSZ, &hdr, sizeof(hdr));
+	for (int i = top - 1, o = VARHDRSZ + sizeof(uint16); i >= lo; i--, o += sizeof(uint16))
+		memcpy(out + o, &dig[i], sizeof(uint16));
+	return VARSIZE(out);
+}
+
+/* the varlena of the numeric of a decimal text */
+static uint32
+text_numeric(const char *txt, uint8 *out)
+{
+	Datum		d = DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	uint32		len = VARSIZE_ANY(DatumGetPointer(d));
+
+	memcpy(out, DatumGetPointer(d), len);
+	pfree(DatumGetPointer(d));
+	return len;
 }
 
 void
@@ -154,39 +208,38 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 		e = find(w, k, &at);
 		if (e == 0)
 		{
-			const char *b;
+			uint8		b[SIFT_NIMG_TEXT_MAX + 64] __attribute__((aligned(8)));
 			uint32		len;
-			Interval	iv;
 
 			if (nan)
 			{
-				b = "NaN";
-				len = 3;
+				SET_VARSIZE(b, VARHDRSZ + sizeof(uint16));
+				memcpy(b + VARHDRSZ, &(uint16) {0xC000}, sizeof(uint16));
+				len = VARSIZE(b);
 			}
 			else if (interval)
 			{
 				Interval   *p = sift_col_lanes_interval(lanes[0].i[i], lanes[1].i[i], lanes[2].i[i]);
 
-				iv = *p;
+				memcpy(b, p, sizeof(Interval));
 				pfree(p);
-				b = (const char *) &iv;
 				len = sizeof(Interval);
 			}
 			else if (image)
 			{
-				len = sift_col_numimg_to_text((const uint8 *) SIFT_COL_DICT_STR(lanes[0].dict, lanes[0].codes[i]),
-											  SIFT_COL_DICT_LEN(lanes[0].dict, lanes[0].codes[i]), (int32) lanes[1].i[i], w->txt,
-											  SIFT_NIMG_TEXT_MAX);
-				if (len == 0)
+				const char *img = SIFT_COL_DICT_STR(lanes[0].dict, lanes[0].codes[i]);
+
+				if (sift_col_numimg_to_text((const uint8 *) img, SIFT_COL_DICT_LEN(lanes[0].dict, lanes[0].codes[i]), (int32) lanes[1].i[i], w->txt,
+											SIFT_NIMG_TEXT_MAX) == 0)
 					ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: a numeric image is damaged")));
-				b = w->txt;
+				len = text_numeric(w->txt, b);
 			}
-			else
+			else if ((len = w128_numeric(sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), def->scale, b)) == 0)
 			{
-				len = sift_col_w128_to_decimal(sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), def->scale, txt);
-				b = txt;
+				sift_col_w128_to_decimal(sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), def->scale, txt);
+				len = text_numeric(txt, b);
 			}
-			e = add(w, k, at, b, len);
+			e = add(w, k, at, (const char *) b, len);
 		}
 		w->codes[i] = e - 1;
 	}
@@ -195,13 +248,5 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 Datum
 sift_aggwide_datum(Oid typid, const char *bytes, uint32 len)
 {
-	if (typid == INTERVALOID)
-	{
-		Interval   *iv = palloc(sizeof(Interval));
-
-		Assert(len == sizeof(Interval));
-		memcpy(iv, bytes, sizeof(Interval));
-		return IntervalPGetDatum(iv);
-	}
-	return DirectFunctionCall3(numeric_in, CStringGetDatum(pnstrdup(bytes, len)), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	return PointerGetDatum(bytes);
 }
