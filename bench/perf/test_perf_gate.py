@@ -293,15 +293,15 @@ class Methodology(unittest.TestCase):
             def rows(self,sql): return [['3']]
             def stop(self,output): pass
         def measure(revisions,case,deadline,control=False,sink=None,**kwargs):
-            status = 'regression' if control else 'pass'
+            status = 'regression' if control and not (ineffective_insert and case.lifecycle=='insert_trajectory') else 'pass'
             result = dict(name=case.name,workload_version=case.workload_version,phase='complete',complete=True,
                           timing_status=status,status=status,validation={'size_checks':None},
-                          confirmation=gate.interval([(1,1.5)]*6))
+                          confirmation=gate.interval([(1,1.5 if status=='regression' else 1)]*6))
             if coverage and case.lifecycle=='insert_trajectory':
                 result['validation']['size_checks'] = {'state':'mutable_insert_trajectory','status':'pass','relations':[]}
             sink.append(result)
             return result
-        for expiry,coverage in ((False,False),(True,True),(False,True)):
+        for expiry,coverage,ineffective_insert in ((False,False,False),(True,True,False),(False,True,False),(False,True,True)):
             with tempfile.TemporaryDirectory() as tmp:
                 args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
                         '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
@@ -318,10 +318,15 @@ class Methodology(unittest.TestCase):
                      contextlib.redirect_stdout(io.StringIO()):
                     code = gate.main(args)
                 report = json.loads((Path(tmp)/'results.json').read_text())
-                self.assertEqual(code,0 if coverage and not expiry else 2)
+                self.assertEqual(code,0 if coverage and not expiry and not ineffective_insert else 2)
                 self.assertEqual(report['size_status'],'pass' if coverage and not expiry else 'inconclusive')
                 self.assertEqual(len(report['cases']),4)
-                self.assertEqual(report['cases'][-1]['timing_status'],'regression')
+                self.assertEqual(report['cases'][-1]['timing_status'],'pass' if ineffective_insert else 'regression')
+                if ineffective_insert:
+                    self.assertFalse(report['acceptance_pass'])
+                    self.assertEqual(report['status'],'inconclusive')
+                    self.assertEqual(report['cases'][-1]['confirmation']['n'],6)
+                    self.assertIn('control_insert_per_row_slowdown | confirmation | 6 |',(Path(tmp)/'summary.md').read_text())
                 if expiry:
                     self.assertFalse(report['complete'])
                     self.assertIn('Complete: **False**',(Path(tmp)/'summary.md').read_text())
