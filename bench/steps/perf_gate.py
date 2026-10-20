@@ -25,10 +25,13 @@ sys.path.insert(0, str(ROOT / 'bench/steps'))
 import cell
 from catalog import CASES, select
 
-PAIRS = 6
+INITIAL_PAIRS = 6
+READ_CONFIRMATION_PAIRS = 16
+MUTATION_CONFIRMATION_PAIRS = 6
 TARGET = 0.150
 MATERIAL = 1.10
-T95_DF5 = 2.570581835636305
+T95 = {6:  2.570581835636305,
+       16: 2.131449545559323}
 DEADLINE = math.inf
 BATCH_WALL_LIMIT = 1.0
 SETTINGS = '''SET statement_timeout='30s'; SET max_parallel_workers_per_gather=0;
@@ -41,14 +44,14 @@ class BudgetExpired(Exception):
 
 
 def interval(pairs):
-    if len(pairs) != PAIRS:
-        raise ValueError('a block requires exactly six independent pairs')
+    if len(pairs) not in T95:
+        raise ValueError('a block requires exactly 6 or 16 independent pairs')
     if any(not math.isfinite(x) or x <= 0 for p in pairs for x in p):
         raise ValueError('invalid elapsed sample')
     logs = [math.log(b / a) for a, b in pairs]
     mu = statistics.mean(logs)
-    half = T95_DF5 * statistics.stdev(logs) / math.sqrt(len(logs))
-    return dict(n=len(logs), ratio=math.exp(mu), lower=math.exp(mu-half),
+    half = T95[len(pairs)] * statistics.stdev(logs) / math.sqrt(len(logs))
+    return dict(n=len(logs), degrees_freedom=len(logs)-1, t_critical=T95[len(logs)], ratio=math.exp(mu), lower=math.exp(mu-half),
                 upper=math.exp(mu+half), log_sd=statistics.stdev(logs),
                 baseline_median=statistics.median(a for a, _ in pairs),
                 candidate_median=statistics.median(b for _, b in pairs),
@@ -232,6 +235,46 @@ jit=off
             command([self.bindir/'pg_ctl','-D',self.data,'-m','fast','-w','stop'],log=self.log,bounded=False)
             self.started = False
             shutil.copyfile(self.base/'server.log',output/f'{self.name}-server.log')
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def finalize_fixtures(revisions, deadline, sink):
+    """Drain setup checkpoints on both clusters before any fixture/read probes."""
+    start = time.monotonic()
+    sink.update(started_at=utc_now(),revisions={})
+    try:
+        for rev in revisions:
+            if time.monotonic()>=deadline:
+                raise BudgetExpired('global runtime budget exhausted before fixture checkpoint')
+            phase = time.monotonic()
+            barrier = dict(started_at=utc_now(),complete=False)
+            sink['revisions'][rev.name] = barrier
+            try:
+                rev.conn.exec('CHECKPOINT')
+                if time.monotonic()>=deadline:
+                    raise BudgetExpired('global runtime budget exhausted after fixture checkpoint')
+                barrier['complete'] = True
+            finally:
+                barrier.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-phase)
+    finally:
+        sink.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-start)
+
+
+def budget_context(total, workflow_start, reserve, *, now=None):
+    if not math.isfinite(total) or total<=0 or not math.isfinite(reserve) or reserve<0:
+        raise ValueError('budget must be positive and reserve nonnegative, both finite')
+    if workflow_start is not None and (not math.isfinite(workflow_start) or workflow_start<=0):
+        raise ValueError('workflow start must be a positive finite Unix timestamp')
+    now = time.time() if now is None else now
+    if workflow_start is not None and workflow_start>now:
+        raise ValueError('workflow start is in the future')
+    prior = now-workflow_start if workflow_start is not None else 0
+    return dict(total_budget_seconds=total,workflow_start_seconds=workflow_start,
+                prior_elapsed_seconds=prior,cleanup_report_reserve_seconds=reserve,
+                measurement_budget_seconds=max(0,total-prior-reserve))
 
 
 def sizes(conn):
@@ -425,26 +468,32 @@ def calibrate(revisions, case, deadline):
                 target_limited_by_reset=operations<desired)
 
 
-def block(revisions, case, operations, deadline, control=False, sink=None):
+def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS):
+    if pair_count not in T95:
+        raise ValueError('unsupported independent pair count')
     start = time.monotonic()
     pairs = []
-    if sink is not None:
-        sink['samples'] = pairs
-    for round_no in range(PAIRS):
-        pair = [None,None]
-        pairs.append(pair)
-        order = [0,1] if round_no%2 == 0 else [1,0]
-        for side in order:
-            conn = revisions[side].conn
-            prepare(conn,case)
-            elapsed(conn,case,1,deadline)  # independent warmed batch, excluded
-            pair[side] = elapsed(conn,case,operations,deadline,0.075 if control and side else 0)
-    return dict(samples=pairs,runtime_seconds=time.monotonic()-start,**interval(pairs))
+    saved = sink if sink is not None else {}
+    saved.update(samples=pairs,expected_pairs=pair_count,started_at=utc_now())
+    try:
+        for round_no in range(pair_count):
+            pair = [None,None]
+            pairs.append(pair)
+            order = [0,1] if round_no%2 == 0 else [1,0]
+            for side in order:
+                conn = revisions[side].conn
+                prepare(conn,case)
+                elapsed(conn,case,1,deadline)  # independent warmed batch, excluded
+                pair[side] = elapsed(conn,case,operations,deadline,0.075 if control and side else 0)
+        saved.update(interval(pairs))
+    finally:
+        saved.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-start)
+    return saved
 
 
 def measure(revisions, case, deadline, control=False, sink=None):
     start = time.monotonic()
-    result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
+    result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',started_at=utc_now(),
                   validation=validate_case(revisions,case))
     result['phase_runtime_seconds'] = {'validation':time.monotonic()-start}
     if sink is not None:
@@ -459,8 +508,11 @@ def measure(revisions, case, deadline, control=False, sink=None):
     result['initial'].update(block(revisions,case,operations,deadline,control,sink=result['initial']))
     result['status'] = verdict(result['initial'])
     if result['status'] == 'suspect':
+        result['status'] = 'inconclusive'
         result['confirmation'] = {}
-        result['confirmation'].update(block(revisions,case,operations,deadline,control,sink=result['confirmation']))
+        pair_count = MUTATION_CONFIRMATION_PAIRS if case.reset else READ_CONFIRMATION_PAIRS
+        result['confirmation'].update(block(revisions,case,operations,deadline,control,
+                                            sink=result['confirmation'],pair_count=pair_count))
         result['status'] = verdict(result['confirmation'],True)
     if result['validation']['size_checks'] is not None:
         result['space_status'] = result['validation']['size_checks']['status']
@@ -478,7 +530,7 @@ def write_report(output, report):
              f"PostgreSQL: {report.get('postgresql','unknown')}. CPU: {report['cpu']}; CPUs: {report['cpus']}.",
              f"Runner: {report['runner']}. Load: {report['load']}.",
              'Metric: monotonic elapsed persistent SQL end-to-end, including planning and result receipt.',
-             'Six alternating independent warmed pairs/block; fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
+             'Six initial alternating warmed pairs; one fresh suspect-only confirmation: 16 read pairs or 6 mutation pairs. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
              '', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
              '|---|---|---:|---:|---|---|---|---|']
     for case in report['cases']:
@@ -492,6 +544,8 @@ def write_report(output, report):
             lines.append(f"| {snapshot['state']} | {r['relation']} / {r['role']} | {r['baseline_bytes']} / {r['baseline_pages']} | {r['candidate_bytes']} / {r['candidate_pages']} | {r['ratio']} | {r['threshold_bytes']} | {r['status']} |")
     lines.extend(['', 'Phase runtime (seconds): `'+json.dumps(report['runtime_seconds'])+'`.',
                   'Configuration: `'+json.dumps(report['config'])+'`.',
+                  'Budget envelope: `'+json.dumps(report.get('budget',{}))+'`. Cleanup/report reserve is an allowance, not a hard deadline.',
+                  'Fixture checkpoint barrier: `'+json.dumps(report.get('fixture_checkpoint_barrier',{}))+'`.',
                   'This is a small warm serial workload on the recorded host; no hardware-counter or production throughput claim.'])
     if 'error' in report:
         lines.extend(['', 'Error: '+report['error']])
@@ -512,6 +566,8 @@ def parser():
     p.add_argument('--pg-config',default=shutil.which('pg_config'))
     p.add_argument('--port-base',type=int,default=56240)
     p.add_argument('--budget-seconds',type=float,default=300,help='global budget including builds/setup; exhaustion is inconclusive')
+    p.add_argument('--workflow-start-seconds',type=float,help='workflow Unix start timestamp; prior elapsed time is deducted from the budget')
+    p.add_argument('--cleanup-report-reserve-seconds',type=float,default=0,help='allowance deducted before builds/measurement; not a hard cleanup deadline')
     return p
 
 
@@ -524,21 +580,25 @@ def main(argv=None):
                   baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
-                  config=dict(tier=args.tier,groups=args.groups,pairs=PAIRS,target_seconds=TARGET,threshold=MATERIAL,
+                  config=dict(tier=args.tier,groups=args.groups,initial_pairs=INITIAL_PAIRS,
+                              read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
+                              supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
     revisions = []
     scratch = None
     start = time.monotonic()
-    DEADLINE = start+args.budget_seconds
+    DEADLINE = start
     measurement_start = None
     try:
+        report['budget'] = budget_context(args.budget_seconds,args.workflow_start_seconds,args.cleanup_report_reserve_seconds)
+        DEADLINE = start+report['budget']['measurement_budget_seconds']
+        if time.monotonic()>=DEADLINE:
+            raise BudgetExpired('workflow budget exhausted before source/build setup')
         exact_sha(args.baseline_ref)
         exact_sha(args.candidate_ref)
         if args.verify_control:
             require_equal(args.baseline_ref,args.candidate_ref,'control requires unchanged revisions')
-        if not math.isfinite(args.budget_seconds) or args.budget_seconds<=0:
-            raise ValueError('budget must be positive and finite')
         if not 56100 <= args.port_base <= 56298:
             raise ValueError('port-base must be in 56100..56298')
         selected = select([g for g in args.groups.split(',') if g],args.tier)
@@ -557,6 +617,9 @@ def main(argv=None):
             report.setdefault('setup_phases',{})[name] = rev.timings
             report.setdefault('versions',{})[name] = rev.versions
             report['runtime_seconds'][name+'_build_cluster_fixture'] = time.monotonic()-phase
+        report['fixture_checkpoint_barrier'] = {}
+        finalize_fixtures(revisions,DEADLINE,report['fixture_checkpoint_barrier'])
+        report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
         report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
         digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
         require_equal(digests[0],digests[1],'logical fixture')
@@ -609,6 +672,8 @@ def main(argv=None):
     except Exception as exc:
         report['status'],report['error'] = 'error',f'{type(exc).__name__}: {exc}'
     finally:
+        if 'fixture_checkpoint_barrier' in report:
+            report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
         if measurement_start is not None:
             report['runtime_seconds']['measurement_validation'] = time.monotonic()-measurement_start
         phase = time.monotonic()
