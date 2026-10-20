@@ -134,4 +134,20 @@ SELECT i, i % 7, CASE i % 8 WHEN 0 THEN '{"m": "s", "a": "x"}' WHEN 1 THEN '{"m"
 	ELSE jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX cv_typeof_col ON cv_typeof USING sift_col (id, grp, doc) WITH (paths = 'doc->m float8, doc->a astext');
+-- sift_tables with declared jsonb paths (JT10, T34, T35). cv_tp holds every JSON type under its paths, cv_tc only the declared ones (a row of
+-- them in the write buffer), cv_tq has the declaration newer than its data
+CREATE TABLE cv_tp (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('cv_tp', 'doc', 'doc->m float8, doc->a astext');
+INSERT INTO cv_tp SELECT id, grp, doc FROM cv_typeof;
+VACUUM FULL cv_tp;
+CREATE TABLE cv_tc (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('cv_tc', 'doc', 'doc->m float8, doc->a text');
+INSERT INTO cv_tc SELECT i, i % 7, jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) FROM generate_series(1, 3000) i;
+VACUUM FULL cv_tc;
+INSERT INTO cv_tc SELECT 3000 + i, i % 7, jsonb_build_object('m', i / 8.0, 'a', 'w' || i % 3) FROM generate_series(1, 100) i;
+CREATE TABLE cv_tq (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+INSERT INTO cv_tq SELECT id, grp, doc FROM cv_tc;
+VACUUM cv_tq;
+SELECT sift.table_set_paths('cv_tq', 'doc', 'doc->m float8, doc->a text');
+
 ANALYZE;
