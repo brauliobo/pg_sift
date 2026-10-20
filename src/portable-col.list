@@ -21,6 +21,7 @@ col/ver.c
 col/preagg.c
 col/wide.c
 col/shred.c
+col/shred_spec.c
 col/shred_kern.c
 col/shred_kern_avx2.c
 col/shred_kern_avx512.c
@@ -29,6 +30,7 @@ agg/sift_aggkern_avx2.c
 agg/sift_aggkern_avx512.c
 # headers
 col/shred.h
+col/shred_int.h
 col/col.h
 col/kern.h
 col/kern_int.h
