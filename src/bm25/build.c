@@ -1,6 +1,6 @@
 /*
  * bm25/build.c - the PostgreSQL side of the build: heap scan, parallel workers and leader, ambuild and ambuildempty
- * (DESIGN.md (i)). The inverted buffer, the runs and their merge are shared with the other hosts (bm25/runs.c).
+ * (DESIGN.md (i)). The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs.c).
  */
 #include "postgres.h"
 
