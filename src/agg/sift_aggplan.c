@@ -17,6 +17,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "access/stratnum.h"
@@ -2667,6 +2668,73 @@ compile_wide(AggCtx *c, Node *n)
 	return p;
 }
 
+/* the TID comparison a function is, SiftCmpOp, or -1 (<> keeps no range) */
+static int
+tid_cmp(Oid fn)
+{
+	switch (fn)
+	{
+		case F_TIDEQ:
+			return SCMP_EQ;
+		case F_TIDLT:
+			return SCMP_LT;
+		case F_TIDLE:
+			return SCMP_LE;
+		case F_TIDGT:
+			return SCMP_GT;
+		case F_TIDGE:
+			return SCMP_GE;
+		default:
+			return -1;
+	}
+}
+
+static bool
+is_ctid(AggCtx *c, Node *n)
+{
+	Var		   *v = (Var *) n;
+
+	return IsA(n, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno == SelfItemPointerAttributeNumber;
+}
+
+/*
+ * `ctid op constant` as a conjunct of the query (op: = < <= > >=, either side): the scan reads the superblocks of the range of all the conjuncts and
+ * tests the TIDs of the rows of its edges (SAP_TID, sift_aggspec_tid_range). Not as a branch of OR, an expression or a key; not for a partitioned
+ * table, whose rows have a TID in each partition.
+ */
+static SiftAggPred *
+compile_tid(AggCtx *c, Node *n)
+{
+	Node	   *l,
+			   *r;
+	int			op;
+	SiftAggPred *p;
+
+	n = strip_relabel(n);
+	if (!IsA(n, OpExpr) || c->nparts > 0 || list_length(((OpExpr *) n)->args) != 2 || (op = tid_cmp(func_of(n))) < 0 ||
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
+		return NULL;
+	l = strip_relabel(linitial(((OpExpr *) n)->args));
+	r = strip_relabel(lsecond(((OpExpr *) n)->args));
+	if (is_ctid(c, r))
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+		op = commute(op);
+	}
+	if (!is_ctid(c, l) || !IsA(r, Const) || ((Const *) r)->constisnull)
+		return NULL;
+	p = new_pred(c, SAP_TID);
+	p->op = op;
+	p->expr = r;
+	p->argtype = TIDOID;
+	p->sel = 1.0;
+	p->desc = expr_text(c, n);
+	return p;
+}
+
 /*
  * The type of a path tested by an expression (a FILTER, a CASE, an OR, a key) while the query reads the values of the path: the leaf cannot hold
  * the strings among its numbers, so the scan would raise where PostgreSQL's guard skips them. Only a conjunct of the query (SAP_TYPE) guards a read.
@@ -4820,6 +4888,9 @@ zone_kept(AggCtx *c, SiftAggSpec *s)
 
 		kept = Min(kept, f + (1.0 - f) * (1.0 - corr * corr));
 	}
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_TID)
+			kept = Min(kept, s->pred[i]->sel);
 	return kept;
 }
 
@@ -5690,6 +5761,23 @@ agg_spec_new(AggCtx *c)
 	return s;
 }
 
+/* the share of the heap pages the TID range of the conjuncts leaves, on the first of them (zone_kept) */
+static void
+tid_share(AggCtx *c, SiftAggSpec *s)
+{
+	uint64		lo,
+				hi;
+
+	if (!sift_aggspec_tid_range(s, &lo, &hi))
+		return;
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_TID)
+		{
+			s->pred[i]->sel = lo >= hi ? 0.0 : Min(((double) ((hi - 1) >> 16) - (double) (lo >> 16) + 1.0) / Max(rel_pages(c), 1.0), 1.0);
+			return;
+		}
+}
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 static bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -5711,6 +5799,8 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		if (p == NULL)
 			p = compile_wide(c, e);
 		if (p == NULL)
+			p = compile_tid(c, e);
+		if (p == NULL)
 			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(q))
 			return false;
@@ -5730,6 +5820,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
 	s->desc_quals = txt.data;
+	tid_share(c, s);
 	return true;
 }
 
@@ -6357,6 +6448,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	CustomPath *cp;
 	StringInfoData txt;
 	List	   *scan_tlist = NIL;
+	uint64		tlo,
+				thi;
 	int			leaf[SIFT_TOPN_MAX_KEYS];
 	bool		desc[SIFT_TOPN_MAX_KEYS],
 				nulls_first[SIFT_TOPN_MAX_KEYS];
@@ -6374,7 +6467,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		return;
 	s = agg_spec_new(c);
 	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
-	if (!agg_quals(c, s, &fs) || s->npost > 0)
+	if (!agg_quals(c, s, &fs) || s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))
 		return;
 	initStringInfo(&txt);
 	foreach_node(SortGroupClause, sgc, parse->sortClause)

@@ -13,6 +13,7 @@
 #include "utils/lsyscache.h"
 #include "utils/date.h"
 #include "nodes/value.h"
+#include "storage/itemptr.h"
 
 #include "sift_aggspec.h"
 
@@ -114,6 +115,36 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 	for (int i = 0; i < s->npred; i++)
 		out = zone_cmps(out, s->pred[i], lay, nbase);
 	return out;
+}
+
+static uint64
+tid_key(const ItemPointerData *t)
+{
+	return (uint64) ItemPointerGetBlockNumberNoCheck(t) << 16 | ItemPointerGetOffsetNumberNoCheck(t);
+}
+
+bool
+sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
+{
+	bool		any = false;
+
+	*lo = 0;
+	*hi = SIFT_TID_KEY_END;
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+		uint64		k;
+
+		if (p->kind != SAP_TID)
+			continue;
+		any = true;
+		k = tid_key(DatumGetItemPointer(((Const *) p->expr)->constvalue));
+		if (p->op == SCMP_EQ || p->op == SCMP_GE || p->op == SCMP_GT)
+			*lo = Max(*lo, p->op == SCMP_GT ? k + 1 : k);
+		if (p->op == SCMP_EQ || p->op == SCMP_LE || p->op == SCMP_LT)
+			*hi = Min(*hi, p->op == SCMP_LT ? k : k + 1);
+	}
+	return any;
 }
 
 /* ---------- pre-aggregates ---------- */

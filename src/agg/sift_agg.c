@@ -82,6 +82,7 @@
 #include "sift_colsrc.h"
 #include "sift_search.h"
 #include "sift_topn.h"
+#include "sift_visibility.h"
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
@@ -725,6 +726,17 @@ typedef struct AggExec
 	int			nfilter;		/* how many */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
+	int			tid_pred;		/* the first SAP_TID conjunct, which tests the range of all of them (tid_init); -1: none */
+	uint64		tid_lo;			/* the TID keys [tid_lo, tid_hi) of the range (sift_aggspec_tid_range) */
+	uint64		tid_hi;
+	BlockNumber tid_blo;		/* the first and the last block of the range */
+	BlockNumber tid_bhi;
+	uint32		tid_sb_lo;		/* the superblocks [tid_sb_lo, tid_sb_hi) the scan reads */
+	uint32		tid_sb_hi;
+	uint32	   *tid_rows;		/* the rows of a chunk and their TIDs */
+	ItemPointerData *tid_tids;
+	SiftVis    *tid_vis;		/* a heap: the visible versions of its edge blocks' rows (a HOT chain's member, not the root the index keeps) */
+	TupleTableSlot *tid_slot;
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
@@ -3280,6 +3292,47 @@ rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
 	}
 }
 
+/*
+ * A row of a heap is at the TID of the root of its HOT chain in the index, and its ctid is the visible version's, on the same page: the rows of the
+ * blocks inside the range pass, those of its first and last block are fetched for the version the snapshot sees (none: the row is not the scan's).
+ */
+static bool
+tid_row_in(AggExec *ex, ItemPointerData *tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumberNoCheck(tid);
+	uint64		key;
+
+	if (blk < ex->tid_blo || blk > ex->tid_bhi)
+		return false;
+	if (blk > ex->tid_blo && blk < ex->tid_bhi)
+		return true;
+	if (ex->tid_vis && !sift_vis_fetch(ex->tid_vis, tid, ex->tid_slot))
+		return false;
+	key = (uint64) ItemPointerGetBlockNumberNoCheck(tid) << 16 | ItemPointerGetOffsetNumberNoCheck(tid);
+	return key >= ex->tid_lo && key < ex->tid_hi;
+}
+
+/* SAP_TID on the rows [start, start + n) of the unit: the first conjunct tests the range of all, a unit inside it needs no TID */
+static void
+eval_tid(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	uint64		first = (uint64) ex->unit.sb * SIFT_SB_PAGES << 16,
+				last = first + ((uint64) SIFT_SB_PAGES << 16) - 1;
+	if (p->id != ex->tid_pred || (ex->tid_lo <= first && last < ex->tid_hi))
+	{
+		fill_ones(out, n);
+		return;
+	}
+	clear_words(out, n);
+	if (ex->tid_hi <= first || ex->tid_lo > last)
+		return;
+	for (int i = 0; i < n; i++)
+		ex->tid_rows[i] = start + i;
+	sift_colsrc_tids(ex->src, &ex->unit, ex->tid_rows, n, ex->tid_tids);
+	for (int i = 0; i < n; i++)
+		out[i >> 6] |= (uint64) tid_row_in(ex, &ex->tid_tids[i]) << (i & 63);
+}
+
 /* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
 static void
 any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
@@ -3412,6 +3465,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_ELEM_ROW:
 			eval_elem_row(ex, p, start, n, out);
+			break;
+		case SAP_TID:
+			eval_tid(ex, p, start, n, out);
 			break;
 		case SAP_TYPE:
 		case SAP_WIDE:
@@ -9244,6 +9300,41 @@ wide_init(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* The TID range of the SAP_TID conjuncts: the scan reads the superblocks it touches, and a heap's edge rows are looked up for their visible version */
+static void
+tid_init(AggExec *ex, Snapshot snapshot)
+{
+	SiftAggSpec *s = ex->spec;
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	ex->tid_pred = -1;
+	ex->tid_sb_hi = PG_UINT32_MAX;
+	for (int i = 0; i < s->npred && ex->tid_pred < 0; i++)
+		if (s->pred[i]->kind == SAP_TID)
+			ex->tid_pred = s->pred[i]->id;
+	if (ex->tid_pred >= 0)
+	{
+		sift_aggspec_tid_range(s, &ex->tid_lo, &ex->tid_hi);
+		ex->tid_sb_hi = 0;
+		ex->tid_rows = palloc(VEC * sizeof(uint32));
+		ex->tid_tids = palloc(VEC * sizeof(ItemPointerData));
+		if (ex->tid_lo < ex->tid_hi)
+		{
+			ex->tid_blo = ex->tid_lo >> 16;
+			ex->tid_bhi = (ex->tid_hi - 1) >> 16;
+			ex->tid_sb_lo = ex->tid_blo / SIFT_SB_PAGES;
+			ex->tid_sb_hi = ex->tid_bhi / SIFT_SB_PAGES + 1;
+		}
+		if (!ex->lay->is_table)
+		{
+			ex->tid_vis = palloc(sizeof(SiftVis));
+			sift_vis_begin(ex->tid_vis, ex->heap, snapshot, NULL, 0);
+			ex->tid_slot = table_slot_create(ex->heap, NULL);
+		}
+	}
+	MemoryContextSwitchTo(old);
+}
+
 /* what a key keeps for the whole scan: its expression and the type of its input; the ids are the table's (table_init) */
 static void
 register_key(AggExec *ex, int ki)
@@ -10198,6 +10289,10 @@ shared_init(ScanShared *sh, AggExec *ex)
 static void
 scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
+	lo = Max(lo, ex->tid_sb_lo);
+	hi = Min(hi, ex->tid_sb_hi);
+	if (lo >= hi)
+		return;
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 	{
@@ -11203,6 +11298,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	filter_init(ex);
 	type_init(ex);
 	wide_init(ex);
+	tid_init(ex, snapshot);
 	str_init(ex);
 	preagg_init(ex);
 	dense_init(ex);
@@ -11217,6 +11313,11 @@ engine_close(AggExec *ex)
 		sift_search_close(ex->search);
 	if (ex->topn)
 		sift_topn_close(ex->topn);
+	if (ex->tid_vis)
+	{
+		sift_vis_end(ex->tid_vis);
+		ExecDropSingleTupleTableSlot(ex->tid_slot);
+	}
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
