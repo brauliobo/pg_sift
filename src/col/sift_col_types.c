@@ -13,6 +13,9 @@
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
+#include "utils/date.h"
+#include "utils/uuid.h"
+#include "utils/rangetypes.h"
 
 #include "sift_col_am.h"
 
@@ -89,8 +92,12 @@ sift_col_type_of_oid(Oid typid)
 			return SIFT_COLT_MONEY;
 		case INTERVALOID:
 			return SIFT_COLT_INTERVAL;
+		case TIMEOID:
+			return SIFT_COLT_TIME;
 		default:
-			return SIFT_COLT_OTHER;
+			if (type_is_enum(typid))
+				return SIFT_COLT_ENUM;
+			return OidIsValid(get_element_type(typid)) || type_is_range(typid) || type_is_multirange(typid) ? SIFT_COLT_VARLENA : SIFT_COLT_OTHER;
 	}
 }
 
@@ -98,7 +105,8 @@ static const Oid type_oids[SIFT_COLT_END] = {
 	[SIFT_COLT_BOOL] = BOOLOID, [SIFT_COLT_INT2] = INT2OID, [SIFT_COLT_INT4] = INT4OID, [SIFT_COLT_INT8] = INT8OID,
 	[SIFT_COLT_FLOAT4] = FLOAT4OID, [SIFT_COLT_FLOAT8] = FLOAT8OID, [SIFT_COLT_NUMERIC] = NUMERICOID, [SIFT_COLT_TEXT] = TEXTOID,
 	[SIFT_COLT_BYTEA] = BYTEAOID, [SIFT_COLT_DATE] = DATEOID, [SIFT_COLT_TIMESTAMP] = TIMESTAMPOID, [SIFT_COLT_TIMESTAMPTZ] = TIMESTAMPTZOID,
-	[SIFT_COLT_UUID] = UUIDOID, [SIFT_COLT_JSONB] = JSONBOID, [SIFT_COLT_MONEY] = CASHOID, [SIFT_COLT_INTERVAL] = INTERVALOID
+	[SIFT_COLT_UUID] = UUIDOID, [SIFT_COLT_JSONB] = JSONBOID, [SIFT_COLT_MONEY] = CASHOID, [SIFT_COLT_INTERVAL] = INTERVALOID,
+	[SIFT_COLT_TIME] = TIMEOID
 };
 
 /* A leaf of a plain attribute yields exactly the type of the attribute in desc (varchar stays varchar); any other one the tag's type */
@@ -196,6 +204,8 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs)
 			return make_lanes(att, defs, 1);
 		case INTERVALOID:
 			return make_lanes(att, defs, 3);
+		case TIMEOID:
+			return make_lanes(att, defs, 1);
 		case NUMERICOID:
 			switch (numeric_form(att, &defs[0].scale))
 			{
@@ -215,11 +225,18 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs)
 				defs[0].flags = typid == BPCHAROID && att->atttypmod < 0 ? SIFT_COLD_LOSSY : 0;
 				return make_lanes(att, defs, 1);
 			}
+			if (defs[0].type == SIFT_COLT_ENUM)
+				return make_lanes(att, defs, 1);
+			if (defs[0].type == SIFT_COLT_VARLENA || defs[0].type == SIFT_COLT_UUID || defs[0].type == SIFT_COLT_BYTEA)
+			{
+				defs[0].store = SIFT_COLS_STR;
+				return make_lanes(att, defs, 1);
+			}
 	}
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid), NameStr(att->attname)),
-			 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name and jsonb with paths.")));
+			 errhint("Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.")));
 	return 0;
 }
 
@@ -368,6 +385,25 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 			break;
 		case SIFT_COLT_BOOL:
 			v->v.i = DatumGetBool(d);
+			break;
+		case SIFT_COLT_TIME:
+			v->v.i = DatumGetTimeADT(d);
+			break;
+		case SIFT_COLT_ENUM:
+			v->v.i = (int32) DatumGetObjectId(d);
+			break;
+		case SIFT_COLT_UUID:
+			v->v.s = (const char *) DatumGetUUIDP(d);
+			v->len = UUID_LEN;
+			break;
+		case SIFT_COLT_BYTEA:
+		case SIFT_COLT_VARLENA:
+			{
+				struct varlena *image = pg_detoast_datum((struct varlena *) DatumGetPointer(d));
+
+				v->v.s = (const char *) image;
+				v->len = VARSIZE(image);
+			}
 			break;
 		case SIFT_COLT_NUMERIC:
 			if (def->store == SIFT_COLS_STR)

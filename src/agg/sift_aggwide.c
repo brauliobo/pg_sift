@@ -165,7 +165,8 @@ void
 sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n)
 {
 	bool		interval = def->type == SIFT_COLT_INTERVAL,
-				image = def->store == SIFT_COLS_STR;
+				image = def->store == SIFT_COLS_STR && def->type == SIFT_COLT_NUMERIC,
+				opaque = def->store == SIFT_COLS_STR && !image;
 	char		txt[SIFT_COL_W128_TEXT];
 
 	if (w->cxt == NULL)
@@ -180,7 +181,7 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 	{
 		uint64		k[3] = {0, 0, 0};
 		bool		isnull = lanes[0].nulls && (lanes[0].nulls[i >> 6] >> (i & 63) & 1),
-					nan = isnull && lanes[0].ovf && (lanes[0].ovf[i >> 6] >> (i & 63) & 1);
+					nan = isnull && !opaque && lanes[0].ovf && (lanes[0].ovf[i >> 6] >> (i & 63) & 1);
 		uint32		at = 0,
 					e;
 
@@ -193,6 +194,8 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 		}
 		if (nan)
 			k[2] = 1;
+		else if (opaque)
+			k[0] = lanes[0].codes[i];
 		else if (image)
 		{
 			k[0] = lanes[0].codes[i];
@@ -211,6 +214,12 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 			uint8		b[SIFT_NIMG_TEXT_MAX + 64] __attribute__((aligned(8)));
 			uint32		len;
 
+			if (opaque)
+			{
+				e = add(w, k, at, SIFT_COL_DICT_STR(lanes[0].dict, lanes[0].codes[i]), SIFT_COL_DICT_LEN(lanes[0].dict, lanes[0].codes[i]));
+				w->codes[i] = e - 1;
+				continue;
+			}
 			if (nan)
 			{
 				SET_VARSIZE(b, VARHDRSZ + sizeof(uint16));

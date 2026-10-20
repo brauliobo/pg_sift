@@ -816,7 +816,7 @@ lut_leaf_ok(AggCtx *c, int leaf)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
 
-	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_CODE || l->vtype == SCV_I32);
+	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_CODE || (l->vtype == SCV_I32 && !type_is_enum(l->typid)));
 }
 
 /* a leaf an expression PostgreSQL evaluates may read: a combo gives an id to each distinct value of a dictionary, integer, 64-bit integer (numeric included) or float leaf */
@@ -2976,8 +2976,10 @@ gen_leaf_ok(AggCtx *c, int id)
 			return l->vtype == SCV_I64;
 		case NUMERICOID:
 			return l->vtype == SCV_I64;
+		case TIMEOID:
+			return l->vtype == SCV_I64;
 		default:
-			return false;
+			return l->vtype == SCV_I32 && type_is_enum(l->typid);
 	}
 }
 

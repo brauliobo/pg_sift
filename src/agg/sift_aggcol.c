@@ -76,11 +76,12 @@ col_owns_table(Oid tablerelam)
 	return false;
 }
 
-/* a head of two or three lanes (a numeric of more than 18 digits or of any other shape, an interval): read through a dictionary of its values */
+/* a head of two or three lanes (a numeric of more than 18 digits or of any other shape, an interval) or a uuid, bytea or other varlena image:
+ * read through a dictionary of its datums */
 static bool
 leaf_wide(const SiftColDef *def)
 {
-	return def->lane == 0 && def->lanes > 0;
+	return def->lane == 0 && (def->lanes > 0 || def->type == SIFT_COLT_UUID || def->type == SIFT_COLT_BYTEA || def->type == SIFT_COLT_VARLENA);
 }
 
 static SiftSrcVecType
@@ -92,7 +93,7 @@ leaf_vtype(const SiftColDef *def)
 	{
 		case SIFT_COLS_INT:
 			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ || def->type == SIFT_COLT_NUMERIC ||
-					def->type == SIFT_COLT_MONEY) ? SCV_I64 : SCV_I32;
+					def->type == SIFT_COLT_MONEY || def->type == SIFT_COLT_TIME) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -190,7 +191,7 @@ col_layout(Relation index)
 		l->parent = def->parent;
 		l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(tupdesc, def);
 		l->wide = leaf_wide(def);
-		l->wtypid = sift_col_def_needs_wide(def) && def->lane == 0 ? sift_col_def_typid(tupdesc, def) : InvalidOid;
+		l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(tupdesc, def) : InvalidOid;
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
@@ -541,7 +542,7 @@ wide_unit(ColSource *src, int leaf)
 		const SiftColDef *def = sift_col_def(src->cs, leaf);
 		SiftColVec	v[SIFT_COL_MAX_LANES];
 
-		for (int k = 0; k < def->lanes; k++)
+		for (int k = 0; k < Max(def->lanes, 1); k++)
 			sift_aggsel_read(&src->sel, &src->unit, leaf + k, &v[k]);
 		w->cxt = src->cxt;
 		sift_aggwide_build(w, def, v, v[0].n);

@@ -80,15 +80,18 @@ layout_build(Relation rel, MemoryContext cxt)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
 		uint8		scale;
+		uint8		type;
 		SiftColStore store;
 
 		l->leaf[a] = -1;
 		if (att->attisdropped)
 			continue;
 		store = att_store(att, &scale);
+		type = sift_col_type_of_oid(getBaseType(att->atttypid));
 		l->leaf[a] = n;
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.type = sift_col_type_of_oid(getBaseType(att->atttypid)),
-		.path = "",.scale = scale};
+		/* the tags of the index's own images (time, enum, arrays, ranges) mean nothing to the table's layout, which stores them by size */
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,
+		.type = type == SIFT_COLT_TIME || type == SIFT_COLT_ENUM || type == SIFT_COLT_VARLENA ? SIFT_COLT_OTHER : type,.path = "",.scale = scale};
 		n++;
 	}
 	l->exc = n;

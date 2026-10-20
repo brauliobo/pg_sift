@@ -8,6 +8,7 @@
 #define SIFT_AGGWIDE_H
 
 #include "catalog/pg_type_d.h"
+#include "utils/lsyscache.h"
 
 #include "sift_col.h"
 #include "sift_colsrc.h"
@@ -42,7 +43,8 @@ extern Datum sift_aggwide_datum(Oid typid, const char *bytes, uint32 len);
 static inline bool
 sift_aggwide_type(Oid typid)
 {
-	return typid == NUMERICOID || typid == INTERVALOID;
+	return typid == NUMERICOID || typid == INTERVALOID || typid == UUIDOID || typid == BYTEAOID || type_is_array(typid) || type_is_range(typid) ||
+		type_is_multirange(typid);
 }
 
 #endif							/* SIFT_AGGWIDE_H */
