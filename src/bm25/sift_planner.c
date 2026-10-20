@@ -8,10 +8,13 @@
 #include <math.h>
 
 #include "access/genam.h"
+#include "access/stratnum.h"
 #include "access/sysattr.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
@@ -263,6 +266,71 @@ score_walker(Node *node, ScoreRefs *refs)
 		return false;
 	}
 	return expression_tree_walker(node, score_walker, refs);
+}
+
+/* The score in an operand of a comparison: sift.score(rel.ctid), or the float8 PostgreSQL makes of it */
+static bool
+score_operand(Node *arg, Index relid)
+{
+	bool		is_max;
+
+	if (IsA(arg, FuncExpr) && ((FuncExpr *) arg)->funcid == F_FLOAT8_FLOAT4)
+		arg = linitial(((FuncExpr *) arg)->args);
+	return sift_is_score_expr(arg, relid, &is_max) && !is_max;
+}
+
+/*
+ * Is the clause `sift.score(rel.ctid) {>, >=, <, <=} c` (either side) for a c the scan can read when it starts: no column,
+ * no volatile function, no sub-plan? *lower: the score is bounded from below, so the rows it drops are the last ones of a ranked scan.
+ */
+static bool
+score_cutoff(Node *clause, Index relid, bool *lower)
+{
+	OpExpr	   *op;
+	Node	   *cutoff;
+	int			strategy;
+	bool		score_left;
+
+	if (!IsA(clause, OpExpr) || list_length((op = (OpExpr *) clause)->args) != 2)
+		return false;
+	strategy = get_op_opfamily_strategy(op->opno, get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID)));
+	if (strategy == 0 || strategy == BTEqualStrategyNumber)
+		return false;
+	score_left = score_operand(linitial(op->args), relid);
+	if (!score_left && !score_operand(lsecond(op->args), relid))
+		return false;
+	cutoff = score_left ? lsecond(op->args) : linitial(op->args);
+	if (contain_var_clause(cutoff) || contain_volatile_functions(cutoff) || contain_subplans(cutoff))
+		return false;
+	if (lower)
+		*lower = score_left ? strategy > BTEqualStrategyNumber : strategy < BTEqualStrategyNumber;
+	return true;
+}
+
+/* The restrictions of the rel that are cutoffs of the score */
+static List *
+score_cutoffs(RelOptInfo *rel)
+{
+	List	   *cuts = NIL;
+
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
+			cuts = lappend(cuts, rinfo);
+	return cuts;
+}
+
+/* Does a cutoff bound the score from above? The best rows are the ones it drops, so a limit hint cannot apply before it */
+static bool
+cuts_from_above(List *cuts, Index relid)
+{
+	foreach_node(RestrictInfo, rinfo, cuts)
+	{
+		bool		lower;
+
+		if (score_cutoff((Node *) rinfo->clause, relid, &lower) && !lower)
+			return true;
+	}
+	return false;
 }
 
 /* The members of the sort key's class that are about rel: its own, and for a partition the ones derived from its parent's */
@@ -1116,7 +1184,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	ScanCand	c;
 	ScanEst		est;
 	PathKey    *pk = NULL;
-	List	   *scores;
+	List	   *scores,
+			   *cuts;
 	KeyedOrder	ko;
 	bool		ranked,
 				only_best,
@@ -1149,22 +1218,23 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
 		check_partition_scores(rel, scores);
+	cuts = score_cutoffs(rel);
 	ranked = sorted_by_score(root, rel, &pk);
-	only_best = ranked || scores != NIL;
+	only_best = ranked || scores != NIL || cuts != NIL;
 	/* the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score */
-	keyed = only_best && !ranked && !is_partition(rel) && !reads_max_score(rel, scores) &&
+	keyed = only_best && !ranked && cuts == NIL && !is_partition(rel) && !reads_max_score(rel, scores) &&
 		(query_limit(root) > 0 || param_limits(root) != NIL) && keyed_order(root, rel, &ko);
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 	{
 		ScoreRefs	refs = {rti, NIL};
 
 		score_walker((Node *) rinfo->clause, &refs);
-		if (refs.found != NIL)
+		if (refs.found != NIL && !list_member_ptr(cuts, rinfo))
 			return;
 	}
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 	{
-		int64		k = scan_limit(root, ranked);
+		int64		k = cuts_from_above(cuts, rti) ? 0 : scan_limit(root, ranked);
 		SiftScanMode mode = only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
 		List	   *pathkeys = ranked ? list_make1(pk) : NIL;
 		/*
@@ -1374,20 +1444,22 @@ rel_index(RelOptInfo *rel, Oid indexoid)
 	return NULL;
 }
 
-/* Vars of the rel the scan hands to its parent, its own quals and sort keys, then the sift.score expressions */
+/* Vars of the rel the scan hands to its parent, its own quals and sort keys, then the sift.score expressions the query and the cutoffs read */
 static List *
-scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual, List *keys)
+scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual, List *keys, List *cuts)
 {
 	List	   *vars = pull_var_clause((Node *) list_concat(list_concat_copy(rel->reltarget->exprs, residual), list_copy(keys)),
 									   PVC_RECURSE_PLACEHOLDERS),
 			   *exprs = NIL,
 			   *tlist = NIL;
 	int			resno = 1;
+	ScoreRefs	refs = {rel->relid, score_exprs(root, rel)};
 
 	foreach_node(Var, v, vars)
 		if (v->varno == rel->relid)
 			exprs = list_append_unique(exprs, v);
-	exprs = list_concat(exprs, score_exprs(root, rel));
+	score_walker((Node *) cuts, &refs);
+	exprs = list_concat(exprs, refs.found);
 	foreach_ptr(Node, e, exprs)
 		tlist = lappend(tlist, makeTargetEntry((Expr *) e, resno++, NULL, false));
 	return tlist;
@@ -1411,9 +1483,9 @@ score_outputs(PlannerInfo *root, RelOptInfo *rel, List *tlist)
  * it starts (the plan's k hint is what root->limit_tuples says, which for a parameter is nothing)
  */
 static List *
-limit_params(PlannerInfo *root, CustomPath *best)
+limit_params(PlannerInfo *root, CustomPath *best, bool from_above)
 {
-	if (DatumGetInt64(list_nth_node(Const, best->custom_private, SIFT_PRIV_K)->constvalue) > 0 ||
+	if (from_above || DatumGetInt64(list_nth_node(Const, best->custom_private, SIFT_PRIV_K)->constvalue) > 0 ||
 		DatumGetInt32(list_nth_node(Const, best->custom_private, SIFT_PRIV_MODE)->constvalue) != SIFT_MODE_RANKED ||
 		(best->path.pathkeys == NIL && root->query_pathkeys != NIL))
 		return NIL;
@@ -1427,23 +1499,30 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	CustomScan *cs = makeNode(CustomScan);
 	IndexOptInfo *ii = rel_index(rel, DatumGetObjectId(((Const *) linitial(best->custom_private))->constvalue));
 	List	   *keys = list_nth_node(List, best->custom_private, SIFT_NPRIV + 1),
-			   *residual = NIL;
+			   *residual = NIL,
+			   *cuts = NIL,
+			   *cut_exprs;
 
 	foreach_node(RestrictInfo, rinfo, clauses)
 	{
 		Expr	   *q;
 
-		if (!sift_match_clause((Node *) rinfo, ii, &q))
+		if (sift_match_clause((Node *) rinfo, ii, &q))
+			continue;
+		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
+			cuts = lappend(cuts, rinfo);
+		else
 			residual = lappend(residual, rinfo);
 	}
 	residual = extract_actual_clauses(residual, false);
+	cut_exprs = extract_actual_clauses(cuts, false);
 	cs->scan.plan.targetlist = score_outputs(root, rel, tlist);
 	cs->scan.scanrelid = rel->relid;
 	cs->flags = best->flags;
-	cs->custom_scan_tlist = scan_tlist(root, rel, residual, keys);
+	cs->custom_scan_tlist = scan_tlist(root, rel, residual, keys, cut_exprs);
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make4(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
-								  limit_params(root, best), copyObject(keys));
+	cs->custom_exprs = list_make5(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
+								  limit_params(root, best, cuts_from_above(cuts, rel->relid)), copyObject(keys), cut_exprs);
 	cs->methods = &sift_scan_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, ii->indexoid);
 	if (custom_plans != NIL)
@@ -1466,7 +1545,7 @@ sift_plan_count(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlis
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = tlist;
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make4(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL, NIL, NIL);
+	cs->custom_exprs = list_make5(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL, NIL, NIL, NIL);
 	cs->methods = &sift_count_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids,
 										   DatumGetObjectId(((Const *) linitial(best->custom_private))->constvalue));
