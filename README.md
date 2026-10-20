@@ -5,7 +5,7 @@
 pg_sift adds fast full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`. No external search
 server, no separate analytics database, no `shared_preload_libraries`. The search engine also runs as a SQLite extension and a MariaDB library.
 
-[Features](#features) · [Install](#install) · [Search](#search) · [Analytics](#analytics) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Limits](#limits) · [Vulkan (experimental)](#vulkan-experimental) · [Docs](#docs)
+[Features](#features) · [Install](#install) · [Homebrew](#install-with-homebrew) · [Search](#search) · [Analytics](#analytics) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Limits](#limits) · [Vulkan (experimental)](#vulkan-experimental) · [Docs](#docs)
 
 ## Features
 
@@ -17,16 +17,11 @@ server, no separate analytics database, no `shared_preload_libraries`. The searc
 
 ## Install
 
-Needs PostgreSQL 17 or 18, `pg_config` on `PATH` and a C compiler (x86-64 tested). Packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
-
-```sh
-make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
-psql -d mydb -c 'CREATE EXTENSION pg_sift'          # as a superuser; after an upgrade: ALTER EXTENSION pg_sift UPDATE
-```
+Supports PostgreSQL 17 and 18 on Linux and macOS. Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
 
 ### Install with Homebrew
 
-On macOS, the formula in this repository builds for Homebrew PostgreSQL 17 and 18:
+On macOS, the [formula](Formula/pg_sift.rb) in this repository builds for Homebrew PostgreSQL 17 and 18:
 
 ```sh
 brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
@@ -34,9 +29,24 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-Tested on Apple Silicon with PostgreSQL 17.11 and 18.6. HEAD tracks `main`; v3.1.0 cannot build on arm64.
-The portability fix must be merged before the default HEAD installation works on arm64.
-Enable the extension with `CREATE EXTENSION pg_sift;` in a database.
+The formula is HEAD-only and builds current `main`, which includes macOS arm64 support; the v3.1.0 release does not.
+Tested on Apple Silicon with PostgreSQL 17.11 and 18.6. With your PostgreSQL server running, enable the extension as a superuser in each database:
+
+```sh
+"$(brew --prefix postgresql@18)/bin/psql" -d mydb -c 'CREATE EXTENSION pg_sift;'
+```
+
+Replace `mydb` with your database name; use `postgresql@17` for a PostgreSQL 17 server.
+Existing users of the former separate tap: [migration instructions](docs/USAGE.md#install-with-homebrew).
+
+### Build from source
+
+Needs server headers with `pg_config` on `PATH` and a C compiler.
+
+```sh
+make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
+psql -d mydb -c 'CREATE EXTENSION pg_sift'          # as a superuser; after an upgrade: ALTER EXTENSION pg_sift UPDATE
+```
 
 ## Search
 
