@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The regex engine of the MariaDB host tells the query parser (src/bm25/query.c compile_regex) whether a pattern has a back-reference:
+# The regex engine of the MariaDB host tells the query parser (src/bm25/query_analyze.c compile_regex) whether a pattern has a back-reference:
 # re_info of the regex_t, which the parser palloc's and never clears. The engine must set it for every pattern: a pattern without a
 # back-reference was refused (and one with it accepted) depending on what the heap held.
 set -euo pipefail

@@ -26,7 +26,7 @@ extern IndexBulkDeleteResult *sift_ambulkdelete(IndexVacuumInfo *info, IndexBulk
 												IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
 
-/* bm25/planner.c */
+/* bm25/planner_path.c */
 extern void sift_amcostestimate(struct PlannerInfo *root, struct IndexPath *path, double loop_count,
 								Cost *indexStartupCost, Cost *indexTotalCost,
 								Selectivity *indexSelectivity, double *indexCorrelation,
