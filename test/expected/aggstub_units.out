@@ -160,7 +160,7 @@ SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_du
            0
 (1 row)
 
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
  only_live_rows 
 ----------------
@@ -175,7 +175,7 @@ SELECT diffs('t_col', 0, 't', 'id') AS id_diffs, diffs('t_col', 9, 't', 's') AS 
 
 -- VACUUM removed whole pages' worth of rows; a superblock with none gives no unit
 DELETE FROM t WHERE id > 3000 AND id <= 6000;
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) < :units_before AS fewer_units, sum(nrow) = (SELECT count(*) FROM t) AS all_rows FROM sift._test_aggstub_units('t_col');
  fewer_units | all_rows 
 -------------+----------
@@ -198,7 +198,7 @@ SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) 
                    1
 (1 row)
 
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) WHERE val = '100001';
  rolled_back_present 
 ---------------------
@@ -223,7 +223,7 @@ SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_du
            0
 (1 row)
 
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
 									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
  differences 
@@ -260,7 +260,7 @@ SELECT count(*) = :nu AS new_versions FROM sift._test_aggstub_dump('t_col', 9) W
  t
 (1 row)
 
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
  only_live_rows 
 ----------------

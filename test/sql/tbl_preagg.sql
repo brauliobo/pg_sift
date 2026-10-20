@@ -64,7 +64,7 @@ $$;
 INSERT INTO tp SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 9 END, CASE WHEN i % 19 = 0 THEN NULL ELSE 'k' || i % 6 END, i % 10,
 	date '2024-01-01' + i % 30, CASE WHEN i % 31 = 0 THEN NULL ELSE ((i::bigint * 37) % 100000)::numeric / 100 END, i % 7, i / 8.0, i
 FROM generate_series(1, 200000) i;
-VACUUM ANALYZE tp;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) tp;
 SELECT count(*) > 2 AS units FROM sift.table_segments('tp') WHERE kind = 'columns';
 
 -- 1. promoted, no write buffer row, no tombstone
@@ -75,7 +75,7 @@ INSERT INTO tp SELECT 300000 + i, i % 9, 'k' || i % 6, i % 10, date '2025-01-01'
 SELECT * FROM pa_check('tp');
 
 -- 3. promoted again
-VACUUM tp;
+VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
 
 -- 4. committed deletes and updates: the superblocks with a tombstone are scanned
@@ -84,7 +84,7 @@ UPDATE tp SET qty = qty + 1, k = 'k9', amt = NULL WHERE id BETWEEN 120000 AND 12
 SELECT * FROM pa_check('tp');
 
 -- 5. vacuumed: the units that lost rows stay scanned until a rewrite
-VACUUM tp;
+VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
 
 -- 6. the transaction's own changes, a rolled back one, a savepoint
@@ -106,7 +106,7 @@ DELETE FROM tp WHERE id BETWEEN 60000 AND 60500;
 UPDATE tp SET qty = 0 WHERE id BETWEEN 150000 AND 150500;
 ROLLBACK;
 SELECT * FROM pa_check('tp');
-VACUUM tp;
+VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
 
 -- 8. a column added later (null in the older segments), with rows of both layouts, then promoted
@@ -114,7 +114,7 @@ ALTER TABLE tp ADD COLUMN z int;
 ALTER TABLE tp ADD COLUMN w int DEFAULT 5;
 INSERT INTO tp (id, g, k, cat, d, amt, qty, z, w) SELECT 700000 + i, i % 9, 'z' || i % 3, i % 10, current_date, i, i % 7, i, i % 4 FROM generate_series(1, 5000) i;
 SELECT * FROM pa_check('tp', 14, 16);
-VACUUM tp;
+VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
 SELECT * FROM pa_check('tp', 14, 16);
 SELECT count(DISTINCT gen) > 1 AS layouts FROM sift.table_segments('tp') WHERE kind = 'columns';
@@ -122,7 +122,7 @@ SELECT count(DISTINCT gen) > 1 AS layouts FROM sift.table_segments('tp') WHERE k
 -- 9. a table of a single column layout and no pre-aggregates to speak of: whole-table counts
 CREATE TABLE tq (id int, g int) USING sift_table;
 INSERT INTO tq SELECT i, i % 5 FROM generate_series(1, 120000) i;
-VACUUM tq;
+VACUUM (DISABLE_PAGE_SKIPPING) tq;
 INSERT INTO pa_q VALUES (20, 'count', 'SELECT g, count(*) FROM %s GROUP BY g'), (21, 'sum', 'SELECT sum(id), count(*) FROM %s');
 SELECT * FROM pa_check('tq', 20, 21);
 DELETE FROM tq WHERE id % 10 = 0;
@@ -131,11 +131,11 @@ SELECT * FROM pa_check('tq', 20, 21);
 -- 10. a dropped column: the histograms of the older segments carry it as a measure, those units are scanned
 CREATE TABLE tr (id int, g int, amt numeric(10,2)) USING sift_table;
 INSERT INTO tr SELECT i, i % 5, i % 100 FROM generate_series(1, 120000) i;
-VACUUM tr;
+VACUUM (DISABLE_PAGE_SKIPPING) tr;
 ALTER TABLE tr DROP COLUMN amt;
 INSERT INTO tr SELECT i, i % 5 FROM generate_series(120001, 180000) i;
 SELECT * FROM pa_check('tr', 20, 21);
-VACUUM tr;
+VACUUM (DISABLE_PAGE_SKIPPING) tr;
 SELECT * FROM pa_check('tr', 20, 21);
 
 DROP TABLE tp, tq, tr, pa_q;

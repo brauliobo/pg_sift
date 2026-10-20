@@ -15,7 +15,7 @@ SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', 
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 30000) i;
 CREATE INDEX v_t_col ON v_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8}');
-VACUUM (FREEZE, ANALYZE) v_t;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
 
 CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -60,19 +60,19 @@ BEGIN;
 UPDATE v_t SET touched = 1 WHERE id = 29000;
 SELECT pg_stat_get_xact_tuples_hot_updated('v_t'::regclass) AS hot_updates;
 COMMIT;
-VACUUM v_t;
+VACUUM (DISABLE_PAGE_SKIPPING) v_t;
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS hot_row_pushed, same(agg_q('l.k, avg(l.n)')) AS hot_row_same;
 -- and the row is still in the index
 SELECT pushed('SELECT count(*), max(id) FROM v_t') AS count_pushed, same('SELECT count(*), max(id) FROM v_t') AS count_same;
 
 -- repair the rows of the first superblock: the one of the second still holds a string in a live row
 UPDATE v_t SET doc = unstring(doc) WHERE id BETWEEN 100 AND 103;
-VACUUM v_t;
+VACUUM (DISABLE_PAGE_SKIPPING) v_t;
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS live_row_pushed, same(agg_q('l.k, avg(l.n)')) AS live_row_same;
 
 -- repair the last one: only dead rows hold a string, and the VACUUM of the index lets the scan read the leaf again
 UPDATE v_t SET doc = unstring(doc) WHERE id = 29000;
-VACUUM v_t;
+VACUUM (DISABLE_PAGE_SKIPPING) v_t;
 SELECT count(*) AS string_values FROM v_t t, jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n') = 'string';
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS repaired_pushed, same(agg_q('l.k, avg(l.n)')) AS repaired_same;
 SELECT pushed(agg_q('l.k, count(*)')) AS key_pushed, same(agg_q('l.k, count(*)')) AS key_same;
