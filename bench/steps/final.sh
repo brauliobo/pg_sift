@@ -6,6 +6,8 @@
 #   stats        what ClickHouse and Elasticsearch read per question
 #   gap          the pg_sift profile (private cluster under a memory cap) and docs/BENCH-GAP.md
 #   search       articles and places, every engine: warm and cold tables, charts, README.md and docs/BENCHMARKS.md
+#   sets         the set-filter benchmark (synthetic, steps/sets.sh) on the release REF (the release of SIFT_SRC=ref:REF, else this checkout)
+#   extras       element rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU (steps/extras.sh), the builds they compare are tags
 # The total budget is checked first (the sum of the stages that will run; exit 4 over it, --budget 0 skips the check); a stage that finished before with the same code, settings and
 # host is skipped (its key is in $STORE/final-state; --no-resume runs everything). Every other option is passed on to the stages (bench/bench --help). --docs also writes bench/results,
 # the charts, README.md and docs/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
@@ -36,11 +38,12 @@ done
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 [[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
 FWD+=(--size "$SIZE")
-[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || BUDGET=25; }
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=190 || BUDGET=25; }; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
 ALL_STAGES="store compression stats gap search"
+[[ $SIZE != standard && $SIZE != full ]] || ALL_STAGES="$ALL_STAGES sets extras"   # the synthetic and the release-to-release benchmarks are published at standard and full
 [[ -n $STAGES ]] || STAGES=$ALL_STAGES
 [[ $SIZE == standard || $SIZE == full || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
 
@@ -54,6 +57,8 @@ s_gap() {
                       python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
 }
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
+s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
+s_extras() { bench extras all ${DOCS:+--docs}; }
 minutes() { # STAGE: the minutes it takes when everything is measured
   case $1 in
     store) if [[ " ${FWD[*]} " != *" --remeasure-all "* ]] && compgen -G "${S_CACHE_DIR:-$STORE/store-cache}/cells/*/*.json" >/dev/null; then echo "$P_MIN_STORE_CACHED"   # competitor cells are in the cache
@@ -62,6 +67,8 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     stats) echo "${P_MIN_STATS:-3}" ;;
     gap) echo "${P_MIN_GAP:-4}" ;;
     search) echo "$P_MIN_SEARCH" ;;
+    sets) echo "${P_MIN_SETS:-25}" ;;
+    extras) echo "${P_MIN_EXTRAS:-100}" ;;
   esac
 }
 key() { python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$1" "$SIZE" "${FWD[*]}" "$DOCS" "$SIZES"; }

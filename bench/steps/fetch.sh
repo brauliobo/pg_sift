@@ -4,7 +4,8 @@
 # Builds or unpacks the engines under $ROOT/engines/<name>, never system-wide: the PGXS extensions (sift from this
 # checkout, rum, pg_textsearch) are installed with DESTDIR into <name>/root, the ParadeDB pg_search package is
 # unpacked there; the cluster finds every */root (bench/steps/lib.sh). Downloads land in <name>/dl.
-# SIFT_SRC=worktree (default) builds the tracked files of this checkout, SIFT_SRC=head the last commit.
+# SIFT_SRC=worktree (default) builds the tracked files of this checkout, SIFT_SRC=head the last commit, SIFT_SRC=ref:REF a tag or commit (SIFT_SRC=ref:v3.1.0:
+# the release is measured with the harness of this checkout, from git archive: no worktree is touched).
 # sift_ref: sift built from SIFT_REF (a git ref of this repository, default the tag in versions.env) under the extension name
 # pg_sift_ref, the reference of `bench/bench regress`. bm25 (pgx-bm25) is the installed system package (pacman -S pgx-bm25: the cluster finds
 # its control file and library in the system directories, nothing is built); without it BM25_PKG, the Arch package to unpack, or
@@ -36,16 +37,19 @@ pgxs_release() { # engine url [sha256]: a PGXS extension from a release tarball
 
 # built tree differs from the last commit: only for SIFT_SRC=worktree
 sift_dirty() {
-  [[ ${SIFT_SRC:-worktree} == head ]] || git -C "$REPO" diff --quiet HEAD -- . ':!bench' ':!docs' ':!packaging' 2>/dev/null || echo "+uncommitted changes"
+  [[ ${SIFT_SRC:-worktree} != worktree ]] || git -C "$REPO" diff --quiet HEAD -- . ':!bench' ':!docs' ':!packaging' 2>/dev/null || echo "+uncommitted changes"
 }
 
 fetch_sift() {
   local src=$BUILD/sift
   rm -rf "$src" "$SIFT_ROOT"; mkdir -p "$src"
-  if [[ ${SIFT_SRC:-worktree} == head ]]; then git -C "$REPO" archive HEAD | tar -x -C "$src"
-  else (cd "$REPO" && git ls-files -z -- . ':!bench' ':!docs' ':!packaging' | tar --null -T - -cf -) | tar -x -C "$src"; fi
+  case ${SIFT_SRC:-worktree} in
+    head) git -C "$REPO" archive HEAD | tar -x -C "$src" ;;
+    ref:*) git -C "$REPO" archive "${SIFT_SRC#ref:}" | tar -x -C "$src" ;;
+    *) (cd "$REPO" && git ls-files -z -- . ':!bench' ':!docs' ':!packaging' | tar --null -T - -cf -) | tar -x -C "$src" ;;
+  esac
   pgxs_install sift "$src" >/dev/null
-  echo "$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)$(sift_dirty)" >"$SIFT_ROOT/.build-info"
+  echo "$(git -C "$REPO" rev-parse --short=12 "${SIFT_SRC#ref:}^{commit}" 2>/dev/null || git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)$(sift_dirty)" >"$SIFT_ROOT/.build-info"
 }
 
 fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz" "$RUM_SHA256"; }
@@ -113,8 +117,11 @@ pg_key() { pg_config --version; }
 xbench_key() { cat "$BENCH"/xbench/{Cargo.toml,Cargo.lock,rust-toolchain.toml,src/*.rs} | sha256sum | cut -c1-16; }
 sift_key() { # the files the extension is built from: the tracked ones without the documentation, the tests, the CI and the harness itself
   local skip=(':!bench' ':!docs' ':!packaging' ':!test' ':!scripts' ':!.github' ':!*.md')
-  if [[ ${SIFT_SRC:-worktree} == head ]]; then git -C "$REPO" archive HEAD -- . "${skip[@]}" | sha256sum | cut -c1-32
-  else (cd "$REPO" && git ls-files -z -- . "${skip[@]}" | xargs -0 sha256sum | sha256sum | cut -c1-32); fi
+  case ${SIFT_SRC:-worktree} in
+    head) git -C "$REPO" archive HEAD -- . "${skip[@]}" | sha256sum | cut -c1-32 ;;
+    ref:*) git -C "$REPO" archive "${SIFT_SRC#ref:}" -- . "${skip[@]}" | sha256sum | cut -c1-32 ;;
+    *) (cd "$REPO" && git ls-files -z -- . "${skip[@]}" | xargs -0 sha256sum | sha256sum | cut -c1-32) ;;
+  esac
 }
 fetch_key() {
   case $1 in
