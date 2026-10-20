@@ -29,15 +29,14 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The formula is HEAD-only and builds current `main`, which includes macOS arm64 support; the v3.1.0 release does not.
-Tested on Apple Silicon with PostgreSQL 17.11 and 18.6. With your PostgreSQL server running, enable the extension as a superuser in each database:
+The HEAD-only formula builds `main` and supports macOS arm64. Tested on Apple Silicon with PostgreSQL 17.11 and 18.6.
+With your PostgreSQL server running, connect as a superuser:
 
 ```sh
 "$(brew --prefix postgresql@18)/bin/psql" -d mydb -c 'CREATE EXTENSION pg_sift;'
 ```
 
 Replace `mydb` with your database name; use `postgresql@17` for a PostgreSQL 17 server.
-Existing users of the former separate tap: [migration instructions](docs/USAGE.md#install-with-homebrew).
 
 ### Build from source
 
