@@ -103,23 +103,13 @@ and `SIFT_COL_PAD`, `SIFT_COL_NWORDS` and `sift_col_f8_key` / `sift_col_f8_from_
 float keys. Tests that run the codec at a level set both tables (`sift_cck` and `sift_colk`). The core's `unpack` (sequential `PACK` layout, bits 1..31)
 and the codec's `unpack32` (vertical layout, bits 0..32) are different layouts of the same idea; with `PACK` retired the core's slot can be removed.
 
-## 5. Integration patch (the chunk writer; nothing of the chunk format is rewritten)
+## 5. Where the engine calls it
 
-1. `sift_col_enc.h`: `#define SIFT_COLENC_CC 4`; `sift_cchunk_parse` accepts it (payload = blob aligned to 8, `bits`/`base` ignored).
-2. Writer (`sift_cunit_encode`, per leaf): after gathering `keys[]` and the NULL bits, `sift_cc_encode(out, kind, keys, n, nulls, &pol, &info)`; the chunk
-   header gets `enc = 4`, the existing flags and bitmaps; zone `min`/`max` may be taken from `info`. Keep the shortcut of the all-NULL leaf (a `CONST` chunk
-   with the bitmap) and `n == 0`.
-3. Readers: `sift_ctest_run` -> `sift_cc_open` + `sift_cc_filter` + AND non-NULL; `sift_cchunk_decode` -> `sift_cc_decode` (NULL slots are unspecified:
-   mask them); `sift_cchunk_decode_sel` -> `sift_cc_decode_sel`; `sift_cchunk_zone` (verification C4) -> decode and recompute.
-4. Options: register the string reloption `compression` (default `auto`) next to `paths`; parse it once with `sift_cc_policy_for_column` per leaf at
-   writer creation (`SiftColDef` path or attribute name is the key); a change of the option applies to chunks written afterwards (merge rewrites).
-5. Dictionaries: `sift_cdict_serialize` output goes through `sift_cc_encode_strs` when the dictionary exceeds a few hundred bytes; the DICTS section
-   records which form.
-6. `sift.col_leaves` reports the chunks per encoding of each leaf from `SiftCcInfo.tag`. (`sift_cc_kernels_init()` is already called from `_PG_init` by this branch.)
-7. Portable hosts: list the codec in `portable.list` and add the `colz.c` stubs (header of this file).
-
-This branch depends on nothing of the engine. The shared files it touches are `Makefile` (library probes), `src/core/sift_handler.c` (one line in `_PG_init`),
-`pg_sift_test--1.0.sql`, `CHANGELOG.md` and the packaging recipes (build dependencies on the LZ4 and zstd development packages).
+Chunk encoding 4 (`SIFT_COLENC_CC`): the payload is the blob aligned to 8, `bits` and `base` are ignored. The writer (`sift_cunit_encode`) calls `sift_cc_encode`
+per leaf with the leaf's policy and keeps a `CONST` chunk for an all-NULL leaf and for `n == 0`. The readers go through the codec: `sift_ctest_run` ->
+`sift_cc_open` + `sift_cc_filter` and the non-NULL bits, `sift_cchunk_decode` and `_sel` -> `sift_cc_decode` and `_sel` (NULL slots are unspecified: mask them), and the
+zone check of `sift.col_verify` decodes and recomputes. A dictionary above a few hundred bytes is written through `sift_cc_encode_strs`; the DICTS section records the form.
+`sift.col_leaves` reports the chunks per encoding from `SiftCcInfo.tag`. The codec is in `src/portable-col.list`.
 
 ## 6. The `compression` option
 
