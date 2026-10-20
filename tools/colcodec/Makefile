@@ -24,7 +24,7 @@ endif
 N       ?= 1
 
 CODEC    = $(addprefix $(SRC)/,sift_colcodec.c sift_colcodec_kern.c sift_colcodec_avx2.c sift_colcodec_avx512.c sift_colz.c \
-                               bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/analyze.c bm25/analyze_stem.c \
+                               bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
                                sift_col_kern.c sift_col_kern_avx2.c sift_col_kern_avx512.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c) $(KT)/shim.c
 OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o $(OUT)/pgshim.o
 HDR      = $(wildcard $(SRC)/col/sift_colcodec*.h $(SRC)/col/sift_colz.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/sift_col_kern*.h $(SRC)/col/sift_col.h) ccshim.h
