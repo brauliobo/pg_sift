@@ -665,7 +665,7 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 		return false;
 	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's */
 	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].child >= 0)
+		if (s->join[i].child >= 0 || s->join[i].params != NIL)
 			return false;
 	/* the rows nothing matched are known when every row of the table was seen: by one scan */
 	for (int i = 0; i < s->njoin; i++)
@@ -949,6 +949,9 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		put_int(p, (int) j->relid);
 		put_int(p, j->child);
 		put_int(p, j->kind);
+		put_int(p, j->subplan);
+		put_node(p, (Node *) j->params);
+		put_node(p, (Node *) j->args);
 		put_int(p, j->fslot);
 		put_int(p, j->nidx);
 		for (int k = 0; k < j->nidx; k++)
@@ -1281,6 +1284,9 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		j->relid = (Oid) get_int(u);
 		j->child = get_int(u);
 		j->kind = get_int(u);
+		j->subplan = get_int(u);
+		j->params = (List *) get_node(u);
+		j->args = (List *) get_node(u);
 		j->fslot = get_int(u);
 		j->nidx = get_int(u);
 		for (int k = 0; k < j->nidx; k++)

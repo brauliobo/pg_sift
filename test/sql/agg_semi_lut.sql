@@ -90,7 +90,7 @@ SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE day IN
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM holidays h WHERE h.d = ev.day)$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE entity_id IN (SELECT entity_id FROM members8)$$);
 SELECT * FROM same($$SELECT count(*) AS n, count(entity_id) AS c FROM ev WHERE NOT EXISTS (SELECT 1 FROM members8 m WHERE m.entity_id = ev.entity_id)$$);
--- NOT IN of a table whose key can be NULL stays on the hashed subplan (the NULL makes the answer empty); of NOT NULL columns it is the same answer
+-- NOT IN of a table whose key can be NULL stays a hashed subplan, asked by the scan for each tuple (the NULL makes the answer empty); of NOT NULL columns it is the same answer
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM members8)$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM members_nn)$$);
 -- a table with no rows, and no row that passes

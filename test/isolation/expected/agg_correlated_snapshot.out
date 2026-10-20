@@ -1,0 +1,68 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1pushed s1decl s2map s2names s1same s1end
+step s1pushed: SELECT iso_corr_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT m.name, n.name AS other, count(*) FROM iso_corr f
+		  LEFT JOIN LATERAL (SELECT name FROM iso_corr_map m WHERE m.kind = f.kind ORDER BY name LIMIT 1) m ON true
+		  JOIN (SELECT id, name FROM iso_corr_names UNION ALL SELECT id, name FROM iso_corr_names) n ON n.id = f.entity_id GROUP BY m.name, n.name;
+step s2map: INSERT INTO iso_corr_map VALUES ('c', 'gamma'), ('a', 'aardvark');
+step s2names: INSERT INTO iso_corr_names VALUES (3, 'late');
+step s1same: SELECT iso_corr_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2map s2names s1same s2commit s1end
+step s1pushed: SELECT iso_corr_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT m.name, n.name AS other, count(*) FROM iso_corr f
+		  LEFT JOIN LATERAL (SELECT name FROM iso_corr_map m WHERE m.kind = f.kind ORDER BY name LIMIT 1) m ON true
+		  JOIN (SELECT id, name FROM iso_corr_names UNION ALL SELECT id, name FROM iso_corr_names) n ON n.id = f.entity_id GROUP BY m.name, n.name;
+step s2begin: BEGIN;
+step s2map: INSERT INTO iso_corr_map VALUES ('c', 'gamma'), ('a', 'aardvark');
+step s2names: INSERT INTO iso_corr_names VALUES (3, 'late');
+step s1same: SELECT iso_corr_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2map s2names s2abort s1same s1end
+step s1pushed: SELECT iso_corr_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT m.name, n.name AS other, count(*) FROM iso_corr f
+		  LEFT JOIN LATERAL (SELECT name FROM iso_corr_map m WHERE m.kind = f.kind ORDER BY name LIMIT 1) m ON true
+		  JOIN (SELECT id, name FROM iso_corr_names UNION ALL SELECT id, name FROM iso_corr_names) n ON n.id = f.entity_id GROUP BY m.name, n.name;
+step s2begin: BEGIN;
+step s2map: INSERT INTO iso_corr_map VALUES ('c', 'gamma'), ('a', 'aardvark');
+step s2names: INSERT INTO iso_corr_names VALUES (3, 'late');
+step s2abort: ROLLBACK;
+step s1same: SELECT iso_corr_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
