@@ -39,6 +39,7 @@
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|LICENSE|NOTICE|\.gitignore)	-
-^scripts/(bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src|rename-write-buffer)	-
+^scripts/neutral\.denylist$	-
+^scripts/(check-neutral|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src|rename-write-buffer)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/(static\.baseline|build-bench\.sql)	-

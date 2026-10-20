@@ -106,7 +106,8 @@ if [[ $MODE == affected ]]; then
 			for f in sqlite mariadb replication; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
 			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
-		pick) (( ${#PICK[@]} )) || { echo "nothing to run: the diff touches no job"; exit 0; }
+		pick) "$REPO/scripts/check-neutral.sh" || exit 1   # a change of any file: the wording guard is not a job of the map
+			(( ${#PICK[@]} )) || { echo "nothing to run: the diff touches no job"; exit 0; }
 			echo "ci: ${#PICK[@]} of ${#JOBS_ALL[@]} jobs" >&2
 			SIFT_CI_AFFECTED=$RE exec "$0" quick ;;
 	esac
@@ -145,6 +146,7 @@ if [[ $MODE == --selftest ]]; then
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
 	[[ $(areas_regex src/core/sift_ops.c) == *'|.' ]] || { echo "FAIL: areas: a core file does not select every job"; bad=1; }
+	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
 	exit $bad
 fi
@@ -422,7 +424,7 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-HARNESS=(leakcheck-selftest plan-selftest portable-core span-test)
+HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral)
 if (( SHARD == 1 )); then
 	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
 	selftest=$!
@@ -430,20 +432,22 @@ if (( SHARD == 1 )); then
 	plantest=$!
 	step portable-core portable-core "$S/check-portable.sh" &
 	portable=$!
+	step neutral neutral "$S/check-neutral.sh" &
+	neutral=$!
 	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
 	spantest=$!
 else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-}
+wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"

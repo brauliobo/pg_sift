@@ -57,6 +57,8 @@ release tag.
 
 `src/` has one folder per area (`core/`, `bm25/`, `col/`, `agg/`, `table/`; DESIGN.md "Source layout"). A source includes another by its bare name, and a new file goes to the folder its name selects (`scripts/restructure-src.sh --check` fails for a name no rule places: add the pattern to its MAP).
 
+`scripts/check-neutral.sh` fails a tracked file or a commit subject of the branch that holds a product-specific name (the encoded list is `scripts/neutral.denylist`): data, tests and docs use generic names (fact table, entities, `entity_id`, `group_members`). `scripts/ci.sh affected` runs it first, whatever the diff touches.
+
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
