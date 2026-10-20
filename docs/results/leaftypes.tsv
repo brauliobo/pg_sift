@@ -1,0 +1,59 @@
+# Wide numeric, money and interval leaves against the narrow path of a sift_col index (bench/sql/extras/leaftypes.sql).
+# date: 2026-10-20
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (97% threads)
+# noisy_starts: 0 of the timed runs started while the pressure was above 15% for 300 s
+# postgresql: PostgreSQL 18.6
+# scope: run-p1079670-i277608077.scope
+# method: 1000000 rows, one index per side, median of 21 server-side runs, no parallel workers, sift.enable_agg off (normal plan) against on; every pair of columns holds the same values
+# host_load_before: load 7.86 6.22 7.24 cpu_psi 5.03%
+# host_load_after: load 6.41 6.19 7.13 cpu_psi 0.00%
+version	case	arm	metric	value	min	max	n	load	note
+v3.1.0	index:narrow	build	wall_ms	179				7.71	
+v3.1.0	index:narrow	build	cpu_ms	178				7.71	
+v3.1.0	index:narrow	sift_col	bytes	11608064				7.71	
+v3.1.0	narrow:int8 (cents)	btw normal	ms	29.828				7.71	
+v3.1.0	narrow:int8 (cents)	btw siftagg	ms	0.453				7.71	SiftAgg
+v3.1.0	narrow:int8 (cents)	gt normal	ms	26.856				7.71	
+v3.1.0	narrow:int8 (cents)	gt siftagg	ms	0.919				7.71	SiftAgg
+v3.1.0	narrow:int8 (microseconds)	btw normal	ms	30.288				7.71	
+v3.1.0	narrow:int8 (microseconds)	btw siftagg	ms	0.457				7.71	SiftAgg
+v3.1.0	narrow:int8 (microseconds)	gt normal	ms	27.525				7.71	
+v3.1.0	narrow:int8 (microseconds)	gt siftagg	ms	0.927				7.71	SiftAgg
+v3.1.0	narrow:numeric(18,2)	btw normal	ms	43.509				7.71	
+v3.1.0	narrow:numeric(18,2)	btw siftagg	ms	0.463				7.71	SiftAgg
+v3.1.0	narrow:numeric(18,2)	gt normal	ms	36.550				7.71	
+v3.1.0	narrow:numeric(18,2)	gt siftagg	ms	0.925				7.71	SiftAgg
+v3.1.0-23-ga43d075	index:narrow	build	wall_ms	225				7.90	
+v3.1.0-23-ga43d075	index:narrow	build	cpu_ms	224				7.90	
+v3.1.0-23-ga43d075	index:narrow	sift_col	bytes	11526144				7.90	
+v3.1.0-23-ga43d075	narrow:int8 (cents)	btw normal	ms	40.540				7.68	
+v3.1.0-23-ga43d075	narrow:int8 (cents)	btw siftagg	ms	2.718				7.68	SiftAgg
+v3.1.0-23-ga43d075	narrow:int8 (cents)	gt normal	ms	36.718				7.68	
+v3.1.0-23-ga43d075	narrow:int8 (cents)	gt siftagg	ms	8.351				7.68	SiftAgg
+v3.1.0-23-ga43d075	narrow:int8 (microseconds)	btw normal	ms	44.853				7.68	
+v3.1.0-23-ga43d075	narrow:int8 (microseconds)	btw siftagg	ms	2.863				7.68	SiftAgg
+v3.1.0-23-ga43d075	narrow:int8 (microseconds)	gt normal	ms	42.178				7.68	
+v3.1.0-23-ga43d075	narrow:int8 (microseconds)	gt siftagg	ms	9.170				7.68	SiftAgg
+v3.1.0-23-ga43d075	narrow:numeric(18,2)	btw normal	ms	52.557				7.68	
+v3.1.0-23-ga43d075	narrow:numeric(18,2)	btw siftagg	ms	2.795				7.68	SiftAgg
+v3.1.0-23-ga43d075	narrow:numeric(18,2)	gt normal	ms	44.316				7.68	
+v3.1.0-23-ga43d075	narrow:numeric(18,2)	gt siftagg	ms	7.955				7.68	SiftAgg
+v3.1.0-23-ga43d075	index:wide	build	wall_ms	489				7.68	
+v3.1.0-23-ga43d075	index:wide	build	cpu_ms	488				7.68	
+v3.1.0-23-ga43d075	index:wide	sift_col	bytes	18300928				7.68	
+v3.1.0-23-ga43d075	wide:interval	btw normal	ms	52.324				6.41	
+v3.1.0-23-ga43d075	wide:interval	btw siftagg	ms	2.981				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:interval	gt normal	ms	47.508				6.41	
+v3.1.0-23-ga43d075	wide:interval	gt siftagg	ms	9.377				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:money	btw normal	ms	51.182				6.41	
+v3.1.0-23-ga43d075	wide:money	btw siftagg	ms	4.713				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:money	gt normal	ms	45.803				6.41	
+v3.1.0-23-ga43d075	wide:money	gt siftagg	ms	10.018				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:numeric	btw normal	ms	63.008				6.41	
+v3.1.0-23-ga43d075	wide:numeric	btw siftagg	ms	2230.642				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:numeric	gt normal	ms	55.003				6.41	
+v3.1.0-23-ga43d075	wide:numeric	gt siftagg	ms	495.702				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:numeric(30,6)	btw normal	ms	57.347				6.41	
+v3.1.0-23-ga43d075	wide:numeric(30,6)	btw siftagg	ms	2.811				6.41	SiftAgg
+v3.1.0-23-ga43d075	wide:numeric(30,6)	gt normal	ms	50.615				6.41	
+v3.1.0-23-ga43d075	wide:numeric(30,6)	gt siftagg	ms	12.823				6.41	SiftAgg

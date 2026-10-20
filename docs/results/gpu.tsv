@@ -1,40 +1,28 @@
-# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS 9), one backend, one core on the CPU side, NVIDIA GeForce RTX 3090, run once under the perf lock on 2026-10-19.
-# first_ms: the first query (cpu_*) or the first query after the device is open, chunks uploaded (gpu); median_ms: median of the 9 repeats (chunks resident for gpu).
-# cpu_1core: this branch with sift.gpu = off; cpu_dense_3_1: the 3.1 development build with the dense path; the device binary predates three small fixes (IS NOT NULL on numeric, a larger dense-leaf list, the auto threshold) that do not touch the kernels.
+# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS 9), pg_sift v3.1.0 built with VULKAN=1, one backend, one core on the CPU side, NVIDIA GeForce RTX 3090, measured 2026-10-20 under the perf lock.
+# host load before: load 5.70 5.40 7.86 cpu_psi 0.00%; after: load 8.85 6.26 8.06 cpu_psi 1.09%.
+# first_ms: the first query (cpu_1core: sift.gpu off) or the first query after the device is open, chunks uploaded (gpu_cold_resident); median_ms: median of the 9 repeats (chunks resident for the device).
 rows	query	mode	first_ms	median_ms
-1000000	q7	cpu_1core	3.901	0.722
-1000000	q7	gpu_cold_resident	4.170	0.506
-1000000	q8	cpu_1core	1.919	0.425
-1000000	q8	gpu_cold_resident	3.619	0.550
-1000000	q9	cpu_1core	4.481	2.256
-1000000	q9	gpu_cold_resident	3.321	0.510
-1000000	g1	cpu_1core	4.416	2.994
-1000000	g1	gpu_cold_resident	3.663	0.441
-1000000	g2	cpu_1core	3.987	2.811
-1000000	g2	gpu_cold_resident	5.380	0.546
-1000000	g3	cpu_1core	5.224	3.925
-1000000	g3	gpu_cold_resident	3.710	0.478
-1000000	q7	cpu_dense_3_1	4.470	0.593
-1000000	q8	cpu_dense_3_1	1.681	0.505
-1000000	q9	cpu_dense_3_1	4.316	2.733
-1000000	g1	cpu_dense_3_1	4.966	2.743
-1000000	g2	cpu_dense_3_1	3.142	1.831
-1000000	g3	cpu_dense_3_1	4.021	2.835
-10000000	q7	cpu_1core	23.356	23.557
-10000000	q7	gpu_cold_resident	45.037	3.264
-10000000	q8	cpu_1core	16.086	12.958
-10000000	q8	gpu_cold_resident	15.952	2.781
-10000000	q9	cpu_1core	36.967	32.002
-10000000	q9	gpu_cold_resident	15.663	3.020
-10000000	g1	cpu_1core	31.915	28.309
-10000000	g1	gpu_cold_resident	17.849	2.321
-10000000	g2	cpu_1core	27.404	23.784
-10000000	g2	gpu_cold_resident	25.250	3.672
-10000000	g3	cpu_1core	47.501	37.885
-10000000	g3	gpu_cold_resident	21.130	2.417
-10000000	q7	cpu_dense_3_1	26.845	24.075
-10000000	q8	cpu_dense_3_1	14.132	8.664
-10000000	q9	cpu_dense_3_1	30.050	24.758
-10000000	g1	cpu_dense_3_1	34.338	27.317
-10000000	g2	cpu_dense_3_1	23.840	20.386
-10000000	g3	cpu_dense_3_1	36.273	30.006
+1000000	q7	cpu_1core	2.190	1.269
+1000000	q7	gpu_cold_resident	5.177	0.357
+1000000	q8	cpu_1core	1.878	0.704
+1000000	q8	gpu_cold_resident	4.358	0.346
+1000000	q9	cpu_1core	4.676	3.625
+1000000	q9	gpu_cold_resident	4.276	0.392
+1000000	g1	cpu_1core	4.831	3.645
+1000000	g1	gpu_cold_resident	4.617	0.402
+1000000	g2	cpu_1core	3.541	2.548
+1000000	g2	gpu_cold_resident	4.244	0.517
+1000000	g3	cpu_1core	4.965	4.147
+1000000	g3	gpu_cold_resident	4.852	0.660
+10000000	q7	cpu_1core	19.238	10.379
+10000000	q7	gpu_cold_resident	26.591	1.957
+10000000	q8	cpu_1core	13.538	8.309
+10000000	q8	gpu_cold_resident	17.982	2.296
+10000000	q9	cpu_1core	28.122	24.588
+10000000	q9	gpu_cold_resident	16.207	1.705
+10000000	g1	cpu_1core	41.235	32.448
+10000000	g1	gpu_cold_resident	17.514	1.455
+10000000	g2	cpu_1core	25.751	18.860
+10000000	g2	gpu_cold_resident	18.368	2.007
+10000000	g3	cpu_1core	30.185	26.631
+10000000	g3	gpu_cold_resident	17.965	2.060

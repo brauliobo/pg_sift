@@ -1,0 +1,26 @@
+# Facet counts and field weights (bench/sql/extras/fields.sql).
+# date: 2026-10-20
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (85% threads)
+# noisy_starts: 0 of the timed runs started while the pressure was above 15% for 300 s
+# postgresql: PostgreSQL 18.6
+# scope: run-p4081972-i276404528.scope
+# build: v3.1.0
+# method: 1000000 orders of bench/sql/store/gen.sql, median of 21 server-side runs, no parallel workers
+# host_load_before: load 18.93 17.69 12.83 cpu_psi 5.95%
+# host_load_after: load 16.81 17.29 12.80 cpu_psi 2.96%
+version	case	arm	metric	value	min	max	n	load	note
+v3.1.0	index	orders_col	bytes	11395072				18.37	
+v3.1.0	index	orders_title	bytes	8273920				18.37	
+v3.1.0	index	orders_fields	bytes	15646720				18.37	
+v3.1.0	facets: wireless	facet_counts	ms	11.211				17.31	291928
+v3.1.0	facets: wireless	four GROUP BYs, SiftAgg	ms	10.522				17.31	291928
+v3.1.0	facets: wireless	four GROUP BYs, normal plan	ms	227.291				17.31	291928
+v3.1.0	facets: wireless OR portable OR compact OR premium	facet_counts	ms	14.814				17.31	532430
+v3.1.0	facets: wireless OR portable OR compact OR premium	four GROUP BYs, SiftAgg	ms	10.631				17.31	532430
+v3.1.0	facets: wireless OR portable OR compact OR premium	four GROUP BYs, normal plan	ms	239.723				17.31	532430
+v3.1.0	facets: wireless smart black (selective)	facet_counts	ms	2.173				17.31	0
+v3.1.0	facets: wireless smart black (selective)	four GROUP BYs, SiftAgg	ms	1.243				17.31	0
+v3.1.0	facets: wireless smart black (selective)	four GROUP BYs, normal plan	ms	0.966				17.31	0
+v3.1.0	fields: wireless headphones	title only	ms	1.255				16.81	
+v3.1.0	fields: wireless headphones	title, category (weights 1, 1)	ms	1.345				16.81	
+v3.1.0	fields: wireless headphones	title^3, category	ms	1.332				16.81	
