@@ -33,7 +33,7 @@ SELECT * FROM sift.facet_counts('items', 'title', 'wireless',
 | `size`, `order` | top N of a terms facet; `count` (default), `count asc`, `value`, `value desc` |
 | `missing` | adds the bucket of the NULL values |
 | `array` | the expression is an array: each element counts once per row |
-| `edges` | range bounds: buckets `[,e1) [e1,e2) ... [en,)` |
+| `edges` | range bounds: buckets `,e1) [e1,e2) ... [en,)` |
 | `interval`, `offset` | histogram width and origin |
 | `unit` | `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` (`date_trunc` on the `timestamp`) |
 | `fill` | returns the empty buckets between the first and the last; more than 10000 buckets is an error |
@@ -54,14 +54,9 @@ Rules:
   `EXPLAIN` of `sift.facet_sql(...)`. Without one it is the ordinary plan, with the same result.
 
 Why a scan per facet and not one `GROUPING SETS`: the first version used `GROUPING SETS`. With four expression keys the planner chose a
-`SiftScan` and a `HashAgg` (54-163 ms on a million rows), and a single set is not pushed down. A scan per facet with `FILTER` aggregates for the
-ranges was 7-13 times faster. At 1,000,000 rows and four facets (category, top 10 brands, two price ranges, month):
-
-| Search | `sift.facet_counts` | the same four `GROUP BY`s with `sift.enable_agg = off` |
-|---|---|---|
-| `wireless` (100,000 matches) | 10.4 ms | 140 ms |
-| `wireless OR wired OR portable OR compact` | 12.7 ms | 310 ms |
-| `wireless headphones black` (selective) | 2.9 ms | 4.2 ms |
+`SiftScan` and a `HashAgg` (54-163 ms on a million rows in the development of the feature, a 3.1 development build), and a single set is not pushed down. A scan per facet with
+`FILTER` aggregates for the ranges was 7-13 times faster on the same build. The figures of the release (pg_sift 3.1.0, 1,000,000 rows, four facets: category, top 10
+countries, two price ranges, month; `sift.facet_counts` against the same four `GROUP BY`s on the aggregate pushdown and on the normal plan, with date, host and load) are the generated tables
 
 The planner's choice between the aggregate pushdown and a `SiftScan` with a normal aggregate flips with a cold or warm term-statistics cache
 (`sift_estimate_cached`); the results are the same.

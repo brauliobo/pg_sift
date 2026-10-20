@@ -128,10 +128,7 @@ SELECT sift_count('news', 'power AND plant');
 - **Maintenance:** a background worker (`sift.async_maintenance`) promotes write buffers and merges segments; VACUUM clears dead rows.
 - **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
 - **Replication:** physical replicas work through generic WAL.
-- **Cost of one library (3.0):** the BM25 index and the column engine share one library, about twice the size of 2.0's. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells:
-  - the first query of a session: about 1.04 to 1.05 (connection pooling amortizes it);
-  - a `VACUUM` with nothing to free: about 1.04, on 3.9M instructions;
-  - a ranked query on a one-segment index: 1.02 to 1.03.
+- **Cost of one library:** the BM25 index and the column engine share one library (8.5 MB for 3.1.0, 7.9 MB for 3.0.2, as built for the benchmarks).
 - **More:** settings, options, maintenance, replication and limits in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index in [docs/SIZING.md](docs/SIZING.md).
 
 ## Limits
@@ -146,23 +143,6 @@ SELECT sift_count('news', 'power AND plant');
 ## Vulkan (experimental)
 
 Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|on` (`auto`: grouped aggregates on indexes of at least `sift.gpu_min_rows`, 5,000,000 rows; `on`: also ungrouped). It runs grouped and filtered integer and `numeric` counts and sums of a `sift_col` index on a Vulkan device, clean all-visible units on the device and the rest on the CPU in the same query; a missing or failed device falls back to the CPU. The compressed chunks stay on the device, so use it from persistent connections (each backend pays about 0.2 s to open it). Not eligible: floats, `min`/`max`, `count(DISTINCT)`, text filters, more than one key, `sift_table`. Details and limits: [docs/GPU.md](docs/GPU.md).
-
-Online-store table, one backend, one CPU core, NVIDIA GeForce RTX 3090, measured once on 2026-10-19 (ms; CPU cells: first query / median of 9; cold: first query after the device is open; resident: median of 9). The 3.1 dense path is a 3.1 development build; the device binary predates three small fixes that do not touch the kernels.
-
-| rows | query | CPU, one core | CPU, 3.1 dense path | device, cold | device, resident | resident vs dense path |
-|---|---|---|---|---|---|---|
-| 1M | q7 `count(*)`, 2 filters | 3.9 / 0.7 | 4.5 / 0.6 | 4.2 | 0.51 | 1.2x |
-| 1M | q8 `count(*)`, 2 filters | 1.9 / 0.4 | 1.7 / 0.5 | 3.6 | 0.55 | 0.9x |
-| 1M | q9 `count, sum, sum`, 2 filters | 4.5 / 2.3 | 4.3 / 2.7 | 3.3 | 0.51 | 5.4x |
-| 1M | g1 `GROUP BY country` (30 groups), `count, sum` | 4.4 / 3.0 | 5.0 / 2.7 | 3.7 | 0.44 | 6.2x |
-| 1M | g2 `GROUP BY category` (40), `count, sum` | 4.0 / 2.8 | 3.1 / 1.8 | 5.4 | 0.55 | 3.4x |
-| 1M | g3 `GROUP BY month` (36), `sum` | 5.2 / 3.9 | 4.0 / 2.8 | 3.7 | 0.48 | 5.9x |
-| 10M | q7 `count(*)`, 2 filters | 23.4 / 23.6 | 26.8 / 24.1 | 45.0 | 3.26 | 7.4x |
-| 10M | q8 `count(*)`, 2 filters | 16.1 / 13.0 | 14.1 / 8.7 | 16.0 | 2.78 | 3.1x |
-| 10M | q9 `count, sum, sum`, 2 filters | 37.0 / 32.0 | 30.1 / 24.8 | 15.7 | 3.02 | 8.2x |
-| 10M | g1 `GROUP BY country` (30 groups), `count, sum` | 31.9 / 28.3 | 34.3 / 27.3 | 17.8 | 2.32 | 11.8x |
-| 10M | g2 `GROUP BY category` (40), `count, sum` | 27.4 / 23.8 | 23.8 / 20.4 | 25.2 | 3.67 | 5.6x |
-| 10M | g3 `GROUP BY month` (36), `sum` | 47.5 / 37.9 | 36.3 / 30.0 | 21.1 | 2.42 | 12.4x |
 
 ## Docs
 
