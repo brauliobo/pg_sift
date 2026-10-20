@@ -195,7 +195,7 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (
  SiftAgg with SubPlan 1 |           3 |              0
 (1 row)
 
--- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the normal plan)
+-- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the lookup table asks it once)
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT unnest(ARRAY[1, 2, 3, 4, 5, 6, 7])) GROUP BY kind$$);
           plan          | result_rows | vs_normal_plan 
 ------------------------+-------------+----------------
@@ -209,9 +209,9 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE store_id <> ALL (ARRAY(SELECT id FROM stores WHERE id < 30)) GROUP BY kind$$);
-  plan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           3 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
 (1 row)
 
 -- a SubPlan in a CASE (a group key) and in a FILTER

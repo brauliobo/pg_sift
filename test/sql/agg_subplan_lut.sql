@@ -90,7 +90,7 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM ev WHERE entity_id IS NOT NULL GROUP BY entity_id HAVING count(*) > 20) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT id FROM stores ORDER BY id LIMIT 12 OFFSET 2) OR kind = 'b' GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT id FROM stores UNION SELECT entity_id FROM blocked WHERE entity_id < 100) GROUP BY kind$$);
--- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the normal plan)
+-- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the lookup table asks it once)
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT unnest(ARRAY[1, 2, 3, 4, 5, 6, 7])) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT unnest(ARRAY[1, 2, 3, NULL])) OR store_id = 1 GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE store_id <> ALL (ARRAY(SELECT id FROM stores WHERE id < 30)) GROUP BY kind$$);
