@@ -45,7 +45,7 @@ build() {
 		mkdir -p "$dir/src"
 		if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
 		# the production flavor, the library users get; its own scratch and port (the port is only checked, the cluster is not started)
-		( cd "$dir/src" && SIFT_TMP=$dir SIFT_PORT=56100 SIFT_TESTING= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
+		( cd "$dir/src" && SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
 			{ tail -20 "$dir/build.log" >&2; echo "FAIL building $OLD_REF" >&2; exit 1; }
 	fi
 	echo "$dir/root"

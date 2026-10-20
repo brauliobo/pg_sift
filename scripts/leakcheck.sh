@@ -102,7 +102,7 @@ leak_unexpected() {
 
 # ---------- cluster invariants ----------
 
-leak_psql() { psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"; }
+leak_psql() { psql -X -qAt -v ON_ERROR_STOP=1 -d postgres "$@"; }
 
 # leak_procs DATA: "pid starttime kB command" of the processes that live as long as the cluster: the postmaster and its
 # auxiliary processes, found by their process titles
@@ -124,7 +124,7 @@ leak_baseline() { leak_procs "$1" >"$1/leakcheck.baseline"; }
 # leak_finding TEXT...: a finding of the cluster checks, kept in $SIFT_TMP for the scans of the whole run
 leak_finding() { echo "leaked server state: $*" | tee -a "${SIFT_TMP:-/tmp/sift-arch}/leakcheck.findings" >&2; }
 
-# leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT select it)
+# leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
 leak_cluster() {
 	local data=$1 bad=0 line pid start kb name now
 	while read -r line; do leak_finding "$line"; bad=1; done < <(leak_psql <<-'SQL' 2>&1 || echo "cannot query the cluster"

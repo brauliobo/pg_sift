@@ -123,7 +123,7 @@ start() {
 stop() {
 	[[ -f $DATA/postmaster.pid ]] || return 0
 	local rc=0
-	leak_cluster "$DATA" || rc=1
+	PGUSER=postgres leak_cluster "$DATA" || rc=1
 	pg_ctl -D "$DATA" -m fast -w stop >/dev/null
 	leak_after_stop "$DATA" || rc=1
 	leak_scan "$TMP" || rc=1

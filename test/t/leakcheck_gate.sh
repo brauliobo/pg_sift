@@ -22,7 +22,7 @@ slice() { tail -c +"$(($1 + 1))" "$LOG" >"$D/slice.out"; }
 gate_fails() { slice "$1"; ! leak_scan "$D/slice.out" 2>"$D/gate.out" && grep -qE -e "$2" "$D/gate.out"; }
 logsize() { stat -c %s "$LOG"; }
 # the cluster checks of this node record their findings next to it
-cluster_fails() { local out; ! out=$(PGHOST=$D/sock PGPORT=$(port gate) SIFT_TMP=$D leak_cluster "$D/data" 2>&1) && grep -q "$1" <<<"$out"; }
+cluster_fails() { local out; ! out=$(PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres SIFT_TMP=$D leak_cluster "$D/data" 2>&1) && grep -q "$1" <<<"$out"; }
 asan_fails() { ! leak_scan "$D"/asan.* 2>/dev/null; }
 asan_only() { local f; for f in "$D"/asan.*; do grep -q sift_test_leak "$f" || return 1; done; }
 
