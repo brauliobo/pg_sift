@@ -58,6 +58,8 @@ typedef struct SiftSrcLeaf
 	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match. InvalidOid for a wide leaf: no
 								 * expression reads its values (wtypid) */
 	Oid			wtypid;			/* a wide leaf: its SQL type, which only a conjunct of the query tests (SAP_WIDE); else InvalidOid */
+	bool		wide;			/* numeric of more than 18 digits or any other shape, interval: an SCV_CODE leaf whose dictionary entries are
+								 * not text (src/agg/sift_aggwide.h): only an expression PostgreSQL evaluates reads it, no kernel, native aggregate, histogram or text test */
 	int			scale;			/* numeric leaf (typid NUMERICOID, SCV_I64): digits after the decimal point, the value is the number times 10^scale */
 	bool		lossy;			/* the shredder may have left values out of the leaf (overflow): no predicate may use it */
 	bool		astext;			/* a text leaf of the `->>` text of any scalar: not the strings a jsonpath, `@>` or `?` compares */

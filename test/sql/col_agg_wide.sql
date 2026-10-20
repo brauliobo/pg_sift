@@ -1,7 +1,7 @@
 -- SiftAgg over the wide leaves of a sift_col index: numeric of more than 18 digits (two lanes) or of any other shape
 -- (a canonical image), money and interval. A conjunct of the query on one of them is tested by the column engine on its stored lanes; every
--- other use of their values (a key, an aggregate, an OR, a FILTER, an expression) keeps the normal plan. Every query runs with and without
--- the pushdown and the rows must be the same.
+-- other use of their values (a key, an aggregate, an OR, a FILTER, an expression) reads them as a dictionary of the unit's distinct values
+-- (col_agg_wide_keys). Every query runs with and without the pushdown and the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
@@ -75,7 +75,7 @@ SELECT wide_in_source($$SELECT count(*), sum(qty) FROM wa WHERE n38 > 1234.5$$) 
        wide_in_source($$SELECT count(*), sum(qty) FROM wa WHERE iv >= interval '1 month'$$) AS interval,
        wide_in_source($$SELECT count(*), sum(qty) FROM wa WHERE n38 IN (0, 1, 2) AND m NOT IN ('1.00', '2.00') AND iv IS NOT NULL$$) AS lists_and_null,
        wide_in_source($$SELECT grp, count(*) FROM wa WHERE n38 > 5 AND grp < 4 GROUP BY grp$$) AS grouped_by_other;
--- the rest stays on the normal plan: OR, a key, an aggregate, an expression and a FILTER read the values
+-- the rest is scanned too: OR, a key, an aggregate, an expression and a FILTER read the values
 SELECT scanned($$SELECT count(*) FROM wa WHERE n38 > 1234.5 OR grp = 1$$) AS or_,
        scanned($$SELECT n19, count(*) FROM wa GROUP BY n19$$) AS key_,
        scanned($$SELECT sum(n38) FROM wa$$) AS sum_,

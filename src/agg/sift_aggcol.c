@@ -19,6 +19,7 @@
 #include "sift_aggkern.h"
 #include "sift_aggpre.h"
 #include "sift_aggsel.h"
+#include "sift_aggwide.h"
 #include "sift_popcount.h"
 #include "sift_col.h"
 #include "sift_col_gpu.h"
@@ -50,6 +51,10 @@ typedef struct ColSource
 	int			nspred;
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
+	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
+	uint64	   *wgen;
+	uint64		ugen;			/* the unit the source is at, counted */
+	uint64		wseq;			/* dictionaries made, for their ids */
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
@@ -71,13 +76,23 @@ col_owns_table(Oid tablerelam)
 	return false;
 }
 
+/* a head of two or three lanes (a numeric of more than 18 digits or of any other shape, an interval): read through a dictionary of its values */
+static bool
+leaf_wide(const SiftColDef *def)
+{
+	return def->lane == 0 && def->lanes > 0;
+}
+
 static SiftSrcVecType
 leaf_vtype(const SiftColDef *def)
 {
+	if (leaf_wide(def))
+		return SCV_CODE;
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ || def->type == SIFT_COLT_NUMERIC) ? SCV_I64 : SCV_I32;
+			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ || def->type == SIFT_COLT_NUMERIC ||
+					def->type == SIFT_COLT_MONEY) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -90,13 +105,13 @@ leaf_vtype(const SiftColDef *def)
 }
 
 /*
- * A leaf the aggregate scan does not read: a lane of a wide value and the wide types themselves; with no SQL type no
- * expression matches it, so those queries keep the normal plan
+ * A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word;
+ * with no SQL type no expression matches it. money is one int64 and is read as such.
  */
 static bool
 leaf_hidden(const SiftColDef *def)
 {
-	return sift_col_def_needs_wide(def);
+	return def->lane > 0;
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -174,7 +189,8 @@ col_layout(Relation index)
 		l->attno = def->attno;
 		l->parent = def->parent;
 		l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(tupdesc, def);
-		l->wtypid = leaf_hidden(def) && def->lane == 0 ? sift_col_def_typid(tupdesc, def) : InvalidOid;
+		l->wide = leaf_wide(def);
+		l->wtypid = sift_col_def_needs_wide(def) && def->lane == 0 ? sift_col_def_typid(tupdesc, def) : InvalidOid;
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
@@ -222,7 +238,7 @@ leaf_stats(const SiftColIndexMeta *meta, const SiftColLeafStats *ls, SiftSrcStat
 		st->ndistinct[i] = nonnull;
 		if (def->store == SIFT_COLS_STR && !ls[i].inl)
 			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);
-		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0)
+		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0 && !leaf_wide(def))
 		{
 			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
 			st->min[i] = (double) ls[i].min;
@@ -257,6 +273,9 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
+	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
+	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
+	src->ugen = 1;
 	sift_aggsel_init(&src->sel, mcxt);
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
@@ -424,6 +443,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 	{
 		if (!sift_col_next(src->cs, &src->unit))
 			return false;
+		src->ugen++;
 		nrow = src->unit.nrows;
 	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
@@ -481,6 +501,8 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	SiftColZone cz;
 
+	if (((ColSource *) impl)->lay->leaf[leaf].wide)
+		return false;				/* a NaN is a dictionary entry */
 	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
 	return cz.has_ovf;
 }
@@ -504,7 +526,51 @@ overflow_error(void)
 			 errhint("Set sift.enable_agg to off for this query.")));
 }
 
-/* The values of a read of the engine into the caller's storage, in the vector type of the leaf */
+/*
+ * A wide leaf of the unit as a dictionary (sift_aggwide.h), made from its lanes by the first read of the leaf in the unit (the rows the executor
+ * sees: those of a unit restricted to a match set are the kept ones) and shared by the reads after it, so that the executor's maps of the
+ * dictionary are made once. A dictionary has an id of its own: the executor keeps what it derives by the id.
+ */
+static const SiftAggWide *
+wide_unit(ColSource *src, int leaf)
+{
+	SiftAggWide *w = &src->wide[leaf];
+
+	if (src->wgen[leaf] != src->ugen)
+	{
+		const SiftColDef *def = sift_col_def(src->cs, leaf);
+		SiftColVec	v[SIFT_COL_MAX_LANES];
+
+		for (int k = 0; k < def->lanes; k++)
+			sift_aggsel_read(&src->sel, &src->unit, leaf + k, &v[k]);
+		w->cxt = src->cxt;
+		sift_aggwide_build(w, def, v, v[0].n);
+		src->wgen[leaf] = src->ugen;
+		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
+	}
+	return w;
+}
+
+/* the codes of the rows `rows` (n of them; NULL: all the unit's) of a wide leaf, in the caller's storage */
+static void
+wide_fill(ColSource *src, int leaf, const uint32 *rows, int n, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	const SiftAggWide *w = wide_unit(src, leaf);
+	uint32	   *codes = buf->data;
+	int			m = rows ? n : (int) w->n;
+
+	for (int i = 0; i < m; i++)
+	{
+		uint32		r = rows ? rows[i] : (uint32) i;
+
+		codes[i] = w->codes[r];
+		buf->isnull[i] = w->isnull[r];
+	}
+	memset(codes + m, 0, SIFT_AGG_PAD * sizeof(uint32));
+	*vec = (SiftSrcVec) {.data = codes, .isnull = w->has_null ? buf->isnull : NULL, .dict = &src->dict[leaf], .n = m};
+}
+
+/* the values of a read of the engine into the caller's storage, in the vector type of the leaf */
 static void
 col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcVec *vec)
 {
@@ -568,6 +634,11 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 	SiftColLaneInfo info;
 
+	if (l->wide)
+	{
+		wide_fill(src, leaf, NULL, 0, buf, vec);
+		return;
+	}
 	if (src->sel.keep && src->sel.compact)
 	{
 		col_read_selected(src, leaf, buf, vec);
@@ -701,7 +772,7 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	SiftColVec	v;
 	uint32	   *idx;
 
-	if (src->sel.keep && src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
+	if ((src->sel.keep && src->sel.compact) || src->lay->leaf[leaf].wide)	/* the rows of a compacted unit are not the engine's: the whole leaf */
 	{
 		col_read(impl, unit, leaf, vec);
 		return;
@@ -719,10 +790,17 @@ static void
 col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
 {
 	ColSource  *src = impl;
-	uint32	   *ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
+	uint32	   *ords;
 	SiftColVec	v;
 	ColLeafBuf *b;
 
+	if (src->lay->leaf[leaf].wide)
+	{
+		b = leaf_buf(src, leaf, n);
+		wide_fill(src, leaf, rows, n, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
+		return;
+	}
+	ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
 	for (int i = 0; i < n; i++)
 		ords[i] = src->sel.keep && src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
 	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));

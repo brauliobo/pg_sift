@@ -231,7 +231,7 @@ gpu_plain_leaf(const SiftAggScan *sc, int leaf)
 	if (leaf < 0 || leaf >= sc->nbase)
 		return false;
 	lf = &sc->lay->leaf[leaf];
-	return lf->kind == SCL_SCALAR && lf->parent < 0 && !lf->lossy;
+	return lf->kind == SCL_SCALAR && lf->parent < 0 && !lf->lossy && !lf->wide;
 }
 
 static int
