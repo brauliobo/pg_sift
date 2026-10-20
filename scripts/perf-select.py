@@ -2,7 +2,9 @@
 """Select focused cases from the same dependency map as ci.sh affected.
 
 Diffs use --no-renames so both the removed and added paths contribute. Every
-non-documentation change includes smoke; unmapped paths select every group.
+change that can alter the built extension includes smoke; unmapped paths select
+every group. Paths no job builds (documentation, the gate itself, the CI
+machinery) select nothing: both revisions would build the same extension.
 """
 import argparse
 import json
@@ -42,9 +44,13 @@ def select(paths, map_path, jobs):
     owners = subprocess.check_output(
         ['bash', str(ROOT / 'scripts/areas.sh'), '--owners', str(map_path),
          *OWNERS, '--', *paths], input=''.join(job+'\0' for job in sorted(jobs)), text=True).splitlines()
+    # '-' is a path that cannot change the extension: identical builds measure only noise.
+    if owners.count('-') == len(paths):
+        return []
     picked = {'smoke'}
     for owner in owners:
-        picked.update(ALL if owner=='*' else OWNERS[owner])
+        if owner != '-':
+            picked.update(ALL if owner=='*' else OWNERS[owner])
     return [group for group in ALL if group in picked]
 
 

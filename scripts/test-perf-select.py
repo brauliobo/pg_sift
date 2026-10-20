@@ -29,7 +29,7 @@ class SelectionTest(unittest.TestCase):
             'test/sql/col_search.sql': ['smoke', 'agg', 'storage'],
             'test/sql/count_scan.sql': ['smoke', 'bm25'],
             'sqlite/host/host.h': ['smoke'],
-            '.github/workflows/assert.yml': ['smoke'],
+            '.github/workflows/assert.yml': [],
             'scripts/source-snapshot.sh': ['smoke'],
             'scripts/port-isa-check.sh': ['smoke'],
         }.items():
@@ -40,11 +40,26 @@ class SelectionTest(unittest.TestCase):
         for path in ('src/core/sift_store.c', 'src/core/sift_codec.h',
                      'src/portable.list', 'Makefile', 'src/areas.mk',
                      'pg_sift--3.0.sql', 'pg_sift.control', 'sql/pg_sift--3.0.sql',
-                     'scripts/pgtest.sh', 'scripts/areas.tsv', 'scripts/areas.sh', 'new/unknown.c',
-                     '.github/workflows/performance.yml', 'scripts/perf-select.py',
-                     'bench/steps/perf_gate.py', 'bench/perf/cases.json', 'bench/perf/test_insert_trajectory.py'):
+                     'scripts/harden.mk', 'new/unknown.c'):
             with self.subTest(path=path):
                 self.assertEqual(self.selected(path), list(SELECT.ALL))
+
+    def test_paths_that_cannot_change_the_extension_select_nothing(self):
+        # Both revisions would build identical extensions: a paired run measures only noise.
+        for path in ('scripts/pgtest.sh', 'scripts/ci.sh', 'scripts/areas.tsv', 'scripts/areas.sh',
+                     'test/t/lib/SiftTest.pm', '.github/workflows/ci.yml',
+                     '.github/workflows/performance.yml', 'scripts/perf-select.py', 'scripts/test-perf-select.py',
+                     'bench/steps/perf_gate.py', 'bench/perf/catalog.py', 'bench/perf/test_insert_trajectory.py',
+                     'bench/steps/store.py', 'Formula/pg_sift.rb'):
+            with self.subTest(path=path):
+                self.assertEqual(self.selected(path), [])
+
+    def test_one_buildable_path_keeps_the_gate_armed(self):
+        # A harness change never hides a real source change in the same diff.
+        self.assertEqual(self.selected('scripts/ci.sh', 'bench/perf/catalog.py', 'src/table/sift_table.c'),
+                         ['smoke', 'storage'])
+        self.assertEqual(self.selected('scripts/areas.sh', 'src/core/sift_store.c'), list(SELECT.ALL))
+        self.assertEqual(self.selected('scripts/ci.sh', 'sqlite/new.c'), ['smoke'])
 
     def test_docs_and_unions(self):
         self.assertEqual(self.selected(), [])
@@ -94,7 +109,7 @@ class SelectionTest(unittest.TestCase):
         for rhs, expected in (('{tbl}', ['smoke','storage']),
                               ('{tbl}|{other}', ['smoke','agg','storage']),
                               ('^shared$', list(SELECT.ALL)),
-                              ('.',list(SELECT.ALL)), ('{perf}',list(SELECT.ALL)), ('-',['smoke'])):
+                              ('.',list(SELECT.ALL)), ('.|{perf}',[]), ('{perf}',[]), ('-',[])):
             with self.subTest(rhs=rhs):
                 self.fixture(groups, [('^path/',rhs)], 'path/a', {'shared','table','column'}, expected)
         self.fixture(groups, [('^path/','{tbl}'), ('/a$','{agg}')], 'path/a', {'table','agg'}, ['smoke','agg','storage'])
@@ -108,7 +123,7 @@ class SelectionTest(unittest.TestCase):
             'test/t/001_crash.pl':r'^$|^tap(-shell)?-001_crash$',
             'test/expected/count_scan_1.out':'^$|^installcheck-count_scan_1$|^installcheck-count_scan$',
             'scripts/source-snapshot.sh':'^$|^(hardened|assert|valgrind)$',
-            'scripts/areas.sh':'^$|.',
+            'scripts/areas.sh':'^$|.|(^gh:perf$)',
         }.items():
             with self.subTest(path=path):
                 actual = subprocess.check_output(['bash',str(ROOT/'scripts/ci.sh'),'--areas-regex',
