@@ -39,6 +39,7 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|perfo
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap_kern.h|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/blob.c|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/build.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_build.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
