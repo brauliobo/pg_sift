@@ -22,7 +22,7 @@
 #define SIFT_AGG_MAX_KEYS	8		/* group columns (at most 8, 7 with grouping sets), the cell keys of the arms and the grouping set number */
 #define SIFT_AGG_MAX_FUSE	5		/* keys of the arms one pass serves, with the arm number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
-#define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
+#define SIFT_AGG_MAX_CLEAVES	8	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
 #define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
 #define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */

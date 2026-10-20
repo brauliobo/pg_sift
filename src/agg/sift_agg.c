@@ -594,7 +594,8 @@ typedef struct ComboSt
 	uint32		nevals;
 	uint32		nent;
 	uint32		entcap;
-	uint64	   *vid;			/* [ent * SIFT_AGG_MAX_CLEAVES]: 0 NULL, else the value's id in `in` / the integer + 1 */
+	int			ninputs;		/* stored cache tuple width, at least one */
+	uint64	   *vid;			/* [ent * ninputs]: 0 NULL, else the value's id in `in` / the integer + 1 */
 	bool	   *null_input;		/* the nullable input was absent for this entry */
 	ComboEnt   *ent;
 	uint32		nht;
@@ -2909,7 +2910,7 @@ combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl)
 	Datum		d;
 	uint32		r;
 
-	combo_bind_leaves(ex, ci, &cs->vid[(size_t) row * SIFT_AGG_MAX_CLEAVES]);
+	combo_bind_leaves(ex, ci, &cs->vid[(size_t) row * cs->ninputs]);
 	d = ExecEvalExprSwitchContext(cs->slot[sl], ex->lutcx, &isnull);
 	if (isnull)
 		r = 0;
@@ -3040,11 +3041,13 @@ combo_unmatched(AggExec *ex, int ci, const uint32 *prior)
 }
 
 static inline uint32
-combo_hash(const uint64 *v, bool null_input)
+combo_hash(const uint64 *v, int ninputs, bool null_input)
 {
-	uint64		h = (v[0] * UINT64CONST(0x9E3779B97F4A7C15)) ^ (v[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (v[2] * UINT64CONST(0x165667B19E3779F9));
+	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
 
-	return (uint32) (h ^ (h >> 29)) ^ (null_input ? 0x85EBCA6BU : 0);
+	for (int p = 0; p < ninputs; p++)
+		h ^= v[p] + UINT64CONST(0x9E3779B97F4A7C15) + (h << 6) + (h >> 2);
+	return (uint32) (h ^ (h >> 32)) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 
 /* room for one more entry */
@@ -3054,8 +3057,8 @@ combo_grow_ent(ComboSt *cs)
 	if (cs->nent < cs->entcap)
 		return;
 	cs->entcap = Max(cs->entcap * 2, 64);
-	cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) :
-		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+	cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * cs->ninputs * sizeof(uint64)) :
+		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * cs->ninputs * sizeof(uint64));
 	cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
 		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
 	cs->null_input = cs->null_input ? repalloc(cs->null_input, cs->entcap * sizeof(bool)) :
@@ -3078,9 +3081,9 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 		uint64	   *v;
 
 		combo_grow_ent(cs);
-		v = &cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES];
+		v = &cs->vid[(size_t) cs->nent * cs->ninputs];
+		memset(v, 0, cs->ninputs * sizeof(uint64));
 		v[0] = cs->nent;
-		v[1] = v[2] = 0;
 		cs->null_input[cs->nent] = false;
 		combo_make(ex, ci, v, &cs->ent[cs->nent]);
 		cs->nent++;
@@ -3098,10 +3101,10 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 
 	if (cs->by_id)
 		return combo_ent_by_id(ex, ci, (uint32) v[0]);
-	h = combo_hash(v, ex->null_input) & (cs->nht - 1);
+	h = combo_hash(v, cs->ninputs, ex->null_input) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
 		if (cs->null_input[e - 1] == ex->null_input &&
-			memcmp(&cs->vid[(size_t) (e - 1) * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) == 0)
+			memcmp(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs * sizeof(uint64)) == 0)
 			return e - 1;
 	combo_grow_ent(cs);
 	if (cs->nent >= (uint32) 1 << 24)
@@ -3109,7 +3112,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
 				 errhint("Set sift.enable_agg to off for this query.")));
-	memcpy(&cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+	memcpy(&cs->vid[(size_t) cs->nent * cs->ninputs], v, cs->ninputs * sizeof(uint64));
 	cs->null_input[cs->nent] = ex->null_input;
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
 	cs->ht[h] = ++cs->nent;
@@ -3120,7 +3123,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 		cs->ht = MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32));
 		for (uint32 x = 0; x < cs->nent; x++)
 		{
-			h = combo_hash(&cs->vid[(size_t) x * SIFT_AGG_MAX_CLEAVES], cs->null_input[x]) & (cs->nht - 1);
+			h = combo_hash(&cs->vid[(size_t) x * cs->ninputs], cs->ninputs, cs->null_input[x]) & (cs->nht - 1);
 			while (cs->ht[h])
 				h = (h + 1) & (cs->nht - 1);
 			cs->ht[h] = x + 1;
@@ -3230,7 +3233,10 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 	}
 	for (int i = 0; i < n; i++)
 	{
-		uint64		v[SIFT_AGG_MAX_CLEAVES] = {ex->cvid[0][i], ex->cvid[1][i], ex->cvid[2][i]};
+		uint64		v[SIFT_AGG_MAX_CLEAVES] = {0};
+
+		for (int p = 0; p < cb->nleaves; p++)
+			v[p] = ex->cvid[p][i];
 
 		eid[i] = alive && !sift_colsrc_bit(alive, i) ? COMBO_NONE : combo_ent(ex, ci, v);
 	}
@@ -9772,6 +9778,7 @@ register_combos(AggExec *ex)
 		SiftAggCombo *cb = &s->combo[ci];
 		ComboSt    *cs = &ex->cs[ci];
 
+		cs->ninputs = Max(cb->nleaves, 1);
 		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
 		cs->resettable = cb->join < 0;
 		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && cb->leaf[0] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
