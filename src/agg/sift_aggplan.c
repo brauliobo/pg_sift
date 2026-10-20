@@ -6946,8 +6946,8 @@ append_arms(PlannerInfo *root, Index parent, List **arms)
 		foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 			if (!rinfo->pseudoconstant)
 				return false;
-		foreach_node(Var, v, ai->translated_vars)
-			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
+		foreach_ptr(Node, tv, ai->translated_vars)
+			if (tv == NULL || !IsA(tv, Var) || ((Var *) tv)->varno != ai->child_relid || ((Var *) tv)->varattno != ++i)
 				return false;
 		if (rel->subroot != NULL)
 			*arms = lappend(*arms, rel->subroot);
