@@ -97,7 +97,7 @@ extern PGDLLIMPORT bool sift_test_run_gap;
 extern void sift_store_test_init(void);
 #endif
 
-/* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in core/store.c) */
+/* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in core/freelist.c) */
 extern PGDLLIMPORT bool sift_standby_conflicts;
 
 /* Page helpers: zeroes the page, standard header, special type/gen */

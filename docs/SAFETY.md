@@ -123,7 +123,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
 | P3-3 | col/seg.c:sift_cseg_open, sift_cseg_dict, zone_arrays | manual arithmetic; one 7-byte over-read at 429/441 |
 | P3-4 | col/compress.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
-| P3-5 | core/store.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |
+| P3-5 | core/reader.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |
 | P3-6 | bm25/dict.c:block_begin, block_next, find_block | correct; `pos_len` points into the shared buffer: take/read_varint |
 | P3-7 | bm25/pos.c:pos_next, pos_window, pos_ckpt; bm25/posting.c:BLOB_NG/BLOB_KEYS; bm25/segment.c:docmap; core/store.c:check_dir; bm25/wbuf.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |

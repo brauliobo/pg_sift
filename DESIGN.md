@@ -662,7 +662,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 | kernels | `bm25/kernels.h/.c` | Scoring SIMD kernels + scalar references | cpu |
 | analyze | `bm25/analyze.h/.c` | Tokenizer, folding, stemming, term hashing | core |
 | query | `bm25/query.h`, `bm25/query.c`, `bm25/query_analyze.c`, `bm25/query_match.c` | SiftQL parse, analyze, deparse, document evaluation | analyze |
-| store | `core/page.h`, `core/store.h/.c` | Page formats, metapage and directory IO, extent alloc and free, byte streams, WAL helpers | core |
+| store | `core/page.h`, `core/store.h`, `core/store.c`, `freelist.c`, `writer.c`, `reader.c`, `verify.c`, `relocate.c` | Page formats, metapage and directory IO, extent alloc and free, byte streams, WAL helpers | core |
 | dict | `bm25/dict.h/.c` | Dictionary writer, reader, term matchers | store, query |
 | posting | `bm25/posting.h/.c` | Term blob writer and reader: chunks, tf stream, bounds, sparse and inline | store, codec, kernels |
 | segment | `bm25/segment.h/.c`, `bm25/segment_int.h`, `bm25/writer.c`, `bm25/liveness.c`, `bm25/walk.c`, `bm25/livestream.c` | Segment writer and reader: docmap, liveness, sections; streaming merge input | posting, dict |
