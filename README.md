@@ -29,7 +29,7 @@ psql -d mydb -c 'CREATE EXTENSION pg_sift'          # as a superuser; after an u
 On macOS, the formula in this repository builds for Homebrew PostgreSQL 17 and 18:
 
 ```sh
-brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift
+brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
 brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```

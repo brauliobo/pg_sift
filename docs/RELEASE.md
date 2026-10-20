@@ -31,7 +31,7 @@ Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 1
 ## Homebrew tap
 
 The tap is this source repository: `Formula/pg_sift.rb` is maintained alongside the extension.
-Install with `brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift`, then `brew install --HEAD brauliobo/pg_sift/pg_sift`.
+Install with `brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git`, then `brew install --HEAD brauliobo/pg_sift/pg_sift`.
 HEAD tracks `main`; the portability fix must merge before the default installation works on arm64. No tag or release is created by the tap.
 
 To validate an unmerged packaging branch, clone the tap with the command above, check out that branch in
@@ -39,8 +39,8 @@ To validate an unmerged packaging branch, clone the tap with the command above, 
 Install with `--HEAD`, run the formula tests, style and audit, then restore the formula with `git restore Formula/pg_sift.rb`.
 This tests GitHub source for both the tap and extension without claiming that the default `main` installation already works.
 
-For the first compatible release, add `url "https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz"` and its downloaded source tarball's
-`sha256` to `Formula/pg_sift.rb` before `license`. Keep HEAD tracking `main`. For later releases, use
+After creating the immutable tag for the first compatible release, add `url "https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz"` and its downloaded source tarball's
+`sha256` to `Formula/pg_sift.rb` before `license` in a subsequent commit. Do not include a tag’s own tarball checksum in that tag: the formula would change the archive being checksummed. Keep HEAD tracking `main`. For later releases, use
 `brew bump-formula-pr --url=https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz brauliobo/pg_sift/pg_sift`.
 Review the URL and checksum, run `brew style` and `brew audit --strict --online`, then install from the GitHub tap and run `brew test` on macOS for both PostgreSQL versions
 before publishing the formula update. The formula reads the installed control version when testing the upgrade.
