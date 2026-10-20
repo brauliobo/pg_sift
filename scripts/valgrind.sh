@@ -24,6 +24,7 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+source "$REPO/scripts/source-snapshot.sh"
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
@@ -52,7 +53,7 @@ container() {
 	image "$image"
 	rm -rf "$tmp" && mkdir -p "$tmp/export" "$tmp/scratch" "$cache"
 	trap 'docker rm -f "$name" >/dev/null 2>&1 || true; (( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$tmp"' EXIT
-	( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$tmp/export" -xf -
+	copy_git_sources "$REPO" "$tmp/export"
 	local run=(docker run --rm --init --name "$name" --user "$uid" --cpus "${SIFT_VALGRIND_CPUS:-4}" --memory "${SIFT_VALGRIND_MEMORY:-16g}" -e HOME=/tmp -e SIFT_PG_CACHE=/cache
 		-v "$tmp/export:/src:ro" -v "$cache:/cache")
 	# the server build needs the network the first time (the tarball), the tests do not
@@ -83,7 +84,7 @@ WORK=$TMP/valgrind
 unset SIFT_INITDB_TEMPLATE INITDB_TEMPLATE SANITIZE
 rm -rf "$WORK" && mkdir -p "$WORK/tree" "$WORK/vg"
 # a private copy; in the container the checkout is already an export without .git
-if [[ -e $REPO/.git ]]; then ( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$WORK/tree" -xf -
+if [[ -e $REPO/.git ]]; then copy_git_sources "$REPO" "$WORK/tree"
 else tar -C "$REPO" -cf - . | tar -C "$WORK/tree" -xf -; fi
 cd "$WORK/tree"
 export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_SUDO=
