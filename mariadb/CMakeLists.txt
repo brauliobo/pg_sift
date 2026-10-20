@@ -65,7 +65,7 @@ set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/host_stubs.c host/host_r
 set(GLUE engine.c query.c feed.c merge.c)
 
 add_library(sift_engine OBJECT ${portable} ${GEN}/sift_bitmap.c ${HOST} ${GLUE})
-target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_DIRS})
+target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${SIFT_DIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
   # the codec's names are those of two UDFs
