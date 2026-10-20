@@ -39,8 +39,12 @@ SELECT id FROM docs WHERE body @@> ANY (ARRAY['case', 'clip']);       -- OR of s
 ## Ranking, filters and joins
 
 `ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid.
-`sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table, not in `WHERE`
-(filter on a score from a subquery). A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant one, also in a generic plan.
+`sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table. In `WHERE` it
+may only be compared with a constant, a parameter or a stable expression of them (`>`, `>=`, `<`, `<=`, either side): a minimum or maximum
+score, tested by the scan on the score it computed, so the rows are those of a subquery that filters on the score (several cutoffs must all
+hold; `EXPLAIN` shows `Score Filter`). A cutoff from below keeps the `LIMIT` hint of the ranked scan; one from above reads every match.
+`BETWEEN` and `NOT (score > c)` are such comparisons once PostgreSQL has rewritten them. Any other use in `WHERE` (`OR`, `=`, `<>`, an
+expression of the score, `sift.max_score()`) is an error: filter on the score from a subquery. A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant one, also in a generic plan.
 `ORDER BY name, sift.score(ctid) DESC LIMIT k` (columns of the scanned table first, then the score) scores only the rows tied with the
 k-th best `name` instead of every match, and gives the answer of ranking every match and sorting after; `EXPLAIN` shows
 `Order: name, score DESC` and `Key Passes`. A query with no `LIMIT` ranks every match in one search.
@@ -48,8 +52,10 @@ It works on materialized views too. It is not available in `UPDATE`, `DELETE`, `
 `SELECT` and change or lock the rows by key.
 
 ```sql
+SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly OR case' AND sift.score(ctid) > 0.5
+ORDER BY sift.score(ctid) DESC LIMIT 100;                                          -- a minimum score
 SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'friendly OR case'
-                   ORDER BY s DESC LIMIT 100) top WHERE s > 0.5;  -- filter on the score
+                   ORDER BY s DESC LIMIT 100) top WHERE s > 0.5;  -- filter on the score of the top 100
 SELECT d.id, c.name FROM docs d JOIN (VALUES (1, 'audio')) c(id, name) ON c.id = d.category
 WHERE d.body @@> 'friendly' ORDER BY sift.score(d.ctid) DESC LIMIT 10;              -- joins work too
 ```
@@ -422,7 +428,8 @@ its own docker container.
 - `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
   inserted since the build, and phrases under `NOT`.
-- `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it. It is not available with `@@> ANY (array)` (write
+- `sift.score()` in `WHERE` is only a comparison with a constant (`>`, `>=`, `<`, `<=`); any other use is an error, read the score from a subquery
+  to filter on it. It is not available with `@@> ANY (array)` (write
   the OR in the query text), nor in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
 - Under `SERIALIZABLE` a sift scan locks the whole relation (the index access method has no finer predicate locks), so concurrent writers
   can make a serializable transaction fail with `40001`: retry.
