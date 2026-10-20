@@ -865,6 +865,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 	put_int(p, g->darg);
 	put_int(p, g->ordered);
 	put_int(p, g->sorted);
+	put_int(p, g->first);
 	put_int(p, g->hyp);
 	put_int(p, g->parallel);
 }
@@ -1182,6 +1183,7 @@ get_gen(Unpack *u)
 	g->darg = get_int(u);
 	g->ordered = get_int(u);
 	g->sorted = get_int(u);
+	g->first = get_int(u);
 	g->hyp = get_int(u);
 	g->parallel = get_int(u);
 	return g;
