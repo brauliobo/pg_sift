@@ -62,8 +62,8 @@ SELECT * FROM wd_compare();
  SELECT count(*) FROM wd WHERE iv NOT IN (interval '1 month', interval '2 days') | t      | t
  SELECT count(*) FROM wd WHERE m BETWEEN '5.00' AND '20.00' AND m <> '7.00'      | t      | t
  SELECT count(*) FROM wd WHERE nf <> 3 AND nf <= 40                              | t      | t
- SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | f      | t
- SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | f      | t
+ SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | t      | t
+ SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | t      | t
  SELECT g, count(*) FROM wd WHERE iv >= interval '10 days' GROUP BY g            | t      | t
  SELECT g, count(*) FROM wd WHERE m IN ('1.00', '2.00', '30.00') GROUP BY g      | t      | t
  SELECT g, count(*) FROM wd WHERE n38 = 70000000000000000000.000007 GROUP BY g   | t      | t
@@ -87,8 +87,8 @@ SELECT * FROM wd_compare();
  SELECT count(*) FROM wd WHERE iv NOT IN (interval '1 month', interval '2 days') | t      | t
  SELECT count(*) FROM wd WHERE m BETWEEN '5.00' AND '20.00' AND m <> '7.00'      | t      | t
  SELECT count(*) FROM wd WHERE nf <> 3 AND nf <= 40                              | t      | t
- SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | f      | t
- SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | f      | t
+ SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | t      | t
+ SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | t      | t
  SELECT g, count(*) FROM wd WHERE iv >= interval '10 days' GROUP BY g            | t      | t
  SELECT g, count(*) FROM wd WHERE m IN ('1.00', '2.00', '30.00') GROUP BY g      | t      | t
  SELECT g, count(*) FROM wd WHERE n38 = 70000000000000000000.000007 GROUP BY g   | t      | t
@@ -113,8 +113,8 @@ SELECT * FROM wd_compare();
  SELECT count(*) FROM wd WHERE iv NOT IN (interval '1 month', interval '2 days') | t      | t
  SELECT count(*) FROM wd WHERE m BETWEEN '5.00' AND '20.00' AND m <> '7.00'      | t      | t
  SELECT count(*) FROM wd WHERE nf <> 3 AND nf <= 40                              | t      | t
- SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | f      | t
- SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | f      | t
+ SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | t      | t
+ SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | t      | t
  SELECT g, count(*) FROM wd WHERE iv >= interval '10 days' GROUP BY g            | t      | t
  SELECT g, count(*) FROM wd WHERE m IN ('1.00', '2.00', '30.00') GROUP BY g      | t      | t
  SELECT g, count(*) FROM wd WHERE n38 = 70000000000000000000.000007 GROUP BY g   | t      | t
@@ -137,8 +137,8 @@ SELECT * FROM wd_compare();
  SELECT count(*) FROM wd WHERE iv NOT IN (interval '1 month', interval '2 days') | t      | t
  SELECT count(*) FROM wd WHERE m BETWEEN '5.00' AND '20.00' AND m <> '7.00'      | t      | t
  SELECT count(*) FROM wd WHERE nf <> 3 AND nf <= 40                              | t      | t
- SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | f      | t
- SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | f      | t
+ SELECT count(*) FROM wd WHERE nf = 'NaN' OR n38 IS NULL                         | t      | t
+ SELECT count(*) FROM wd WHERE nf IN (1, 2.50, 3) OR i4 = 1                      | t      | t
  SELECT g, count(*) FROM wd WHERE iv >= interval '10 days' GROUP BY g            | t      | t
  SELECT g, count(*) FROM wd WHERE m IN ('1.00', '2.00', '30.00') GROUP BY g      | t      | t
  SELECT g, count(*) FROM wd WHERE n38 = 70000000000000000000.000007 GROUP BY g   | t      | t
@@ -166,7 +166,7 @@ SELECT * FROM wd_compare();
                           query                           | pushed | same 
 ----------------------------------------------------------+--------+------
  SELECT count(*) FROM wd WHERE m2 = '12.00'               | t      | t
- SELECT count(*) FROM wd WHERE m2 IS NULL OR n2 IS NULL   | f      | t
+ SELECT count(*) FROM wd WHERE m2 IS NULL OR n2 IS NULL   | t      | t
  SELECT count(*) FROM wd WHERE n2 NOT IN (4.5, 4.50, 3)   | t      | t
  SELECT g, count(*) FROM wd WHERE m2 > '12.00' GROUP BY g | t      | t
  SELECT g, count(*) FROM wd WHERE n2 >= 4.5 GROUP BY g    | t      | t
@@ -177,7 +177,7 @@ SELECT * FROM wd_compare();
                           query                           | pushed | same 
 ----------------------------------------------------------+--------+------
  SELECT count(*) FROM wd WHERE m2 = '12.00'               | t      | t
- SELECT count(*) FROM wd WHERE m2 IS NULL OR n2 IS NULL   | f      | t
+ SELECT count(*) FROM wd WHERE m2 IS NULL OR n2 IS NULL   | t      | t
  SELECT count(*) FROM wd WHERE n2 NOT IN (4.5, 4.50, 3)   | t      | t
  SELECT g, count(*) FROM wd WHERE m2 > '12.00' GROUP BY g | t      | t
  SELECT g, count(*) FROM wd WHERE n2 >= 4.5 GROUP BY g    | t      | t
