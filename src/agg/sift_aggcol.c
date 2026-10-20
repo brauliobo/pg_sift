@@ -82,7 +82,7 @@ col_owns_table(Oid tablerelam)
 static bool
 leaf_wide(const SiftColDef *def)
 {
-	return def->lane == 0 && (def->lanes > 0 || def->type == SIFT_COLT_UUID || def->type == SIFT_COLT_BYTEA || def->type == SIFT_COLT_VARLENA);
+	return def->lane == 0 && (def->lanes > 0 || sift_col_def_is_image(def));
 }
 
 static SiftSrcVecType
