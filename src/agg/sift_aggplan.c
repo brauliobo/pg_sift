@@ -4346,6 +4346,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
+#define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
+#define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves (docs/COL.md 2.9) */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
 #define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
@@ -4668,6 +4670,26 @@ leaf_heap_width(AggCtx *c, int leaf)
 	return e && IsA(e, Var) ? get_attavgwidth(planner_rt_fetch(c->relid, c->root)->relid, ((Var *) e)->varattno) : 0;
 }
 
+/* the share of the rows of a leaf that PostgreSQL's statistics expect to hold a distinct value (1: no statistics) */
+static double
+leaf_distinct_frac(AggCtx *c, int leaf, double rows)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	HeapTuple	tup;
+	double		nd = 0;
+
+	if (e == NULL || !IsA(e, Var))
+		return 1.0;
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
+						  Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tup))
+		return 1.0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
+	ReleaseSysCache(tup);
+	return nd > 0 ? Min(nd / Max(rows, 1.0), 1.0) : nd < 0 ? Min(-nd, 1.0) : 1.0;
+}
+
 /*
  * Text leaves of long strings: a unit stores the strings inline, and reading the leaf as codes builds a dictionary of the unit
  * (measured 0.5 us a row, which the heap scan beats when few rows pass); a test on the encoded strings costs a few ns a row.
@@ -4768,6 +4790,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->nvleaf; i++)
 		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	scan_cost += rows * inline_text_cost(c, s);
+	for (int i = 0; i < s->nleaves; i++)
+		if (leaf_of(c, s->leaves[i])->wide)
+			scan_cost += rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], rows));
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
