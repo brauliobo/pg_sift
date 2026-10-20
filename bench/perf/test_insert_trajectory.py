@@ -28,7 +28,7 @@ class InsertTrajectory(unittest.TestCase):
 
     def test_explicit_lifecycles_and_point_identity(self):
         self.assertEqual(CASE.lifecycle,'insert_trajectory')
-        self.assertEqual(CASE.workload_version,'committed_append_settled_pair_v3')
+        self.assertEqual(CASE.workload_version,'committed_append_settled_composite_v4')
         for seed_max in (8192,32768):
             statements = CASE.statements(seed_max,5)
             self.assertEqual(len(statements),5)
@@ -76,10 +76,12 @@ class InsertTrajectory(unittest.TestCase):
 
     def test_mutation_control_is_real_row_trigger_above_seed(self):
         conn = Capture()
-        gate.install_insert_control(conn,8192)
-        self.assertIn('IF NEW.id > 8192 THEN',conn.calls[0])
-        self.assertIn('pg_sleep(0.001)',conn.calls[0])
-        self.assertIn('FOR EACH ROW',conn.calls[1])
+        gate.install_insert_control(conn,8192,17)
+        sql='\n'.join(conn.calls)
+        self.assertIn('IF NEW.id > 8192 THEN',sql)
+        self.assertIn('perf_gate_cpu_work(NEW.id,17)',sql)
+        self.assertNotIn('pg_sleep',sql)
+        self.assertIn('FOR EACH ROW',sql)
 
     def test_raw_relation_forks_sum_per_relation(self):
         class Conn:
@@ -93,12 +95,12 @@ class InsertTrajectory(unittest.TestCase):
         for fork in gate.FORKS: self.assertIn(f"pg_relation_size(c.oid,'{fork}')",conn.query)
 
     def test_validation_gates_full_n_separate_mutable_relations(self):
-        def pair(revisions,case,identity,n,deadline,sink,**kwargs):
+        def pair(revisions,case,identity,n,k,deadline,sink,**kwargs):
             self.assertEqual(n,5)
-            sink.update(sides=[{'after':{'totals':{'mutable':v,'mutable_pk':1048576},'forks':{}}}
-                               for v in (8192,32768)])
+            sink.update(histories=[{'sides':[{'after':{'totals':{'mutable':v,'mutable_pk':1048576},'forks':{}}}
+                               for v in (8192,32768)]}])
         saved = {}
-        with patch.object(gate,'insert_pair',side_effect=pair):
+        with patch.object(gate,'insert_observation',side_effect=pair):
             gate.validate_insert([],CASE,{},5,math.inf,saved)
         sizes = saved['size_checks']
         self.assertEqual(sizes['state'],'mutable_insert_trajectory')
@@ -119,7 +121,7 @@ class InsertTrajectory(unittest.TestCase):
         def pair(revisions,case,identity,n,deadline,sink,**kwargs):
             calls.append((n,list(kwargs['order'])))
             return [1,1.3]
-        def calibration(*args): args[-1].update(operations=5)
+        def calibration(*args): args[-1].update(operations=5,histories=1)
         def validation(*args,**kwargs): args[-1].update(size_checks=None)
         with patch.object(gate,'insert_identity',return_value={'seed_max_id':32768}), patch.object(gate,'calibrate_insert',side_effect=calibration) as pilot, patch.object(gate,'validate_insert',side_effect=validation), patch.object(gate,'insert_pair',side_effect=pair):
             result = gate.measure([],CASE,math.inf)
@@ -127,7 +129,7 @@ class InsertTrajectory(unittest.TestCase):
         self.assertEqual(calls,[(5,order) for order in ([0,1],[1,0])]*6)
         self.assertEqual(result['confirmation']['n'],6)
         self.assertEqual(result['timing_status'],'regression')
-        self.assertEqual(result['workload_version'],'committed_append_settled_pair_v3')
+        self.assertEqual(result['workload_version'],'committed_append_settled_composite_v4')
 
     def test_seed_identity_mismatch_and_full_allowed_id_range(self):
         class Rev:
@@ -175,7 +177,7 @@ class InsertTrajectory(unittest.TestCase):
             def run(self,sql): pass
         class Rev: conn=Conn()
         identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed'}
-        frozen = {'name':'clean','identity':identity,'calibration':{'operations':5},'validation':{}}
+        frozen = {'name':'clean','identity':identity,'calibration':{'operations':5,'histories':1},'validation':{}}
         saved = []
         def invalid(*args,**kwargs):
             gate.DEADLINE = -math.inf
@@ -183,10 +185,10 @@ class InsertTrajectory(unittest.TestCase):
         gate.DEADLINE = math.inf
         try:
             with patch.object(gate,'insert_identity',return_value=identity), \
-                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100,'evidence_complete':True}), \
+                 patch.object(gate,'freeze_cpu_work',return_value={'iterations':1}), patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'predicted_total_remaining_seconds':1,'reserve_seconds':0,'remaining_seconds':100,'evidence_complete':True}), \
                  patch.object(gate,'validate_insert',side_effect=invalid), patch.object(gate,'write_report'):
                 with self.assertRaisesRegex(ValueError,'original correctness error'):
-                    gate.measure([Rev(),Rev()],CASE,math.inf,True,sink=saved,frozen=frozen,report={})
+                    gate.measure([Rev(),Rev()],CASE,math.inf,True,sink=saved,frozen=frozen,report={'cpu_calibration':{},'baseline_ref':'a'*40,'candidate_ref':'a'*40,'config':{'tier':'pr'}})
             self.assertIn('before SQL operation',saved[0]['cleanup_errors'][0]['error'])
             self.assertIn('runtime_seconds',saved[0])
         finally:
@@ -195,7 +197,7 @@ class InsertTrajectory(unittest.TestCase):
 
     def main_cleanup_scenario(self, mode):
         identity = {'seed_count':8192,'seed_max_id':8192,'seed_digest':'seed','first_id':8193}
-        calibration = {'operations':5,'pilot_operations':2048,'growth_cap_operations':2048,
+        calibration = {'operations':5,'histories':1,'pilot_operations':2048,'growth_cap_operations':2048,
                        'predicted_wall_limit_seconds':1,'predicted_reset_loop_seconds':[.105,.105],
                        'loop_wall_seconds_per_operation':[.001,.001],
                        'pilot_pair':{'sides':[{'operation_seconds':[.001]*2048},{'operation_seconds':[.002]*2048}]}}
@@ -206,7 +208,7 @@ class InsertTrajectory(unittest.TestCase):
                 def __init__(self): self.control=False
                 def run(self,raw):
                     sql = raw.decode()
-                    if sql.startswith('CREATE FUNCTION'):
+                    if sql.startswith('CREATE FUNCTION perf_gate_cpu_work'):
                         path = output/'results.json'
                         # Inspect the actual persisted report at the first fault statement.
                         assert path.exists(), 'pre-fault results.json missing'
@@ -252,7 +254,7 @@ class InsertTrajectory(unittest.TestCase):
                             visits=[[{'check_seconds':.001},{'check_seconds':.001}]]*count)
             args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
                     '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true']
-            with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
+            with patch.object(gate,'Revision',Revision), patch.object(gate,'refresh_report_cost'), patch.object(gate,'prepare_control_costs',side_effect=lambda revs,report,output:report.update(cpu_calibration={})), patch.object(gate,'churn_sizes',return_value={'state':'churn_vacuum','status':'pass','relations':[]}), patch.object(gate,'exact_sha'), \
                  patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
                  patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
                  patch.object(gate,'sizes',return_value=[]), \
@@ -261,7 +263,7 @@ class InsertTrajectory(unittest.TestCase):
                  patch.object(gate,'calibrate',return_value={'operations':5}), patch.object(gate,'block',side_effect=block), \
                  patch.object(gate,'insert_identity',return_value=identity), \
                  patch.object(gate,'calibrate_insert',side_effect=calibrate), patch.object(gate,'validate_insert',side_effect=validate), \
-                 patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'remaining_seconds':100,'evidence_complete':True,'candidate_delayed_operations':130,'cost_scope':{'startup':'already elapsed'}}), \
+                 patch.object(gate,'freeze_cpu_work',return_value={'iterations':1}), patch.object(gate,'insert_control_budget',return_value={'predicted_seconds':1,'predicted_total_remaining_seconds':1,'reserve_seconds':0,'remaining_seconds':100,'evidence_complete':True,'candidate_delayed_operations':130,'cost_scope':{'startup':'already elapsed'}}), \
                  contextlib.redirect_stdout(io.StringIO()):
                 try:
                     code = gate.main(args)
