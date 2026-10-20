@@ -83,6 +83,8 @@ typedef struct JoinCtx
 	SiftAggJoin j;
 	Node	   *kexpr[SIFT_AGG_MAX_JKEYS];	/* the key expressions, in terms of the query's Vars */
 	int			combo;
+	Path	   *cpath;			/* a right side that is a plan (sub-select, VALUES, function): the path of its rows, NULL for a table */
+	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
 } JoinCtx;
 
 typedef struct SlotReq
@@ -1282,12 +1284,23 @@ join_of_var(AggCtx *c, Node *n)
 	return NULL;
 }
 
+/* a column of a joined plan the spec reads (keys and columns): the path outputs it */
+static void
+join_var(JoinCtx *jc, Var *v)
+{
+	foreach_ptr(Var, x, jc->cvars)
+		if (x->varattno == v->varattno)
+			return;
+	jc->cvars = lappend(jc->cvars, copyObject(v));
+}
+
 /* the index of column v of the joined table among the columns the expressions read; -1 when there are too many */
 static int
 join_col(JoinCtx *jc, Var *v)
 {
 	SiftAggJoin *j = &jc->j;
 
+	join_var(jc, v);
 	for (int i = 0; i < j->ncol; i++)
 		if (j->colatt[i] == v->varattno)
 			return i;
@@ -1411,6 +1424,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	else if (lf->vtype != SCV_I32 || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
+	join_var(jc, (Var *) m);
 	j->keyatt[j->nkey] = ((Var *) m)->varattno;
 	j->keytype[j->nkey] = mt;
 	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->typid, -1, lf->vtype == SCV_CODE ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
@@ -1645,6 +1659,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 			return false;
 	for (int p = 0; p < w.nl; p++)
 		use_leaf(c, w.leaf[p]);
+	join_var(jc, (Var *) m);
 	j->keyatt[j->nkey] = ((Var *) m)->varattno;
 	j->keytype[j->nkey] = mt;
 	j->keypos[j->nkey] = -1;
@@ -4843,7 +4858,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				gen_cost = 0,
 				exact,
 				agg_rows;
-	Cost		startup;
+	Cost		startup,
+				child_cost = 0;
 
 	if (s->group >= 0)
 		elems = elems_of(c, s->group);
@@ -4872,8 +4888,13 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
 		double		tuples = Max(jrel->tuples, 1.0);
 
-		/* an index scan reads the rows that pass the equalities, the rest is read whole */
-		if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
+		/* a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
+		if (jc->cpath != NULL)
+		{
+			scan_cost += Max(jc->cpath->rows, 1.0) * AGG_JOIN_ROW;
+			child_cost += jc->cpath->total_cost;
+		}
+		else if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
 			scan_cost += Min(Max(jrel->rows, 1.0), tuples) * AGG_IDX_ROW;
 		else
 			scan_cost += tuples * AGG_JOIN_ROW;
@@ -4917,7 +4938,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 		scan_cost += exact * (units * (AGG_UNIT_COST + Min(rows_out, 256.0) * AGG_PREAGG_GROUP) * cpu_operator_cost - scan_cost);
-	startup = AGG_START_COST * cpu_operator_cost;
+	startup = AGG_START_COST * cpu_operator_cost + child_cost;
 	if (s->nworkers > 0)
 	{
 		/* each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
@@ -4948,18 +4969,104 @@ unsupported_clause(Node *n)
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, n));
 }
 
-/* a table in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
+/* does the tree read a column or an aggregate of a query above it, or a common table expression of one (a plan per row, not a list)? */
+static bool
+outer_ref_walker(Node *n, int *depth)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup > *depth;
+	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > *depth)
+		return true;
+	if (IsA(n, RangeTblEntry))
+		return ((RangeTblEntry *) n)->rtekind == RTE_CTE && ((RangeTblEntry *) n)->ctelevelsup > *depth;
+	if (IsA(n, Query))
+	{
+		bool		r;
+
+		(*depth)++;
+		r = query_tree_walker((Query *) n, outer_ref_walker, depth, QTW_EXAMINE_RTES_BEFORE);
+		(*depth)--;
+		return r;
+	}
+	return expression_tree_walker(n, outer_ref_walker, depth);
+}
+
+/* the cheapest path of the rows of a sub-select, VALUES list or function that a scan node can output with the columns of its choice */
+static Path *
+child_path(RelOptInfo *rel)
+{
+	Path	   *best = NULL;
+
+	foreach_ptr(Path, p, rel->pathlist)
+		if (p->param_info == NULL && (IsA(p, SubqueryScanPath) || p->pathtype == T_ValuesScan || p->pathtype == T_FunctionScan) &&
+			(best == NULL || p->total_cost < best->total_cost))
+			best = p;
+	return best;
+}
+
+/*
+ * The right side of a join that is a plan: a sub-select PostgreSQL did not pull up (GROUP BY, LIMIT, DISTINCT, a set operation), a VALUES list
+ * or a function that reads nothing of the query's other tables. Its rows are those of PostgreSQL's plan of it, read once when the scan starts
+ * (SiftAggJoin.child); no table of the query's own is read, so a side that is volatile or depends on the query's rows keeps the normal plan.
+ */
+static bool
+add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **what)
+{
+	RelOptInfo *rel = c->root->simple_rel_array[rti];
+	int			depth = 0;
+	bool		outer;
+
+	switch (e->rtekind)
+	{
+		case RTE_SUBQUERY:
+			*what = "subquery";
+			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
+				return false;
+			outer = query_tree_walker(e->subquery, outer_ref_walker, &depth, QTW_EXAMINE_RTES_BEFORE);
+			break;
+		case RTE_VALUES:
+			*what = "values";
+			if (contain_volatile_functions((Node *) e->values_lists))
+				return false;
+			outer = outer_ref_walker((Node *) e->values_lists, &depth);
+			break;
+		default:
+			*what = "function";
+			if (contain_volatile_functions((Node *) e->functions))
+				return false;
+			outer = outer_ref_walker((Node *) e->functions, &depth);
+			break;
+	}
+	if (outer || e->lateral || rel == NULL || rel->reloptkind != RELOPT_BASEREL || !bms_is_empty(rel->lateral_relids) ||
+		(jc->cpath = child_path(rel)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
+		return false;
+	jc->j.child = 0;
+	foreach_ptr(JoinCtx, o, c->joins)
+		jc->j.child += o->cpath != NULL;
+	return true;
+}
+
+/* a table or plan in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
 static bool
 add_join(AggCtx *c, FromScan *fs, Index rti)
 {
 	RangeTblEntry *e = rt_fetch(rti, c->root->parse->rtable);
 	JoinCtx    *jc = palloc0(sizeof(JoinCtx));
+	const char *what = NULL;
 
-	if (e->relkind != RELKIND_RELATION)
-		return false;
 	jc->rti = rti;
-	jc->j.relid = e->relid;
+	jc->j.child = -1;
 	jc->j.fslot = -1;
+	if (e->rtekind == RTE_RELATION)
+	{
+		if (e->relkind != RELKIND_RELATION)
+			return false;
+		jc->j.relid = e->relid;
+	}
+	else if (!add_plan_join(c, e, rti, jc, &what))
+		return false;
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == rti)
 		{
@@ -4967,7 +5074,8 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 			jc->clauses = lj->quals;
 		}
 	jc->j.kind = jc->kind;
-	jc->j.desc = psprintf("%s%s", get_rel_name(e->relid), jc->kind == SJ_LEFT ? " (left)" : jc->kind == SJ_SEMI ? " (semi)" : jc->kind == SJ_ANTI ? " (anti)" : "");
+	jc->j.desc = psprintf("%s%s", what ? (e->rtekind == RTE_VALUES ? "values" : psprintf("%s (%s)", e->eref->aliasname, what)) : get_rel_name(e->relid),
+						  jc->kind == SJ_LEFT ? " (left)" : jc->kind == SJ_SEMI ? " (semi)" : jc->kind == SJ_ANTI ? " (anti)" : "");
 	jc->combo = combo_index(c, new_combo(c, list_length(c->joins)));
 	c->joins = lappend(c->joins, jc);
 	return true;
@@ -4983,6 +5091,8 @@ join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
 {
 	SiftAggJoin *j = &jc->j;
 
+	if (jc->cpath != NULL)
+		return;
 	foreach_ptr(Node, q, conds)
 	{
 		OpExpr	   *op;
@@ -5173,9 +5283,9 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			else if (!add_join(c, fs, rti))
 				return false;
 		}
-		else if (e->rtekind == RTE_FUNCTION)
+		else if (e->rtekind == RTE_FUNCTION && e->lateral)
 		{
-			if (c->func_rti != 0 || e->funcordinality || list_length(e->functions) != 1 || !e->lateral)
+			if (c->func_rti != 0 || e->funcordinality || list_length(e->functions) != 1)
 				return false;
 			c->func_rti = rti;
 			c->func = linitial_node(RangeTblFunction, e->functions);
@@ -5183,11 +5293,16 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if (c->func_kind == FK_NONE)
 				return false;
 		}
-		else
+		else if (input_rel == NULL || (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION) ||
+				 !add_join(c, fs, rti))
 			return false;
 	}
 	if (c->relid == 0)
 		return false;
+	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		if (lj->rti == c->relid)
+			return false;
 	if (input_rel != NULL)
 	{
 		/* the planner may have dropped a join to a table that no expression reads (unique key): the lookup is exact for it too */
@@ -5328,6 +5443,16 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 	return n;
 }
 
+/* the position (1..) of column att in the output of a joined plan */
+static int
+child_pos(List *vars, int att)
+{
+	foreach_ptr(Var, v, vars)
+		if (v->varattno == att)
+			return foreach_current_index(v) + 1;
+	elog(ERROR, "sift: column %d is not an output of the joined plan", att);
+}
+
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 static void
 add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers)
@@ -5342,7 +5467,62 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->cpath != NULL)
+			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
 	add_path(output_rel, &cp->path);
+}
+
+/*
+ * A column of a sub-select that only a condition pushed down into it read is a NULL in its plan (remove_unused_subquery_outputs), so the
+ * spec, which reads the condition again, must not read it: the normal plan stays.
+ */
+static bool
+child_cols_kept(AggCtx *c, JoinCtx *jc)
+{
+	RelOptInfo *rel = find_base_rel(c->root, jc->rti);
+	Bitmapset  *used = NULL;
+
+	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
+	foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
+		pull_varattnos((Node *) ri->clause, rel->relid, &used);
+	foreach_ptr(Var, v, jc->cvars)
+		if (!bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, used))
+			return false;
+	return true;
+}
+
+/*
+ * The plans the joins read, as paths that output the columns the spec reads (the columns of the joined rows are positions of that output): the
+ * path PostgreSQL chose for the rows of the sub-select, VALUES list or function, projected on them. The scan nodes project any column.
+ */
+static bool
+child_paths(AggCtx *c, SiftAggSpec *s)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		SiftAggJoin *j = &s->join[foreach_current_index(jc)];
+		PathTarget *t = create_empty_pathtarget();
+		Path	   *p;
+		Size		size;
+
+		if (jc->cpath == NULL)
+			continue;
+		if (j->nkey == 0 || !child_cols_kept(c, jc))
+			return false;
+		foreach_ptr(Var, v, jc->cvars)
+			add_column_to_pathtarget(t, (Expr *) v, 0);
+		set_pathtarget_cost_width(c->root, t);
+		for (int k = 0; k < j->nkey; k++)
+			j->keyatt[k] = child_pos(jc->cvars, j->keyatt[k]);
+		for (int k = 0; k < j->ncol; k++)
+			j->colatt[k] = child_pos(jc->cvars, j->colatt[k]);
+		size = IsA(jc->cpath, SubqueryScanPath) ? sizeof(SubqueryScanPath) : sizeof(Path);
+		p = memcpy(palloc(size), jc->cpath, size);
+		p->pathtarget = t;
+		jc->cpath = p;
+	}
+	return true;
 }
 
 /*
@@ -5425,6 +5605,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
  * has. A custom plan sees the array and needs none of this.
  */
 int			sift_agg_param_set_size = 1000;
+int			sift_agg_lookup_max_rows = 1000000;
 
 static double
 param_set_ratio(AggCtx *c)
@@ -5512,7 +5693,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 {
 	int			nworkers;
 
-	if (!spec_finish(c, s, root, input_rel, keys))
+	if (!spec_finish(c, s, root, input_rel, keys) || !child_paths(c, s))
 		return;
 	param_set_penalty(c, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
@@ -6543,6 +6724,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 
 	cs->scan.plan.targetlist = tlist;
 	cs->scan.scanrelid = 0;
+	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = copyObject(scan_tlist);
 	cs->custom_private = pack;
 	cs->methods = &sift_agg_plan_methods;
@@ -6552,7 +6734,8 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	if (OidIsValid(spec->indexoid))
 		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->indexoid);
 	for (int i = 0; i < spec->njoin; i++)
-		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->join[i].relid);
+		if (spec->join[i].child < 0)
+			root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->join[i].relid);
 	return &cs->scan.plan;
 }
 

@@ -140,6 +140,10 @@ sift_agg_init(void)
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_lookup_max_rows",
+							"Rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
+							NULL, &sift_agg_lookup_max_rows, 1000000, 0, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,
@@ -2239,9 +2243,55 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 	return best;
 }
 
+/* an empty table of the rows of a join; filtered: only rows that hold the ON clause's own conditions are loaded (map_row) */
+static MapTab *
+map_new(const SiftAggJoin *j, bool filtered)
+{
+	MapTab	   *m = palloc0(sizeof(MapTab));
+
+	m->nkey = j->nkey;
+	m->ncol = j->ncol;
+	m->filtered = filtered;
+	for (int k = 0; k < j->nkey; k++)
+		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+	return m;
+}
+
+/* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match) */
+static void
+map_index_rows(MapTab *m)
+{
+	m->nslot = 64;
+	while (m->nslot < 2 * m->nrow)
+		m->nslot *= 2;
+	m->head = palloc0(m->nslot * sizeof(uint32));
+	m->next = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	m->hv = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	for (uint32 r = m->nrow; r-- > 0;)
+	{
+		uint32		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
+
+		m->hv[r] = h;
+		m->next[r] = m->head[h & (m->nslot - 1)];
+		m->head[h & (m->nslot - 1)] = r + 1;
+	}
+}
+
+/* EXPLAIN ANALYZE: the rows loaded and the time since t0 */
+static void
+map_loaded(AggExec *ex, const MapTab *m, instr_time t0)
+{
+	instr_time	t1;
+
+	ex->lookup_loaded += m->nrow;
+	INSTR_TIME_SET_CURRENT(t1);
+	INSTR_TIME_SUBTRACT(t1, t0);
+	ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
+}
+
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree */
 static MapTab *
-map_load(AggExec *ex, int ci)
+map_load_table(AggExec *ex, int ci)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -2269,12 +2319,7 @@ map_load(AggExec *ex, int ci)
 	}
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
-	m = palloc0(sizeof(MapTab));
-	m->nkey = j->nkey;
-	m->ncol = j->ncol;
-	m->filtered = own != NULL;
-	for (int k = 0; k < j->nkey; k++)
-		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+	m = map_new(j, own != NULL);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
@@ -2300,32 +2345,49 @@ map_load(AggExec *ex, int ci)
 			map_row(ex, m, slot, j, cb, own);
 		table_endscan(scan);
 	}
-	m->nslot = 64;
-	while (m->nslot < 2 * m->nrow)
-		m->nslot *= 2;
-	m->head = palloc0(m->nslot * sizeof(uint32));
-	m->next = palloc(Max(m->nrow, 1) * sizeof(uint32));
-	m->hv = palloc(Max(m->nrow, 1) * sizeof(uint32));
-	for (uint32 r = m->nrow; r-- > 0;)
-	{
-		uint32		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
-
-		m->hv[r] = h;
-		m->next[r] = m->head[h & (m->nslot - 1)];
-		m->head[h & (m->nslot - 1)] = r + 1;
-	}
+	map_index_rows(m);
 	MemoryContextSwitchTo(old);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
-	ex->lookup_loaded += m->nrow;
-	{
-		instr_time	t1;
-
-		INSTR_TIME_SET_CURRENT(t1);
-		INSTR_TIME_SUBTRACT(t1, t0);
-		ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
-	}
+	map_loaded(ex, m, t0);
 	return m;
+}
+
+/* the rows of a child plan (a sub-select, VALUES list or function), run once; the rows are the plan's, in the query's snapshot */
+static MapTab *
+map_load_child(AggExec *ex, int ci)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !slot_reads_leaf(cb, j->fslot) ? ex->cs[ci].slot[j->fslot] : NULL;
+	PlanState  *child = list_nth(ex->css.custom_ps, j->child);
+	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
+	MapTab	   *m = map_new(j, own != NULL);
+	instr_time	t0;
+
+	INSTR_TIME_SET_CURRENT(t0);
+	for (;;)
+	{
+		TupleTableSlot *slot;
+
+		MemoryContextSwitchTo(caller);
+		slot = ExecProcNode(child);
+		MemoryContextSwitchTo(ex->cxt);
+		if (TupIsNull(slot))
+			break;
+		map_row(ex, m, slot, j, cb, own);
+	}
+	map_index_rows(m);
+	MemoryContextSwitchTo(caller);
+	map_loaded(ex, m, t0);
+	return m;
+}
+
+/* the rows of the joined table or plan, hashed by key */
+static MapTab *
+map_load(AggExec *ex, int ci)
+{
+	return ex->spec->join[ex->spec->combo[ci].join].child >= 0 ? map_load_child(ex, ci) : map_load_table(ex, ci);
 }
 
 static void
@@ -11066,6 +11128,9 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	ex->params = estate->es_param_list_info;
 	ex->snap = estate->es_snapshot;
 	engine_contexts(ex, estate->es_query_cxt);
+	/* the child plans of the joins (a sub-select, VALUES list or function) are the provider's to start and end; the scan reads each once */
+	foreach_ptr(Plan, child, cs->custom_plans)
+		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags & ~(EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 		return;
 	engine_rels(ex);
@@ -11098,6 +11163,8 @@ agg_end(CustomScanState *node)
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
+	foreach_ptr(PlanState, child, node->custom_ps)
+		ExecEndNode(child);
 }
 
 static void

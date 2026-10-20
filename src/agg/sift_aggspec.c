@@ -632,6 +632,10 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 {
 	if (s->narms)
 		return false;
+	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's */
+	for (int i = 0; i < s->njoin; i++)
+		if (s->join[i].child >= 0)
+			return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
 			return false;
@@ -906,6 +910,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		const SiftAggJoin *j = &s->join[i];
 
 		put_int(p, (int) j->relid);
+		put_int(p, j->child);
 		put_int(p, j->kind);
 		put_int(p, j->fslot);
 		put_int(p, j->nidx);
@@ -1226,6 +1231,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		SiftAggJoin *j = &s->join[i];
 
 		j->relid = (Oid) get_int(u);
+		j->child = get_int(u);
 		j->kind = get_int(u);
 		j->fslot = get_int(u);
 		j->nidx = get_int(u);
