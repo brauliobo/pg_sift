@@ -253,7 +253,7 @@ SELECT * FROM fc_stage('sift_table', 'fct');
 ------------+----------------------------------------------------------
  sift_table | array=same/same 1 SiftAgg, 1 searching, 7 rows          +
             | drill=same/same 4 SiftAgg, 4 searching, 19 rows         +
-            | drill_buckets=same/same 0 SiftAgg, 0 searching, 38 rows +
+            | drill_buckets=same/same 4 SiftAgg, 4 searching, 38 rows +
             | drill_dates=same/same 4 SiftAgg, 4 searching, 32 rows   +
             | histogram=same/same 2 SiftAgg, 2 searching, 7 rows      +
             | histogram_fill=same/same 2 SiftAgg, 2 searching, 42 rows+

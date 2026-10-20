@@ -219,7 +219,7 @@ SELECT e::text, count(*), min(t), max(ia) FROM tt GROUP BY e;
 SELECT chk($$SELECT mo::text AS k, count(*) AS c, sum(mo)::text AS s, max(mo)::text AS m FROM tt GROUP BY mo$$) AS table_money;
  table_money 
 -------------
- plain same
+ scan same
 (1 row)
 
 DROP TABLE tt;
