@@ -11,7 +11,7 @@ the includes). Checked by building them, not only by reading includes (`make -C 
 
 | Part | Files | Lines | On the SQLite host |
 |---|---|---|---|
-| chunk and unit encoding, zones, dictionaries, batches | `col/enc.c` | 2.1k | builds, round trip passes |
+| chunk and unit encoding, zones, dictionaries, batches | `col/enc.c`, `col/{schema,dict,batch,chunk,ctest,unit}.c` | 2.1k | builds, round trip passes |
 | chunk codec (cascades, FOR/delta/RLE/dict/ALP), LZ4/zstd layer | `col/codec*.c`, `col/compress.c` | 3.6k | builds, round trip passes |
 | segment writer/reader of units over the page store | `col/seg*.c` | 0.9k | builds, linked (not yet exercised) |
 | column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
@@ -114,7 +114,7 @@ demand and legal has answered; 3a is optional and only worth it if MariaDB users
 4. **`typid` becomes an opaque type tag** in the column format (the host stores whatever tag identifies its type; the schema hash
    covers the tag, not a PostgreSQL OID); done: the leaf type in the format is the host-independent tag `SiftColType` (column format version 1), and PostgreSQL OIDs are mapped at the PG boundary only.
 5. **SQLite rowid mapping: `blk = rowid >> 8`, `off = (rowid & 255) + 1`** (decided by evaluation, not by the maintainers):
-   - Constraints from the format: an offset must be 1..`MaxHeapTuplesPerPage` (291; `col/enc.c` rejects others, the offset mask
+   - Constraints from the format: an offset must be 1..`MaxHeapTuplesPerPage` (291; `col/batch.c` rejects others, the offset mask
      is 512 bits), a unit is one 256-block superblock, so a unit holds at most 256 x 291 = 74,496 rows. `>> 9` or more (offsets up to
      512) is therefore invalid; a mapping must give at most 291 offsets per block.
    - `>> 8` gives 256 offsets, a power of two (no division per row), dense blocks (a block whose offsets are 1..n stores no sparse

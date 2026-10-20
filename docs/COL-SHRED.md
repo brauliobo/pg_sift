@@ -63,7 +63,7 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 
 ### Wildcard dictionary
 
-`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`col/enc.c`) created with the
+`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`col/dict.c`) created with the
 shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes (`SIFT_COL_DICT_MAX_ENTRY`), or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 

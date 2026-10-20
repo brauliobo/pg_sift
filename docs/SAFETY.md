@@ -72,7 +72,7 @@ Installed: clang-tidy, scan-build, gcc -fanalyzer, libFuzzer, MSan and UBSan-min
 - clang `-fbounds-safety` (`__counted_by`, `__sized_by`, `__indexable`): clang 23 here only has `-Xclang -fexperimental-bounds-safety`, no
   `<ptrcheck.h>`, and a one-function probe did not build; Apple's clang ships it. Not usable on the Debian/RPM/AUR toolchains.
 - `counted_by` on flexible array members: gcc 15+ and clang 18+; with `-fsanitize=bounds` the access traps (verified with gcc 16). Applies to 5
-  sites only (src/core/sift_page.h x3, src/bm25/parallel.h, src/col/enc.c); the pgsql-hackers thread "Add counted_by attribute" is the
+  sites only (src/core/sift_page.h x3, src/bm25/parallel.h, src/col/batch.c); the pgsql-hackers thread "Add counted_by attribute" is the
   PostgreSQL-side attempt (it found write-order problems under bounds checking). Low value for sift: decoders mostly walk byte buffers.
 - PostgreSQL aids: `--enable-cassert` implies MEMORY_CONTEXT_CHECKING and CLOBBER_FREED_MEMORY (they catch palloc overruns ASan cannot); the
   `assert` and `valgrind` lanes above use them. amcheck is the model for sift.verify.
@@ -101,8 +101,8 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-1 | bm25/bitmap.c:sift_cur_blob, gr_seek, ls_seek, ef_hdr, ef_decode, ls_at | query path decodes unchecked blobs (F-BM25-2/3/4, fixed by explicit checks in 2.0.2, 463951f; the Span conversion is open): cursor over a Span, per-group sub-span, lazy check_grouped rules |
 | P1-2 | bm25/bitmap.c:sift_chunk_pagemask/offsets/count (called by bm25/segment.c:load_sb) | no length argument; pass `sift_span_sub(rec,8,h[1])`, require w in {1,2,4,8..64}, pg<256 |
 | P1-3 | bm25/segment.c:load_sb; bm25/walk.c:walk_docs; bm25/liveness.c:live_sb_bits | ndocs from mask popcounts never compared with the header; `keys[]` overflow |
-| P1-4 | col/scan_unit.c:unit_group, col/scan_read.c:sift_col_read; col/enc.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
-| P1-5 | col/enc.c:chunk_lut, cc_lut | done (F-COL-1): tables of at most 16 bits cover the width, wider codes pass `max32(codes) < sbits` |
+| P1-4 | col/scan_unit.c:unit_group, col/scan_read.c:sift_col_read; col/batch.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
+| P1-5 | col/ctest.c:chunk_lut, cc_lut | done (F-COL-1): tables of at most 16 bits cover the width, wider codes pass `max32(codes) < sbits` |
 | P1-6 | col/scan_read.c:read_positions (STR), sift_col_read_lane (CODE lane) | done: `max32(codes) <= dict->n` once per chunk read, before sift_agg.c indexes `map[code]` or the LUT |
 | P1-7 | sift_table_store.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
 | P1-8 | sift_table_store.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
@@ -117,9 +117,9 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
 | P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed |
 | P2-10 | col/seg.c:sift_cseg_unit, sift_cseg_unit_head | unit buffer lacks `SIFT_COL_PAD`; `unpack` reads 31 bytes past |
-| P2-11 | col/enc.c:sift_cchunk_zone, chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
+| P2-11 | col/enc.c:sift_cchunk_zone, col/ctest.c:chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
 | P3-1 | col/codec_parse.c:parse_node, parse_child, sift_cc_open, col/codec_blob.c:sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
-| P3-2 | col/enc.c:sift_cchunk_parse, unit_parse, sift_cdict_parse, sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
+| P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
 | P3-3 | col/seg.c:sift_cseg_open, sift_cseg_dict, zone_arrays | manual arithmetic; one 7-byte over-read at 429/441 |
 | P3-4 | col/compress.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
 | P3-5 | sift_store.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |
@@ -128,7 +128,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
 | P4-1 | sift_varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
 | P4-2 | sift_varint.h:sift_get_varint64_n, bm25/pos.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
-| P4-3 | col/enc.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
+| P4-3 | col/unit.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
 Also: extend sift.verify (src/bm25/segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: bm25/docdir.c, sift_lane.c, rest of bm25/wbuf.c, bm25/cscan.c, sift_cscan consumers.
