@@ -344,7 +344,7 @@ which it would read as final, until `VACUUM FULL` rewrites it (new files have mi
 
 *Layout of a group* (`SiftTblLayout`): one leaf per live column in column order (typed: integers and `numeric(p<=18, s>=0)` as INT with the
 scale, `float4/8` as F4/F8, text kinds as STR; any other type, including `jsonb`, `uuid`, arrays and `bytea`, as VAR holding the exact datum
-image) plus one `exceptions` VAR leaf. A value a typed leaf cannot hold exactly (numeric NaN/Infinity, a float non-canonical NaN)
+image), then the leaves of the declared jsonb paths (`sift.table_set_paths`, section 11), plus one `exceptions` VAR leaf. A value a typed leaf cannot hold exactly (numeric NaN/Infinity, a float non-canonical NaN)
 is stored as NULL with the overflow flag in its leaf and its image in `exceptions`, so every value round-trips
 exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by attribute number (missing: the default), segments of
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
@@ -411,7 +411,7 @@ and the free list.
   `sift.table_compression` (the `compression` grammar of `sift_col`: `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings; `'auto; col=zstd:9'` per column;
   taken from the session that promotes, autovacuum uses the server setting), `sift.table_dead_rewrite_pct` (1-100, default 50: section 7,
   merge). Segments are self-describing, so changing a setting affects only
-  the segments written afterwards. `sift_group_rows` (rows per unit: one superblock) and `sift_paths` (jsonb shredding) are not provided.
+  the segments written afterwards. `sift_group_rows` (rows per unit: one superblock) is not provided; the jsonb paths of a column are declared with `sift.table_set_paths` (section 11).
 - `ALTER TABLE ... SET ACCESS METHOD sift_table` rewrites the table through `relation_copy_for_cluster`-style bulk writes.
 - Types: every type, exactly (section 7, layout of a group): typed leaves for what the engine stores natively, opaque `SIFT_COLS_VAR` leaves
   for the rest, an `exceptions` leaf for the values a typed leaf would change.
@@ -470,14 +470,16 @@ Run by `scripts/ci.sh` like the BM25 tests:
   query touches are loaded. Mass deletes should be VACUUMed (autovacuum does) or avoided (TRUNCATE, partition drop).
 - Shared row locks degrade to exclusive; implementing MultiXact would need a lock-owner set per row.
 - Relation-level SSI locks; a per-SB granularity is possible once the engine reports the SBs a scan touched.
-- Typed jsonb paths for a `sift_table` (not built). A table keeps a jsonb column as one opaque leaf of exact bytes, so `SiftAgg` over it runs PostgreSQL's
-  `jsonb_to_recordset` on every row and `jsonb_typeof(x->'k')` has no leaf to answer from; on the 11 MB table of the jsonb benchmark
-  ([COL-SHRED.md](COL-SHRED.md)) the shapes cost what the heap costs (j01 354 ms, j02 408 ms, against 4 and 5 ms on a `sift_col` index). The design:
-  segments carry their schema, so the shredded leaves can sit next to the exact bytes; the paths are declared by a function (a table access method has no
-  reloptions) and stored in an extension table that an event trigger clears with the table; promotion, merge and VACUUM rewrite shred the declared
-  columns; the planner uses the paths only when every segment it reads has them (the declaration is older than all of them, the write buffer is shredded on
-  the fly), and a merge rewrites the old ones. Open: statistics and EXPLAIN need the path names, and `ALTER TABLE ... SET ACCESS METHOD` and dumps must
-  carry the declaration.
+- Typed jsonb paths for a `sift_table`: `SELECT sift.table_set_paths('t', 'doc', 'doc->ch text, doc->w int4, doc->items[]{k int4, p float8}')` (the
+  `paths` grammar of `sift_col`, the column named in each path; `NULL` or an empty spec drops the declaration). Without it a jsonb column is one opaque
+  leaf of exact bytes and `SiftAgg` runs PostgreSQL's `jsonb_to_recordset` on every row. The declaration is a row of `sift.table_paths(relid, attname,
+  spec)` (an extension configuration table, so `pg_dump` carries it; keyed by column name, so a renamed or dropped column has no paths); an event trigger
+  clears it with the table. Promotion, merge and `VACUUM FULL` shred the declared column into leaves next to the exact bytes (no format change: a segment
+  carries its schema), and the write buffer is shredded as rows are read. The planner uses the paths only when every segment it reads has them, so the
+  plan stays the normal one until `VACUUM FULL` has rewritten the older segments, and a rewrite of the table that is not `VACUUM FULL` (`ALTER TABLE ...
+  TYPE`) drops the leaves until the next one. A value of another JSON type than its path declares is kept exactly (overflow) and a query that reads
+  that path keeps the normal plan while such a row exists; the `jsonb_typeof` forms still run (`filter_types`). Not done: rollups of the elements for a
+  table (the scan reads the elements), and ANALYZE gives the paths no statistics.
 - The logical record doubles WAL for published tables; a custom rmgr for all page changes would remove the double write but demands
   preload everywhere.
 
