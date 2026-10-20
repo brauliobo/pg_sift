@@ -1,4 +1,4 @@
--- synthetic documents for the jsonb benchmarks (docs/COL-JSONB-31.md): items[]{kind,sub,flag,score}, scores.* (dynamic keys), attrs{channel,nested.a.b,tags[],mixed}
+-- synthetic documents for the jsonb benchmarks (docs/COL-SHRED.md, Measured): items[]{kind,sub,flag,score}, scores.* (dynamic keys), attrs{channel,nested.a.b,tags[],mixed}
 -- psql -v n=100000 -v strs=0 -f gen.sql   (strs: share of numbers written as strings in the numeric paths: 0 is a clean table; 0.05 adds the strings, the mixed-type case)
 \if :{?n} \else \set n 100000 \endif
 \if :{?strs} \else \set strs 0 \endif

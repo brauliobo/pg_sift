@@ -1,4 +1,4 @@
--- Column format minor 4 beside minor 3 (docs/COL-JSONB-31.md 5.2): an index reads the segments of both, whatever sift.col_format_minor is
+-- Column format minor 4 beside minor 3 (docs/COL.md section 4): an index reads the segments of both, whatever sift.col_format_minor is
 -- when they are written, and a merge or a VACUUM rewrite writes the setting's minor. fmt lists the minors of the segments, oldest first.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

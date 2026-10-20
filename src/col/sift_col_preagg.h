@@ -10,7 +10,7 @@
  *   - per unit, from column format minor 4: for the leaves of a list (an array of objects, an array of scalars, a map; its rows are the
  *     elements) one rollup: the distinct tuples of the values of a few low-cardinality leaves (the dims) that the unit holds, each with its element
  *     count and, per measure, (non-NULL count, sum, min, max). A GROUP BY over any subset of the dims, a filter on the dims and these aggregates
- *     are answered by adding up the tuples (docs/COL-PREAGG.md section 2, docs/COL-JSONB-31.md 5.1). Depth 1: a list inside a list has none.
+ *     are answered by adding up the tuples (docs/COL-PREAGG.md section 2). Depth 1: a list inside a list has none.
  *
  * Immutable like the unit it describes: never updated in place; whether a unit's pre-aggregate may answer a query is the visibility rule of
  * sift_col_unit_exact (clean unit, every page all-visible) and the predicate rule of the consumer (docs/COL-PREAGG.md section 4).

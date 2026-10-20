@@ -19,7 +19,7 @@
 #include "sift_col_wide.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the element rollups (docs/COL-JSONB-31.md 5) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
+#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
 #define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves (lanes, money, interval; docs/COL-LEAFTYPES-32.md) is written as this minor, and only such a segment; the others keep the minor above */
@@ -513,7 +513,7 @@ extern void sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum
 extern bool sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
 
 /*
- * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path (docs/COL-JSONB-31.md 5): a stored value has
+ * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path (docs/COL.md 2.2): a stored value has
  * the leaf's own type deftag (an astext leaf, mixed, holds the text of a string, a number or a boolean: STRING unless its chunk says
  * otherwise), an overflow value the tag the chunk kept for it, a NULL slot SIFT_COLTAG_JNULL for a JSON null and SIFT_COLTAG_NONE
  * (jsonb_typeof is NULL) for a missing key, and for a value that is no value at all.

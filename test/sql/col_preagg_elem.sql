@@ -1,4 +1,4 @@
--- Element cubes of a unit (docs/COL-PREAGG.md, docs/COL-JSONB-31.md 5.1): the histograms of the leaves of a list (an array of objects, an array of
+-- Element cubes of a unit (docs/COL-PREAGG.md): the histograms of the leaves of a list (an array of objects, an array of
 -- scalars, a map) whose rows are the elements, checked against direct SQL over jsonb_array_elements / jsonb_each after a build, DML, VACUUM,
 -- promote, merge and a parallel build, on minor 4, minor 3 and mixed indexes. Only units that are the single unit of their superblock and exact
 -- (clean, every page all-visible) are compared: the rule under which a consumer may use them.
@@ -170,7 +170,7 @@ RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET maintenance_work_mem;
 
--- minor 3 beside minor 4 (docs/COL-JSONB-31.md 5.2): a segment written under minor 3 has no element cubes and the plain cube of 3.0, the merge of both
+-- minor 3 beside minor 4 (docs/COL.md section 4): a segment written under minor 3 has no element cubes and the plain cube of 3.0, the merge of both
 -- writes the setting's minor
 SET sift.col_format_minor = 3;
 INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(42001, 46000) g;

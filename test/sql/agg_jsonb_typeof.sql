@@ -1,4 +1,4 @@
--- jsonb_typeof(path) = 'type' (or IN a list of types) pushed into the aggregate scan (docs/COL-JSONB-31.md 5.1, docs/COL-PLAN.md): the source keeps the
+-- jsonb_typeof(path) = 'type' (or IN a list of types) pushed into the aggregate scan (docs/COL.md 2.2, docs/COL-PLAN.md): the source keeps the
 -- rows whose value has the type, the stored values by the type of the leaf and the values the leaf cannot hold by the type its chunk kept for them,
 -- and the rows of any other type are dropped without the error that a read of such a value raises. Every query runs with and without the
 -- pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).

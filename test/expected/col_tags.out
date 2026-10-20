@@ -1,4 +1,4 @@
--- The JSON type of the values a leaf cannot hold (docs/COL-JSONB-31.md 5.1): chunks of column format minor 4 keep it for every overflow
+-- The JSON type of the values a leaf cannot hold (docs/COL.md 2.2): chunks of column format minor 4 keep it for every overflow
 -- value, in segments and in the write buffer; a value written under minor 3 has none, and a merge carries that over.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
