@@ -22,13 +22,13 @@ Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_s
 ### Install with Homebrew
 
 ```sh
-brew tap brauliobo/pg_sift
+brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift
 brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The [tap](https://github.com/brauliobo/homebrew-pg_sift) builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
-It currently uses the macOS portability branch until those changes reach a release; v3.1.0 fails to compile on arm64.
+The formula in this repository builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
+HEAD tracks `main`; v3.1.0 fails to compile on arm64. The portability fix must be merged before the default HEAD installation works on arm64.
 The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
 For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
 Remove the extension package with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
