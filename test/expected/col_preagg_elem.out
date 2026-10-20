@@ -87,7 +87,7 @@ CREATE INDEX pe_col ON pe USING sift_col (id, grp, items, tags, m)
 SELECT fmt('pe_col');
  fmt 
 -----
- 4,4
+ 6,6
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -278,7 +278,7 @@ SELECT count(*) FILTER (WHERE NOT exact) AS inexact FROM sift.col_unit_agg('pe_c
 SELECT fmt('pe_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 -- parallel build and REINDEX
@@ -329,7 +329,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
   fmt  
 -------
- 4,4,3
+ 6,6,3
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -353,7 +353,7 @@ SELECT what, checked, bad FROM pe_battery('pe_col');
 
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 3)) AS minor3_elem_groups,
        (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'grp') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 3)) > 0 AS minor3_top_level_cube,
-       (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 4)) > 0 AS minor4_elem_groups;
+       (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format > 3)) > 0 AS minor4_elem_groups;
  minor3_elem_groups | minor3_top_level_cube | minor4_elem_groups 
 --------------------+-----------------------+--------------------
                   0 | t                     | t
@@ -427,7 +427,7 @@ REINDEX INDEX pe_col3;
 SELECT fmt('pe_col3');
  fmt 
 -----
- 4,4
+ 6,6
 (1 row)
 
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col3', 'items[].k')) > 0 AS reindexed_elem_groups;

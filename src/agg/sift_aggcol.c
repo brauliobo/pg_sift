@@ -238,6 +238,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 		double		nonnull = ls[i].nvals - ls[i].nnull;
 
 		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
+		st->nokinds[i] = ls[i].nokinds;
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;

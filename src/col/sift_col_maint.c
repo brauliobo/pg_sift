@@ -143,6 +143,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	SiftColSegWriter *w = NULL;
 	SiftSegEntry neu;
 	TimestampTz start = GetCurrentTimestamp();
+	bool		exact = true;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -150,7 +151,11 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		if (seg[i]->schema->hash != schema->hash)
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		part[i] = sift_cbatch_create(cx, schema);
+		exact &= sift_cseg_kinds_exact(seg[i]);
 	}
+	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
+	if (!exact)
+		format = Min(format, SIFT_COL_FORMAT_TAGS);
 	for (;;)
 	{
 		uint32		sb = PG_UINT32_MAX;

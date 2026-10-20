@@ -580,7 +580,7 @@ SELECT sift.col_promote('g_col');
 SELECT fmt('g_col');
  fmt 
 -----
- 3,4
+ 3,6
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -599,7 +599,7 @@ SELECT sift.col_merge('g_col', true);
 SELECT fmt('g_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -628,7 +628,7 @@ RESET sift.col_format_minor;
 SELECT fmt('g_col');
  fmt 
 -----
- 4,3
+ 6,3
 (1 row)
 
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
@@ -666,7 +666,7 @@ REINDEX INDEX g_col;
 SELECT fmt('g_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -682,7 +682,7 @@ VACUUM g;
 SELECT fmt('g_col');
  fmt 
 -----
- 4
+ 6
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;

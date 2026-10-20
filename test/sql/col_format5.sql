@@ -18,7 +18,7 @@ BEGIN
 	RETURN a IS NOT DISTINCT FROM b;
 END $$;
 
--- the setting's range is the one of 3.1: the wide minor is a property of the schema
+-- the wide minor is a property of the schema, not a GUC setting
 SET sift.col_format_minor = 5;
 
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);

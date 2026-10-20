@@ -182,7 +182,7 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 3)) AS minor3_elem_groups,
        (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'grp') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 3)) > 0 AS minor3_top_level_cube,
-       (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format = 4)) > 0 AS minor4_elem_groups;
+       (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format > 3)) > 0 AS minor4_elem_groups;
 SELECT sift.col_merge('pe_col', true) >= 0 AS merged;
 SELECT fmt('pe_col');
 SELECT sift.col_verify('pe_col', true);

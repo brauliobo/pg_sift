@@ -2461,7 +2461,7 @@ sift_tbl_paths_complete(Relation rel, SiftTblRel *st)
 		const SiftSegEntry *e = &st->dir.segs[i];
 
 		/* the types of the values of a path are in a segment of column format minor 4 and later */
-		if (e->kind == SIFT_SEG_IMMUTABLE && (e->format < SIFT_COL_FORMAT_MINOR || !schema_has_paths(schema_of(rel, st, e), l->schema)))
+		if (e->kind == SIFT_SEG_IMMUTABLE && (e->format < SIFT_COL_FORMAT_TAGS || !schema_has_paths(schema_of(rel, st, e), l->schema)))
 			return false;
 	}
 	return true;
@@ -2741,13 +2741,31 @@ sift_tbl_bulk_tuple(SiftTblBulk *b, HeapTuple tup)
 	MemoryContextReset(b->rowcx);
 }
 
-/* Are all column segments of the old table written for the new table's layout (their units are copied as they decode)? */
+/*
+ * Are all column segments of the old table written for the new table's layout (their units are copied as they decode), and keep the kinds of
+ * their path leaves (a copy of a unit that does not writes its JSON nulls as missing keys: the rows are formed from the tuples instead, which
+ * derives the leaves from the documents again)?
+ */
 static bool
 bulk_same_layout(SiftTblBulk *b, Relation old, SiftTblRel *ost)
 {
 	for (int i = 0; i < ost->dir.nsegs; i++)
-		if (ost->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(old, ost, &ost->dir.segs[i])->hash != b->sw.l->schema->hash)
+	{
+		SiftColSegment *seg;
+		bool		exact;
+
+		if (ost->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		if (schema_of(old, ost, &ost->dir.segs[i])->hash != b->sw.l->schema->hash)
 			return false;
+		if (!b->sw.l->schema->kinds || ost->dir.segs[i].format >= SIFT_COL_FORMAT_KINDS)
+			continue;
+		seg = sift_cseg_open(old, &ost->dir.segs[i], b->sw.cxt);
+		exact = sift_cseg_kinds_exact(seg);
+		sift_cseg_close(seg);
+		if (!exact)
+			return false;
+	}
 	return true;
 }
 

@@ -19,11 +19,13 @@
 #include "sift_col_wide.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
+#define SIFT_COL_FORMAT_MINOR	6			/* the newest minor 3.2 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
+#define SIFT_COL_FORMAT_TAGS	4			/* what 3.1 writes: the tags and kinds of a chunk (minor 4 and 5 say nothing about their completeness); the minor of a segment of a schema without shredded leaves, and of one whose kinds a merge could not carry over, under the default setting */
 #define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
-#define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves is written as this minor, and only such a segment; the others keep the minor above */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_WIDE	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves is written as at least this minor, and only such a segment */
+#define SIFT_COL_FORMAT_KINDS	6			/* 3.2: a segment whose schema has shredded leaves and whose every kind is known: a NULL slot that is a JSON null has its kind, one without is a missing key, an astext value has its type. A minor 3, 4 or 5 chunk may lack them (a merge of a segment written before the kinds were kept carried it over without) */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_KINDS	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -126,6 +128,13 @@ typedef struct SiftColDef
 	uint8		lane;
 } SiftColDef;
 
+/* a leaf the shredder fills from a jsonb value (a path is declared): its NULL slots are JSON nulls or missing keys, and an astext leaf holds numbers and booleans as text */
+static inline bool
+sift_col_def_has_kinds(const SiftColDef *d)
+{
+	return d->store != SIFT_COLS_VAR && d->path != NULL && d->path[0] != 0 && d->lane == 0;	/* a lane after the head of a wide leaf has a path of its own (name#k) */
+}
+
 static inline bool
 sift_col_def_is_wide(const SiftColDef *d)
 {
@@ -166,6 +175,7 @@ sift_col_def_lane_tested(const SiftColDef *d)
 #define SIFT_COLTAG_JNULL		7		/* JSON null: a NULL slot that is not a missing key (never an overflow value); its jsonb_typeof is 'null' */
 #define SIFT_COLTAG_OVF_MAX		SIFT_COLTAG_NONE	/* the last tag an overflow value has */
 #define SIFT_COLTAG_MAX			7
+#define SIFT_COLTAG_UNSURE		8		/* memory only: a legacy write-buffer slot did not preserve its kind */
 
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
@@ -188,7 +198,7 @@ typedef struct SiftColValue
 static inline bool
 sift_col_tag_valid(const SiftColValue *v)
 {
-	return v->tag == SIFT_COLTAG_UNKNOWN ||
+	return v->tag == SIFT_COLTAG_UNSURE || v->tag == SIFT_COLTAG_UNKNOWN ||
 		(v->overflow ? v->tag <= SIFT_COLTAG_OVF_MAX : v->isnull ? v->tag == SIFT_COLTAG_JNULL : v->tag <= SIFT_COLTAG_BOOLEAN);
 }
 
@@ -288,6 +298,7 @@ typedef struct SiftColLeafStats
 	bool		has_sum;
 	bool		has_ovf;		/* some unit's zone is flagged with an overflow value (a dead row's too, until the segment is rewritten) */
 	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
+	bool		nokinds;		/* some segment of column format below SIFT_COL_FORMAT_KINDS holds NULL slots (or astext values) of the leaf: a JSON null and a missing key, or the type of a value, cannot be told in it */
 } SiftColLeafStats;
 
 typedef struct SiftColIndexMeta

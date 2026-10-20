@@ -19,6 +19,7 @@ typedef struct SiftColSchema
 	int			ncols;
 	int			ngroups;
 	bool		wide;			/* some leaf is a lane, money or interval (sift_col_def_needs_wide): a segment of this schema is column format minor 5 */
+	bool		kinds;			/* some leaf is filled from a jsonb path (sift_col_def_has_kinds): a segment of this schema whose kinds are complete is column format minor 6 */
 	SiftColDef *cols;			/* [ncols], paths copied */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
@@ -98,6 +99,8 @@ typedef struct SiftColBatch
 	SiftCDict **dict;			/* [ncols]: batch dictionary of each STR leaf, NULL for the others */
 } SiftColBatch;
 
+/* Legacy write-buffer values carry UNSURE in memory; a writer must not certify them as complete kinds. */
+extern bool sift_cbatch_kinds_exact(const SiftColBatch *b);
 extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema *schema);
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);

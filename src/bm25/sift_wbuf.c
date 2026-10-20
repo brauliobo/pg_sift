@@ -73,7 +73,7 @@ sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 uint64
 sift_wbuf_seal(Relation index, bool force)
 {
-	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), limit_pages(index), has_docs);
+	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), 0, limit_pages(index), has_docs);
 }
 
 /* ---------- append ---------- */
@@ -97,7 +97,7 @@ get_hint(Relation index)
 static void
 refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 {
-	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftWbufPageHeaderData), sift_maint_make_room,
+	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftWbufPageHeaderData), 0, sift_maint_make_room,
 					  &h->gen, &h->hdr, h->tail);
 }
 

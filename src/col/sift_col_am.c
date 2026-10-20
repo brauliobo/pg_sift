@@ -36,6 +36,19 @@
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 
+/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4 or 6 */
+static bool
+check_col_format_minor(int *newval, void **extra, GucSource source)
+{
+	if (*newval == SIFT_COL_FORMAT_WIDE)
+	{
+		GUC_check_errdetail("Column format minor 5 is written for wide leaves only, whatever the setting.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1) or 6.");
+		return false;
+	}
+	return true;
+}
+
 static relopt_kind col_relopt_kind;
 
 /* Every entry of the option is a policy, optionally prefixed by "column =" */
@@ -91,10 +104,11 @@ sift_col_init(void)
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 4, or 3 to keep them readable by pg_sift 3.0.",
-							"Segments already written keep their minor; a 3.1 library reads both.",
+							"Column format minor of the segments written: 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
+							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
-							PGC_SUSET, 0, NULL, NULL, NULL);
+							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.test_col_rollup_panic",
 							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
@@ -383,13 +397,12 @@ sift_col_leaf_stats(Relation index)
 {
 	const SiftColIndexMeta *d = sift_col_index_defs(index);
 	SiftDirSnapshot dir;
-	uint64		stamp = 0;
+	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
 	int			slot = -1;
 
 	sift_dir_read(index, &dir);
 	for (int i = 0; i < dir.nsegs; i++)
-		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			stamp = stamp * 31 + dir.segs[i].gen + 1;
+		stamp = stamp * 31 + dir.segs[i].gen * 8 + dir.segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
 	for (int i = 0; i < LEAF_STATS_CACHE; i++)
 		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
 			slot = i;
@@ -417,6 +430,10 @@ sift_col_leaf_stats(Relation index)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
 			sift_cseg_close(seg);
 		}
+		for (int i = 0; i < dir.nsegs; i++)
+			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE && dir.segs[i].format < SIFT_COL_FORMAT_KINDS)
+				for (int c = 0; c < d->ncols; c++)
+					st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
 		MemoryContextDelete(cx);
 		leaf_cache[slot].index = RelationGetRelid(index);
 		leaf_cache[slot].stamp = stamp;

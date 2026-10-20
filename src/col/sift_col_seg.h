@@ -32,8 +32,15 @@ typedef struct SiftColSBRef
 
 typedef struct SiftColSegWriter SiftColSegWriter;
 
+/*
+ * The column format minor a segment of schema is written as under the setting sift.col_format_minor (or the minor a sift_table needs: its
+ * groups with versions are at least SIFT_COL_FORMAT_VERS): a wide schema is at least SIFT_COL_FORMAT_WIDE; the setting SIFT_COL_FORMAT_KINDS
+ * gives SIFT_COL_FORMAT_KINDS to a schema with shredded leaves when kinds_exact (every segment the rows come from keeps its kinds, sift_cseg_kinds_exact;
+ * rows of a heap or a write buffer do), SIFT_COL_FORMAT_TAGS to the others. A merge that cannot say so passes false.
+ */
+extern int sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact);
 /* Allocates in mcxt. schema must outlive the writer. */
-/* pol[ncols]: the compression policy of each leaf (NULL: plain FOR/PACK chunks), valid until sift_colw_finish; format: the column format minor written (sift.col_format_minor) */
+/* pol[ncols]: the compression policy of each leaf (NULL: plain FOR/PACK chunks), valid until sift_colw_finish; format: the column format minor written (sift_col_write_minor of the setting) */
 extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol,
 										 int format, MemoryContext mcxt);
 /*
@@ -131,6 +138,8 @@ extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z)
 
 /* Adds what the zones and the dictionary of the segment say about leaf col to acc (sift_col_leaf_stats_init first). Reads the leaf's zone arrays and four bytes of its dictionary, no chunk */
 extern void sift_col_leaf_stats_init(SiftColLeafStats *acc);
+/* Does the segment keep the kinds of every leaf: a segment of column format SIFT_COL_FORMAT_KINDS, or one of an older format with no NULL slot and no astext value in a leaf filled from a jsonb path. Reads the zone arrays */
+extern bool sift_cseg_kinds_exact(SiftColSegment *seg);
 extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
 
 /*
