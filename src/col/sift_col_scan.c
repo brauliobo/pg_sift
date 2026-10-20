@@ -373,6 +373,11 @@ prune_segment(ColCursor *c, const SiftColPred *preds, int npreds, uint32 sb_lo, 
 		const SiftColDef *def = &seg->schema->cols[preds[i].col];
 		SiftCTest	t;
 
+		if (sift_colw_is_wide_int(def))
+		{
+			sift_colw_prune(seg, &preds[i], c->keep);
+			continue;
+		}
 		sift_ctest_make(def, sift_cseg_dict(seg, preds[i].col), &preds[i], &t);
 		sift_cseg_prune(seg, preds[i].col, &t, c->keep);
 	}
@@ -810,10 +815,16 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 	{
 		if (cu->src->schema->cols[preds[i].col].parent >= 0)
 			elog(ERROR, "sift_col: leaf %d is an element column, use the group filters", preds[i].col);
-		if (!chunk_filter(cu, &preds[i], sel, NULL))
+		if (!(sift_colw_is_wide_int(&cu->src->schema->cols[preds[i].col]) ? sift_colw_filter(unit, &preds[i], sel) : chunk_filter(cu, &preds[i], sel, NULL)))
 			return false;
 	}
 	return sel->count > 0;
+}
+
+bool
+sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
+{
+	return chunk_filter(unit->priv, p, sel, NULL);
 }
 
 /* A unit written with the kinds (column format minor 4): its NULL slots say whether they are a JSON null, and an astext leaf's values their type */

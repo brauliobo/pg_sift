@@ -64,7 +64,8 @@ typedef struct SiftColDefDisk
 	uint16		pathlen;
 	uint8		type;
 	uint8		scale;
-	uint16		reserved;
+	uint8		lanes;			/* 0 in every schema before 3.2 (these were the two reserved bytes) */
+	uint8		lane;
 } SiftColDefDisk;
 
 /* NULL when the leaf list is valid, else why not */
@@ -89,8 +90,21 @@ schema_check(const SiftColDef *defs, int n)
 			return "a variable-length leaf is a top level scalar";
 		if (d->path != NULL && strlen(d->path) > PG_UINT16_MAX)
 			return "leaf path too long";
-		if (d->scale > SIFT_COL_MAX_SCALE || (d->scale > 0 && d->store != SIFT_COLS_INT))
-			return "a scale belongs to an integer leaf and is at most 18";
+		if (d->scale > (d->lanes > 1 || d->lane > 0 ? SIFT_COL_MAX_WIDE_SCALE : SIFT_COL_MAX_SCALE) || (d->scale > 0 && d->store != SIFT_COLS_INT))
+			return "a scale belongs to an integer leaf and is at most 18 (38 for a wide one)";
+		if (d->lanes > SIFT_COL_MAX_LANES || d->lanes == 1 || (d->lanes > 1 && (d->lane != 0 || i + d->lanes > n)))
+			return "a wide leaf has 2 or 3 lanes, all inside the leaf list";
+		if (d->lanes > 1 || d->lane > 0)
+		{
+			if (d->kind != SIFT_COLK_SCALAR || d->parent != -1 || d->store == SIFT_COLS_VAR || (d->lane > 0 && d->store != SIFT_COLS_INT))
+				return "a wide leaf is a top level scalar of storage class INT or STR, its other lanes INT";
+			for (int k = 1; k < d->lanes; k++)
+				if (defs[i + k].lane != k)
+					return "the leaves after a wide head are its lanes";
+			if (d->lane > 0 && (d->lane >= SIFT_COL_MAX_LANES || i < d->lane || defs[i - d->lane].lanes <= d->lane ||
+								defs[i - d->lane].attno != d->attno || defs[i - d->lane].type != d->type || defs[i - d->lane].scale != d->scale))
+				return "a lane must follow its head and agree with it";
+		}
 		if (d->kind == SIFT_COLK_GROUP && (d->parent != -1 || d->store != SIFT_COLS_INT))
 			return "a group is a top level leaf of storage class INT";
 		if (d->kind == SIFT_COLK_SCALAR && d->parent != -1 &&
@@ -104,7 +118,7 @@ static void
 schema_put_def(StringInfo out, const SiftColDef *d, bool with_flags)
 {
 	const char *path = d->path ? d->path : "";
-	SiftColDefDisk disk = {d->id, d->parent, d->kind, d->store, with_flags ? d->flags : 0, d->attno, (uint16) strlen(path), d->type, d->scale};
+	SiftColDefDisk disk = {d->id, d->parent, d->kind, d->store, with_flags ? d->flags : 0, d->attno, (uint16) strlen(path), d->type, d->scale, d->lanes, d->lane};
 
 	put_val(out, disk);
 	put_bytes(out, path, disk.pathlen);
@@ -141,6 +155,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->cols[i] = defs[i];
 		s->cols[i].path = copy;
 		s->ngroups += defs[i].kind == SIFT_COLK_GROUP;
+		s->wide |= sift_col_def_needs_wide(&defs[i]);
 	}
 	s->hash = schema_hash(defs, n);
 	return s;
@@ -198,7 +213,7 @@ sift_cschema_parse(MemoryContext mcxt, const void *data, Size len)
 		memcpy(path, p + pos, disk.pathlen);
 		path[disk.pathlen] = '\0';
 		pos += disk.pathlen;
-		defs[i] = (SiftColDef) {disk.id, disk.parent, disk.kind, disk.store, disk.flags, disk.attno, disk.type, path, disk.scale};
+		defs[i] = (SiftColDef) {disk.id, disk.parent, disk.kind, disk.store, disk.flags, disk.attno, disk.type, path, disk.scale, disk.lanes, disk.lane};
 	}
 	if (schema_check(defs, (int) head[1]) == NULL && schema_hash(defs, (int) head[1]) == head[2])
 		s = schema_build(mcxt, defs, (int) head[1]);

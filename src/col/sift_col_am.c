@@ -204,133 +204,6 @@ sift_col_options_rollup(Relation index)
 	return o->rollup ? (const char *) o + o->rollup : "";
 }
 
-/* ---------- the leaves of an index ---------- */
-
-bool
-sift_col_leaf_store(Oid typid, SiftColStore *store)
-{
-	switch (typid)
-	{
-		case INT2OID:
-		case INT4OID:
-		case INT8OID:
-		case BOOLOID:
-		case DATEOID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-		case NUMERICOID:
-			*store = SIFT_COLS_INT;
-			return true;
-		case FLOAT4OID:
-			*store = SIFT_COLS_F4;
-			return true;
-		case FLOAT8OID:
-			*store = SIFT_COLS_F8;
-			return true;
-		case TEXTOID:
-		case VARCHAROID:
-			*store = SIFT_COLS_STR;
-			return true;
-	}
-	return false;
-}
-
-/* The types of a sift_col index: the table AM's set plus char(n) and name, which are strings too (the table AM keeps its narrower set) */
-static bool
-col_leaf_store(Oid typid, SiftColStore *store)
-{
-	if (typid != BPCHAROID && typid != NAMEOID)
-		return sift_col_leaf_store(typid, store);
-	*store = SIFT_COLS_STR;
-	return true;
-}
-
-/* The format's tag of a PostgreSQL type, and the type a tag stands for: the one place the engine's logical types meet type OIDs */
-uint8
-sift_col_type_of_oid(Oid typid)
-{
-	switch (typid)
-	{
-		case BOOLOID:
-			return SIFT_COLT_BOOL;
-		case INT2OID:
-			return SIFT_COLT_INT2;
-		case INT4OID:
-			return SIFT_COLT_INT4;
-		case INT8OID:
-			return SIFT_COLT_INT8;
-		case FLOAT4OID:
-			return SIFT_COLT_FLOAT4;
-		case FLOAT8OID:
-			return SIFT_COLT_FLOAT8;
-		case NUMERICOID:
-			return SIFT_COLT_NUMERIC;
-		case TEXTOID:
-		case VARCHAROID:
-		case BPCHAROID:
-		case NAMEOID:
-			return SIFT_COLT_TEXT;
-		case BYTEAOID:
-			return SIFT_COLT_BYTEA;
-		case DATEOID:
-			return SIFT_COLT_DATE;
-		case TIMESTAMPOID:
-			return SIFT_COLT_TIMESTAMP;
-		case TIMESTAMPTZOID:
-			return SIFT_COLT_TIMESTAMPTZ;
-		case UUIDOID:
-			return SIFT_COLT_UUID;
-		case JSONBOID:
-			return SIFT_COLT_JSONB;
-		default:
-			return SIFT_COLT_OTHER;
-	}
-}
-
-static const Oid type_oids[SIFT_COLT_END] = {
-	[SIFT_COLT_BOOL] = BOOLOID, [SIFT_COLT_INT2] = INT2OID, [SIFT_COLT_INT4] = INT4OID, [SIFT_COLT_INT8] = INT8OID,
-	[SIFT_COLT_FLOAT4] = FLOAT4OID, [SIFT_COLT_FLOAT8] = FLOAT8OID, [SIFT_COLT_NUMERIC] = NUMERICOID, [SIFT_COLT_TEXT] = TEXTOID,
-	[SIFT_COLT_BYTEA] = BYTEAOID, [SIFT_COLT_DATE] = DATEOID, [SIFT_COLT_TIMESTAMP] = TIMESTAMPOID, [SIFT_COLT_TIMESTAMPTZ] = TIMESTAMPTZOID,
-	[SIFT_COLT_UUID] = UUIDOID, [SIFT_COLT_JSONB] = JSONBOID
-};
-
-/* A leaf of a plain attribute yields exactly the type of the attribute in desc (varchar stays varchar); any other one the tag's type */
-Oid
-sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
-{
-	if (def->attno > 0 && def->path[0] == '\0')
-		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
-	return type_oids[def->type];
-}
-
-/* The scale of numeric(p, s); the INT class holds the number times 10^s exactly while p <= 18 (docs/COL.md 2.3) */
-bool
-sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
-{
-	int32		tm = att->atttypmod - VARHDRSZ;
-	int			prec = (tm >> 16) & 0xFFFF,
-				s = ((tm & 0x7FF) ^ 1024) - 1024;
-
-	if (att->atttypmod < VARHDRSZ || prec > SIFT_COL_MAX_SCALE || s < 0)
-		return false;
-	*scale = s;
-	return true;
-}
-
-static uint8
-numeric_scale_of(Form_pg_attribute att)
-{
-	uint8		scale;
-
-	if (!sift_col_numeric_scale(att, &scale))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col holds numeric(p, s) with p <= %d and s >= 0, not the type of column \"%s\"", SIFT_COL_MAX_SCALE,
-						NameStr(att->attname)),
-				 errhint("Declare the column as numeric(%d, s) or smaller; the values are stored as integers scaled by 10^s.", SIFT_COL_MAX_SCALE)));
-	return scale;
-}
-
 static SiftColRel *
 build_rel(Relation index)
 {
@@ -352,41 +225,36 @@ build_rel(Relation index)
 	r->shred = sift_col_shred_create(index->rd_indexcxt, index);
 	for (int a = 1; a <= natts; a++)
 	{
-		Oid			typid = TupleDescAttr(desc, a - 1)->atttypid;
-		SiftColStore store = SIFT_COLS_INT;
-		uint8		scale = typid == NUMERICOID ? numeric_scale_of(TupleDescAttr(desc, a - 1)) : 0;
-		int			k = typid == JSONBOID ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 1;
+		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
+		bool		isjson = att->atttypid == JSONBOID;
+		int			k = isjson ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 0;
+		SiftColDef	lanes[SIFT_COL_MAX_LANES];
 
-		if (typid != JSONBOID && !col_leaf_store(typid, &store))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid),
-							NameStr(TupleDescAttr(desc, a - 1)->attname)),
-					 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p, s) with p <= 18, real, double precision, text, varchar, char(n), name and jsonb with paths.")));
-		if (typid == JSONBOID && k == 0)
+		if (!isjson)
+			k = sift_col_att_leaves(att, lanes);
+		if (isjson && k == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(TupleDescAttr(desc, a - 1)->attname)),
-					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(TupleDescAttr(desc, a - 1)->attname))));
+					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
+					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(att->attname))));
 		if (n + k > SIFT_COL_MAX_COLS)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", SIFT_COL_MAX_COLS)));
 		r->first[a] = n;
-		r->json[a] = typid == JSONBOID;
-		r->name[a] = typid == NAMEOID;
+		r->json[a] = isjson;
+		r->name[a] = att->atttypid == NAMEOID;
 		r->nleaves[a] = k;
-		if (typid != JSONBOID)
-			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale,
-				.flags = typid == BPCHAROID && TupleDescAttr(desc, a - 1)->atttypmod < 0 ? SIFT_COLD_LOSSY : 0};
-		else
-			for (int i = 0; i < k; i++)
-			{
-				SiftColDef *d = &defs[n + i];
+		for (int i = 0; i < k; i++)
+		{
+			SiftColDef *d = &defs[n + i];
 
+			if (isjson)
 				sift_col_shred_leaf(r->shred, a, i, d);
-				d->id = n + i;
-				d->attno = a;
-				d->parent = d->parent < 0 ? -1 : n + d->parent;
-			}
+			else
+				*d = lanes[i];
+			d->id = n + i;
+			d->attno = a;
+			d->parent = d->parent < 0 ? -1 : n + d->parent;
+		}
 		n += k;
 	}
 	r->schema = sift_cschema_create(index->rd_indexcxt, defs, n);
@@ -574,98 +442,6 @@ sift_col_am_oid(void)
 	return am;
 }
 
-/* ---------- numeric ---------- */
-
-/* 10^scale as a numeric, for the lifetime of the backend */
-static Datum
-numeric_pow10(int scale)
-{
-	static Datum pow10[SIFT_COL_MAX_SCALE + 1];
-
-	if (pow10[scale] == (Datum) 0)
-	{
-		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
-		int64		p = 1;
-
-		for (int i = 0; i < scale; i++)
-			p *= 10;
-		pow10[scale] = NumericGetDatum(int64_to_numeric(p));
-		MemoryContextSwitchTo(old);
-	}
-	return pow10[scale];
-}
-
-int64
-sift_col_numeric_key(int scale, Datum value, SiftColRound round)
-{
-	Datum		scaled = DirectFunctionCall2(numeric_mul, value, numeric_pow10(scale));
-
-	if (round == SIFT_COL_ROUND_DOWN)
-		scaled = DirectFunctionCall1(numeric_floor, scaled);
-	else if (round == SIFT_COL_ROUND_UP)
-		scaled = DirectFunctionCall1(numeric_ceil, scaled);
-	return DatumGetInt64(DirectFunctionCall1(numeric_int8, scaled));
-}
-
-Datum
-sift_col_key_numeric(int scale, int64 key)
-{
-	return NumericGetDatum(int64_div_fast_to_numeric(key, scale));
-}
-
-/* ---------- tuple to row ---------- */
-
-static void
-datum_value(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
-{
-	v->isnull = v->overflow = false;
-	v->tag = SIFT_COLTAG_UNKNOWN;
-	v->len = 0;
-	switch (def->type)
-	{
-		case SIFT_COLT_INT2:
-			v->v.i = DatumGetInt16(d);
-			break;
-		case SIFT_COLT_INT4:
-		case SIFT_COLT_DATE:
-			v->v.i = DatumGetInt32(d);
-			break;
-		case SIFT_COLT_INT8:
-		case SIFT_COLT_TIMESTAMP:
-		case SIFT_COLT_TIMESTAMPTZ:
-			v->v.i = DatumGetInt64(d);
-			break;
-		case SIFT_COLT_BOOL:
-			v->v.i = DatumGetBool(d);
-			break;
-		case SIFT_COLT_NUMERIC:
-			if (numeric_is_nan(DatumGetNumeric(d)))
-				v->isnull = v->overflow = true;
-			else
-				v->v.i = sift_col_numeric_key(def->scale, d, SIFT_COL_ROUND_NEAREST);
-			break;
-		case SIFT_COLT_FLOAT4:
-			v->v.f = DatumGetFloat4(d);
-			break;
-		case SIFT_COLT_FLOAT8:
-			v->v.f = DatumGetFloat8(d);
-			break;
-		default:
-			if (name)
-			{
-				v->v.s = NameStr(*DatumGetName(d));
-				v->len = strlen(v->v.s);
-			}
-			else
-			{
-				text	   *t = DatumGetTextPP(d);
-
-				v->v.s = VARDATA_ANY(t);
-				v->len = VARSIZE_ANY_EXHDR(t);
-			}
-	}
-}
-
 void
 sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row, MemoryContext mcxt)
 {
@@ -683,9 +459,10 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 		if (r->json[a])
 			continue;
 		if (isnull[a - 1])
-			row->val[def->id].isnull = true;
+			for (int k = 0; k < r->nleaves[a]; k++)
+				row->val[def->id + k].isnull = true;
 		else
-			datum_value(def, values[a - 1], r->name[a], &row->val[def->id]);
+			sift_col_datum_values(def, values[a - 1], r->name[a], &row->val[def->id]);
 	}
 	if (r->shred)
 	{

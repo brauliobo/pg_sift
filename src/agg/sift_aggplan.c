@@ -136,6 +136,7 @@ typedef struct AggCtx
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
+	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -2396,6 +2397,108 @@ compile_typeof(AggCtx *c, Node *n)
 	c->used = bms_add_member(c->used, leaf);
 	p->op = types;
 	p->desc = expr_text(c, n);
+	return p;
+}
+
+/*
+ * The wide leaf an expression is exactly the value of (docs/COL-LEAFTYPES-32.md 5): an attribute or index expression of numeric, money or
+ * interval that the index keeps as lanes. No expression reads their values (their SiftSrcLeaf.typid is InvalidOid), so only compile_wide finds them.
+ */
+static int
+wide_leaf(AggCtx *c, Node *e)
+{
+	int			att = attr_of_expr(c, e);
+
+	for (int i = 0; att > 0 && i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && OidIsValid(l->wtypid) && l->wtypid == exprType(e))
+			return i;
+	}
+	return -1;
+}
+
+static bool
+source_can_wide(AggCtx *c)
+{
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_wide(get_rel_relam(c->indexoid), true) : sift_colsrc_can_wide(get_rel_relam(c->heapoid), false);
+}
+
+/* the operator, leaf and operand of `leaf op operand` (or the commuted form), `leaf IN / NOT IN (operands)` and `leaf IS [NOT] NULL` on a wide leaf; false for any other clause */
+static bool
+wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
+{
+	Oid			lt,
+				rt;
+	Node	   *l,
+			   *r;
+
+	*operand = NULL;
+	*argtype = InvalidOid;
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
+	{
+		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SWT_NOTNULL : SWT_ISNULL;
+		return (*leaf = wide_leaf(c, strip_relabel((Node *) ((NullTest *) n)->arg))) >= 0;
+	}
+	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && (*op = builtin_cmp(((OpExpr *) n)->opno, &lt, &rt)) >= 0)
+	{
+		l = strip_relabel(linitial(((OpExpr *) n)->args));
+		r = strip_relabel(lsecond(((OpExpr *) n)->args));
+		if ((*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r))
+			*operand = r;
+		else if ((*leaf = wide_leaf(c, r)) >= 0 && pseudo_const(l))
+		{
+			*operand = l;
+			*op = commute(*op);
+		}
+		else
+			return false;
+		*argtype = exprType(*operand);
+		return *argtype == leaf_of(c, *leaf)->wtypid;
+	}
+	if (IsA(n, ScalarArrayOpExpr) && list_length(((ScalarArrayOpExpr *) n)->args) == 2)
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) n;
+		int			cmp = builtin_cmp(sa->opno, &lt, &rt);
+
+		if (!((sa->useOr && cmp == SCMP_EQ) || (!sa->useOr && cmp == SCMP_NE)))
+			return false;
+		l = strip_relabel(linitial(sa->args));
+		r = strip_relabel(lsecond(sa->args));
+		*op = sa->useOr ? SWT_IN : SWT_NOTIN;
+		*operand = r;
+		*argtype = rt;
+		return (*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r) && lt == leaf_of(c, *leaf)->wtypid && rt == lt;
+	}
+	return false;
+}
+
+/*
+ * A test of a wide leaf as a conjunct of the query: the source keeps the rows that pass (SAP_WIDE) and the executor never reads the values, which
+ * is why it is only a conjunct: an OR, a CASE, a FILTER or a key would have to read them.
+ */
+static SiftAggPred *
+compile_wide(AggCtx *c, Node *n)
+{
+	int			leaf,
+				op;
+	Node	   *operand;
+	Oid			argtype;
+	SiftAggPred *p;
+
+	n = strip_relabel(n);
+	if (c->nwide >= SIFT_AGG_MAX_WIDE || !wide_test(c, n, &leaf, &op, &operand, &argtype) || !source_can_wide(c))
+		return NULL;
+	c->nwide++;
+	p = new_pred(c, SAP_WIDE);
+	p->leaf = leaf;
+	p->level = 0;
+	p->op = op;
+	p->expr = operand;
+	p->argtype = argtype;
+	p->desc = expr_text(c, n);
+	p->sel = clause_selectivity(c->root, n, c->relid, JOIN_INNER, NULL);
 	return p;
 }
 
@@ -4855,6 +4958,8 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		Node	   *e = normalize_expr(c, q);
 		SiftAggPred *p = compile_typeof(c, e);
 
+		if (p == NULL)
+			p = compile_wide(c, e);
 		if (p == NULL)
 			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(q))

@@ -21,9 +21,9 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **Leaf column.** The index definition becomes a list of leaf columns (`SiftColDef`, ids 0..ncols-1, at most `SIFT_COL_MAX_COLS` = 128).
   An index attribute that is a plain type is one leaf; a `jsonb` attribute with declared paths is several leaves (section 6); an array of
   objects inside it is a **group** leaf plus one **child** leaf per object field.
-- **Storage class** of a leaf (`SiftColStore`): `INT` (int2, int4, int8, bool, date, timestamp, timestamptz: an int64; `numeric(p, s)` with p <= 18 and s >= 0: the number times 10^s, `SiftColDef.scale` = s, exact like the sums PostgreSQL computes while they fit int64; NaN is NULL with the overflow flag, an unconstrained or wider numeric is refused at CREATE INDEX; constants are scaled with `sift_col_numeric_key`, values come back with `sift_col_key_numeric`), `F4`, `F8`
+- **Storage class** of a leaf (`SiftColStore`): `INT` (int2, int4, int8, bool, date, timestamp, timestamptz: an int64; `numeric(p, s)` with p <= 18 and s >= 0: the number times 10^s, `SiftColDef.scale` = s, exact like the sums PostgreSQL computes while they fit int64; NaN is NULL with the overflow flag; a wider or unconstrained numeric, money and interval are several INT leaves or a STR head, section 2.11; constants are scaled with `sift_col_numeric_key`, values come back with `sift_col_key_numeric`), `F4`, `F8`
   (float4/float8) and `STR` (text, varchar, char(n), name: a per-segment dictionary code, or the string itself in a unit that has a long one, section 2.9; values up
-  to 1 GB; char(n) keeps its blank padding and name its bytes up to the first NUL, so equal values have equal bytes; a `bpchar` without a length does not, and its leaf is flagged lossy: no predicate or group is pushed on it). The other types are refused at CREATE INDEX in this version.
+  to 1 GB; char(n) keeps its blank padding and name its bytes up to the first NUL, so equal values have equal bytes; a `bpchar` without a length does not, and its leaf is flagged lossy: no predicate or group is pushed on it). The other types are refused at CREATE INDEX in this version (uuid, bytea, time, arrays, ranges).
 - **Key domain.** Every chunk holds integers: an `INT` value as it is, a float as its **order key** (the IEEE bits turned into a signed
   int64 that sorts like the float; the sign of zero is kept: -0 is the key just below +0, so a float comes back with its bits; every NaN is one NaN, sorted after +Inf as PostgreSQL does. PostgreSQL compares -0 and +0 equal, so a predicate constant of zero spans both keys (`sift_ctest_make`)), a `STR` value as a
   dictionary code. All filters are unsigned range tests on `value - base` (section 2.4), whatever the type.
@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 4; minor 3 is read side by side)
+## 2. Format (format major 1, col minor 4; minor 3 is read side by side; minor 5 for the wide leaves of section 2.11)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -46,7 +46,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4; 4 also for a segment with version vectors, the changelog below). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.1 library reads minors 3 and 4 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.1 library reads minors 3 and 4 in one index
   as written and rewrites them as minor 4 by merge (docs/COL-JSONB-31.md 5.2). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -363,6 +363,24 @@ their chunks: page directory, offsets, alignment), `dict_other`, `zones`, `preag
 unused end of each stream's last page), `headers` (SEGHEADER and LIVE pages), `free` (blocks on the free list) and `other` (the metapage, directory, free list pages,
 the write buffer, tombstones). `sift.col_leaves` counts the chunks of a leaf by encoding, `sift.col_index_info` the pre-aggregate bytes.
 
+### 2.11 Wide leaves: numeric of any precision, money, interval (3.2)
+
+A value of more than 64 bits is `SiftColDef.lanes` consecutive ordinary leaves of one attribute (`lane` 0 is the head, the leaf a planner addresses; the
+others are named `<attribute>#k`), so chunks, zones, the write buffer, merge and pre-aggregates are unchanged. `lanes` and `lane` use the two
+formerly reserved bytes of the serialized leaf, which the schema hash covers (the hash of a 3.1 leaf list does not change).
+
+| SQL type | leaves | stored |
+|---|---|---|
+| `money` | 1 INT (type `MONEY`) | the `int64` count of the smallest unit |
+| `numeric(p, s)`, 19 <= p <= 38 or s > 18, s <= 38 | 2 INT | the number times 10^s as an `int128`: lane 0 the high word, lane 1 the low word with its sign bit flipped (the signed order of the pair is the order of the value); NaN is NULL with the overflow flag in both |
+| `numeric` unconstrained, p > 38, s < 0 or s > 38 | STR head + 1 INT | the canonical image of the number (bytewise order = numeric order, `1.0` and `1.00` one image, NaN and the infinities included) and the display scale |
+| `interval` | 3 INT | lanes 0 and 1 the total `time + day * 86400e6 + month * 30 * 86400e6` as an `int128` (what PostgreSQL compares and groups on), lane 2 `month << 32 \| day` |
+
+A segment of a schema with such a leaf is written as **format minor 5** and only that one; every other segment keeps minor 3 or 4 by
+`sift.col_format_minor` (range unchanged), so an index of the old types stays readable by 3.1. Type tags 15 and 16 are `MONEY` and `INTERVAL`.
+SiftAgg tests a WHERE conjunct on these leaves in the source and reads nothing else of them; the pre-aggregates and cubes ignore them.
+The value code is the portable `sift_col_wide.[ch]`. Details, the special values and what stays on the normal plan: `docs/COL-LEAFTYPES-32.md`.
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -613,7 +631,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 ## 10. Limits
 
 BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
-integers, bool, date, timestamp(tz), numeric(p <= 18, s), float4/8, text-like. A group's elements: any number, one level. Not supported: wider `numeric`, `uuid`,
+integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, float4/8, text-like. A group's elements: any number, one level. Not supported: `uuid`, `bytea`, `time`,
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_zone_exact`).
 

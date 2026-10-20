@@ -16,11 +16,14 @@
 #include "sift.h"
 #include "sift_cpu.h"
 #include "sift_col_kern.h"
+#include "sift_col_wide.h"
 #include "sift_filter.h"
 
 #define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the element rollups (docs/COL-JSONB-31.md 5) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
+#define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves (lanes, money, interval; docs/COL-LEAFTYPES-32.md) is written as this minor, and only such a segment; the others keep the minor above */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_WIDE	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -58,6 +61,7 @@ typedef enum SiftColStore
 #define SIFT_COL_META_NEXT_VBLOCK(meta)		((meta)->sum_dl)
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
+#define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (sift_col_wide.h) is the same limit for a scaled 128-bit integer of two lanes */
 
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
@@ -76,7 +80,12 @@ typedef enum SiftColType
 	SIFT_COLT_INT8,
 	SIFT_COLT_FLOAT4,
 	SIFT_COLT_FLOAT8,
-	SIFT_COLT_NUMERIC,			/* exact decimal; a scaled integer (SiftColDef.scale) in the INT class */
+	/*
+	 * Exact decimal, in one of three forms told apart by the head leaf: a scaled integer of the INT class (SiftColDef.scale, precision <= 18),
+	 * a scaled 128-bit integer of two INT lanes (precision <= 38), or the canonical image of the number in a STR head with its display scale
+	 * as the INT lane after it (any other shape; docs/COL-LEAFTYPES-32.md).
+	 */
+	SIFT_COLT_NUMERIC,
 	SIFT_COLT_TEXT,				/* text, varchar, char(n), name */
 	SIFT_COLT_BYTEA,
 	SIFT_COLT_DATE,
@@ -84,6 +93,8 @@ typedef enum SiftColType
 	SIFT_COLT_TIMESTAMPTZ,
 	SIFT_COLT_UUID,
 	SIFT_COLT_JSONB,
+	SIFT_COLT_MONEY,			/* INT class: the int64 count of the smallest currency unit */
+	SIFT_COLT_INTERVAL,			/* three INT lanes: the canonical total as 128 bits (two lanes) and the month and day counts */
 	SIFT_COLT_END
 } SiftColType;
 
@@ -97,8 +108,30 @@ typedef struct SiftColDef
 	int16		attno;			/* 1-based attribute of the index the leaf comes from */
 	uint8		type;			/* SiftColType: the logical type of the values the leaf yields to the host */
 	const char *path;			/* "" for a plain attribute, else the shredder's path text (e.g. items[].category) */
-	uint8		scale;			/* numeric(p <= 18, s): digits after the decimal point; the INT value is the number times 10^scale. 0 otherwise */
+	uint8		scale;			/* numeric(p, s) of the INT class: digits after the decimal point; the integer value is the number times 10^scale. 0 otherwise */
+	/*
+	 * Wide leaves (docs/COL-LEAFTYPES-32.md): a value of more than 64 bits is `lanes` consecutive leaves of one attribute, each an ordinary leaf
+	 * with its own chunk and zone. The first (the head, lane 0) is the leaf a planner addresses: lanes is 2 or 3 and the next lanes - 1 leaves
+	 * have lane = 1, 2. A wide integer is lane 0 = the high word (signed) and lane 1 = the low word with the sign bit flipped, so comparing
+	 * (lane 0, lane 1) in turn is the order of the value; any lane after those two is payload that equality and order ignore. Every lane has the
+	 * NULL and overflow bits of the value. 0 and 0 for a leaf of one lane.
+	 */
+	uint8		lanes;
+	uint8		lane;
 } SiftColDef;
+
+static inline bool
+sift_col_def_is_wide(const SiftColDef *d)
+{
+	return d->lanes > 1;
+}
+
+/* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval */
+static inline bool
+sift_col_def_needs_wide(const SiftColDef *d)
+{
+	return d->lanes > 0 || d->lane > 0 || d->type == SIFT_COLT_MONEY || d->type == SIFT_COLT_INTERVAL;
+}
 
 /* The JSON type of an overflowing value (SiftColValue.tag, the chunk flag SIFT_COLC_TAGS, docs/COL.md 2.2); the numbers are on disk */
 #define SIFT_COLTAG_UNKNOWN		0
@@ -122,6 +155,7 @@ typedef struct SiftColValue
 		const char *s;
 	}			v;
 	uint32		len;
+	int64		lo;				/* a constant of a wide integer head (lanes == 2, INT): v.i is the key of lane 0, lo the key of lane 1 (sift_col_wide_hi / _lo) */
 	bool		isnull;
 	bool		overflow;		/* the value exists but the leaf cannot hold it (the shredder's OVERFLOW): stored as NULL and flagged; isnull is also set */
 	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it. Otherwise 0, or what the leaf's
@@ -435,6 +469,48 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 
 /* Top level predicates (leaf ids of scalar leaves); a predicate on a child leaf is an error (use the group forms) */
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
+
+/*
+ * Wide leaves (docs/COL-LEAFTYPES-32.md). A predicate on the head of a wide integer (two INT lanes) has constants whose two keys are v.i and .lo;
+ * sift_col_filter evaluates it as the comparison of the pair, from ordinary tests of the lanes. A constant beyond the 128-bit range is clamped to
+ * the largest or smallest 128-bit integer, which no value of a 38-digit column reaches. The head of a numeric image is an ordinary STR leaf whose
+ * constants are images; IS NULL and IS NOT NULL on any head are the plain ones. sift_col_filter_lane is the plain test of one lane, constants in
+ * v.i. sift_col_read_lanes reads the def->lanes lanes (vecs has room for SIFT_COL_MAX_LANES vectors) of the selected rows.
+ */
+extern bool sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
+extern void sift_col_read_lanes(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vecs);
+
+/*
+ * The conjunct of a query on a wide leaf (numeric of more than 18 digits, money, interval; docs/COL-LEAFTYPES-32.md 5) as what the engine tests:
+ * the operands are Datums of the leaf's type. op is 0..5 for = <> < <= > >= (the order of SiftCmpOp), SIFT_COLW_IN, SIFT_COLW_NOTIN, SIFT_COLW_ISNULL,
+ * SIFT_COLW_NOTNULL. The verdict of the constants is NONE (no row passes), ALL (every row), NONNULL (every non-NULL row), NONNULL_NONAN (the same but the NaNs of
+ * a numeric), NAN (the NaNs only) or PRED: the engine predicate `pred`, whose result for the NaNs (rows stored as overflow, which the engine
+ * keeps as candidates of every predicate) is replaced by nan_passes. sift_colw_apply narrows sel by it and says whether any row is left.
+ */
+#define SIFT_COLW_IN		6
+#define SIFT_COLW_NOTIN		7
+#define SIFT_COLW_ISNULL	8
+#define SIFT_COLW_NOTNULL	9
+
+typedef enum SiftColWVerdict
+{
+	SIFT_COLW_NONE,
+	SIFT_COLW_ALL,				/* every row, NULL ones too (x <> ALL of an empty list) */
+	SIFT_COLW_NONNULL,
+	SIFT_COLW_NONNULL_NONAN,
+	SIFT_COLW_NAN,
+	SIFT_COLW_PRED
+} SiftColWVerdict;
+
+typedef struct SiftColWTest
+{
+	SiftColWVerdict verdict;
+	SiftColPred pred;
+	bool		nan_passes;
+} SiftColWTest;
+
+extern void sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t);
+extern bool sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
 
 /*
  * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path (docs/COL-JSONB-31.md 5): a stored value has

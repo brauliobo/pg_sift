@@ -33,17 +33,24 @@ depth1(const SiftColSchema *s, const SiftColDef *d)
 	return d->kind == SIFT_COLK_SCALAR && (d->parent < 0 || s->cols[d->parent].parent < 0);
 }
 
+/* A leaf of a wide value (a lane, its head) or of money / interval is no dimension or measure of the pre-aggregates: its sums and keys are not the value's (docs/COL-LEAFTYPES-32.md) */
+static bool
+plain_type(const SiftColDef *d)
+{
+	return !sift_col_def_needs_wide(d);
+}
+
 bool
 sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 {
-	return depth1(s, d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
+	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
 /* a scalar INT or float leaf, not a date/time/bool, of the top level (parent < 0) or of the elements of the list parent */
 static bool
 meas_in(const SiftColSchema *s, const SiftColDef *m, int parent)
 {
-	if (m->parent != parent || !depth1(s, m))
+	if (m->parent != parent || !depth1(s, m) || !plain_type(m))
 		return false;
 	if (m->store == SIFT_COLS_F4 || m->store == SIFT_COLS_F8)
 		return true;

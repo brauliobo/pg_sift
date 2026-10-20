@@ -6,6 +6,7 @@
 #define SIFT_COL_AM_H
 
 #include "access/amapi.h"
+#include "datatype/timestamp.h"
 
 #include "sift_col_pg.h"
 #include "sift_col_seg.h"
@@ -47,9 +48,16 @@ extern void sift_col_validate_preagg(const char *value);
 extern void sift_col_validate_rollup(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
-/* The storage class of a type the engine holds natively (false: not natively); the scale of a numeric(p, s) leaf (false: not representable) */
+/* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */
 extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
 extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
+/*
+ * The leaves of one attribute of a sift_col index (sift_col_types.c): defs[0 .. result) with the type, storage class, scale, lanes, lane and path set;
+ * the caller sets id and attno (parent is -1). defs has room for SIFT_COL_MAX_LANES. ERROR for a type the engine does not hold.
+ */
+extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs);
+/* The values of one datum for the leaf def and the leaves after it (its lanes): v[0 .. max(def->lanes, 1)); strings are palloc'd or point into the datum */
+extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v);
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
@@ -70,9 +78,28 @@ typedef enum SiftColRound
 extern int64 sift_col_numeric_key(int scale, Datum value, SiftColRound round);
 extern Datum sift_col_key_numeric(int scale, int64 key);
 
+/*
+ * The other forms of numeric and the wide types (docs/COL-LEAFTYPES-32.md). The constant of a predicate on a numeric of two lanes is scaled and
+ * rounded like the narrow one and comes back as the two lane keys: 0 when it is inside the 128-bit range, -1 / 1 when it is below / above it
+ * (the keys are then the least / greatest integer, which no value of a 38-digit column reaches), 2 for a NaN or an infinity. A numeric image is
+ * the canonical bytes of the number (sift_col_wide.h) and its display scale; an interval is the lane keys of its total and its month and day counts.
+ */
+extern int	sift_col_numeric_wide_key(int scale, Datum value, SiftColRound round, int64 *hi, int64 *lo);
+extern Datum sift_col_wide_numeric(int scale, int64 hi, int64 lo);
+extern uint8 *sift_col_numeric_image(Datum value, uint32 *len, int32 *dscale);
+extern Datum sift_col_image_numeric(const uint8 *img, uint32 len, int32 dscale);
+extern void sift_col_interval_lanes(const Interval *iv, int64 *hi, int64 *lo, int64 *md);
+extern Interval *sift_col_lanes_interval(int64 hi, int64 lo, int64 md);
+
 /* The leaves of one index tuple (values/isnull as the AM callbacks receive them), allocated in mcxt */
 extern void sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row,
 							  MemoryContext mcxt);
+
+/* sift_col_widescan.c: the hooks of the column source for wide integers (two INT lanes): the pair test of a predicate, and the zone pruning of one */
+struct SiftColSegment;
+extern bool sift_colw_is_wide_int(const SiftColDef *d);
+extern bool sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
+extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, uint64 *keep);
 
 /* sift_col_am.c */
 extern void sift_col_init(void);

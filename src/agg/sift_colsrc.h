@@ -55,7 +55,9 @@ typedef struct SiftSrcLeaf
 	int			parent;			/* -1, or the id of the SCL_ARRAY / SCL_OBJECT leaf this leaf is a child of */
 	SiftSrcLeafKind kind;
 	SiftSrcVecType vtype;		/* of the values; of the counts (SCV_I32) for a group leaf */
-	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match */
+	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match. InvalidOid for a wide leaf: no
+								 * expression reads its values (wtypid) */
+	Oid			wtypid;			/* a wide leaf (docs/COL-LEAFTYPES-32.md): its SQL type, which only a conjunct of the query tests (SAP_WIDE); else InvalidOid */
 	int			scale;			/* numeric leaf (typid NUMERICOID, SCV_I64): digits after the decimal point, the value is the number times 10^scale */
 	bool		lossy;			/* the shredder may have left values out of the leaf (overflow): no predicate may use it */
 	bool		astext;			/* a text leaf of the `->>` text of any scalar: not the strings a jsonpath, `@>` or `?` compares */
@@ -178,6 +180,24 @@ typedef struct SiftSrcStrTest
 	const char *const *vals;
 	const uint32 *lens;
 } SiftSrcStrTest;
+
+/*
+ * A test of a conjunct on a wide leaf: SWT_* ops are the comparison operators of SiftCmpOp (0..5) and the four below. vals are the operands in
+ * the type of the leaf (a NULL operand is isnull[i]; an IN or NOT IN list has nvals of them, a comparison one, a NULL test none).
+ */
+#define SWT_IN			6
+#define SWT_NOTIN		7
+#define SWT_ISNULL		8
+#define SWT_NOTNULL		9
+
+typedef struct SiftSrcWideTest
+{
+	int			leaf;
+	int			op;
+	int			nvals;
+	const Datum *vals;
+	const bool *isnull;
+} SiftSrcWideTest;
 
 /* The zone of a scalar leaf in a unit: min and max of the integer-typed (SCV_I32/SCV_I64) values, dead rows included (docs/COL-SEARCH.md, top-N) */
 typedef struct SiftSrcZone
@@ -382,6 +402,14 @@ typedef struct SiftSrcProvider
 	void		(*prune_str) (void *impl, const SiftSrcStrTest *t, int nt);
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
 	/*
+	 * Optional, both or neither (sift_colsrc_can_wide): the tests of a conjunct on a wide leaf (SiftSrcLeaf.wtypid: numeric of more than 18
+	 * digits, money, interval; docs/COL-LEAFTYPES-32.md). set_wide, called before `begin`, takes the tests of the scan (operands as Datums, in
+	 * the type of the leaf), joins them to the zone pruning and returns how many it will apply: the executor does not evaluate them. filter_wide
+	 * ANDs `rows` with the rows that pass test i and says whether any is left; NULL never passes, a NaN as PostgreSQL orders it.
+	 */
+	int			(*set_wide) (void *impl, const SiftSrcWideTest *t, int nt);
+	bool		(*filter_wide) (void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
+	/*
 	 * Optional (NULL: sift_colsrc_read_into reads with `read` and copies). leaf_n: the values a read of the leaf yields (rows, or for a child
 	 * the elements of the whole unit; an upper bound for a unit restricted to a match set), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
 	 * is a wrapper of in a provider that has it.
@@ -513,6 +541,11 @@ sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
 }
+
+/* Can the source of this access method test the wide leaves (SiftSrcProvider.set_wide / filter_wide)? */
+extern bool sift_colsrc_can_wide(Oid relam, bool index);
+extern int sift_colsrc_set_wide(SiftSrcSource *src, const SiftSrcWideTest *t, int nt);
+extern bool sift_colsrc_filter_wide(SiftSrcSource *src, const SiftSrcUnit *unit, int i, uint64 *rows);
 
 /* Can the source of this access method be restricted to a match set (SiftSrcProvider.select)? */
 extern bool sift_colsrc_can_select(Oid relam, bool index);

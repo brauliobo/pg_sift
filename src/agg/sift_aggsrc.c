@@ -133,6 +133,26 @@ sift_colsrc_can_types(Oid relam, bool index)
 }
 
 bool
+sift_colsrc_can_wide(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->set_wide != NULL && prov->filter_wide != NULL;
+}
+
+int
+sift_colsrc_set_wide(SiftSrcSource *src, const SiftSrcWideTest *t, int nt)
+{
+	return src->prov->set_wide(src->impl, t, nt);
+}
+
+bool
+sift_colsrc_filter_wide(SiftSrcSource *src, const SiftSrcUnit *unit, int i, uint64 *rows)
+{
+	return src->prov->filter_wide(src->impl, unit, i, rows);
+}
+
+bool
 sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	return src->prov->filter_types(src->impl, unit, leaf, types, bits);

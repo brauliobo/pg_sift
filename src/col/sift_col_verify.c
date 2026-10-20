@@ -90,8 +90,48 @@ row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 	return rh;
 }
 
+/*
+ * The lanes of a wide value (docs/COL-LEAFTYPES-32.md) agree: one NULL and overflow flag for all, a numeric image is a canonical image and its
+ * display scale one PostgreSQL has, an interval's total is the one its time, day and month give
+ */
 static void
-collect_batch(Collect *cl, const SiftColSchema *sc, const SiftColBatch *b)
+check_wide(Relation index, const SiftColSchema *sc, const SiftColRow *row)
+{
+	for (int c = 0; c < sc->ncols; c++)
+	{
+		const SiftColDef *def = &sc->cols[c];
+		const SiftColValue *v = &row->val[c];
+
+		if (def->lanes < 2)
+			continue;
+		for (int k = 1; k < def->lanes; k++)
+			if (row->val[c + k].isnull != v->isnull || row->val[c + k].overflow != v->overflow)
+				corrupt(index, "The lanes of leaf %d disagree on whether a value is NULL.", c);
+		if (v->isnull)
+			continue;
+		if (def->store == SIFT_COLS_STR)
+		{
+			if (!sift_col_numimg_valid((const uint8 *) v->v.s, v->len))
+				corrupt(index, "Leaf %d holds a numeric image that is not canonical.", c);
+			if (row->val[c + 1].v.i < 0 || row->val[c + 1].v.i > SIFT_NIMG_DSCALE_MAX)
+				corrupt(index, "Leaf %d holds a display scale of %lld.", c, (long long) row->val[c + 1].v.i);
+		}
+		else if (def->type == SIFT_COLT_INTERVAL)
+		{
+			sift_w128	total = sift_col_wide_join(v->v.i, row->val[c + 1].v.i);
+			int64		time;
+			int32		day,
+						month;
+
+			sift_col_interval_raw(total, row->val[c + 2].v.i, &time, &day, &month);
+			if (sift_col_interval_total(time, day, month) != total)
+				corrupt(index, "Leaf %d holds an interval whose total is not that of its month, day and time.", c);
+		}
+	}
+}
+
+static void
+collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftColBatch *b)
 {
 	SiftColRow	row = {0};
 
@@ -103,6 +143,7 @@ collect_batch(Collect *cl, const SiftColSchema *sc, const SiftColBatch *b)
 			cl->rows = cl->rows ? repalloc(cl->rows, cl->cap * sizeof(RowHash)) : palloc(cl->cap * sizeof(RowHash));
 		}
 		sift_cbatch_row(b, r, &row);
+		check_wide(index, sc, &row);
 		cl->rows[cl->n++] = row_hash(sc, &row, b->keys[r]);
 	}
 }
@@ -191,7 +232,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			for (uint32 u = 0; u < seg->nsb; u++)
 			{
 				sift_cseg_decode_unit(seg, u, batch);
-				collect_batch(&cl, r->schema, batch);
+				collect_batch(index, &cl, r->schema, batch);
 			}
 			sift_cseg_close(seg);
 		}
@@ -203,7 +244,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			sift_cwbuf_verify(index, e, r->schema);
 			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n);
 			for (int j = 0; j < n; j++)
-				collect_batch(&cl, r->schema, bs[j]);
+				collect_batch(index, &cl, r->schema, bs[j]);
 		}
 	}
 	if (ndocs != snap->meta.ndocs)

@@ -1,0 +1,5 @@
+-- constants no value equals: finer than the scale, and beyond the 128 bits in either direction
+-- shape: trap
+-- expect: agg
+-- key: -
+SELECT 'finer_eq' AS op, count(*) AS n FROM t_wide WHERE n38 = 0.00000000015 UNION ALL SELECT 'finer_ne', count(*) FROM t_wide WHERE n38 <> 0.00000000015 UNION ALL SELECT 'finer_gt', count(*) FROM t_wide WHERE n38 > 0.00000000015 UNION ALL SELECT 'finer_lt', count(*) FROM t_wide WHERE n38 < 0.00000000015 UNION ALL SELECT 'finer_ge', count(*) FROM t_wide WHERE n38 >= 0.00000000015 UNION ALL SELECT 'finer_le', count(*) FROM t_wide WHERE n38 <= 0.00000000015 UNION ALL SELECT 'huge_lt', count(*) FROM t_wide WHERE n38 < 1e60 UNION ALL SELECT 'huge_gt', count(*) FROM t_wide WHERE n38 > 1e60 UNION ALL SELECT 'huge_eq', count(*) FROM t_wide WHERE n38 = 1e60 UNION ALL SELECT 'huge_ne', count(*) FROM t_wide WHERE n38 <> 1e60 UNION ALL SELECT 'neg_huge_gt', count(*) FROM t_wide WHERE n38 > -1e60 UNION ALL SELECT 'neg_huge_le', count(*) FROM t_wide WHERE n38 <= -1e60 ORDER BY 1
