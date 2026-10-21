@@ -81,6 +81,48 @@ $q$);
  f      | f        |           0
 (1 row)
 
+-- A column that only a condition read stays out of the UNION ALL's plan (an Append outputs the columns the joins and the groups need): the normal plan stays.
+SELECT * FROM check_query($q$
+ SELECT count(*) AS n, sum(f.amount) AS total
+ FROM facts f JOIN (SELECT id, name FROM left_names UNION ALL SELECT id, name FROM right_names) n ON n.id = f.entity_id
+ WHERE n.name <> 'n1'
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+SELECT * FROM check_query($q$
+ SELECT count(*) AS n, count(f.amount) AS amounts
+ FROM facts f LEFT JOIN (SELECT id, name FROM left_names UNION ALL SELECT id, name FROM right_names) n ON n.id = f.entity_id AND n.name = 'n1'
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+SELECT * FROM check_query($q$
+ SELECT n.id, count(*) AS n
+ FROM facts f LEFT JOIN (SELECT id, name FROM left_names UNION ALL SELECT id, name FROM right_names) n ON n.id = f.entity_id AND n.name = 'm1'
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+-- The condition's column is a group key: the Append outputs it, the scan runs.
+SELECT * FROM check_query($q$
+ SELECT n.name, count(*) AS n
+ FROM facts f JOIN (SELECT id, name FROM left_names UNION ALL SELECT id, name FROM right_names) n ON n.id = f.entity_id
+ WHERE n.name <> 'n1'
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
 DROP FUNCTION check_query(text);
 DROP TABLE facts, dates, left_names, right_names;
 DROP EXTENSION pg_sift;

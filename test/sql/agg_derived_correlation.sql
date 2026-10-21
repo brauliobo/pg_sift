@@ -29,6 +29,14 @@ CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, json
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
  WITH (paths = 'document.opinions[]{category text,subrating text,score float8,polarity text}');
+-- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
+CREATE TABLE ops_facts AS
+SELECT id, entity_id, kind,
+ CASE WHEN id % 4 = 0 THEN document || '{"tag":"svc"}' WHEN id % 4 = 1 THEN document || '{"tag":"clean"}' WHEN id % 13 = 2 THEN '[1]'::jsonb ELSE document END AS document, payload
+FROM facts;
+CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, entity_id, kind, document, (document ? 'mapped'), (document ->> 'tag'), jsonb_typeof(document))
+ WITH (paths = 'document.opinions[]{category text}');
+VACUUM (FREEZE, ANALYZE) ops_facts;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (FREEZE, ANALYZE) odd_facts;
 VACUUM (FREEZE, ANALYZE) plain_facts;
@@ -112,6 +120,24 @@ SELECT * FROM check_query($q$
  LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = 'a' AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) m ON true
  GROUP BY 1
 $q$);
+-- The operator ? is the call jsonb_exists, as the index column spells it.
+SELECT * FROM check_query($q$
+ SELECT m.mapped_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND NOT (f.document ? 'mapped') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+-- ->> of a key: a NULL for the documents that are arrays or lack the key.
+SELECT * FROM check_query($q$
+ SELECT m.mapped_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND m.category = (f.document ->> 'tag') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+-- The type of the whole document (one argument).
+SELECT * FROM check_query($q$
+ SELECT m.mapped_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND jsonb_typeof(f.document) = 'object' AND m.category = 'svc' LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
 DROP FUNCTION check_query(text);
-DROP TABLE facts, odd_facts, plain_facts, entities, mappings;
+DROP TABLE facts, odd_facts, plain_facts, ops_facts, entities, mappings;
 DROP EXTENSION pg_sift;

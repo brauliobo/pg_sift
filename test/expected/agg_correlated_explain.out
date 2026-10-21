@@ -1,0 +1,76 @@
+-- EXPLAIN shows the plan of a correlated lookup under its node; the statement-level Settings and Query Identifier are printed once, at the top.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET compute_query_id = on;
+CREATE TABLE facts (id int, kind text, payload text);
+INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END, repeat('payload', 50) FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, kind);
+CREATE TABLE lookup_values (kind text, region text, label text);
+INSERT INTO lookup_values VALUES ('a', 'east', 'ae'), ('b', 'east', 'be'), ('a', 'west', 'aw'), ('b', 'west', 'bw');
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE lookup_values;
+SET work_mem = '5MB';
+-- the lines of the EXPLAIN output that contain a word
+CREATE FUNCTION explain_lines(opts text, word text) RETURNS TABLE (shown bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  shown := 0;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ' || opts || ') SELECT count(*) FILTER (WHERE l.label = ''ae'') FROM facts f
+    LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind = f.kind AND m.region = ''east'' LIMIT 1) l ON true' LOOP
+    IF l LIKE '%' || word || '%' THEN shown := shown + 1; END IF;
+  END LOOP;
+  RETURN NEXT;
+END $$;
+-- the plan of the lookup is under the node
+SELECT * FROM explain_lines('FORMAT TEXT', 'Seq Scan on lookup_values');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('FORMAT JSON', '"Relation Name": "lookup_values"');
+ shown 
+-------
+     1
+(1 row)
+
+-- the settings and the identifier of the statement are printed once
+SELECT * FROM explain_lines('SETTINGS', 'Settings:');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('SETTINGS, FORMAT JSON', '"Settings"');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('SETTINGS, FORMAT YAML', 'Settings:');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('VERBOSE', 'Query Identifier');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('VERBOSE, FORMAT JSON', '"Query Identifier"');
+ shown 
+-------
+     1
+(1 row)
+
+SELECT * FROM explain_lines('VERBOSE, SETTINGS', 'Settings:');
+ shown 
+-------
+     1
+(1 row)
+
+DROP FUNCTION explain_lines(text, text);
+DROP TABLE facts, lookup_values;
+DROP EXTENSION pg_sift;

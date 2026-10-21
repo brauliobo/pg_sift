@@ -94,6 +94,14 @@ typedef int SiftTamOptions;
 #define SIFT_PLANNER_ARGS(q)	(q), query_string, cursorOptions, boundParams
 #endif
 
+/* subquery_planner names its plan and takes an alternative root (19); the name is the sub-select's alias, as PostgreSQL's own call of it makes it */
+#if PG_VERSION_NUM >= 190000
+#define sift_subquery_planner(glob, query, parent, name) \
+	subquery_planner((glob), (query), choose_plan_name((glob), (name), false), (parent), NULL, false, 0.0, NULL)
+#else
+#define sift_subquery_planner(glob, query, parent, name)	subquery_planner((glob), (query), (parent), false, 0.0, NULL)
+#endif
+
 /* GlobalVisTestIsRemovableXid may update its bounds (19) */
 #if PG_VERSION_NUM >= 190000
 #define sift_vis_removable_xid(state, xid)	GlobalVisTestIsRemovableXid((state), (xid), true)

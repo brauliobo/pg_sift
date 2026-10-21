@@ -167,6 +167,9 @@ typedef struct AggCtx
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
+	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
+	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
+	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -821,11 +824,64 @@ typedef struct LeafWalk
 
 static bool raising_walker(Node *n, void *context);
 
+typedef struct OuterRef
+{
+	PlannerInfo *root;			/* the query the examined RTE belongs to */
+	int			depth;			/* the query levels below that RTE the walk is in */
+	int			skip;			/* the levels above the RTE's query whose references do not count: 0 counts the query's own */
+} OuterRef;
+
+/*
+ * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
+ * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
+ */
+static bool
+outer_ref_walker(Node *n, OuterRef *o)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup > o->depth + o->skip;
+	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth + o->skip)
+		return true;
+	if (IsA(n, RangeTblEntry))
+	{
+		RangeTblEntry *e = (RangeTblEntry *) n;
+		PlannerInfo *owner = o->root;
+
+		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth + o->skip)
+			return false;
+		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
+			owner = owner->parent_root;
+		return owner == NULL || owner->parent_root != NULL;
+	}
+	if (IsA(n, Query))
+	{
+		bool		r;
+
+		o->depth++;
+		r = query_tree_walker((Query *) n, outer_ref_walker, o, QTW_EXAMINE_RTES_BEFORE);
+		o->depth--;
+		return r;
+	}
+	return expression_tree_walker(n, outer_ref_walker, o);
+}
+
+/* does the sub-select, a body of its own, read a column, aggregate or CTE of the queries around it? */
+static bool
+reads_outer_query(AggCtx *c, Query *q)
+{
+	OuterRef	oref = {c->root, 0, 0};
+
+	return query_tree_walker(q, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+}
+
 /*
  * An uncorrelated ANY sub-plan that PostgreSQL hashes (x IN (SELECT ..), x NOT IN (SELECT ..) and their NULL rules): its answer is a function of
  * the tested value alone and holds for the statement, so the lookup table of the leaf may ask the sub-plan once per distinct value. The sub-select
  * is run when the scan starts, also when no row would reach it in the normal plan, so it must not raise, be volatile, lock rows, hold a sub-plan of its own
- * or read a parameter of an outer query (a CTE scan, an initplan of the outer level).
+ * or read a column of an outer query (a CTE scan, an initplan of the outer level, a parameter of its plan): the groups are replayed for a rescan. The
+ * extParam of its plan says that only after PostgreSQL has finished the whole plan, so the sub-select itself is walked, the copies of it that were planned too.
  */
 static bool
 subplan_runs_at_start(AggCtx *c, SubPlan *sp)
@@ -836,8 +892,7 @@ subplan_runs_at_start(AggCtx *c, SubPlan *sp)
 	if (sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
 		return false;
 	q = ((PlannerInfo *) list_nth(glob->subroots, sp->plan_id - 1))->parse;
-	return bms_is_empty(((Plan *) list_nth(glob->subplans, sp->plan_id - 1))->extParam) && q->rowMarks == NIL &&
-		!contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c);
+	return q->rowMarks == NIL && !contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c) && !reads_outer_query(c, q);
 }
 
 static bool
@@ -5520,48 +5575,6 @@ unsupported_clause(AggCtx *c, Node *n)
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
 }
 
-typedef struct OuterRef
-{
-	PlannerInfo *root;			/* the query the examined RTE belongs to */
-	int			depth;			/* the query levels below that RTE the walk is in */
-} OuterRef;
-
-/*
- * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
- * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
- */
-static bool
-outer_ref_walker(Node *n, OuterRef *o)
-{
-	if (n == NULL)
-		return false;
-	if (IsA(n, Var))
-		return ((Var *) n)->varlevelsup > o->depth;
-	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth)
-		return true;
-	if (IsA(n, RangeTblEntry))
-	{
-		RangeTblEntry *e = (RangeTblEntry *) n;
-		PlannerInfo *owner = o->root;
-
-		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth)
-			return false;
-		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
-			owner = owner->parent_root;
-		return owner == NULL || owner->parent_root != NULL;
-	}
-	if (IsA(n, Query))
-	{
-		bool		r;
-
-		o->depth++;
-		r = query_tree_walker((Query *) n, outer_ref_walker, o, QTW_EXAMINE_RTES_BEFORE);
-		o->depth--;
-		return r;
-	}
-	return expression_tree_walker(n, outer_ref_walker, o);
-}
-
 /* a path whose node outputs the columns of its choice (the others need a projection above them) */
 static bool
 projects_columns(Path *p)
@@ -5582,12 +5595,14 @@ child_path(RelOptInfo *rel, bool correlated)
 	return best;
 }
 
-/* the calls on one column of the enclosing query that never raise: the child takes the call's value instead of the column */
+/* the calls (function or operator) on one column of the enclosing query that never raise: the child takes the call's value instead of the column */
 static bool
-derivable_call(FuncExpr *f)
+derivable_call(Node *n)
 {
-	return !f->funcretset && list_length(f->args) >= 2 &&
-		(f->funcid == F_JSONB_EXISTS || f->funcid == F_JSONB_OBJECT_FIELD_TEXT || f->funcid == F_JSONB_TYPEOF);
+	Oid			fid = func_of(n);
+
+	return list_length(func_args(n)) >= 1 && !(IsA(n, FuncExpr) && ((FuncExpr *) n)->funcretset) &&
+		(fid == F_JSONB_EXISTS || fid == F_JSONB_OBJECT_FIELD_TEXT || fid == F_JSONB_TYPEOF);
 }
 
 typedef struct DeriveCtx
@@ -5602,7 +5617,6 @@ typedef struct DeriveCtx
 static Node *
 derive_mutator(Node *n, DeriveCtx *x)
 {
-	FuncExpr   *f;
 	Node	   *a;
 
 	if (n == NULL)
@@ -5616,17 +5630,16 @@ derive_mutator(Node *n, DeriveCtx *x)
 		x->depth--;
 		return (Node *) q;
 	}
-	if (IsA(n, FuncExpr) && derivable_call(f = (FuncExpr *) n) && IsA(a = strip_relabel(linitial(f->args)), Var) &&
-		((Var *) a)->varlevelsup == x->depth + 1)
+	if (derivable_call(n) && IsA(a = strip_relabel(linitial(func_args(n))), Var) && ((Var *) a)->varlevelsup == x->depth + 1)
 	{
-		FuncExpr   *call = copyObject(f);
+		Node	   *call = copyObject(n);
 		Param	   *prm = makeNode(Param);
 		int			at = -1;
 
-		foreach_ptr(Node, other, call->args)
+		foreach_ptr(Node, other, func_args(call))
 			if (foreach_current_index(other) > 0 && !IsA(strip_relabel(other), Const))
 				return expression_tree_mutator(n, derive_mutator, x);
-		((Var *) strip_relabel(linitial(call->args)))->varlevelsup = 0;
+		((Var *) strip_relabel(linitial(func_args(call))))->varlevelsup = 0;
 		for (int i = 0; i < list_length(x->calls); i++)
 			if (equal(list_nth(x->calls, i), call))
 				at = i;
@@ -5663,9 +5676,9 @@ derived_column_walker(Node *n, DeriveCtx *x)
 		return r;
 	}
 	if (IsA(n, Var) && ((Var *) n)->varlevelsup == x->depth + 1)
-		foreach_ptr(FuncExpr, call, x->calls)
+		foreach_ptr(Node, call, x->calls)
 		{
-			Var		   *v = (Var *) strip_relabel(linitial(call->args));
+			Var		   *v = (Var *) strip_relabel(linitial(func_args(call)));
 
 			if (v->varno == ((Var *) n)->varno && v->varattno == ((Var *) n)->varattno)
 				return true;
@@ -5723,7 +5736,9 @@ planned_child(RelOptInfo *rel, JoinCtx *jc)
  * A sub-select or function that reads the query's other tables is planned in a query level of its own, with what it reads of them as
  * parameters: the scan gives it their values for each distinct input and runs the plan PostgreSQL makes of it (an Append of the arms of
  * a UNION ALL, an unnest of a joined table's array, a LIMIT lookup). A column it reads only through calls that never raise (key
- * presence) is replaced by the call's value, which the scan then needs, not the column.
+ * presence) is replaced by the call's value, which the scan then needs, not the column. The scan runs the child for the distinct values of the
+ * tuples that reach its join, which are those PostgreSQL's plan reaches it with only when no other join or unnest can come before it: a child that can
+ * raise (raising_walker) keeps the normal plan unless it is the only one.
  */
 static bool
 correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
@@ -5735,6 +5750,8 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	RelOptInfo *final;
 	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
+	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
+		return false;
 	if (rel->baserestrictinfo != NIL)
 		return e->rtekind == RTE_SUBQUERY && planned_child(rel, jc);
 	if (q == NULL)
@@ -5754,7 +5771,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		item->paramId = list_nth_int(x.params, i);
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
-	jc->subroot = subquery_planner(c->root->glob, q, c->root, false, 0.0, NULL);
+	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
 	foreach_node(PlannerParamItem, item, c->root->plan_params)
 	{
 		jc->j.params = lappend_int(jc->j.params, item->paramId);
@@ -5776,6 +5793,65 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	return true;
 }
 
+/* the rows the scan keeps of a correlated child, those of its plan for each distinct input, are bounded as the rows of a plan read once are */
+static bool
+child_rows_fit(AggCtx *c, JoinCtx *jc)
+{
+	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, c->rel->tuples, NULL, NULL), c->rel->tuples) <= sift_agg_lookup_max_rows;
+}
+
+/* the plan of a correlated child, made once for the query: the other table of a flipped join reads the same child */
+static bool
+planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
+{
+	JoinCtx    *hit;
+
+	foreach_ptr(JoinCtx, done, c->planned)
+		if (done->rti == jc->rti)
+		{
+			jc->cpath = done->cpath;
+			jc->subroot = done->subroot;
+			jc->j.params = done->j.params;
+			jc->args = done->args;
+			return done->cpath != NULL;
+		}
+	hit = palloc0(sizeof(JoinCtx));
+	hit->rti = jc->rti;
+	if (correlated_child(c, e, rel, jc) && child_rows_fit(c, jc))
+		*hit = *jc;
+	c->planned = lappend(c->planned, hit);
+	return hit->cpath != NULL;
+}
+
+/* a parameter that a query above carries into the tree (PostgreSQL has replaced a column of it in the expressions of the query itself) */
+static bool
+ancestor_param_walker(Node *n, PlannerInfo *root)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		for (PlannerInfo *up = root->parent_root; up != NULL; up = up->parent_root)
+			foreach_node(PlannerParamItem, item, up->plan_params)
+				if (item->paramId == ((Param *) n)->paramid)
+					return true;
+	return expression_tree_walker(n, ancestor_param_walker, root);
+}
+
+/* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
+static bool
+reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
+{
+	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
+	OuterRef	oref = {c->root, e->rtekind == RTE_SUBQUERY ? 0 : -1, skip};
+	Node	   *expr = e->rtekind == RTE_VALUES ? (Node *) e->values_lists : (Node *) e->functions;
+
+	if (e->rtekind == RTE_SUBQUERY)
+		return query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+	if (e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION)
+		return false;
+	return outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
+}
+
 /*
  * The right side of a join that is a plan: a sub-select PostgreSQL did not pull up (GROUP BY, LIMIT, DISTINCT, a set operation), a VALUES list
  * or a function that reads nothing of the query's other tables. Its rows are those of PostgreSQL's plan of it, read once when the scan starts
@@ -5785,8 +5861,6 @@ static bool
 add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **what)
 {
 	RelOptInfo *rel = c->root->simple_rel_array[rti];
-	OuterRef	oref = {c->root, 0};
-	bool		outer;
 
 	switch (e->rtekind)
 	{
@@ -5800,32 +5874,32 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 			/* A statement-level CTE has no changing outer-row inputs, wherever it is referenced. */
 			if (owner->parent_root != NULL || e->self_reference)
 				return false;
-			outer = false;
 			break;
 		}
 		case RTE_SUBQUERY:
 			*what = "subquery";
 			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
 				return false;
-			outer = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
 			break;
 		case RTE_VALUES:
 			*what = "values";
 			if (contain_volatile_functions((Node *) e->values_lists))
 				return false;
-			outer = outer_ref_walker((Node *) e->values_lists, &oref);
 			break;
 		default:
 			*what = "function";
 			if (contain_volatile_functions((Node *) e->functions))
 				return false;
-			outer = outer_ref_walker((Node *) e->functions, &oref);
 			break;
 	}
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL)
+	/*
+	 * A column of a query above the aggregate's own reaches the child as a parameter of that query's plan, which changes per row of it; the
+	 * scan replays its groups when rescanned (agg_rescan) and never sees it. Only the query's own tables are an input of the child.
+	 */
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
 		return false;
-	if (outer || !bms_is_empty(rel->lateral_relids))
-		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && correlated_child(c, e, rel, jc);
+	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
+		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
 	if ((jc->cpath = child_path(rel, false)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
 		return false;
 	jc->j.child = 0;
@@ -6393,7 +6467,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
 	Bitmapset  *allrtis = NULL;
-	List	   *live_rtis = NIL;
+	List	   *live_rtis = NIL,
+			   *joined = NIL;
 	int			nin = 0;
 
 	scan_from((Node *) parse->jointree, fs);
@@ -6421,8 +6496,10 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 				return false;
 			if (c->relid == 0)
 				c->relid = rti;
-			else if (part || !add_join(c, fs, rti))
+			else if (part || c->joinless)
 				return false;
+			else
+				joined = lappend_int(joined, rti);
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
@@ -6435,15 +6512,26 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			c->func = linitial_node(RangeTblFunction, e->functions);
 			c->func_kind = func_kind_of(c->func);
 		}
-		else if (input_rel == NULL || (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE) ||
-				 !add_join(c, fs, rti))
+		else if (input_rel == NULL || c->joinless ||
+				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
 			return false;
+		else
+			joined = lappend_int(joined, rti);
 	}
 	if (c->relid == 0)
 		return false;
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)
+			return false;
+	c->rel = root->simple_rel_array[c->relid];
+	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
+	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
+	if (c->rel == NULL || !find_source(c, &ii))
+		return false;
+	c->nsiblings = list_length(joined) + (c->func_rti != 0);
+	foreach_int(rti, joined)
+		if (!add_join(c, fs, rti))
 			return false;
 	if (input_rel != NULL)
 	{
@@ -6459,10 +6547,6 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		if (nin + list_length(c->joins) < list_length(fs->rtis))
 			return false;
 	}
-	c->rel = root->simple_rel_array[c->relid];
-	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
-	if (c->rel == NULL || !find_source(c, &ii))
-		return false;
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
 	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
 		return false;
@@ -6484,11 +6568,15 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 static bool
 agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
+	List	   *planned;
+
 	if (agg_base(c, root, input_rel, fs))
 		return true;
 	if (!fs->flippable)
 		return false;
+	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
+	c->planned = planned;
 	*fs = (FromScan) {.ok = true, .flip = true};
 	return agg_base(c, root, input_rel, fs);
 }
@@ -6685,7 +6773,8 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 
 /*
  * A column of a sub-select that only a condition pushed down into it read is a NULL in its plan (remove_unused_subquery_outputs), so the
- * spec, which reads the condition again, must not read it: the normal plan stays.
+ * spec, which reads the condition again, must not read it: the normal plan stays. The plan of a sub-select, VALUES list or function keeps
+ * the columns of the conditions it evaluates; an Append or MergeAppend outputs the relation's target only.
  */
 static bool
 child_cols_kept(AggCtx *c, JoinCtx *jc)
@@ -6694,8 +6783,9 @@ child_cols_kept(AggCtx *c, JoinCtx *jc)
 	Bitmapset  *used = NULL;
 
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
-	foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
-		pull_varattnos((Node *) ri->clause, rel->relid, &used);
+	if (projects_columns(jc->cpath))
+		foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
+			pull_varattnos((Node *) ri->clause, rel->relid, &used);
 	foreach_ptr(Var, v, jc->cvars)
 		if (!bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, used))
 			return false;
@@ -7437,6 +7527,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
+	c->joinless = true;
 	if (!agg_base(c, root, input_rel, &fs) || c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;

@@ -12023,15 +12023,19 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		{
 			EState     *estate = node->ss.ps.state;
 			QueryDesc   query = {0};
+			PlannedStmt stmt = *estate->es_plannedstmt;
 			ExplainState child;
 			char       *label = psprintf("Correlated Lookup %d", i + 1);
 
 			ExplainOpenGroup("Correlated Lookup", label, true, es);
 			ExplainPropertyText("Name", s->join[i].desc, es);
-			query.plannedstmt = estate->es_plannedstmt;
+			/* the statement's identifier and settings are printed once, at the top */
+			stmt.queryId = UINT64CONST(0);
+			query.plannedstmt = &stmt;
 			query.planstate = list_nth(estate->es_subplanstates, s->join[i].subplan - 1);
 			query.estate = estate;
 			child = *es;
+			child.settings = false;
 			child.printed_subplans = NULL;
 			ExplainPrintPlan(&child, &query);
 			es->indent = child.indent;
