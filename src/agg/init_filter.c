@@ -3,8 +3,13 @@
  */
 #include "postgres.h"
 
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/datum.h"
+#include "utils/lsyscache.h"
 
+#include "agg/part.h"
 #include "agg/wide.h"
 #include "core/cmp.h"
 #include "agg/agg_int.h"
@@ -165,6 +170,42 @@ zone_tests(AggExec *ex, SiftAggPred *p, List *tests)
 	else if (sift_aggspec_zone_cmp(p, ex->lay, ex->nbase) && cmp_zone(ex, p, &z))
 		tests = and_zone(tests, &z);
 	return tests;
+}
+
+/* the operands of a condition that need no row (a parameter, a stable function) as the constants they have for this statement */
+static Node *
+part_fold(Node *n, AggExec *ex)
+{
+	ExprState  *e;
+	Datum		d;
+	bool		isnull;
+	int16		len;
+	bool		byval;
+
+	if (n == NULL || IsA(n, Const) || IsA(n, Var))
+		return n;
+	if (contain_var_clause(n))
+		return expression_tree_mutator(n, part_fold, ex);
+	e = ExecInitExpr((Expr *) n, EXPR_PARENT(ex));
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+	get_typlenbyval(exprType(n), &len, &byval);
+	return (Node *) makeConst(exprType(n), exprTypmod(n), exprCollation(n), len, isnull ? (Datum) 0 : datumCopy(d, byval, len), isnull, byval);
+}
+
+/* the partitions a parameter or a stable function prunes when the plan starts are not read (the leader decides, the workers take its offsets) */
+void
+part_prune_init(AggExec *ex)
+{
+	List	   *conds = NIL;
+	MemoryContext old;
+
+	if (ex->spec->nparts == 0 || ex->spec->partprune == NIL || IsParallelWorker())
+		return;
+	old = MemoryContextSwitchTo(ex->cxt);
+	foreach_ptr(Node, cl, ex->spec->partprune)
+		conds = lappend(conds, part_fold(cl, ex));
+	ex->parts_pruned = sift_aggpart_prune(ex->src, ex->spec->heapoid, conds);
+	MemoryContextSwitchTo(old);
 }
 
 /* the entries of the leaves the conjuncts compare (preagg_zones), then those of the ORs: all of them prune the scan */

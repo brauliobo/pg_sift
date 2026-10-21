@@ -18,6 +18,13 @@
 extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt);
 
 /*
+ * The partitions the conditions refute (bounds against conditions on the partitioned table's columns, varno 1, operands already constants) are
+ * not read: they take no superblocks. Called once, before the source is counted. Returns how many it dropped. A worker does not call it: it sets
+ * the leader's offsets, which hold nothing for those partitions.
+ */
+extern int sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds);
+
+/*
  * The first superblock of each partition and the total (n + 1 entries), as the first sift_colsrc_nsb of the source counted them. The processes of a
  * parallel scan open the partitions at different times and a heap may have grown: they must number the superblocks as the leader did, so the leader
  * shares its offsets and a worker sets them before it scans.

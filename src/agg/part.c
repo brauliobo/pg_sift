@@ -13,7 +13,11 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/acl.h"
+#include "utils/lsyscache.h"
+#include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 
@@ -37,6 +41,7 @@ typedef struct PartSource
 	SiftSrcSource **src;
 	uint32	   *off;			/* n + 1: the first superblock of each partition, the total last */
 	bool		have_off;
+	bool	   *skip;			/* sift_aggpart_prune: the partitions the scan does not read (no superblocks), NULL: all are read */
 	int			cur;			/* the partition of the unit the source is at */
 	int			next;			/* the first partition begin has not started */
 	uint32		lo,
@@ -152,7 +157,8 @@ count_sbs(PartSource *ps)
 	for (int i = 0; i < ps->n; i++)
 	{
 		ps->off[i] = (uint32) total;
-		total += sift_colsrc_nsb(ps->src[i]);
+		if (ps->skip == NULL || !ps->skip[i])
+			total += sift_colsrc_nsb(ps->src[i]);
 	}
 	if (total > PG_UINT32_MAX)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number")));
@@ -185,6 +191,61 @@ sift_aggpart_set_offsets(SiftSrcSource *src, const uint32 *off)
 
 	memcpy(ps->off, off, (ps->n + 1) * sizeof(uint32));
 	ps->have_off = true;
+}
+
+typedef struct QualVars
+{
+	Oid			part;
+	Oid			parent;
+	bool		ok;
+} QualVars;
+
+/* a column of the partition's bound as the column of the partitioned table (the attribute numbers differ after a dropped column) */
+static Node *
+qual_vars_mutator(Node *n, QualVars *qv)
+{
+	Var		   *v;
+	AttrNumber	att;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, Var))
+		return expression_tree_mutator(n, qual_vars_mutator, qv);
+	v = copyObject((Var *) n);
+	att = get_attnum(qv->parent, get_attname(qv->part, v->varattno, false));
+	if (att == InvalidAttrNumber)
+		qv->ok = false;
+	v->varattno = att;
+	return (Node *) v;
+}
+
+/*
+ * The partitions whose bounds the conditions refute (they hold the partitioned table's columns, with varno 1 and constants for the operands the
+ * query evaluated when it started) are not read: they have no superblocks. Before the first sift_colsrc_nsb. PostgreSQL's own test of a
+ * partition against the conditions, so a partition it cannot refute (a default partition, a hash remainder) stays. Returns how many are dropped.
+ */
+int
+sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds)
+{
+	PartSource *ps = src->impl;
+	int			dropped = 0;
+
+	Assert(!ps->have_off);
+	if (conds == NIL)
+		return 0;
+	ps->skip = palloc0(ps->n * sizeof(bool));
+	for (int i = 0; i < ps->n; i++)
+	{
+		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
+		List	   *bound = (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
+
+		if (qv.ok && bound != NIL && predicate_refuted_by(bound, conds, false))
+		{
+			ps->skip[i] = true;
+			dropped++;
+		}
+	}
+	return dropped;
 }
 
 /* Starts the next partition that has superblocks in [lo, hi); false when there is none */
