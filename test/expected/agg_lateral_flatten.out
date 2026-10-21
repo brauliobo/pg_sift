@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources VALUES (1, true), (2, true), (3, false);
 CREATE TABLE labels (src_id int, source_key text, label text, sublabel text);
-INSERT INTO labels VALUES (1, 'aspa_score', 'asp_b', NULL), (1, 'aspm_score', 'asp_f', 'sea'), (2, 'aspa_score', 'tidy', NULL), (2, 'aspa_score', 'tidy2', NULL);
+INSERT INTO labels VALUES (1, 'aspa_score', 'asp_b', NULL), (1, 'aspm_score', 'asp_f', 'sub_a'), (2, 'aspa_score', 'tidy', NULL), (2, 'aspa_score', 'tidy2', NULL);
 CREATE TABLE entries (id int, src_id int, day date, scores jsonb);
 INSERT INTO entries
 SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
