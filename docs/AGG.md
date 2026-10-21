@@ -29,7 +29,7 @@ The value of a `jsonb_each` member (`r.value`) is given to the child as the json
 the member holds none), so the child may cast it (`CAST(r.value AS integer)`): the cast runs only for the members of the rows that reach the child, and
 raises PostgreSQL's own error (`integer out of range`). A document the index cannot hold as numbers (a string or object member) keeps the normal plan.
 A path declared `float8` holds floats, so a child reads the float: a number that is not exactly a float8 (`9007199254740993`, `1.50` as `numeric` or `text`) reads as the float.
-A lateral sub-select that PostgreSQL does not pull up because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`) is pulled up
+A lateral sub-select that PostgreSQL does not pull up because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`; below a `RIGHT` or `FULL` join the normal plan stays) is pulled up
 inside its own query level by the planner hook (`agg/flat.c`), which plans the query both ways and keeps the flat plan when it runs in the scan and costs
 less; a sub-select with a join of its own is attached through its leftmost table, as `(a JOIN jsonb_each(a.doc) r) LEFT JOIN m ON ..`.
 `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` with a constant key is the member `k` of each row (an object has one member per key; a row without it stays, with NULL columns): the scan reads it at the
@@ -60,9 +60,6 @@ A combo of one input (a join key, a grouping expression of one leaf) finds the e
 same snapshot: the first node loads them into a context of the statement and the others use that table (`sift.agg_share_lookups`, `Shared Lookup Tables`). Arms that read other columns
 or conditions of the table, a table that is a plan, a preserved side and a parallel worker load their own; nothing is kept between statements. Test `agg_share_lookups`, isolation spec
 `agg_share_lookups`, fixture `j_share_arms`, row J29.
-
-Measured on a 500,000-row fact table and a 6,000-row entity table (median of 7, the scan alone): a selective inner join that returns a column 6.4 to 3.0 ms, a country-wide one 5.1 to 3.3 ms,
-a non-selective one 10.2 to 8.9 ms (the combo entry by index), an inner join to `sources` on a 99,000-row sample 7.8 to 3.6 ms.
 
 ## Outer joins that keep the other table
 
