@@ -21,9 +21,9 @@ CREATE TABLE segs_ser AS SELECT gen, ndocs, sum_dl, nterms, bytes FROM sift.segm
 DROP INDEX pb_ser;
 
 SET max_parallel_maintenance_workers = 2;
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_par ON pb USING sift (body);
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
 SELECT count(*) AS same_segments FROM sift.segments('pb_par') p JOIN segs_ser s USING (gen, ndocs, sum_dl, nterms);
 SELECT count(*) AS serial_segments FROM segs_ser;
 SELECT sift.verify('pb_par', true);
@@ -40,23 +40,25 @@ INSERT INTO pb (body) SELECT 'late word' || i FROM generate_series(1, 500) i;
 SELECT count(*) FROM pb WHERE body @@> 'late';
 SELECT sift.merge('pb_par') >= 0 AS merged;
 SELECT sift.verify('pb_par', true);
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 REINDEX INDEX pb_par;
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
 SELECT sift.verify('pb_par', true);
 
 -- MVCC snapshot variant and an expression index
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX CONCURRENTLY pb_cic ON pb USING sift (body);
+SELECT current_setting('sift.test_par_workers')::int AS cic_workers;
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_expr ON pb USING sift ((body || ' tail'));
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS expr_workers;
 SELECT sift.verify('pb_cic', true);
 SELECT sift.verify('pb_expr', true);
 
 -- build_segments asks for an exact layout, so it builds serially
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_one ON pb USING sift (body) WITH (build_segments = 3);
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
 SELECT count(*) AS three_segments FROM sift.segments('pb_one');
 
 -- a heap bigger than a quarter of shared_buffers is scanned from where a scan stopped last, but
