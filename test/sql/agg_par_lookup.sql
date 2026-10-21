@@ -108,6 +108,11 @@ END $$;
 
 SELECT n, mode, par_same, off_same FROM p_compare();
 
+-- the leader does not scan: the tables of the workers are the whole answer
+SET parallel_leader_participation = off;
+SELECT n, mode, par_same, off_same FROM p_compare();
+RESET parallel_leader_participation;
+
 -- the workers read the rows the leader shared
 SELECT p_shared(q) AS shared FROM p_q WHERE n IN (1, 3, 7, 9, 10) ORDER BY n;
 

@@ -101,7 +101,7 @@ RESET sift.agg_lookup_max_rows;
 SET sift.enable_agg = off;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM stores ORDER BY id LIMIT 5) s ON e.store_id = s.id GROUP BY s.kind$$) AS pushdown_off;
 RESET sift.enable_agg;
--- parallel workers: a child plan is the leader's, the node asks for none
+-- parallel workers: a child plan is the leader's, who shares its rows with the workers
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT * FROM same($$SELECT m.label, count(*) AS n, sum(amount) AS s FROM ev e JOIN (VALUES ('north', 'N'), ('east', 'E')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
 RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;

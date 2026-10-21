@@ -45,15 +45,14 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	l->nslot = m->nslot;
 	l->filtered = m->filtered;
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
-	for (size_t i = 0; i < nk; i++)
-		if (m->ktext[i % m->nkey] && m->kptr[i] != NULL)
-			data += MAXALIGN(m->klen[i]);
-	for (size_t i = 0; i < nc; i++)
+	for (uint32 r = 0; r < m->nrow; r++)
 	{
-		int			c = i % m->ncol;
-
-		if (!byval[c] && !m->cnull[i])
-			data += MAXALIGN(datumGetSize(m->col[i], false, len[c]));
+		for (int k = 0; k < m->nkey; k++)
+			if (m->ktext[k] && m->kptr[(size_t) r * m->nkey + k] != NULL)
+				data += MAXALIGN(m->klen[(size_t) r * m->nkey + k]);
+		for (int c = 0; c < m->ncol; c++)
+			if (!byval[c] && !m->cnull[(size_t) r * m->ncol + c])
+				data += MAXALIGN(datumGetSize(m->col[(size_t) r * m->ncol + c], false, len[c]));
 	}
 	l->klen = off;
 	off += MAXALIGN(nk * sizeof(uint32));
@@ -95,30 +94,35 @@ map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char 
 	memcpy(dst + l->hv, m->hv, (size_t) m->nrow * sizeof(uint32));
 	memcpy(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
 	memcpy(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
-	for (size_t i = 0; i < nk; i++)
+	for (uint32 r = 0; r < m->nrow; r++)
 	{
-		if (!m->ktext[i % m->nkey] || m->kptr[i] == NULL)
+		for (int k = 0; k < m->nkey; k++)
 		{
-			koff[i] = MAP_NOOFF;
-			continue;
+			size_t		i = (size_t) r * m->nkey + k;
+
+			if (!m->ktext[k] || m->kptr[i] == NULL)
+			{
+				koff[i] = MAP_NOOFF;
+				continue;
+			}
+			koff[i] = at - l->data;
+			memcpy(dst + at, m->kptr[i], m->klen[i]);
+			at += MAXALIGN(m->klen[i]);
 		}
-		koff[i] = at - l->data;
-		memcpy(dst + at, m->kptr[i], m->klen[i]);
-		at += MAXALIGN(m->klen[i]);
-	}
-	for (size_t i = 0; i < nc; i++)
-	{
-		int			c = i % m->ncol;
-
-		if (byval[c] || m->cnull[i])
-			cval[i] = (uint64) m->col[i];
-		else
+		for (int c = 0; c < m->ncol; c++)
 		{
-			Size		n = datumGetSize(m->col[i], false, len[c]);
+			size_t		i = (size_t) r * m->ncol + c;
 
-			cval[i] = at - l->data;
-			memcpy(dst + at, DatumGetPointer(m->col[i]), n);
-			at += MAXALIGN(n);
+			if (byval[c] || m->cnull[i])
+				cval[i] = (uint64) m->col[i];
+			else
+			{
+				Size		n = datumGetSize(m->col[i], false, len[c]);
+
+				cval[i] = at - l->data;
+				memcpy(dst + at, DatumGetPointer(m->col[i]), n);
+				at += MAXALIGN(n);
+			}
 		}
 	}
 	Assert(at == l->size);
@@ -156,7 +160,12 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	for (size_t i = 0; i < nk; i++)
 		m->kptr[i] = koff[i] == MAP_NOOFF ? NULL : src + l->data + koff[i];
 	m->col = MemoryContextAlloc(cxt, Max(nc, 1) * sizeof(Datum));
-	for (size_t i = 0; i < nc; i++)
-		m->col[i] = byval[i % l->ncol] || m->cnull[i] ? (Datum) cval[i] : PointerGetDatum(src + l->data + cval[i]);
+	for (uint32 r = 0; r < l->nrow; r++)
+		for (int c = 0; c < l->ncol; c++)
+		{
+			size_t		i = (size_t) r * l->ncol + c;
+
+			m->col[i] = byval[c] || m->cnull[i] ? (Datum) cval[i] : PointerGetDatum(src + l->data + cval[i]);
+		}
 	return m;
 }

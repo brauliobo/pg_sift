@@ -94,6 +94,7 @@
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
+#define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows the source reads again from the heap when a leaf the scan rechecks is flagged (the index does not count them) */
@@ -806,6 +807,8 @@ typedef struct CostAcc
 	double		units;
 	double		open_cost;
 	double		scan_cost;
+	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
+	double		load_rows;
 	double		gen_cost;
 	double		child_cost;
 	double		zone_kept;
@@ -887,14 +890,51 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
+/* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
+static double
+join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
+{
+	RelOptInfo *jrel = root->simple_rel_array[jc->rti];
+	double		tuples = Max(jrel->tuples, 1.0);
+
+	if (jc->cpath != NULL)
+	{
+		*row_cost = AGG_JOIN_ROW;
+		return Max(jc->cpath->rows, 1.0);
+	}
+	if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
+	{
+		*row_cost = AGG_IDX_ROW;
+		return Min(Max(jrel->rows, 1.0), tuples);
+	}
+	*row_cost = AGG_JOIN_ROW;
+	return tuples;
+}
+
+/* the rows of the lookup tables a parallel scan has the leader write to the shared memory (agg/lookshare.c) */
+double
+agg_share_rows(AggCtx *c)
+{
+	double		rows = 0;
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		double		row_cost;
+
+		if (jc->j.params == NIL)
+			rows += join_load_rows(jc, c->root, &row_cost);
+	}
+	return rows;
+}
+
 /* The lookup joins: the children's plans and the lookup tables' reads */
 static void
 cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
-		RelOptInfo *jrel;
-		double		tuples;
+		double		rows,
+					row_cost;
 
 		/* Correlated children run once per distinct input, with their native path's cost. */
 		if (jc->j.params != NIL)
@@ -904,21 +944,15 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			k->child_cost += combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 			continue;
 		}
-		jrel = c->root->simple_rel_array[jc->rti];
-		tuples = Max(jrel->tuples, 1.0);
-		/* a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
+		rows = join_load_rows(jc, c->root, &row_cost);
+		k->load_rows += rows;
+		k->load_cost += rows * row_cost;
 		if (jc->cpath != NULL)
-		{
-			k->scan_cost += Max(jc->cpath->rows, 1.0) * AGG_JOIN_ROW;
 			k->child_cost += jc->cpath->total_cost;
-		}
-		else if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
-			k->scan_cost += Min(Max(jrel->rows, 1.0), tuples) * AGG_IDX_ROW;
-		else
-			k->scan_cost += tuples * AGG_JOIN_ROW;
 		if (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI)
 			k->scan_cost += k->sel_rows * AGG_SEMI_ROW;
 	}
+	k->scan_cost += k->load_cost;
 }
 
 /* The aggregates, combos, keys and predicates of every tuple, less what the plain path saves, plus the bytes read */
@@ -942,13 +976,17 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
 }
 
-/* Each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
+/*
+ * Each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them. The lookup tables are
+ * read once, by the leader, who writes them to the shared memory (agg/lookshare.c): the divisor is not theirs.
+ */
 static void
 cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
+	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
 
-	k->scan_cost = k->scan_cost / parallel_divisor(s->nworkers) +
+	k->scan_cost = (k->scan_cost - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
