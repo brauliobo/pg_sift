@@ -7,6 +7,7 @@
 
 #include <math.h>
 
+#include "core/cmp.h"
 #include "col/enc.h"
 #include "col/enc_test_int.h"
 
@@ -107,12 +108,6 @@ gen_case(TCtx *t)
 	return c;
 }
 
-static int
-cmp_u32(const void *a, const void *b)
-{
-	return (int) *(const uint32 *) a - (int) *(const uint32 *) b;
-}
-
 /* Ascending TIDs of one superblock: 1..256 pages, each dense (offsets 1..cnt) or sparse (gaps) */
 SiftKey *
 gen_keys(TCtx *t, uint32 sb, uint32 nrows, uint32 *nout)
@@ -133,7 +128,7 @@ gen_keys(TCtx *t, uint32 sb, uint32 nrows, uint32 *nout)
 		pages[i] = pages[j];
 		pages[j] = x;
 	}
-	qsort(pages, npages, sizeof(uint32), cmp_u32);
+	qsort(pages, npages, sizeof(uint32), sift_cmp_u32);
 	for (uint32 p = 0; p < npages; p++)
 	{
 		uint32		cnt = t->full ? MaxHeapTuplesPerPage : Min(MaxHeapTuplesPerPage, 1 + RAND(t, per * 2)),

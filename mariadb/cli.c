@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "engine.h"
+#include "core/cmp.h"
 
 static char err[1024];
 
@@ -126,15 +127,6 @@ print_hits(const SxHit *h, int n)
 		printf("%s%lld:%.9g", i ? "," : "", (long long) h[i].pk, h[i].score);
 }
 
-static int
-cmp_d(const void *a, const void *b)
-{
-	double		x = *(const double *) a,
-				y = *(const double *) b;
-
-	return (x > y) - (x < y);
-}
-
 static void
 run(const char *name, const char *file, int k, bool timing)
 {
@@ -193,8 +185,8 @@ run(const char *name, const char *file, int k, bool timing)
 			st += tt[i];
 			sc += tc[i];
 		}
-		qsort(tt, nq, sizeof(double), cmp_d);
-		qsort(tc, nq, sizeof(double), cmp_d);
+		qsort(tt, nq, sizeof(double), sift_cmp_f64);
+		qsort(tc, nq, sizeof(double), sift_cmp_f64);
 		printf("queries %d  topk median %.1f us mean %.1f us p95 %.1f us  count median %.1f us mean %.1f us\n",
 			   nq, tt[nq / 2], st / nq, tt[nq * 95 / 100], tc[nq / 2], sc / nq);
 	}
