@@ -22,7 +22,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_exact_owners(self):
         for path, expected in {
-            'src/bm25/sift_query.c': list(SELECT.ALL),
+            'src/bm25/query.c': list(SELECT.ALL),
             'src/col/sift_colz.c': ['smoke', 'agg', 'storage'],
             'src/agg/sift_agg.c': ['smoke', 'agg'],
             'src/agg/sift_aggplan.c': ['smoke', 'agg'],
