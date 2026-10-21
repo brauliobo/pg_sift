@@ -347,6 +347,7 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_COUNT_DISTINCT:
 		case SAA_O_COUNT_STAR:
 		case SAA_O_COUNT_ROWS:
+		case SAA_O_COUNT_KEY:
 		case SAA_M_COUNT:
 		case SAA_M_DISTINCT:
 		case SAA_X_COUNT:
