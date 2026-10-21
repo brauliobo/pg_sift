@@ -645,6 +645,49 @@ nulltest_mutator(Node *n, AggCtx *c)
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
 
+/* the RTE_GROUP of the grouping sets of the query, 0 when there are none */
+static Index
+group_rti(AggCtx *c)
+{
+#if PG_VERSION_NUM >= 180000
+	return c->root->group_rtindex;
+#else
+	return 0;
+#endif
+}
+
+/* does the expression read columns, and only those of the preserved side of the outer joins whose nullable side is the scanned table? */
+static bool
+reads_preserved_only(AggCtx *c, Node *e)
+{
+	Relids		rels = pull_varnos(c->root, e);
+
+	if (bms_is_empty(rels))
+		return false;
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (sift_aggjoin_preserves(jc->kind))
+			rels = bms_del_member(rels, jc->rti);
+	return bms_is_empty(rels);
+}
+
+/*
+ * The outer joins that null a placeholder. The group expression of grouping sets is kept as it was below the join, without its own
+ * nulling: the joins of the scan null it unless it reads the preserved side only.
+ */
+static Relids
+placeholder_nulling(AggCtx *c, PlaceHolderVar *ph)
+{
+	Relids		own = ph->phnullingrels;
+
+	if (group_rti(c) == 0)
+		return own;
+	/* the grouping step marks the expression as nulled too */
+	own = bms_del_member(bms_copy(own), group_rti(c));
+	if (bms_is_empty(own) && !reads_preserved_only(c, (Node *) ph->phexpr))
+		return c->nulling;
+	return own;
+}
+
 /* A placeholder computed inside the nullable input becomes NULL when that whole input is absent. */
 static Node *
 nullable_expr_mutator(Node *n, AggCtx *c)
@@ -654,8 +697,9 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 	if (IsA(n, PlaceHolderVar))
 	{
 		PlaceHolderVar *ph = (PlaceHolderVar *) n;
+		Relids		nulling = placeholder_nulling(c, ph);
 
-		if (ph->phlevelsup == 0 && !bms_is_empty(ph->phnullingrels) && bms_is_subset(ph->phnullingrels, c->nulling))
+		if (ph->phlevelsup == 0 && !bms_is_empty(nulling) && bms_is_subset(nulling, c->nulling))
 		{
 			CaseExpr   *out = makeNode(CaseExpr);
 			CaseWhen   *when = makeNode(CaseWhen);
@@ -676,6 +720,9 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 			out->location = -1;
 			return (Node *) out;
 		}
+		/* a group expression of the preserved side is its expression */
+		if (ph->phlevelsup == 0 && bms_is_empty(nulling) && group_rti(c) > 0)
+			return nullable_expr_mutator((Node *) ph->phexpr, c);
 	}
 	return expression_tree_mutator(n, nullable_expr_mutator, c);
 }
