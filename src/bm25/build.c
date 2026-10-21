@@ -805,7 +805,13 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift indexes require a heap or sift_table table")));
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
+	{
+		SiftAnalyzerConfig cfg;
+
+		/* the options are refused here: a worker that refuses them first reports the error to the leader with the context of the worker */
+		sift_analyzer_config_from_options(opts, &cfg);
 		ldr = begin_parallel(heap, index, info);
+	}
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
 	if (ldr == NULL)
