@@ -26,7 +26,7 @@ PostgreSQL-bound, and staying so: the page/buffer store behind `sift_store.h` (P
 already implements the same interface in `sqlite/sqstore.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
 `col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
 (`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
-(`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`sift_table*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
+(`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
 interface (docs/COL.md): the segment's liveness bits and an atomically published manifest give a single-writer host a snapshot by
 construction (how the BM25 SQLite host already works).
 

@@ -29,7 +29,7 @@ The minimal provider for another match source (`sift_match_bitmap`-like):
 const SiftFilter *sift_search_range(SiftSearch *s, uint32 lo, uint32 hi);
 ```
 
-A column provider opts in with `select` in `SiftColProvider` (`sift_colsrc_select(src, keep)`); it then calls `sift_aggsel_unit()` for each unit, which returns the number of rows the executor sees (or false when the unit has no kept row), and `sift_aggsel_read/live/vet()` for the rest. `sift_col`'s `sift_aggcol.c` and `sift_table`'s `sift_table_src.c` use it; a provider without `select` is never given a search (the planner checks `sift_colsrc_can_select`).
+A column provider opts in with `select` in `SiftColProvider` (`sift_colsrc_select(src, keep)`); it then calls `sift_aggsel_unit()` for each unit, which returns the number of rows the executor sees (or false when the unit has no kept row), and `sift_aggsel_read/live/vet()` for the rest. `sift_col`'s `sift_aggcol.c` and `sift_table`'s `table/src.c` use it; a provider without `select` is never given a search (the planner checks `sift_colsrc_can_select`).
 
 Executor contract of the match set:
 

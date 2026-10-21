@@ -26,7 +26,7 @@ class SelectionTest(unittest.TestCase):
             'src/col/compress.c': ['smoke', 'agg', 'storage'],
             'src/agg/sift_agg.c': ['smoke', 'agg'],
             'src/agg/sift_aggplan.c': ['smoke', 'agg'],
-            'src/table/sift_table.c': ['smoke', 'storage'],
+            'src/table/am.c': ['smoke', 'storage'],
             'sqlite/host/host.h': ['smoke'],
             '.github/workflows/assert.yml': [],
             'scripts/source-snapshot.sh': ['smoke'],
@@ -58,11 +58,11 @@ class SelectionTest(unittest.TestCase):
 
     def test_one_buildable_path_keeps_the_gate_armed(self):
         # A harness change never hides a real source change in the same diff.
-        self.assertEqual(self.selected('scripts/ci.sh', 'bench/perf/catalog.py', 'src/table/sift_table.c'),
+        self.assertEqual(self.selected('scripts/ci.sh', 'bench/perf/catalog.py', 'src/table/am.c'),
                          ['smoke', 'storage'])
         self.assertEqual(self.selected('scripts/areas.sh', 'src/core/sift_store.c'), list(SELECT.ALL))
         self.assertEqual(self.selected('scripts/ci.sh', 'sqlite/new.c'), ['smoke'])
-        self.assertEqual(self.selected('test/sql/count_scan.sql', 'src/table/sift_table.c'), ['smoke', 'storage'])
+        self.assertEqual(self.selected('test/sql/count_scan.sql', 'src/table/am.c'), ['smoke', 'storage'])
 
     def test_aggregate_change_with_its_tests_selects_only_the_aggregate_group(self):
         # The diff of an aggregate PR: sources, tests of every kind, fixtures and documentation.

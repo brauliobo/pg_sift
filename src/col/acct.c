@@ -12,7 +12,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
-#include "sift_table.h"
+#include "table/table.h"
 
 typedef struct SectionRows
 {

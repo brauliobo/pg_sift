@@ -1,12 +1,25 @@
 /*
- * sift_table.h - the table access method sift_table (docs/COL-TAM.md): formats and the interfaces between its modules.
+ * table/table.h - the table access method sift_table (docs/COL-TAM.md): formats and the interfaces between its modules.
  *
- *   sift_table.c         handler, the TableAmRoutine callbacks, DML
- *   sift_table_store.c   layout, per-relation cache, write buffers (row format), tombstone segment
- *   sift_table_mvcc.c    visibility of a row version under every snapshot type
- *   sift_table_scan.c    scans, TID fetches, bitmap, analyze, index build
- *   sift_table_vacuum.c  VACUUM, promotion, rewrites
- *   sift_table_seg.c     the column groups: the engine glue (stubs until the column engine lands)
+ *   table/am.c         handler, the TableAmRoutine callbacks, DML
+ *   table/store.c   layout, per-relation cache
+ *   table/wbuf.c    write buffers (row format)
+ *   table/tomb.c    tombstone segment
+ *   table/mvcc.c    visibility of a row version under every snapshot type
+ *   table/scan.c    sequential, TID range and parallel scans
+ *   table/fetch.c   TID fetches, bitmap scans, TABLESAMPLE
+ *   table/analyze.c ANALYZE sampling, index build
+ *   table/vacuum.c  VACUUM, promotion, rewrites
+ *   table/seg.c     the column groups: the layout of a table, datum <-> leaf values, the engine glue
+ *   table/gscan.c   the group scan: rows of the column groups in order, a vblock, TID fetches
+ *   table/vers.c    versions of the rows of the groups with unfrozen rows
+ *   table/feed.c    what the groups give the aggregate scan: schemas, write buffer batches, path statistics
+ *   table/promote.c promotion of the sealed write buffers into column segments
+ *   table/freeze.c  freezing, aborted rows, live rows, merges of the column segments
+ *   table/bulk.c    the new table of a rewrite written as column segments
+ *   table/funcs.c   SQL functions that show the segments and the space
+ *   table/src.c     the column source of the aggregate scan (SiftAgg)
+ *   table/wide.c    its wide leaves: the dictionary of exact datum images, the conjuncts on them
  *
  * A TID is (vblock, offset), offset 1..SIFT_TBL_MAX_OFF, vblock from the metapage counter, never reused.
  */
@@ -141,7 +154,7 @@ StaticAssertDecl(sizeof(SiftTblTomb) == 32, "tombstone entries are 32 bytes");
 StaticAssertDecl(sizeof(SiftTblPageHdr) + 16 < BLCKSZ / 4, "page header leaves room for rows");
 StaticAssertDecl(TBL_WBUF_HDR_USED <= SIFT_PAGE_PAYLOAD, "write buffer header fits a page");
 
-/* ---------- per relation backend cache (sift_table_store.c) ---------- */
+/* ---------- per relation backend cache (table/store.c) ---------- */
 
 typedef struct SiftTblSeg
 {
@@ -180,7 +193,7 @@ typedef struct SiftTblRel
 	/* the page this backend appends to */
 	uint64		tgt_gen;
 	BlockNumber tgt_blk;
-	/* column groups (sift_table_seg.c) */
+	/* column groups (table/seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
 	struct SiftTblVers *curvers;	/* the unfrozen groups of dir, for readers that go by the directory the cache holds (sift_tbl_filter_page) */
@@ -308,7 +321,7 @@ extern uint64 sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKee
 /* The entries of key (sorted by log position), n of them; NULL when none */
 extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n);
 
-/* ---------- visibility (sift_table_mvcc.c) ---------- */
+/* ---------- visibility (table/mvcc.c) ---------- */
 
 extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
 /* The insertion of the version is visible; *dead set when no snapshot will ever see it */
@@ -336,7 +349,7 @@ typedef struct SiftTblDel
 /* The deletion state of key by the log as it is now (no snapshot: the writers' view) */
 extern void sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del);
 
-/* ---------- table AM callbacks implemented outside sift_table.c ---------- */
+/* ---------- table AM callbacks implemented outside table/am.c ---------- */
 
 extern TableScanDesc sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
 										 ParallelTableScanDesc pscan, uint32 flags);
@@ -386,10 +399,10 @@ extern bool sift_tbl_scan_sample_next_block(TableScanDesc scan, struct SampleSca
 extern bool sift_tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate,
 											TupleTableSlot *slot);
 
-/* ---------- dml helpers (sift_table.c) ---------- */
+/* ---------- dml helpers (table/am.c) ---------- */
 
 extern bool sift_tbl_published(Relation rel);
-/* Logical replication (sift_table_wal.c): a published table under wal_level = logical also writes a record per row change */
+/* Logical replication (table/wal.c): a published table under wal_level = logical also writes a record per row change */
 typedef enum SiftTblOp
 {
 	SIFT_TBL_OP_INSERT,
@@ -404,7 +417,7 @@ extern bool sift_tbl_check_publication(Relation rel);
 /* newrow: the row after the change (NULL for DELETE); old: the row before it (NULL for INSERT), reduced to its replica identity */
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
 
-/* ---------- column groups: the engine glue (sift_table_seg.c) ---------- */
+/* ---------- column groups: the engine glue (table/seg.c, table/gscan.c) ---------- */
 
 typedef struct SiftTblLayout SiftTblLayout;
 typedef struct SiftTblGroupScan SiftTblGroupScan;
@@ -421,7 +434,7 @@ extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 extern bool sift_tbl_xid_aborted(TransactionId xid);
 
 /*
- * The slot of a sift_table (sift_table_slot.c): a virtual slot that decodes the attributes of a row of a column group on demand.
+ * The slot of a sift_table (table/slot.c): a virtual slot that decodes the attributes of a row of a column group on demand.
  * store_group: the row at position pos of the vectors of the current unit of g (token), tid its TID; store_tuple: a row as a HeapTuple
  * that stays valid until the slot is cleared (t_self and t_tableOid are the row's TID and table).
  */
@@ -465,7 +478,7 @@ extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
  * into xmin / cmin (0: frozen; either may be NULL); their number */
 extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin);
 
-/* ---------- the column source of the aggregate scan (sift_table_src.c) ---------- */
+/* ---------- the column source of the aggregate scan (table/feed.c, table/src.c) ---------- */
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
@@ -530,7 +543,7 @@ extern PGDLLIMPORT char *sift_tbl_compression_spec;
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
 
-/* ---------- rewrites and dead rows (sift_table_seg.c) ---------- */
+/* ---------- rewrites and dead rows (table/bulk.c, table/freeze.c) ---------- */
 
 /*
  * The new table of a rewrite written as column segments directly: the rows get dense TIDs in the order they are added; finish

@@ -105,15 +105,15 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-4 | col/scan_unit.c:unit_group, col/scan_read.c:sift_col_read; col/batch.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
 | P1-5 | col/ctest.c:chunk_lut, cc_lut | done (F-COL-1): tables of at most 16 bits cover the width, wider codes pass `max32(codes) < sbits` |
 | P1-6 | col/scan_read.c:read_positions (STR), sift_col_read_lane (CODE lane) | done: `max32(codes) <= dict->n` once per chunk read, before sift_agg.c indexes `map[code]` or the LUT |
-| P1-7 | sift_table_store.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
-| P1-8 | sift_table_store.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
-| P1-9 | sift_table_store.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |
+| P1-7 | table/wbuf.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
+| P1-8 | table/wbuf.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
+| P1-9 | table/wbuf.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |
 | P2-1 | bm25/posting.c:post_attach, sift_post_group_tf, list_tf_pos | nnib/df/ng/esc length raw (F-BM25-5, fixed by explicit checks in 3.0.0, 7f59d1a; the Span conversion is open): carve sidecar Spans at attach |
 | P2-2 | bm25/posting.c:post_open; bm25/dict.c:sift_dict_open; bm25/segment.c:docmap, load_sb; bm25/walk.c:walk_docs | allocation before validation (up to 32 GB) |
 | P2-3 | bm25/rank.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
 | P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream |
 | P2-5 | sift_live.c:sift_live_clear | page index and write unchecked (Assert only) |
-| P2-6 | sift_table_store.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
+| P2-6 | table/tomb.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
 | P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in |
 | P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
 | P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed |
