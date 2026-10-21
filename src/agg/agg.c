@@ -763,14 +763,8 @@ lookup_inputs(List *params)
 }
 
 static void
-agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
+explain_source(SiftAggSpec *s, ExplainState *es)
 {
-	AggExec    *ex = (AggExec *) node;
-	SiftAggSpec *s = ex->spec;
-	StringInfoData buf;
-	int			h1 = s->nkeys - (s->nsets > 0),	/* the hidden keys are between the outer ones and the set's */
-				h0 = h1 - s->nhidden;
-
 	ExplainPropertyText("Index", s->nparts > 0 ? "(partitions)" : s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
 	if (s->nparts > 0)
 	{
@@ -786,6 +780,15 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	if (s->topn)
 		ExplainPropertyText("Top-N", psprintf("%s (limit %s)", s->desc_topn, sift_topn_limit_text(s->topn)), es);
+}
+
+static void
+explain_keys(SiftAggSpec *s, ExplainState *es)
+{
+	StringInfoData buf;
+	int			h1 = s->nkeys - (s->nsets > 0),	/* the hidden keys are between the outer ones and the set's */
+				h0 = h1 - s->nhidden;
+
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
 		if (j < h0 || j >= h1)
@@ -811,122 +814,162 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			appendStringInfo(&buf, "%s%s", i ? ", " : "", s->join[i].desc);
 		ExplainPropertyText("Lookup Joins", buf.data, es);
 	}
+}
+
+/* The plan of the lookup i that PostgreSQL plans per scanned row, nested in the scan's */
+static void
+explain_correlated(CustomScanState *node, int i, ExplainState *es)
+{
+	SiftAggSpec *s = ((AggExec *) node)->spec;
+	EState     *estate = node->ss.ps.state;
+	QueryDesc   query = {0};
+	PlannedStmt stmt = *estate->es_plannedstmt;
+	ExplainState child;
+	List       *own;
+	char       *label = psprintf("Correlated Lookup %d", i + 1);
+
+	ExplainOpenGroup("Correlated Lookup", label, true, es);
+	ExplainPropertyText("Name", s->join[i].desc, es);
+	/* the statement's identifier and settings are printed once, at the top */
+	stmt.queryId = UINT64CONST(0);
+	query.plannedstmt = &stmt;
+	query.planstate = list_nth(estate->es_subplanstates, s->join[i].subplan - 1);
+	query.estate = estate;
+	child = *es;
+	child.settings = false;
+	child.printed_subplans = NULL;
+	own = query.planstate->plan->initPlan;
+	query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
+	ExplainPrintPlan(&child, &query);
+	query.planstate->plan->initPlan = own;
+	es->indent = child.indent;
+	es->grouping_stack = child.grouping_stack;
+	ExplainCloseGroup("Correlated Lookup", label, true, es);
+}
+
+/* The source's counters of the filters and lookup tables a run used */
+static void
+explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
+{
+	if (c->nfilter > 0)
+		ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
+	if (c->ntype > 0)
+		ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
+	if (c->nwide > 0)
+		ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
+	if (s->njoin > 0)
+	{
+		ExplainPropertyInteger("Lookup Rows Read", NULL, c->lookup_read, es);
+		ExplainPropertyInteger("Lookup Rows Loaded", NULL, c->lookup_loaded, es);
+		if (c->lookup_index > 0)
+			ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
+		if (es->timing)
+			ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
+	}
+	if (c->njfilter > 0)
+		ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
+	if (c->njpass > 0)
+		ExplainPropertyInteger("Join Key Passes", NULL, c->njpass, es);
+	if (c->nshared > 0)
+		ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
+	if (c->nsemi > 0)
+	{
+		ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);
+		ExplainPropertyInteger("Semi Lookup Table Size", "kB", (c->semi_bytes + 1023) / 1024, es);
+	}
+}
+
+/* The units a run read and how many came from the pre-aggregates */
+static void
+explain_units(AggExec *ex, AggExec *c, ExplainState *es)
+{
+	sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
+	ExplainPropertyInteger("Units", NULL, c->n_units, es);
+	if (!c->pa_on && es->verbose)
+		ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
+	if (!c->pa_on)
+		return;
+	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
+	if (ex->pa.list < 0)
+		return;
+	explain_pa_leaves(ex, es);
+	ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
+	if (c->n_rollup_cost > 0)
+		ExplainPropertyInteger("Units Scanned By Cost", NULL, c->n_rollup_cost, es);
+	if (c->n_rollup_queued > 0)
+		ExplainPropertyInteger("Rollup Refresh Queued", NULL, c->n_rollup_queued, es);
+}
+
+static void
+explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
+{
+	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
+	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
+	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
+	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
+	ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc->rows_vetted, es);
+	ExplainPropertyInteger("Heap Pages", NULL, cc->heap_pages, es);
+	if (c->recheck)
+		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
+	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+	if (c->n_osa_spilled)
+		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
+	if (c->n_dist_spilled)
+		ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
+	if (c->n_dist_chunks)
+		ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
+}
+
+/* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */
+static void
+explain_run(AggExec *ex, ExplainState *es)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcCounters cc;
+	AggExec    *c = ex->fuse ? ex->fuse->F : ex;
+
+	sift_colsrc_counters(c->src, &cc);
+	if (ex->fuse)
+		ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
+	ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
+	if (s->nworkers > 0)
+		ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
+	if (c->par)
+	{
+		cc.units_pruned += c->par->cc.units_pruned;
+		cc.rows_vetted += c->par->cc.rows_vetted;
+		cc.heap_pages += c->par->cc.heap_pages;
+		cc.rechecked += c->par->cc.rechecked;
+	}
+	if (s->search)
+		ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
+	if (s->topn && ex->topn)
+	{
+		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
+		if (sift_topn_sorted(ex->topn) >= 0)
+			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);
+	}
+	explain_source_run(c, s, es);
+	explain_units(ex, c, es);
+	explain_rows(ex, c, &cc, es);
+}
+
+static void
+agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
+{
+	AggExec    *ex = (AggExec *) node;
+	SiftAggSpec *s = ex->spec;
+
+	explain_source(s, es);
+	explain_keys(s, es);
 	for (int i = 0; i < s->njoin; i++)
 		if (s->join[i].subplan > 0)
-		{
-			EState     *estate = node->ss.ps.state;
-			QueryDesc   query = {0};
-			PlannedStmt stmt = *estate->es_plannedstmt;
-			ExplainState child;
-			List       *own;
-			char       *label = psprintf("Correlated Lookup %d", i + 1);
-
-			ExplainOpenGroup("Correlated Lookup", label, true, es);
-			ExplainPropertyText("Name", s->join[i].desc, es);
-			/* the statement's identifier and settings are printed once, at the top */
-			stmt.queryId = UINT64CONST(0);
-			query.plannedstmt = &stmt;
-			query.planstate = list_nth(estate->es_subplanstates, s->join[i].subplan - 1);
-			query.estate = estate;
-			child = *es;
-			child.settings = false;
-			child.printed_subplans = NULL;
-			own = query.planstate->plan->initPlan;
-			query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
-			ExplainPrintPlan(&child, &query);
-			query.planstate->plan->initPlan = own;
-			es->indent = child.indent;
-			es->grouping_stack = child.grouping_stack;
-			ExplainCloseGroup("Correlated Lookup", label, true, es);
-		}
+			explain_correlated(node, i, es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
 	if (es->analyze && ex->started)
-	{
-		SiftSrcCounters cc;
-		AggExec    *c = ex->fuse ? ex->fuse->F : ex;
-
-		sift_colsrc_counters(c->src, &cc);
-		if (ex->fuse)
-			ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
-		ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
-		if (s->nworkers > 0)
-			ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
-		if (c->par)
-		{
-			cc.units_pruned += c->par->cc.units_pruned;
-			cc.rows_vetted += c->par->cc.rows_vetted;
-			cc.heap_pages += c->par->cc.heap_pages;
-			cc.rechecked += c->par->cc.rechecked;
-		}
-		if (s->search)
-			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
-		if (s->topn && ex->topn)
-		{
-			ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
-			ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
-			if (sift_topn_sorted(ex->topn) >= 0)
-				ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);
-		}
-		if (c->nfilter > 0)
-			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
-		if (c->ntype > 0)
-			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
-		if (c->nwide > 0)
-			ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
-		if (s->njoin > 0)
-		{
-			ExplainPropertyInteger("Lookup Rows Read", NULL, c->lookup_read, es);
-			ExplainPropertyInteger("Lookup Rows Loaded", NULL, c->lookup_loaded, es);
-			if (c->lookup_index > 0)
-				ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
-			if (es->timing)
-				ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
-		}
-		if (c->njfilter > 0)
-			ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
-		if (c->njpass > 0)
-			ExplainPropertyInteger("Join Key Passes", NULL, c->njpass, es);
-		if (c->nshared > 0)
-			ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
-		if (c->nsemi > 0)
-		{
-			ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);
-			ExplainPropertyInteger("Semi Lookup Table Size", "kB", (c->semi_bytes + 1023) / 1024, es);
-		}
-		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
-		ExplainPropertyInteger("Units", NULL, c->n_units, es);
-		if (!c->pa_on && es->verbose)
-			ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
-		if (c->pa_on)
-		{
-			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
-			if (ex->pa.list >= 0)
-			{
-				explain_pa_leaves(ex, es);
-				ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
-				if (c->n_rollup_cost > 0)
-					ExplainPropertyInteger("Units Scanned By Cost", NULL, c->n_rollup_cost, es);
-				if (c->n_rollup_queued > 0)
-					ExplainPropertyInteger("Rollup Refresh Queued", NULL, c->n_rollup_queued, es);
-			}
-		}
-		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
-		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
-		ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
-		ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
-		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
-		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
-		if (c->recheck)
-			ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc.rechecked, es);
-		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
-		if (c->n_osa_spilled)
-			ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
-		if (c->n_dist_spilled)
-			ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
-		if (c->n_dist_chunks)
-			ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
-	}
+		explain_run(ex, es);
 }
 
 static const CustomExecMethods agg_exec_methods = {
