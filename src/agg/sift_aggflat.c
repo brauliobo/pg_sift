@@ -155,6 +155,17 @@ pull_up_lateral(Query *q, JoinExpr *j, RangeTblEntry *rte, List **pulled)
 	return node;
 }
 
+/* a copy of n that reads the expressions of the pulled-up sub-select in place of its columns */
+static Node *
+read_columns(Node *n, Pulled *p)
+{
+#if PG_VERSION_NUM >= 180000
+	return ReplaceVarsFromTargetList(n, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
+#else
+	return ReplaceVarsFromTargetList(n, p->rti, 0, p->rte, p->targetlist, REPLACEVARS_REPORT_ERROR, 0, NULL);
+#endif
+}
+
 static bool flatten_query(Query *q, bool apply);
 
 /*
@@ -211,9 +222,9 @@ flatten_query(Query *q, bool apply)
 	/* the copy ReplaceVarsFromTargetList makes takes the place of the query; a sub-select may read the columns of an earlier one */
 	foreach_ptr(Pulled, p, pulled)
 	{
-		*q = *(Query *) ReplaceVarsFromTargetList((Node *) q, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
+		*q = *(Query *) read_columns((Node *) q, p);
 		foreach_ptr(Pulled, later, pulled)
-			later->targetlist = (List *) ReplaceVarsFromTargetList((Node *) later->targetlist, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
+			later->targetlist = (List *) read_columns((Node *) later->targetlist, p);
 	}
 	return changed;
 }
