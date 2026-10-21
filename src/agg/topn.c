@@ -137,6 +137,11 @@ struct SiftTopN
 		uint32		sb;
 		int64		best;
 	}			probe[TOPN_PROBES];
+	/* the walk (sift_topn_walk_*): the zone and the number of units of every superblock, and the superblocks by their best bound */
+	SiftSrcZone *wzone;
+	uint32	   *wunits;
+	uint32	   *word;
+	uint32		wpos;
 	Relation	rel;
 	Snapshot	snap;
 	TupleTableSlot *fslot;
@@ -710,6 +715,95 @@ void
 sift_topn_skip(SiftTopN *t)
 {
 	t->skipped++;
+}
+
+/*
+ * The walk: for a first sort column that does not follow the table (the probes disagree) the superblocks are visited by the best value of
+ * their zone, not in table order. Every superblock's zone is read first (sift_topn_walk_add, headers only), the superblocks are sorted by the
+ * best row they can hold (sift_topn_walk_sort), and sift_topn_walk_next hands them out until the zone of the next cannot beat the n-th best:
+ * the zones after it are no better, so the walk ends there. The result does not depend on the order: a superblock is left out only when no
+ * row in it can sort before the n-th (a bound equal to it is kept: ties go on to the other keys and the TID).
+ */
+bool
+sift_topn_follows(const SiftTopN *t)
+{
+	return t->follows;
+}
+
+void
+sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
+{
+	MemoryContext cxt = GetMemoryChunkContext(t);
+
+	t->nsb = nsb;
+	t->wzone = MemoryContextAllocZero(cxt, nsb * sizeof(SiftSrcZone));
+	t->wunits = MemoryContextAllocZero(cxt, nsb * sizeof(uint32));
+	t->word = MemoryContextAlloc(cxt, nsb * sizeof(uint32));
+	for (uint32 i = 0; i < nsb; i++)
+		t->word[i] = i;
+	t->wpos = 0;
+}
+
+void
+sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z)
+{
+	t->wzone[sb] = *z;
+	t->wunits[sb] = units;
+}
+
+/* 0: holds rows that sort first whatever the bound (a NULL under NULLS FIRST, a zone that is not exact); 1: by its bound; 2: only NULLs under NULLS LAST */
+static int
+walk_class(const SiftTopN *t, const SiftSrcZone *z)
+{
+	if (z->inexact || (z->nnull > 0 && t->key[0].nulls_first))
+		return 0;
+	return z->nnull == z->nvals ? 2 : 1;
+}
+
+static int
+walk_cmp(const void *pa, const void *pb, void *arg)
+{
+	const SiftTopN *t = arg;
+	uint32		a = *(const uint32 *) pa,
+				b = *(const uint32 *) pb;
+	const SiftSrcZone *za = &t->wzone[a],
+			   *zb = &t->wzone[b];
+	int			ca = walk_class(t, za),
+				cb = walk_class(t, zb);
+
+	if (ca != cb)
+		return ca < cb ? -1 : 1;
+	if (ca == 1)
+	{
+		int64		ba = t->key[0].desc ? za->max : za->min,
+					bb = t->key[0].desc ? zb->max : zb->min;
+
+		if (ba != bb)
+			return (ba < bb) != t->key[0].desc ? -1 : 1;
+	}
+	return SIFT_CMP3(a, b);
+}
+
+void
+sift_topn_walk_sort(SiftTopN *t)
+{
+	qsort_arg(t->word, t->nsb, sizeof(uint32), walk_cmp, t);
+}
+
+bool
+sift_topn_walk_next(SiftTopN *t, uint32 *sb)
+{
+	if (t->wpos >= t->nsb)
+		return false;
+	*sb = t->word[t->wpos];
+	if (!sift_topn_zone_viable(t, &t->wzone[*sb]))
+	{
+		for (; t->wpos < t->nsb; t->wpos++)
+			t->skipped += t->wunits[t->word[t->wpos]];
+		return false;
+	}
+	t->wpos++;
+	return true;
 }
 
 /* ---------- the result ---------- */

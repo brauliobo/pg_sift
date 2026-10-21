@@ -15,6 +15,7 @@ extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_preagg;
 extern PGDLLIMPORT bool sift_agg_join_filter;
 extern PGDLLIMPORT bool sift_enable_topn;
+extern PGDLLIMPORT bool sift_topn_walk;
 extern PGDLLIMPORT int sift_agg_param_set_size;
 extern PGDLLIMPORT int sift_agg_lookup_max_rows;
 
