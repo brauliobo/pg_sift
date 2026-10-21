@@ -24,8 +24,12 @@ END $$;
 -- the refresh worker of a query that found a unit without its rollup holds a snapshot while it rewrites the segment: a VACUUM that runs meanwhile
 -- cannot make the pages of rows written since all-visible, so the units stay scanned. Wait for the queue to drain before the statements that need them.
 CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
 BEGIN
-	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue()) LOOP PERFORM pg_sleep(0.01); END LOOP;
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue()) LOOP
+		IF clock_timestamp() > deadline THEN RAISE EXCEPTION 'the rollup queue did not drain'; END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
 END $$;
 
 -- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
