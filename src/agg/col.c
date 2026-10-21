@@ -175,7 +175,8 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 static SiftSrcLayout *
 col_layout(Relation index)
 {
-	const SiftColIndexMeta *meta = sift_col_index_defs(index);
+	SiftColIndexMeta m = *sift_col_index_defs(index);	/* a copy: the cached state it points into is freed when reading an index expression reloads the entry */
+	const SiftColIndexMeta *meta = &m;
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	SiftSrcLayout *lay = palloc0(sizeof(SiftSrcLayout));
 
