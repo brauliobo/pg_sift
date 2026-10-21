@@ -147,6 +147,7 @@ typedef struct AggCtx
 	RangeTblFunction *func;
 	const char *func_key;		/* LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k': r.value is the member k of each row, no unnest */
 	int			func_obj;		/* ... and the object leaf of doc */
+	Bitmapset  *func_ovf;		/* ... and the leaves that make the scan unfit when a unit holds what they cannot store (a document that is no object raises in jsonb_each) */
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
@@ -617,7 +618,11 @@ static int
 member_leaf(AggCtx *c, Oid typid)
 {
 	const SiftSrcLeaf *obj = leaf_of(c, c->func_obj);
+	int			val = child_leaf(c, c->func_obj, "value", typid);
 
+	if (val < 0)
+		return -1;
+	c->func_ovf = bms_add_member(bms_add_member(c->func_ovf, c->func_obj), val);
 	return key_leaf(c, obj->attno, lappend(list_copy(obj->path), makeString(pstrdup(c->func_key))), typid);
 }
 
@@ -5813,40 +5818,45 @@ child_arg(AggCtx *c, Node *arg)
 	return (Node *) out;
 }
 
-/* does the plan read the parameter other than as the argument of a cast of jsonb to a number or boolean */
+typedef struct BareRead
+{
+	Index		rti;			/* the unnested function */
+	int			level;			/* query levels below the child's own */
+} BareRead;
+
+/* does the child read a column of the function other than as the argument of a cast of jsonb to a number or boolean */
 static bool
-bare_param_walker(Node *n, int *paramid)
+bare_read_walker(Node *n, BareRead *x)
 {
 	if (n == NULL)
 		return false;
-	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid && IsA(linitial(((FuncExpr *) n)->args), Param) &&
-		((Param *) linitial(((FuncExpr *) n)->args))->paramid == *paramid)
+	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid && IsA(linitial(((FuncExpr *) n)->args), Var) &&
+		((Var *) linitial(((FuncExpr *) n)->args))->varno == x->rti && ((Var *) linitial(((FuncExpr *) n)->args))->varlevelsup == x->level &&
+		((Var *) linitial(((FuncExpr *) n)->args))->varattno == 2)
 		return false;
-	if (IsA(n, Param))
-		return ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid == *paramid;
+	if (IsA(n, Var))
+		return ((Var *) n)->varno == x->rti && ((Var *) n)->varlevelsup == x->level;
 	if (IsA(n, Query))
-		return query_tree_walker((Query *) n, bare_param_walker, paramid, 0);
-	return expression_tree_walker(n, bare_param_walker, paramid);
+	{
+		bool		bare;
+
+		x->level++;
+		bare = query_tree_walker((Query *) n, bare_read_walker, x, 0);
+		x->level--;
+		return bare;
+	}
+	return expression_tree_walker(n, bare_read_walker, x);
 }
 
-/*
- * The parameters of a child and what the scan gives for each. The member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it
- * and for a JSON null alike, so a child reads it only through casts (a JSON null casts to NULL in PostgreSQL 18).
- */
-static bool
+/* The parameters of a child and what the scan gives for each. */
+static void
 child_params(AggCtx *c, JoinCtx *jc, List *items)
 {
 	foreach_node(PlannerParamItem, item, items)
 	{
-		Node	   *value = copyObject(item->item),
-				   *arg = child_arg(c, value);
-
-		if (c->func_key && arg != value && bare_param_walker((Node *) jc->subroot->parse, &item->paramId))
-			return false;
 		jc->j.params = lappend_int(jc->j.params, item->paramId);
-		jc->args = lappend(jc->args, arg);
+		jc->args = lappend(jc->args, child_arg(c, copyObject(item->item)));
 	}
-	return true;
 }
 
 /* The plan PostgreSQL made of a correlated sub-select, with the quals it pushed into it: its parameters are what it read of the query's rows. */
@@ -5856,7 +5866,8 @@ planned_child(AggCtx *c, RelOptInfo *rel, JoinCtx *jc)
 	if ((jc->cpath = child_path(rel, true)) == NULL || !IsA(jc->cpath, SubqueryScanPath) || rel->subplan_params == NIL)
 		return false;
 	jc->subroot = rel->subroot;
-	return child_params(c, jc, rel->subplan_params);
+	child_params(c, jc, rel->subplan_params);
+	return true;
 }
 
 /*
@@ -5877,6 +5888,9 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	RelOptInfo *final;
 	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
+	/* the member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it and for a JSON null alike: a child reads it only through casts (a JSON null casts to NULL in PostgreSQL 18) */
+	if (c->func_key && bare_read_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, &(BareRead) {c->func_rti, 0}))
+		return false;
 	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
 		return false;
 	if (rel->baserestrictinfo != NIL)
@@ -5899,11 +5913,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
 	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
-	if (!child_params(c, jc, c->root->plan_params))
-	{
-		c->root->plan_params = saved;
-		return false;
-	}
+	child_params(c, jc, c->root->plan_params);
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
 		return false;
@@ -7163,13 +7173,15 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 static bool
 reads_overflow(AggCtx *c, const SiftAggSpec *s)
 {
-	Bitmapset  *typed = NULL;
+	Bitmapset  *typed = NULL,
+			   *leaves;
 	int			m = -1;
 
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_TYPE)
 			typed = bms_add_member(typed, s->pred[i]->leaf);
-	while ((m = bms_next_member(c->used, m)) >= 0)
+	leaves = bms_union(c->used, c->func_ovf);
+	while ((m = bms_next_member(leaves, m)) >= 0)
 		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE)
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m))));
