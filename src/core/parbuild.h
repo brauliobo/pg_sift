@@ -40,6 +40,9 @@ extern SiftParLeader *sift_par_enter(bool concurrent);
  */
 extern bool sift_par_setup(SiftParLeader *ldr, const char *worker, int nworkers, Size shared_size, Size parts_size, bool ship_snapshot);
 
+/* Testing: the workers the last sift_par_launch of the session started (sift.test_par_workers; a test sets it to 0 before the build: a serial build leaves it) */
+extern PGDLLIMPORT int sift_test_par_workers;
+
 /* Starts the workers; false, with the context left, when none could be started (the leader then builds alone). what: "sift", "sift_col" */
 extern bool sift_par_launch(SiftParLeader *ldr, const char *what, Relation index, int nworkers);
 

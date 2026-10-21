@@ -22,6 +22,10 @@
 #define KEY_SNAPSHOT	UINT64CONST(0x5100000000000005)
 #define KEY_QUERY_TEXT	UINT64CONST(0x5100000000000006)
 
+#ifdef SIFT_TESTING
+int			sift_test_par_workers = 0;
+#endif
+
 SiftParLeader *
 sift_par_enter(bool concurrent)
 {
@@ -85,6 +89,9 @@ sift_par_launch(SiftParLeader *ldr, const char *what, Relation index, int nworke
 	ParallelContext *pcxt = ldr->pcxt;
 
 	LaunchParallelWorkers(pcxt);
+#ifdef SIFT_TESTING
+	sift_test_par_workers = pcxt->nworkers_launched;
+#endif
 	if (pcxt->nworkers_launched == 0)
 	{
 		ereport(DEBUG1, errmsg("building %s index \"%s\" without parallel workers: none could be launched", what,

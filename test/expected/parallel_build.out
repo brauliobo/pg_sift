@@ -18,11 +18,14 @@ CREATE TABLE ranked_ser AS
 CREATE TABLE segs_ser AS SELECT gen, ndocs, sum_dl, nterms, bytes FROM sift.segments('pb_ser');
 DROP INDEX pb_ser;
 SET max_parallel_maintenance_workers = 2;
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_par ON pb USING sift (body);
-DEBUG:  building index "pb_par" on table "pb" with request for 2 parallel workers
-DEBUG:  building sift index "pb_par" with 2 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       2
+(1 row)
+
 SELECT count(*) AS same_segments FROM sift.segments('pb_par') p JOIN segs_ser s USING (gen, ndocs, sum_dl, nterms);
  same_segments 
 ---------------
@@ -82,11 +85,14 @@ SELECT sift.verify('pb_par', true);
  
 (1 row)
 
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 REINDEX INDEX pb_par;
-DEBUG:  building index "pb_par" on table "pb" with request for 2 parallel workers
-DEBUG:  building sift index "pb_par" with 2 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       2
+(1 row)
+
 SELECT sift.verify('pb_par', true);
  verify 
 --------
@@ -94,14 +100,22 @@ SELECT sift.verify('pb_par', true);
 (1 row)
 
 -- MVCC snapshot variant and an expression index
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX CONCURRENTLY pb_cic ON pb USING sift (body);
-DEBUG:  building index "pb_cic" on table "pb" with request for 2 parallel workers
-DEBUG:  building sift index "pb_cic" with 2 parallel workers
+SELECT current_setting('sift.test_par_workers')::int AS cic_workers;
+ cic_workers 
+-------------
+           2
+(1 row)
+
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_expr ON pb USING sift ((body || ' tail'));
-DEBUG:  building index "pb_expr" on table "pb" with request for 2 parallel workers
-DEBUG:  building sift index "pb_expr" with 2 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS expr_workers;
+ expr_workers 
+--------------
+            2
+(1 row)
+
 SELECT sift.verify('pb_cic', true);
  verify 
 --------
@@ -115,10 +129,14 @@ SELECT sift.verify('pb_expr', true);
 (1 row)
 
 -- build_segments asks for an exact layout, so it builds serially
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX pb_one ON pb USING sift (body) WITH (build_segments = 3);
-DEBUG:  building index "pb_one" on table "pb" with request for 2 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       0
+(1 row)
+
 SELECT count(*) AS three_segments FROM sift.segments('pb_one');
  three_segments 
 ----------------
