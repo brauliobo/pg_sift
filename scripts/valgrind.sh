@@ -32,11 +32,11 @@ TESTS=("$@")
 # the default list is the memory-sensitive paths that are cheap under memcheck (seconds measured in CI): store 33, table AM 9, shredder 154,
 # the relcache pointer of the column index 34 + 11, dictionary and lookup caches 16 + 21 + 32 + 116, write buffer 66 + 12, parallel build 58,
 # aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
-# agg_bucket 188, agg_dense 114. col_index_dict_tests is in neither: it takes 283 s.
+# col_index_dict_tests 283, agg_bucket 188, agg_dense 114.
 if (( ! ${#TESTS[@]} )); then
 	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
 		agg_lookup_cache col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
-	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel agg_bucket agg_dense)
+	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
 fi
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
