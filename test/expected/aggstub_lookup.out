@@ -19,6 +19,7 @@ VACUUM ANALYZE o;
 -- the mapping tables: a key with two rows, a NULL key, a key that differs by case, keys without a row (E, x)
 CREATE TABLE cat_map (category text, mapped text);
 INSERT INTO cat_map VALUES ('A', 'a1'), ('A', 'a2'), ('B', 'bb'), ('b', 'lower'), ('C', NULL), (NULL, 'nothing'), ('D', 'dd');
+ANALYZE cat_map;
 CREATE TABLE empty_map (category text, mapped text);
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint;
