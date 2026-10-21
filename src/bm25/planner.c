@@ -280,6 +280,133 @@ reject_scores(PlannerInfo *root, RelOptInfo *rel)
 				 errhint("Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.")));
 }
 
+/* what the paths of a relation are chosen from: the shape of the query, the filter bitmap, and the best path of each kind so far */
+typedef struct PathSearch
+{
+	PlannerInfo *root;
+	RelOptInfo *rel;
+	PathKey    *pk;				/* the score order, when ranked */
+	List	   *cuts;
+	KeyedOrder	ko;
+	bool		ranked,
+				only_best,
+				keyed,
+				filter_looked;
+	BitmapHeapPath *filter;
+	CustomPath *best,
+			   *best_partial,
+			   *best_keyed;
+} PathSearch;
+
+/* true when the relation is one a sift scan can serve; a statement that cannot rank, and an inheritance parent, only record its scores */
+static bool
+scannable(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->tablesample ||
+		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
+		sift_catalog()->am == InvalidOid)
+		return false;
+	if (root->parse->commandType != CMD_SELECT || root->rowMarks != NIL)
+	{
+		reject_scores(root, rel);
+		return false;
+	}
+	if (rte->inh)
+	{
+		if (!holds_all_rels(root, rel))
+			carry_parent_scores(root, rel);
+		return false;
+	}
+	return rte->relkind == RELKIND_RELATION || rte->relkind == RELKIND_MATVIEW;
+}
+
+/* true when a restriction other than a score cutoff reads the score: only a scan that computes it can serve those */
+static bool
+score_in_filter(RelOptInfo *rel, Index rti, List *cuts)
+{
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+	{
+		ScoreRefs	refs = {rti, NIL};
+
+		score_walker((Node *) rinfo->clause, &refs);
+		if (refs.found != NIL && !list_member_ptr(cuts, rinfo))
+			return true;
+	}
+	return false;
+}
+
+/* the paths one index offers, kept when they beat the best so far */
+static void
+consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
+{
+	PlannerInfo *root = ps->root;
+	RelOptInfo *rel = ps->rel;
+	ScanCand	c;
+	ScanEst		est;
+	int64		k = cuts_from_above(ps->cuts, rti) ? 0 : scan_limit(root, ps->ranked);
+	SiftScanMode mode = ps->only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
+	List	   *pathkeys = ps->ranked ? list_make1(ps->pk) : NIL;
+	/*
+	 * A ranked scan shares its threshold, which needs the number of rows it is asked for, and
+	 * only the scan can compute the score, so nothing may sit between it and the query's
+	 * target list: not a Gather below a join, which would not pass the score on
+	 */
+	bool		parallel = mode == SIFT_MODE_UNORDERED ||
+		(ps->ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON);
+
+	if (!split_quals(rel, ii, &c))
+		return;
+	if (mode == SIFT_MODE_RANKED && !ps->filter_looked)
+	{
+		ps->filter = sift_filter_bitmap_path(root, rel);
+		ps->filter_looked = true;
+	}
+	scan_est(root, rel, &c, mode, k, ps->filter, &est);
+	if (mode == SIFT_MODE_UNORDERED && any_list_too_long(root, &c, &est.sc))
+		return;
+	if (ps->keyed)
+	{
+		CustomPath *cp = keyed_path(root, rel, &c, &est, &ps->ko, query_limit(root));
+
+		if (cheaper(cp, ps->best_keyed))
+			ps->best_keyed = cp;
+	}
+	if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
+		unknown_query_path(root, rel, &c, &est, k, pathkeys, ps->filter, parallel, &ps->best, &ps->best_partial);
+	else
+	{
+		if (ps->filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
+			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, ps->filter, false, parallel, ps->only_best, &ps->best, &ps->best_partial);
+		if (ps->filter)
+			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, ps->filter, true, false, ps->only_best, &ps->best, &ps->best_partial);
+	}
+}
+
+/* the best paths replace the others when a score is read; a score that no path can serve is an error */
+static void
+publish_paths(PathSearch *ps, RangeTblEntry *rte)
+{
+	RelOptInfo *rel = ps->rel;
+
+	if (ps->best && ps->only_best)
+	{
+		rel->pathlist = list_make1(ps->best);
+		if (ps->best_keyed)
+			rel->pathlist = lappend(rel->pathlist, ps->best_keyed);
+		rel->partial_pathlist = ps->best_partial ? list_make1(ps->best_partial) : NIL;
+	}
+	else if (ps->only_best && rte->securityQuals != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
+				 errdetail("A ranked scan counts the rows that the policy hides in the scores.")));
+	else if (ps->only_best && is_partition(rel) && has_match_clause(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.score() needs a sift index on every partition the query reads"),
+				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid))));
+}
+
 /*
  * A score the query reads can only come from a ranked scan, so that path
  * replaces the others; without one the unordered scan competes with them.
@@ -287,114 +414,27 @@ reject_scores(PlannerInfo *root, RelOptInfo *rel)
 static void
 sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
-	ScanCand	c;
-	ScanEst		est;
-	PathKey    *pk = NULL;
-	List	   *scores,
-			   *cuts;
-	KeyedOrder	ko;
-	bool		ranked,
-				only_best,
-				keyed,
-				filter_looked = false;
-	BitmapHeapPath *filter = NULL;
-	CustomPath *best = NULL,
-			   *best_partial = NULL,
-			   *best_keyed = NULL;
+	PathSearch	ps = {.root = root, .rel = rel};
+	List	   *scores;
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->tablesample ||
-		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
-		sift_catalog()->am == InvalidOid)
-		return;
-	if (root->parse->commandType != CMD_SELECT || root->rowMarks != NIL)
-	{
-		reject_scores(root, rel);
-		return;
-	}
-	if (rte->inh)
-	{
-		if (!holds_all_rels(root, rel))
-			carry_parent_scores(root, rel);
-		return;
-	}
-	if (rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_MATVIEW)
+	if (!scannable(root, rel, rte))
 		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
 		check_partition_scores(rel, scores);
-	cuts = score_cutoffs(rel);
-	ranked = sorted_by_score(root, rel, &pk);
-	only_best = ranked || scores != NIL || cuts != NIL;
+	ps.cuts = score_cutoffs(rel);
+	ps.ranked = sorted_by_score(root, rel, &ps.pk);
+	ps.only_best = ps.ranked || scores != NIL || ps.cuts != NIL;
 	/* the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score */
-	keyed = only_best && !ranked && cuts == NIL && !is_partition(rel) && !reads_max_score(rel, scores) &&
-		(query_limit(root) > 0 || param_limits(root) != NIL) && keyed_order(root, rel, &ko);
-	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-	{
-		ScoreRefs	refs = {rti, NIL};
-
-		score_walker((Node *) rinfo->clause, &refs);
-		if (refs.found != NIL && !list_member_ptr(cuts, rinfo))
-			return;
-	}
+	ps.keyed = ps.only_best && !ps.ranked && ps.cuts == NIL && !is_partition(rel) && !reads_max_score(rel, scores) &&
+		(query_limit(root) > 0 || param_limits(root) != NIL) && keyed_order(root, rel, &ps.ko);
+	if (score_in_filter(rel, rti, ps.cuts))
+		return;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
-	{
-		int64		k = cuts_from_above(cuts, rti) ? 0 : scan_limit(root, ranked);
-		SiftScanMode mode = only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
-		List	   *pathkeys = ranked ? list_make1(pk) : NIL;
-		/*
-		 * A ranked scan shares its threshold, which needs the number of rows it is asked for, and
-		 * only the scan can compute the score, so nothing may sit between it and the query's
-		 * target list: not a Gather below a join, which would not pass the score on
-		 */
-		bool		parallel = mode == SIFT_MODE_UNORDERED ||
-			(ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON);
-
-		if (!split_quals(rel, ii, &c))
-			continue;
-		if (mode == SIFT_MODE_RANKED && !filter_looked)
-		{
-			filter = sift_filter_bitmap_path(root, rel);
-			filter_looked = true;
-		}
-		scan_est(root, rel, &c, mode, k, filter, &est);
-		if (mode == SIFT_MODE_UNORDERED && any_list_too_long(root, &c, &est.sc))
-			continue;
-		if (keyed)
-		{
-			CustomPath *cp = keyed_path(root, rel, &c, &est, &ko, query_limit(root));
-
-			if (cheaper(cp, best_keyed))
-				best_keyed = cp;
-		}
-		if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-		{
-			unknown_query_path(root, rel, &c, &est, k, pathkeys, filter, parallel, &best, &best_partial);
-			continue;
-		}
-		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
-		if (filter)
-			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, filter, true, false, only_best, &best, &best_partial);
-	}
-	if (best && only_best)
-	{
-		rel->pathlist = list_make1(best);
-		if (best_keyed)
-			rel->pathlist = lappend(rel->pathlist, best_keyed);
-		rel->partial_pathlist = best_partial ? list_make1(best_partial) : NIL;
-	}
-	else if (only_best && rte->securityQuals != NIL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
-				 errdetail("A ranked scan counts the rows that the policy hides in the scores.")));
-	else if (only_best && is_partition(rel) && has_match_clause(rel))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() needs a sift index on every partition the query reads"),
-				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid))));
+		consider_index(&ps, ii, rti);
+	publish_paths(&ps, rte);
 }
 
 /* count(*) and count(<constant>) without DISTINCT, FILTER or ORDER BY */
