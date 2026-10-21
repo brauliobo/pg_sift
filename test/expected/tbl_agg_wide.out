@@ -72,7 +72,7 @@ SELECT * FROM wd_compare();
  SELECT g, count(*) FROM wd WHERE nf IS NOT NULL AND n38 IS NOT NULL GROUP BY g  | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, 2.50, 3) GROUP BY g              | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, NULL) GROUP BY g                 | t      | t
- SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | f      | t
+ SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE m > '10.00' GROUP BY g                | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE n38 > 100.5 GROUP BY g                | t      | t
 (18 rows)
@@ -97,7 +97,7 @@ SELECT * FROM wd_compare();
  SELECT g, count(*) FROM wd WHERE nf IS NOT NULL AND n38 IS NOT NULL GROUP BY g  | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, 2.50, 3) GROUP BY g              | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, NULL) GROUP BY g                 | t      | t
- SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | f      | t
+ SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE m > '10.00' GROUP BY g                | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE n38 > 100.5 GROUP BY g                | t      | t
 (18 rows)
@@ -123,7 +123,7 @@ SELECT * FROM wd_compare();
  SELECT g, count(*) FROM wd WHERE nf IS NOT NULL AND n38 IS NOT NULL GROUP BY g  | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, 2.50, 3) GROUP BY g              | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, NULL) GROUP BY g                 | t      | t
- SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | f      | t
+ SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE m > '10.00' GROUP BY g                | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE n38 > 100.5 GROUP BY g                | t      | t
 (18 rows)
@@ -147,7 +147,7 @@ SELECT * FROM wd_compare();
  SELECT g, count(*) FROM wd WHERE nf IS NOT NULL AND n38 IS NOT NULL GROUP BY g  | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, 2.50, 3) GROUP BY g              | t      | t
  SELECT g, count(*) FROM wd WHERE nf NOT IN (1, NULL) GROUP BY g                 | t      | t
- SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | f      | t
+ SELECT g, count(*) FROM wd WHERE nf NOT IN (SELECT 1 WHERE false) GROUP BY g    | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE m > '10.00' GROUP BY g                | t      | t
  SELECT g, count(*), sum(i4) FROM wd WHERE n38 > 100.5 GROUP BY g                | t      | t
 (18 rows)
