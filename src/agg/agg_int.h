@@ -862,6 +862,12 @@ void osa_sort(Osa *o);
 bool osa_next(Osa *o, OsaRun *r);
 void osa_finish_all(AggExec *ex);
 
+/* accum.c */
+void pgagg_init(AggExec *ex);
+void mapped_finish(AggExec *ex);
+Datum mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull);
+int32 grouping_bits(AggExec *ex, const SiftAggAgg *a, uint32 g);
+
 /* back_host.c */
 bool backend_begin(AggExec *ex);
 void backend_finish(AggExec *ex);
