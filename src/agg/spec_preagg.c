@@ -199,14 +199,28 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 }
 
 /*
+ * Can the histogram of leaf answer a test of it? The keys of a 32-bit leaf or a dictionary code; without a group key also those of a 64-bit
+ * integer (not a numeric, whose NaN the vectors present as a value).
+ */
+static bool
+hist_leaf_ok(const SiftSrcLayout *lay, int nbase, int leaf, bool keyed)
+{
+	SiftSrcVecType vt = plain_leaf(lay, nbase, -1, leaf) ? lay->leaf[leaf].vtype : SCV_F64;
+
+	return vt == SCV_I32 || vt == SCV_CODE || (!keyed && vt == SCV_I64 && lay->leaf[leaf].typid != NUMERICOID);
+}
+
+/*
  * The leaf the conjuncts test besides the zone comparisons (-1: none), or -2 when they cannot be answered from a histogram. The conjuncts must be
- * zone comparisons, or test one scalar leaf.
+ * zone comparisons, or test one scalar leaf. *zdim: the first leaf of a zone comparison that has a histogram (-1: none), which tests it when the
+ * zone of a unit is not inside the comparison.
  */
 static int
-preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim)
+preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim, const SiftSrcPreagg *pa, int *zdim)
 {
 	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
 
+	*zdim = -1;
 	for (int i = 0; i < s->npred; i++)
 	{
 		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
@@ -214,6 +228,8 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 		if (l == -2)
 			return -2;
 		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension */
+		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l, dim >= 0))
+			*zdim = l;
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
 			continue;
 		if (dim >= 0 && dim != l)
@@ -339,7 +355,7 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	for (int i = 0; i < nm; i++)
 		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
 			return SPW_MEAS_NOT_STORED;
-	*out = (SiftAggPaShape) {.dim = -1, .list = group, .ndims = nd, .nmeas = nm};
+	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .ndims = nd, .nmeas = nm};
 	memcpy(out->rdim, dims, nd * sizeof(int));
 	memcpy(out->rmeas, meas, nm * sizeof(int));
 	return SPW_OK;
@@ -349,7 +365,10 @@ SiftPaWhy
 sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
 	int			dim = -1,
-				d = -1;
+				d = -1,
+				hdim = -1,
+				zdim;
+	SiftPaWhy	why = SPW_OK;
 
 	if (s->narms)
 		return SPW_ARMS;
@@ -379,27 +398,38 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 			return SPW_ROW_KEY;
 		dim = s->key[0].leaf;
 	}
-	dim = preagg_conj_dim(s, lay, nbase, dim);
+	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
 	if (dim == -2)
 		return SPW_ROW_PRED;
 	if (dim >= 0)
 	{
-		SiftSrcVecType vt = plain_leaf(lay, nbase, -1, dim) ? lay->leaf[dim].vtype : SCV_F64;
-
 		d = pa_dim(pa, dim);
-		if (d < 0 || (vt != SCV_I32 && vt != SCV_CODE))
+		if (d < 0 || !hist_leaf_ok(lay, nbase, dim, s->nkeys == 1))
 			return SPW_ROW_NO_HIST;
 	}
 	else if (!pa->aggs)
-		return SPW_ROW_NO_SUMS;
-	for (int i = 0; i < s->naggs; i++)
+		why = SPW_ROW_NO_SUMS;
+	for (int i = 0; why == SPW_OK && i < s->naggs; i++)
+		why = cube_agg_ok(&s->agg[i], lay, nbase, pa, d);
+	/* the units the sums cannot answer (their zone is not inside the comparison) answer from the histogram of the dim it tests, when it holds the aggregates */
+	if (dim < 0 && zdim >= 0)
 	{
-		SiftPaWhy	why = cube_agg_ok(&s->agg[i], lay, nbase, pa, d);
+		SiftPaWhy	zwhy = SPW_OK;
 
-		if (why != SPW_OK)
-			return why;
+		for (int i = 0; zwhy == SPW_OK && i < s->naggs; i++)
+			zwhy = cube_agg_ok(&s->agg[i], lay, nbase, pa, pa_dim(pa, zdim));
+		if (zwhy == SPW_OK)
+		{
+			if (why == SPW_OK)
+				hdim = zdim;
+			else
+				dim = zdim;
+			why = SPW_OK;
+		}
 	}
-	*out = (SiftAggPaShape) {.dim = dim, .list = -1};
+	if (why != SPW_OK)
+		return why;
+	*out = (SiftAggPaShape) {.dim = dim, .hdim = hdim, .list = -1};
 	return SPW_OK;
 }
 
