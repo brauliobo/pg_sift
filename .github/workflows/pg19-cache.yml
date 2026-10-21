@@ -1,8 +1,14 @@
 name: pg19-cache
 
 # Keeps the build of PostgreSQL 19 (.github/actions/pg19) in the cache of the default branch, which every pull request reads: the head of REL_19_STABLE
-# moves often, and a pull request run takes the newest build the cache has instead of compiling one. Never blocks anything.
+# moves often, and a pull request run takes the newest build the cache has instead of compiling one. A change of the recipe builds again at once. Never blocks anything.
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pg19-cache.yml
+      - .github/actions/pg19/**
+      - scripts/pg19-build.sh
   schedule:
     - cron: '41 */6 * * *'
   workflow_dispatch:
