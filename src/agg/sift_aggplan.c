@@ -821,11 +821,64 @@ typedef struct LeafWalk
 
 static bool raising_walker(Node *n, void *context);
 
+typedef struct OuterRef
+{
+	PlannerInfo *root;			/* the query the examined RTE belongs to */
+	int			depth;			/* the query levels below that RTE the walk is in */
+	int			skip;			/* the levels above the RTE's query whose references do not count: 0 counts the query's own */
+} OuterRef;
+
+/*
+ * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
+ * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
+ */
+static bool
+outer_ref_walker(Node *n, OuterRef *o)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup > o->depth + o->skip;
+	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth + o->skip)
+		return true;
+	if (IsA(n, RangeTblEntry))
+	{
+		RangeTblEntry *e = (RangeTblEntry *) n;
+		PlannerInfo *owner = o->root;
+
+		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth + o->skip)
+			return false;
+		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
+			owner = owner->parent_root;
+		return owner == NULL || owner->parent_root != NULL;
+	}
+	if (IsA(n, Query))
+	{
+		bool		r;
+
+		o->depth++;
+		r = query_tree_walker((Query *) n, outer_ref_walker, o, QTW_EXAMINE_RTES_BEFORE);
+		o->depth--;
+		return r;
+	}
+	return expression_tree_walker(n, outer_ref_walker, o);
+}
+
+/* does the sub-select, a body of its own, read a column, aggregate or CTE of the queries around it? */
+static bool
+reads_outer_query(AggCtx *c, Query *q)
+{
+	OuterRef	oref = {c->root, 0, 0};
+
+	return query_tree_walker(q, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+}
+
 /*
  * An uncorrelated ANY sub-plan that PostgreSQL hashes (x IN (SELECT ..), x NOT IN (SELECT ..) and their NULL rules): its answer is a function of
  * the tested value alone and holds for the statement, so the lookup table of the leaf may ask the sub-plan once per distinct value. The sub-select
  * is run when the scan starts, also when no row would reach it in the normal plan, so it must not raise, be volatile, lock rows, hold a sub-plan of its own
- * or read a parameter of an outer query (a CTE scan, an initplan of the outer level).
+ * or read a column of an outer query (a CTE scan, an initplan of the outer level, a parameter of its plan): the groups are replayed for a rescan. The
+ * extParam of its plan says that only after PostgreSQL has finished the whole plan, so the sub-select itself is walked, the copies of it that were planned too.
  */
 static bool
 subplan_runs_at_start(AggCtx *c, SubPlan *sp)
@@ -836,8 +889,7 @@ subplan_runs_at_start(AggCtx *c, SubPlan *sp)
 	if (sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
 		return false;
 	q = ((PlannerInfo *) list_nth(glob->subroots, sp->plan_id - 1))->parse;
-	return bms_is_empty(((Plan *) list_nth(glob->subplans, sp->plan_id - 1))->extParam) && q->rowMarks == NIL &&
-		!contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c);
+	return q->rowMarks == NIL && !contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c) && !reads_outer_query(c, q);
 }
 
 static bool
@@ -5518,49 +5570,6 @@ static bool
 unsupported_clause(AggCtx *c, Node *n)
 {
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
-}
-
-typedef struct OuterRef
-{
-	PlannerInfo *root;			/* the query the examined RTE belongs to */
-	int			depth;			/* the query levels below that RTE the walk is in */
-	int			skip;			/* the levels above the RTE's query whose references do not count: 0 counts the query's own */
-} OuterRef;
-
-/*
- * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
- * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
- */
-static bool
-outer_ref_walker(Node *n, OuterRef *o)
-{
-	if (n == NULL)
-		return false;
-	if (IsA(n, Var))
-		return ((Var *) n)->varlevelsup > o->depth + o->skip;
-	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth + o->skip)
-		return true;
-	if (IsA(n, RangeTblEntry))
-	{
-		RangeTblEntry *e = (RangeTblEntry *) n;
-		PlannerInfo *owner = o->root;
-
-		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth + o->skip)
-			return false;
-		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
-			owner = owner->parent_root;
-		return owner == NULL || owner->parent_root != NULL;
-	}
-	if (IsA(n, Query))
-	{
-		bool		r;
-
-		o->depth++;
-		r = query_tree_walker((Query *) n, outer_ref_walker, o, QTW_EXAMINE_RTES_BEFORE);
-		o->depth--;
-		return r;
-	}
-	return expression_tree_walker(n, outer_ref_walker, o);
 }
 
 /* a path whose node outputs the columns of its choice (the others need a projection above them) */
