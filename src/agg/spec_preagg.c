@@ -297,7 +297,7 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 		return SPW_NO_ROLLUP;
 	for (int k = 0; k < s->nkeys; k++)
 	{
-		if (s->key[k].kind != SAK_LEAF)
+		if (s->key[k].kind != SAK_LEAF && s->key[k].kind != SAK_LUT)
 			return SPW_KEY_EXPR;
 		if (!dim_leaf(lay, nbase, group, s->key[k].leaf) || !add_leaf(dims, &nd, SIFT_SRC_MAX_RDIMS, s->key[k].leaf))
 			return SPW_KEY_LEAF;

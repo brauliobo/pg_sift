@@ -900,6 +900,7 @@ void arm_chunk(AggExec *ex, Tup *t);
 
 /* unit.c */
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
+uint32 key_null_id(AggExec *ex, int ki);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
 void preagg_init(AggExec *ex);
