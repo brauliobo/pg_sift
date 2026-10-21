@@ -913,6 +913,10 @@ void table_init(AggExec *ex);
 void table_reset(AggExec *ex);
 void scan_buffers(AggExec *ex);
 
+/* blob.c */
+void blob_dump(AggExec *ex, int lane, StringInfo b);
+void blob_merge(AggExec *g, const char *p);
+
 /* back_host.c */
 bool backend_begin(AggExec *ex);
 void backend_finish(AggExec *ex);
