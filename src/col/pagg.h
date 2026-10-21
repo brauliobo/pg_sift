@@ -33,6 +33,8 @@ extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext m
  * The rollup of a list in the unit (SiftCRollup, docs/COL-PREAGG.md): its tuples of the dims it holds. Arrays palloc'd in mcxt; dict[j] is the dictionary of a
  * STR dim j (set; zeroed for the other dims). false when the unit may not answer or has no rollup of the list.
  */
+/* the tuples of the unit's rollup of the list without decoding it (0: the unit has none) */
+extern uint32 sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list);
 extern bool sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict);
 
 /* A scan reads the unit for lack of its rollup (missing, other dims, a measure it lacks): asks for the segment to be rewritten (sift_col_rollup_request) */

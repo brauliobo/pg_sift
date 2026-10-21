@@ -577,6 +577,29 @@ has_filter(const SiftAggSpec *s)
 	return false;
 }
 
+/* a leaf of the list's elements, whose count in a unit is the unit's elements */
+static int
+elem_leaf(AggExec *ex)
+{
+	for (int l = 0; l < ex->nbase; l++)
+		if (ex->lay->leaf[l].parent == ex->pa.list && ex->lay->leaf[l].kind == SCL_SCALAR)
+			return l;
+	return -1;
+}
+
+/* does the unit's rollup cost less than its elements (the unit scans when not)? Unknown sizes: the rollup */
+static bool
+rollup_cheaper(AggExec *ex)
+{
+	uint32		nt = sift_colsrc_unit_rollup_tuples(ex->src, &ex->unit, ex->pa.list);
+	int			leaf = elem_leaf(ex);
+	SiftSrcUnitAgg ua;
+
+	if (nt == 0 || leaf < 0 || !sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua))
+		return true;
+	return nt * ex->pa_tuple_cost * sift_agg_rollup_cost <= ua.nvals * ex->pa_elem_cost;
+}
+
 /* The unit's rollup of the list: its tuples that pass the conjuncts, folded into the groups of the keys. false: the unit lacks a dim or a measure the query reads */
 static bool
 preagg_rollup(AggExec *ex)
@@ -593,6 +616,12 @@ preagg_rollup(AggExec *ex)
 	int			nkept = 0;
 
 	ex->pa_miss = true;
+	if (!rollup_cheaper(ex))
+	{
+		ex->pa_miss = false;
+		ex->n_rollup_cost++;
+		return false;
+	}
 	if (!sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &ex->pa_need, &r))
 		return false;
 	for (int d = 0; d < ex->pa.ndims; d++)
@@ -721,7 +750,10 @@ preagg_init(AggExec *ex)
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
 	if (ex->pa_on && ex->pa.list >= 0)
+	{
 		rollup_need(ex);
+		sift_aggspec_unit_costs(ex->spec, ex->lay, &ex->pa_elem_cost, &ex->pa_tuple_cost);
+	}
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
 	{

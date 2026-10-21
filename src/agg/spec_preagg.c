@@ -406,3 +406,55 @@ sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, c
 {
 	return sift_aggspec_preagg_why(s, lay, nbase, pa, out) == SPW_OK;
 }
+
+double		sift_agg_rollup_cost = 1.0;
+
+/* instructions of an aggregate of an element in the scan: a count(*) costs nothing, the sums and counts of a leaf a few, a min or max of a float many */
+static double
+agg_elem_instr(const SiftAggAgg *a, const SiftSrcLayout *lay)
+{
+	double		c = a->kind == SAA_COUNT_STAR ? 0.0 : 8.5;
+
+	if (a->kind == SAA_MIN || a->kind == SAA_MAX)
+		c = a->leaf >= 0 && lay->leaf[a->leaf].vtype == SCV_F64 ? 57.0 : 25.0;
+	return c + (a->filter ? 10.0 : 0.0);
+}
+
+void
+sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *elem, double *tuple)
+{
+	double		e = 5.0,
+				t = 300.0;
+	int			nmeas = 0,
+				nmm = 0,
+				meas[SIFT_SRC_MAX_MEAS];
+
+	e += s->nkeys >= 1 ? 12.0 : 0.0;
+	e += s->nkeys >= 2 ? 5.0 : 0.0;
+	e += s->nkeys >= 3 ? 28.0 * (s->nkeys - 2) : 0.0;
+	t += 45.0 * s->nkeys;
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->level == 1)
+		{
+			e += 3.0;
+			t += 10.0;
+		}
+	for (int i = 0; i < s->naggs; i++)
+	{
+		const SiftAggAgg *a = &s->agg[i];
+		bool		mm = a->kind == SAA_MIN || a->kind == SAA_MAX,
+					seen = false;
+
+		e += agg_elem_instr(a, lay);
+		t += a->filter ? 10.0 : 0.0;
+		if (a->kind == SAA_COUNT_STAR || a->leaf < 0)
+			continue;
+		for (int k = 0; k < nmeas; k++)
+			seen |= meas[k] == a->leaf;
+		if (!seen && nmeas < SIFT_SRC_MAX_MEAS)
+			meas[nmeas++] = a->leaf;
+		nmm += mm && !seen;
+	}
+	*elem = e;
+	*tuple = t + 90.0 * nmeas + 120.0 * nmm;
+}

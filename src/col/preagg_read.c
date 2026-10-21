@@ -315,6 +315,19 @@ need_meas(const SiftCRollupNeed *need, int leaf)
 	return -1;
 }
 
+uint32
+sift_cpagg_rollup_tuples(const uint8 *blob, uint32 len)
+{
+	Rd			rd = {blob, blob + len, false};
+	uint64		nt;
+
+	if (len < 3)
+		return 0;
+	rd.p += 2;
+	nt = get_u(&rd);
+	return rd.bad || nt > SIFT_PAGG_ROLLUP_TUPLES ? 0 : (uint32) nt;
+}
+
 bool
 sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r)
 {

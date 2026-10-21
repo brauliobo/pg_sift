@@ -210,6 +210,8 @@ typedef struct SiftCRollupNeed
 
 /* false when the bytes are not a rollup of this schema; the arrays are palloc'd in mcxt; need NULL: every column */
 extern bool sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r);
+/* the tuples a rollup blob says it holds, read from its header (0: not a rollup) */
+extern uint32 sift_cpagg_rollup_tuples(const uint8 *blob, uint32 len);
 extern bool sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r);
 /* The rollup added up by one of its dims: the histogram of that leaf over the elements (false: the rollup lacks the dim) */
 extern bool sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, int leaf, MemoryContext mcxt, SiftCHistDim *out);

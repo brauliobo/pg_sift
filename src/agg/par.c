@@ -236,6 +236,7 @@ typedef struct WorkerDone
 	int64		n_pre_units;
 	int64		n_rollup_miss;
 	int64		n_rollup_queued;
+	int64		n_rollup_cost;
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_dense;
@@ -340,6 +341,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_pre_units = ex->n_pre_units;
 	done.n_rollup_miss = ex->n_rollup_miss;
 	done.n_rollup_queued = ex->n_rollup_queued;
+	done.n_rollup_cost = ex->n_rollup_cost;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
 	done.n_dense = ex->n_dense;
@@ -431,6 +433,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_pre_units += d->n_pre_units;
 		ex->n_rollup_miss += d->n_rollup_miss;
 		ex->n_rollup_queued += d->n_rollup_queued;
+		ex->n_rollup_cost += d->n_rollup_cost;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		ex->n_dense += d->n_dense;
