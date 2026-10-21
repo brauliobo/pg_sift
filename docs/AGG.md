@@ -97,6 +97,14 @@ reads one index for (a ranked search with `sift.score`, a top-N, a time series o
 attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
 Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
 
+## Partial indexes
+
+A `sift_col` index with a `WHERE` predicate holds only the rows that pass it, so the scan reads it only when the query proves the predicate: the planner
+takes the index when PostgreSQL's `predOK` is true for it (the conditions of the table imply the predicate, as for a partial btree or a BM25 index).
+A query that may need a row outside the predicate keeps the normal plan, and so does a generic plan of a prepared statement whose parameter the proof
+needs. Rows that an `UPDATE` moves in or out of the predicate are inserted into or deleted from the index like any other change. Of several indexes
+that the query can use, a full one and a partial one, the cheaper (the partial one is smaller) wins. Fixtures `pi_*` and `t_partial`, test `agg_partial_index`.
+
 ## Uncorrelated sub-selects
 
 `col NOT IN (SELECT ...)`, and `col IN (SELECT ...)` under `OR` or `NOT`, are hashed `SubPlan`s in PostgreSQL (a semi join is not possible for them), and

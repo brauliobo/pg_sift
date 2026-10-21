@@ -237,6 +237,7 @@ col_index() {
 		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
 		t_nan) ddl="CREATE INDEX t_nan_col ON t_nan USING $AM (id, grp, n2, n6)" ;;
 		t_float) ddl="CREATE INDEX t_float_col ON t_float USING $AM (id, grp, f4, f8)" ;;
+		t_partial) ddl="CREATE INDEX t_partial_col ON t_partial USING $AM (id, grp, day, deleted_at, amount, tag) WHERE deleted_at IS NULL AND day >= '2026-01-08'" ;;
 		t_dist) ddl="CREATE INDEX t_dist_col ON t_dist USING $AM (id, grp, v, w, x)" ;;
 		t_wide) ddl="CREATE INDEX t_wide_col ON t_wide USING $AM (id, grp, qty, n38, n19, nimg, nneg, nhuge, m, iv)" ;;
 		t_misc) ddl="CREATE INDEX t_misc_col ON t_misc USING $AM (id, grp, qty, t, e, u, b, ia, ta, na, r, tr, mr)" ;;
@@ -288,13 +289,13 @@ fixture_tables() {
 		done
 		sql -c "VACUUM FULL $t" || return 1
 	done
-	for t in orders_part t_part t_part_ni t_part_op t_inh t_wl t_rc t_vd; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
+	for t in orders_part t_part t_part_ni t_part_op t_inh t_wl t_rc t_vd t_partial; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
 }
 
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_wl t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_wl t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }

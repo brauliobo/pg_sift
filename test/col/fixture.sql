@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -339,6 +339,12 @@ CREATE AGGREGATE coldiff.sum_six(int, int, int, int, int, int) (sfunc = coldiff.
 CREATE TABLE t_dist (id integer PRIMARY KEY, grp integer NOT NULL, v integer, w integer, x integer);
 INSERT INTO t_dist SELECT i, 1 + i % 8, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 6007 - 3000 END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 100003) % 2000000011 - 1000000000 END,
 	(i * 37) % 1000000
+FROM generate_series(1, 20000) i;
+
+-- a partial column index: the rows that are not deleted, from the eighth day (pi_*: the queries whose conditions imply it use the index, the others the heap)
+CREATE TABLE t_partial (id integer PRIMARY KEY, grp integer NOT NULL, day date NOT NULL, deleted_at timestamp, amount numeric(10,2), tag text);
+INSERT INTO t_partial SELECT i, 1 + i % 8, date '2026-01-01' + i % 60, CASE WHEN i % 9 = 0 THEN timestamp '2026-03-01' END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 1000) / 4.0 END, CASE WHEN i % 13 = 0 THEN NULL ELSE 't' || (i % 40) END
 FROM generate_series(1, 20000) i;
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)

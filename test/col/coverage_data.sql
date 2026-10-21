@@ -22,6 +22,7 @@ CREATE INDEX t_jp_col ON t_jp USING sift_col (id, grp, doc, mdoc) WITH (paths = 
 CREATE INDEX t_eo_col ON t_eo USING sift_col (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}');
 CREATE INDEX t_rc_col ON t_rc USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}');
 CREATE INDEX t_vd_col ON t_vd USING sift_col (id, grp, doc) WITH (paths = 'doc.m.* float8, doc.k float8, doc.l[]{v float8}, doc.n[]{x float8}');
+CREATE INDEX t_partial_col ON t_partial USING sift_col (id, grp, day, deleted_at, amount, tag) WHERE deleted_at IS NULL AND day >= '2026-01-08';
 CREATE INDEX t_wl_col ON t_wl USING sift_col (id, entity_id, source_id, product_id, item_date, updated_at, deleted_at, country_code, composition, segment, ratings, comments, (coldiff.wl_norm(doc)), (coldiff.wl_txt(doc)))
 	WITH (paths = 'ratings.* astext, comments[]{type text}, wl_norm.lang astext, wl_norm.mapped astext, wl_norm.opinions[]{category astext, subrating astext, polarity astext, score float8}, wl_txt.opinions[]{category astext, score astext}');
 
