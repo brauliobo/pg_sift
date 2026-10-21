@@ -498,7 +498,12 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 			l->eoff = palloc((v->nrows + 1) * sizeof(uint32));
 			l->eoff[0] = 0;
 			for (uint32 r = 0; r < v->nrows; r++)
+			{
+				if ((uint64) l->key[r] > PG_UINT32_MAX || (uint64) l->eoff[r] + (uint64) l->key[r] > PG_UINT32_MAX)
+					ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+									errmsg("invalid column unit: the group counts of leaf %d add up to more than %u elements", col, PG_UINT32_MAX)));
 				l->eoff[r + 1] = l->eoff[r] + (uint32) l->key[r];
+			}
 		}
 	}
 	for (int col = 0; col < s->ncols; col++)

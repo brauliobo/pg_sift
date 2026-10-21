@@ -160,6 +160,14 @@ unit_group(ColUnit *cu, int group)
 			cu->src->cnt.bytes_decoded += c.paylen;
 		}
 		sift_cck->prefix32(lead, n + 1, g->eoff, 0, 0);
+		{
+			uint64		total = 0;		/* the running ends are 32 bit: a sum that wrapped would size the child arrays below the counts */
+
+			for (uint32 i = 0; i < n; i++)
+				total += g->counts[i];
+			if (total != g->eoff[n])
+				corrupt("The counts of group %d add up to more than %u elements.", group, PG_UINT32_MAX);
+		}
 		g->nelems = g->eoff[n];
 		g->ready = true;
 	}
