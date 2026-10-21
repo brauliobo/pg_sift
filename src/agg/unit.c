@@ -341,7 +341,7 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 			mx = Max(mx, (int32) key[kept[j]]);
 		}
 	if (!dict)
-		cover = key_cover(ex, ki, mn <= mx, mn, mx);
+		cover = key_cover(ex, ki, mn <= mx, mn, mx, nkept);
 	for (int j = 0; j < nkept; j++)
 	{
 		uint32		g = kept[j];
