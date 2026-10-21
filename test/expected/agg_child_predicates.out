@@ -195,7 +195,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | differences 
 --------+-------------
- f      |           0
+ t      |           0
 (1 row)
 
 -- A predicate-only lookup examines every candidate for each distinct input tuple.

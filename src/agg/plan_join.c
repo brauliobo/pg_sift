@@ -490,6 +490,31 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	return true;
 }
 
+/*
+ * The ON conjuncts of a join that keeps the other table and read only the scanned table (and the rows it unnests) decide which of its
+ * rows can match, as the planner would filter them before the join: they become conditions of the scan, which an EXISTS or a jsonpath test
+ * can be too. The rest is the join's own.
+ */
+static List *
+nullable_filters(AggCtx *c, FromScan *fs, List *quals)
+{
+	List	   *rest = NIL;
+	Relids		own = bms_make_singleton(c->relid);
+
+	if (c->func_rti)
+		own = bms_add_member(own, c->func_rti);
+	foreach_ptr(Node, q, quals)
+	{
+		Relids		v = pull_varnos(c->root, q);
+
+		if (!bms_is_empty(v) && bms_is_subset(v, own) && !contain_volatile_functions(q))
+			fs->scan_quals = lappend(fs->scan_quals, q);
+		else
+			rest = lappend(rest, q);
+	}
+	return rest;
+}
+
 /* a table or plan in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
 bool
 add_join(AggCtx *c, FromScan *fs, Index rti)
@@ -513,7 +538,7 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 		if (lj->rti == rti)
 		{
 			jc->kind = lj->kind;
-			jc->clauses = lj->quals;
+			jc->clauses = lj->kind == SJ_RIGHT ? nullable_filters(c, fs, lj->quals) : lj->quals;
 		}
 	jc->j.kind = jc->kind;
 	jc->j.desc = psprintf("%s%s", what ? (e->rtekind == RTE_VALUES ? "values" : psprintf("%s (%s)", e->eref->aliasname, what)) : get_rel_name(e->relid),

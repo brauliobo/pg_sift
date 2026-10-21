@@ -73,8 +73,10 @@ the matches: a condition on the table's own columns, a NULL key and a duplicate 
 The normal plan stays when a `WHERE` conjunct over only the indexed table must be evaluated after preservation, or the indexed table is partitioned.
 A nullable indexed input may contain ordinary lookup joins and expand one JSON object or array before joining to the preserved side.
 Empty preserved buckets contribute one NULL fact input, including NULL lookup columns and expressions computed inside that input.
+The `ON` conjuncts of such a `LEFT JOIN` that read only the indexed table (and the rows it unnests) decide which of its rows can match, so they are conditions of the scan: an `EXISTS` over the elements of an array, written with a sub-select that PostgreSQL pulls up, or a `jsonb_path_exists`, runs there, and so does an aggregate filter on a test computed inside the nullable input. The test of an absent input (`CASE WHEN absent THEN NULL ELSE x END`) is read as `x` only when `x` is not true for the NULL leaves of the row an empty bucket contributes (comparisons, `IS NOT NULL`, `EXISTS`); `x IS NULL` keeps the normal plan.
 A scan with such a join runs without workers: one scan sees every row.
 Fixtures `ps_*`, rows J06 and J07 of the coverage table.
+Fixtures `nf_*`, test `agg_nullable_filters`, rows J30 and J31.
 
 ## Partitioned tables
 
