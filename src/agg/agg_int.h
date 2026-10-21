@@ -140,8 +140,9 @@ typedef struct AggExec
 	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
 	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
-	SiftSrcPrune *prune;		/* the zone tests of the conjuncts */
+	SiftSrcPrune *prune;		/* the zone tests of the conjuncts: the integer leaves they compare (nprune), then the ORs of such tests (up to nzone) */
 	int			nprune;
+	int			nzone;
 	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */

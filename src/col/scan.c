@@ -319,13 +319,8 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 /* ---------- begin / next ---------- */
 
 static void
-prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
+prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep)
 {
-	SiftColSegment *seg = c->seg;
-
-	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
-	for (uint32 i = 0; i < seg->nsb; i++)
-		sift_col_bit_set(c->keep, i);
 	for (int i = 0; i < npreds; i++)
 	{
 		const SiftColDef *def = &seg->schema->cols[preds[i].col];
@@ -333,21 +328,55 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 
 		if (sift_colw_is_wide_int(def))
 		{
-			sift_colw_prune(seg, &preds[i], c->keep);
+			sift_colw_prune(seg, &preds[i], keep);
 			continue;
 		}
 		if (def->store == SIFT_COLS_STR)
 			seg_test(src, seg, def, &preds[i], &t);
 		else
 			make_test(src, def, NULL, &preds[i], &t);
-		sift_cseg_prune(seg, preds[i].col, &t, c->keep);
+		sift_cseg_prune(seg, preds[i].col, &t, keep);
 	}
+}
+
+/* keep narrowed to the units z may match: a kid of an OR narrows a copy, and the units any copy keeps are the ones kept */
+static void
+prune_zone(SiftColSource *src, SiftColSegment *seg, const SiftColPrune *z, uint64 *keep)
+{
+	uint32		nw = SIFT_COL_NWORDS(seg->nsb);
+	uint64	   *any = z->any ? palloc0(nw * sizeof(uint64)) : NULL;
+	uint64	   *kid = z->any ? palloc(nw * sizeof(uint64)) : keep;
+
+	prune_preds(src, seg, z->preds, z->npreds, keep);
+	for (int i = 0; i < z->nkids; i++)
+	{
+		if (z->any)
+			memcpy(kid, keep, nw * sizeof(uint64));
+		prune_zone(src, seg, &z->kids[i], kid);
+		for (uint32 w = 0; any && w < nw; w++)
+			any[w] |= kid[w];
+	}
+	if (any)
+		memcpy(keep, any, nw * sizeof(uint64));
+}
+
+static void
+prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
+{
+	SiftColSegment *seg = c->seg;
+
+	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	for (uint32 i = 0; i < seg->nsb; i++)
+		sift_col_bit_set(c->keep, i);
+	prune_preds(src, seg, preds, npreds, c->keep);
+	for (int i = 0; i < nzones; i++)
+		prune_zone(src, seg, &zones[i], c->keep);
 	c->cur = sift_cseg_find_unit(seg, sb_lo);
 	c->end = sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi);
 }
 
 void
-sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
+sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
 	MemoryContext old;
 
@@ -357,7 +386,7 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 		if (preds[i].col < 0 || preds[i].col >= src->schema->ncols)
 			elog(ERROR, "sift_col: predicate on leaf %d of %d", preds[i].col, src->schema->ncols);
 	for (int i = 0; i < src->nseg; i++)
-		prune_segment(src, &src->seg[i], preds, npreds, sb_lo, sb_hi);
+		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
@@ -368,6 +397,12 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 	qsort(src->order, src->norder, sizeof(ColMem *), mem_cmp);
 	src->ocur = 0;
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
+{
+	sift_col_begin_zones(src, preds, npreds, NULL, 0, sb_lo, sb_hi);
 }
 
 /* The superblock of the cursor's next kept unit, false at its end */

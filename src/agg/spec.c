@@ -88,23 +88,28 @@ sift_aggspec_integer_type(Oid t)
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
 }
 
-/* the conjuncts a unit's zone can refuse: a comparison (not <>) of an integer-valued leaf with a constant, a numeric leaf as its scaled integer, an IN list */
-static List *
-zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+/* can a unit's zone refuse p: a comparison (not <>) of an integer-valued leaf with a constant, a numeric leaf as its scaled integer, an IN list */
+bool
+sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 {
 	const SiftSrcLeaf *lf;
 	bool		num;
 
+	if ((p->kind != SAP_CMP && p->kind != SAP_IN) || p->leaf >= nbase || (p->kind == SAP_CMP && p->op == SCMP_NE) || (p->kind == SAP_IN && p->op))
+		return false;
+	lf = &lay->leaf[p->leaf];
+	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
+	return lf->parent < 0 && !lf->lossy && (num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid)));
+}
+
+/* the conjuncts a unit's zone can refuse */
+static List *
+zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
 			out = zone_cmps(out, p->child[i], lay, nbase);
-	if ((p->kind != SAP_CMP && p->kind != SAP_IN) || p->leaf >= nbase || (p->kind == SAP_CMP && p->op == SCMP_NE) || (p->kind == SAP_IN && p->op))
-		return out;
-	lf = &lay->leaf[p->leaf];
-	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
-	if (lf->parent >= 0 || lf->lossy || !(num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid))))
-		return out;
-	return lappend(out, (void *) p);
+	return sift_aggspec_zone_cmp(p, lay, nbase) ? lappend(out, (void *) p) : out;
 }
 
 List *

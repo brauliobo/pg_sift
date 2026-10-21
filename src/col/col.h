@@ -488,6 +488,22 @@ extern uint32 sift_col_heap_sbs(const SiftColSource *src);
 extern void sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi);
 
 /*
+ * A zone test of the scan beyond the conjunction of predicates: a unit is kept when every pred may select a row of it and every kid keeps
+ * it (any: some kid keeps it, each tested on its own: an OR). It tests the zones only; the caller filters the rows.
+ */
+typedef struct SiftColPrune
+{
+	const SiftColPred *preds;
+	int			npreds;
+	bool		any;
+	int			nkids;
+	const struct SiftColPrune *kids;
+} SiftColPrune;
+
+/* sift_col_begin, the units also kept by every one of the nzones tests */
+extern void sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi);
+
+/*
  * Adds in-memory units to the source before sift_col_begin: each batch (one SB, rows in key order, all live) is read like a unit of a write
  * buffer (in_wbuf), together with the stored units of the same SB. The rows' visibility is the installed SiftColVisibility's. The batches
  * must outlive the source (the table AM adds the rows of its delta pages this way).
