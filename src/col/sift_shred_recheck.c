@@ -61,15 +61,6 @@ sift_shred_recheck_create(MemoryContext mcxt, const SiftShredSpec *spec)
 }
 
 void
-sift_shred_recheck_free(SiftShredRecheck *rc)
-{
-	pfree(rc->col);
-	pfree(rc->grp);
-	pfree(rc->in);
-	pfree(rc);
-}
-
-void
 sift_shred_recheck_begin(SiftShredRecheck *rc)
 {
 	rc->err = NULL;
@@ -88,20 +79,13 @@ keep_error(SiftShredRecheck *rc, ErrorData *err)
 static void
 function_error(SiftShredRecheck *rc, int sqlstate, const char *fmt, const char *fn)
 {
-	MemoryContext old = CurrentMemoryContext;
+	ErrorSaveContext esc = {T_ErrorSaveContext};
+	MemoryContext old = MemoryContextSwitchTo(rc->mcxt);
 
-	PG_TRY();
-	{
-		ereport(ERROR, (errcode(sqlstate), errmsg(fmt, fn)));
-	}
-	PG_CATCH();
-	{
-		MemoryContextSwitchTo(rc->mcxt);
-		keep_error(rc, CopyErrorData());
-		MemoryContextSwitchTo(old);
-		FlushErrorState();
-	}
-	PG_END_TRY();
+	esc.details_wanted = true;
+	errsave((Node *) &esc, (errcode(sqlstate), errmsg(fmt, fn)));
+	keep_error(rc, esc.error_data);
+	MemoryContextSwitchTo(old);
 }
 
 /* the text of a scalar or container the way `->>` and a record column give it; NULL for a JSON null */
