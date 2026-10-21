@@ -98,3 +98,7 @@ SELECT * FROM check_query($q$
  SELECT count(*) FILTER (WHERE l.label = 'ae') FROM plain_facts f
  LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind = f.kind AND m.region = 'east' LIMIT 1) l ON true
 $q$);
+DROP FUNCTION check_query(text);
+DROP FUNCTION run_query(text, bool);
+DROP TABLE facts, plain_facts, lookup_values, region_kinds, regions;
+DROP EXTENSION pg_sift;
