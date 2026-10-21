@@ -224,3 +224,10 @@ SELECT pushed('SELECT o.c, count(*) FROM d_t, jsonb_array_elements(doc -> $$opin
  f
 (1 row)
 
+DROP FUNCTION rec_q(text, text, text);
+DROP FUNCTION reread(text);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE d_t;
+DROP EXTENSION pg_sift;

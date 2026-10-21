@@ -113,3 +113,11 @@ SELECT same(rec_q('o.c, count(*), avg(o.score), sum(o.n)', 'true')) AS after_pro
 -- the plan keeps the normal plan when something else reads the leaf of the list or the query reads it in a form the source cannot read again
 SELECT pushed('SELECT o.c, avg(o.score) FROM d_t, jsonb_to_recordset(doc -> $$opinions$$) AS o(c text, score float8) WHERE jsonb_array_length(doc -> $$opinions$$) > 1 GROUP BY o.c') AS list_conjunct_pushed;
 SELECT pushed('SELECT o.c, count(*) FROM d_t, jsonb_array_elements(doc -> $$opinions$$) e, jsonb_to_record(e) AS o(c text) GROUP BY o.c') AS elements_pushed;
+
+DROP FUNCTION rec_q(text, text, text);
+DROP FUNCTION reread(text);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE d_t;
+DROP EXTENSION pg_sift;
