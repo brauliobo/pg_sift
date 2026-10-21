@@ -46,7 +46,7 @@ CASES = [
     Case('storage_insert', 'storage', "INSERT INTO mutable VALUES ({id},1,7,'insert common',repeat('p',1500))", reset=RESET, check=STATE, lifecycle='insert_trajectory', workload_version='committed_append_settled_composite_v4'),
     Case('storage_update', 'storage', 'UPDATE mutable SET amount=amount+1 WHERE id BETWEEN 100 AND 200', reset=RESET, check=STATE, lifecycle='reset_each_operation'),
     Case('storage_vacuum_space', 'storage', 'VACUUM (DISABLE_PAGE_SKIPPING) mutable', reset=RESET+'; DELETE FROM mutable WHERE id>2048', check=STATE, lifecycle='reset_each_operation'),
-    Case('bm25_phrase_nightly', 'bm25', "SELECT count(*) FROM docs WHERE body @@> '\"common wifi\"'", "SELECT count(*) FROM seed WHERE body LIKE '%common wifi%'", 'docs_bm25', nightly=True),
+    Case('bm25_phrase_nightly', 'bm25', "SELECT count(*) FROM docs WHERE body @@> '\"common wire\"'", "SELECT count(*) FROM seed WHERE body LIKE '%common wire%'", 'docs_bm25', nightly=True),
     Case('agg_high_cardinality_nightly', 'agg', 'SELECT id,count(*),sum(amount) FROM docs GROUP BY id ORDER BY id', 'SELECT id,count(*),sum(amount) FROM seed GROUP BY id ORDER BY id', 'SiftAgg', nightly=True),
 ]
 

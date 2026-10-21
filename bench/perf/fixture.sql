@@ -5,7 +5,7 @@ CREATE TABLE seed (id int, g int, amount bigint, body text, pad text);
 ALTER TABLE seed ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO seed
 SELECT i,i%16,CASE WHEN i%31=0 THEN NULL ELSE i%1000 END,
-       'common wifi ' || CASE WHEN i%97=3 THEN 'rare ' ELSE '' END ||
+       'common wire ' || CASE WHEN i%97=3 THEN 'rare ' ELSE '' END ||
        repeat('clean ',1+i%13) || 'word' || i%43,(SELECT string_agg(md5(i::text || ':' || j::text),'') FROM generate_series(1,48) j)
 FROM generate_series(1,:rows) i;
 CREATE TABLE docs (LIKE seed);
