@@ -1,0 +1,54 @@
+-- A unit whose rollup answers a query is not read, so the value one of its elements holds in a column jsonb_to_recordset declares and the query
+-- does not read (a string where the column is a float8) raises no error there, where PostgreSQL's function reads every declared column of the element.
+-- A unit that holds such a value is scanned and raises it, as the normal plan does; the units without one keep answering from their rollups.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE pr_clean (id int, items jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO pr_clean
+SELECT i, jsonb_build_array(jsonb_build_object('kind', 'k' || i % 5, 'n', i % 9, 'score', (i % 13)::float8 / 4), jsonb_build_object('kind', 'k' || i % 3, 'n', 2, 'score', 1.5))
+FROM generate_series(1, 20000) i;
+CREATE TABLE pr_dirty (LIKE pr_clean) WITH (autovacuum_enabled = off);
+INSERT INTO pr_dirty SELECT id, CASE WHEN id = 17777 THEN jsonb_set(items, '{0,score}', '"abc"') ELSE items END FROM pr_clean;
+CREATE INDEX pr_clean_col ON pr_clean USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
+CREATE INDEX pr_dirty_col ON pr_dirty USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
+
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
+  RETURN result;
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- whether a unit was answered from the rollup (NULL: the query fails)
+CREATE FUNCTION from_rollup(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+    n := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, n);
+  END LOOP;
+  RETURN n > 0;
+EXCEPTION WHEN OTHERS THEN RETURN NULL;
+END $$;
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, same bool, rollup bool) LANGUAGE sql AS $$
+  SELECT name, outcome(q, false) = outcome(q, true), from_rollup(q)
+$$;
+
+SELECT * FROM check_query('clean: kind', $q$
+ SELECT e.kind, count(*) FROM pr_clean d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1
+$q$);
+SELECT * FROM check_query('dirty: kind', $q$
+ SELECT e.kind, count(*) FROM pr_dirty d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1
+$q$);
+SELECT * FROM check_query('dirty: kind and n', $q$
+ SELECT e.kind, count(*), sum(e.n) FROM pr_dirty d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1
+$q$);
+
+DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool);
+DROP TABLE pr_clean, pr_dirty;
+DROP EXTENSION pg_sift;
