@@ -718,6 +718,70 @@ order_lookups(AggCtx *c, List *quals)
 	return true;
 }
 
+/* the columns of a joined sub-select that its plan outputs: those the query reads, and (the plan evaluates them) those of the conditions it keeps */
+static Bitmapset *
+child_kept_attrs(AggCtx *c, JoinCtx *jc)
+{
+	RelOptInfo *rel = find_base_rel(c->root, jc->rti);
+	Bitmapset  *used = NULL;
+
+	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
+	if (projects_columns(jc->cpath))
+		foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
+			pull_varattnos((Node *) ri->clause, rel->relid, &used);
+	return used;
+}
+
+/*
+ * A column of a sub-select that only a condition pushed down into it read is a NULL in its plan (remove_unused_subquery_outputs), so the
+ * spec, which reads the condition again, must not read it: the normal plan stays. The plan of a sub-select, VALUES list or function keeps
+ * the columns of the conditions it evaluates; an Append or MergeAppend outputs the relation's target only.
+ */
+static bool
+child_cols_kept(AggCtx *c, JoinCtx *jc)
+{
+	Bitmapset  *used = child_kept_attrs(c, jc);
+
+	foreach_ptr(Var, v, jc->cvars)
+		if (!bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, used))
+			return false;
+	return true;
+}
+
+/*
+ * A condition over the columns of a joined sub-select that PostgreSQL pushed down into it (a run condition of a ranking window, a filter of
+ * its scans): its plan enforces it, so its rows are those the condition keeps and the scan does not test it again. Such a condition is
+ * recognized by a column that nothing else of the query keeps in the plan's output.
+ */
+static bool
+pushed_into_child(AggCtx *c, JoinCtx *jc, Node *q)
+{
+	Bitmapset  *vars = NULL;
+
+	if (jc->cpath == NULL || jc->j.params != NIL || !projects_columns(jc->cpath) || !bms_equal(lookup_inputs(c, q), bms_make_singleton(jc->rti)))
+		return false;
+	pull_varattnos(q, jc->rti, &vars);
+	return bms_nonempty_difference(vars, child_kept_attrs(c, jc));
+}
+
+/* the conditions of the list that no plan of a joined sub-select has enforced already */
+static List *
+drop_pushed(AggCtx *c, List *quals)
+{
+	List	   *kept = NIL;
+
+	foreach_ptr(Node, q, quals)
+	{
+		bool		pushed = false;
+
+		foreach_ptr(JoinCtx, jc, c->joins)
+			pushed |= pushed_into_child(c, jc, q);
+		if (!pushed)
+			kept = lappend(kept, q);
+	}
+	return kept;
+}
+
 /*
  * The conjuncts of the WHERE and of the ON clauses that read a joined table. Those of an inner join are its ON clause (the same rows
  * either way); those of an outer, semi or anti join filter its output rows (*post). In the ON clause of every join an equality of a
@@ -756,8 +820,13 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 bool
 setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
 {
-	List	   *probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
+	List	   *probe_quals;
 
+	*quals = drop_pushed(c, *quals);
+	*scan_quals = drop_pushed(c, *scan_quals);
+	foreach_ptr(JoinCtx, jc, c->joins)
+		jc->clauses = drop_pushed(c, jc->clauses);
+	probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->kind == SJ_INNER)
 			probe_quals = list_concat(probe_quals, list_copy(jc->clauses));
@@ -831,27 +900,6 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
 	}
 	add_path(output_rel, &cp->path);
-}
-
-/*
- * A column of a sub-select that only a condition pushed down into it read is a NULL in its plan (remove_unused_subquery_outputs), so the
- * spec, which reads the condition again, must not read it: the normal plan stays. The plan of a sub-select, VALUES list or function keeps
- * the columns of the conditions it evaluates; an Append or MergeAppend outputs the relation's target only.
- */
-static bool
-child_cols_kept(AggCtx *c, JoinCtx *jc)
-{
-	RelOptInfo *rel = find_base_rel(c->root, jc->rti);
-	Bitmapset  *used = NULL;
-
-	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
-	if (projects_columns(jc->cpath))
-		foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
-			pull_varattnos((Node *) ri->clause, rel->relid, &used);
-	foreach_ptr(Var, v, jc->cvars)
-		if (!bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, used))
-			return false;
-	return true;
 }
 
 /*
