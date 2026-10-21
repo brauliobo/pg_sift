@@ -4,14 +4,14 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE entities (id int PRIMARY KEY, kind text);
 INSERT INTO entities SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 49) i;
 CREATE TABLE mappings (kind text, category text, val text, mapped_category text, mapped_val text);
-INSERT INTO mappings VALUES ('a', 'svc', '', 'service', NULL), ('a', 'svc', '', 'duplicate', NULL), ('b', 'svc', '', 'staff', NULL),
- ('b', 'clean', 'x', 'cleanliness', 'room'), ('a', 'nul', NULL, 'never', NULL);
+INSERT INTO mappings VALUES ('a', 'asp_l', '', 'asp_j', NULL), ('a', 'asp_l', '', 'duplicate', NULL), ('b', 'asp_l', '', 'asp_k', NULL),
+ ('b', 'asp_a', 'x', 'asp_b', 'asp_i'), ('a', 'nul', NULL, 'never', NULL);
 CREATE TABLE facts (id int, entity_id int, kind text, document jsonb, payload text);
 INSERT INTO facts
 SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
  jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","sign":"positive","score":8}]'::jsonb
-   ELSE '[{"category":"svc","val":"","sign":"positive","score":9},{"category":"clean","val":"x","sign":"negative","score":3},{"category":"zzz","val":"","sign":"neutral","score":null}]'::jsonb END)
+   WHEN i % 3 = 0 THEN '[{"category":"asp_l","val":"","sign":"positive","score":8}]'::jsonb
+   ELSE '[{"category":"asp_l","val":"","sign":"positive","score":9},{"category":"asp_a","val":"x","sign":"negative","score":3},{"category":"zzz","val":"","sign":"neutral","score":null}]'::jsonb END)
   || CASE WHEN i % 5 = 0 THEN '{"mapped":false}'::jsonb WHEN i % 11 = 0 THEN '{"mapped":null}'::jsonb ELSE '{}'::jsonb END,
  repeat('payload', 50)
 FROM generate_series(1, 60000) i;
@@ -32,7 +32,7 @@ CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
 SELECT id, entity_id, kind,
- CASE WHEN id % 4 = 0 THEN document || '{"tag":"svc"}' WHEN id % 4 = 1 THEN document || '{"tag":"clean"}' WHEN id % 13 = 2 THEN '[1]'::jsonb ELSE document END AS document, payload
+ CASE WHEN id % 4 = 0 THEN document || '{"tag":"asp_l"}' WHEN id % 4 = 1 THEN document || '{"tag":"asp_a"}' WHEN id % 13 = 2 THEN '[1]'::jsonb ELSE document END AS document, payload
 FROM facts;
 CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, entity_id, kind, document, (document ? 'mapped'), (document ->> 'tag'), jsonb_typeof(document))
  WITH (paths = 'document.parts[]{category text}');
@@ -137,7 +137,7 @@ $q$);
 -- The type of the whole document (one argument).
 SELECT * FROM check_query($q$
  SELECT m.mapped_category, count(*) AS n FROM ops_facts f
- LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND jsonb_typeof(f.document) = 'object' AND m.category = 'svc' LIMIT 1) m ON true
+ LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND jsonb_typeof(f.document) = 'object' AND m.category = 'asp_l' LIMIT 1) m ON true
  GROUP BY 1
 $q$);
 DROP FUNCTION check_query(text);

@@ -5,7 +5,7 @@
 -- scenario: yes
 SELECT s.kind, count(DISTINCT w.id) AS n, count(DISTINCT w.id) FILTER (WHERE w.managed IS TRUE) AS managed, count(*) FILTER (WHERE w.id IS NULL) AS empty_stores
 FROM stores s LEFT JOIN (
-  SELECT x.id, x.entity_id, jsonb_path_exists(x.comments, '$[*] ? (@.type == "manager")') AS managed
+  SELECT x.id, x.entity_id, jsonb_path_exists(x.comments, '$[*] ? (@.type == "role_a")') AS managed
   FROM t_load x
   WHERE x.deleted_at IS NULL
     AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, sign, score FROM jsonb_to_recordset(coldiff.load_norm(x.doc) -> 'parts') AS o(category text, sign text, score float8) WHERE o.score IS NOT NULL) o WHERE o.sign = 'positive')

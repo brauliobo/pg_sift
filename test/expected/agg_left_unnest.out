@@ -6,7 +6,7 @@ INSERT INTO facts
 SELECT i, i % 40,
        CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"overall": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
                   WHEN 4 THEN NULL ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END,
-       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"reviewer"},{"type":"manager"}]'::jsonb END
+       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"role_a"}]'::jsonb ELSE '[{"type":"role_c"},{"type":"role_a"}]'::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, metrics, comments) WITH (paths = 'metrics.* float8, comments[]{type text}');
 VACUUM (FREEZE, ANALYZE) facts;
@@ -50,7 +50,7 @@ $q$);
 
 SELECT * FROM check_query('left join, array', $q$
  SELECT count(*) AS n, count(e) AS elements, count(DISTINCT f.id) AS ids
- FROM facts f LEFT JOIN LATERAL jsonb_array_elements(f.comments) e ON e->>'type' = 'manager'
+ FROM facts f LEFT JOIN LATERAL jsonb_array_elements(f.comments) e ON e->>'type' = 'role_a'
 $q$);
       label       | scan | same |                     outcome                     
 ------------------+------+------+-------------------------------------------------
