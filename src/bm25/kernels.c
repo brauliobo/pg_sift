@@ -270,20 +270,25 @@ sift_kern_topk_theta(const SiftTopK *t)
 	return t->n < t->k ? -INFINITY : nextafterf(t->hit[0].score, -INFINITY);
 }
 
-/* Restores the min-heap (worst at the root) below slot i of h[0..n) */
+/*
+ * Restores the min-heap (worst at the root) below slot i of h[0..n): the hole at i sinks to a leaf along the worse child, one comparison
+ * per level, and the hit that was there climbs back to its place. The path and the place are the ones of a sift down that compares the
+ * hit at every level, with about half the comparisons when the hit belongs near the leaves (the last hit of a heap sort always does).
+ */
 static void
 sift_down(SiftHit *h, int64 n, int64 i)
 {
 	SiftHit		x = h[i];
+	int64		top = i;
 
 	for (int64 c; (c = 2 * i + 1) < n; i = c)
 	{
 		if (c + 1 < n && sift_hit_better(h[c].score, h[c].key, &h[c + 1]))
 			c++;
-		if (!sift_hit_better(x.score, x.key, &h[c]))
-			break;
 		h[i] = h[c];
 	}
+	for (int64 p = (i - 1) / 2; i > top && sift_hit_better(h[p].score, h[p].key, &x); i = p, p = (i - 1) / 2)
+		h[i] = h[p];
 	h[i] = x;
 }
 
