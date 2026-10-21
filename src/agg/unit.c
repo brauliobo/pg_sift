@@ -719,10 +719,22 @@ preagg_rollup(AggExec *ex)
 	return true;
 }
 
+/* a unit that holds a value a leaf the source reads again cannot store has the row SQL raises for, also when the query reads other columns: it is scanned */
+static bool
+preagg_rechecked(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+
+	for (int i = 0; ex->recheck && i < s->nleaves; i++)
+		if (s->recheck[i] != SRK_NONE && sift_colsrc_overflow(ex->src, &ex->unit, s->leaves[i]))
+			return true;
+	return false;
+}
+
 static bool
 preagg_unit(AggExec *ex)
 {
-	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || !preagg_zones(ex))
+	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_zones(ex))
 		return false;
 	if (ex->pa.list < 0)
 		return ex->pa.dim < 0 ? preagg_sums(ex) : preagg_hist(ex);
