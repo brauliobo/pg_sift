@@ -21,6 +21,7 @@
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
 #include "storage/latch.h"
+#include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
