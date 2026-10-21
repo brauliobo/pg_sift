@@ -194,7 +194,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
-	sift_tbl_refresh(rel, st);
+	sift_tbl_refresh_full(rel, st);
 	fs = sift_store_free_stats(rel);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
 	v[1] = Int64GetDatum(st->dir.meta.high_water);

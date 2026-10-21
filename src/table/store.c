@@ -213,7 +213,7 @@ sift_tbl_ensure_init(Relation rel)
 }
 
 void
-sift_tbl_refresh(Relation rel, SiftTblRel *st)
+sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 {
 	SiftTblSeg *old = st->wbuf;
 	int			nold = st->nwbuf,
@@ -250,8 +250,18 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 		s->vbase = (uint64) e->sb_lo * SIFT_TBL_VBLOCKS_SB;
 		s->vcap = (e->sb_hi - e->sb_lo + 1) * SIFT_TBL_VBLOCKS_SB;
 	}
+	st->wbuf_version = st->dir.version;
 	if (old)
 		pfree(old);
+}
+
+/* Every directory update bumps its version: a cache that holds the current one has nothing to read (the metapage fields that change without an update, the high-water mark and the generation counter, are not the cache's: sift_tbl_refresh_full) */
+void
+sift_tbl_refresh(Relation rel, SiftTblRel *st)
+{
+	if (st->initialized && st->wbuf != NULL && sift_dir_version(rel) == st->wbuf_version)
+		return;
+	sift_tbl_refresh_full(rel, st);
 }
 
 uint64
