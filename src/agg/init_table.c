@@ -169,6 +169,30 @@ done:
 	MemoryContextSwitchTo(old);
 }
 
+/*
+ * Does an inner or semi join have no row to match (the table, with its own conditions, is empty)? Then no tuple of the scan exists and the
+ * scan has nothing to read: the keys of an integer column are a conjunct that prunes every unit (join_filters), those of another type are
+ * not, and the rows of the scan would be tested against an empty table one by one. The tables are loaded by now (scan_buffers).
+ */
+bool
+join_none(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		const SiftAggCombo *cb = &s->combo[ci];
+		const SiftAggJoin *j;
+
+		if (cb->join < 0 || cb->level != 0 || ex->cs[ci].map == NULL)
+			continue;
+		j = &s->join[cb->join];
+		if ((j->kind == SJ_INNER || j->kind == SJ_SEMI) && j->params == NIL && ex->cs[ci].map->nrow == 0)
+			return true;
+	}
+	return false;
+}
+
 /* An empty group table, all in tcxt: key ids, group arrays, count(DISTINCT) sets */
 void
 table_init(AggExec *ex)

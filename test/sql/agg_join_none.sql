@@ -1,0 +1,75 @@
+-- A join that has no row to match (the dimension's conditions select no key) leaves no tuple: the scan opens, finds the table empty and reads no unit,
+-- whatever the type of the key. The aggregates over nothing are still the normal plan's: the one row of a global aggregate, the grand total of a
+-- grouping set. Joins that keep the rows without a match (LEFT, anti, the preserved side of a spine) still read every unit.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE dims (id int, code text, grp text);
+INSERT INTO dims SELECT i, 'c' || i % 40, CASE WHEN i % 20 = 0 THEN 'g1' WHEN i % 20 = 1 THEN 'g2' ELSE 'g3' END FROM generate_series(0, 79) i;
+INSERT INTO dims VALUES (100, NULL, 'g4'), (101, 'c3', 'g5'), (102, 'c3', 'g5');
+CREATE TABLE facts (id int, dim_id int, code text, day date, amount float8, document jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 110 END, CASE WHEN i % 19 = 0 THEN NULL ELSE 'c' || i % 45 END, '2026-02-01'::date + i % 12, i % 13 + 0.25,
+       jsonb_build_object('parts', CASE WHEN i % 5 = 0 THEN '[]'::jsonb ELSE jsonb_build_array(jsonb_build_object('category', 'catg_a', 'score', i % 9),
+         jsonb_build_object('category', 'catg_b', 'score', CASE WHEN i % 10 = 1 THEN to_jsonb('4'::text) ELSE to_jsonb(i % 7) END)) END)
+FROM generate_series(1, 8000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, code, day, amount, document) WITH (paths = 'document.parts[]{category text,score float8}');
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE dims;
+CREATE TABLE spine (day date PRIMARY KEY);
+INSERT INTO spine SELECT d::date FROM generate_series('2026-02-01'::date, '2026-02-14', '1 day') d;
+
+-- the rows of the query with the extension on and off, how many differ, and the units the first plan read
+CREATE FUNCTION check_query(q text) RETURNS TABLE (n bigint, diff bigint, units bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	SELECT count(*) INTO n FROM r_off;
+	SET LOCAL sift.enable_agg = on;
+	units := -1;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ '^\s+Units: ' THEN units := greatest(units, 0) + substr(l, strpos(l, ': ') + 2)::bigint; END IF;
+	END LOOP;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- units is -1 when the plan has no scan of the index, 0 when it read none
+
+-- no key selected: an integer key, a text key
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.id = f.dim_id WHERE d.grp = 'none' GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none' GROUP BY d.grp$q$);
+-- the aggregates of nothing: one row of a global aggregate, and the grand total of the grouping sets
+SELECT * FROM check_query($q$SELECT count(*) AS n, sum(f.amount) AS s, avg(f.amount) AS m, min(f.day) AS d, count(DISTINCT f.id) AS ids FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none'$q$);
+SELECT * FROM check_query($q$SELECT d.grp, f.day, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none' GROUP BY ROLLUP (d.grp, f.day)$q$);
+SELECT * FROM check_query($q$SELECT d.grp, f.day, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none' GROUP BY GROUPING SETS ((d.grp), (f.day), ())$q$);
+SELECT count(*) AS n, sum(f.amount) AS s FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none';
+-- the elements of a document
+SELECT * FROM check_query($q$SELECT d.grp, avg(l.score), count(*) FROM facts f JOIN dims d ON d.code = f.code CROSS JOIN LATERAL jsonb_to_recordset(f.document -> 'parts') AS l(category text, score float8) WHERE d.grp = 'none' GROUP BY d.grp$q$);
+-- IN and EXISTS: the semi join of a table with no row
+SELECT * FROM check_query($q$SELECT f.day, count(*) FROM facts f WHERE f.code IN (SELECT code FROM dims WHERE grp = 'none') GROUP BY f.day$q$);
+SELECT * FROM check_query($q$SELECT f.day, count(*) FROM facts f WHERE EXISTS (SELECT 1 FROM dims d WHERE d.code = f.code AND d.grp = 'none') GROUP BY f.day$q$);
+-- UNION ALL arms over the empty table
+SELECT * FROM check_query($q$SELECT d.grp AS a, NULL::date AS b, count(*) AS n FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none' GROUP BY d.grp
+	UNION ALL SELECT d.grp, f.day, count(*) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none' GROUP BY d.grp, f.day$q$);
+
+-- one key selected, keys that repeat (c3 is three rows), NULL keys (of the facts and of a dimension row): the units are read
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'g4' GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.id = 1 GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'g5' GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.code = f.code GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.id = f.dim_id WHERE d.grp IN ('g1', 'g4') GROUP BY d.grp$q$);
+
+-- the joins that keep the rows without a match are not empty plans
+SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f LEFT JOIN dims d ON d.code = f.code AND d.grp = 'none' GROUP BY d.grp$q$);
+SELECT * FROM check_query($q$SELECT f.day, count(*) FROM facts f WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.code = f.code AND d.grp = 'none') GROUP BY f.day$q$);
+SELECT * FROM check_query($q$SELECT s.day, count(f.id), sum(f.amount) FROM spine s LEFT JOIN (SELECT f.id, f.day, f.amount FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none') f ON f.day = s.day GROUP BY s.day$q$);
+
+DROP FUNCTION check_query(text);
+DROP TABLE facts, dims, spine;
+DROP EXTENSION pg_sift;
