@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE gs_facts (id int PRIMARY KEY, entity_id int, day date, kind text, scores jsonb);
 INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b', NULL])[1 + i % 3],
-	jsonb_build_object('room_clean', i % 10, 'room', 3, 'view', i % 4) FROM generate_series(1, 3000) i;
+	jsonb_build_object('asp_i_asp_a', i % 10, 'asp_i', 3, 'asp_m', i % 4) FROM generate_series(1, 3000) i;
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, entity_id, day, kind, scores) WITH (paths = 'scores.* float8');
 VACUUM (FREEZE, ANALYZE) gs_facts;
 

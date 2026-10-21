@@ -2,7 +2,7 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT w.mix, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.load_norm(w.doc), '$.parts[*] ? (@.val == "wifi")')) AS no_wifi
+SELECT w.mix, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.load_norm(w.doc), '$.parts[*] ? (@.val == "asp_n")')) AS no_asp_n
 FROM t_load w
 GROUP BY 1
 ORDER BY 1 NULLS FIRST

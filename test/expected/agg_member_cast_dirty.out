@@ -33,33 +33,33 @@ CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
 CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t
-SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'room', (i % 7) + 0.5, 'staff', i % 5)
+SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'asp_i', (i % 7) + 0.5, 'asp_k', i % 5)
 FROM generate_series(1, 6000) i;
-UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 100;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 6000;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', 'true') WHERE id = 5990;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '{"a": 1}') WHERE id = 5980;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '[1]') WHERE id = 5970;
+UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 100;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 6000;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', 'true') WHERE id = 5990;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', '{"a": 1}') WHERE id = 5980;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', '[1]') WHERE id = 5970;
 CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM ANALYZE m_t;
 CREATE FUNCTION mq(sel text, keep text DEFAULT 'true', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || sel || ' FROM m_t t JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE ' || keep || ' GROUP BY ' || grp
 $$;
 -- the leaf is flagged and the scan is in the plan for the rows that hold no such value
-SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS clean_window_pushed;
- clean_window_pushed 
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS asp_a_window_pushed;
+ asp_a_window_pushed 
 ---------------------
  t
 (1 row)
 
-SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 'day < 500')) AS clean_window;
- clean_window 
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 'day < 500')) AS asp_a_window;
+ asp_a_window 
 --------------
  same
 (1 row)
 
-SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8))', 'day BETWEEN 20 AND 400', 't.src, e.key')) AS clean_window_keys;
- clean_window_keys 
+SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8))', 'day BETWEEN 20 AND 400', 't.src, e.key')) AS asp_a_window_keys;
+ asp_a_window_keys 
 -------------------
  same
 (1 row)
@@ -127,7 +127,7 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900')
  same
 (1 row)
 
-SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$room$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$asp_i$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
  member_filtered 
 -----------------
  same
@@ -185,15 +185,15 @@ SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')
 (1 row)
 
 -- rows in the write buffer, updated and deleted ones, and after promotion
-INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "room": 4}'), (7002, 1, 11, '{"overall": "x"}');
+INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "asp_i": 4}'), (7002, 1, 11, '{"overall": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
  write_buffer 
 --------------
  same
 (1 row)
 
-SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_clean;
- write_buffer_clean 
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_asp_a;
+ write_buffer_asp_a 
 --------------------
  same
 (1 row)

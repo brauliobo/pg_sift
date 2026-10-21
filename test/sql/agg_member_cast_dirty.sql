@@ -37,13 +37,13 @@ CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
 CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t
-SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'room', (i % 7) + 0.5, 'staff', i % 5)
+SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'asp_i', (i % 7) + 0.5, 'asp_k', i % 5)
 FROM generate_series(1, 6000) i;
-UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 100;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 6000;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', 'true') WHERE id = 5990;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '{"a": 1}') WHERE id = 5980;
-UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '[1]') WHERE id = 5970;
+UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 100;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 6000;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', 'true') WHERE id = 5990;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', '{"a": 1}') WHERE id = 5980;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_k}', '[1]') WHERE id = 5970;
 CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM ANALYZE m_t;
 
@@ -52,9 +52,9 @@ CREATE FUNCTION mq(sel text, keep text DEFAULT 'true', grp text DEFAULT 'e.key')
 $$;
 
 -- the leaf is flagged and the scan is in the plan for the rows that hold no such value
-SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS clean_window_pushed;
-SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 'day < 500')) AS clean_window;
-SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8))', 'day BETWEEN 20 AND 400', 't.src, e.key')) AS clean_window_keys;
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS asp_a_window_pushed;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 'day < 500')) AS asp_a_window;
+SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8))', 'day BETWEEN 20 AND 400', 't.src, e.key')) AS asp_a_window_keys;
 -- the errors: a row that reaches the cast with a value that is no number, whatever its type
 SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600'), true) AS string;
 SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5990'), true) AS boolean;
@@ -68,7 +68,7 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970')) AS array_sam
 SELECT left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), false), 9) = left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), true), 9) AS whole_table_raises;
 -- a row filtered out reaches nothing: by a leaf of its row, by the key of the member, by a join that drops it
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900')) AS row_filtered;
-SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$room$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$asp_i$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
 SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row;
 SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row_pushed;
 -- a cast that only a FILTER or a CASE evaluates is evaluated for the members it keeps: the dirty one raises nothing here, so the plan stays
@@ -82,9 +82,9 @@ SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) 
 SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;
 
 -- rows in the write buffer, updated and deleted ones, and after promotion
-INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "room": 4}'), (7002, 1, 11, '{"overall": "x"}');
+INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "asp_i": 4}'), (7002, 1, 11, '{"overall": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
-SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_clean;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_asp_a;
 UPDATE m_t SET metrics = '{"overall": 1}' WHERE id = 7002;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
 SELECT sift.col_promote('m_col') >= 0 AS promoted;
