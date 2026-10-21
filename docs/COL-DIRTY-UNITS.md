@@ -47,7 +47,7 @@ document, re-evaluates the spec's leaves with the SQL semantics, and feeds the s
   per-leaf counter in the stats, a format change of the stats page, or a sample at plan time).
 
 Cost: a heap fetch per flagged row (a random read when the page is cold), against the whole table on the heap plan. Size of the
-change: a per-row path through `sift_agg.c` (about the size of the heap-vetting path), the planner gate and the cost, and the whole
+change: a per-row path through `agg/agg.c` (about the size of the heap-vetting path), the planner gate and the cost, and the whole
 coldiff matrix for a mixed unit (all five variants, every scenario). Too large for the 3.2 branch that carries this note.
 
 **B. Let a typed leaf coerce.** A numeric string in a `float8` leaf becomes the number. This changes what the leaf means: `->` gives

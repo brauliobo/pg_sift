@@ -123,7 +123,7 @@ of its month, day and time.
 
 The value code (lane keys, the 128-bit decimal text codec, the image encoder and decoder, the interval total) is `src/col/wide.[ch]`,
 in `src/portable-col.list`: C library and `core/host.h` only, no allocation (the caller passes the buffers), no host type. It uses `__int128`
-(`unsigned __int128`), as `col/preagg.h` and `sift_aggspec.h` already do; a compiler without it (MSVC) cannot build the column engine, which
+(`unsigned __int128`), as `col/preagg.h` and `agg/spec.h` already do; a compiler without it (MSVC) cannot build the column engine, which
 neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C sqlite col-smoke` compiles `portable-col.list`, and
 `scripts/check-portable.sh` checks both lists). The PostgreSQL side (`col/types.c`) maps `Datum`s and OIDs to it.
 
@@ -156,7 +156,7 @@ column runs the normal plan):
 ## 8. What `SiftAgg` does with them
 
 The planner reads a wide leaf (numeric lanes, image, `money`, `interval`) and the opaque images (uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit) through a per-unit
-dictionary of Datums (`src/agg/sift_aggwide.c`): each unit decodes its lanes once into the distinct values (numeric in the short varlena form PostgreSQL
+dictionary of Datums (`src/agg/wide.c`): each unit decodes its lanes once into the distinct values (numeric in the short varlena form PostgreSQL
 builds, the `Interval` struct, the stored varlena or uuid bytes) and the leaf is a code vector of that dictionary, exposed to the executor as an
 ordinary `CODE` leaf whose entries *are* the Datums. Time is an `int64` vector and an enum an `int32` vector of OIDs. A wide leaf is not eligible
 for the dense or LUT key forms, native `count(DISTINCT)`, the pre-aggregates, the top-N scan or the GPU; it goes through the code of PostgreSQL's

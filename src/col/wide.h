@@ -1,7 +1,7 @@
 /*
  * col/wide.h - the values of the leaf types that are not one machine word (docs/COL-LEAFTYPES-32.md): the lane keys of a 128-bit
  * integer, the canonical total of an interval, the canonical image of a decimal of any precision. Portable: the C library and core/host.h
- * only, no allocation (the caller passes every buffer), no host type. __int128 is what col/preagg.h and sift_aggspec.h already need.
+ * only, no allocation (the caller passes every buffer), no host type. __int128 is what col/preagg.h and agg/spec.h already need.
  */
 #ifndef SIFT_COL_WIDE_H
 #define SIFT_COL_WIDE_H

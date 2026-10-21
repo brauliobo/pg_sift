@@ -3,7 +3,7 @@
 #define AK_HARNESS_H
 
 #include "../kernels/harness.h"
-#include "sift_aggkern_int.h"
+#include "agg/kern_int.h"
 
 /* Exactly n bytes, so that a sanitizer sees an access past them */
 static inline void *

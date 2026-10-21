@@ -5,7 +5,7 @@
 
 /* The static helpers and the byte table of the AVX2 level; its table is renamed so that it does not clash */
 #define sift_aggkern_avx2 alt_unused_avx2_table
-#include "../../src/agg/sift_aggkern_avx2.c"
+#include "../../src/agg/kern_avx2.c"
 #undef sift_aggkern_avx2
 
 double		alt_sum_f64_a(const double *v, const uint64 *mask, int n);

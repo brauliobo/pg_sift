@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes src/agg/sift_aggvk_min.h: the part of the Vulkan API that src/agg/sift_aggvk.c uses, copied verbatim from the Khronos header.
+"""Writes src/agg/vk_min.h: the part of the Vulkan API that src/agg/vk.c uses, copied verbatim from the Khronos header.
 
 A VULKAN=1 build then needs no Vulkan SDK or headers (libvulkan.so.1 is opened with dlopen at run time). The declarations are the
 interface of the loader, which does not change: a Vulkan function or structure keeps its layout in every later version.
@@ -7,7 +7,7 @@ interface of the loader, which does not change: a Vulkan function or structure k
     scripts/gen-aggvk-min.py [--header /usr/include/vulkan/vulkan_core.h]        regenerate the file
     scripts/gen-aggvk-min.py --check                                              fail when the file differs from what the header gives
 
-The names are those sift_aggvk.c mentions (identifiers starting with Vk, PFN_vk or VK_), and what their declarations need.
+The names are those agg/vk.c mentions (identifiers starting with Vk, PFN_vk or VK_), and what their declarations need.
 Vulkan headers: Apache-2.0 OR MIT, Copyright 2015-2025 The Khronos Group Inc.
 """
 import argparse
@@ -16,8 +16,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "src/agg/sift_aggvk.c")
-OUT = os.path.join(ROOT, "src/agg/sift_aggvk_min.h")
+SRC = os.path.join(ROOT, "src/agg/vk.c")
+OUT = os.path.join(ROOT, "src/agg/vk_min.h")
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--header", default="/usr/include/vulkan/vulkan_core.h")
@@ -102,7 +102,7 @@ for t in list(wanted["tdef"]):
 
 out = []
 out.append("""/*
- * sift_aggvk_min.h - the Vulkan declarations sift_aggvk.c uses, copied from the Khronos header vulkan_core.h (header version %s) by
+ * agg/vk_min.h - the Vulkan declarations agg/vk.c uses, copied from the Khronos header vulkan_core.h (header version %s) by
  * scripts/gen-aggvk-min.py; do not edit. A VULKAN=1 build needs no Vulkan SDK: the library is opened with dlopen and the functions are
  * taken from it by name. Only the structures, enumerators and function pointer types the backend mentions are here.
  * The Vulkan headers are Apache-2.0 OR MIT, Copyright 2015-2025 The Khronos Group Inc.
@@ -164,7 +164,7 @@ text = re.sub(r"\n{3,}", "\n\n", text)
 if args.check:
     cur = open(OUT).read() if os.path.exists(OUT) else ""
     if cur != text:
-        sys.stderr.write("src/agg/sift_aggvk_min.h differs from what scripts/gen-aggvk-min.py gives\n")
+        sys.stderr.write("src/agg/vk_min.h differs from what scripts/gen-aggvk-min.py gives\n")
         sys.exit(1)
     print("gen-aggvk-min: ok")
 else:
