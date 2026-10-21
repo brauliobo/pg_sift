@@ -747,6 +747,17 @@ explain_pa_leaves(AggExec *ex, ExplainState *es)
 	pfree(m.data);
 }
 
+/* what the scan gives a correlated plan, as the output of an InitPlan: the deparser asserts on a Param that nothing generates */
+static SubPlan *
+lookup_inputs(List *params)
+{
+	SubPlan    *sp = makeNode(SubPlan);
+
+	sift_initplan_named(sp, "input");
+	sp->setParam = params;
+	return sp;
+}
+
 static void
 agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
@@ -803,6 +814,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			QueryDesc   query = {0};
 			PlannedStmt stmt = *estate->es_plannedstmt;
 			ExplainState child;
+			List       *own;
 			char       *label = psprintf("Correlated Lookup %d", i + 1);
 
 			ExplainOpenGroup("Correlated Lookup", label, true, es);
@@ -815,7 +827,10 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			child = *es;
 			child.settings = false;
 			child.printed_subplans = NULL;
+			own = query.planstate->plan->initPlan;
+			query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
 			ExplainPrintPlan(&child, &query);
+			query.planstate->plan->initPlan = own;
 			es->indent = child.indent;
 			es->grouping_stack = child.grouping_stack;
 			ExplainCloseGroup("Correlated Lookup", label, true, es);
