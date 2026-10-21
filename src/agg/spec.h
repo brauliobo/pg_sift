@@ -189,7 +189,8 @@ typedef enum SiftAggKind
 	SAA_X_MIN,					/* min(x), max(x): the type's btree comparison, a tie takes the later value as PostgreSQL's larger / smaller do */
 	SAA_X_MAX,
 	SAA_X_SUM,					/* sum(x), avg(x) of numeric (numeric_add) and float8 (float8pl) */
-	SAA_X_AVG
+	SAA_X_AVG,
+	SAA_O_COUNT_KEY				/* count(DISTINCT x) of a column the arms group by: the distinct ids of key `slot` in the cells of a group */
 } SiftAggKind;
 
 /* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
@@ -273,7 +274,7 @@ typedef struct SiftAggAgg
 	int			ncond;			/* SAA_O_*: the FILTER */
 	SiftAggCond *cond;
 	int			combo;			/* SAA_M_*: the combo and slot that give the ids of the values */
-	int			slot;
+	int			slot;			/* ... SAA_O_COUNT_KEY: the key whose ids it counts */
 	int			nref;			/* SAA_GROUPING: the keys of its arguments */
 	int		   *ref;
 	char	   *desc;
