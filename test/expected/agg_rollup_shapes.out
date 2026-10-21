@@ -69,7 +69,10 @@ INSERT INTO pa_q VALUES
 	(22, 'filter on a measure',   'SELECT e.kind, count(*) FILTER (WHERE e.score > 5) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(23, 'every part of measures', 'SELECT e.flag, count(e.kind), count(e.score), sum(e.qty), min(e.qty), max(e.score), avg(e.qty), count(e.band), min(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(24, 'counts of a measure only', 'SELECT e.kind, count(e.score), count(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
-	(25, 'one measure, minmax only', 'SELECT e.kind, e.flag, min(e.qty), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2');
+	(25, 'one measure, minmax only', 'SELECT e.kind, e.flag, min(e.qty), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2'),
+	(26, 'sets: cube, derived key', 'SELECT left(e.seen, 7), e.flag, count(*), avg(e.score), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY CUBE (1, 2)'),
+	(27, 'sets: empty set, test', 'SELECT e.kind, e.flag, e.band, count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.band >= 4 GROUP BY GROUPING SETS ((e.kind), (e.flag, e.band), ())'),
+	(28, 'sets: grouping()', 'SELECT e.kind, GROUPING(e.kind), count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY ROLLUP (e.kind)');
 CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
@@ -93,7 +96,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | all  |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | all  |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | t
@@ -109,7 +112,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | all  |                                        | t
  24 | counts of a measure only  | all  |                                        | t
  25 | one measure, minmax only  | all  |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | all  |                                        | t
+ 27 | sets: empty set, test     | all  |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 -- rows change: the units they are on are scanned, the others answer; the derived keys follow
 UPDATE ev SET items = '[{"kind": "k1", "flag": "fa", "band": 9, "seen": "2026-02-10", "score": 1.5, "qty": 2}]' WHERE id BETWEEN 100 AND 150;
@@ -126,7 +132,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | some |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | some |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | t
@@ -142,7 +148,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | some |                                        | t
  24 | counts of a measure only  | some |                                        | t
  25 | one measure, minmax only  | some |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | some |                                        | t
+ 27 | sets: empty set, test     | some |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 VACUUM (index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
@@ -157,7 +166,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | some |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | some |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | t
@@ -173,7 +182,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | some |                                        | t
  24 | counts of a measure only  | some |                                        | t
  25 | one measure, minmax only  | some |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | some |                                        | t
+ 27 | sets: empty set, test     | some |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 -- rows in the write buffer, then sealed
 INSERT INTO ev SELECT g, g % 7, '[{"kind": null, "flag": "fc", "band": null, "seen": "2026-03-01", "score": 2.5, "qty": 3}, {"kind": "k2", "flag": "fa", "band": 4, "seen": "2026-01-02"}]', repeat('p', 200)
@@ -190,7 +202,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | some |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | some |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | f
@@ -206,7 +218,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | some |                                        | t
  24 | counts of a measure only  | some |                                        | t
  25 | one measure, minmax only  | some |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | some |                                        | t
+ 27 | sets: empty set, test     | some |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;
  promoted 
@@ -227,7 +242,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | some |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | some |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | f
@@ -243,7 +258,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | some |                                        | t
  24 | counts of a measure only  | some |                                        | t
  25 | one measure, minmax only  | some |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | some |                                        | t
+ 27 | sets: empty set, test     | some |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 SELECT sift.col_verify('ev_col', true);
  col_verify 
@@ -277,7 +295,7 @@ SELECT * FROM pa_check('ev');
   7 | key: band case            | all  |                                        | t
   8 | test on a measure         | -    | conjunct is not on the dims            | t
   9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | -    | grouping sets                          | t
+ 10 | grouping sets             | all  |                                        | t
  11 | joined table              | -    | joined table                           | t
  12 | key of the rows           | -    | group key is not a dim leaf            | t
  13 | variance                  | -    | aggregate not additive over tuples     | t
@@ -293,7 +311,10 @@ SELECT * FROM pa_check('ev');
  23 | every part of measures    | all  |                                        | t
  24 | counts of a measure only  | all  |                                        | t
  25 | one measure, minmax only  | all  |                                        | t
-(25 rows)
+ 26 | sets: cube, derived key   | all  |                                        | t
+ 27 | sets: empty set, test     | all  |                                        | t
+ 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+(28 rows)
 
 DROP TABLE ev, ev_dim, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int);
