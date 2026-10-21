@@ -23,11 +23,14 @@ SET maintenance_work_mem = '4MB';
 SET max_parallel_maintenance_workers = 3;
 SET sift.test_run_docs = 20;
 SET sift.test_segment_postings = 300;
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX bp_idx ON bp USING sift (body);
-DEBUG:  building index "bp_idx" on table "bp" with request for 3 parallel workers
-DEBUG:  building sift index "bp_idx" with 3 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       3
+(1 row)
+
 SELECT count(*) > 3 AS segments FROM sift.segments('bp_idx');
  segments 
 ----------

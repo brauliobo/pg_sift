@@ -47,11 +47,14 @@ SET maintenance_work_mem = '1MB';
 SET sift.test_run_docs = 3;
 SET sift.test_merge_fanin = 3;
 SET max_parallel_maintenance_workers = 2;
-SET client_min_messages = debug1;
+SET sift.test_par_workers = 0;
 CREATE INDEX br_par ON br USING sift (body);
-DEBUG:  building index "br_par" on table "br" with request for 2 parallel workers
-DEBUG:  building sift index "br_par" with 2 parallel workers
-RESET client_min_messages;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       2
+(1 row)
+
 SELECT sift.verify('br_par', true);
  verify 
 --------

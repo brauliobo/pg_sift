@@ -42,6 +42,7 @@
 #include "core/visibility.h"
 #include "bm25/pushdown.h"
 #include "col/shred.h"
+#include "core/parbuild.h"
 #include "core/sql.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_MODULE_VERSION);
@@ -155,6 +156,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_run_docs",
 							"Testing: documents a CREATE INDEX run holds before it is spilled (0 = by memory).",
 							NULL, &sift_test_run_docs, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_par_workers",
+							"Testing: parallel workers the last CREATE INDEX of this session launched (a test sets it to 0 before the build).",
+							NULL, &sift_test_par_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_fanin",
 							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
 							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
