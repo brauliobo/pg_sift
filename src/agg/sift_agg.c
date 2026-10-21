@@ -93,6 +93,7 @@ static bool sift_agg_dense = true;
 static bool sift_agg_semi_lut = true;
 static int	sift_agg_semi_lut_size = 4096;
 static bool sift_agg_lookup_pushdown = true;
+static bool sift_agg_join_filter = true;
 bool		sift_enable_topn = true;
 static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
@@ -132,6 +133,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_lookup_pushdown",
 							 "Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading.",
 							 NULL, &sift_agg_lookup_pushdown, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_join_filter",
+							 "Tests the integer key leaf of an inner or semi lookup join against the keys of the loaded table before tuples are made (zone pruning, source filters, row bitmaps).",
+							 NULL, &sift_agg_join_filter, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
@@ -749,6 +754,7 @@ typedef struct AggExec
 	ItemPointerData *tid_tids;
 	SiftVis    *tid_vis;		/* a heap: the visible versions of its edge blocks' rows (a HOT chain's member, not the root the index keeps) */
 	TupleTableSlot *tid_slot;
+	int			njfilter;		/* the join key conjuncts join_filters added to the spec */
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
@@ -1697,6 +1703,40 @@ in_hash_has(const PredState *st, int64 x)
 	return false;
 }
 
+/* the test of an IN list of nv values within [lo, hi]: a byte table over the range, else the sorted values (an int4 leaf) or a hash table (an int8 leaf); false (nothing built) when only a table is wanted and the range is too wide */
+static bool
+in_build(PredState *st, bool wide, bool table_only, const int64 *vals, int nv, int64 lo, int64 hi)
+{
+	uint64		span = nv > 0 ? (uint64) hi - (uint64) lo + 1 : 0;	/* 0: all the 2^64 values */
+
+	if (nv > 0 && (span == 0 || span > MAX_RANGE) && table_only)
+		return false;
+	st->in_lut = palloc0(SIFT_AGG_PAD);
+	if (nv == 0)
+		return true;
+	if (span == 0 || span > MAX_RANGE)
+	{
+		if (wide)
+			in_hash_build(st, vals, nv);
+		else
+		{
+			st->in_sorted = palloc(nv * sizeof(int32));
+			for (int i = 0; i < nv; i++)
+				st->in_sorted[i] = (int32) vals[i];
+			qsort(st->in_sorted, nv, sizeof(int32), int32_cmp_asc);
+			st->in_nsorted = nv;
+		}
+		return true;
+	}
+	st->in_lo = lo;
+	st->in_nlut = (uint32) span;
+	st->in_lut = palloc0(span + SIFT_AGG_PAD);
+	for (int i = 0; i < nv; i++)
+		st->in_lut[vals[i] - lo] = 1;
+	st->in_dense = memchr(st->in_lut, 0, span) == NULL;
+	return true;
+}
+
 static void
 eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 {
@@ -1762,34 +1802,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 			lo = Min(lo, v);
 			hi = Max(hi, v);
 		}
-		st->in_lut = palloc0(SIFT_AGG_PAD);
-		if (nv > 0)
-		{
-			uint64		span = (uint64) hi - (uint64) lo + 1;	/* 0: all the 2^64 values */
-
-			if (span == 0 || span > MAX_RANGE)
-			{
-				if (wide)
-					in_hash_build(st, vals, nv);
-				else
-				{
-					st->in_sorted = palloc(nv * sizeof(int32));
-					for (int i = 0; i < nv; i++)
-						st->in_sorted[i] = (int32) vals[i];
-					qsort(st->in_sorted, nv, sizeof(int32), int32_cmp_asc);
-					st->in_nsorted = nv;
-				}
-			}
-			else
-			{
-				st->in_lo = lo;
-				st->in_nlut = (uint32) span;
-				st->in_lut = palloc0(span + SIFT_AGG_PAD);
-				for (int i = 0; i < nv; i++)
-					st->in_lut[vals[i] - lo] = 1;
-				st->in_dense = memchr(st->in_lut, 0, span) == NULL;
-			}
-		}
+		in_build(st, wide, false, vals, nv, lo, hi);
 	}
 	MemoryContextSwitchTo(old);
 	st->ready = true;
@@ -9918,6 +9931,130 @@ register_combos(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/*
+ * A tuple of an inner or semi join needs a row of the table with its key, so the keys of the loaded table are a conjunct of the scan,
+ * `leaf IN (keys)`: the leaf's zones, the source's filters and the row bitmaps apply it before a tuple is made, where the join would
+ * resolve every tuple through the combo cache. The table is loaded here (the table's own conditions already hold for its rows).
+ */
+static bool
+join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const SiftSrcLeaf *lf;
+
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || cb->level != 0)
+		return false;
+	*leaf = cb->leaf[j->keypos[k]];
+	if (*leaf < 0 || *leaf >= ex->nbase)
+		return false;
+	lf = &ex->lay->leaf[*leaf];
+	return lf->kind == SCL_SCALAR && lf->parent < 0 && lf->vtype == SCV_I32;
+}
+
+static SiftAggPred *
+join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const MapTab *m = ex->cs[ci].map;
+	PredState  *st = &ex->ps[id];
+	SiftAggPred *p;
+	int64	   *vals = palloc(Max(m->nrow, 1) * sizeof(int64));
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+	int			nv = 0;
+
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		int64		v = m->kint[(size_t) r * m->nkey + k];
+
+		if (v < PG_INT32_MIN || v > PG_INT32_MAX)
+			continue;				/* no int4 value equals it */
+		vals[nv++] = v;
+		lo = Min(lo, v);
+		hi = Max(hi, v);
+	}
+	if (!in_build(st, false, true, vals, nv, lo, hi))
+	{
+		pfree(vals);
+		return NULL;
+	}
+	pfree(vals);
+	st->ready = true;
+	p = palloc0(sizeof(SiftAggPred));
+	p->kind = SAP_IN;
+	p->id = id;
+	p->leaf = leaf;
+	p->leaf2 = -1;
+	p->argtype = ex->lay->leaf[leaf].typid;
+	p->desc = psprintf("%s IN (keys of %s)", ex->lay->leaf[leaf].name, j->desc);
+	return p;
+}
+
+static void
+join_filters(AggExec *ex, MemoryContext caller)
+{
+	SiftAggSpec *s = ex->spec;
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	List	   *add = NIL;
+	int			total = s->npreds_total;
+
+	for (int j = 0; j < s->njoin; j++)
+		if (sift_aggjoin_preserves(s->join[j].kind))
+			goto done;
+	if (!sift_agg_join_filter || s->topn)
+		goto done;
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		const SiftAggJoin *j;
+		int			leaf;
+
+		if (s->combo[ci].join < 0)
+			continue;
+		j = &s->join[s->combo[ci].join];
+		for (int k = 0; k < j->nkey; k++)
+		{
+			SiftAggPred *p;
+
+			if (!join_filter_leaf(ex, ci, k, &leaf))
+				continue;
+			if (ex->cs[ci].map == NULL)
+			{
+				/* a child plan runs in the context the scan was started in */
+				MemoryContextSwitchTo(caller);
+				ex->cs[ci].map = map_load(ex, ci);
+				MemoryContextSwitchTo(ex->cxt);
+			}
+			if (ex->cs[ci].map->ktext[k])
+				continue;
+			/* the table of the predicate is the state of the id it is given: make room first */
+			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
+			memset(&ex->ps[total], 0, sizeof(PredState));
+			if ((p = join_filter_pred(ex, ci, k, leaf, total)) != NULL)
+			{
+				add = lappend(add, p);
+				total++;
+			}
+		}
+	}
+	if (add != NIL)
+	{
+		SiftAggSpec *c = palloc(sizeof(SiftAggSpec));
+
+		*c = *s;
+		c->pred = palloc((s->npred + list_length(add)) * sizeof(SiftAggPred *));
+		memcpy(c->pred, s->pred, s->npred * sizeof(SiftAggPred *));
+		foreach_ptr(SiftAggPred, p, add)
+			c->pred[c->npred++] = p;
+		c->npreds_total = total;
+		ex->spec = c;
+		ex->njfilter = list_length(add);
+	}
+done:
+	MemoryContextSwitchTo(old);
+}
+
 /* An empty group table, all in tcxt: key ids, group arrays, count(DISTINCT) sets */
 static void
 table_init(AggExec *ex)
@@ -10063,7 +10200,8 @@ scan_buffers(AggExec *ex)
 		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		if (s->combo[ci].join >= 0)
 		{
-			ex->cs[ci].map = map_load(ex, ci);
+			if (ex->cs[ci].map == NULL)
+				ex->cs[ci].map = map_load(ex, ci);
 			if (s->join[s->combo[ci].join].params == NIL)
 				semi_lut_build(ex, ci);
 		}
@@ -11874,6 +12012,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
 	register_combos(ex);
+	join_filters(ex, old);
 	pgagg_init(ex);
 	prune_init(ex);
 	filter_init(ex);
@@ -12111,6 +12250,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			if (es->timing)
 				ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
 		}
+		if (c->njfilter > 0)
+			ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
 		if (c->nsemi > 0)
 		{
 			ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);

@@ -1,0 +1,111 @@
+-- An inner or semi lookup join on an integer leaf of Custom Scan (SiftAgg) tests the leaf against the keys of the loaded table before tuples are made
+-- (sift.agg_join_filter; "Join Key Filters" of EXPLAIN ANALYZE): the units the keys' range misses are not read, the other rows are tested as a set.
+-- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows (and the errors) must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- events stored in entity order, so that a set of entities is a few units
+CREATE TABLE ev (id int PRIMARY KEY, entity_id int, small_id int2, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i - 1) / 20 END, (i % 50)::int2, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 300000) i;
+CREATE INDEX ev_col ON ev USING sift_col (entity_id, small_id, day, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- a dimension with a duplicate key, a NULL key, keys the events do not have, a zero divisor on entities that exist, and an int8 key table
+CREATE TABLE ents (id int, country int, tier int, label text);
+INSERT INTO ents SELECT i, i % 60, CASE WHEN i % 10 = 0 THEN 0 ELSE 1 + i % 4 END, 'e' || i FROM generate_series(1, 15000) i;
+INSERT INTO ents VALUES (11, 11, 3, 'dup'), (NULL, 11, 1, 'nokey'), (900000, 11, 1, 'far'), (-5, 11, 1, 'neg');
+CREATE INDEX ents_country ON ents (country);
+CREATE TABLE ents8 (id int8, grp int);
+INSERT INTO ents8 SELECT i, i % 7 FROM generate_series(1, 15000) i;
+INSERT INTO ents8 VALUES (5000000000, 1), (-5000000000, 1), (4294967297, 1);
+CREATE TABLE pairs (entity_id int, small_id int2, w int);
+INSERT INTO pairs SELECT 1 + i * 3, (i % 50)::int2, i FROM generate_series(0, 4000) i;
+CREATE TABLE days (d date, name text);
+INSERT INTO days SELECT date '2024-01-01' + i * 9, 'd' || i FROM generate_series(0, 70) i;
+CREATE TABLE nothing (id int, label text);
+ANALYZE ents; ANALYZE ents8; ANALYZE pairs; ANALYZE days; ANALYZE nothing;
+
+-- the filters and pruned units of an EXPLAIN ANALYZE, and whether the plan is the pushed one
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Join Key Filters:%' THEN r := r || ' key filters ' || trim(split_part(l, ':', 2)); END IF;
+		IF l LIKE '%Units Pruned: _%' AND l NOT LIKE '%Units Pruned: 0%' THEN r := r || ' units pruned'; END IF;
+		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_filter bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_join_filter = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_join_filter;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_no_filter := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- an inner join that returns a column of the table, selective (a country: its keys span the events, 1,500 of the 15,000 entities) and a few entities
+SELECT * FROM same($$SELECT e.country, e.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 7 GROUP BY 1, 2$$);
+SELECT * FROM same($$SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.id < 40 AND e.country = e.id % 60 GROUP BY 1$$);
+-- the duplicate key multiplies the events of its entity; a NULL key, a key far away and a negative one match nothing
+SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 11 GROUP BY 1$$);
+-- the whole table, the leaves' own filters, and a table with no rows or no matching row
+SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE day >= '2025-01-01' AND small_id < 30 GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN nothing e ON e.id = ev.entity_id$$);
+SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 999$$);
+-- semi joins: IN and EXISTS
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELECT id FROM ents WHERE country = 7) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.entity_id AND e.tier = 2) GROUP BY kind$$);
+-- two joins on two leaves, a join on two keys, an int8 key table (keys past int4 match no event), a date key
+SELECT * FROM same($$SELECT e.country, d.name, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id JOIN days d ON d.d = ev.day WHERE e.country < 3 GROUP BY 1, 2$$);
+SELECT * FROM same($$SELECT p.w % 5 AS w, count(*) AS n FROM ev JOIN pairs p ON p.entity_id = ev.entity_id AND p.small_id = ev.small_id GROUP BY 1$$);
+SELECT * FROM same($$SELECT e.grp, count(*) AS n FROM ev JOIN ents8 e ON e.id = ev.entity_id GROUP BY 1$$);
+-- a LEFT join and an anti join keep the tuples without a match: no filter
+SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev LEFT JOIN ents e ON e.id = ev.entity_id AND e.country = 7 GROUP BY 1$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.entity_id AND e.country = 7) GROUP BY kind$$);
+-- a sub-select as the table
+SELECT * FROM same($$SELECT s.c, count(*) AS n FROM ev JOIN (SELECT id, country AS c FROM ents WHERE country < 4 ORDER BY id LIMIT 500) s ON s.id = ev.entity_id GROUP BY 1$$);
+-- a divisor that is zero only on entities outside the table's rows is never evaluated for their events, as in the normal plan; a zero on a matching one raises the same error
+SELECT * FROM same($$SELECT count(*) AS n, sum(amount / e.tier) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 7 AND e.tier > 0$$);
+CREATE FUNCTION error_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN EXECUTE q; RETURN 'no error'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
+SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 10$$) AS filter;
+SET sift.agg_join_filter = off;
+SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 10$$) AS no_filter;
+RESET sift.agg_join_filter;
+SET sift.enable_agg = off;
+SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 10$$) AS normal_plan;
+RESET sift.enable_agg;
+DROP FUNCTION error_of(text);
+
+-- parallel workers build their own sets
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SELECT * FROM same($$SELECT e.country, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country < 5 GROUP BY 1$$);
+RESET max_parallel_workers_per_gather;
+
+-- a prepared statement with a parameter in the table's condition, run again with another value and with the filter off
+PREPARE by_country(int) AS SELECT e.country, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = $1 GROUP BY 1;
+EXECUTE by_country(3);
+EXECUTE by_country(4);
+SET sift.agg_join_filter = off;
+EXECUTE by_country(3);
+RESET sift.agg_join_filter;
+
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, ents, ents8, pairs, days, nothing;
+DROP EXTENSION pg_sift;
