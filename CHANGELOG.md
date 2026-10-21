@@ -85,6 +85,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Fixed: pg_sift: SiftAgg answered a unit of `jsonb_to_recordset` from its rollup although an element held, in a column the function declares and the query does not read, a value the column's type refuses (a string where it is a float8); PostgreSQL raises for it, and now the unit is scanned and raises too.
 - Fixed: pg_sift: SiftAgg no longer fails with `a column of the aggregate scan holds values its index cannot store` for a `jsonb_to_recordset` query that has a condition on the same list, when a document that the condition drops holds a value one of the function's declared columns refuses; the query keeps PostgreSQL's plan, which never gives that document to the function.
 - Changed: pg_sift: the arms of one statement that join the same table with the same columns and no condition of its own share the rows they load also when their join keys read a different number of columns (`Shared Lookup Tables`).
+- Fixed: pg_sift: SiftAgg gave a correlated child of `jsonb_each` the number as the float the index stores, so a cast to `numeric` or the jsonb itself lost the scale the document wrote (`12.50` came back as `12.5`); a child now reads the member only through integer and float casts, and the others keep PostgreSQL's plan. No query of the 301-query analytics corpus read a member that way.
 
 ## Unreleased
 

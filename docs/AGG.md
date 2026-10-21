@@ -26,14 +26,14 @@ PostgreSQL's plan in another, so a child that can raise (a division, a cast of t
 conditions of the scanned table come before it in both plans), else the normal plan stays; so it does for a child that reads the whole document or a column of a
 query above the aggregate's own (a sub-select of an outer query: its value changes per row of that query).
 The value of a `jsonb_each` member (`r.value`) is given to the child as the jsonb its stored float stands for (the member's number, or a JSON null when
-the member holds none), so the child may cast it (`CAST(r.value AS integer)`): the cast runs only for the members of the rows that reach the child, and
+the member holds none), so the child may cast it to an integer or float (`CAST(r.value AS integer)`): the cast runs only for the members of the rows that reach the child, and
 raises PostgreSQL's own error (`integer out of range`). A document the index cannot hold as numbers (a string or object member) keeps the normal plan.
-A path declared `float8` holds floats, so a child reads the float: a number that is not exactly a float8 (`9007199254740993`, `1.50` as `numeric` or `text`) reads as the float.
+A path declared `float8` holds floats, which carry no scale: a child that reads the member any other way (a cast to `numeric` or `boolean`, `r.value` itself, as text) would see `12.5` where the document has `12.50`, so it keeps the normal plan (test `agg_child_member_value`).
 A lateral sub-select that PostgreSQL does not pull up because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`; below a `RIGHT` or `FULL` join the normal plan stays) is pulled up
 inside its own query level by the planner hook (`agg/flat.c`), which plans the query both ways and keeps the flat plan when it runs in the scan and costs
 less; a sub-select with a join of its own is attached through its leftmost table, as `(a JOIN jsonb_each(a.doc) r) LEFT JOIN m ON ..`.
 `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` with a constant key is the member `k` of each row (an object has one member per key; a row without it stays, with NULL columns): the scan reads it at the
-row level, as `(doc ->> 'k')::float8`, and no element is unnested. A correlated child reads `r.value` only through casts of jsonb to a number or boolean (a missing member and a JSON null are the same NULL, and a
+row level, as `(doc ->> 'k')::float8`, and no element is unnested. A correlated child reads `r.value` only through casts of jsonb to an integer or float (a missing member and a JSON null are the same NULL, and a
 JSON null casts to NULL in PostgreSQL 18); before PostgreSQL 18, with another condition, or with `r.key` read, the normal plan stays. Other outer joins of an unnested JSON function keep the normal plan too.
 Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation`, `agg_append_children`, `agg_raw_value_children`, `agg_lateral_flatten`, `agg_left_each` and `agg_left_unnest`.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.

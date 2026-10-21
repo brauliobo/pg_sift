@@ -46,7 +46,7 @@ SELECT * FROM check_query('union all, filter, key', $q$
  WHERE f.dim_a_id < 30 AND r.key = 'mhead'
  GROUP BY 1, 2
 $q$);
--- the number itself is the argument: its cast to numeric keeps the digits of the stored float
+-- a cast to numeric keeps the scale the document wrote, which the stored float does not: the normal plan (agg_child_member_value)
 SELECT * FROM check_query('numeric', $q$
  SELECT c.v, count(*) AS n
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
