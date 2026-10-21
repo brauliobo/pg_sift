@@ -772,6 +772,10 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
+void run_scan(AggExec *ex);
+void list_groups(AggExec *ex);
+Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
+Datum agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull);
 void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
 void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
@@ -931,6 +935,12 @@ void lane_fold(AggExec *ex);
 void scan_items(AggExec *ex);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);
+
+/* fuse.c */
+void fuse_register(AggExec *ex);
+void fuse_unregister(AggExec *ex);
+bool fuse_start(AggExec *ex);
+TupleTableSlot *fuse_next(AggExec *ex, TupleTableSlot *slot);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
