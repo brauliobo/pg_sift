@@ -589,7 +589,7 @@ elem_leaf(AggExec *ex)
 
 /*
  * Units in a row that must cost at least a quarter more from the rollup than from the elements before the next ones are scanned without even looking
- * at them (their exactness, their rollup), and how many are skipped before one is looked at again: the units of an index look alike, and
+ * at them (their exactness, their rollup), and how many are skipped before one is looked at again (a clear scan then skips the next ones at once): the units of an index look alike, and
  * looking costs buffer reads that a scan the cost chose anyway does not need.
  */
 #define PA_SCAN_RUN		3
@@ -600,8 +600,8 @@ rollup_skip(AggExec *ex)
 {
 	if (ex->pa_scan_run < PA_SCAN_RUN)
 		return false;
-	if (++ex->pa_scan_run > PA_SCAN_RUN + PA_SCAN_RESAMPLE)
-		ex->pa_scan_run = 0;
+	if (++ex->pa_scan_run >= PA_SCAN_RUN + PA_SCAN_RESAMPLE)
+		ex->pa_scan_run = PA_SCAN_RUN - 1;		/* one more clear scan skips again */
 	ex->n_rollup_cost++;
 	return true;
 }
