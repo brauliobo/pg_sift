@@ -229,6 +229,26 @@ sift_cseg_dict_stored(SiftColSegment *seg, int col)
 	return len;
 }
 
+/* The dictionary of leaf col read from the segment into mcxt (the loader of the backend's cache, col/dictcache.c) */
+static SiftCDict *
+dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
+{
+	uint64		off,
+				len;
+	char	   *data;
+	Size		used;
+	SiftCDict  *d;
+
+	dict_region(seg, col, &off, &len);
+	data = palloc(len);
+	seg_read(seg, sec(seg, SIFT_SEC_DICT)->off + off, len, data);
+	d = sift_cdict_parse(mcxt, data, len, &used);
+	if (d == NULL)
+		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+	pfree(data);
+	return d;
+}
+
 SiftCDict *
 sift_cseg_dict(SiftColSegment *seg, int col)
 {
@@ -237,20 +257,7 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 	if (seg->schema->cols[col].store != SIFT_COLS_STR)
 		return NULL;
 	if (pv->dict[col] == NULL)
-	{
-		uint64		off,
-					len;
-		char	   *data;
-		Size		used;
-
-		dict_region(seg, col, &off, &len);
-		data = palloc(len);
-		seg_read(seg, sec(seg, SIFT_SEC_DICT)->off + off, len, data);
-		pv->dict[col] = sift_cdict_parse(seg->mcxt, data, len, &used);
-		if (pv->dict[col] == NULL)
-			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-		pfree(data);
-	}
+		pv->dict[col] = sift_cseg_dict_cached(seg, col, dict_load);
 	return pv->dict[col];
 }
 
