@@ -333,20 +333,20 @@ static const sift_grp *ls_seek(sift_cur *c, uint32_t target)
 	uint32_t base = i, gid = SIFT_GID(ls_at(c, &i, target));
 	for (;;) {
 		/* tight loop over the decoded window (or the raw array) */
-		const sift_tid *t = c->ls.t ? c->ls.t : c->ls.blk - c->ls.bi;
-		uint32_t end = c->ls.t ? n : c->ls.bi + c->ls.bn;
+		const sift_tid *t = c->ls.t ? c->ls.t : c->ls.blk;
+		uint32_t o = c->ls.t ? 0 : c->ls.bi, end = c->ls.t ? n : c->ls.bi + c->ls.bn;
 		if (b.w <= 8)
-			for (; i < end && SIFT_GID(t[i]) == gid; i++) {
-				uint32_t pg = SIFT_BLK(t[i]) & (SIFT_GROUP_PAGES - 1);
+			for (; i < end && SIFT_GID(t[i - o]) == gid; i++) {
+				uint32_t pg = SIFT_BLK(t[i - o]) & (SIFT_GROUP_PAGES - 1);
 				if (pg != b.last) {
 					if (b.last != UINT32_MAX && pg < b.last) sift_codec_corrupt("postings of a group are not in page order");
 					build_flush(&b);
 					b.cur = 0, b.r++, b.last = pg, b.pages[pg >> 6] |= 1ull << (pg & 63);
 				}
-				b.cur |= 1ull << (SIFT_OFF(t[i]) - 1);
+				b.cur |= 1ull << (SIFT_OFF(t[i - o]) - 1);
 			}
 		else
-			for (; i < end && SIFT_GID(t[i]) == gid; i++) build_add(&b, SIFT_BLK(t[i]) & (SIFT_GROUP_PAGES - 1), SIFT_OFF(t[i]) - 1);
+			for (; i < end && SIFT_GID(t[i - o]) == gid; i++) build_add(&b, SIFT_BLK(t[i - o]) & (SIFT_GROUP_PAGES - 1), SIFT_OFF(t[i - o]) - 1);
 		if (i < end || i == n || SIFT_GID(ls_at(c, &i, target)) != gid) break;
 	}
 	build_flush(&b);
