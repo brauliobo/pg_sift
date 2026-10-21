@@ -7,12 +7,12 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ents (id int PRIMARY KEY, type text NOT NULL);
 INSERT INTO ents SELECT i, (ARRAY['site', 'museum', 'diner', 'ferry'])[1 + i % 4] FROM generate_series(1, 60) i;
--- the sections of an item: a category, a polarity and a score that is a number, a numeric string or text
+-- the sections of an item: a category, a sign and a score that is a number, a numeric string or text
 CREATE FUNCTION op_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN i % 301 = 0 THEN '[]'::jsonb ELSE jsonb_build_object('lang', (ARRAY['en', 'de', 'fr'])[1 + i % 3], 'sections', (
 		SELECT coalesce(jsonb_agg(jsonb_build_object(
 			'category', (ARRAY['service', 'food', 'view', 'price'])[1 + (i * j) % 4],
-			'polarity', (ARRAY['positive', 'negative', 'neutral'])[1 + (i + j) % 3],
+			'sign', (ARRAY['positive', 'negative', 'neutral'])[1 + (i + j) % 3],
 			'score', CASE (i + j) % 11 WHEN 0 THEN to_jsonb('n/a'::text) WHEN 1 THEN to_jsonb(((i * j) % 10)::text) ELSE to_jsonb(((i * j) % 100) / 10.0) END) ORDER BY j), '[]')
 		FROM generate_series(1, i % 5) j)) END $$;
 -- the same with the scores as text (what a client that keeps the values as they are reads); a document that is no object is NULL
@@ -23,7 +23,7 @@ CREATE FUNCTION op_txt(doc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 CREATE TABLE ev (id int PRIMARY KEY, entity_id int, deleted_at timestamptz, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + (i * 7) % 60, CASE WHEN i % 17 = 0 THEN now() END, op_doc(i) FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, entity_id, deleted_at, (op_txt(doc)))
-	WITH (paths = 'op_txt.lang astext, op_txt.sections[]{category astext, polarity astext, score astext}');
+	WITH (paths = 'op_txt.lang astext, op_txt.sections[]{category astext, sign astext, score astext}');
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE ents;
 -- the shape of the plan: the number of SiftAgg nodes and the aggregates one pushes
@@ -87,8 +87,8 @@ SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE entity_id = ANY (ARRAY(SELEC
 (1 row)
 
 -- EXISTS over the sections of an index expression, with the members of one element and the other elements not counting
-SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text, polarity text)
-	WHERE o.category = 'service' AND o.polarity = 'negative')) AS service_negative, count(*) AS n FROM ev$$);
+SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text, sign text)
+	WHERE o.category = 'service' AND o.sign = 'negative')) AS service_negative, count(*) AS n FROM ev$$);
                        plan                        | result_rows | vs_normal_plan 
 ---------------------------------------------------+-------------+----------------
  SiftAgg (Pushed Aggregates: count(*), count(*); ) |           1 |              0
@@ -108,13 +108,13 @@ SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FRO
 (1 row)
 
 -- nested jsonpath tests over the sections
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.sections[*] ? (@.category == "service" && @.polarity == "negative")')$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.sections[*] ? (@.category == "service" && @.sign == "negative")')$$);
                   plan                   | result_rows | vs_normal_plan 
 -----------------------------------------+-------------+----------------
  SiftAgg (Pushed Aggregates: count(*); ) |           1 |              0
 (1 row)
 
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.sections[*] ? (@.polarity != "neutral")'$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.sections[*] ? (@.sign != "neutral")'$$);
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------
  normal |           1 |              0

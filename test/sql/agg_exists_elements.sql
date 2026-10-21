@@ -15,14 +15,14 @@ SELECT i, i % 52, '2026-01-01'::date + (i % 9),
  CASE WHEN i % 29 = 0 THEN NULL
       WHEN i % 31 = 0 THEN '{}'::jsonb
       ELSE jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","polarity":"positive","score":8}]'::jsonb
-   ELSE '[{"category":"svc","val":"","polarity":"positive","score":9},{"category":"clean","val":"x","polarity":"negative","score":3},{"category":"zzz","val":"","polarity":"neutral","score":null},{"category":"nul","val":null,"polarity":"neutral","score":1}]'::jsonb END)
+   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","sign":"positive","score":8}]'::jsonb
+   ELSE '[{"category":"svc","val":"","sign":"positive","score":9},{"category":"clean","val":"x","sign":"negative","score":3},{"category":"zzz","val":"","sign":"neutral","score":null},{"category":"nul","val":null,"sign":"neutral","score":1}]'::jsonb END)
    || CASE WHEN i % 5 = 0 THEN '{"mapped":false}'::jsonb WHEN i % 11 = 0 THEN '{"mapped":null}'::jsonb WHEN i % 13 = 0 THEN '{"mapped":true}'::jsonb ELSE '{}'::jsonb END END,
  CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('overall', i % 11, 'service_room', (i * 3) % 11) END,
  repeat('payload', 30)
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, day, document, metrics, jsonb_exists(document, 'mapped'))
- WITH (paths = 'document.parts[]{category text,val text,score float8,polarity text}, metrics.* float8');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,sign text}, metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE entities;
@@ -52,7 +52,7 @@ SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n, avg(f.id) AS mean FROM facts f JOIN entities e ON e.id = f.entity_id
  WHERE EXISTS (SELECT 1 FROM LATERAL (
    SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.category ELSE m.mapped_category END) AS category
-   FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+   FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    LEFT JOIN LATERAL (SELECT lm.mapped_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
      AND lm.mapped_category IS NOT NULL AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) m ON true
    WHERE o.score IS NOT NULL) x WHERE x.category IN ('service', 'cleanliness'))
@@ -62,53 +62,53 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n, count(DISTINCT f.id) AS items, sum(f.id) AS total FROM facts f JOIN entities e ON e.id = f.entity_id
  WHERE f.id > 100 AND EXISTS (SELECT 1 FROM LATERAL (
-   SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.category ELSE m.mapped_category END) AS category, o.polarity
-   FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+   SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.category ELSE m.mapped_category END) AS category, o.sign
+   FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    LEFT JOIN LATERAL (SELECT lm.mapped_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
      AND lm.mapped_category IS NOT NULL AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) m ON true
-   WHERE o.score IS NOT NULL) x WHERE x.category IN ('service') AND x.polarity IN ('positive', 'neutral'))
+   WHERE o.score IS NOT NULL) x WHERE x.category IN ('service') AND x.sign IN ('positive', 'neutral'))
  GROUP BY e.kind
 $q$);
 -- The element is compared with a column of the joined table, without a lookup.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN entities e ON e.id = f.entity_id
- WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    WHERE o.score IS NOT NULL AND o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
  GROUP BY e.kind
 $q$);
 -- Two of them, and a count of the elements of another array of the same rows (the tuples repeat the row).
 SELECT * FROM check_query($q$
  SELECT r.key, count(*) AS n, avg(r.value::float8) AS mean FROM facts f JOIN entities e ON e.id = f.entity_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
- WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
-   AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
-   WHERE o.polarity = CASE e.kind WHEN 'a' THEN 'positive' ELSE 'negative' END)
+   AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
+   WHERE o.sign = CASE e.kind WHEN 'a' THEN 'positive' ELSE 'negative' END)
  GROUP BY r.key
 $q$);
 -- The entities with no row, the ones with a NULL kind and the documents with no array: the same rows as PostgreSQL's.
 SELECT * FROM check_query($q$
  SELECT e.id IS NULL AS no_entity, e.kind, count(*) AS n FROM facts f LEFT JOIN entities e ON e.id = f.entity_id
- WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
-   WHERE o.category = 'svc' AND (e.kind IS NULL OR o.polarity <> 'negative'))
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
+   WHERE o.category = 'svc' AND (e.kind IS NULL OR o.sign <> 'negative'))
  GROUP BY 1, 2
 $q$);
 -- The test in the nullable input of a preserved side: the buckets that no row reaches stay.
 SELECT * FROM check_query($q$
  SELECT d.day, count(DISTINCT f.id) AS n, avg(f.id) AS mean FROM dates d
  LEFT JOIN (SELECT f.id, f.day FROM facts f JOIN entities e ON e.id = f.entity_id
-   WHERE f.id % 4 <> 3 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+   WHERE f.id % 4 <> 3 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
      WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)) f ON f.day = d.day
  GROUP BY d.day
 $q$);
 -- NOT EXISTS, and an EXISTS inside an aggregate's FILTER, stay with PostgreSQL.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN entities e ON e.id = f.entity_id
- WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+ WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
  GROUP BY e.kind
 $q$);
 SELECT * FROM check_query($q$
- SELECT e.kind, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+ SELECT e.kind, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
    WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)) FROM facts f JOIN entities e ON e.id = f.entity_id
  GROUP BY e.kind
 $q$);
@@ -117,7 +117,7 @@ EXPLAIN (COSTS OFF)
 SELECT e.kind, count(*) FROM facts f JOIN entities e ON e.id = f.entity_id
 WHERE EXISTS (SELECT 1 FROM LATERAL (
   SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.category ELSE m.mapped_category END) AS category
-  FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, polarity text)
+  FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, sign text)
   LEFT JOIN LATERAL (SELECT lm.mapped_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
     AND lm.mapped_category IS NOT NULL AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) m ON true
   WHERE o.score IS NOT NULL) x WHERE x.category IN ('service', 'cleanliness'))

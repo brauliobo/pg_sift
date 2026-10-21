@@ -247,7 +247,7 @@ col_index() {
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
 		t_rc) ddl="CREATE INDEX t_rc_col ON t_rc USING $AM (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}')" ;;
 		t_vd) ddl="CREATE INDEX t_vd_col ON t_vd USING $AM (id, grp, doc) WITH (paths = 'doc.m.* float8, doc.k float8, doc.l[]{v float8}, doc.n[]{x float8}')" ;;
-		t_load) ddl="CREATE INDEX t_load_col ON t_load USING $AM (id, entity_id, src_id, prod_id, item_date, updated_at, deleted_at, country_code, mix, segment, metrics, comments, (coldiff.load_norm(doc)), (coldiff.wl_txt(doc))) WITH (paths = 'metrics.* astext, comments[]{type text}, load_norm.lang astext, load_norm.mapped astext, load_norm.parts[]{category astext, val astext, polarity astext, score float8}, wl_txt.parts[]{category astext, score astext}')" ;;
+		t_load) ddl="CREATE INDEX t_load_col ON t_load USING $AM (id, entity_id, src_id, prod_id, item_date, updated_at, deleted_at, country_code, mix, segment, metrics, comments, (coldiff.load_norm(doc)), (coldiff.wl_txt(doc))) WITH (paths = 'metrics.* astext, comments[]{type text}, load_norm.lang astext, load_norm.mapped astext, load_norm.parts[]{category astext, val astext, sign astext, score float8}, wl_txt.parts[]{category astext, score astext}')" ;;
 		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
 		t_part) ddl="CREATE INDEX t_part_col ON t_part USING $AM (id, grp, d, qty, amount, tag, doc, note) WITH (paths = 'doc->k int4, doc->s text')" ;;
 		t_part_ni) ddl="CREATE INDEX t_part_ni_a_col ON t_part_ni_a USING $AM (id, grp, d, qty)" ;;

@@ -24,7 +24,7 @@ CREATE INDEX t_rc_col ON t_rc USING sift_col (id, grp, doc) WITH (paths = 'doc.l
 CREATE INDEX t_vd_col ON t_vd USING sift_col (id, grp, doc) WITH (paths = 'doc.m.* float8, doc.k float8, doc.l[]{v float8}, doc.n[]{x float8}');
 CREATE INDEX t_partial_col ON t_partial USING sift_col (id, grp, day, deleted_at, amount, tag) WHERE deleted_at IS NULL AND day >= '2026-01-08';
 CREATE INDEX t_load_col ON t_load USING sift_col (id, entity_id, src_id, prod_id, item_date, updated_at, deleted_at, country_code, mix, segment, metrics, comments, (coldiff.load_norm(doc)), (coldiff.wl_txt(doc)))
-	WITH (paths = 'metrics.* astext, comments[]{type text}, load_norm.lang astext, load_norm.mapped astext, load_norm.parts[]{category astext, val astext, polarity astext, score float8}, wl_txt.parts[]{category astext, score astext}');
+	WITH (paths = 'metrics.* astext, comments[]{type text}, load_norm.lang astext, load_norm.mapped astext, load_norm.parts[]{category astext, val astext, sign astext, score float8}, wl_txt.parts[]{category astext, score astext}');
 
 CREATE TYPE cv_color AS ENUM ('red', 'green', 'blue');
 CREATE TABLE cv_types (

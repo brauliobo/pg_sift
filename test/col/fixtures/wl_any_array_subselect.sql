@@ -4,8 +4,8 @@
 -- key: -
 -- scenario: yes
 SELECT w.mix,
-	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'accommodation'))) AS in_type,
-	   count(*) FILTER (WHERE w.entity_id <> ALL (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'accommodation'))) AS not_in_type,
+	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'cat_a'))) AS in_type,
+	   count(*) FILTER (WHERE w.entity_id <> ALL (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'cat_a'))) AS not_in_type,
 	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.id < 0))) AS empty_array,
 	   count(*) FILTER (WHERE w.prod_id = ANY (ARRAY(SELECT x.prod_id FROM t_load x WHERE x.id <= 40))) AS with_null,
 	   count(*) FILTER (WHERE NOT (w.prod_id = ANY (ARRAY(SELECT x.prod_id FROM t_load x WHERE x.id <= 40)))) AS not_with_null,
