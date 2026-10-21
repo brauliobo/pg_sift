@@ -146,18 +146,26 @@ sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb)
 	return lo;
 }
 
+/* The buffer of a unit record holds len bytes and the SIFT_COL_PAD bytes the kernels read past the packed payload of its last chunk */
+static void
+unit_room(SiftColSegment *seg, SegPriv *pv, uint32 len)
+{
+	if (len + SIFT_COL_PAD > pv->unitcap)
+	{
+		pv->unitcap = Max(len + SIFT_COL_PAD, 2 * pv->unitcap);
+		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(seg->mcxt, pv->unitcap);
+	}
+}
+
 const uint8 *
 sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len)
 {
 	SegPriv    *pv = PRIV(seg);
 	const SiftColSBRef *r = &seg->sbdir[u];
 
-	if (r->len > pv->unitcap)
-	{
-		pv->unitcap = Max(r->len, 2 * pv->unitcap);
-		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(seg->mcxt, pv->unitcap);
-	}
+	unit_room(seg, pv, r->len);
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + r->off, r->len, pv->unitbuf);
+	memset(pv->unitbuf + r->len, 0, SIFT_COL_PAD);
 	*len = r->len;
 	return pv->unitbuf;
 }
@@ -168,14 +176,12 @@ sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail)
 	SegPriv    *pv = PRIV(seg);
 	const SiftColSBRef *r = &seg->sbdir[u];
 
-	if (r->len > pv->unitcap)
-	{
-		pv->unitcap = Max(r->len, 2 * pv->unitcap);
-		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(seg->mcxt, pv->unitcap);
-	}
+	unit_room(seg, pv, r->len);
 	*len = r->len;
 	*avail = Min(r->len, SIFT_COL_UNIT_HEAD);
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + r->off, *avail, pv->unitbuf);
+	if (*avail == r->len)
+		memset(pv->unitbuf + r->len, 0, SIFT_COL_PAD);
 	return pv->unitbuf;
 }
 
@@ -186,6 +192,7 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 
 	Assert((uint64) off + len <= seg->sbdir[u].len);
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off + off, len, pv->unitbuf + off);
+	memset(pv->unitbuf + seg->sbdir[u].len, 0, SIFT_COL_PAD);
 }
 
 /* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
