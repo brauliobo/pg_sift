@@ -152,14 +152,14 @@ semi_lut_build(AggExec *ex, int ci)
 	keep = palloc(Max(m->nrow, 1) * sizeof(bool));
 	for (uint32 r = 0; r < m->nrow; r++)
 	{
-		keep[r] = m->kint[r] >= PG_INT32_MIN && m->kint[r] <= PG_INT32_MAX;
+		keep[r] = map_kint(m, r, 0) >= PG_INT32_MIN && map_kint(m, r, 0) <= PG_INT32_MAX;
 		if (keep[r] && j->fslot >= 0 && !m->filtered)
 		{
 			bool		isnull;
 			Datum		d;
 
 			for (int c = 0; c < j->ncol; c++)
-				bind_param(ex, cb->nleaves + c, m->col[(size_t) r * m->ncol + c], m->cnull[(size_t) r * m->ncol + c]);
+				map_bind(ex, cb->nleaves + c, m, r, c);
 			d = ExecEvalExprSwitchContext(cs->slot[j->fslot], ex->lutcx, &isnull);
 			keep[r] = !isnull && DatumGetBool(d);
 			if ((r & 1023) == 1023)
@@ -167,8 +167,8 @@ semi_lut_build(AggExec *ex, int ci)
 		}
 		if (keep[r])
 		{
-			lo = Min(lo, m->kint[r]);
-			hi = Max(hi, m->kint[r]);
+			lo = Min(lo, map_kint(m, r, 0));
+			hi = Max(hi, map_kint(m, r, 0));
 		}
 	}
 	ResetExprContext(ex->lutcx);
@@ -185,7 +185,7 @@ semi_lut_build(AggExec *ex, int ci)
 		if (keep[r])
 		{
 			/* an inner join repeats a tuple per row of its key: only a key that holds once is a membership test */
-			if (cs->slut[m->kint[r] - cs->slo] && j->kind == SJ_INNER)
+			if (cs->slut[map_kint(m, r, 0) - cs->slo] && j->kind == SJ_INNER)
 			{
 				pfree(cs->slut);
 				cs->slut = NULL;
@@ -193,7 +193,7 @@ semi_lut_build(AggExec *ex, int ci)
 				pfree(keep);
 				return;
 			}
-			cs->slut[m->kint[r] - cs->slo] = 1;
+			cs->slut[map_kint(m, r, 0) - cs->slo] = 1;
 		}
 	pfree(keep);
 	ex->nsemi++;

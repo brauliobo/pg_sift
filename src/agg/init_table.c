@@ -83,7 +83,7 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 
 	for (uint32 r = 0; r < m->nrow; r++)
 	{
-		int64		v = m->kint[(size_t) r * m->nkey + k];
+		int64		v = map_kint(m, r, k);
 
 		if ((live && !live[r]) || (ex->lay->leaf[leaf].vtype == SCV_I32 && (v < PG_INT32_MIN || v > PG_INT32_MAX)))
 			continue;				/* no int4 value equals it, or no tuple of the row survives the joins after it */

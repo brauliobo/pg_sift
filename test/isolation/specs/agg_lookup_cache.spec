@@ -4,11 +4,11 @@
 
 setup
 {
-	CREATE TABLE iso_lc (id int PRIMARY KEY, dim_a_id int, kind text) WITH (autovacuum_enabled = off);
-	INSERT INTO iso_lc SELECT i, i % 40, (array['a', 'b', 'c'])[1 + i % 3] FROM generate_series(1, 4000) i;
-	CREATE INDEX iso_lc_col ON iso_lc USING sift_col (id, dim_a_id, kind);
-	CREATE TABLE iso_lc_dim (id int, country int, label text) WITH (autovacuum_enabled = off);
-	INSERT INTO iso_lc_dim SELECT i, i % 4, 'e' || i FROM generate_series(0, 39) i;
+	CREATE TABLE iso_lc (id int PRIMARY KEY, dim_a_id int, kind text, code text) WITH (autovacuum_enabled = off);
+	INSERT INTO iso_lc SELECT i, i % 40, (array['a', 'b', 'c'])[1 + i % 3], 'c' || (i % 40) FROM generate_series(1, 4000) i;
+	CREATE INDEX iso_lc_col ON iso_lc USING sift_col (id, dim_a_id, kind, code);
+	CREATE TABLE iso_lc_dim (id int, country int, label text, code text) WITH (autovacuum_enabled = off);
+	INSERT INTO iso_lc_dim SELECT i, i % 4, 'e' || i, 'c' || i FROM generate_series(0, 39) i;
 }
 
 setup		{ VACUUM (FREEZE, ANALYZE) iso_lc; }
@@ -17,9 +17,8 @@ setup		{ VACUUM (FREEZE, ANALYZE) iso_lc_dim; }
 setup
 {
 	-- the tables the node took from an earlier query, and whether its rows are those of the normal plan, in the snapshot of the statement
-	CREATE FUNCTION iso_lc_run() RETURNS text LANGUAGE plpgsql AS $$
+	CREATE FUNCTION iso_lc_check(q text) RETURNS text LANGUAGE plpgsql AS $$
 	DECLARE
-		q text := 'SELECT d.label, f.kind, count(*) AS n FROM iso_lc f JOIN iso_lc_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind';
 		l text;
 		nodes int := 0;
 		kept int := 0;
@@ -37,23 +36,30 @@ setup
 		DROP TABLE iso_lc_on, iso_lc_off;
 		RETURN format('%s SiftAgg nodes, %s cached tables, %s differences from the normal plan', nodes, kept, differences);
 	END $$;
+	-- an integer key, and a text key whose rows keep their label and code as distinct values
+	CREATE FUNCTION iso_lc_run() RETURNS text LANGUAGE sql AS $$
+		SELECT iso_lc_check('SELECT d.label, f.kind, count(*) AS n FROM iso_lc f JOIN iso_lc_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind') $$;
+	CREATE FUNCTION iso_lc_runt() RETURNS text LANGUAGE sql AS $$
+		SELECT iso_lc_check('SELECT d.label, f.kind, count(*) AS n FROM iso_lc f LEFT JOIN iso_lc_dim d ON d.code = f.code GROUP BY d.label, f.kind') $$;
 }
 
 teardown
 {
-	DROP FUNCTION iso_lc_run();
+	DROP FUNCTION iso_lc_run(), iso_lc_runt(), iso_lc_check(text);
 	DROP TABLE iso_lc, iso_lc_dim;
 }
 
 session s1
 setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; }
 step s1run	{ SELECT iso_lc_run(); }
+step s1runt	{ SELECT iso_lc_runt(); }
 step s1rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_lc_dim; }
 step s1end	{ COMMIT; }
 
 session s2
 step s2begin	{ BEGIN; }
 step s2upd	{ UPDATE iso_lc_dim SET country = 1 WHERE id = 3; }
+step s2updt	{ UPDATE iso_lc_dim SET label = 'renamed', code = 'c4' WHERE id = 7; }
 step s2ins	{ INSERT INTO iso_lc_dim VALUES (2, 1, 'late'); }
 step s2del	{ DELETE FROM iso_lc_dim WHERE id = 5; }
 step s2commit	{ COMMIT; }
@@ -70,3 +76,5 @@ permutation s1run s1run s2begin s2ins s2del s2abort s1run s2vacuum s1run s1run
 permutation s1run s1run s2del s1run s2vacuum s1run s1run
 # a snapshot older than a committed write and its vacuum reads the rows of its own snapshot
 permutation s1run s1run s1rr s2upd s2del s2vacuum s1run s1end s1run s1run
+# a text key: a changed label and key give the rows of the normal plan, and the rows are kept again once vacuumed
+permutation s1runt s1runt s2begin s2updt s1runt s2commit s1runt s2vacuum s1runt s1runt
