@@ -198,12 +198,11 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 
 		if (n == rem)
 		{
-			Page		page = BufferGetPage(cur);
 			SiftPageEdit ed;
 
-			sift_page_edit_begin(&ed, page, SIFT_PAGE_DATA_OFFSET + sizeof(SiftWbufPageHeaderData));
-			put_piece(page, tid, dl, !first, t + i, n, tb);
-			sift_page_edit_end(index, cur, &ed, 0, 0);
+			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + sizeof(SiftWbufPageHeaderData));
+			put_piece(ed.page, tid, dl, !first, t + i, n, tb);
+			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
 		/* a doc that fits an empty page moves there whole rather than splitting */

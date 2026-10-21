@@ -320,16 +320,23 @@ sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int nla
 	pg_unreachable();
 }
 
-#define EDIT_HEAD_FRAGS	6			/* regions of the head bytes; with the extra region and the appended bytes, 16 of the 20 chunks of a WAL record */
+#define EDIT_HEAD_FRAGS	6			/* regions of the head bytes; with the extra region and the appended bytes, 16 chunks of a WAL record per page */
+#define EDIT_FRAGS		(EDIT_HEAD_FRAGS + 2)
 #define EDIT_GAP		4			/* equal bytes between two changed ones that are logged with them: a region costs 4 bytes of header */
 
 void
-sift_page_edit_begin(SiftPageEdit *e, Page page, Size headlen)
+sift_page_edit_begin(SiftPageEdit *e, Buffer buf, Size headlen)
 {
+	Page		page = BufferGetPage(buf);
+
 	Assert(headlen <= SIFT_EDIT_HEAD);
+	if (CritSectionCount == 0)		/* the first of the edits of a record: the room for all of them, outside a critical section */
+		XLogEnsureRecordSpace(SIFT_EDIT_PAGES - 1, SIFT_EDIT_PAGES * EDIT_FRAGS * 2);
+	e->buf = buf;
 	e->page = page;
 	e->headlen = headlen;
 	e->lower = ((PageHeader) page)->pd_lower;
+	e->extra_len = 0;
 	memcpy(e->head, page, headlen);
 #ifdef USE_ASSERTION_CHECKING
 	memcpy(e->image, page, BLCKSZ);
@@ -338,10 +345,17 @@ sift_page_edit_begin(SiftPageEdit *e, Page page, Size headlen)
 }
 
 void
-sift_page_edit_end(Relation index, Buffer buf, SiftPageEdit *e, Size extra_off, Size extra_len)
+sift_page_edit_extra(SiftPageEdit *e, Size off, Size len)
+{
+	e->extra_off = off;
+	e->extra_len = len;
+}
+
+/* The regions (offset, length) of the page that changed; returns how many */
+static int
+edit_regions(const SiftPageEdit *e, uint16 (*frag)[2])
 {
 	const char *page = (const char *) e->page;
-	uint16		frag[EDIT_HEAD_FRAGS + 2][2];	/* offset, length */
 	int			nf = 0;
 
 	for (Size i = 0; i < e->headlen;)
@@ -365,34 +379,55 @@ sift_page_edit_end(Relation index, Buffer buf, SiftPageEdit *e, Size extra_off, 
 		frag[nf++][1] = end - i;
 		i = nf == EDIT_HEAD_FRAGS ? e->headlen : end;
 	}
-	if (extra_len > 0)
+	if (e->extra_len > 0)
 	{
-		frag[nf][0] = extra_off;
-		frag[nf++][1] = extra_len;
+		frag[nf][0] = e->extra_off;
+		frag[nf++][1] = e->extra_len;
 	}
 	if (((PageHeader) page)->pd_lower > e->lower)
 	{
 		frag[nf][0] = e->lower;
 		frag[nf++][1] = ((PageHeader) page)->pd_lower - e->lower;
 	}
+	return nf;
+}
+
+void
+sift_page_edit_end(Relation index, SiftPageEdit *e, int n)
+{
+	uint16		frag[SIFT_EDIT_PAGES][EDIT_FRAGS][2];	/* offset, length */
+	int			nf[SIFT_EDIT_PAGES];
+	XLogRecPtr	lsn;
+
+	Assert(n <= SIFT_EDIT_PAGES);
+	for (int i = 0; i < n; i++)
+	{
+		nf[i] = edit_regions(&e[i], frag[i]);
 #ifdef USE_ASSERTION_CHECKING
-	for (int k = 0; k < nf; k++)
-		memcpy(e->image + frag[k][0], page + frag[k][0], frag[k][1]);
-	Assert(memcmp(e->image, page, BLCKSZ) == 0);
+		for (int k = 0; k < nf[i]; k++)
+			memcpy(e[i].image + frag[i][k][0], (char *) e[i].page + frag[i][k][0], frag[i][k][1]);
+		Assert(memcmp(e[i].image, e[i].page, BLCKSZ) == 0);
 #endif
-	MarkBufferDirty(buf);
+		MarkBufferDirty(e[i].buf);
+	}
 	if (RelationNeedsWAL(index))
 	{
 		XLogBeginInsert();
-		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-		for (int k = 0; k < nf; k++)
+		for (int i = 0; i < n; i++)
 		{
-			XLogRegisterBufData(0, (char *) frag[k], sizeof(frag[k]));
-			XLogRegisterBufData(0, page + frag[k][0], frag[k][1]);
+			XLogRegisterBuffer(i, e[i].buf, REGBUF_STANDARD);
+			for (int k = 0; k < nf[i]; k++)
+			{
+				XLogRegisterBufData(i, (char *) frag[i][k], sizeof(frag[i][k]));
+				XLogRegisterBufData(i, (char *) e[i].page + frag[i][k][0], frag[i][k][1]);
+			}
 		}
-		PageSetLSN(e->page, XLogInsert(RM_GENERIC_ID, 0));
+		lsn = XLogInsert(RM_GENERIC_ID, 0);
+		for (int i = 0; i < n; i++)
+			PageSetLSN(e[i].page, lsn);
 	}
-	END_CRIT_SECTION();
+	for (int i = 0; i < n; i++)
+		END_CRIT_SECTION();
 }
 
 Buffer
