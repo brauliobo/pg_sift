@@ -168,7 +168,7 @@ map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, cons
 }
 
 /*
- * The btree of the joined table that starts with columns the table's `column = value` conditions give (the planner found them, join_index_quals),
+ * The btree of the joined table that starts with columns the table's `column = value` and `column = ANY (array)` conditions give (the planner found them, join_index_quals),
  * opened, with the keys of its scan: the rows that can match are those it returns. NULL when no index fits; *none when a value is NULL (no row).
  */
 static Relation
@@ -200,7 +200,7 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 				get_op_opfamily_properties(j->idxop[k], idx->rd_opfamily[n], false, &strategy, &lt, &rt);
 				if (strategy != BTEqualStrategyNumber)
 					break;
-				ScanKeyEntryInitialize(&ik[n], 0, n + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+				ScanKeyEntryInitialize(&ik[n], j->idxany[k] ? SK_SEARCHARRAY : 0, n + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
 			}
 		if (n > nbest)
 		{
@@ -319,7 +319,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		TableScanDesc scan;
 
 		for (int k = 0; heap && sift_agg_lookup_pushdown && k < j->nidx; k++)
-			ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+			if (!j->idxany[k])
+				ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
 		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
 
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -406,7 +407,7 @@ shared_map_key(AggExec *ex, int ci)
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
-		appendStringInfo(&k, "|%d/%u/%u/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], nodeToString(j->idxval[i]));
+		appendStringInfo(&k, "|%d/%u/%u/%d/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], j->idxany[i], nodeToString(j->idxval[i]));
 	return k.data;
 }
 

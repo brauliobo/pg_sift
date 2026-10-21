@@ -149,8 +149,8 @@ per-relation flags PostgreSQL's own grouping does, so these queries get `Workers
 ## 4. The lookup table loads only the rows it can match (`sift.agg_lookup_pushdown`)
 
 Before the scan, `SiftAgg` reads the joined table (the membership table, the attribute table) into a lookup table. It used to read every row and apply the table's own conditions
-afterwards. Now the planner collects the `column = value` conditions of the join (`group_id = 7`, `country_id = 7`, a parameter included) and the executor evaluates their values once; it reads the longest matching
-prefix of a btree index of the table (an index scan, `Lookup Index Scans` in `EXPLAIN ANALYZE`), or, on a table without such an index, passes them to the heap scan as scan keys, and applies the other
+afterwards. Now the planner collects the `column = value` conditions of the join (`group_id = 7`, `country_id = 7`, a parameter included, and `country_id IN (3, 17, 41)` when the statistics expect the list to keep a small share of the table: a larger one is read faster by the heap scan) and the executor evaluates their values once; it reads the longest matching
+prefix of a btree index of the table (an index scan, `Lookup Index Scans` in `EXPLAIN ANALYZE`), or, on a table without such an index, passes the equalities to the heap scan as scan keys, and applies the other
 conditions (`deleted_at IS NULL`, a boolean) to each row as it is read, so the table keeps only the rows that can match (`Lookup Rows Read`, `Lookup Rows Loaded`, `Lookup Load Time` with `TIMING`). A `NULL`
 value gives an empty table. The conditions stay in the join's filter, so a scan key that a table access method ignores (only heap tables get scan keys) changes the cost, not the rows. The planner prices the load by
 the rows it expects the conditions to keep when a btree can give them, instead of every row of the table. `SET sift.agg_lookup_pushdown = off` loads the whole table as before.

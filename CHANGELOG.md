@@ -75,6 +75,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Added: the rollups of the elements of a list answer a `GROUP BY` of a function of one dim (`left(day, 7)`, `upper(kind)`, a `CASE` band of an integer dim, `coalesce`), evaluated once per distinct value of the unit's tuples. Before, any expression key scanned every unit.
 
 - Added: `EXPLAIN (ANALYZE, VERBOSE)` of a `SiftAgg` node that does not answer units from the pre-aggregates prints `Pre-aggregates: <reason>` (the aggregate is `count(DISTINCT)`, has `FILTER`, a group key is an expression, a conjunct tests a measure, a joined table, grouping sets, and so on). Test `agg_rollup_shapes` lists the shapes of an element-level analytics query with their reason and the units answered.
+- Changed: `SiftAgg` loads the joined table of a lookup join through its btree for a `column IN (list)` condition (`dim.country IN (3, 17, 41)`) as for `column = value`, when the statistics expect the list to keep a small share of the table; with a 200,000-row dimension a filter on 3 countries loads 10,000 rows instead of 200,000.
 
 - Added: SiftAgg lookup keys and expressions may read earlier lookup outputs, retaining duplicate matches and NULL extensions. Materialized CTEs can supply lookup rows through their PostgreSQL plans.
 

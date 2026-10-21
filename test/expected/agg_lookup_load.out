@@ -83,7 +83,7 @@ SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE N
  SiftAgg,Lookup Rows Read: 500,Lookup Rows Loaded: 500,Lookup Index Scans: 1 |           4 |              0 |              0
 (1 row)
 
--- a group with a NULL key and a duplicate, two groups (no equality on the leading column: the table is read whole and filtered while loading), a group with no rows
+-- a group with a NULL key and a duplicate, two groups (a list on the leading column is an index scan too), a group with no rows
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3) GROUP BY kind');
                                     plan                                     | result_rows | vs_no_pushdown | vs_normal_plan 
 -----------------------------------------------------------------------------+-------------+----------------+----------------
@@ -91,9 +91,9 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id IN (3, 4)) GROUP BY kind');
-                           plan                           | result_rows | vs_no_pushdown | vs_normal_plan 
-----------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,Lookup Rows Read: 20003,Lookup Rows Loaded: 1002 |           4 |              0 |              0
+                                     plan                                      | result_rows | vs_no_pushdown | vs_normal_plan 
+-------------------------------------------------------------------------------+-------------+----------------+----------------
+ SiftAgg,Lookup Rows Read: 1003,Lookup Rows Loaded: 1002,Lookup Index Scans: 1 |           4 |              0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 999) GROUP BY kind');
