@@ -80,8 +80,47 @@ pa_dim(const SiftSrcPreagg *pa, int dim)
 	return -1;
 }
 
+static const char *const pawhy_name[] = {
+	[SPW_OK] = "ok",
+	[SPW_OFF] = "sift.agg_preagg is off",
+	[SPW_NONE] = "the index stores no pre-aggregates",
+	[SPW_ARMS] = "union arms",
+	[SPW_SETS] = "grouping sets",
+	[SPW_JOIN] = "joined table",
+	[SPW_COMBO] = "combination or lookup",
+	[SPW_POST] = "post-aggregation",
+	[SPW_VLEAF] = "virtual leaf",
+	[SPW_NO_AGG] = "no aggregate",
+	[SPW_SEARCH] = "text search",
+	[SPW_TOPN] = "top-N",
+	[SPW_NOT_LIST] = "unnested leaf is not a list",
+	[SPW_NO_ROLLUP] = "no rollup of the list",
+	[SPW_KEY_EXPR] = "group key is an expression",
+	[SPW_KEY_LEAF] = "group key is not a dim leaf",
+	[SPW_PRED] = "conjunct is not on the dims",
+	[SPW_AGG_FILTER] = "aggregate with FILTER",
+	[SPW_AGG_DISTINCT] = "aggregate with DISTINCT",
+	[SPW_AGG_KIND] = "aggregate not additive over tuples",
+	[SPW_AGG_ARG] = "aggregate argument is not a plain leaf",
+	[SPW_AGG_TYPE] = "aggregate type not summed",
+	[SPW_DIM_NOT_STORED] = "dim not in the rollup",
+	[SPW_MEAS_NOT_STORED] = "measure not in the rollup",
+	[SPW_ROW_KEYS] = "rows: several group keys",
+	[SPW_ROW_KEY] = "rows: key is not a column",
+	[SPW_ROW_PRED] = "rows: conjunct the histogram cannot test",
+	[SPW_ROW_NO_HIST] = "rows: no histogram of the key",
+	[SPW_ROW_NO_SUMS] = "rows: no sums",
+	[SPW_ZONE] = "row comparison decides no unit",
+};
+
+const char *
+sift_pawhy_name(SiftPaWhy why)
+{
+	return pawhy_name[why];
+}
+
 /* The leaf aggregate a reads (-1: count(*)) when pre-aggregates can give it at all; group: the list leaf of an element level scan, else -1 */
-static bool
+static SiftPaWhy
 preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int group, int *leaf_out)
 {
 	int			leaf = a->leaf;
@@ -90,13 +129,15 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 				mm = false;
 	SiftSrcVecType vt;
 
-	if (a->filter || a->distinct)
-		return false;
+	if (a->filter)
+		return SPW_AGG_FILTER;
+	if (a->distinct)
+		return SPW_AGG_DISTINCT;
 	switch (a->kind)
 	{
 		case SAA_COUNT_STAR:
 			*leaf_out = -1;
-			return true;
+			return SPW_OK;
 		case SAA_COUNT:
 			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
 			break;
@@ -112,8 +153,10 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
 			/* the sums of the groups are added in another order than the rows': the result of a float8 sum may differ in its last digits */
-			if (group < 0 || a->nvx || a->restype != FLOAT8OID)
-				return false;
+			if (group < 0 || a->restype != FLOAT8OID)
+				return SPW_AGG_TYPE;
+			if (a->nvx)
+				return SPW_AGG_ARG;
 			flt = true;
 			break;
 		case SAA_MIN:
@@ -121,36 +164,38 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
 			mm = true;
 			break;
+		case SAA_COUNT_ROWS:
+		case SAA_COUNT_DISTINCT:
+			return SPW_AGG_DISTINCT;
 		default:
-			return false;
+			return SPW_AGG_KIND;
 	}
 	if (!plain_leaf(lay, nbase, group, leaf))
-		return false;
+		return SPW_AGG_ARG;
 	vt = lay->leaf[leaf].vtype;
 	if (flt ? vt != SCV_F64 : mm ? (vt != SCV_I32 && vt != SCV_I64 && !(group >= 0 && !a->num.n && vt == SCV_F64)) : sums && vt != SCV_I32 && vt != SCV_I64)
-		return false;
+		return SPW_AGG_TYPE;
 	*leaf_out = leaf;
-	return true;
+	return SPW_OK;
 }
 
 /* can the unit's histogram d of pa (or the sums of the leaves when d < 0) give aggregate a? */
-static bool
+static SiftPaWhy
 cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int d)
 {
 	int			leaf;
+	SiftPaWhy	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);
 
-	if (!preagg_agg_leaf(a, lay, nbase, -1, &leaf))
-		return false;
-	if (leaf < 0 || d < 0)
-		return true;
+	if (why != SPW_OK || leaf < 0 || d < 0)
+		return why;
 	if (a->kind == SAA_MIN || a->kind == SAA_MAX)
-		return false;
+		return SPW_AGG_KIND;
 	if (leaf == pa->dim[d].leaf)
-		return a->kind == SAA_COUNT;			/* the rows of the groups that are not NULL */
+		return a->kind == SAA_COUNT ? SPW_OK : SPW_AGG_KIND;	/* the rows of the groups that are not NULL */
 	for (int m = 0; m < pa->dim[d].nmeas; m++)
 		if (pa->dim[d].meas[m] == leaf)
-			return true;
-	return false;
+			return SPW_OK;
+	return SPW_MEAS_NOT_STORED;
 }
 
 /*
@@ -235,7 +280,7 @@ in_leaves(const int *arr, int n, int leaf)
  * The rollup of the list that answers a scan of its elements: the dims are the group keys, the leaves the element conjuncts test and the leaves
  * count(leaf) reads; the measures the other aggregates read. Conjuncts of the rows must be zone comparisons.
  */
-static bool
+static SiftPaWhy
 preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
 	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
@@ -249,81 +294,112 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	while (r < pa->nrollups && pa->rollup[r].list != group)
 		r++;
 	if (r == pa->nrollups)
-		return false;
+		return SPW_NO_ROLLUP;
 	for (int k = 0; k < s->nkeys; k++)
-		if (s->key[k].kind != SAK_LEAF || !dim_leaf(lay, nbase, group, s->key[k].leaf) || !add_leaf(dims, &nd, SIFT_SRC_MAX_RDIMS, s->key[k].leaf))
-			return false;
+	{
+		if (s->key[k].kind != SAK_LEAF)
+			return SPW_KEY_EXPR;
+		if (!dim_leaf(lay, nbase, group, s->key[k].leaf) || !add_leaf(dims, &nd, SIFT_SRC_MAX_RDIMS, s->key[k].leaf))
+			return SPW_KEY_LEAF;
+	}
 	for (int i = 0; i < s->npred; i++)
 	{
 		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
 
 		if (l != -2 ? (l >= 0 && !list_member_ptr(cmps, s->pred[i])) : !pred_dims(s->pred[i], lay, nbase, group, dims, &nd))
-			return false;
+			return SPW_PRED;
 	}
 	for (int i = 0; i < s->naggs; i++)
 	{
 		const SiftAggAgg *a = &s->agg[i];
 		int			leaf;
+		SiftPaWhy	why = preagg_agg_leaf(a, lay, nbase, group, &leaf);
 
-		if (!preagg_agg_leaf(a, lay, nbase, group, &leaf))
-			return false;
+		if (why != SPW_OK)
+			return why;
 		if (leaf < 0)
 			continue;
 		/* count(leaf) is the count of the dim's tuples that are not NULL, or the count of the measure */
 		if (a->kind == SAA_COUNT)
 		{
 			if (!in_leaves(pa->rollup[r].dim, pa->rollup[r].ndims, leaf) && !in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, leaf))
-				return false;
+				return SPW_DIM_NOT_STORED;
 		}
 		else if (!add_leaf(meas, &nm, SIFT_SRC_MAX_MEAS, leaf))
-			return false;
+			return SPW_MEAS_NOT_STORED;
 	}
 	for (int i = 0; i < nd; i++)
 		if (!in_leaves(pa->rollup[r].dim, pa->rollup[r].ndims, dims[i]))
-			return false;
+			return SPW_DIM_NOT_STORED;
 	for (int i = 0; i < nm; i++)
 		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
-			return false;
+			return SPW_MEAS_NOT_STORED;
 	*out = (SiftAggPaShape) {.dim = -1, .list = group, .ndims = nd, .nmeas = nm};
 	memcpy(out->rdim, dims, nd * sizeof(int));
 	memcpy(out->rmeas, meas, nm * sizeof(int));
-	return true;
+	return SPW_OK;
 }
 
-bool
-sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+SiftPaWhy
+sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
 	int			dim = -1,
 				d = -1;
 
-	if (s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->naggs == 0 || s->search || s->topn)
-		return false;
+	if (s->narms)
+		return SPW_ARMS;
+	if (s->nsets)
+		return SPW_SETS;
+	if (s->njoin)
+		return SPW_JOIN;
+	if (s->ncombo)
+		return SPW_COMBO;
+	if (s->npost)
+		return SPW_POST;
+	if (s->nvleaf)
+		return SPW_VLEAF;
+	if (s->naggs == 0)
+		return SPW_NO_AGG;
+	if (s->search)
+		return SPW_SEARCH;
+	if (s->topn)
+		return SPW_TOPN;
 	if (s->group >= 0)
-		return (lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT) && preagg_rollup(s, lay, nbase, pa, out);
+		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
 	if (s->nkeys > 1)
-		return false;
+		return SPW_ROW_KEYS;
 	if (s->nkeys == 1)
 	{
 		if (s->key[0].kind != SAK_LEAF)
-			return false;
+			return SPW_ROW_KEY;
 		dim = s->key[0].leaf;
 	}
 	dim = preagg_conj_dim(s, lay, nbase, dim);
 	if (dim == -2)
-		return false;
+		return SPW_ROW_PRED;
 	if (dim >= 0)
 	{
 		SiftSrcVecType vt = plain_leaf(lay, nbase, -1, dim) ? lay->leaf[dim].vtype : SCV_F64;
 
 		d = pa_dim(pa, dim);
 		if (d < 0 || (vt != SCV_I32 && vt != SCV_CODE))
-			return false;
+			return SPW_ROW_NO_HIST;
 	}
 	else if (!pa->aggs)
-		return false;
+		return SPW_ROW_NO_SUMS;
 	for (int i = 0; i < s->naggs; i++)
-		if (!cube_agg_ok(&s->agg[i], lay, nbase, pa, d))
-			return false;
+	{
+		SiftPaWhy	why = cube_agg_ok(&s->agg[i], lay, nbase, pa, d);
+
+		if (why != SPW_OK)
+			return why;
+	}
 	*out = (SiftAggPaShape) {.dim = dim, .list = -1};
-	return true;
+	return SPW_OK;
+}
+
+bool
+sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+{
+	return sift_aggspec_preagg_why(s, lay, nbase, pa, out) == SPW_OK;
 }

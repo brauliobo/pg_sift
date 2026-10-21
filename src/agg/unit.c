@@ -643,10 +643,12 @@ preagg_init(AggExec *ex)
 	SiftSrcPreagg pa;
 
 	ex->pa_on = false;
+	ex->pa_why = SPW_OFF;
 	if (!sift_agg_preagg)
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
-	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
+	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
+	ex->pa_on = ex->pa_why == SPW_OK;
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
 	{
@@ -654,7 +656,11 @@ preagg_init(AggExec *ex)
 
 		if (!st->ready)
 			eval_operand(ex, p, st);
-		ex->pa_on &= !st->cnull && (p->kind != SAP_IN || st->in_dense);
+		if (ex->pa_on && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
+		{
+			ex->pa_on = false;
+			ex->pa_why = SPW_ZONE;
+		}
 	}
 }
 /* A unit whose zone of the first sort leaf has nothing that sorts before the n-th best so far is not read */
