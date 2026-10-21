@@ -3075,6 +3075,9 @@ compile_pred(AggCtx *c, Node *n)
 	}
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
+	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
+	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_TRUE)
+		return compile_pred(c, (Node *) ((BooleanTest *) n)->arg);
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0)
 	{
 		p = make_leaf_pred(c, SAP_NULL, leaf);
@@ -5740,9 +5743,54 @@ function_query(RangeTblEntry *e)
 	return q;
 }
 
+/*
+ * What a correlated child is given for a column of the query. The value of a jsonb_each member is not a stored leaf (the leaf holds its
+ * float8), so the child gets the jsonb the leaf stands for, built from the key (a member exists) and the number: a JSON null is the NULL
+ * of the number, a number is the jsonb of its float8. A cast the child makes of it raises as it does on the stored value, for the
+ * members the child runs for.
+ */
+static Node *
+child_arg(AggCtx *c, Node *arg)
+{
+	Var		   *v = IsA(arg, Var) ? (Var *) arg : NULL;
+	Var		   *key;
+	Node	   *number;
+	CaseExpr   *out = makeNode(CaseExpr);
+	CaseWhen   *no_member = makeNode(CaseWhen),
+			   *json_null = makeNode(CaseWhen);
+	NullTest   *absent = makeNode(NullTest),
+			   *nil = makeNode(NullTest);
+
+	if (v == NULL || c->func_kind != FK_EACH || v->varlevelsup != 0 || v->varno != c->func_rti || v->varattno != 2 || v->vartype != JSONBOID)
+		return arg;
+	key = copyObject(v);
+	key->varattno = 1;
+	key->vartype = TEXTOID;
+	key->vartypmod = -1;
+	key->varcollid = DEFAULT_COLLATION_OID;
+	number = (Node *) makeFuncExpr(F_FLOAT8_JSONB, FLOAT8OID, list_make1(arg), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+	absent->arg = (Expr *) key;
+	absent->nulltesttype = IS_NULL;
+	absent->location = -1;
+	nil->arg = (Expr *) number;
+	nil->nulltesttype = IS_NULL;
+	nil->location = -1;
+	no_member->expr = (Expr *) absent;
+	no_member->result = (Expr *) makeNullConst(JSONBOID, -1, InvalidOid);
+	no_member->location = -1;
+	json_null->expr = (Expr *) nil;
+	json_null->result = (Expr *) makeConst(JSONBOID, -1, InvalidOid, -1, DirectFunctionCall1(jsonb_in, CStringGetDatum("null")), false, false);
+	json_null->location = -1;
+	out->casetype = JSONBOID;
+	out->args = list_make2(no_member, json_null);
+	out->defresult = (Expr *) makeFuncExpr(F_TO_JSONB, JSONBOID, list_make1(copyObject(number)), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+	out->location = -1;
+	return (Node *) out;
+}
+
 /* The plan PostgreSQL made of a correlated sub-select, with the quals it pushed into it: its parameters are what it read of the query's rows. */
 static bool
-planned_child(RelOptInfo *rel, JoinCtx *jc)
+planned_child(AggCtx *c, RelOptInfo *rel, JoinCtx *jc)
 {
 	if ((jc->cpath = child_path(rel, true)) == NULL || !IsA(jc->cpath, SubqueryScanPath) || rel->subplan_params == NIL)
 		return false;
@@ -5750,7 +5798,7 @@ planned_child(RelOptInfo *rel, JoinCtx *jc)
 	foreach_node(PlannerParamItem, item, rel->subplan_params)
 	{
 		jc->j.params = lappend_int(jc->j.params, item->paramId);
-		jc->args = lappend(jc->args, copyObject(item->item));
+		jc->args = lappend(jc->args, child_arg(c, copyObject(item->item)));
 	}
 	return true;
 }
@@ -5776,7 +5824,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
 		return false;
 	if (rel->baserestrictinfo != NIL)
-		return e->rtekind == RTE_SUBQUERY && planned_child(rel, jc);
+		return e->rtekind == RTE_SUBQUERY && planned_child(c, rel, jc);
 	if (q == NULL)
 		return false;
 	derived = query_tree_mutator(copyObject(q), derive_mutator, &x, 0);
@@ -5798,7 +5846,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	foreach_node(PlannerParamItem, item, c->root->plan_params)
 	{
 		jc->j.params = lappend_int(jc->j.params, item->paramId);
-		jc->args = lappend(jc->args, copyObject(item->item));
+		jc->args = lappend(jc->args, child_arg(c, copyObject(item->item)));
 	}
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)

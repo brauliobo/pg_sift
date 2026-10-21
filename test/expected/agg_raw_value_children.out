@@ -1,0 +1,147 @@
+-- A correlated child that reads the value of a jsonb_each member (a cast that can raise) runs only for the members a row reaches, with the
+-- error of the value it was given; `x IS TRUE` over an existence test selects the rows the test does.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
+INSERT INTO facts
+SELECT i, i % 40,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END,
+       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"checker"},{"type":"manager"}]'::jsonb END
+FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, tags_a) WITH (paths = 'metrics.* float8, tags_a[]{type text}');
+VACUUM (FREEZE, ANALYZE) facts;
+-- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
+  RETURN result;
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text; found bool := false;
+BEGIN
+  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  RETURN found;
+END $$;
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+END $$;
+-- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5), a JSON null casts to NULL.
+SELECT * FROM check_query('union', $q$
+ SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids
+ FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+ JOIN LATERAL (SELECT 'all' AS category UNION (SELECT CASE WHEN CAST(r.value AS integer) > 6 THEN 'high' ELSE 'low' END)) c ON true
+ GROUP BY 1
+$q$);
+ label | scan | same |                                               outcome                                                
+-------+------+------+------------------------------------------------------------------------------------------------------
+ union | t    | t    | [{"n": 13333, "ids": 13333, "category": "all"}, {"n": 4889, "ids": 4889, "category": "high"}, {"n": 
+(1 row)
+
+SELECT * FROM check_query('union all, filter, key', $q$
+ SELECT c.category, f.dim_a_id % 3 AS k, count(*) AS n
+ FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+ WHERE f.dim_a_id < 30 AND r.key = 'mhead'
+ GROUP BY 1, 2
+$q$);
+         label          | scan | same |                                               outcome                                                
+------------------------+------+------+------------------------------------------------------------------------------------------------------
+ union all, filter, key | t    | t    | [{"k": 0, "n": 1223, "category": "high"}, {"k": 0, "n": 2110, "category": "low"}, {"k": 0, "n": 3333
+(1 row)
+
+-- the number itself is the argument: its cast to numeric keeps the digits of the stored float
+SELECT * FROM check_query('numeric', $q$
+ SELECT c.v, count(*) AS n
+ FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+ JOIN LATERAL (SELECT r.value::numeric AS v UNION ALL SELECT r.value::numeric + 1) c ON true
+ GROUP BY 1
+$q$);
+  label  | scan | same |                                               outcome                                                
+---------+------+------+------------------------------------------------------------------------------------------------------
+ numeric | t    | t    | [{"n": 1776, "v": 1}, {"n": 1776, "v": 2}, {"n": 1776, "v": 3}, {"n": 1777, "v": 4}, {"n": 1777, "v"
+(1 row)
+
+-- `x IS TRUE` over an existence test counts the rows the test selects, with or without a join
+SELECT * FROM check_query('is true', $q$
+ SELECT count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type != "manager")') IS TRUE) AS with_comments,
+        count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "manager")') IS TRUE) AS with_responses
+ FROM facts f
+$q$);
+  label  | scan | same |                      outcome                       
+---------+------+------+----------------------------------------------------
+ is true | t    | t    | [{"with_comments": 5000, "with_responses": 10000}]
+(1 row)
+
+SELECT * FROM check_query('is true, unnest', $q$
+ SELECT f.dim_a_id % 5 AS k, count(*) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "manager")') IS TRUE) AS n
+ FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other' GROUP BY 1
+$q$);
+      label      | scan | same |                                               outcome                                                
+-----------------+------+------+------------------------------------------------------------------------------------------------------
+ is true, unnest | t    | t    | [{"k": 0, "n": 1333}, {"k": 1, "n": 1334}, {"k": 2, "n": 1334}, {"k": 3, "n": 1333}, {"k": 4, "n": 1
+(1 row)
+
+-- Error timing: a member that cannot be cast raises only for the rows that reach the cast, with PostgreSQL's SQLSTATE and message.
+INSERT INTO facts VALUES (20001, 1, '{"mhead": 3000000000}', NULL), (20002, 2, '{"mhead": 1e30}', NULL);
+VACUUM (FREEZE, ANALYZE) facts;
+SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+   WHERE f.id < 20000 GROUP BY 1$q$);
+    label     | scan | same |                                              outcome                                               
+--------------+------+------+----------------------------------------------------------------------------------------------------
+ excluded row | t    | t    | [{"n": 13333, "category": "all"}, {"n": 4889, "category": "high"}, {"n": 8444, "category": "low"}]
+(1 row)
+
+SELECT * FROM check_query('other key', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+   GROUP BY 1$q$);
+   label   | scan | same |                                               outcome                                               
+-----------+------+------+-----------------------------------------------------------------------------------------------------
+ other key | t    | t    | [{"n": 11111, "category": "low"}, {"n": 13333, "category": "all"}, {"n": 2222, "category": "high"}]
+(1 row)
+
+SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+   WHERE f.id = 20001 GROUP BY 1$q$);
+      label       | scan | same |          outcome           
+------------------+------+------+----------------------------
+ int out of range | t    | t    | 22003 integer out of range
+(1 row)
+
+SELECT * FROM check_query('bigint out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::bigint > 6 THEN 'high' ELSE 'low' END) c ON true
+   WHERE f.id = 20002 GROUP BY 1$q$);
+        label        | scan | same |          outcome          
+---------------------+------+------+---------------------------
+ bigint out of range | t    | t    | 22003 bigint out of range
+(1 row)
+
+-- A member the index cannot hold as a number (a string, an object) keeps the query native, which raises the same errors.
+INSERT INTO facts VALUES (20003, 3, '{"mhead": "abc"}', NULL), (20004, 4, '{"mhead": {"a": 1}}', NULL);
+VACUUM (FREEZE, ANALYZE) facts;
+SELECT * FROM check_query('string member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+   WHERE f.id = 20003 GROUP BY 1$q$);
+     label     | scan | same |                    outcome                     
+---------------+------+------+------------------------------------------------
+ string member | f    | t    | 22023 cannot cast jsonb string to type integer
+(1 row)
+
+SELECT * FROM check_query('object member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+   JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
+   WHERE f.id = 20004 GROUP BY 1$q$);
+     label     | scan | same |                    outcome                     
+---------------+------+------+------------------------------------------------
+ object member | f    | t    | 22023 cannot cast jsonb object to type integer
+(1 row)
+
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP TABLE facts;
+DROP EXTENSION pg_sift;
