@@ -49,7 +49,7 @@ SELECT * FROM check_shape($q$
  CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text,value float8)
  LEFT JOIN LATERAL unnest(e.labels) label ON true GROUP BY label
 $q$);
--- Native correlated UNION children read JSONB values with their native cast semantics.
+-- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics.
 SELECT * FROM check_shape($q$
  SELECT category, count(DISTINCT f.id) AS ids,
  count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "reply")')) AS replies
