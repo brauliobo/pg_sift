@@ -475,9 +475,10 @@ gen_units(const char *dir)
 {
 	CcgRng		r = 7;
 
-	for (int k = 0; k < 8; k++)
+	for (int k = 0; k < 9; k++)
 	{
-		uint32		nrows = k == 0 ? 3 : 100 + 400 * (uint32) k;
+		/* unit 8: 45 distinct strings, written against a dictionary of 40 (the stored codes 40..44 are past it) */
+		uint32		nrows = k == 0 ? 3 : k == 8 ? 45 : 100 + 400 * (uint32) k;
 		SiftColBatch *b = sift_cbatch_create(CurrentMemoryContext, schema);
 		SiftCcPolicy pol[lengthof(defs)];
 		StringInfoData out;
@@ -503,7 +504,7 @@ gen_units(const char *dir)
 			row.elem = elem;
 			val[0].v.i = (int64) (ccg_next(&r) % (k % 2 ? 100 : 1000000)) - 50;
 			val[1].v.f = (double) (ccg_next(&r) % 100000) / 100.0;
-			val[2].v.s = pstrdup((snprintf(str, sizeof(str), "k%u", (unsigned) (ccg_next(&r) % 30)), str));
+			val[2].v.s = pstrdup((snprintf(str, sizeof(str), "k%u", k == 8 ? i : (unsigned) (ccg_next(&r) % 30)), str));
 			val[2].len = (uint32) strlen(val[2].v.s);
 			val[2].isnull = i % 17 == 0;
 			val[3].v.i = ne;

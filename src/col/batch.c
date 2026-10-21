@@ -453,7 +453,8 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 		uint32	   *to;
 
 		if (key < 0 || key >= dicts[col]->n)
-			elog(ERROR, "sift_col: dictionary code %lld is outside the dictionary of %u values", (long long) key, dicts[col]->n);
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("invalid column unit: dictionary code %lld is outside the dictionary of %u values", (long long) key, dicts[col]->n)));
 		to = &lf->remap[key];
 		if (*to == PG_UINT32_MAX)
 			*to = sift_cdict_intern(dst->dict[col], dicts[col]->bytes + dicts[col]->off[key], cdict_len(dicts[col], (uint32) key));
@@ -502,8 +503,9 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 	}
 	for (int col = 0; col < s->ncols; col++)
 		if (s->cols[col].parent >= 0 && lf[col].present && lf[col].c.n != (lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0))
-			elog(ERROR, "sift_col: group leaf %d has %u values for %u elements", col, lf[col].c.n,
-				 lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0);
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("invalid column unit: group leaf %d has %u values for %u elements", col, lf[col].c.n,
+								   lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0)));
 
 	for (uint32 r = 0; r < v->nrows; r++)
 	{
