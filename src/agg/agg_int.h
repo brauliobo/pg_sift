@@ -771,6 +771,26 @@ void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
 void table_reset(AggExec *ex);
 void scan_items(AggExec *ex);
 
+/* leaf.c */
+void ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid);
+void ot_init_image(OutTable *t, Oid typid);
+uint32 ot_id(OutTable *t, Datum d);
+void rt_init(RangeTab *r, int esize);
+void rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg);
+Datum leaf_datum(Oid typid, int64 iv);
+Datum text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len);
+bool eval_bool(AggExec *ex, ExprState *e, Datum in, bool in_null);
+DictSlot *dict_slot(AggExec *ex, const SiftSrcDict *d);
+uint32 key_value_id(AggExec *ex, int ki, Datum in, bool in_null);
+uint32 *dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki);
+const SiftSrcVec *get_vec(AggExec *ex, int leaf);
+uint32 *elem_offs(AggExec *ex, int leaf);
+void idmap_init(IdMap *m);
+uint32 idmap_id(IdMap *m, sift_i128 v);
+const sift_i128 *eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull, const uint64 *alive);
+const uint32 *unit_parent(AggExec *ex);
+Datum scaled_numeric(__int128 v, int scale);
+
 /* back_host.c */
 bool backend_begin(AggExec *ex);
 void backend_finish(AggExec *ex);
