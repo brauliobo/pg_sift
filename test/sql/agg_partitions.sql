@@ -70,19 +70,69 @@ SELECT n, (same(q)).* FROM pt_q ORDER BY n;
 SELECT * FROM same('SELECT count(*) AS n FROM ONLY pt');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pt_b GROUP BY g');
 
--- a prepared statement whose parameter prunes partitions when it runs keeps the normal plan, which prunes; one on another column does not
+-- the partitions a parameter or a stable function prunes when the statement runs are dropped when the scan starts: their units are not read.
+-- A prepared statement with a generic plan against the literal query: the same rows, and as many partitions read as the normal plan scans
+CREATE FUNCTION same_exec(stmt text, ref text) RETURNS TABLE (scan text, partitions_read int, normal_scans int, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE l text; listed int := 0; removed int := 0;
+BEGIN
+	scan := 'normal'; normal_scans := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scan := 'SiftAgg'; END IF;
+		IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
+		IF l LIKE '%Partitions Removed:%' THEN removed := trim(split_part(l, ':', 2))::int; END IF;
+	END LOOP;
+	partitions_read := CASE WHEN scan = 'SiftAgg' THEN listed - removed END;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', stmt);
+	SET LOCAL sift.enable_agg = off;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || ref LOOP
+		IF l LIKE '%Scan on p%' THEN normal_scans := normal_scans + 1; END IF;
+	END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', ref);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
 SET plan_cache_mode = force_generic_plan;
 PREPARE pt_pruned (date) AS SELECT g, count(*) AS n FROM pt WHERE d >= $1 AND d < DATE '2024-07-01' GROUP BY g;
 PREPARE pt_param (int) AS SELECT g, count(*) AS n FROM pt WHERE g = $1 GROUP BY g;
-SELECT plan_of('EXECUTE pt_pruned(DATE ''2024-05-01'')') AS pruned, plan_of('EXECUTE pt_param(3)') AS other;
-EXECUTE pt_pruned('2024-05-01');
-EXECUTE pt_param(3);
+PREPARE pt_in (date[]) AS SELECT g, count(*) AS n FROM pt WHERE d = ANY ($1) GROUP BY g;
+PREPARE pt_hash (int) AS SELECT g, count(*) AS n FROM pt WHERE id = $1 GROUP BY g;
+SELECT plan_of('EXECUTE pt_pruned(DATE ''2024-05-01'')') AS pruned, plan_of('EXECUTE pt_param(3)') AS other,
+       plan_of('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])') AS in_list, plan_of('EXECUTE pt_hash(7)') AS hash_key;
+SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-01-02'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-01-02'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2025-02-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2025-02-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_pruned(NULL)', 'SELECT g, count(*) AS n FROM pt WHERE d >= NULL AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2023-02-01''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2023-02-01'']) GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_in(''{}'')', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (''{}''::date[]) GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_param(3)', 'SELECT g, count(*) AS n FROM pt WHERE g = 3 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_hash(7)', 'SELECT g, count(*) AS n FROM pt WHERE id = 7 GROUP BY g');
 RESET plan_cache_mode;
+
+-- a stable function decides when the statement starts (current_date - current_date is 0, not folded at plan time)
+SELECT * FROM same_exec('SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' + (current_date - current_date) AND d < DATE ''2024-07-01'' + (current_date - current_date) GROUP BY g',
+                        'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-11-15'' + (current_date - current_date) GROUP BY g',
+                        'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-11-15'' GROUP BY g');
+SELECT * FROM same_exec('SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2030-01-01'' + (current_date - current_date) GROUP BY g',
+                        'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2030-01-01'' GROUP BY g');
 
 -- forced parallel plans: the workers split the superblocks of all the partitions
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 5) ORDER BY n;
+-- the workers take the superblocks of the partitions the leader kept
+SET plan_cache_mode = force_generic_plan;
+PREPARE pt_pruned_par (date) AS SELECT g, count(*) AS n FROM pt WHERE d >= $1 AND d < DATE '2024-07-01' GROUP BY g;
+PREPARE pt_in_par (date[]) AS SELECT g, count(*) AS n FROM pt WHERE d = ANY ($1) GROUP BY g;
+SELECT plan_of('EXECUTE pt_pruned_par(DATE ''2024-05-01'')'), plan_of('EXECUTE pt_in_par(ARRAY[DATE ''2024-02-02''])');
+SELECT * FROM same_exec('EXECUTE pt_pruned_par(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_in_par(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
+RESET plan_cache_mode;
 SET max_parallel_workers_per_gather = 0;
 
 -- a partition attached and detached between statements: the plan lists the partitions the statement was planned with (the attached table
@@ -133,6 +183,12 @@ SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 6) ORDER BY n;
 VACUUM pt;
 SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 5) ORDER BY n;
 
+-- the same after rows moved between partitions and one was emptied
+SET plan_cache_mode = force_generic_plan;
+SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
+RESET plan_cache_mode;
+
 -- a partition's own DML stays visible to the parent in the same transaction
 BEGIN;
 INSERT INTO pt_a VALUES (900001, 1, '2024-02-02', 5, 1.5, 'red', '{"k": 2}');
@@ -169,8 +225,35 @@ CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g);
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih_a GROUP BY g');
 
+-- a text key split by list: the zones cannot refuse it, so the partitions the parameter drops are the whole saving
+CREATE TABLE pl (id int, k text, v int) PARTITION BY LIST (k);
+CREATE TABLE pl_a PARTITION OF pl FOR VALUES IN ('cat_a', 'cat_b') WITH (autovacuum_enabled = false);
+CREATE TABLE pl_b PARTITION OF pl FOR VALUES IN ('cat_c') WITH (autovacuum_enabled = false);
+CREATE TABLE pl_c PARTITION OF pl FOR VALUES IN ('cat_d') WITH (autovacuum_enabled = false);
+CREATE TABLE pl_rest PARTITION OF pl DEFAULT WITH (autovacuum_enabled = false);
+INSERT INTO pl SELECT i, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d', 'cat_e'])[1 + i % 5], i % 100 FROM generate_series(1, 4000) i;
+CREATE INDEX pl_col ON pl USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) pl;
+SET plan_cache_mode = force_generic_plan;
+PREPARE pl_k (text) AS SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = $1 GROUP BY k;
+PREPARE pl_ks (text[]) AS SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ANY ($1) GROUP BY k;
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_c'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_c'' GROUP BY k');
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_b'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_b'' GROUP BY k');
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_e'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_e'' GROUP BY k');
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_z'' GROUP BY k');
+SELECT * FROM same_exec('EXECUTE pl_ks(ARRAY[''cat_a'', ''cat_d''])', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ANY (ARRAY[''cat_a'', ''cat_d'']) GROUP BY k');
+-- a partition attached after the plan was made: the plan is made again with it
+CREATE TABLE pl_n (LIKE pl INCLUDING DEFAULTS) WITH (autovacuum_enabled = false);
+INSERT INTO pl_n SELECT 100000 + i, 'cat_z', i FROM generate_series(1, 300) i;
+ALTER TABLE pl ATTACH PARTITION pl_n FOR VALUES IN ('cat_z');
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_z'' GROUP BY k');
+ALTER TABLE pl DETACH PARTITION pl_n;
+SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_z'' GROUP BY k');
+RESET plan_cache_mode;
+
+DROP FUNCTION same_exec(text, text);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP FUNCTION pt_fill(int, int);
-DROP TABLE pt, pn, pt_n, pt_q, ih_a, ih;
+DROP TABLE pt, pn, pt_n, pt_q, pl, pl_n, ih_a, ih;
 DROP EXTENSION pg_sift;
