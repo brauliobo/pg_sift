@@ -90,11 +90,12 @@ SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION
 
 -- arms that look the mapped names of each line up with a correlated LIMIT 1 sub-select: the arms read other columns of it (one the mapped kind, one
 -- also the mapped part), the lines without a mapping are no row of the first two arms and a row of the third (a LEFT JOIN, another set of rows: it stays apart)
--- (the scan of the table is made dearer than the index's: the plan with the sub-select as a child of the scan is the one PostgreSQL costs cheapest)
+-- (the scan of the table is made dearer than the index's, and the lookups are not cached: the plan with the sub-select as a child of the scan is the one PostgreSQL costs cheapest)
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SET enable_indexonlyscan = off;
+SET enable_memoize = off;
 CREATE TABLE kmap (k text, p text, mk text, mp text);
 INSERT INTO kmap SELECT k, 'p' || p, 'm' || (p % 2) || k, CASE WHEN k = 'y' THEN NULL ELSE 'q' || p END FROM unnest(ARRAY['x', 'y']) k, generate_series(0, 2) p;
 CREATE INDEX kmap_i ON kmap (k, p);
@@ -112,6 +113,7 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
+RESET enable_memoize;
 
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
