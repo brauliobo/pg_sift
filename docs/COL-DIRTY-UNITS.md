@@ -91,11 +91,15 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   `float4`, `float8`, `text` leaves, read as the record column reads them). It still refuses when anything else reads the leaf or its
   list (a path read, `jsonb_array_length` of the list, a test of the list at the top level, a top-level conjunct that may fail
   and is applied after the others, search) and when the provider cannot read rows again (`sift_table`, whose rows have no index
-  expressions). A value the shredder cannot store even after the coercion (a string `NaN`, an infinity or `-0` in a float
-  column, a list of more than 2^20 elements) stays an overflow and the scan raises its generic `0A000` error for it: the planner
-  cannot know it beforehand. The price is `AGG_RECHECK_FRAC` (2%) of the
+  expressions). A value the shredder cannot store even after the coercion (the string `-0` in a float column, a list of more than
+  2^20 elements) stays an overflow and the scan raises its generic `0A000` error for it: the planner cannot know it beforehand.
+  A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is `AGG_RECHECK_FRAC` (2%) of the
   rows at `AGG_RECHECK_ROW` (60) operator costs; the per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that
   would make the price exact and was not needed for the numbers below.
+- **Leaves after the source's.** `(doc -> 'm' ->> 'k')::float8` of an object leaf with free keys and `jsonb_array_length(doc -> 'l')` of an
+  array leaf take their values from a column of the index (the `value` column of the members, the array itself): `reads_overflow` follows
+  them to it, so a flagged column keeps the normal plan (a numeric string converts, anything else raises PostgreSQL's error), and the scan
+  checks it for a plan made before the value was written (`0A000`). They were read as NULL.
 - **Not done.** `jsonb_each` with `CAST(value AS float8)` keeps the normal plan (the same error as the normal plan, since it is the
   normal plan). Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
   as before.
