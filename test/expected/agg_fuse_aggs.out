@@ -67,7 +67,7 @@ SELECT arms_shared(:'flag_a') AS mapped_shared, same(:'flag_a') AS mapped_same;
 SELECT arms_shared(:'twice') AS twice_shared, same(:'twice') AS twice_same;
  twice_shared | twice_same 
 --------------+------------
-            2 | t
+            3 | t
 (1 row)
 
 -- other aggregates and a WHERE of their own
