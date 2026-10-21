@@ -3,14 +3,14 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT w.composition,
-	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_wl_entity e WHERE e.type = 'accommodation'))) AS in_type,
-	   count(*) FILTER (WHERE w.entity_id <> ALL (ARRAY(SELECT e.id FROM t_wl_entity e WHERE e.type = 'accommodation'))) AS not_in_type,
-	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_wl_entity e WHERE e.id < 0))) AS empty_array,
-	   count(*) FILTER (WHERE w.product_id = ANY (ARRAY(SELECT x.product_id FROM t_wl x WHERE x.id <= 40))) AS with_null,
-	   count(*) FILTER (WHERE NOT (w.product_id = ANY (ARRAY(SELECT x.product_id FROM t_wl x WHERE x.id <= 40)))) AS not_with_null,
-	   count(*) FILTER (WHERE w.source_id = ANY (ARRAY(SELECT s.id FROM t_wl_source s WHERE s.kind = 'web')) OR w.entity_id = ANY (ARRAY(SELECT e.id FROM t_wl_entity e WHERE e.id <= 3))) AS either
-FROM t_wl w
+SELECT w.mix,
+	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'accommodation'))) AS in_type,
+	   count(*) FILTER (WHERE w.entity_id <> ALL (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.type = 'accommodation'))) AS not_in_type,
+	   count(*) FILTER (WHERE w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.id < 0))) AS empty_array,
+	   count(*) FILTER (WHERE w.prod_id = ANY (ARRAY(SELECT x.prod_id FROM t_load x WHERE x.id <= 40))) AS with_null,
+	   count(*) FILTER (WHERE NOT (w.prod_id = ANY (ARRAY(SELECT x.prod_id FROM t_load x WHERE x.id <= 40)))) AS not_with_null,
+	   count(*) FILTER (WHERE w.src_id = ANY (ARRAY(SELECT s.id FROM t_load_source s WHERE s.kind = 'web')) OR w.entity_id = ANY (ARRAY(SELECT e.id FROM t_load_entity e WHERE e.id <= 3))) AS either
+FROM t_load w
 WHERE w.deleted_at IS NULL
 GROUP BY 1
 ORDER BY 1 NULLS FIRST

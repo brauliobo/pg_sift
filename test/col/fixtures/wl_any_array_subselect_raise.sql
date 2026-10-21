@@ -2,8 +2,8 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT w.composition, count(*) AS n
-FROM t_wl w
-WHERE w.id < 0 AND w.entity_id = ANY (ARRAY(SELECT 100 / (e.id - 5) FROM t_wl_entity e))
+SELECT w.mix, count(*) AS n
+FROM t_load w
+WHERE w.id < 0 AND w.entity_id = ANY (ARRAY(SELECT 100 / (e.id - 5) FROM t_load_entity e))
 GROUP BY 1
 ORDER BY 1 NULLS FIRST

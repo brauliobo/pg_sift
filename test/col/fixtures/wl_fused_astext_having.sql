@@ -5,7 +5,7 @@
 -- key: -
 -- scenario: yes
 WITH b AS (SELECT r.id AS rid, i.category AS k, CASE WHEN i.score ~ '^-?[0-9]+(\.[0-9]+)?$' THEN i.score::float8 END AS n
-		   FROM t_wl r, jsonb_to_recordset(coldiff.wl_txt(r.doc) -> 'opinions') AS i(category text, score text) WHERE r.deleted_at IS NULL)
+		   FROM t_load r, jsonb_to_recordset(coldiff.wl_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
 SELECT k, avg(a) FILTER (WHERE a >= 5.03) AS high, count(DISTINCT rid) AS items
 FROM (SELECT rid, k, avg(n) AS a FROM b GROUP BY rid, k HAVING avg(n) > 1
 	  UNION ALL SELECT rid, NULL::text, avg(n) FROM b GROUP BY rid) x

@@ -2,7 +2,7 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT w.composition, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.wl_norm(w.doc), '$.opinions[*] ? (@.subrating == "wifi")')) AS no_wifi
-FROM t_wl w
+SELECT w.mix, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.load_norm(w.doc), '$.parts[*] ? (@.val == "wifi")')) AS no_wifi
+FROM t_load w
 GROUP BY 1
 ORDER BY 1 NULLS FIRST

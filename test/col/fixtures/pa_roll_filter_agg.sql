@@ -1,4 +1,4 @@
--- preagg: rollup: aggregates with FILTER on dims (the shares of a rating band) next to unfiltered ones, grouped by a dim
+-- preagg: rollup: aggregates with FILTER on dims (the shares of a metric band) next to unfiltered ones, grouped by a dim
 -- shape: S2
 -- expect: agg
 -- key: -
