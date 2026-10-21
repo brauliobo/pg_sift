@@ -322,6 +322,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->rows_vetted += pc.rows_vetted;
 		c->heap_pages += pc.heap_pages;
 		c->rechecked += pc.rechecked;
+		c->recheck_units += pc.recheck_units;
 	}
 }
 

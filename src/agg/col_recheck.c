@@ -145,6 +145,7 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 				k->npend = m;
 				k->sb = src->unit.sb;
 				k->taken = true;
+				k->nunits++;
 			}
 			break;
 		}

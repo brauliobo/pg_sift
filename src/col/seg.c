@@ -388,6 +388,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 	{
 		bool		any = z->nnull[u] < z->nvals[u];
 
+		acc->nunits++;
 		acc->nvals += z->nvals[u];
 		acc->nnull += z->nnull[u];
 		acc->nokinds |= !leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]);
@@ -396,6 +397,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		{
 			acc->has_range = acc->has_sum = false;
 			acc->has_ovf = true;
+			acc->novf++;
 		}
 		if (def->kind == SIFT_COLK_GROUP)
 			acc->has_sum &= !(z->flags[u] & SIFT_COLZ_NOSUM);

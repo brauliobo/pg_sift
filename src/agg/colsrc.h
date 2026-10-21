@@ -94,6 +94,7 @@ typedef struct SiftSrcStats
 	double		max[SIFT_COLSRC_MAX_LEAVES];
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */
+	double		ovf_units[SIFT_COLSRC_MAX_LEAVES];	/* share of the units flagged with an overflow value of the leaf (at least one unit when ovf: a write buffer may hold one) */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
 	bool		jnull[SIFT_COLSRC_MAX_LEAVES];	/* some unit may hold a JSON null in the leaf (a write buffer, or a segment that cannot tell it from a missing key, may): its cast to a number raises before PostgreSQL 18 */
 	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value: a test that needs it raises the REINDEX error */
@@ -392,6 +393,7 @@ typedef struct SiftSrcCounters
 	int64		rows_vetted;	/* rows checked against the heap */
 	int64		heap_pages;		/* heap pages read for them */
 	int64		rechecked;		/* rows of units read again from the heap (SiftSrcProvider.set_recheck) */
+	int64		recheck_units;	/* the units that had such rows */
 } SiftSrcCounters;
 
 /*

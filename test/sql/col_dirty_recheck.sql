@@ -114,6 +114,43 @@ SELECT same(rec_q('o.c, count(*), avg(o.score), sum(o.n)', 'true')) AS after_pro
 SELECT pushed('SELECT o.c, avg(o.score) FROM d_t, jsonb_to_recordset(doc -> $$parts$$) AS o(c text, score float8) WHERE jsonb_array_length(doc -> $$parts$$) > 1 GROUP BY o.c') AS list_conjunct_pushed;
 SELECT pushed('SELECT o.c, count(*) FROM d_t, jsonb_array_elements(doc -> $$parts$$) e, jsonb_to_record(e) AS o(c text) GROUP BY o.c') AS elements_pushed;
 
+-- the share of the units that hold such a value: the plan counts the units read again and prices only the flagged ones
+CREATE FUNCTION again(q text, attribute text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text; n numeric := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ attribute THEN n := regexp_replace(l, '\D', '', 'g')::numeric; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION plan_cost(q text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP RETURN substring(l from 'cost=[0-9.]+\.\.([0-9.]+)')::numeric; END LOOP;
+END $$;
+CREATE TABLE d_spread (id int PRIMARY KEY, doc jsonb) WITH (autovacuum_enabled = false);
+CREATE TABLE d_few (id int PRIMARY KEY, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO d_spread SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', CASE WHEN i % 36 = 0 THEN to_jsonb('8.5'::text) ELSE to_jsonb(i % 10) END, 'pad', repeat('x', 300))))
+FROM generate_series(1, 24000) i;
+INSERT INTO d_few SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', CASE WHEN i IN (5, 6, 7) THEN to_jsonb('8.5'::text) ELSE to_jsonb(i % 10) END, 'pad', repeat('x', 300))))
+FROM generate_series(1, 24000) i;
+CREATE INDEX d_spread_col ON d_spread USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
+CREATE INDEX d_few_col ON d_few USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
+VACUUM ANALYZE d_spread;
+VACUUM ANALYZE d_few;
+CREATE FUNCTION share_q(t text) RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT o.c, count(*), avg(o.score) FROM %s, jsonb_to_recordset(doc -> ''parts'') AS o(c text, score float8) WHERE o.score > 3 GROUP BY o.c', t)
+$$;
+SELECT same(share_q('d_spread')) AS spread_same, same(share_q('d_few')) AS few_same;
+SELECT again(share_q('d_few'), 'Rows Read Again') AS few_rows, again(share_q('d_few'), 'Units Read Again') AS few_units,
+       again(share_q('d_spread'), 'Units Read Again') > again(share_q('d_few'), 'Units Read Again') AS spread_reads_more_units;
+SELECT again(share_q('d_spread'), 'Rows Read Again') AS spread_rows, again(share_q('d_spread'), 'Units Read Again') = again(share_q('d_spread'), '^ +Units:') / 2 AS every_unit;
+SELECT plan_cost(share_q('d_few')) < plan_cost(share_q('d_spread')) AS few_flagged_units_cost_less;
+DROP FUNCTION share_q(text), plan_cost(text), again(text, text);
+DROP TABLE d_spread, d_few;
+
 DROP FUNCTION rec_q(text, text, text);
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
