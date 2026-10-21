@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Added: pg_sift: an expression key or predicate that reads one column twice under binary-compatible types (the column, and the column relabeled for a comparison with a `char(n)` column of an `IN (SELECT ..)`) runs in SiftAgg.
 - Added: pg_sift: a correlated child of SiftAgg (a `UNION` arm, a lateral sub-select) can read the value of a `jsonb_each` member and cast it: the child is given the jsonb the stored number stands for, runs only for the members a row reaches, and raises PostgreSQL's own cast error. `x IS TRUE` over an existence test (`jsonb_path_exists`, `@?`) runs in the scan.
 - Added: pg_sift: a lateral sub-select that PostgreSQL leaves in place because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`) is pulled up inside its own query level when that gives a SiftAgg plan that costs less, so `jsonb_each(doc)` joined to a mapping table runs in the scan instead of as a correlated child of the whole document.
 - Fixed: pg_sift: SiftAgg no longer treats `LEFT JOIN LATERAL jsonb_each(..)` / `jsonb_array_elements(..)` as an inner join: the rows without a member (NULL columns) were dropped and the ON clause was ignored. Such queries keep the normal plan.

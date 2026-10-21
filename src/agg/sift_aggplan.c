@@ -1745,7 +1745,10 @@ combo_walker(Node *n, ComboWalk *w)
 		w->null_input = true;
 		return false;
 	}
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType))
+	/* a relabel keeps the representation: the leaf is read as what it is, and the relabel stays around the parameter */
+	if (IsA(n, RelabelType))
+		return combo_walker((Node *) ((RelabelType *) n)->arg, w);
+	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
 	{
 		if ((jc = join_of_var(w->c, n)) != NULL)
 		{
@@ -2062,7 +2065,7 @@ combo_sub_mutator(Node *n, ComboSub *s)
 		hash_param_saop((ScalarArrayOpExpr *) r);
 		return r;
 	}
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType))
+	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
 	{
 		p = makeNode(Param);
 		p->paramkind = PARAM_EXEC;
