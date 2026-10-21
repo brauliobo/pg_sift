@@ -43,6 +43,7 @@ typedef struct SlotReq
 	int			agg;
 	bool		direct;			/* the value itself (SiftAggSlot.direct) */
 	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
+	bool		lowered;		/* expr is over Params already (lower_scoped): finish_combos leaves it */
 } SlotReq;
 
 typedef struct ComboCtx
@@ -284,6 +285,7 @@ extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q);
 extern bool combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si);
 extern bool combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si);
+extern Node *lower_scoped(AggCtx *c, int ci, Node *expr);
 extern void finish_combos(AggCtx *c, SiftAggSpec *s);
 extern char *combo_text(AggCtx *c, int ci, Node *expr);
 extern SiftAggPred *compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins);
@@ -310,6 +312,8 @@ extern void finish_leaves(AggCtx *c, SiftAggSpec *s);
 extern SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 
 extern SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **target);
+extern SiftAggPred *compile_exists_post(AggCtx *c, SubPlan *sp);
+extern bool scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args);
 extern bool target_not_null(AggCtx *c, Node *target);
 extern void record_deps(PlannerInfo *root, Node *n);
 extern void pred_deps(PlannerInfo *root, SiftAggPred *p);

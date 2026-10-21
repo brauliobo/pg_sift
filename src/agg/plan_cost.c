@@ -179,15 +179,37 @@ column_distinct(AggCtx *c, Var *v)
 	return nd * (clauses == NIL ? 1.0 : clauselist_selectivity(c->root, clauses, 0, JOIN_INNER, NULL));
 }
 
+/* the distinct values of column col of a joined table by PostgreSQL's statistics, its rows when there are none */
+static double
+joined_distinct(AggCtx *c, JoinCtx *jc, int col)
+{
+	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
+	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(jc->rti, c->root)->relid),
+									  Int16GetDatum(jc->j.colatt[col]), BoolGetDatum(false));
+	double		nd = 0;
+
+	if (HeapTupleIsValid(tup))
+	{
+		nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
+		ReleaseSysCache(tup);
+		nd = nd > 0 ? nd : -nd * rel->tuples;
+	}
+	return nd > 0 ? Min(nd, Max(rel->rows, 1.0)) : Max(rel->rows, 1.0);
+}
+
 /*
  * distinct value combinations of the inputs of a combo among `tuples`: what the statistics say of the columns, the tuples when an input is
- * not one; a column of an earlier lookup has at most as many values as the lookup has rows.
+ * not one; a column of an earlier lookup has at most as many values as the lookup has rows. The combo of a lookup per element is not
+ * evaluated for the tuples but for the combinations of the values of the elements (the index counts those of each leaf) and of the column
+ * of the lookup it reads.
  */
 static double
 combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 {
 	List	   *exprs = NIL;
-	double		entries = 1.0;
+	double		entries = 1.0,
+				elem_nd = 1.0;
+	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
@@ -199,14 +221,19 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 		{
 			foreach_ptr(JoinCtx, jc, c->joins)
 				if (jc->combo == cb->refcombo[p])
-					entries *= Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+					entries *= scoped ? joined_distinct(c, jc, cb->refcol[p]) : Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
 			continue;
 		}
 		lf = leaf_of(c, cb->leaf[p]);
 		/* the values of a member or an element have no statistics: PostgreSQL's default number of distinct values, as for a column it knows nothing of */
 		if (lf->parent >= 0 || lf->path != NIL)
 		{
-			entries *= DEFAULT_NUM_DISTINCT;
+			nd = scoped && c->stats.ndistinct[cb->leaf[p]] > 0 ? c->stats.ndistinct[cb->leaf[p]] : DEFAULT_NUM_DISTINCT;
+			/* the fields of one element go together (a category and its kind): the combinations are about as many as the values of the widest */
+			if (scoped)
+				elem_nd = Max(elem_nd, nd);
+			else
+				entries *= nd;
 			continue;
 		}
 		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
@@ -218,7 +245,7 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 	}
 	if (exprs != NIL)
 		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
-	return Max(Min(entries, tuples), 1.0);
+	return Max(Min(entries * elem_nd, tuples), 1.0);
 }
 
 /*
@@ -685,8 +712,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
-		RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
-		double		tuples = Max(jrel->tuples, 1.0);
+		RelOptInfo *jrel;
+		double		tuples;
 
 		/* Correlated children run once per distinct input, with their native path's cost. */
 		if (jc->j.params != NIL)
@@ -696,6 +723,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 			child_cost += combo_entries(c, cb, agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 			continue;
 		}
+		jrel = c->root->simple_rel_array[jc->rti];
+		tuples = Max(jrel->tuples, 1.0);
 		/* a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
 		if (jc->cpath != NULL)
 		{

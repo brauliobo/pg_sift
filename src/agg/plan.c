@@ -286,6 +286,13 @@ tid_share(AggCtx *c, SiftAggSpec *s)
 		}
 }
 
+/* a conjunct over the joined rows: a boolean slot of a combo, or an EXISTS over the elements of an array */
+static SiftAggPred *
+post_pred(AggCtx *c, Node *q)
+{
+	return IsA(q, SubPlan) ? compile_exists_post(c, (SubPlan *) q) : compile_combo_pred(c, normalize_expr(c, q));
+}
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -323,7 +330,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	}
 	foreach_ptr(Node, q, scan_post)
 	{
-		SiftAggPred *p = compile_combo_pred(c, normalize_expr(c, q));
+		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
 			return false;
@@ -333,7 +340,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	s->nprepost = preserved_join(c) ? s->npost : 0;
 	foreach_ptr(Node, q, joined)
 	{
-		SiftAggPred *p = compile_combo_pred(c, normalize_expr(c, q));
+		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
 			return false;

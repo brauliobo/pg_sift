@@ -221,6 +221,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		put_node(p, (Node *) j->params);
 		put_node(p, (Node *) j->args);
 		put_node(p, j->sig);
+		put_int(p, j->scoped);
 		put_int(p, j->fslot);
 		put_int(p, j->nidx);
 		for (int k = 0; k < j->nidx; k++)
@@ -561,6 +562,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		j->params = (List *) get_node(u);
 		j->args = (List *) get_node(u);
 		j->sig = get_node(u);
+		j->scoped = get_int(u);
 		j->fslot = get_int(u);
 		j->nidx = get_int(u);
 		for (int k = 0; k < j->nidx; k++)
