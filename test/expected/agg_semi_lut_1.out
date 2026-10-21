@@ -165,17 +165,17 @@ SELECT * FROM same($$SELECT count(*) AS n, count(entity_id) AS c FROM ev WHERE N
  SiftAgg semi tables 1 |           1 |               0 |              0
 (1 row)
 
--- NOT IN of a table whose key can be NULL stays on the hashed subplan (the NULL makes the answer empty); of NOT NULL columns it is the same answer
+-- NOT IN of a table whose key can be NULL stays a hashed subplan, asked by the scan for each tuple (the NULL makes the answer empty); of NOT NULL columns it is the same answer
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM members8)$$);
-  plan  | result_rows | vs_generic_join | vs_normal_plan 
---------+-------------+-----------------+----------------
- normal |           1 |               0 |              0
+  plan   | result_rows | vs_generic_join | vs_normal_plan 
+---------+-------------+-----------------+----------------
+ SiftAgg |           1 |               0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE entity_id NOT IN (SELECT entity_id FROM members_nn)$$);
-  plan  | result_rows | vs_generic_join | vs_normal_plan 
---------+-------------+-----------------+----------------
- normal |           1 |               0 |              0
+  plan   | result_rows | vs_generic_join | vs_normal_plan 
+---------+-------------+-----------------+----------------
+ SiftAgg |           1 |               0 |              0
 (1 row)
 
 -- a table with no rows, and no row that passes
