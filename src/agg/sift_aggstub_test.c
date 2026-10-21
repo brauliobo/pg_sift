@@ -489,3 +489,4 @@ sift_test_aggstub_stats(PG_FUNCTION_ARGS)
 }
 
 #endif							/* SIFT_TESTING */
+/* diag */
