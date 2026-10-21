@@ -606,6 +606,8 @@ typedef struct ComboSt
 	ComboEnt   *ent;
 	uint32		nht;
 	uint32	   *ht;				/* ent + 1 */
+	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
+	uint32	   *dir;
 	uint32		nout;
 	uint32		outcap;
 	uint32	   *val;			/* [out * nslots + slot]: key id (0 NULL) or boolean */
@@ -3157,6 +3159,25 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 	return id;
 }
 
+#define COMBO_DIR_MAX	((uint64) 1 << 22)	/* the ids a combo of one input finds its entry by index */
+
+/* entry e (1..) is the one of id k: the table grows to hold k */
+static void
+combo_dir_set(ComboSt *cs, uint64 k, uint32 e)
+{
+	if (k >= cs->dircap)
+	{
+		uint32		cap = Max(cs->dircap, 1024);
+
+		while (cap <= k)
+			cap *= 2;
+		cs->dir = cs->dir ? repalloc(cs->dir, (size_t) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (size_t) cap * sizeof(uint32));
+		memset(cs->dir + cs->dircap, 0, (size_t) (cap - cs->dircap) * sizeof(uint32));
+		cs->dircap = cap;
+	}
+	cs->dir[k] = e;
+}
+
 /* the entry of a tuple of leaf values, made on its first sight */
 static uint32
 combo_ent(AggExec *ex, int ci, const uint64 *v)
@@ -3164,13 +3185,19 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	ComboSt    *cs = &ex->cs[ci];
 	uint32		h,
 				e;
+	bool		direct;
 
 	if (cs->by_id)
 		return combo_ent_by_id(ex, ci, (uint32) v[0]);
+	/* one input with a small id (a dictionary code, a small integer): the entry is an array index, no hash */
+	direct = cs->ninputs == 1 && !ex->null_input && v[0] < COMBO_DIR_MAX;
+	if (direct && v[0] < cs->dircap && cs->dir[v[0]])
+		return cs->dir[v[0]] - 1;
 	h = combo_hash(v, cs->ninputs, ex->null_input) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
 		if (cs->null_input[e - 1] == ex->null_input &&
-			memcmp(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs * sizeof(uint64)) == 0)
+			(cs->ninputs == 1 ? cs->vid[e - 1] == v[0] :
+			 memcmp(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs * sizeof(uint64)) == 0))
 			return e - 1;
 	combo_grow_ent(cs);
 	if (cs->nent >= (uint32) 1 << 24)
@@ -3182,6 +3209,8 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	cs->null_input[cs->nent] = ex->null_input;
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
 	cs->ht[h] = ++cs->nent;
+	if (direct)
+		combo_dir_set(cs, v[0], cs->nent);
 	if (cs->nent * 2 > cs->nht)
 	{
 		pfree(cs->ht);
@@ -3218,6 +3247,8 @@ combo_reset(AggExec *ex, int ci)
 	cs->arena = NULL;
 	cs->arena_left = 0;
 	cs->nht = 64;
+	cs->dir = NULL;
+	cs->dircap = 0;
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)
@@ -10167,6 +10198,8 @@ table_reset(AggExec *ex)
 	{
 		ex->cs[ci].nent = ex->cs[ci].nout = 0;
 		memset(ex->cs[ci].ht, 0, ex->cs[ci].nht * sizeof(uint32));
+		if (ex->cs[ci].dir)
+			memset(ex->cs[ci].dir, 0, ex->cs[ci].dircap * sizeof(uint32));
 	}
 	table_init(ex);
 }
