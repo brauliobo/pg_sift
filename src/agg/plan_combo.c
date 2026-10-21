@@ -629,6 +629,16 @@ combo_sub_mutator(Node *n, ComboSub *s)
 	return expression_tree_mutator(n, combo_sub_mutator, s);
 }
 
+/* the expression of an argument or slot of combo ci over Params, now: the scope that resolves its columns is the one the caller is in */
+Node *
+lower_scoped(AggCtx *c, int ci, Node *expr)
+{
+	ComboCtx   *cb = list_nth(c->combos, ci);
+	ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL};
+
+	return combo_sub_mutator(expr, &sub);
+}
+
 /* the joins and combos of the query as the spec holds them: the slots' expressions over Params */
 void
 finish_combos(AggCtx *c, SiftAggSpec *s)
@@ -660,7 +670,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 		{
 			s->join[cb->join].args = NIL;
 			foreach_ptr(Node, arg, sub.jc->j.args)
-				s->join[cb->join].args = lappend(s->join[cb->join].args, combo_sub_mutator(arg, &sub));
+				s->join[cb->join].args = lappend(s->join[cb->join].args, sub.jc->j.scoped ? arg : combo_sub_mutator(arg, &sub));
 		}
 		for (int k = 0; sub.jc && k < sub.jc->j.nkey; k++)
 			if (sub.jc->kexpr[k])
@@ -675,7 +685,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 			sl->key = rq->key;
 			sl->agg = rq->agg;
 			sl->direct = rq->direct;
-			sl->expr = combo_sub_mutator(rq->expr, &sub);
+			sl->expr = rq->lowered ? rq->expr : combo_sub_mutator(rq->expr, &sub);
 		}
 	}
 }

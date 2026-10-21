@@ -80,6 +80,8 @@ A scan with such a join runs without workers: one scan sees every row.
 Fixtures `ps_*`, rows J06 and J07 of the coverage table.
 Fixtures `nf_*`, test `agg_nullable_filters`, rows J30 and J31.
 
+An `EXISTS` over the elements of an array may read a column of a joined table, or look each element up in a mapping table (`LEFT JOIN LATERAL (SELECT .. LIMIT 1) m ON true`, keyed by the element and a joined column) before it tests the result: the lookup is PostgreSQL's plan, run once for each distinct combination of the values it reads, and a row's answer is kept while its elements and the joined values repeat. `NOT EXISTS`, `EXISTS` inside an aggregate `FILTER` and an expression that can raise keep the normal plan. Fixtures `ee_*`, row J34 of the coverage table.
+
 ## Partitioned tables
 
 A partitioned table is one source of `Custom Scan (SiftAgg)` when every partition left after PostgreSQL's pruning (plan-time, at every level) has a

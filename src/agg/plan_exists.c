@@ -10,6 +10,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/planmain.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
@@ -249,13 +250,11 @@ exists_leaf(Node *n, List **quals)
 	return exists_leaf(linitial(f->fromlist), quals);
 }
 
-/* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE; *rti is the function's entry */
+/* the query of a correlated EXISTS sub-plan, if it is a plain SELECT of tables and conditions */
 static Query *
-exists_query(AggCtx *c, SubPlan *sp, Index *rti, List **quals)
+exists_subquery(AggCtx *c, SubPlan *sp)
 {
 	Query	   *q;
-	RangeTblEntry *rte;
-	RangeTblRef *ref;
 
 	if (sp->subLinkType != EXISTS_SUBLINK || sp->testexpr || sp->useHashTable || sp->setParam || sp->parParam == NIL ||
 		list_length(sp->parParam) != list_length(sp->args) || sp->plan_id < 1 ||
@@ -263,8 +262,20 @@ exists_query(AggCtx *c, SubPlan *sp, Index *rti, List **quals)
 		return NULL;
 	q = ((PlannerInfo *) list_nth(c->root->glob->subroots, sp->plan_id - 1))->parse;
 	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->groupClause || q->havingQual ||
-		q->distinctClause || q->limitCount || q->limitOffset || q->setOperations || q->cteList || q->rowMarks ||
-		(ref = exists_leaf((Node *) q->jointree, quals)) == NULL)
+		q->distinctClause || q->limitCount || q->limitOffset || q->setOperations || q->cteList || q->rowMarks)
+		return NULL;
+	return q;
+}
+
+/* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE; *rti is the function's entry */
+static Query *
+exists_query(AggCtx *c, SubPlan *sp, Index *rti, List **quals)
+{
+	Query	   *q = exists_subquery(c, sp);
+	RangeTblEntry *rte;
+	RangeTblRef *ref;
+
+	if (q == NULL || (ref = exists_leaf((Node *) q->jointree, quals)) == NULL)
 		return NULL;
 	*rti = ref->rtindex;
 	rte = rt_fetch(*rti, q->rtable);
@@ -358,6 +369,209 @@ compile_exists(AggCtx *c, SubPlan *sp)
 	x.params = outer_params(c, sp);
 	grp = group_leaf_of(c, outer_mutator(linitial(((FuncExpr *) x.f->funcexpr)->args), sp), func_leaf_kind(x.kind));
 	return grp < 0 ? NULL : any_elem(c, grp, build_exists, &x);
+}
+
+/* ---- EXISTS over the elements with a lookup, or a column of a joined table: a test of the joined tuples (SAP_ELEM_EXISTS) ---- */
+
+typedef struct ExistsScan
+{
+	Query	   *q;
+	Index		frti;			/* the unnesting function */
+	Index		lrti;			/* the sub-select left joined to it (LEFT JOIN LATERAL .. ON true), 0 none */
+	List	   *quals;
+} ExistsScan;
+
+/* the function of the FROM, and the lateral sub-select left joined to it; the conditions of the lists are added to quals */
+static bool
+exists_scan(Node *n, ExistsScan *x)
+{
+	if (IsA(n, RangeTblRef))
+	{
+		Index		rti = ((RangeTblRef *) n)->rtindex;
+		RangeTblEntry *rte = rt_fetch(rti, x->q->rtable);
+
+		if (rte->rtekind == RTE_FUNCTION && x->frti == 0)
+			x->frti = rti;
+		else if (rte->rtekind == RTE_SUBQUERY && rte->lateral && x->frti != 0 && x->lrti == 0)
+			x->lrti = rti;
+		else
+			return false;
+		return true;
+	}
+	if (IsA(n, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) n;
+
+		if (list_length(f->fromlist) != 1)
+			return false;
+		if (f->quals != NULL)
+			x->quals = list_concat(x->quals, list_copy(IsA(f->quals, List) ? (List *) f->quals : list_make1(f->quals)));
+		return exists_scan(linitial(f->fromlist), x);
+	}
+	if (IsA(n, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+		Const	   *on = (Const *) j->quals;
+
+		return j->jointype == JOIN_LEFT && x->frti == 0 && (on == NULL || (IsA(on, Const) && !on->constisnull && DatumGetBool(on->constvalue))) &&
+			exists_scan(j->larg, x) && x->frti != 0 && exists_scan(j->rarg, x) && x->lrti != 0;
+	}
+	return false;
+}
+
+/* the scoped lookup join of the sub-select left joined to the elements: its child plan, and the combo that its parameters are the inputs of */
+static JoinCtx *
+scoped_join(AggCtx *c, ExistsScan *x, Index offset)
+{
+	RangeTblEntry *rte = rt_fetch(x->lrti, x->q->rtable);
+	JoinCtx    *jc = palloc0(sizeof(JoinCtx));
+	ComboCtx   *cb;
+	List	   *args;
+
+	jc->rti = x->lrti + offset;
+	jc->kind = SJ_LEFT;
+	jc->j.kind = SJ_LEFT;
+	jc->j.child = -1;
+	jc->j.fslot = -1;
+	jc->j.scoped = true;
+	jc->j.desc = psprintf("%s (left, per element)", rte->eref->aliasname);
+	if (!scoped_child(c, rte->subquery, offset, jc, &args))
+		return NULL;
+	cb = new_combo(c, list_length(c->joins));
+	jc->combo = combo_index(c, cb);
+	c->joins = lappend(c->joins, jc);
+	foreach_ptr(Node, arg, args)
+	{
+		Node	   *expr = normalize_expr(c, arg);
+		ComboWalk	w = {c};
+
+		combo_walker(expr, &w);
+		if (w.bad || (w.jc && w.jc->combo >= jc->combo))
+			return NULL;
+		for (int p = 0; p < w.nl; p++)
+		{
+			if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
+				return NULL;
+			use_matched_leaf(c, w.leaf[p]);
+		}
+		foreach_ptr(Var, v, w.vars)
+			if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+				return NULL;
+		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr));
+	}
+	return jc;
+}
+
+/* the conjuncts that read the leaves of the elements only, as predicates of the element level; the others are returned in *rest */
+static SiftAggPred *
+element_conjuncts(AggCtx *c, List *quals, List **rest)
+{
+	List	   *preds = NIL;
+	SiftAggPred *p;
+
+	foreach_ptr(Node, q, quals)
+	{
+		SiftAggPred *e = NULL;
+
+		if (bms_is_subset(pull_varnos(c->root, q), bms_make_singleton(c->func_rti)))
+			e = compile_pred(c, normalize_expr(c, q));
+		if (e != NULL && e->level == 1 && !e->late)
+			preds = lappend(preds, e);
+		else
+			*rest = lappend(*rest, q);
+	}
+	if (preds == NIL)
+		return NULL;
+	if (list_length(preds) == 1)
+		return linitial(preds);
+	p = new_junction(c, SAP_AND, list_length(preds));
+	foreach_ptr(SiftAggPred, e, preds)
+		p->child[foreach_current_index(e)] = e;
+	junction_done(p);
+	return p;
+}
+
+/*
+ * EXISTS (SELECT .. FROM jsonb_to_recordset(array) e [LEFT JOIN LATERAL (lookup of one row) m ON true] WHERE ..) that reads a column of a joined table
+ * (or the lookup): PostgreSQL cannot pull it up, so it is a test of each joined tuple. The elements of its row go through a combo whose
+ * inputs are the element's leaves, the row's and the lookup outputs the tuple holds, the lookup being a correlated child of the elements
+ * (the join is `scoped`: no stage of the tuples applies it). The sub-query's range table is appended to the query's, so that its columns
+ * and the query's are told apart; the conjuncts that read the leaves of the elements only are tested in bulk, before the combo.
+ */
+SiftAggPred *
+compile_exists_post(AggCtx *c, SubPlan *sp)
+{
+	ExistsScan	x = {exists_subquery(c, sp)};
+	Index		offset = list_length(c->root->parse->rtable);
+	int			nj0 = list_length(c->joins),
+				nc0 = list_length(c->combos),
+				grp,
+				ci,
+				si;
+	RangeTblFunction *f;
+	FuncKind	kind;
+	JoinCtx    *jc = NULL;
+	List	   *quals,
+			   *rest = NIL;
+	AggCtx		saved;
+	SiftAggPred *p = NULL;
+	Node	   *expr;
+
+	if (x.q == NULL || !exists_scan((Node *) x.q->jointree, &x))
+		return NULL;
+	f = linitial_node(RangeTblFunction, rt_fetch(x.frti, x.q->rtable)->functions);
+	if (rt_fetch(x.frti, x.q->rtable)->funcordinality || list_length(rt_fetch(x.frti, x.q->rtable)->functions) != 1 ||
+		(kind = func_kind_of(f)) == FK_NONE || contain_volatile_functions((Node *) x.quals))
+		return NULL;
+	grp = group_leaf_of(c, outer_mutator(linitial(((FuncExpr *) f->funcexpr)->args), sp), func_leaf_kind(kind));
+	if (grp < 0)
+		return NULL;
+	quals = copyObject(x.quals);
+	OffsetVarNodes((Node *) quals, offset, 0);
+	quals = (List *) outer_mutator((Node *) quals, sp);
+	saved = scope_enter(c, grp);
+	c->func_rti = x.frti + offset;
+	c->func = f;
+	c->func_kind = kind;
+	c->rtable = list_concat(list_copy(c->root->parse->rtable), list_copy(x.q->rtable));
+	c->dpctx = NIL;
+	c->oparams = NIL;
+	if (x.lrti == 0 || (jc = scoped_join(c, &x, offset)) != NULL)
+	{
+		p = new_pred(c, SAP_ELEM_EXISTS);
+		p->nchild = 0;
+		p->leaf2 = grp;
+		p->level = 2;
+		p->child = palloc(sizeof(SiftAggPred *));
+		if ((p->child[0] = element_conjuncts(c, quals, &rest)) != NULL)
+			p->nchild = 1;
+		expr = rest == NIL ? NULL : normalize_expr(c, (Node *) make_ands_explicit(rest));
+		/*
+		 * An expression that may raise stays with PostgreSQL: it evaluates the test for the tuples that reach its join and the elements before
+		 * the first that passes, which the scan, applying the test after all the joins, cannot tell
+		 */
+		if (expr == NULL || raising_walker(expr, c) || (jc && raising_walker((Node *) rt_fetch(x.lrti, x.q->rtable)->subquery, c)) ||
+			!combo_slot_in(c, jc, expr, false, jc == NULL, &ci, &si) || (jc && ci != jc->combo))
+			p = NULL;
+		else
+		{
+			SlotReq    *rq = slot_req(c, ci, si);
+
+			p->leaf = ci;
+			p->op = si;
+			rq->expr = lower_scoped(c, ci, rq->expr);
+			rq->lowered = true;
+			p->desc = psprintf("EXISTS %s[] (%s)", leaf_name(c, grp), combo_text(c, ci, expr));
+			c->elem_work += (p->nchild + 1) * elems_of(c, grp);
+		}
+	}
+	scope_leave(c, &saved, grp);
+	if (p == NULL)
+	{
+		c->joins = list_truncate(c->joins, nj0);
+		c->combos = list_truncate(c->combos, nc0);
+	}
+	return p;
 }
 
 /*

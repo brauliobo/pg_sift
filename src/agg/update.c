@@ -697,7 +697,10 @@ post_filter(AggExec *ex, Tup *t, int first, int end, int stages)
 		{
 			const SiftAggPred *p = ex->spec->post[i];
 
-			keep = ex->cs[p->leaf].val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
+			if (p->kind == SAP_ELEM_EXISTS)
+				keep = elem_exists(ex, t, j, p);
+			else
+				keep = ex->cs[p->leaf].val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
 		}
 		if (!keep)
 			continue;
