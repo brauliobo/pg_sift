@@ -420,6 +420,7 @@ typedef struct SiftAggSpec
 	int			nparts;			/* > 0: heapoid is a partitioned table and the scan reads these partitions, whose indexes have one layout (agg/part.h) */
 	Oid		   *partheap;
 	Oid		   *partindex;
+	List	   *partprune;		/* the conditions on the partition key that a parameter or a stable function decides: the scan drops the partitions they refute when it starts */
 	int			group;			/* leaf id of the array/object leaf the query unnests, -1: row level */
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;

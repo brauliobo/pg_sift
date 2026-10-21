@@ -267,6 +267,7 @@ agg_spec_new(AggCtx *c)
 	s->nparts = c->nparts;
 	s->partheap = c->partheap;
 	s->partindex = c->partindex;
+	s->partprune = c->partprune;
 	s->group = c->group;
 	return s;
 }

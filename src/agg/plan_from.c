@@ -315,42 +315,76 @@ part_leaves(RelOptInfo *rel, List **leaves)
 	}
 }
 
-/* the names of the columns the partitions are split by, at every level */
+/* the names of the columns the partitions are split by, at every level (hash: only at the levels split by hash) */
 static void
-part_key_names(AggCtx *c, RelOptInfo *rel, List **names)
+part_key_names(AggCtx *c, RelOptInfo *rel, bool hash, List **names)
 {
 	Oid			relid = planner_rt_fetch(rel->relid, c->root)->relid;
 
-	for (int k = 0; k < rel->part_scheme->partnatts; k++)
-		foreach_node(Var, v, pull_var_clause((Node *) rel->partexprs[k], 0))
-			*names = list_append_unique(*names, makeString(get_attname(relid, v->varattno, false)));
+	if (!hash || rel->part_scheme->strategy == PARTITION_STRATEGY_HASH)
+		for (int k = 0; k < rel->part_scheme->partnatts; k++)
+			foreach_node(Var, v, pull_var_clause((Node *) rel->partexprs[k], 0))
+				*names = list_append_unique(*names, makeString(get_attname(relid, v->varattno, false)));
 	for (int i = -1; (i = bms_next_member(rel->live_parts, i)) >= 0;)
 		if (rel->part_rels[i]->part_scheme != NULL)
-			part_key_names(c, rel->part_rels[i], names);
+			part_key_names(c, rel->part_rels[i], hash, names);
+}
+
+static bool
+exec_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if ((IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC) || IsA(node, SubPlan) || IsA(node, AlternativeSubPlan))
+		return true;
+	return expression_tree_walker(node, exec_param_walker, context);
+}
+
+static bool
+mentions_key(Node *clause, Oid relid, List *names)
+{
+	foreach_node(Var, v, pull_var_clause(clause, 0))
+		if (list_member(names, makeString(get_attname(relid, v->varattno, false))))
+			return true;
+	return false;
 }
 
 /*
- * A parameter in a condition on a column the partitions are split by prunes them when the plan runs, which the scan does not do (it reads every
- * partition PostgreSQL's planning kept, and applies the condition to the rows): the normal plan keeps that pruning.
+ * A condition on a column the partitions are split by whose operand is a parameter of a generic plan or a stable function (PostgreSQL prunes
+ * the partitions with it when the plan starts) is kept in c->partprune, in the terms of the table with varno 1: the scan evaluates the operands
+ * when it starts and drops the partitions the partition bounds refute (sift_aggpart_prune). False when the partitions are split by hash on
+ * such a column: the bounds cannot refute a hash remainder, and the normal plan keeps the pruning.
  */
 static bool
-part_runtime_pruning(AggCtx *c)
+part_prune_clauses(AggCtx *c)
 {
-	List	   *names = NIL;
+	List	   *names = NIL,
+			   *hashed = NIL;
 
-	part_key_names(c, c->rel, &names);
+	c->partprune = NIL;
+	part_key_names(c, c->rel, false, &names);
+	part_key_names(c, c->rel, true, &hashed);
 	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
-		if (extern_param_walker((Node *) ri->clause, NULL))
-			foreach_node(Var, v, pull_var_clause((Node *) ri->clause, 0))
-				if (list_member(names, makeString(get_attname(c->heapoid, v->varattno, false))))
-					return true;
-	return false;
+	{
+		Node	   *cl = (Node *) ri->clause;
+
+		if (!(extern_param_walker(cl, NULL) || contain_mutable_functions(cl)) || contain_volatile_functions(cl) || exec_param_walker(cl, NULL) ||
+			!mentions_key(cl, c->heapoid, names))
+			continue;
+		if (mentions_key(cl, c->heapoid, hashed))
+			return false;
+		cl = copyObject(cl);
+		ChangeVarNodes(cl, c->relid, 1, 0);
+		c->partprune = lappend(c->partprune, cl);
+	}
+	return true;
 }
 
 /*
  * The source of a partitioned table: the live partitions after PostgreSQL's pruning, each read through a sift_col index of the same layout, the
  * columns in the terms of the table (the query is compiled once, against them). A partition without such an index, of another storage, or whose
- * index differs from the others' keeps the normal plan, and so does a partitioned table whose partitions are pruned when the plan runs.
+ * index differs from the others' keeps the normal plan, and so does a table split by hash on a column a parameter is compared with. The partitions
+ * a parameter or a stable function prunes when the plan runs are dropped when the scan starts.
  */
 static bool
 part_source(AggCtx *c)
@@ -363,7 +397,7 @@ part_source(AggCtx *c)
 		return false;
 	part_leaves(c->rel, &leaves);
 	n = list_length(leaves);
-	if (n == 0 || n > SIFT_AGG_MAX_PARTS || part_runtime_pruning(c))
+	if (n == 0 || n > SIFT_AGG_MAX_PARTS || !part_prune_clauses(c))
 		return false;
 	first = part_candidates(c, linitial_node(RelOptInfo, leaves));
 	foreach_ptr(PartCand, f, first)

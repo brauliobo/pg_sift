@@ -653,6 +653,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	MemoryContextSwitchTo(ex->cxt);
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
+	part_prune_init(ex);
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
@@ -920,6 +921,8 @@ static void
 explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 {
 	sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
+	if (c->parts_pruned > 0)
+		ExplainPropertyInteger("Partitions Removed", NULL, c->parts_pruned, es);
 	ExplainPropertyInteger("Units", NULL, c->n_units, es);
 	if (!c->pa_on && es->verbose)
 		ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
