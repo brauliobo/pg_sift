@@ -910,7 +910,10 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc->rows_vetted, es);
 	ExplainPropertyInteger("Heap Pages", NULL, cc->heap_pages, es);
 	if (c->recheck)
+	{
+		ExplainPropertyInteger("Units Read Again From The Heap", NULL, cc->recheck_units, es);
 		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
+	}
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 	if (c->n_osa_spilled)
 		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
@@ -940,6 +943,7 @@ explain_run(AggExec *ex, ExplainState *es)
 		cc.rows_vetted += c->par->cc.rows_vetted;
 		cc.heap_pages += c->par->cc.heap_pages;
 		cc.rechecked += c->par->cc.rechecked;
+		cc.recheck_units += c->par->cc.recheck_units;
 	}
 	if (s->search)
 		ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);

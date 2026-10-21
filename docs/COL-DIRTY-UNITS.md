@@ -94,8 +94,10 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   expressions). A value the shredder cannot store even after the coercion (the string `-0` in a float column, a list of more than
   2^20 elements) stays an overflow and the scan raises its generic `0A000` error for it: the planner cannot know it beforehand.
   A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is `AGG_RECHECK_FRAC` (2%) of the
-  rows at `AGG_RECHECK_ROW` (60) operator costs; the per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that
-  would make the price exact and was not needed for the numbers below.
+  rows of the units the leaf flags (the share of units whose zone carries the overflow flag, from the zones the planner reads anyway; one row
+  for each flagged unit at least) at `AGG_RECHECK_ROW` (60) operator costs, so a few dirty rows in one unit cost one unit's rows, not 2% of the
+  table. The per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that would make the price exact and was not needed for the numbers
+  below. `EXPLAIN ANALYZE` shows `Units Read Again From The Heap` (the stored units that had flagged rows, of `Units`) and `Rows Read Again From The Heap`.
 - **Leaves after the source's.** `(doc -> 'm' ->> 'k')::float8` of an object leaf with free keys and `jsonb_array_length(doc -> 'l')` of an
   array leaf take their values from a column of the index (the `value` column of the members, the array itself): `reads_overflow` follows
   them to it, so a flagged column keeps the normal plan (a numeric string converts, anything else raises PostgreSQL's error), and the scan
