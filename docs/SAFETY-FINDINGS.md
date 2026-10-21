@@ -45,7 +45,7 @@ F-COL-1 is fixed: `chunk_lut` gives a table of at most 16 bits a bit for every c
 above 16 bits, the codec's offsets in `cc_lut`) with `codes_below` before the LUT kernels read them (ERRCODE_DATA_CORRUPTED). The inputs of the
 three paths (FOR32, PACK, CC with a valid check word) are in test/fuzz/regress/, replayed by `make -C test/fuzz regress` and first in every
 `colchunk` run; scripts/fuzz.sh no longer skips the LUT check. The same check guards the code lanes the aggregate executor
-indexes its dictionary tables with (`eval_lut` in src/agg/agg.c, the group maps; P1-6): `sift_cchunk_decode_codes` in `sift_col_read_lane` and
+indexes its dictionary tables with (`eval_lut` in src/agg/pred.c, the group maps; P1-6): `sift_cchunk_decode_codes` in `sift_col_read_lane` and
 `sift_ccodes_below` in `read_positions` raise ERRCODE_DATA_CORRUPTED for a code above the dictionary size (the tables have one entry more, for NULL).
 Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no code above the dictionary is ever returned).
 
