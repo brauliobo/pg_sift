@@ -6,6 +6,7 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/amapi.h"
 #include "funcapi.h"
 
 #include "core/store.h"
