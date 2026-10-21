@@ -573,19 +573,40 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 }
 
 /*
- * The share of the units the zone tests leave: the comparisons (their selectivity is also the fraction of the leaf's range they keep),
- * the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
+ * The share of the units the zone tests of p leave (the scan tests each disjunct of an OR on its own, init_filter.c): a comparison keeps the
+ * zones its selectivity overlaps, an AND the most selective of its conjuncts' share, an OR the sum of its disjuncts' (1: none refuses a unit).
+ */
+static double
+pred_zone_kept(AggCtx *c, const SiftAggPred *p)
+{
+	double		kept = 1.0;
+
+	if (p->kind == SAP_AND)
+		for (int i = 0; i < p->nchild; i++)
+			kept = Min(kept, pred_zone_kept(c, p->child[i]));
+	else if (p->kind == SAP_OR)
+	{
+		kept = 0.0;
+		for (int i = 0; i < p->nchild; i++)
+			kept += pred_zone_kept(c, p->child[i]);
+		kept = Min(kept, 1.0);
+	}
+	else if (sift_aggspec_zone_cmp(p, c->lay, c->lay->nleaves))
+		kept = zone_overlap(c, p->leaf, Min(Max(p->sel, 0.0), 1.0));
+	return kept;
+}
+
+/*
+ * The share of the units the zone tests leave: the comparisons (their selectivity is also the fraction of the leaf's range they keep) and
+ * the ORs of them, the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
  */
 static double
 zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
 	double		kept = join_key_zone(c, s, nkeyfilters);
 
-	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, c->lay, c->lay->nleaves))
-		kept = Min(kept, zone_overlap(c, p->leaf, Min(Max(p->sel, 0.0), 1.0)));
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TID)
-			kept = Min(kept, s->pred[i]->sel);
+		kept = Min(kept, s->pred[i]->kind == SAP_TID ? s->pred[i]->sel : pred_zone_kept(c, s->pred[i]));
 	return kept;
 }
 

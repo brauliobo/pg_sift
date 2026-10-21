@@ -88,6 +88,9 @@ typedef struct ColSource
 	SiftColPred *fpred;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
+	const SiftSrcPrune *zfor;	/* the prune entries of the last begin, and the zone trees made of those that are junctions */
+	SiftColPrune *zone;
+	int			nzone;
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
 	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */

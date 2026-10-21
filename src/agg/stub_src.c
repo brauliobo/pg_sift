@@ -273,29 +273,41 @@ src_slot(StubSource *src, int leaf)
 	return leaf_slot(&src->dc, &src->unit, leaf);
 }
 
-/* True if some prune entry has no value of its leaf in the unit within its range */
+/* does the unit hold a row the prune entry may select: a value of its leaf in range, or for a junction every kid (some kid, any) may? */
+static bool
+prune_may(StubSource *src, const SiftSrcPrune *p)
+{
+	const SiftSrcLeaf *lf;
+	const SiftSrcVec *v;
+	bool		some = false;
+
+	if (p->nkids > 0)
+	{
+		for (int i = 0; i < p->nkids; i++)
+			if (prune_may(src, &p->kids[i]) == p->any)
+				return p->any;
+		return !p->any;
+	}
+	lf = &src->lay->l.leaf[p->leaf];
+	if (lf->parent >= 0 || lf->kind != SCL_SCALAR || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64))
+		return true;
+	v = &src_slot(src, p->leaf)->vec;
+	for (int64 i = 0; i < v->n && !some; i++)
+	{
+		int64		x = lf->vtype == SCV_I32 ? ((const int32 *) v->data)[i] : ((const int64 *) v->data)[i];
+
+		some = !(v->isnull && v->isnull[i]) && x >= p->lo && x <= p->hi && (p->nvals == 0 || bsearch(&x, p->vals, p->nvals, sizeof(int64), sift_cmp_i64) != NULL);
+	}
+	return some;
+}
+
+/* True if some prune entry may select no row of the unit */
 static bool
 unit_pruned(StubSource *src)
 {
 	for (int k = 0; k < src->nprune; k++)
-	{
-		const SiftSrcPrune *p = &src->prune[k];
-		const SiftSrcLeaf *lf = &src->lay->l.leaf[p->leaf];
-		const SiftSrcVec *v;
-		bool		any = false;
-
-		if (lf->parent >= 0 || lf->kind != SCL_SCALAR || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64))
-			continue;
-		v = &src_slot(src, p->leaf)->vec;
-		for (int64 i = 0; i < v->n && !any; i++)
-		{
-			int64		x = lf->vtype == SCV_I32 ? ((const int32 *) v->data)[i] : ((const int64 *) v->data)[i];
-
-			any = !(v->isnull && v->isnull[i]) && x >= p->lo && x <= p->hi && (p->nvals == 0 || bsearch(&x, p->vals, p->nvals, sizeof(int64), sift_cmp_i64) != NULL);
-		}
-		if (!any)
+		if (!prune_may(src, &src->prune[k]))
 			return true;
-	}
 	return false;
 }
 

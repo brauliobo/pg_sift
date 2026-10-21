@@ -111,7 +111,7 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 	hi = Min(hi, ex->tid_sb_hi);
 	if (lo >= hi)
 		return;
-	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
+	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nzone);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 	{
 		process_unit(ex);

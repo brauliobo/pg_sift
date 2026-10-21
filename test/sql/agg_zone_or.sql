@@ -1,0 +1,115 @@
+-- Custom Scan (SiftAgg) prunes the units of an OR by the zones: each disjunct is tested on its own (an AND of comparisons, a range, an IN list), and a unit
+-- is read when any disjunct may match. An OR with a disjunct no zone can refuse (a text test, an arithmetic on the leaf) prunes nothing.
+-- Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- events in day order, and an owner that changes every 25000 events: both leaves have narrow zones; the padding makes a unit of about 8000 rows
+CREATE TABLE ev (id int PRIMARY KEY, set_id int, day date, kind text, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, 1 + (i - 1) / 25000, date '2020-01-01' + (i - 1) / 300, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], i % 100, repeat('x', 200)
+FROM generate_series(1, 300000) i;
+CREATE INDEX ev_col ON ev USING sift_col (set_id, day, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- the units a statement reads, and those it prunes ('normal' when SiftAgg does not run it)
+CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; read text; pruned text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Units: %' THEN read := trim(split_part(l, ':', 2)); END IF;
+		IF l LIKE '%Units Pruned: %' THEN pruned := trim(split_part(l, ':', 2)); END IF;
+	END LOOP;
+	RETURN CASE WHEN r = 'normal' THEN r ELSE format('%s read %s pruned %s', r, read, pruned) END;
+END $$;
+
+-- the plan, and whether its rows are those of the normal plan
+CREATE FUNCTION same(cond text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT set_id, count(*) AS n, sum(amount) AS s FROM ev WHERE %s GROUP BY set_id', cond);
+BEGIN
+	plan := units_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((SELECT * FROM r_on EXCEPT ALL SELECT * FROM r_off) UNION ALL (SELECT * FROM r_off EXCEPT ALL SELECT * FROM r_on)) d);
+	RETURN NEXT;
+END $$;
+
+-- the units of one window, and of two (a period and the same one a year later): the second adds its own units, and the ones between are pruned
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31'$$);
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2020-09-01' AND day <= '2020-09-30'$$);
+SELECT * FROM same($$(day >= '2020-03-01' AND day <= '2020-03-31') OR (day >= '2020-09-01' AND day <= '2020-09-30') OR (day >= '2021-01-01' AND day < '2021-01-15')$$);
+-- BETWEEN, IN lists and equalities are disjuncts too
+SELECT * FROM same($$day BETWEEN '2020-03-01' AND '2020-03-31' OR day BETWEEN '2021-03-01' AND '2021-03-31'$$);
+SELECT * FROM same($$day IN ('2020-02-10', '2021-02-10') OR day = '2020-12-25'$$);
+SELECT * FROM same($$day IN ('2020-02-10', '2020-02-11') OR day IN ('2021-02-10', '2021-02-11')$$);
+-- a disjunct that matches nothing adds no unit
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day > '2030-01-01'$$);
+SELECT * FROM same($$day >= '2020-03-31' AND day <= '2020-03-01' OR day >= '2020-09-01' AND day <= '2020-09-30'$$);
+-- other leaves: a disjunct on the owner and one on the day
+SELECT * FROM same($$set_id = 2 OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT * FROM same($$set_id IN (1, 12) OR set_id = 6$$);
+-- an AND of ORs, and an OR of ANDs of two leaves: every conjunct, every disjunct is tested on its own
+SELECT * FROM same($$(day < '2020-06-01' OR day > '2021-06-01') AND (set_id = 1 OR set_id = 12)$$);
+SELECT * FROM same($$(set_id = 1 AND day < '2020-02-01') OR (set_id = 12 AND day > '2021-03-01')$$);
+SELECT * FROM same($$(set_id = 1 OR set_id = 12) AND (day < '2020-02-01' OR day > '2021-03-01') AND amount > 50$$);
+-- the conjuncts of the query narrow every disjunct
+SELECT * FROM same($$day >= '2020-03-01' AND (day <= '2020-03-31' OR day >= '2020-09-01' AND day <= '2020-09-30')$$);
+
+-- a disjunct no zone can refuse leaves every unit: a test of the text leaf, of another leaf that is no zone leaf, an arithmetic on the leaf
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR kind = 'a'$$);
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR amount > 98$$);
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day + 1 > '2021-03-01'$$);
+
+-- the windows come from parameters of a prepared statement, tested when it runs
+PREPARE w(date, date, date, date) AS SELECT set_id, count(*) FROM ev WHERE day >= $1 AND day <= $2 OR day >= $3 AND day <= $4 GROUP BY set_id ORDER BY 1;
+SET plan_cache_mode = force_generic_plan;
+SELECT units_of($$EXECUTE w('2020-03-01', '2020-03-31', '2021-03-01', '2021-03-31')$$);
+EXECUTE w('2020-03-01', '2020-03-31', '2021-03-01', '2021-03-31');
+SET sift.enable_agg = off;
+EXECUTE w('2020-03-01', '2020-03-31', '2021-03-01', '2021-03-31');
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+
+-- rows written after the index was built are in the write buffer, and a row deleted from a unit stays out of the result
+INSERT INTO ev SELECT 300000 + i, 13, date '2020-03-15', 'a', 1, 'x' FROM generate_series(1, 50) i;
+DELETE FROM ev WHERE id BETWEEN 5000 AND 5100;
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+
+-- rows moved by UPDATE leave a dead version in an old unit and a new one elsewhere: both sides of an OR see only the live row
+UPDATE ev SET day = date '2021-03-10' WHERE id BETWEEN 100000 AND 100200;
+UPDATE ev SET day = date '2020-01-02' WHERE day >= '2020-03-10' AND day <= '2020-03-12';
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT * FROM same($$day >= '2020-01-01' AND day <= '2020-01-05' OR day = '2021-03-10'$$);
+
+-- a NULL day matches no disjunct, and a disjunct of IS NULL leaves every unit
+INSERT INTO ev SELECT 400000 + i, 14, NULL, 'b', 2, 'x' FROM generate_series(1, 30) i;
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day IS NULL$$);
+
+-- units answered from the pre-aggregates (a grouped dictionary leaf, no test) and the OR that scans: the same rows
+VACUUM (FREEZE, ANALYZE) ev;
+SELECT units_of($$SELECT kind, count(*), sum(amount) FROM ev GROUP BY kind$$) ~ 'SiftAgg' AS grouped_by_siftagg;
+CREATE FUNCTION same_kind(cond text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE %s GROUP BY kind', cond);
+BEGIN
+	plan := units_of(q);
+	EXECUTE format('CREATE TEMP TABLE k_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE k_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM k_on);
+	vs_normal_plan := (SELECT count(*) FROM ((SELECT * FROM k_on EXCEPT ALL SELECT * FROM k_off) UNION ALL (SELECT * FROM k_off EXCEPT ALL SELECT * FROM k_on)) d);
+	RETURN NEXT;
+END $$;
+SELECT * FROM same_kind($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT * FROM same_kind($$set_id < 3 OR set_id > 11$$);
+SELECT * FROM same_kind($$(set_id < 3 OR set_id > 11) AND day >= '2020-01-01'$$);
+
+DROP FUNCTION same_kind(text), same(text), units_of(text);
+DROP TABLE ev;
+DROP EXTENSION pg_sift;

@@ -98,6 +98,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: `SiftAgg` prunes units by an `OR` of zone tests (two periods of a date column, `BETWEEN`s, equalities and `IN` lists of one or several leaves, an AND of ORs): each disjunct is tested on its own and a unit is read when any may match, where an `OR` pruned nothing (`Units Pruned`); an `IN` list with gaps is tested against its members, not only its range. The cost of the scan counts the units an `OR` leaves. No format change. 3.4M-row fact, a count over two 30-day windows a year apart: rows in date order 1,446 to 44 units and 16.9 to 3.5 ms, rows in arrival order 1,442 to 1,319 units (the earlier window spans most of the heap); a grouped aggregate with a 51-key filter on the same windows, rows in date order 137 to 16 ms.
+
 - Changed: the join key filter of `SiftAgg` covers `int8` fact keys and integer keys that span more than 4 million values (a hash table of the keys, replacing the sorted array of a wide `IN` list); a join that returns no column of the dimension passes the filtered tuples without a lookup (`Join Key Passes`). 3M-row fact, 200k-row dimension: `int8` key at 50% of the dimension 227 to 31 ms, sparse `int4` keys 211 to 53 ms.
 
 - Changed: `SiftAgg` answers an inner lookup join that returns no column of the joined table (a dimension that only filters, `JOIN dim d ON d.id = f.dim_id WHERE d.country < 30`) from the byte table of the semi join when no key of the kept rows repeats; 100,000 of 200,000 dimension keys over 3,000,000 rows: 76 to 27 ms.

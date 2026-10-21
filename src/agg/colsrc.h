@@ -153,6 +153,8 @@ typedef struct SiftSrcUnit
  * A zone test the source may use to skip a unit without reading it: the unit is skipped when no value of the
  * integer-typed (I32/I64) leaf can lie in [lo, hi], nor in vals when there are nvals (sorted values, within [lo, hi]: a set too
  * sparse for the interval to tell). Conservative; the executor filters again. Only leaves of rows (not children of a group).
+ * With nkids > 0 the entry holds no test of its own: a unit is skipped when one of the kids skips it (kids ANDed), or when all of them
+ * do (any: an OR, where a disjunct that tests nothing is no kid at all, so the whole OR is none).
  */
 typedef struct SiftSrcPrune
 {
@@ -161,6 +163,9 @@ typedef struct SiftSrcPrune
 	int64		hi;
 	int			nvals;
 	const int64 *vals;
+	bool		any;
+	int			nkids;
+	const struct SiftSrcPrune *kids;
 } SiftSrcPrune;
 
 /*

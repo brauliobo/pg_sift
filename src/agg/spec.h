@@ -491,6 +491,9 @@ extern bool sift_aggspec_integer_type(Oid t);
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
 
+/* ... and whether one predicate is such a comparison; the zone tests of an OR are those of its disjuncts */
+extern bool sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+
 /*
  * The TIDs the SAP_TID conjuncts keep together, as the keys (block << 16 | offset) [*lo, *hi) (empty when *lo >= *hi); false when the scan
  * has none. A key is ordered as PostgreSQL orders a TID.
