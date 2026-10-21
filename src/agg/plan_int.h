@@ -284,6 +284,7 @@ extern SiftAggPred *compile_typeof(AggCtx *c, Node *n);
 extern SiftAggPred *compile_wide(AggCtx *c, Node *n);
 extern SiftAggPred *compile_tid(AggCtx *c, Node *n);
 extern bool types_guard_reads(AggCtx *c);
+extern bool typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p);
 extern void typeof_reads(AggCtx *c, SiftAggSpec *s);
 
 extern JoinCtx *join_of_var(AggCtx *c, Node *n);
