@@ -82,13 +82,13 @@ END $$;
 
 SELECT query, same, pushed FROM a_compare();
 
--- a container where the text of a scalar is declared is a value the index cannot hold: the query keeps the normal plan
+-- a container where the text of a scalar is declared is a value the index cannot hold: the row is read again from the heap as `->>` gives it (agg_text_path_recheck)
 CREATE TABLE a_bad (id int, doc jsonb);
 INSERT INTO a_bad SELECT i, CASE i % 3 WHEN 0 THEN '{"label": 1}' WHEN 1 THEN '{"label": "a"}' ELSE '{"label": [1]}' END::jsonb FROM generate_series(1, 90) i;
 CREATE INDEX a_bad_col ON a_bad USING sift_col (id, doc) WITH (paths = 'doc->label astext');
 VACUUM a_bad;
 SET sift.enable_agg = on;
-SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1;
+SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1 ORDER BY 1;
 SET sift.enable_agg = off;
 SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1 ORDER BY 1;
 

@@ -1,0 +1,102 @@
+-- A text path of a sift_col index (`doc ->> 'k'`, an `astext` leaf) cannot store every document: a container where the path is a scalar, and a document
+-- that is an array (lax jsonpath reads the elements of one, so the shredder keeps all its paths as overflow). The text of a value cannot raise, so the
+-- rows that hold one are read again from the heap as `->>` reads them (a container as its JSON text, a key of an array or of a scalar as NULL) and the
+-- scan answers as it does for a clean column. Every query runs with and without the pushdown; the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+-- 'same' when the scan and the normal plan end alike (the rows or the error), else both outcomes
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, false); b text := runq(q, true);
+BEGIN
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the rows the scan read again from the heap
+CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text; n bigint := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Rows Read Again From The Heap' THEN n := regexp_replace(l, '\D', '', 'g')::bigint; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the shapes that read the path: a key, a filter (equality, NULL test, LIKE), distinct and extremes per group, a join key, the path operator
+CREATE FUNCTION t_q(where_ text) RETURNS text[] LANGUAGE sql AS $f$
+	SELECT ARRAY[
+		'SELECT doc ->> $$k$$ AS k, count(*) FROM t WHERE ' || where_ || ' GROUP BY 1',
+		'SELECT count(*) FROM t WHERE ' || where_ || ' AND doc ->> $$k$$ = $$a$$',
+		'SELECT count(*), count(doc ->> $$k$$) FROM t WHERE ' || where_ || ' AND (doc ->> $$k$$ IS NULL OR doc ->> $$k$$ LIKE $$%1%$$)',
+		'SELECT grp, count(DISTINCT doc ->> $$k$$), min(doc ->> $$k$$), max(doc ->> $$k$$) FROM t WHERE ' || where_ || ' GROUP BY grp',
+		'SELECT count(*) FROM t JOIN (VALUES ($$a$$), ($$12$$), ($$true$$)) AS v(k) ON v.k = t.doc ->> $$k$$ WHERE ' || where_,
+		'SELECT doc #>> $${k}$$ AS k, sum(n) FROM t WHERE ' || where_ || ' GROUP BY 1'] $f$;
+
+CREATE TABLE t (id int PRIMARY KEY, grp int, n int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT i, i % 5, i, jsonb_build_object('k', (ARRAY['a', 'b', 'c1', 'd'])[i % 4 + 1], 'o', i % 3) FROM generate_series(1, 3000) i;
+CREATE INDEX t_col ON t USING sift_col (id, grp, n, doc) WITH (paths = 'doc.k astext, doc.o astext');
+VACUUM ANALYZE t;
+
+-- clean documents: the scan has the paths
+SELECT i, pushed(q) AS pushed, same(q) AS clean FROM unnest(t_q('true')) WITH ORDINALITY u(q, i) ORDER BY i;
+
+-- documents the paths cannot store: a number and a boolean are the astext leaf's own, a container, an array root and a scalar root are not
+CREATE TABLE kinds (id int PRIMARY KEY, kind text, val jsonb);
+INSERT INTO kinds VALUES
+	(9001, 'array root', '["k", "a"]'), (9002, 'empty array root', '[]'), (9003, 'array of objects', '[{"k": "a"}]'), (9004, 'string root', '"k"'),
+	(9005, 'number root', '12'), (9006, 'json null root', 'null'), (9007, 'object value', '{"k": {"x": 1, "y": [2]}}'), (9008, 'array value', '{"k": ["a", "b"]}'),
+	(9009, 'number value', '{"k": 12}'), (9010, 'boolean value', '{"k": true}'), (9011, 'json null value', '{"k": null}'), (9012, 'missing key', '{"o": 1}'),
+	(9013, 'empty string value', '{"k": ""}'), (9014, 'text value', '{"k": "a"}');
+INSERT INTO t SELECT id, 0, id, val FROM kinds;
+VACUUM ANALYZE t;
+
+-- every kind of document, one row each (the other 3000 rows are filtered out): the scan ends as the normal plan does
+SELECT k.id, k.kind, same(q[1]) AS grouped, same(q[2]) AS equal, same(q[3]) AS nulls_like, same(q[4]) AS per_group, same(q[5]) AS joined, same(q[6]) AS path_op
+FROM kinds k, LATERAL t_q(format('id = %s', k.id)) q ORDER BY k.id;
+
+-- the whole table: the scan is in the plan, reads the documents again, and answers as the normal plan does
+SELECT i, pushed(q) AS pushed, reread(q) AS reread, same(q) AS dirty FROM unnest(t_q('true')) WITH ORDINALITY u(q, i) ORDER BY i;
+SELECT same('SELECT doc ->> $$k$$ AS k, count(*), sum(n) FROM t WHERE id > 100 GROUP BY 1') AS filtered, same('SELECT grp, doc ->> $$k$$ AS k, count(*) FROM t WHERE id < 4 OR id > 9000 GROUP BY 1, 2') AS few_rows;
+
+-- a query that reads the path as the jsonb value keeps the normal plan, and one that tests the JSON type of the path while it reads the text of it is answered by
+-- the chunks' types alone (a row read again as text would have the type of its text)
+SELECT pushed('SELECT doc -> $$k$$ AS k, count(*) FROM t GROUP BY 1') AS jsonb_pushed, same('SELECT doc -> $$k$$ AS k, count(*) FROM t GROUP BY 1') AS jsonb_same,
+       pushed('SELECT jsonb_typeof(doc -> $$k$$) AS ty, doc ->> $$k$$ AS k, count(*) FROM t GROUP BY 1, 2') AS typeof_key_pushed,
+       same('SELECT jsonb_typeof(doc -> $$k$$) AS ty, doc ->> $$k$$ AS k, count(*) FROM t GROUP BY 1, 2') AS typeof_key_same,
+       same('SELECT doc ->> $$k$$ AS k, count(*) FROM t WHERE jsonb_typeof(doc -> $$k$$) = $$string$$ GROUP BY 1') AS typeof_filter_same;
+
+-- the rows go (a VACUUM rewrites the segment whose overflow values are all in dead rows): the paths are read by the scan again
+SELECT sift.col_promote('t_col') >= 0 AS promoted;
+DELETE FROM t WHERE id >= 9000;
+VACUUM (INDEX_CLEANUP on) t;
+SELECT pushed((t_q('true'))[1]) AS pushed, reread((t_q('true'))[1]) AS reread, same((t_q('true'))[1]) AS same;
+
+DROP FUNCTION t_q(text);
+DROP FUNCTION reread(text);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE kinds, t;
+DROP EXTENSION pg_sift;

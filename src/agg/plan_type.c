@@ -215,6 +215,7 @@ compile_typeof(AggCtx *c, Node *n)
 	p->level = leaf_level(c, leaf);
 	c->used = bms_add_member(c->used, leaf);
 	c->rec_bad = bms_add_member(c->rec_bad, leaf);
+	c->txt_bad = bms_add_member(c->txt_bad, leaf);
 	p->op = types;
 	p->desc = expr_text(c, n);
 	return p;
