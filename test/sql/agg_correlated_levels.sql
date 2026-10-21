@@ -11,7 +11,9 @@ CREATE TABLE region_kinds (kind text, region text);
 INSERT INTO region_kinds VALUES ('a', 'east'), ('b', 'west'), ('b', 'east');
 CREATE TABLE regions (id int, region text);
 INSERT INTO regions VALUES (1, 'east'), (2, 'west'), (3, 'north');
+CREATE TABLE plain_facts AS SELECT id, kind, payload FROM facts;
 VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE plain_facts;
 ANALYZE lookup_values;
 ANALYZE regions;
 ANALYZE region_kinds;
@@ -89,5 +91,10 @@ SELECT * FROM check_query($q$
 $q$);
 SELECT * FROM check_query($q$
  SELECT count(*) FILTER (WHERE l.label = 'ae') FROM facts f
+ LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind = f.kind AND m.region = 'east' LIMIT 1) l ON true
+$q$);
+-- A table with no column index is not scanned: the sub-selects of its query are planned by PostgreSQL only.
+SELECT * FROM check_query($q$
+ SELECT count(*) FILTER (WHERE l.label = 'ae') FROM plain_facts f
  LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind = f.kind AND m.region = 'east' LIMIT 1) l ON true
 $q$);
