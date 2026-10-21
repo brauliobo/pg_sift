@@ -510,6 +510,7 @@ scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args)
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
 	jc->j.params = x.params;
+	jc->j.sig = sift_agg_child_sig((Node *) lifted, x.params);
 	jc->subroot = sift_subquery_planner(c->root->glob, lifted, c->root, jc->j.desc);
 	c->root->plan_params = saved;
 	child_scan_path(c->rel, jc);
