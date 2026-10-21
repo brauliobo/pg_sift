@@ -174,6 +174,8 @@ sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx)
 
 		sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, seg->gen);
 		h = TBL_WBUF_HDR(BufferGetPage(buf));
+		if (h->npages > SIFT_TBL_MAX_WBUF_PAGES)
+			corrupt(rel, "The write buffer header lists %u pages, at most %d fit.", h->npages, SIFT_TBL_MAX_WBUF_PAGES);
 		seg->npages = h->npages;
 		memcpy(seg->page, h->page, h->npages * sizeof(BlockNumber));
 		UnlockReleaseBuffer(buf);
@@ -283,11 +285,21 @@ const SiftTblRec *
 sift_tbl_page_rec(Page page, uint64 gen, uint32 off)
 {
 	const SiftTblPageHdr *ph = TBL_PAGE(page);
+	const char *end;
+	const SiftTblRec *rec;
 
 	if (PageIsNew(page) || SiftPageGetOpaque(page)->type != SIFT_PT_WBUFDATA || SiftPageGetOpaque(page)->gen != gen ||
-		(ph->flags & SIFT_TBL_PAGE_OVFDATA) || off < 1 || off > ph->nrows || ph->slot[off - 1] == 0)
+		(ph->flags & SIFT_TBL_PAGE_OVFDATA) || off < 1 || off > ph->nrows)
 		return NULL;
-	return (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
+	if (off > SIFT_TBL_MAX_OFF)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page counts %u rows, at most %d fit", ph->nrows, SIFT_TBL_MAX_OFF)));
+	if (ph->slot[off - 1] == 0)
+		return NULL;
+	rec = (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
+	end = (const char *) PageGetSpecialPointer(page);
+	if ((const char *) (rec + 1) > end || rec->inline_len > end - (const char *) (rec + 1))
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page holds a record that reaches past the page")));
+	return rec;
 }
 
 /*
