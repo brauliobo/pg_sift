@@ -13,6 +13,7 @@
 
 #include "col/codec_int.h"
 #include "core/popcount.h"
+#include "core/cmp.h"
 
 void
 sift_cc_set_ones(uint64 *bits, uint32 n)
@@ -428,15 +429,7 @@ nd_get(const CcNode *nd, uint32 i)
 				uint32		lo = 0,
 							hi = nd->nexc;
 
-				while (lo < hi)
-				{
-					uint32		m = (lo + hi) / 2;
-
-					if (nd->pos[m] < i)
-						lo = m + 1;
-					else
-						hi = m;
-				}
+				SIFT_BISECT(uint32, m, lo, hi, nd->pos[m] < i);
 				if (lo < nd->nexc && nd->pos[lo] == i)
 					return get64(nd->ekeys + 8 * (size_t) lo);
 				return alp_key(nd, nd_get(nd->a, i));
@@ -521,27 +514,11 @@ alp_digit_range(const CcNode *nd, int64 lo, int64 hi, int64 *dlo, int64 *dhi)
 	int64		a = nd->dmin,
 				b = nd->dmax + 1;
 
-	while (a < b)
-	{
-		int64		m = a + (b - a) / 2;
-
-		if (alp_key(nd, m) < lo)
-			a = m + 1;
-		else
-			b = m;
-	}
+	SIFT_BISECT(int64, m, a, b, alp_key(nd, m) < lo);
 	*dlo = a;
 	a = nd->dmin;
 	b = nd->dmax + 1;
-	while (a < b)
-	{
-		int64		m = a + (b - a) / 2;
-
-		if (alp_key(nd, m) <= hi)
-			a = m + 1;
-		else
-			b = m;
-	}
+	SIFT_BISECT(int64, m, a, b, alp_key(nd, m) <= hi);
 	*dhi = a - 1;
 }
 
@@ -624,26 +601,10 @@ filter_dict(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
 				cl,
 				ch;
 
-	while (a < b)
-	{
-		uint32		m = (a + b) / 2;
-
-		if (nd->dict[m] < lo)
-			a = m + 1;
-		else
-			b = m;
-	}
+	SIFT_BISECT(uint32, m, a, b, nd->dict[m] < lo);
 	cl = a;
 	b = nd->d;
-	while (a < b)
-	{
-		uint32		m = (a + b) / 2;
-
-		if (nd->dict[m] <= hi)
-			a = m + 1;
-		else
-			b = m;
-	}
+	SIFT_BISECT(uint32, m, a, b, nd->dict[m] <= hi);
 	ch = a;
 	if (cl >= ch)
 		set_zeros(bits, nd->n);

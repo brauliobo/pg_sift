@@ -11,6 +11,7 @@
 #include "bm25/wbuf.h"
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
+#include "core/cmp.h"
 
 /* ---------- ranker ---------- */
 
@@ -117,15 +118,7 @@ term_bound_at(const RkTerm *t, uint32 gid)
 	int			lo = 0,
 				hi = t->ngb - 1;
 
-	while (lo < hi)
-	{
-		int			mid = (lo + hi) / 2;
-
-		if (t->gb[mid].gid < gid)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int, mid, lo, hi, t->gb[mid].gid < gid);
 	Assert(t->gb[lo].gid == gid);
 	return &t->gb[lo];
 }

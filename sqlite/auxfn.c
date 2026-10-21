@@ -15,6 +15,7 @@
  * occurrence of a phrase of it.
  */
 #include "vtab.h"
+#include "core/cmp.h"
 
 SQLITE_EXTENSION_INIT3
 
@@ -429,15 +430,7 @@ is_match(const Matches *m, SiftKey key)
 	int64_t		lo = 0,
 				hi = m->n;
 
-	while (lo < hi)
-	{
-		int64_t		mid = (lo + hi) / 2;
-
-		if (m->blk[mid] < blk)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int64_t, mid, lo, hi, m->blk[mid] < blk);
 	return lo < m->n && m->blk[lo] == blk && (m->mask[lo] >> ((key & 0xFFFF) - 1) & 1);
 }
 

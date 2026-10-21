@@ -599,15 +599,7 @@ dict_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcStat
 		uint32		lo = 0,
 					hi = d;
 
-		while (lo < hi)
-		{
-			uint32		m = (lo + hi) / 2;
-
-			if (dv[m] < v[i])
-				lo = m + 1;
-			else
-				hi = m;
-		}
+		SIFT_BISECT(uint32, m, lo, hi, dv[m] < v[i]);
 		codes[i] = lo;
 	}
 	initStringInfo(&cd);

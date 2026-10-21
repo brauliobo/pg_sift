@@ -41,6 +41,7 @@
 #include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
+#include "core/cmp.h"
 
 #define SB_KEYS		(((uint64) SIFT_SB_PAGES) << 16)	/* keys of a superblock: (vblock << 16) | offset */
 
@@ -643,15 +644,7 @@ block_start(const UnitTids *u, BlockNumber vblock)
 	uint32		lo = 0,
 				hi = u->n;
 
-	while (lo < hi)
-	{
-		uint32		mid = (lo + hi) / 2;
-
-		if (ItemPointerGetBlockNumberNoCheck(&u->tid[mid]) < vblock)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, ItemPointerGetBlockNumberNoCheck(&u->tid[mid]) < vblock);
 	return lo;
 }
 

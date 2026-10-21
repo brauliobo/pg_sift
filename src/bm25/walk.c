@@ -9,6 +9,7 @@
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"
+#include "core/cmp.h"
 
 const uint32 sift_df_class_lo[SIFT_DF_CLASSES] = {1, 2, 3, 16, 128, 1024, 8192, 65536, 524288};
 const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
@@ -239,15 +240,7 @@ doc_dl(Walk *w, SiftKey key, uint64 *pos)
 	while (lo + step < hi && w->keys[lo + step] <= key)
 		step *= 2;
 	hi = Min(hi, lo + step + 1);
-	while (lo < hi)
-	{
-		uint64		mid = (lo + hi) / 2;
-
-		if (w->keys[mid] < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint64, mid, lo, hi, w->keys[mid] < key);
 	if (lo == w->ndocs || w->keys[lo] != key)
 		corrupt(w->seg, "Posting (%u,%u) is not a doc of the segment.", sift_key_block(key), (uint32) (key & 0xFFFF));
 	*pos = lo;

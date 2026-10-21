@@ -18,6 +18,7 @@
 #include "core/lane.h"
 #include "table/table.h"
 #include "table/store_int.h"
+#include "core/cmp.h"
 
 /* ---------- tombstones ---------- */
 
@@ -146,15 +147,7 @@ find_run(const SiftTblTomb *a, uint32 na, uint64 key, uint32 *n)
 	*n = 0;
 	if (na == 0)
 		return NULL;
-	while (lo < hi)
-	{
-		uint32		mid = (lo + hi) / 2;
-
-		if (a[mid].key < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, a[mid].key < key);
 	for (; lo + *n < na && a[lo + *n].key == key; (*n)++)
 		;
 	return a + lo;
