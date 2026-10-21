@@ -24,12 +24,18 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- the refresh worker of a query that found a unit without its rollup holds a snapshot while it rewrites the segment: a VACUUM that runs meanwhile
--- cannot make the pages of rows written since all-visible, so the units stay scanned. Wait for the queue to drain before the statements that need them.
+-- cannot make the pages of rows written since all-visible, so the units stay scanned. Wait for the conditions themselves: the queue drained and no
+-- other session of this database holding a snapshot (the worker leaves the queue only after it committed, but any session would hold the horizon).
 CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
 DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
 BEGIN
-	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue()) LOOP
-		IF clock_timestamp() > deadline THEN RAISE EXCEPTION 'the rollup queue did not drain'; END IF;
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
 		PERFORM pg_sleep(0.01);
 	END LOOP;
 END $$;
@@ -86,10 +92,20 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS 
 $$;
 
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE plpgsql AS $$
+DECLARE state text;
+BEGIN
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
-	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
-$$;
+	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
+	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
+	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
+	RAISE LOG 'pa_sum %: % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
+		(SELECT count(*) FROM sift.col_rollup_queue()),
+		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+	RETURN NEXT;
+END $$;
 
 -- Compare execution with the stored dimension intersection, independently of physical unit packing.
 -- Function-local settings also restore the changes made by pa_rows on return.
@@ -267,6 +283,7 @@ SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_forma
 SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
 REINDEX INDEX a3_col;
+CALL pa_settle();
 SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
 SELECT * FROM pa_sum('a3');
 
