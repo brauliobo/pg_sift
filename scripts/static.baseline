@@ -1,12 +1,12 @@
 # Accepted findings of scripts/static.sh: tool|check|file|message, no line numbers. Regenerate with scripts/static.sh --update-baseline.
-scan|analyzer|src/agg/agg.c|Access to field 'data' results in a dereference of a null pointer (loaded from variable 'v') [core.NullDereference]
-scan|analyzer|src/agg/agg.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf') [core.NullDereference]
-scan|analyzer|src/agg/agg.c|Address of stack memory associated with local variable 'al' is still referred to by the caller variable 'ex' upon returning to the caller.  This will be a dangling reference [core.StackAddressEscape]
-scan|analyzer|src/agg/agg.c|Null pointer passed to 2nd parameter expecting 'nonnull' [core.NonNullParamChecker]
-scan|analyzer|src/agg/agg.c|Right operand is negative in left shift [core.BitwiseShift]
-scan|analyzer|src/agg/agg.c|The first element of the 2nd argument is undefined [unix.cstring.UninitializedRead]
-scan|analyzer|src/agg/kern_avx2.c|Assigned value is uninitialized [core.uninitialized.Assign]
-scan|analyzer|src/agg/kern_avx512.c|Assigned value is uninitialized [core.uninitialized.Assign]
+scan|analyzer|src/agg/col_filter.c|Array subscript is undefined [core.uninitialized.ArraySubscript]
+scan|analyzer|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull' [core.NonNullParamChecker]
+scan|analyzer|src/agg/dist.c|Array access (from variable 'ocnt') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/agg/gen_run.c|Branch condition evaluates to a garbage value [core.uninitialized.Branch]
+scan|analyzer|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/agg/osa.c|Dereference of null pointer [core.NullDereference]
+scan|analyzer|src/agg/pred.c|Assigned value is uninitialized [core.uninitialized.Assign]
+scan|analyzer|src/agg/spec.c|Right operand is negative in left shift [core.BitwiseShift]
 scan|analyzer|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
 scan|analyzer|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t' [core.BitwiseShift]
 scan|analyzer|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
@@ -24,11 +24,11 @@ scan|analyzer|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32
 scan|analyzer|src/col/preagg.c|The first element of the 2nd argument is undefined [unix.cstring.UninitializedRead]
 scan|analyzer|src/col/preagg_read.c|Array access results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/core/store.h|Array access (via field 'ext') results in a null pointer dereference [core.NullDereference]
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/agg.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/col.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/kern_avx2.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/kern_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/kern_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/combo.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/wide.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'unsigned long' of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
@@ -97,17 +97,19 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|res
 tidy|bugprone-integer-division|src/table/src.c|result of integer division used in a floating point context; possible loss of precision
 tidy|bugprone-not-null-terminated-result|src/bm25/analyze.c|the result from calling 'memcpy' is not null-terminated
 tidy|bugprone-signed-char-misuse|src/bm25/query.c|comparison between 'signed char' and 'unsigned char'
+tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/agg/plan_from.c|comparing object representation of type 'SiftSrcPreagg' (aka 'struct SiftSrcPreagg') which does not have a unique object representation; consider comparing the members of the object manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/col/seg_maint.c|comparing object representation of type 'double' which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
-tidy|clang-analyzer-core.BitwiseShift|src/agg/agg.c|Right operand is negative in left shift
+tidy|clang-analyzer-core.BitwiseShift|src/agg/spec.c|Right operand is negative in left shift
 tidy|clang-analyzer-core.BitwiseShift|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t'
 tidy|clang-analyzer-core.BitwiseShift|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.BitwiseShift|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.CallAndMessage|src/bm25/topk.c|1st function call argument is an uninitialized value
-tidy|clang-analyzer-core.NonNullParamChecker|src/agg/agg.c|Null pointer passed to 2nd parameter expecting 'nonnull'
-tidy|clang-analyzer-core.NullDereference|src/agg/agg.c|Access to field 'data' results in a dereference of a null pointer (loaded from variable 'v')
-tidy|clang-analyzer-core.NullDereference|src/agg/agg.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf')
+tidy|clang-analyzer-core.NonNullParamChecker|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull'
+tidy|clang-analyzer-core.NullDereference|src/agg/dist.c|Array access (from variable 'ocnt') results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/agg/osa.c|Dereference of null pointer
 tidy|clang-analyzer-core.NullDereference|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc')
 tidy|clang-analyzer-core.NullDereference|src/bm25/inv.c|Array access (via field 'pos') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru')
@@ -118,17 +120,18 @@ tidy|clang-analyzer-core.NullDereference|src/core/store.h|Array access (via fiel
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/segment_int.h|Addition of a null pointer (via field 'xdl') and a probably nonzero integer value may result in undefined behavior
-tidy|clang-analyzer-core.StackAddressEscape|src/agg/agg.c|Address of stack memory associated with local variable 'al' is still referred to by the caller variable 'ex' upon returning to the caller.  This will be a dangling reference
 tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value
-tidy|clang-analyzer-core.uninitialized.Assign|src/agg/kern_avx2.c|Assigned value is uninitialized
-tidy|clang-analyzer-core.uninitialized.Assign|src/agg/kern_avx512.c|Assigned value is uninitialized
+tidy|clang-analyzer-core.uninitialized.ArraySubscript|src/agg/col_filter.c|Array subscript is undefined
+tidy|clang-analyzer-core.uninitialized.Assign|src/agg/pred.c|Assigned value is uninitialized
+tidy|clang-analyzer-core.uninitialized.Branch|src/agg/gen_run.c|Branch condition evaluates to a garbage value
 tidy|clang-analyzer-deadcode.DeadStores|src/bm25/step.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns'
-tidy|clang-analyzer-security.ArrayBound|src/agg/agg.c|Out of bound access to memory around 't'
-tidy|clang-analyzer-security.ArrayBound|src/agg/agg.c|Out of bound access to memory around 'tmp'
-tidy|clang-analyzer-security.ArrayBound|src/agg/agg.c|Out of bound access to memory preceding 'tmp'
+tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory around 'live'
+tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory preceding 'live'
+tidy|clang-analyzer-security.ArrayBound|src/agg/group.c|Out of bound access to memory around 'hash_group_fns'
+tidy|clang-analyzer-security.ArrayBound|src/agg/lookup.c|Out of bound access to memory after the end of the field 'idxval'
+tidy|clang-analyzer-security.ArrayBound|src/agg/unit.c|Out of bound access to memory preceding 'r.key'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/dict.c|Out of bound access to memory after the end of the field 'inline_tf'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/maint.c|Out of bound access to memory preceding the field 'segs'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/merge.c|Out of bound access to memory around 'imm'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/query_match.c|Out of bound access to memory preceding 'rows'
-tidy|clang-analyzer-unix.cstring.UninitializedRead|src/agg/agg.c|The first element of the 2nd argument is undefined
 tidy|clang-analyzer-unix.cstring.UninitializedRead|src/col/preagg.c|The first element of the 2nd argument is undefined
