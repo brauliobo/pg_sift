@@ -94,6 +94,8 @@ typedef struct ArmIn
 	List	   *group;			/* its group expressions */
 	List	   *gsgc;			/* their SortGroupClauses */
 	List	   *used;			/* the group expressions that are an outer key */
+	List	   *kexpr;			/* the group expressions that are a key of the scan (outer or hidden) ... */
+	List	   *kidx;			/* ... and their keys */
 	List	   *quals;			/* its WHERE, when it reads a common table expression */
 	Node	   *id;				/* the group expression that is unique per row */
 	SiftAggArm *out;
@@ -435,7 +437,48 @@ count_aggs_walker(Node *n, int *count)
 	return expression_tree_walker(n, count_aggs_walker, count);
 }
 
-/* The outer aggregate: avg/sum of a float8 or int8 column of the arms, count(DISTINCT id), count(*), with a FILTER of comparisons of columns */
+/* the key of the scan that group expression x of the arm is; -1 if it is none */
+static int
+arm_key_of(const ArmIn *arm, Node *x)
+{
+	ListCell   *le,
+			   *li;
+
+	forboth(le, arm->kexpr, li, arm->kidx)
+		if (equal(lfirst(le), x))
+			return lfirst_int(li);
+	return -1;
+}
+
+/*
+ * count(DISTINCT x) of a column that every arm groups by (or has as NULL): the distinct ids of that key among the cells of a group. The
+ * key is one of the scan, with the ids of the grouping, so the distinct operator must be the key's.
+ */
+static int
+distinct_key(SiftAggSpec *s, Aggref *oa, ArmIn *arms, int narms, int col)
+{
+	int			key = -1;
+	SortGroupClause *sgc;
+
+	for (int k = 0; k < narms; k++)
+	{
+		Node	   *x = list_nth(arms[k].cols, col);
+		int			j;
+
+		if (null_const(x))
+			continue;
+		j = arm_key_of(&arms[k], x);
+		if (j < 0 || (key >= 0 && j != key))
+			return -1;
+		key = j;
+	}
+	if (key < 0 || list_length(oa->aggdistinct) != 1)
+		return -1;
+	sgc = linitial_node(SortGroupClause, oa->aggdistinct);
+	return sgc->eqop == s->key[key].eqop && oa->inputcollid == s->key[key].collid ? key : -1;
+}
+
+/* The outer aggregate: avg/sum of a float8 or int8 column of the arms, count(DISTINCT id or a key), count(*), with a FILTER of comparisons of columns */
 static bool
 outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int narms, SiftAggAgg *out)
 {
@@ -476,10 +519,16 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 		out->kind = SAA_O_COUNT_STAR;
 	else if (fid == F_COUNT_ANY && oa->aggdistinct != NIL)
 	{
-		out->kind = SAA_O_COUNT_ROWS;
+		bool		ids = true;
+
 		for (int k = 0; k < narms; k++)
-			if (!equal(list_nth(arms[k].cols, out->col), arms[k].id))
-				return false;
+			ids &= equal(list_nth(arms[k].cols, out->col), arms[k].id);
+		if (ids)
+			out->kind = SAA_O_COUNT_ROWS;
+		else if ((out->slot = distinct_key(s, oa, arms, narms, out->col)) >= 0)
+			out->kind = SAA_O_COUNT_KEY;
+		else
+			return false;
 	}
 	else if (oa->aggdistinct == NIL && (fid == F_AVG_FLOAT8 || fid == F_SUM_FLOAT8) && v && v->vartype == FLOAT8OID)
 		out->kind = fid == F_AVG_FLOAT8 ? SAA_O_AVG_F64 : SAA_O_SUM_F64;
@@ -497,6 +546,7 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 				return false;
 	}
 	out->desc = psprintf("%s", out->kind == SAA_O_COUNT_STAR ? "count(*)" : out->kind == SAA_O_COUNT_ROWS ? "count(DISTINCT row)" :
+						 out->kind == SAA_O_COUNT_KEY ? "count(DISTINCT key)" :
 						 out->kind == SAA_O_AVG_F64 ? "avg(inner)" : out->kind == SAA_O_SUM_F64 ? "sum(inner)" : "sum(inner int8)");
 	return true;
 }
@@ -541,6 +591,8 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 				pos = s->nkeys++ - nouter;
 			}
 			arms[k].out->hmask |= (uint32) 1 << (nouter + pos);
+			arms[k].kexpr = lappend(arms[k].kexpr, g);
+			arms[k].kidx = lappend_int(arms[k].kidx, nouter + pos);
 		}
 	s->nhidden = s->nkeys - nouter;
 	return true;
@@ -682,6 +734,8 @@ two_keys(TwoLevel *t)
 				return false;
 			def = x;
 			t->arms[k].used = lappend(t->arms[k].used, x);
+			t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
+			t->arms[k].kidx = lappend_int(t->arms[k].kidx, s->nkeys);
 			t->arms[k].out->keymask |= (uint32) 1 << s->nkeys;
 		}
 		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))

@@ -381,6 +381,15 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 			}
 			continue;
 		}
+		if (o->kind == SAA_O_COUNT_KEY)
+		{
+			/* the cell's id of the key, 0 for NULL: an arm that does not group by it has none */
+			uint32		id = key_id(ex, o->slot, g);
+
+			if (id != 0 && dist_add(ex, ex->dist[oi], og, id))
+				acc->n[og]++;
+			continue;
+		}
 		if (!cell_value(a, &sa->inner[sa->colsrc[o->col]], sa->colsrc[o->col], g, &dv, &iv))
 			continue;
 		acc->n[og]++;
