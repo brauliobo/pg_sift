@@ -176,6 +176,7 @@ typedef struct SiftTblRel
 	SiftDirSnapshot dir;
 	int			nwbuf;
 	SiftTblSeg *wbuf;			/* [nwbuf], directory order = ascending vbase */
+	uint32		wbuf_version;	/* the directory version wbuf was built for (dir.version is also set by the readers of the directory that do not rebuild it) */
 	/* tombstones, sorted by (key, seq) */
 	uint64		tomb_gen;
 	BlockNumber tomb_hdr;
@@ -208,8 +209,9 @@ typedef struct SiftTblRel
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
 extern SiftTblRel *sift_tbl_rel(Relation rel);
-/* Re-reads the directory; write buffer page tables are extended lazily by sift_tbl_wbuf_page */
+/* Re-reads the directory unless its version is the cached one (_full: always); write buffer page tables are extended lazily by sift_tbl_wbuf_page */
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
+extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
 extern bool sift_tbl_is_table(Relation rel);
