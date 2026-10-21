@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE nc_entities (id int PRIMARY KEY, kind text NOT NULL);
-INSERT INTO nc_entities SELECT i, (ARRAY['site', 'museum', 'diner'])[1 + i % 3] FROM generate_series(1, 400) i;
+INSERT INTO nc_entities SELECT i, (ARRAY['site', 'cat_c', 'cat_a'])[1 + i % 3] FROM generate_series(1, 400) i;
 -- written entity by entity, as a crawler appends them; the day is not ordered
 CREATE TABLE nc_rows (id int PRIMARY KEY, dim_a_id int NOT NULL, day date NOT NULL, deleted_at timestamptz, metrics_a jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO nc_rows SELECT i, 1 + (i - 1) / 500, date '2025-01-01' + (hashint4(i) & 1023) % 700, CASE WHEN i % 29 = 0 THEN now() END,

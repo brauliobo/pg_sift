@@ -6,7 +6,7 @@ SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the btree and bitmap plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ents (id int PRIMARY KEY, type text NOT NULL);
-INSERT INTO ents SELECT i, (ARRAY['site', 'museum', 'diner', 'ferry'])[1 + i % 4] FROM generate_series(1, 60) i;
+INSERT INTO ents SELECT i, (ARRAY['site', 'cat_c', 'cat_a', 'cat_b'])[1 + i % 4] FROM generate_series(1, 60) i;
 -- the parts of an item: a category, a sign and a score that is a number, a numeric string or text
 CREATE FUNCTION op_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN i % 301 = 0 THEN '[]'::jsonb ELSE jsonb_build_object('lang', (ARRAY['en', 'de', 'fr'])[1 + i % 3], 'parts', (
@@ -56,7 +56,7 @@ SELECT * FROM same($$SELECT count(*) AS n, sum(id) AS s FROM ev WHERE deleted_at
  SiftAgg (Pushed Aggregates: count(*), sum(id); ) |           1 |              0
 (1 row)
 
-SELECT * FROM same($$SELECT dim_a_id % 3 AS g, count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type IN ('diner', 'ferry'))) GROUP BY 1$$);
+SELECT * FROM same($$SELECT dim_a_id % 3 AS g, count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type IN ('cat_a', 'cat_b'))) GROUP BY 1$$);
                   plan                   | result_rows | vs_normal_plan 
 -----------------------------------------+-------------+----------------
  SiftAgg (Pushed Aggregates: count(*); ) |           3 |              0

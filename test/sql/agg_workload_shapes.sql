@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 CREATE TABLE ents (id int PRIMARY KEY, type text NOT NULL);
-INSERT INTO ents SELECT i, (ARRAY['site', 'museum', 'diner', 'ferry'])[1 + i % 4] FROM generate_series(1, 60) i;
+INSERT INTO ents SELECT i, (ARRAY['site', 'cat_c', 'cat_a', 'cat_b'])[1 + i % 4] FROM generate_series(1, 60) i;
 
 -- the parts of an item: a category, a sign and a score that is a number, a numeric string or text
 CREATE FUNCTION op_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
@@ -57,7 +57,7 @@ END $$;
 -- x = ANY (ARRAY (sub-select)): the sub-select runs once and its rows are a lookup table of the leaf; a sub-select that reads the row, is volatile or
 -- may raise keeps the normal plan
 SELECT * FROM same($$SELECT count(*) AS n, sum(id) AS s FROM ev WHERE deleted_at IS NULL AND dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type = 'site'))$$);
-SELECT * FROM same($$SELECT dim_a_id % 3 AS g, count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type IN ('diner', 'ferry'))) GROUP BY 1$$);
+SELECT * FROM same($$SELECT dim_a_id % 3 AS g, count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type IN ('cat_a', 'cat_b'))) GROUP BY 1$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE type = 'none'))$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE id = ev.id % 60))$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT id FROM ents WHERE random() < 2))$$);
