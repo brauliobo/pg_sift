@@ -88,7 +88,7 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   leaf of its own row raises nothing, as in the normal plan. The columns the query does not read are coerced too (PostgreSQL coerces
   every declared column), so a flagged unread column is read as well.
 - **Planner.** `reads_overflow` no longer refuses a flagged leaf that is a column of a recordset (`bool`, `int2`, `int4`, `int8`,
-  `float4`, `float8`, `text` leaves, read as the record column reads them). It still refuses when anything else reads the leaf or its
+  `float4`, `float8`, `text` leaves, read as the record column reads them, alone or inside an expression: a key, a filter, a bucket). It still refuses when anything else reads the leaf or its
   list (a path read, `jsonb_array_length` of the list, a test of the list at the top level, a top-level conjunct that may fail
   and is applied after the others, search) and when the provider cannot read rows again (`sift_table`, whose rows have no index
   expressions). A value the shredder cannot store even after the coercion (the string `-0` in a float column, a list of more than

@@ -188,6 +188,14 @@ cmp_text(int op)
 	return t[op];
 }
 
+/* the leaf an expression read as a stored value (match_leaf): a column of jsonb_to_recordset is read as the column of the record wherever the expression is */
+void
+use_matched_leaf(AggCtx *c, int leaf)
+{
+	c->rec_pending = leaf + 1;
+	use_leaf(c, leaf);
+}
+
 void
 use_leaf(AggCtx *c, int leaf)
 {
