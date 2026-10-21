@@ -31,7 +31,7 @@ HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/compress.h $(SRC)/bm25/kern
 
 all: $(OUT)/test $(OUT)/bench
 
-$(OUT)/research: research.c gen.h
+$(OUT)/research: research.c research_enc.h research_float.h gen.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ research.c $(LDLIBS)
 
