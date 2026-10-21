@@ -27,6 +27,7 @@
 #include "agg/colsrc.h"
 #include "col/pagg.h"
 
+PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
@@ -497,6 +498,21 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 	}
 	scan_close(&ts);
 	return (Datum) 0;
+}
+
+/* (reset bool) The dictionaries this backend parsed from segments and found in its cache since the last reset, and the bytes it keeps */
+Datum
+sift_test_col_dict_cache(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		v[3] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes())};
+	bool		nulls[3] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	if (PG_GETARG_BOOL(0))
+		memset(&sift_cdict_cache_stats, 0, sizeof(sift_cdict_cache_stats));
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 /* The counters of a scan that selects the rows of the query */

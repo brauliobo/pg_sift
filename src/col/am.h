@@ -137,6 +137,16 @@ extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
+extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
+#ifdef SIFT_TESTING
+typedef struct SiftCDictCacheStats
+{
+	uint64		loads;			/* dictionaries parsed from a segment */
+	uint64		hits;			/* dictionaries found in the cache */
+} SiftCDictCacheStats;
+extern SiftCDictCacheStats sift_cdict_cache_stats;
+extern Size sift_cdict_cache_bytes(void);
+#endif
 extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
 extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	sift_col_jitter()

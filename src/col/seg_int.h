@@ -132,4 +132,8 @@ extern bool unit_dirty(SiftColSegment *seg, uint32 u);
 extern const ZoneArrays *zone_arrays(SiftColSegment *seg, int col);
 extern const VersUnit *vers_units(SiftColSegment *seg);
 
+/* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
+typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);
+extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load);
+
 #endif
