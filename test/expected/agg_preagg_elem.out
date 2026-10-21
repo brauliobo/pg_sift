@@ -642,7 +642,7 @@ CALL pa_settle();
 SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
  formats 
 ---------
- 6,6
+ 6
 (1 row)
 
 SELECT * FROM pa_sum('a3');
