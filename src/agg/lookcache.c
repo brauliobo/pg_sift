@@ -24,8 +24,18 @@
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;
 #define LOOKCACHE_BYTES		((Size) sift_agg_lookup_cache_kb * 1024)
-/* a table of more pages is not fingerprinted: its rows would not fit the cache anyway */
-#define LOOKCACHE_MAX_BLOCKS	(1 << 15)
+/* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget */
+#define LOOKCACHE_MAX_BLOCKS	(LOOKCACHE_BYTES / 2 / sizeof(XLogRecPtr))
+/* tables whose rows did not fit, by key: they are not fingerprinted again while the file is no smaller and the budget no larger */
+#define LOOKCACHE_REFUSED		16
+
+typedef struct LookRefused
+{
+	char	   *key;
+	RelFileLocator rel;
+	BlockNumber nblocks;
+	Size		budget;
+} LookRefused;
 
 typedef struct LookEnt
 {
@@ -45,6 +55,8 @@ typedef struct LookPin
 	LookEnt    *ent;
 } LookPin;
 
+static LookRefused refused[LOOKCACHE_REFUSED];
+static int	nrefused;
 static List *entries;
 static MemoryContext cache_cx;
 static Size cache_bytes;
@@ -86,6 +98,45 @@ lookcache_finger(Relation rel)
 	}
 	FreeAccessStrategy(bas);
 	return seen ? f : NULL;
+}
+
+/* did the rows of this table under key not fit the cache the last time they were loaded, and is the table no smaller? */
+bool
+lookcache_refused(const char *key, Relation rel)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
+
+	for (int i = 0; i < nrefused; i++)
+		if (strcmp(refused[i].key, key) == 0 && RelFileLocatorEquals(refused[i].rel, rel->rd_locator))
+			return nblocks >= refused[i].nblocks && LOOKCACHE_BYTES <= refused[i].budget;
+	return false;
+}
+
+static void
+look_refuse(const char *key, const LookFinger *f)
+{
+	LookRefused *r = NULL;
+	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+
+	for (int i = 0; i < nrefused; i++)
+		if (strcmp(refused[i].key, key) == 0)
+			r = &refused[i];
+	if (r == NULL && nrefused < LOOKCACHE_REFUSED)
+		r = &refused[nrefused++];
+	if (r == NULL)
+	{
+		/* the oldest goes: the slots are used in turn */
+		static int	next;
+
+		r = &refused[next++ % LOOKCACHE_REFUSED];
+	}
+	if (r->key)
+		pfree(r->key);
+	r->key = pstrdup(key);
+	r->rel = f->rel;
+	r->nblocks = f->nblocks;
+	r->budget = LOOKCACHE_BYTES;
+	MemoryContextSwitchTo(old);
 }
 
 static bool
@@ -218,7 +269,12 @@ lookcache_keep(const char *key, const LookFinger *before, const LookFinger *afte
 	while ((e = look_unpinned(key)) != NULL)
 		look_drop(e);
 	size = MemoryContextMemAllocated(cx, true) + (Size) before->nblocks * sizeof(XLogRecPtr);
-	if (size > LOOKCACHE_BYTES / 2 || !look_room(size))
+	if (size > LOOKCACHE_BYTES / 2)
+	{
+		look_refuse(key, before);
+		return false;
+	}
+	if (!look_room(size))
 		return false;
 	if (cache_cx == NULL)
 		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache lookup tables", ALLOCSET_DEFAULT_SIZES);
@@ -235,6 +291,15 @@ lookcache_keep(const char *key, const LookFinger *before, const LookFinger *afte
 	old = MemoryContextSwitchTo(TopMemoryContext);
 	entries = lappend(entries, e);
 	MemoryContextSwitchTo(old);
+	/* the rows fit now: the table is not refused any more */
+	for (int i = 0; i < nrefused; i++)
+		if (strcmp(refused[i].key, key) == 0)
+		{
+			pfree(refused[i].key);
+			refused[i] = refused[--nrefused];
+			refused[nrefused].key = NULL;
+			break;
+		}
 	/* nothing below fails: the entry owns cx from here */
 	MemoryContextSetParent(cx, cache_cx);
 	cache_bytes += size;
