@@ -6427,6 +6427,10 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
 		{
+			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
+			foreach_ptr(LeftJoin, lj, fs->lefts)
+				if (lj->rti == rti)
+					return false;
 			c->func_rti = rti;
 			c->func = linitial_node(RangeTblFunction, e->functions);
 			c->func_kind = func_kind_of(c->func);

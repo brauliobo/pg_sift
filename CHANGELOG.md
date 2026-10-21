@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: pg_sift: SiftAgg no longer treats `LEFT JOIN LATERAL jsonb_each(..)` / `jsonb_array_elements(..)` as an inner join: the rows without a member (NULL columns) were dropped and the ON clause was ignored. Such queries keep the normal plan.
 - Added: pg_sift: SiftAgg joins a lateral sub-select, a `UNION` / `UNION ALL` of arms, `generate_series`, `unnest` of an array column or a set-returning function that reads the joined row. PostgreSQL's parameterized plan of it is the child, run once per distinct input, with duplicates, NULL-extended rows and errors as in the normal plan. A call of a document column that cannot raise (`jsonb_exists`, `->>`, `jsonb_typeof`) takes the index expression column of that call as the parameter. A `UNION ALL` / `UNION` of sub-selects, a sub-select of a statement-level CTE and a `WITH` inside the sub-select are lookup plans too.
 - Added: pg_sift: hashed `IN (SELECT ..)` / `NOT IN (SELECT ..)` tests inside group keys, predicates and aggregates of an outer join's nullable input, row-valued tests and tests of an `int8` column run in SiftAgg (the scan asks the sub-plan for each tuple that reaches it).
 - Fixed: pg_sift: grouping by more than eight keys with the two-level aggregate no longer overflows its key mask.

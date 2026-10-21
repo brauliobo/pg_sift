@@ -1,0 +1,50 @@
+-- An outer join of an unnested JSON function keeps the rows without a member (NULL columns) and applies its ON clause to the members: the query stays native.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
+INSERT INTO facts
+SELECT i, i % 40,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END,
+       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"checker"},{"type":"manager"}]'::jsonb END
+FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, tags_a) WITH (paths = 'metrics.* float8, tags_a[]{type text}');
+VACUUM (FREEZE, ANALYZE) facts;
+-- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
+  RETURN result;
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text; found bool := false;
+BEGIN
+  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  RETURN found;
+END $$;
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+END $$;
+SELECT * FROM check_query('left join, on', $q$
+ SELECT count(*) AS n, count(r.key) AS dim_b, count(DISTINCT f.id) AS ids
+ FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+$q$);
+SELECT * FROM check_query('left join, true', $q$
+ SELECT r.key, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON true GROUP BY 1
+$q$);
+SELECT * FROM check_query('left join, array', $q$
+ SELECT count(*) AS n, count(e) AS elements, count(DISTINCT f.id) AS ids
+ FROM facts f LEFT JOIN LATERAL jsonb_array_elements(f.tags_a) e ON e->>'type' = 'manager'
+$q$);
+SELECT * FROM check_query('inner join, on', $q$
+ SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+$q$);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP TABLE facts;
+DROP EXTENSION pg_sift;
