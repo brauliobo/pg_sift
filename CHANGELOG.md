@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: pg_sift: a `sift_col` build (`CREATE INDEX`, `REINDEX`, in a parallel worker too) and the aggregate scan's read of rows again from the heap no longer crash the backend when the index's relcache entry is reloaded meanwhile: they kept the index's cached state across the tuples, which that reload frees. The build now keeps a copy of its own. Test `col_index_relcache` (`sift.test_col_rel_inval`, testing builds).
 - Changed: pg_sift: SiftAgg reads a partial `sift_col` index (`CREATE INDEX .. WHERE pred`) when the conditions of the query imply its predicate, instead of ignoring it; the index is smaller and a query that does not imply the predicate keeps the normal plan.
 - Changed: pg_sift: SiftAgg prices the rows it reads again from the heap (values a `sift_col` leaf cannot store, such as a numeric string in a number path) by the share of units that hold one instead of a fixed share of the table, and `EXPLAIN ANALYZE` shows `Units Read Again From The Heap` next to `Rows Read Again From The Heap`.
 - Changed: pg_sift: a backend keeps the parsed dictionaries of the segments of a `sift_col` index (up to 64 MB, least recently used first) for its next query: a scan that reads a string leaf again no longer inflates and indexes the leaf's dictionary (a free text path of 60,000 entries took about 1.3 ms per segment on every query; the second query of a session takes none, with identical answers). A rewritten segment has its own. No format change.

@@ -193,6 +193,9 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	SiftColRow	row;
 	BlockNumber blk = ItemPointerGetBlockNumber(tid);
 
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);
+#endif
 	if (blk != b->page)
 	{
 		flush_page(b);
@@ -218,7 +221,8 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
 
 	b->index = index;
-	b->r = sift_col_rel(index);
+	/* the index's own state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: the build keeps a copy */
+	b->r = sift_col_rel_private(index, cxt);
 	b->cxt = cxt;
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);

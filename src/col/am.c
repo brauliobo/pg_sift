@@ -35,6 +35,9 @@
 
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
+#ifdef SIFT_TESTING
+bool		sift_test_col_rel_inval = false;
+#endif
 
 /* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4 or 6 */
 static bool
@@ -122,6 +125,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_verify_inval",
 							 "Testing: the heap check of sift.col_verify invalidates the index's relcache entry (what another session's VACUUM or ANALYZE does) at every tuple.",
 							 NULL, &sift_test_col_verify_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_rel_inval",
+							 "Testing: a sift_col build and the recheck of the rows a leaf cannot store invalidate the index's relcache entry (what a lock taken while they run may do) at every tuple.",
+							 NULL, &sift_test_col_rel_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_paranoid",
 							 "Testing: a column scan checks the rows on all-visible pages against the heap too and logs the ones the snapshot does not see.",
 							 NULL, &sift_test_col_paranoid, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -228,10 +234,11 @@ sift_col_options_rollup(Relation index)
 	return o->rollup ? (const char *) o + o->rollup : "";
 }
 
+/* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
-build_rel(Relation index)
+build_rel(Relation index, MemoryContext mcxt)
 {
-	MemoryContext old = MemoryContextSwitchTo(index->rd_indexcxt);
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColRel *r = palloc0(sizeof(SiftColRel));
 	TupleDesc	desc = RelationGetDescr(index);
 	int			natts = IndexRelationGetNumberOfKeyAttributes(index);
@@ -246,7 +253,7 @@ build_rel(Relation index)
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
 	r->name = palloc0((natts + 1) * sizeof(bool));
-	r->shred = sift_col_shred_create(index->rd_indexcxt, index);
+	r->shred = sift_col_shred_create(mcxt, index);
 	for (int a = 1; a <= natts; a++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
@@ -281,7 +288,7 @@ build_rel(Relation index)
 		}
 		n += k;
 	}
-	r->schema = sift_cschema_create(index->rd_indexcxt, defs, n);
+	r->schema = sift_cschema_create(mcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
 	names = palloc(n * sizeof(char *));
 	for (int i = 0; i < n; i++)
@@ -303,7 +310,7 @@ build_rel(Relation index)
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
-	r->rowcxt = AllocSetContextCreate(index->rd_indexcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
+	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(old);
 	return r;
 }
@@ -312,9 +319,27 @@ SiftColRel *
 sift_col_rel(Relation index)
 {
 	if (index->rd_amcache == NULL)
-		index->rd_amcache = build_rel(index);
+		index->rd_amcache = build_rel(index, index->rd_indexcxt);
 	return index->rd_amcache;
 }
+
+SiftColRel *
+sift_col_rel_private(Relation index, MemoryContext mcxt)
+{
+	return build_rel(index, mcxt);
+}
+
+#ifdef SIFT_TESTING
+void
+sift_col_test_inval(Relation index)
+{
+	if (!sift_test_col_rel_inval)
+		return;
+	/* the reload of the entry that a lock taken during the scan may cause frees the cached state: first overwrite what it holds */
+	memset(sift_col_rel(index), 0x7f, sizeof(SiftColRel));
+	RelationCacheInvalidateEntry(RelationGetRelid(index));
+}
+#endif
 
 const SiftColIndexMeta *
 sift_col_index_defs(Relation index)
