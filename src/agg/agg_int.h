@@ -763,6 +763,9 @@ typedef struct FuseSt
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
+extern bool		sift_agg_lookup_pushdown;
+extern bool		sift_agg_share_lookups;
+
 /* agg.c */
 uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
 void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
@@ -798,6 +801,12 @@ void eval_operand(AggExec *ex, SiftAggPred *p, PredState *st);
 void rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out);
 uint64 *row_bitmap(AggExec *ex, SiftAggPred *p);
 void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
+
+/* lookup.c */
+void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
+void map_loaded(AggExec *ex, int nrows, instr_time t0);
+MapTab *map_load(AggExec *ex, int ci);
+bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
