@@ -5724,7 +5724,8 @@ planned_child(RelOptInfo *rel, JoinCtx *jc)
  * A sub-select or function that reads the query's other tables is planned in a query level of its own, with what it reads of them as
  * parameters: the scan gives it their values for each distinct input and runs the plan PostgreSQL makes of it (an Append of the arms of
  * a UNION ALL, an unnest of a joined table's array, a LIMIT lookup). A column it reads only through calls that never raise (key
- * presence) is replaced by the call's value, which the scan then needs, not the column.
+ * presence) is replaced by the call's value, which the scan then needs, not the column. The scan runs the child for the distinct values of the
+ * tuples that reach its join in its own order, PostgreSQL's plan in another, so a child that can raise (raising_walker) keeps the normal plan.
  */
 static bool
 correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
@@ -5736,6 +5737,8 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	RelOptInfo *final;
 	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
+	if (raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
+		return false;
 	if (rel->baserestrictinfo != NIL)
 		return e->rtekind == RTE_SUBQUERY && planned_child(rel, jc);
 	if (q == NULL)
