@@ -257,15 +257,6 @@ sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, in
 	return NULL;
 }
 
-const SiftCHistDim *
-sift_cpagg_find(const SiftCHist *h, int leaf)
-{
-	for (int d = 0; d < h->ndims; d++)
-		if (h->dim[d].leaf == leaf)
-			return &h->dim[d];
-	return NULL;
-}
-
 int
 sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 {

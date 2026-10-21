@@ -395,21 +395,6 @@ sift_doc_ntokens(const SiftDoc *d)
 }
 
 int
-sift_doc_nterms(SiftDoc *d)
-{
-	doc_group(d);
-	return d->nterms;
-}
-
-const char *
-sift_doc_term(SiftDoc *d, int i, int *len)
-{
-	doc_group(d);
-	*len = d->tok[d->first[i]].len;
-	return d->tok[d->first[i]].str;
-}
-
-int
 sift_doc_tf(SiftDoc *d, int i)
 {
 	int			tf = 0;
@@ -418,12 +403,6 @@ sift_doc_tf(SiftDoc *d, int i)
 	for (int t = d->first[i]; t >= 0; t = d->next[t])
 		tf++;
 	return tf;
-}
-
-int
-sift_doc_find(SiftDoc *d, const char *term, int len)
-{
-	return doc_find(d, term, len);
 }
 
 int
