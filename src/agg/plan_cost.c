@@ -205,7 +205,13 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 			continue;
 		}
 		lf = leaf_of(c, cb->leaf[p]);
-		if (lf->parent >= 0 || lf->path != NIL || lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
+		/* the values of a member or an element have no statistics: PostgreSQL's default number of distinct values, as for a column it knows nothing of */
+		if (lf->parent >= 0 || lf->path != NIL)
+		{
+			entries *= DEFAULT_NUM_DISTINCT;
+			continue;
+		}
+		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
 		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e)) > 0)
 			entries *= nd;
