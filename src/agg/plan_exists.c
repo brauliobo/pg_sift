@@ -29,6 +29,7 @@ scope_enter(AggCtx *c, int grp)
 
 	c->group = grp;
 	c->used = NULL;
+	c->func_key = NULL;
 	return saved;
 }
 
@@ -41,6 +42,7 @@ scope_leave(AggCtx *c, const AggCtx *saved, int grp)
 	c->func_rti = saved->func_rti;
 	c->func = saved->func;
 	c->func_kind = saved->func_kind;
+	c->func_key = saved->func_key;
 	c->rtable = saved->rtable;
 	c->dpctx = saved->dpctx;
 	c->oparams = saved->oparams;
