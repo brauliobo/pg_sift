@@ -180,8 +180,6 @@ col_layout(Relation index)
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	SiftSrcLayout *lay = palloc0(sizeof(SiftSrcLayout));
 
-	if (meta->partial)
-		elog(ERROR, "sift: a partial sift_col index has no column source for the aggregate scan");
 	lay->heapoid = meta->heapoid;
 	lay->natts = meta->natts;
 	for (int a = 1; a <= meta->natts; a++)
