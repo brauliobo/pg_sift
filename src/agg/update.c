@@ -683,9 +683,31 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 	}
 }
 
-/* the conjuncts over the joined rows (boolean slots of the join combos): the tuples that pass, moved to the front; the new count */
+/* does conjunct i of the joined rows apply to set `set` (-1: the conjuncts of every set) */
+static bool
+post_applies(const SiftAggSpec *s, int i, int set)
+{
+	uint32		sets = s->postsets ? s->postsets[i] : 0;
+
+	return set < 0 ? sets == 0 : (sets >> set & 1) != 0;
+}
+
+/* the tuple passes conjunct p over the joined rows: a boolean slot of its combo, or a row of the join */
+static bool
+post_holds(AggExec *ex, const SiftAggPred *p, const Tup *t, int j)
+{
+	const ComboSt *cs = &ex->cs[p->leaf];
+
+	if (p->kind == SAP_ELEM_EXISTS)
+		return elem_exists(ex, t, j, p);
+	if (p->kind == SAP_MATCHED)
+		return cs->maprow[t->cout[p->leaf][j]] != UINT32_MAX;
+	return cs->val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
+}
+
+/* the conjuncts over the joined rows [first, end) that apply to the set: the tuples that pass, moved to the front; the new count */
 static int
-post_filter(AggExec *ex, Tup *t, int first, int end, int stages)
+post_filter(AggExec *ex, Tup *t, int first, int end, int stages, int set)
 {
 	int			k = 0;
 
@@ -694,14 +716,7 @@ post_filter(AggExec *ex, Tup *t, int first, int end, int stages)
 		bool		keep = true;
 
 		for (int i = first; keep && i < end; i++)
-		{
-			const SiftAggPred *p = ex->spec->post[i];
-
-			if (p->kind == SAP_ELEM_EXISTS)
-				keep = elem_exists(ex, t, j, p);
-			else
-				keep = ex->cs[p->leaf].val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
-		}
+			keep = !post_applies(ex->spec, i, set) || post_holds(ex, ex->spec->post[i], t, j);
 		if (!keep)
 			continue;
 		t->sel[k] = t->sel[j];
@@ -712,6 +727,40 @@ post_filter(AggExec *ex, Tup *t, int first, int end, int stages)
 		k++;
 	}
 	return k;
+}
+
+/* the tuples of a set that has conjuncts of its own: a copy of the tuples (the other sets read them whole) that passes them */
+static Tup *
+set_tuples(AggExec *ex, const Tup *t, int set)
+{
+	Tup		   *own = ex->set_tup;
+
+	if (own == NULL)
+	{
+		own = ex->set_tup = MemoryContextAllocZero(ex->cxt, sizeof(Tup));
+		own->sel = MemoryContextAlloc(ex->cxt, (VEC + PADW + 16) * sizeof(uint32));
+		own->tidx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+		own->ridx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+		for (int x = 0; x < ex->nj; x++)
+			own->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+	}
+	own->n = t->n;
+	memcpy(own->sel, t->sel, t->n * sizeof(uint32));
+	memcpy(own->tidx, t->tidx, t->n * sizeof(uint32));
+	memcpy(own->ridx, t->ridx, t->n * sizeof(uint32));
+	for (int x = 0; x < ex->nj; x++)
+		memcpy(own->cout[ex->jcombo[x]], t->cout[ex->jcombo[x]], t->n * sizeof(uint32));
+	own->n = post_filter(ex, own, ex->spec->nprepost, ex->spec->npost, ex->nj, set);
+	return own;
+}
+
+static bool
+set_has_post(const SiftAggSpec *s, int set)
+{
+	for (int i = s->nprepost; i < s->npost; i++)
+		if (post_applies(s, i, set))
+			return true;
+	return false;
 }
 
 /* the tuples that passed the joins and the filters over the joined rows: their groups and aggregates */
@@ -726,7 +775,7 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->ridx = t->ridx;
 	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
 	if (s->npost > s->nprepost)
-		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj);
+		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj, -1);
 	if (t->n == 0)
 		return;
 	if (s->narms > 0)
@@ -737,12 +786,23 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->n_tuples += t->n;
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
+		Tup		   *st = s->nsets && set_has_post(s, set) ? set_tuples(ex, t, set) : t;
+
+		if (st->n == 0)
+			continue;
+		/* the free combos are resolved for the tuples they were asked for: the set's own are not the chunk's */
+		if (st != t || ex->cur != t)
+			memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+		ex->cur = st;
+		ex->sel = st->sel;
+		ex->tidx = st->tidx;
+		ex->ridx = st->ridx;
 		ex->curset = set;
 		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
-		compute_gids(ex, t->n);
-		sift_aggk->count_gid(ex->seen, ex->gid, NULL, t->n);
+		compute_gids(ex, st->n);
+		sift_aggk->count_gid(ex->seen, ex->gid, NULL, st->n);
 		for (int i = 0; i < s->naggs; i++)
-			agg_update(ex, i, ex->cstart, ex->cn, t->n);
+			agg_update(ex, i, ex->cstart, ex->cn, st->n);
 	}
 	ex->arm_mask = ~(uint32) 0;
 }
@@ -800,7 +860,7 @@ join_stage(AggExec *ex, int s, Tup *in)
 	cs = &ex->cs[ci];
 	if (cs->map->keep && ex->spec->nprepost > 0)
 	{
-		in->n = n = post_filter(ex, in, 0, ex->spec->nprepost, s);
+		in->n = n = post_filter(ex, in, 0, ex->spec->nprepost, s, -1);
 		if (n == 0)
 			return;
 	}

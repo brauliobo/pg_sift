@@ -536,6 +536,7 @@ typedef struct AggExec
 	/* arms that share one pass (fuse_start) */
 	struct FuseSt *fuse;
 	int			fuse_set;		/* this node's set in the fused spec */
+	Tup		   *set_tup;		/* the tuples of a set of a fused pass that has conjuncts of its own over the joined rows */
 } AggExec;
 
 /* the parent of the expressions: a parallel worker has no plan state */

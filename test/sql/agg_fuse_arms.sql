@@ -88,8 +88,16 @@ SELECT reread(:'line_arm') > 0 AS arm_rereads, reread(:'line_arms') = reread(:'l
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev WHERE qty > 2 GROUP BY kind UNION ALL SELECT zone_id::text, count(*) FROM ev GROUP BY zone_id$$) AS other_filter_shared;
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION ALL SELECT zone_id::text, sum(qty) FROM ev GROUP BY zone_id$$) AS other_aggregate_shared;
 
+-- the rest of an ON clause that only one arm has: an inner join drops the rows it refuses in the arm's set only; a left join keeps them (another set of rows)
+\set inner_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
+\set inner_rest 'SELECT e.kind::text, count(*), sum(e.price) FROM ev e JOIN zones z ON z.id = e.zone_id AND z.tier > 0 GROUP BY e.kind'
+\set left_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e LEFT JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
+\set left_rest 'SELECT e.kind::text, count(*), sum(e.price) FROM ev e LEFT JOIN zones z ON z.id = e.zone_id AND z.tier > 0 GROUP BY e.kind'
+SELECT arms_shared(:'inner_rest' || ' UNION ALL ' || :'inner_plain') AS inner_rest_shared, same(:'inner_rest' || ' UNION ALL ' || :'inner_plain') AS inner_rest_same;
+SELECT arms_shared(:'left_rest' || ' UNION ALL ' || :'left_plain') AS left_rest_shared, same(:'left_rest' || ' UNION ALL ' || :'left_plain') AS left_rest_same;
+
 -- arms that look the mapped names of each line up with a correlated LIMIT 1 sub-select: the arms read other columns of it (one the mapped kind, one
--- also the mapped part), the lines without a mapping are no row of the first two arms and a row of the third (a LEFT JOIN, another set of rows: it stays apart)
+-- also the mapped part), the lines without a mapping are no row of the first two arms (an inner join) and a row of the third (a left join): one pass keeps them for that arm only
 -- (the scan of the table is made dearer than the index's, and the lookups are not cached: the plan with the sub-select as a child of the scan is the one PostgreSQL costs cheapest)
 SET enable_seqscan = off;
 SET enable_indexscan = off;
@@ -108,7 +116,8 @@ SELECT arms_shared(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind') AS
 SELECT arms_shared(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_shared,
        same(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_same;
 SELECT reread(:'mapped' || :'arm_names') > 0 AS mapped_arm_rereads,
-       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind') = reread(:'mapped' || :'arm_names') AS mapped_rereads_once;
+       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind') = reread(:'mapped' || :'arm_names') AS mapped_rereads_once,
+       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') = reread(:'mapped' || :'arm_names') AS mapped_three_rereads_once;
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
