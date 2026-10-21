@@ -179,7 +179,6 @@ static SiftColBatch *
 recheck_batch(ColSource *src)
 {
 	ColRecheck *k = src->rck;
-	SiftColRel *r = sift_col_rel(k->index);
 	SiftColBatch *b;
 	uint32		n = 0;
 
@@ -203,7 +202,11 @@ recheck_batch(ColSource *src)
 		GetPerTupleExprContext(k->estate)->ecxt_scantuple = k->slot;
 		old = MemoryContextSwitchTo(k->tmp);
 		FormIndexDatum(k->info, k->slot, k->estate, values, isnull);
-		sift_col_make_row_rc(r, &k->tid[i], values, isnull, &row, k->tmp, k->rc);
+#ifdef SIFT_TESTING
+		sift_col_test_inval(k->index);
+#endif
+		/* the index's cached state is freed when its relcache entry is reloaded, which a lock taken by the fetch or the index's expressions may cause: not kept across tuples */
+		sift_col_make_row_rc(sift_col_rel(k->index), &k->tid[i], values, isnull, &row, k->tmp, k->rc);
 		sift_cbatch_add(b, &row);
 		MemoryContextSwitchTo(old);
 		k->err[n++] = k->rc->err;

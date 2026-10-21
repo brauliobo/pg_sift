@@ -61,6 +61,11 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
+/*
+ * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
+ * meanwhile may cause one) frees the one sift_col_rel returns, which stays only for what the caller reads before it does either.
+ */
+extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with
@@ -137,6 +142,8 @@ extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
+extern PGDLLIMPORT bool sift_test_col_rel_inval;	/* sift.test_col_rel_inval: the build and the recheck invalidate the index's relcache entry at every tuple (sift_col_test_inval) */
+extern void sift_col_test_inval(Relation index);	/* does so when it is on, after it overwrote the cached state the entry held */
 extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 #ifdef SIFT_TESTING
 typedef struct SiftCDictCacheStats
