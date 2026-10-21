@@ -670,7 +670,7 @@ static void rank_bench(double secs)
 
 /* ---------------- facets ---------------- */
 
-/* facets.tsv: blk, off, source_id, country_code; counts per value for term queries */
+/* facets.tsv: blk, off, src_id, country_code; counts per value for term queries */
 static void facet_bench(const char *dir, double secs)
 {
 	char path[4096], cc[8];

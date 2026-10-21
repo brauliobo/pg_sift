@@ -55,19 +55,19 @@ the string, so `jsonb_typeof(doc -> 'k') = 'number'` and `doc @> '{"k": 7.5}'` w
 the heap. Rejected: the leaf would no longer be the document's value.
 
 **C. Say it.** The smaller part, implemented: when `reads_overflow` refuses a spec, a `DEBUG1` message names the leaf
-(`sift: the aggregate pushdown does not read "doc.opinions[].score": some unit holds values the leaf cannot store`). The planner
+(`sift: the aggregate pushdown does not read "doc.parts[].score": some unit holds values the leaf cannot store`). The planner
 never raises for it and the message is at `DEBUG1` (`SET client_min_messages = debug1`), so an installation sees why a plan stayed on
 the heap without any change of plans or formats. It is the entry point for A: the same site is where a per-row recheck would
 replace the refusal.
 
-## Follow-up with numbers (synthetic workload, 300,000 items, 0.3% non-object documents, 3.5% of the opinions with a string score)
+## Follow-up with numbers (synthetic workload, 300,000 items, 0.3% non-object documents, 3.5% of the parts with a string score)
 
 Per-item arms with a count of the items, serial, best of 2 and 3 (`bench/sql/workload/run.sh time`):
 
 | Form | sift off | sift on |
 | --- | --- | --- |
 | typed `float8` leaf over the raw document | the heap plan | the same heap plan (units flagged) |
-| typed leaf over `coldiff.wl_norm(doc)` (scores repaired, non-objects NULL) | 2.43 s | 0.026 s |
+| typed leaf over `coldiff.load_norm(doc)` (scores repaired, non-objects NULL) | 2.43 s | 0.026 s |
 | `astext` leaf + guarded cast, fused arms (g5) | 2.83 s | 0.073 s |
 
 The first row is the gap: it needs option A.
