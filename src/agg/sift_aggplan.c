@@ -145,6 +145,8 @@ typedef struct AggCtx
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
+	const char *func_key;		/* LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k': r.value is the member k of each row, no unnest */
+	int			func_obj;		/* ... and the object leaf of doc */
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
@@ -407,6 +409,11 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	}
 	if (obj < 0 || (val = child_leaf(c, obj, "value", typid)) < 0)
 		return -1;
+	/* an expression is matched more than once (when its inputs are collected and when they are replaced): the same member is one leaf */
+	for (int j = 0; j < c->nvleaf; j++)
+		if (!c->vleaf[j].count && !c->vleaf[j].types && c->vleaf[j].obj == obj && strcmp(c->vleaf[j].key, strVal(llast(path))) == 0 &&
+			leaf_of(c, c->lay->nleaves - c->nvleaf + j)->typid == typid)
+			return c->lay->nleaves - c->nvleaf + j;
 	v = vleaf_add(c, att, path, leaf_of(c, val)->vtype, typid);
 	c->vleaf[c->nvleaf].obj = obj;
 	c->vleaf[c->nvleaf].count = false;
@@ -605,6 +612,15 @@ json_cast_target(Oid fid)
 
 static int match_leaf(AggCtx *c, Node *e);
 
+/* the member of the row's object that `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` picks (NULL where the row has none), as a row level leaf */
+static int
+member_leaf(AggCtx *c, Oid typid)
+{
+	const SiftSrcLeaf *obj = leaf_of(c, c->func_obj);
+
+	return key_leaf(c, obj->attno, lappend(list_copy(obj->path), makeString(pstrdup(c->func_key))), typid);
+}
+
 /* a column of the unnested function, as a leaf */
 static int
 func_var_leaf(AggCtx *c, Var *v)
@@ -697,8 +713,8 @@ match_leaf(AggCtx *c, Node *e)
 	{
 		/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
 		if (cast_to != InvalidOid && json_cast_target(fid) != InvalidOid && cast_to == exprType(e) && r.att == 0 && c->func_kind == FK_EACH &&
-			r.fcol == 2 && c->group >= 0)
-			return child_leaf(c, c->group, "value", cast_to);
+			r.fcol == 2 && (c->group >= 0 || c->func_key != NULL))
+			return c->func_key ? member_leaf(c, cast_to) : child_leaf(c, c->group, "value", cast_to);
 		return -1;
 	}
 	{
@@ -5786,9 +5802,51 @@ child_arg(AggCtx *c, Node *arg)
 	json_null->location = -1;
 	out->casetype = JSONBOID;
 	out->args = list_make2(no_member, json_null);
+	/* a row without the member and one with a JSON null are the same NULL: the child reads the value only through casts (null_blind) */
+	if (c->func_key)
+	{
+		no_member->expr = (Expr *) nil;
+		out->args = list_make1(no_member);
+	}
 	out->defresult = (Expr *) makeFuncExpr(F_TO_JSONB, JSONBOID, list_make1(copyObject(number)), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
 	out->location = -1;
 	return (Node *) out;
+}
+
+/* does the plan read the parameter other than as the argument of a cast of jsonb to a number or boolean */
+static bool
+bare_param_walker(Node *n, int *paramid)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid && IsA(linitial(((FuncExpr *) n)->args), Param) &&
+		((Param *) linitial(((FuncExpr *) n)->args))->paramid == *paramid)
+		return false;
+	if (IsA(n, Param))
+		return ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid == *paramid;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, bare_param_walker, paramid, 0);
+	return expression_tree_walker(n, bare_param_walker, paramid);
+}
+
+/*
+ * The parameters of a child and what the scan gives for each. The member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it
+ * and for a JSON null alike, so a child reads it only through casts (a JSON null casts to NULL in PostgreSQL 18).
+ */
+static bool
+child_params(AggCtx *c, JoinCtx *jc, List *items)
+{
+	foreach_node(PlannerParamItem, item, items)
+	{
+		Node	   *value = copyObject(item->item),
+				   *arg = child_arg(c, value);
+
+		if (c->func_key && arg != value && bare_param_walker((Node *) jc->subroot->parse, &item->paramId))
+			return false;
+		jc->j.params = lappend_int(jc->j.params, item->paramId);
+		jc->args = lappend(jc->args, arg);
+	}
+	return true;
 }
 
 /* The plan PostgreSQL made of a correlated sub-select, with the quals it pushed into it: its parameters are what it read of the query's rows. */
@@ -5798,12 +5856,7 @@ planned_child(AggCtx *c, RelOptInfo *rel, JoinCtx *jc)
 	if ((jc->cpath = child_path(rel, true)) == NULL || !IsA(jc->cpath, SubqueryScanPath) || rel->subplan_params == NIL)
 		return false;
 	jc->subroot = rel->subroot;
-	foreach_node(PlannerParamItem, item, rel->subplan_params)
-	{
-		jc->j.params = lappend_int(jc->j.params, item->paramId);
-		jc->args = lappend(jc->args, child_arg(c, copyObject(item->item)));
-	}
-	return true;
+	return child_params(c, jc, rel->subplan_params);
 }
 
 /*
@@ -5846,10 +5899,10 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
 	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
-	foreach_node(PlannerParamItem, item, c->root->plan_params)
+	if (!child_params(c, jc, c->root->plan_params))
 	{
-		jc->j.params = lappend_int(jc->j.params, item->paramId);
-		jc->args = lappend(jc->args, child_arg(c, copyObject(item->item)));
+		c->root->plan_params = saved;
+		return false;
 	}
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
@@ -6555,6 +6608,43 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
  * The FROM list of root's query as AggCtx: the scanned table with a column source, at most one lateral unnest of one of its leaves,
  * the tables that join to it by equality. input_rel (NULL: not the query being planned) is the join the planner made of it.
  */
+/*
+ * The key of `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`, NULL for any other outer join of the function. An object has one member
+ * per key, so the join is the member k of each row (a row without it keeps NULL columns): a row level value, not an unnest. A JSON null and
+ * a missing key are the same NULL there; before PostgreSQL 18 a JSON null raises where the missing key does not, so the normal plan stays.
+ */
+static const char *
+left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
+{
+#if PG_VERSION_NUM >= 180000
+	OpExpr	   *op;
+	Node	   *a,
+			   *b;
+
+	if (kind != FK_EACH || lj->kind != SJ_LEFT || list_length(lj->quals) != 1 || !IsA(linitial(lj->quals), OpExpr))
+		return NULL;
+	op = linitial_node(OpExpr, lj->quals);
+	set_opfuncid(op);
+	if (op->opfuncid != F_TEXTEQ)
+		return NULL;
+	a = strip_relabel(linitial(op->args));
+	b = strip_relabel(lsecond(op->args));
+	if (IsA(b, Var))
+	{
+		Node	   *t = a;
+
+		a = b;
+		b = t;
+	}
+	if (!IsA(a, Var) || ((Var *) a)->varno != rti || ((Var *) a)->varlevelsup != 0 || ((Var *) a)->varattno != 1 || !IsA(b, Const) ||
+		((Const *) b)->constisnull)
+		return NULL;
+	return TextDatumGetCString(((Const *) b)->constvalue);
+#else
+	return NULL;
+#endif
+}
+
 static bool
 agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
@@ -6598,13 +6688,13 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
 		{
-			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
-			foreach_ptr(LeftJoin, lj, fs->lefts)
-				if (lj->rti == rti)
-					return false;
 			c->func_rti = rti;
 			c->func = linitial_node(RangeTblFunction, e->functions);
 			c->func_kind = func_kind_of(c->func);
+			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
+			foreach_ptr(LeftJoin, lj, fs->lefts)
+				if (lj->rti == rti && (c->func_key = left_each_key(lj, rti, c->func_kind)) == NULL)
+					return false;
 		}
 		else if (input_rel == NULL || c->joinless ||
 				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
@@ -6650,10 +6740,17 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	build_attexprs(c);
 	if (c->func_rti)
 	{
-		c->group = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
-		if (c->group < 0)
+		int			leaf = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
+
+		if (leaf < 0)
 			return false;
-		c->used = bms_add_member(c->used, c->group);
+		if (c->func_key)
+			c->func_obj = leaf;
+		else
+		{
+			c->group = leaf;
+			c->used = bms_add_member(c->used, leaf);
+		}
 	}
 	return true;
 }
