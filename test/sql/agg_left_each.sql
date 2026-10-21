@@ -55,6 +55,10 @@ $q$);
 SELECT * FROM check_query('key', $q$
  SELECT r.key, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' GROUP BY 1
 $q$);
+SELECT * FROM check_query('child union all, bare read', $q$
+ SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) ra ON ra.key = 'overall'
+ JOIN LATERAL (SELECT 'a' AS v UNION ALL SELECT (ra.value IS NULL)::text) c ON true GROUP BY 1
+$q$);
 -- Error timing: the cast of the member raises for the rows that reach it, with PostgreSQL's SQLSTATE and message.
 INSERT INTO facts VALUES (20001, 1, '{"overall": 3000000000}'), (20002, 2, '{"overall": 1e30}');
 VACUUM (FREEZE, ANALYZE) facts;
@@ -64,12 +68,15 @@ SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FR
 SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20001 GROUP BY 1$q$);
--- A document that is not an object raises PostgreSQL's error for the rows that reach the join; a JSON null is NULL in PostgreSQL 18 and an error before it (the
--- text is not compared: it depends on the version).
-INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20004, 4, '{"overall": null}');
+-- a JSON null member is NULL in PostgreSQL 18 and an error before it (the text is not compared: it depends on the version)
+INSERT INTO facts VALUES (20004, 4, '{"overall": null}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT label, scan, same FROM check_query('array document', $q$SELECT count(r.value) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20003$q$);
 SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20004$q$);
+-- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
+INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"overall": "abc"}');
+VACUUM (FREEZE, ANALYZE) facts;
+SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20003$q$);
+SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20005$q$);
 DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

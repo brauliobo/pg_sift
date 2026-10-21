@@ -80,7 +80,7 @@ SELECT * FROM check_query($q$
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN f.code > '6' THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
 $q$);
--- Stays native: the fan-out reads a column of jsonb_each, which the index does not hold.
+-- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each).
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
