@@ -76,6 +76,49 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
+/* the functions of aggregate aggfn, whose result is of type restype, and the state the transition function starts from */
+void
+pgagg_lookup(PgAgg *pa, Oid aggfn, Oid restype)
+{
+	HeapTuple	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggfn));
+	Form_pg_aggregate ag;
+	bool		isnull;
+	Datum		init;
+
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for aggregate %u", aggfn);
+	ag = (Form_pg_aggregate) GETSTRUCT(tup);
+	fmgr_info(ag->aggtransfn, &pa->trans);
+	pa->strict = pa->trans.fn_strict;
+	pa->has_final = OidIsValid(ag->aggfinalfn);
+	if (pa->has_final)
+		fmgr_info(ag->aggfinalfn, &pa->final);
+	pa->final_extra = ag->aggfinalextra;
+	get_typlenbyval(ag->aggtranstype, &pa->tlen, &pa->tbyval);
+	get_typlenbyval(restype, &pa->rlen, &pa->rbyval);
+	init = SysCacheGetAttr(AGGFNOID, tup, Anum_pg_aggregate_agginitval, &isnull);
+	pa->init_null = isnull;
+	if (!isnull)
+	{
+		Oid			typinput,
+					typioparam;
+
+		getTypeInputInfo(ag->aggtranstype, &typinput, &typioparam);
+		pa->init = OidInputFunctionCall(typinput, TextDatumGetCString(init), typioparam, -1);
+	}
+	ReleaseSysCache(tup);
+}
+
+/* the context the transition functions of PostgreSQL's aggregates see (AggCheckCallContext); their states live in its curaggcontext's memory */
+AggState *
+pgagg_state(void)
+{
+	AggState   *st = makeNode(AggState);
+
+	st->curaggcontext = CreateStandaloneExprContext();
+	return st;
+}
+
 /* the lookup of the aggregate's functions, once per scan */
 void
 pgagg_init(AggExec *ex)
@@ -86,116 +129,81 @@ pgagg_init(AggExec *ex)
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
 		const SiftAggAgg *a = &s->agg[ai];
-		HeapTuple	tup;
-		Form_pg_aggregate ag;
-		PgAgg	   *pa;
-		bool		isnull;
-		Datum		init;
 
 		if (a->kind != SAA_M_PG)
 			continue;
 		if (ex->pgstate == NULL)
-		{
-			ex->pgstate = makeNode(AggState);
-			ex->pgstate->curaggcontext = CreateStandaloneExprContext();
-		}
-		tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(a->aggfn));
-		if (!HeapTupleIsValid(tup))
-			elog(ERROR, "cache lookup failed for aggregate %u", a->aggfn);
-		ag = (Form_pg_aggregate) GETSTRUCT(tup);
-		pa = ex->pgagg[ai] = palloc0(sizeof(PgAgg));
-		fmgr_info(ag->aggtransfn, &pa->trans);
-		pa->strict = pa->trans.fn_strict;
-		pa->has_final = OidIsValid(ag->aggfinalfn);
-		if (pa->has_final)
-			fmgr_info(ag->aggfinalfn, &pa->final);
-		pa->final_extra = ag->aggfinalextra;
-		get_typlenbyval(ag->aggtranstype, &pa->tlen, &pa->tbyval);
-		get_typlenbyval(a->restype, &pa->rlen, &pa->rbyval);
-		init = SysCacheGetAttr(AGGFNOID, tup, Anum_pg_aggregate_agginitval, &isnull);
-		pa->init_null = isnull;
-		if (!isnull)
-		{
-			Oid			typinput,
-						typioparam;
-
-			getTypeInputInfo(ag->aggtranstype, &typinput, &typioparam);
-			pa->init = OidInputFunctionCall(typinput, TextDatumGetCString(init), typioparam, -1);
-		}
-		ReleaseSysCache(tup);
+			ex->pgstate = pgagg_state();
+		ex->pgagg[ai] = palloc0(sizeof(PgAgg));
+		pgagg_lookup(ex->pgagg[ai], a->aggfn, a->restype);
 	}
 }
 
-/* the state of group g gets `times` more occurrences of val: the transition function as nodeAgg calls it (strictness, initial value, the state copied out of the call's memory) */
-static void
-pgagg_add(AggExec *ex, int ai, uint32 g, Datum val, int64 times)
+/*
+ * The state (*has: it is not NULL) gets one more value: the transition function as nodeAgg calls it (strictness, initial value, the state
+ * copied out of the call's memory, callcxt, which is reset after the call).
+ */
+void
+pgagg_step(const PgAgg *pa, AggState *st, Oid collid, MemoryContext callcxt, Datum *state, bool *has, Datum val)
 {
-	PgAgg	   *pa = ex->pgagg[ai];
-	AggAcc	   *acc = &ex->acc[ai];
-	MemoryContext aggcxt = ex->pgstate->curaggcontext->ecxt_per_tuple_memory;
+	MemoryContext aggcxt = st->curaggcontext->ecxt_per_tuple_memory;
 	LOCAL_FCINFO(fc, 2);
+	Datum		r;
+	MemoryContext old;
 
-	for (int64 t = 0; t < times; t++)
+	if (!*has && !pa->init_null)
 	{
-		Datum		r;
-		MemoryContext old;
-
-		if (!acc->nf[g] && !pa->init_null)
-		{
-			old = MemoryContextSwitchTo(aggcxt);
-			acc->v[g] = datumCopy(pa->init, pa->tbyval, pa->tlen);
-			MemoryContextSwitchTo(old);
-			acc->nf[g] = 1;
-		}
-		else if (!acc->nf[g] && pa->strict)
-		{
-			old = MemoryContextSwitchTo(aggcxt);
-			acc->v[g] = datumCopy(val, pa->tbyval, pa->tlen);
-			MemoryContextSwitchTo(old);
-			acc->nf[g] = 1;
-			continue;
-		}
-		InitFunctionCallInfoData(*fc, &pa->trans, 2, ex->spec->agg[ai].collid, (Node *) ex->pgstate, NULL);
-		fc->args[0].value = acc->v[g];
-		fc->args[0].isnull = !acc->nf[g];
-		fc->args[1].value = val;
-		fc->args[1].isnull = false;
-		old = MemoryContextSwitchTo(ex->comcxt);
-		r = FunctionCallInvoke(fc);
-		MemoryContextSwitchTo(aggcxt);
-		if (fc->isnull)
-		{
-			acc->nf[g] = 0;
-			acc->v[g] = (Datum) 0;
-		}
-		else if (pa->tbyval)
-		{
-			acc->v[g] = r;
-			acc->nf[g] = 1;
-		}
-		else if (DatumGetPointer(r) != DatumGetPointer(acc->v[g]))
-		{
-			Datum		prev = acc->v[g];
-			bool		had = acc->nf[g];
-
-			acc->v[g] = datumCopy(r, false, pa->tlen);
-			acc->nf[g] = 1;
-			if (had)
-				pfree(DatumGetPointer(prev));
-		}
-		else
-			acc->nf[g] = 1;
+		old = MemoryContextSwitchTo(aggcxt);
+		*state = datumCopy(pa->init, pa->tbyval, pa->tlen);
 		MemoryContextSwitchTo(old);
-		MemoryContextReset(ex->comcxt);
+		*has = true;
 	}
+	else if (!*has && pa->strict)
+	{
+		old = MemoryContextSwitchTo(aggcxt);
+		*state = datumCopy(val, pa->tbyval, pa->tlen);
+		MemoryContextSwitchTo(old);
+		*has = true;
+		return;
+	}
+	InitFunctionCallInfoData(*fc, (FmgrInfo *) &pa->trans, 2, collid, (Node *) st, NULL);
+	fc->args[0].value = *state;
+	fc->args[0].isnull = !*has;
+	fc->args[1].value = val;
+	fc->args[1].isnull = false;
+	old = MemoryContextSwitchTo(callcxt);
+	r = FunctionCallInvoke(fc);
+	MemoryContextSwitchTo(aggcxt);
+	if (fc->isnull)
+	{
+		*has = false;
+		*state = (Datum) 0;
+	}
+	else if (pa->tbyval)
+	{
+		*state = r;
+		*has = true;
+	}
+	else if (DatumGetPointer(r) != DatumGetPointer(*state))
+	{
+		Datum		prev = *state;
+		bool		had = *has;
+
+		*state = datumCopy(r, false, pa->tlen);
+		*has = true;
+		if (had)
+			pfree(DatumGetPointer(prev));
+	}
+	else
+		*has = true;
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(callcxt);
 }
 
-/* the result of group g: the final function on its state (the state itself without one), kept in acc->v; acc->nf says whether it is not NULL */
-static void
-pgagg_final(AggExec *ex, int ai, uint32 g)
+/* the state becomes the result: the final function on it (the state itself without one), copied to resultcxt; *has says whether it is not NULL */
+void
+pgagg_result(const PgAgg *pa, AggState *st, Oid collid, MemoryContext callcxt, MemoryContext resultcxt, Datum *state, bool *has)
 {
-	PgAgg	   *pa = ex->pgagg[ai];
-	AggAcc	   *acc = &ex->acc[ai];
 	LOCAL_FCINFO(fc, 2);
 	Datum		r;
 	bool		isnull;
@@ -203,24 +211,50 @@ pgagg_final(AggExec *ex, int ai, uint32 g)
 
 	if (!pa->has_final)
 		return;
-	if (pa->final.fn_strict && !acc->nf[g])
+	if (pa->final.fn_strict && !*has)
 	{
-		acc->v[g] = (Datum) 0;
+		*state = (Datum) 0;
 		return;
 	}
-	InitFunctionCallInfoData(*fc, &pa->final, pa->final_extra ? 2 : 1, ex->spec->agg[ai].collid, (Node *) ex->pgstate, NULL);
-	fc->args[0].value = acc->v[g];
-	fc->args[0].isnull = !acc->nf[g];
+	InitFunctionCallInfoData(*fc, (FmgrInfo *) &pa->final, pa->final_extra ? 2 : 1, collid, (Node *) st, NULL);
+	fc->args[0].value = *state;
+	fc->args[0].isnull = !*has;
 	fc->args[1].value = (Datum) 0;
 	fc->args[1].isnull = true;
-	old = MemoryContextSwitchTo(ex->comcxt);
+	old = MemoryContextSwitchTo(callcxt);
 	r = FunctionCallInvoke(fc);
 	isnull = fc->isnull;
-	MemoryContextSwitchTo(ex->tcxt);
-	acc->v[g] = isnull ? (Datum) 0 : datumCopy(r, pa->rbyval, pa->rlen);
-	acc->nf[g] = !isnull;
+	MemoryContextSwitchTo(resultcxt);
+	*state = isnull ? (Datum) 0 : datumCopy(r, pa->rbyval, pa->rlen);
+	*has = !isnull;
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(ex->comcxt);
+	MemoryContextReset(callcxt);
+}
+
+/* the state of group g gets `times` more occurrences of val */
+static void
+pgagg_add(AggExec *ex, int ai, uint32 g, Datum val, int64 times)
+{
+	AggAcc	   *acc = &ex->acc[ai];
+
+	for (int64 t = 0; t < times; t++)
+	{
+		bool		has = acc->nf[g];
+
+		pgagg_step(ex->pgagg[ai], ex->pgstate, ex->spec->agg[ai].collid, ex->comcxt, &acc->v[g], &has, val);
+		acc->nf[g] = has;
+	}
+}
+
+/* the result of group g: the final function on its state (the state itself without one), kept in acc->v; acc->nf says whether it is not NULL */
+static void
+pgagg_final(AggExec *ex, int ai, uint32 g)
+{
+	AggAcc	   *acc = &ex->acc[ai];
+	bool		has = acc->nf[g];
+
+	pgagg_result(ex->pgagg[ai], ex->pgstate, ex->spec->agg[ai].collid, ex->comcxt, ex->tcxt, &acc->v[g], &has);
+	acc->nf[g] = has;
 }
 
 /* `times` rows of group g had the value id: min, max, sum or avg of the aggregate ai */
