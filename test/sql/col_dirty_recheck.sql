@@ -94,6 +94,8 @@ SELECT runq(rec_q('count(*)', 'id = 9008', 'grp'), true) AS the_unread_column_er
 SELECT same(rec_q('o.c, count(*), avg(o.score)', 'id < 9000')) AS filtered_out;
 SELECT same(rec_q('o.c, count(*), avg(o.score)', 'grp <> 9')) AS filtered_out_by_a_leaf;
 SELECT same(rec_q('o.c, count(*), avg(o.score)')) AS reached;
+-- a conjunct that may fail and leaves the rows that hold the error out: they never reach the function
+SELECT same(rec_q('o.c, count(*), avg(o.score)', '100 / (grp + 1) > 50')) AS late_conjunct_drops_them;
 DELETE FROM d_t WHERE id IN (9001, 9002, 9003, 9005, 9007, 9008, 9009);
 VACUUM d_t;
 SELECT same(rec_q('o.c, count(*), avg(o.score), sum(o.n)')) AS after_vacuum;
