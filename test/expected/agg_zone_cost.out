@@ -1,0 +1,87 @@
+-- The plan the planner picks on its own costs when the zones of the units decide what the scan reads: the units a query's constants leave
+-- are counted on the real min and max of the units of the index (the parent and the ts of a row both grow with it, so a window on
+-- either leaves a share of the units, and two windows that meet in other rows leave about none). Every statement is also run with
+-- sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE zc_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, deleted_at timestamptz, payload jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO zc_facts SELECT i, 1 + (i - 1) / 250, date '2024-01-01' + (i - 1) / 150, CASE WHEN i % 29 = 0 THEN now() END,
+	jsonb_build_object('a', 1 + i % 10, 'b', 1 + (i * 7) % 10, 'c', 1 + (i * 3) % 10) FROM generate_series(1, 120000) i;
+CREATE INDEX zc_facts_parent ON zc_facts (parent_id, ts);
+CREATE INDEX zc_facts_col ON zc_facts USING sift_col (id, parent_id, ts, deleted_at, payload) WITH (paths = 'payload.* float8');
+VACUUM (FREEZE, ANALYZE) zc_facts;
+CREATE FUNCTION query_of(scope text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+SELECT e.key, count(DISTINCT r.id) AS ids, round(avg(e.value::float8)::numeric, 6) AS score
+FROM zc_facts r JOIN LATERAL jsonb_each(r.payload) e ON true WHERE r.deleted_at IS NULL AND %s GROUP BY 1 ORDER BY 1$f$, scope) $$;
+CREATE FUNCTION plan_of(q text, OUT plan text, OUT cost numeric) LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	plan := CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+	cost := (j -> 0 -> 'Plan' ->> 'Total Cost')::numeric;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := (plan_of(q)).plan;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- the whole table: the scan
+SELECT * FROM same(query_of('true'));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
+(1 row)
+
+-- a window of the parents and a window of the dates: the scan, reading the units of the window
+SELECT * FROM same(query_of('r.parent_id BETWEEN 100 AND 400'));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
+(1 row)
+
+SELECT * FROM same(query_of('r.ts >= date ''2025-01-01'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
+(1 row)
+
+-- both windows: the units of the parents are not those of the dates, so the scan reads about none (the cost counts the units both leave)
+SELECT * FROM same(query_of('r.parent_id <= 100 AND r.ts >= date ''2025-01-01'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           0 |              0
+(1 row)
+
+-- a few hundred rows of one parent: the btree plan reads them
+SELECT * FROM same(query_of('r.parent_id = 7 AND r.id < 1800'));
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           3 |              0
+(1 row)
+
+-- a short list of parents: the units whose zone holds one of them
+SELECT * FROM same(query_of('r.parent_id IN (3, 200, 470)'));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
+(1 row)
+
+-- the zones decide the price: the windows that meet in no unit cost much less than either alone, the list of three parents less than the window
+SELECT (plan_of(query_of('r.parent_id <= 100 AND r.ts >= date ''2025-01-01'''))).cost < (plan_of(query_of('r.ts >= date ''2025-01-01'''))).cost / 2 AS meeting_windows_cheaper,
+       (plan_of(query_of('r.parent_id IN (3, 200, 470)'))).cost < (plan_of(query_of('r.parent_id BETWEEN 100 AND 400'))).cost / 4 AS list_cheaper_than_window,
+       (plan_of(query_of('r.ts >= date ''2025-01-01'''))).cost < (plan_of(query_of('true'))).cost AS window_cheaper_than_table;
+ meeting_windows_cheaper | list_cheaper_than_window | window_cheaper_than_table 
+-------------------------+--------------------------+---------------------------
+ t                       | t                        | t
+(1 row)
+
+DROP FUNCTION query_of(text), plan_of(text), same(text);
+DROP TABLE zc_facts;
+DROP EXTENSION pg_sift;
