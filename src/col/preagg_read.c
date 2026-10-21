@@ -334,168 +334,201 @@ sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, 
 	return sift_cpagg_rollup_decode_need(s, blob, len, mcxt, NULL, r);
 }
 
-bool
-sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r)
+/* n doubles are passed over; false when the blob ends first */
+static bool
+skip_f8(Rd *r, Size n)
 {
-	MemoryContext old = MemoryContextSwitchTo(mcxt);
-	Rd			rd = {blob, blob + len, false};
-	uint32		nt;
-	bool		ok = false;
+	if ((Size) (r->end - r->p) < n * sizeof(double))
+		return false;
+	r->p += n * sizeof(double);
+	return true;
+}
 
-	memset(r, 0, sizeof(*r));
-	r->list = -1;
-	if (len < 3)
-		goto done;
-	r->ndims = *rd.p++;
-	r->nmeas = *rd.p++;
-	nt = (uint32) get_u(&rd);
+/* the count, the dimension and the measure leaves of a rollup */
+static bool
+read_head(const SiftColSchema *s, Rd *rd, SiftCRollup *r)
+{
+	uint32		nt;
+
+	if (rd->end - rd->p < 3)
+		return false;
+	r->ndims = *rd->p++;
+	r->nmeas = *rd->p++;
+	nt = (uint32) get_u(rd);
 	if (r->ndims == 0 || r->ndims > SIFT_PAGG_MAX_RDIMS || r->nmeas > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > SIFT_PAGG_ROLLUP_TUPLES)
-		goto done;
+		return false;
 	r->ntuples = nt;
 	for (int j = 0; j < r->ndims; j++)
 	{
-		uint64		l = get_u(&rd);
+		uint64		l = get_u(rd);
 
-		if (rd.bad || l >= (uint64) s->ncols || s->cols[l].parent < 0 || (r->list >= 0 && r->list != s->cols[l].parent))
-			goto done;
+		if (rd->bad || l >= (uint64) s->ncols || s->cols[l].parent < 0 || (r->list >= 0 && r->list != s->cols[l].parent))
+			return false;
 		r->dim[j] = (int16) l;
 		r->list = s->cols[l].parent;
 	}
 	for (int m = 0; m < r->nmeas; m++)
 	{
-		uint64		l = get_u(&rd);
+		uint64		l = get_u(rd);
 
-		if (rd.bad || l >= (uint64) s->ncols || s->cols[l].parent != r->list)
-			goto done;
+		if (rd->bad || l >= (uint64) s->ncols || s->cols[l].parent != r->list)
+			return false;
 		r->meas[m] = (int16) l;
 	}
-	for (int j = 0; j < r->ndims; j++)
+	return true;
+}
+
+/* the null flags and the delta coded keys of dimension j; passed over unless want */
+static bool
+read_dim(Rd *rd, SiftCRollup *r, int j, bool want)
+{
+	uint32		nt = r->ntuples,
+				nnull = 0;
+	int64		prev = 0;
+	uint8	   *nulls = NULL;
+
+	if (rd->p >= rd->end || *rd->p > 1)
+		return false;
+	if (*rd->p++)
 	{
-		int64		prev = 0;
-		bool		want = need_dim(need, r->dim[j]);
-		uint8	   *nulls = NULL;
-		uint32		nnull = 0;
+		uint32		nb = (nt + 7) / 8;
 
-		if (rd.p >= rd.end || *rd.p > 1)
-			goto done;
-		if (*rd.p++)
-		{
-			uint32		nb = (nt + 7) / 8;
-
-			if ((uint32) (rd.end - rd.p) < nb)
-				goto done;
-			nulls = palloc0(nt);
-			for (uint32 t = 0; t < nt; t++)
-				nnull += nulls[t] = rd.p[t / 8] >> (t % 8) & 1;
-			rd.p += nb;
-		}
-		if (!want)
-		{
-			skip_u(&rd, nt - nnull);
-			continue;
-		}
-		r->key[j] = palloc0(nt * sizeof(int64));
-		r->isnull[j] = nulls;
+		if ((uint32) (rd->end - rd->p) < nb)
+			return false;
+		nulls = palloc0(nt);
 		for (uint32 t = 0; t < nt; t++)
-		{
-			if (nulls && nulls[t])
-				continue;
-			prev = (int64) ((uint64) prev + (uint64) get_zz(&rd));
-			r->key[j][t] = prev;
-		}
+			nnull += nulls[t] = rd->p[t / 8] >> (t % 8) & 1;
+		rd->p += nb;
 	}
-	r->count = palloc(nt * sizeof(uint32));
-	for (uint32 t = 0; t < nt; t++)
-		r->count[t] = (uint32) get_u(&rd);
-	for (int m = 0; m < r->nmeas; m++)
+	if (!want)
 	{
-		bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
-		int			k = need_meas(need, r->meas[m]);
-		bool		want = need == NULL || k >= 0,
-					sums = need == NULL || (k >= 0 && need->meas[k].sums),
-					mm = need == NULL || (k >= 0 && need->meas[k].minmax);
-		uint32		nnz = 0;
+		skip_u(rd, nt - nnull);
+		return true;
+	}
+	r->key[j] = palloc0(nt * sizeof(int64));
+	r->isnull[j] = nulls;
+	for (uint32 t = 0; t < nt; t++)
+	{
+		if (nulls && nulls[t])
+			continue;
+		prev = (int64) ((uint64) prev + (uint64) get_zz(rd));
+		r->key[j][t] = prev;
+	}
+	return true;
+}
+
+/* the non-null counts of measure m, and how many tuples have any */
+static uint32
+read_nn(Rd *rd, SiftCRollup *r, int m, bool want)
+{
+	uint32		nnz = 0;
+
+	if (want)
+		r->nn[m] = palloc(r->ntuples * sizeof(uint32));
+	for (uint32 t = 0; t < r->ntuples; t++)
+	{
+		uint32		n = (uint32) get_u(rd);
 
 		if (want)
-			r->nn[m] = palloc(nt * sizeof(uint32));
-		for (uint32 t = 0; t < nt; t++)
-		{
-			uint32		n = (uint32) get_u(&rd);
-
-			if (want)
-				r->nn[m][t] = n;
-			nnz += n != 0;
-		}
-		if (!sums)
-		{
-			if (fl)
-			{
-				if ((Size) (rd.end - rd.p) < (Size) nt * sizeof(double))
-					goto done;
-				rd.p += nt * sizeof(double);
-			}
-			else
-				skip_u(&rd, nt);
-		}
-		else if (fl)
-		{
-			if ((Size) (rd.end - rd.p) < (Size) nt * sizeof(double))
-				goto done;
-			r->sumf[m] = palloc(nt * sizeof(double));
-			memcpy(r->sumf[m], rd.p, nt * sizeof(double));
-			rd.p += nt * sizeof(double);
-		}
-		else
-		{
-			r->sum[m] = palloc(nt * sizeof(SiftCI128));
-			for (uint32 t = 0; t < nt; t++)
-				r->sum[m][t] = get_zz128(&rd);
-		}
-		if (!mm)
-		{
-			if (fl)
-			{
-				if ((Size) (rd.end - rd.p) < (Size) nnz * 2 * sizeof(double))
-					goto done;
-				rd.p += (Size) nnz * 2 * sizeof(double);
-			}
-			else
-				skip_u(&rd, nnz * 2);
-			continue;
-		}
-		if (fl)
-		{
-			r->minf[m] = palloc0(nt * sizeof(double));
-			r->maxf[m] = palloc0(nt * sizeof(double));
-		}
-		else
-		{
-			r->min[m] = palloc0(nt * sizeof(int64));
-			r->max[m] = palloc0(nt * sizeof(int64));
-		}
-		for (int pass = 0; pass < 2; pass++)
-			for (uint32 t = 0; t < nt; t++)
-			{
-				if (r->nn[m][t] == 0)
-					continue;
-				if (fl)
-				{
-					double		v;
-
-					if (rd.end - rd.p < (long) sizeof(double))
-						goto done;
-					memcpy(&v, rd.p, sizeof(double));
-					rd.p += sizeof(double);
-					(pass ? r->maxf[m] : r->minf[m])[t] = v;
-				}
-				else
-					(pass ? r->max[m] : r->min[m])[t] = get_zz(&rd);
-			}
+			r->nn[m][t] = n;
+		nnz += n != 0;
 	}
-	ok = !rd.bad && rd.p == rd.end;
-done:
+	return nnz;
+}
+
+/* the sums of measure m (doubles for a float measure, else 128 bit integers); passed over unless want */
+static bool
+read_sums(Rd *rd, SiftCRollup *r, int m, bool fl, bool want)
+{
+	uint32		nt = r->ntuples;
+	const uint8 *at = rd->p;
+
+	if (fl)
+	{
+		if (!skip_f8(rd, nt))
+			return false;
+		if (want)
+			memcpy(r->sumf[m] = palloc(nt * sizeof(double)), at, nt * sizeof(double));
+	}
+	else if (!want)
+		skip_u(rd, nt);
+	else
+	{
+		r->sum[m] = palloc(nt * sizeof(SiftCI128));
+		for (uint32 t = 0; t < nt; t++)
+			r->sum[m][t] = get_zz128(rd);
+	}
+	return true;
+}
+
+/* the minima then the maxima of measure m over its tuples with a value (nnz); passed over unless want */
+static bool
+read_minmax(Rd *rd, SiftCRollup *r, int m, bool fl, bool want, uint32 nnz)
+{
+	if (!want)
+	{
+		if (fl)
+			return skip_f8(rd, (Size) nnz * 2);
+		skip_u(rd, nnz * 2);
+		return true;
+	}
+	if (fl)
+	{
+		r->minf[m] = palloc0(r->ntuples * sizeof(double));
+		r->maxf[m] = palloc0(r->ntuples * sizeof(double));
+	}
+	else
+	{
+		r->min[m] = palloc0(r->ntuples * sizeof(int64));
+		r->max[m] = palloc0(r->ntuples * sizeof(int64));
+	}
+	for (int pass = 0; pass < 2; pass++)
+		for (uint32 t = 0; t < r->ntuples; t++)
+		{
+			if (r->nn[m][t] == 0)
+				continue;
+			if (!fl)
+				(pass ? r->max[m] : r->min[m])[t] = get_zz(rd);
+			else if (!skip_f8(rd, 1))
+				return false;
+			else
+				memcpy(&(pass ? r->maxf[m] : r->minf[m])[t], rd->p - sizeof(double), sizeof(double));
+		}
+	return true;
+}
+
+static bool
+read_meas(const SiftColSchema *s, Rd *rd, SiftCRollup *r, int m, const SiftCRollupNeed *need)
+{
+	bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
+	int			k = need_meas(need, r->meas[m]);
+	bool		want = need == NULL || k >= 0;
+	uint32		nnz = read_nn(rd, r, m, want);
+
+	return read_sums(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].sums)) &&
+		read_minmax(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].minmax), nnz);
+}
+
+bool
+sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	Rd			rd = {blob, blob + len, false};
+	bool		ok;
+
+	memset(r, 0, sizeof(*r));
+	r->list = -1;
+	ok = read_head(s, &rd, r);
+	for (int j = 0; ok && j < r->ndims; j++)
+		ok = read_dim(&rd, r, j, need_dim(need, r->dim[j]));
+	if (ok)
+		r->count = palloc(r->ntuples * sizeof(uint32));
+	for (uint32 t = 0; ok && t < r->ntuples; t++)
+		r->count[t] = (uint32) get_u(&rd);
+	for (int m = 0; ok && m < r->nmeas; m++)
+		ok = read_meas(s, &rd, r, m, need);
 	MemoryContextSwitchTo(old);
-	return ok;
+	return ok && !rd.bad && rd.p == rd.end;
 }
 
 /* the order of the tuples by one dim, ties by position (so that the sums of a group add in the order of the tuples) */
