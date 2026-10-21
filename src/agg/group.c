@@ -780,6 +780,24 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	}
 }
 
+/* the id of the key for a NULL integer: 0, or the id of expr(NULL) of a LUT key */
+uint32
+key_null_id(AggExec *ex, int ki)
+{
+	KeyState   *k = &ex->ks[ki];
+
+	if (ex->spec->key[ki].kind != SAK_LUT)
+		return 0;
+	if (k->nullid == UINT32_MAX)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+
+		k->nullid = key_value_id(ex, ki, (Datum) 0, true);
+		MemoryContextSwitchTo(old);
+	}
+	return k->nullid;
+}
+
 /* ids of the key for the tuples whose value was NULL are 0 (or the id of expr(NULL)): fixes gid after the kernels */
 static void
 key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *vals, uint32 *gid, uint32 mult, uint32 *ids)
@@ -787,21 +805,11 @@ key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *val
 	SiftAggKey *sk = &ex->spec->key[ki];
 	KeyState   *k = &ex->ks[ki];
 	const SiftSrcVec *v = get_vec(ex, sk->leaf);
-	uint32		nullid = 0;
+	uint32		nullid;
 
 	if (v->isnull == NULL || ex->lay->leaf[sk->leaf].vtype == SCV_CODE)
 		return;
-	if (sk->kind == SAK_LUT)
-	{
-		if (k->nullid == UINT32_MAX)
-		{
-			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
-
-			k->nullid = key_value_id(ex, ki, (Datum) 0, true);
-			MemoryContextSwitchTo(old);
-		}
-		nullid = k->nullid;
-	}
+	nullid = key_null_id(ex, ki);
 	for (int i = 0; i < nsel; i++)
 		if (v->isnull[idx[i]])
 		{
