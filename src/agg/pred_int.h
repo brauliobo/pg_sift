@@ -1,0 +1,57 @@
+/*
+ * agg/pred_int.h - the predicates of the scan (agg/pred.c)
+ */
+#ifndef SIFT_AGG_PRED_INT_H
+#define SIFT_AGG_PRED_INT_H
+
+#include "agg/agg_fwd_int.h"
+#include "agg/leaf_int.h"
+#include "agg/tup_int.h"
+
+typedef struct PredState
+{
+	bool		ready;
+	bool		cnull;
+	int64		ci;
+	double		cd;
+	bool		in_hasnull;
+	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
+	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
+	int64		in_lo;			/* the least and the greatest element, when there is one (in_nv) */
+	int64		in_hi;
+	uint32		in_nv;
+	uint32		in_nlut;
+	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
+	int64	   *in_htab;		/* ... or, when the values are too far apart for one, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */
+	uint8	   *in_hused;
+	uint64		in_hmask;
+	ExprState  *expr;			/* SAP_LUT */
+	Param	   *param;
+	bool		null_result;	/* SAP_LUT: the expression for a NULL input */
+	SiftSrcStrTest *str;		/* a row level text test of the query, which the source runs on the encoded form (str_init) */
+	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
+	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */
+	bool		rowmask_ok;
+	int			nop;			/* numeric operand: the comparison of the scaled integers equivalent to the query's (SiftCmpOp) ... */
+	sift_i128	cn;				/* ... with this operand, or ... */
+	int			konst;			/* ... -1, or 1 / 0: it holds for every / no value */
+	bool		nan_res;		/* numeric operand: the comparison holds for a NaN (numeric orders it above every number and equal to itself) */
+	uint32		memo_row;		/* SAP_ELEM_EXISTS (valid while rowmask_ok): the answer for this row of the unit and these lookup rows */
+	uint32		memo_ref[SIFT_AGG_MAX_CLEAVES];
+	bool		memo_res;
+} PredState;
+
+/* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
+#pragma GCC visibility push(hidden)
+
+/* pred.c */
+void in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi);
+void eval_operand(AggExec *ex, SiftAggPred *p, PredState *st);
+void rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out);
+uint64 *row_bitmap(AggExec *ex, SiftAggPred *p);
+void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
+bool elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p);
+
+#pragma GCC visibility pop
+
+#endif
