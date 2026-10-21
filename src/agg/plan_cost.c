@@ -772,62 +772,74 @@ rel_pages(AggCtx *c)
 	return c->nparts > 0 ? c->part_pages : c->rel->pages;
 }
 
-void
-agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
+/* The running terms of agg_cost: the work (in operator costs) is added in this order, which fixes its rounding */
+typedef struct CostAcc
 {
-	double		rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0)),
-				elems = 1.0,
-				sel_rows = Min(Max(c->rel->rows, 1.0), rows),
-				units = Max(c->stats.nunits, ceil(rows / 2000.0)),
-				vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
-				scan_cost,
-				open_cost,
-				gen_cost = 0,
-				exact,
-				agg_rows,
-				scan_rows,
-				zone_kept_v;
-	int			nkeyfilters;
-	Cost		startup,
-				child_cost = 0;
+	double		rows;
+	double		elems;
+	double		sel_rows;
+	double		units;
+	double		open_cost;
+	double		scan_cost;
+	double		gen_cost;
+	double		child_cost;
+	double		zone_kept;
+	double		agg_rows;
+	double		scan_rows;
+	double		rows_out;
+} CostAcc;
 
-	if (s->group >= 0)
-		elems = elems_of(c, s->group);
-	open_cost = c->search ? sift_search_open_cost(c->search, rows) : 0;
-	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
+/* The rows read and tested, the zones kept and the units opened */
+static void
+cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
+{
+	int			nkeyfilters;
+
 	for (int i = 0; i < s->nleaves; i++)
-		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
-	zone_kept_v = zone_kept(c, s, &nkeyfilters);
-	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
-	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
+		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
+	k->zone_kept = zone_kept(c, s, &nkeyfilters);
+	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
+	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
-		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
-	scan_cost += rows * inline_text_cost(c, s);
+		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
+	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE && c->stats.ovf[s->leaves[i]])
 		{
-			scan_cost += rows * AGG_RECHECK_FRAC * AGG_RECHECK_ROW;
+			k->scan_cost += k->rows * AGG_RECHECK_FRAC * AGG_RECHECK_ROW;
 			break;
 		}
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
-			scan_cost += rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], rows));
+			k->scan_cost += k->rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], k->rows));
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
-			scan_cost += rows * leaf_distinct_frac(c, s->pred[i]->leaf, rows) * AGG_WIDE_TEST;
-	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept_v, 1.0 / units);
-	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
+			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;
+	k->scan_cost = (k->scan_cost + k->units * AGG_UNIT_COST) * Max(k->zone_kept, 1.0 / k->units);
+}
+
+/* The tuples that reach the groups and what each takes */
+static void
+cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
+{
+	k->agg_rows = k->sel_rows * (s->group >= 0 ? k->elems : 1.0);
 	/* the lookup joins filter before the groups: no more tuples reach them than the rows PostgreSQL expects of the join */
 	if (c->joins != NIL)
-		agg_rows = Min(agg_rows, Max(input_rel->rows, 1.0));
-	scan_rows = agg_rows;
+		k->agg_rows = Min(k->agg_rows, Max(input_rel->rows, 1.0));
+	k->scan_rows = k->agg_rows;
 	/* the rows of a preserved side no tuple matches are tuples too */
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind))
-			agg_rows += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0);
+			k->agg_rows += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
-	rows_out = Min(rows_out, Max(Max(s->nsets, 1) * agg_rows, 1.0));
-	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
+	k->rows_out = Min(k->rows_out, Max(Max(s->nsets, 1) * k->agg_rows, 1.0));
+	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
+}
+
+/* The lookup joins: the children's plans and the lookup tables' reads */
+static void
+cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
+{
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		RelOptInfo *jrel;
@@ -838,7 +850,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 
-			child_cost += combo_entries(c, cb, agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			k->child_cost += combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 			continue;
 		}
 		jrel = c->root->simple_rel_array[jc->rti];
@@ -846,35 +858,76 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		/* a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
 		if (jc->cpath != NULL)
 		{
-			scan_cost += Max(jc->cpath->rows, 1.0) * AGG_JOIN_ROW;
-			child_cost += jc->cpath->total_cost;
+			k->scan_cost += Max(jc->cpath->rows, 1.0) * AGG_JOIN_ROW;
+			k->child_cost += jc->cpath->total_cost;
 		}
 		else if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
-			scan_cost += Min(Max(jrel->rows, 1.0), tuples) * AGG_IDX_ROW;
+			k->scan_cost += Min(Max(jrel->rows, 1.0), tuples) * AGG_IDX_ROW;
 		else
-			scan_cost += tuples * AGG_JOIN_ROW;
+			k->scan_cost += tuples * AGG_JOIN_ROW;
 		if (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI)
-			scan_cost += sel_rows * AGG_SEMI_ROW;
+			k->scan_cost += k->sel_rows * AGG_SEMI_ROW;
 	}
+}
+
+/* The aggregates, combos, keys and predicates of every tuple, less what the plain path saves, plus the bytes read */
+static void
+cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
+{
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
-			scan_cost += agg_rows * AGG_ORDERED_ROW;
-		scan_cost += agg_rows * (num_cost(&s->agg[i].num) + direct_agg_cost(&s->agg[i])) + rows * pred_num_cost(s->agg[i].filter);
+			k->scan_cost += k->agg_rows * AGG_ORDERED_ROW;
+		k->scan_cost += k->agg_rows * (num_cost(&s->agg[i].num) + direct_agg_cost(&s->agg[i])) + k->rows * pred_num_cost(s->agg[i].filter);
 		if (s->agg[i].kind == SAA_GEN)
-			gen_cost += agg_rows * s->agg[i].gen->cost + rows_out * AGG_GEN_GROUP;
+			k->gen_cost += k->agg_rows * s->agg[i].gen->cost + k->rows_out * AGG_GEN_GROUP;
 	}
-	scan_cost += combo_eval_cost(c, s, rows, agg_rows, scan_rows) + bucket_eval_cost(c, s, agg_rows);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows) + bucket_eval_cost(c, s, k->agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
-		scan_cost += agg_rows * num_cost(&s->key[i].num);
+		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
-		scan_cost += rows * pred_num_cost(s->pred[i]);
-	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
-	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept_v, 1.0 / units);
+		k->scan_cost += k->rows * pred_num_cost(s->pred[i]);
+	k->scan_cost = Max(k->scan_cost - plain_credit(c, s, k->agg_rows), k->scan_cost * 0.1);
+	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
+}
+
+/* Each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
+static void
+cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
+{
+	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
+
+	k->scan_cost = k->scan_cost / parallel_divisor(s->nworkers) +
+		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
+	for (int i = 0; i < s->naggs; i++)
+		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
+			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * cpu_operator_cost;
+	*startup += parallel_setup_cost * AGG_SETUP_FACTOR;
+}
+
+void
+agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
+{
+	CostAcc		k = {0};
+	double		vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
+				exact;
+	Cost		startup;
+
+	k.rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
+	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
+	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
+	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
+	k.rows_out = rows_out;
+	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
+	k.scan_cost = c->search ? sift_search_cost(c->search, k.rows, k.units, &k.rows, &k.units) : 0;
+	cost_read(c, s, &k);
+	cost_tuples(c, s, input_rel, &k);
+	cost_joins(c, s, &k);
+	cost_work(c, s, &k);
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
-		scan_cost = (scan_cost - open_cost) * c->topn_frac + open_cost;
-	scan_cost *= cpu_operator_cost;
+		k.scan_cost = (k.scan_cost - k.open_cost) * c->topn_frac + k.open_cost;
+	k.scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
 	 * jsonb_each) minus its filters, and prices its sort, join and aggregate with them, though the data has a handful per row: when it
@@ -884,36 +937,26 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * plan guesses its selectivity; the values are known at execution): no charge.
 	 */
 	if (s->group >= 0 && !rel_has_param_qual(c->rel))
-		scan_cost *= Max(sqrt(input_rel->rows / (sel_rows * elems)), 1.0);
+		k.scan_cost *= Max(sqrt(input_rel->rows / (k.sel_rows * k.elems)), 1.0);
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
-	scan_cost += gen_cost * cpu_operator_cost;
+	k.scan_cost += k.gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
-	scan_cost += vis * Min(sel_rows, Max(rel_pages(c), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	k.scan_cost += vis * Min(k.sel_rows, Max(rel_pages(c), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);
 	if (exact > 0)
 	{
-		double		pre_cost = units * (AGG_UNIT_COST + preagg_unit_ops(c, s, units, rows, rows_out)) * cpu_operator_cost;
+		double		pre_cost = k.units * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * cpu_operator_cost;
 
-		scan_cost += exact * (Min(pre_cost, scan_cost) - scan_cost);
+		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = AGG_START_COST * cpu_operator_cost + child_cost + c->subplan_cost;
+	startup = AGG_START_COST * cpu_operator_cost + k.child_cost + c->subplan_cost;
 	if (s->nworkers > 0)
-	{
-		/* each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
-		double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
-
-		scan_cost = scan_cost / parallel_divisor(s->nworkers) +
-			tables * Min(rows_out, Max(agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
-		for (int i = 0; i < s->naggs; i++)
-			if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
-				scan_cost += agg_rows * AGG_ORDERED_MERGE * cpu_operator_cost;
-		startup += parallel_setup_cost * AGG_SETUP_FACTOR;
-	}
-	p->startup_cost = startup + scan_cost;
-	p->total_cost = p->startup_cost + rows_out * cpu_tuple_cost;
+		cost_parallel(s, &k, &startup);
+	p->startup_cost = startup + k.scan_cost;
+	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each */
 	if (s->topn)
-		p->total_cost += rows_out * random_page_cost * 0.5;
-	p->rows = rows_out;
+		p->total_cost += k.rows_out * random_page_cost * 0.5;
+	p->rows = k.rows_out;
 }
