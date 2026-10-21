@@ -3,20 +3,20 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE entities (id int PRIMARY KEY, kind text);
 INSERT INTO entities SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 49) i;
-CREATE TABLE mappings (kind text, category text, subrating text, mapped_category text, mapped_subrating text);
+CREATE TABLE mappings (kind text, category text, val text, mapped_category text, mapped_val text);
 INSERT INTO mappings VALUES ('a', 'svc', '', 'service', NULL), ('a', 'svc', '', 'duplicate', NULL), ('b', 'svc', '', 'staff', NULL),
  ('b', 'clean', 'x', 'cleanliness', 'room'), ('a', 'nul', NULL, 'never', NULL);
 CREATE TABLE facts (id int, entity_id int, kind text, document jsonb, payload text);
 INSERT INTO facts
 SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
- jsonb_build_object('opinions', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","subrating":"","polarity":"positive","score":8}]'::jsonb
-   ELSE '[{"category":"svc","subrating":"","polarity":"positive","score":9},{"category":"clean","subrating":"x","polarity":"negative","score":3},{"category":"zzz","subrating":"","polarity":"neutral","score":null}]'::jsonb END)
+ jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
+   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","polarity":"positive","score":8}]'::jsonb
+   ELSE '[{"category":"svc","val":"","polarity":"positive","score":9},{"category":"clean","val":"x","polarity":"negative","score":3},{"category":"zzz","val":"","polarity":"neutral","score":null}]'::jsonb END)
   || CASE WHEN i % 5 = 0 THEN '{"mapped":false}'::jsonb WHEN i % 11 = 0 THEN '{"mapped":null}'::jsonb ELSE '{}'::jsonb END,
  repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, kind, document, jsonb_exists(document, 'mapped'))
- WITH (paths = 'document.opinions[]{category text,subrating text,score float8,polarity text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,polarity text}');
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
 CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
 INSERT INTO odd_facts
@@ -28,14 +28,14 @@ CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, json
 -- The same table without the indexed call: the child needs the whole document, which the index does not hold.
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
- WITH (paths = 'document.opinions[]{category text,subrating text,score float8,polarity text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,polarity text}');
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
 SELECT id, entity_id, kind,
  CASE WHEN id % 4 = 0 THEN document || '{"tag":"svc"}' WHEN id % 4 = 1 THEN document || '{"tag":"clean"}' WHEN id % 13 = 2 THEN '[1]'::jsonb ELSE document END AS document, payload
 FROM facts;
 CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, entity_id, kind, document, (document ? 'mapped'), (document ->> 'tag'), jsonb_typeof(document))
- WITH (paths = 'document.opinions[]{category text}');
+ WITH (paths = 'document.parts[]{category text}');
 VACUUM (FREEZE, ANALYZE) ops_facts;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (FREEZE, ANALYZE) odd_facts;
@@ -83,29 +83,29 @@ SELECT * FROM check_query($q$
    ORDER BY mapped_category DESC LIMIT 1) m ON true
  GROUP BY 1
 $q$);
--- Mapped opinions per item: the presence also chooses the category in the lateral's output, and the unmapped opinions drop out.
+-- Mapped parts per item: the presence also chooses the category in the lateral's output, and the unmapped parts drop out.
 SELECT * FROM check_query($q$
- SELECT f.id, mo.category, mo.subrating, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.polarity = 'positive') AS positive
+ SELECT f.id, mo.category, mo.val, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.polarity = 'positive') AS positive
  FROM facts f INNER JOIN LATERAL (
   SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_category ELSE rm.mapped_category END) AS category,
-         (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_subrating ELSE rm.mapped_subrating END) AS subrating, o.polarity, o.score
-  FROM LATERAL (SELECT category AS source_category, subrating AS source_subrating, polarity, score
-    FROM jsonb_to_recordset(f.document -> 'opinions') AS o(category text, subrating text, polarity text, score float8) WHERE o.score IS NOT NULL) o
-  LEFT JOIN LATERAL (SELECT mapped_category, mapped_subrating FROM mappings m WHERE m.mapped_category IS NOT NULL AND m.kind = f.kind
-    AND m.category = o.source_category AND m.subrating = o.source_subrating AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) rm ON true
+         (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_val ELSE rm.mapped_val END) AS val, o.polarity, o.score
+  FROM LATERAL (SELECT category AS source_category, val AS source_val, polarity, score
+    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, polarity text, score float8) WHERE o.score IS NOT NULL) o
+  LEFT JOIN LATERAL (SELECT mapped_category, mapped_val FROM mappings m WHERE m.mapped_category IS NOT NULL AND m.kind = f.kind
+    AND m.category = o.source_category AND m.val = o.source_val AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) rm ON true
  ) mo ON true
- WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category, mo.subrating
+ WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category, mo.val
 $q$);
--- The mean of the per-item means over the same mapping (the items weigh equally whatever their opinion count).
+-- The mean of the per-item means over the same mapping (the items weigh equally whatever their part count).
 SELECT * FROM check_query($q$
  SELECT category, avg(score) AS score, count(*) AS items FROM (
   SELECT f.id, mo.category, avg(mo.score) AS score
   FROM facts f INNER JOIN LATERAL (
    SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_category ELSE rm.mapped_category END) AS category, o.score
-   FROM LATERAL (SELECT category AS source_category, subrating AS source_subrating, score
-     FROM jsonb_to_recordset(f.document -> 'opinions') AS o(category text, subrating text, score float8) WHERE o.score IS NOT NULL) o
+   FROM LATERAL (SELECT category AS source_category, val AS source_val, score
+     FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8) WHERE o.score IS NOT NULL) o
    LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = f.kind AND m.category = o.source_category
-     AND m.subrating = o.source_subrating AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) rm ON true
+     AND m.val = o.source_val AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) rm ON true
   ) mo ON true WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category) per_item
  GROUP BY category
 $q$);
@@ -113,7 +113,7 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT m.mapped_category, count(*) AS n FROM facts f
  LEFT JOIN LATERAL (SELECT mapped_category FROM mappings m WHERE m.kind = 'a' AND NOT jsonb_exists(f.document, 'mapped')
-   AND f.document -> 'opinions' IS NOT NULL LIMIT 1) m ON true
+   AND f.document -> 'parts' IS NOT NULL LIMIT 1) m ON true
  GROUP BY 1
 $q$);
 -- Stays native: the index holds no presence column, and a presence test of a whole object has no other leaf.

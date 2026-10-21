@@ -5,11 +5,11 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
-CREATE TABLE ev (id int PRIMARY KEY, entity_id int, source_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+CREATE TABLE ev (id int PRIMARY KEY, entity_id int, src_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + i % 3000 END, 1 + i % 40, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 120000) i;
-CREATE INDEX ev_col ON ev USING sift_col (entity_id, source_id, day, kind, amount);
+CREATE INDEX ev_col ON ev USING sift_col (entity_id, src_id, day, kind, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE ents (id int, country int, tier int, label text) WITH (autovacuum_enabled = false);
 INSERT INTO ents SELECT i, i % 30, i % 4, 'e' || i FROM generate_series(1, 3000) i;

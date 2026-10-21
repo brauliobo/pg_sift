@@ -4,16 +4,16 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources VALUES (1, true), (2, true), (3, false);
-CREATE TABLE labels (source_id int, source_key text, label text, sublabel text);
+CREATE TABLE labels (src_id int, source_key text, label text, sublabel text);
 INSERT INTO labels VALUES (1, 'clean_score', 'cleanliness', NULL), (1, 'view_score', 'outlook', 'sea'), (2, 'clean_score', 'tidy', NULL), (2, 'clean_score', 'tidy2', NULL);
-CREATE TABLE entries (id int, source_id int, day date, scores jsonb);
+CREATE TABLE entries (id int, src_id int, day date, scores jsonb);
 INSERT INTO entries
 SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
        CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN NULL WHEN 2 THEN '{"clean_score": 9, "view_score": 4}'::jsonb
                   WHEN 3 THEN '{"clean_score": 6.5, "other_score": 2, "service": 5}'::jsonb
                   ELSE jsonb_build_object('clean_score', i % 10, 'staff_score', i % 7) END
 FROM generate_series(1, 20000) i;
-CREATE INDEX entries_col ON entries USING sift_col (id, source_id, day, scores) WITH (paths = 'scores.* float8');
+CREATE INDEX entries_col ON entries USING sift_col (id, src_id, day, scores) WITH (paths = 'scores.* float8');
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE sources; ANALYZE labels;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
@@ -43,7 +43,7 @@ SELECT * FROM check_query('mapping below an outer join', $q$
    SELECT e.id, e.day, s.category, s.subcategory, CAST(s.value AS float) AS score
    FROM entries e
    INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, coalesce(l.sublabel, nullif(split_part(r.key, '_', 2), '')) AS subcategory, r.value
-                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true)
+                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true)
  SELECT d.day, p.category, count(DISTINCT p.id) AS entries, avg(p.score) AS score
  FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
  GROUP BY d.day, p.category
@@ -57,9 +57,9 @@ $q$);
 SELECT * FROM check_query('equality with a joined table', $q$
  WITH parsed AS (
    SELECT e.id, e.day, s.category, CAST(s.value AS float) AS score
-   FROM entries e INNER JOIN sources src ON src.id = e.source_id AND src.enabled IS TRUE
+   FROM entries e INNER JOIN sources src ON src.id = e.src_id AND src.enabled IS TRUE
    INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
-                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true)
+                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true)
  SELECT d.day, p.category, count(DISTINCT p.id) AS entries, avg(p.score) AS score
  FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
  GROUP BY d.day, p.category
@@ -87,7 +87,7 @@ $q$);
 SELECT * FROM check_query('no outer join', $q$
  SELECT s.category, count(*) AS n, sum(CAST(s.value AS float)) AS total
  FROM entries e INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
-                                     FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
+                                     FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true
  GROUP BY 1
 $q$);
      label     | scan | same |                                               outcome                                                
@@ -99,7 +99,7 @@ $q$);
 SELECT * FROM check_query('right join', $q$
  SELECT s.category, z.id, count(e.id) AS n
  FROM (entries e INNER JOIN LATERAL (SELECT 'c'::text AS category FROM jsonb_each(e.scores) r) s ON true)
- RIGHT JOIN sources z ON z.id = e.source_id + 10
+ RIGHT JOIN sources z ON z.id = e.src_id + 10
  GROUP BY 1, 2
 $q$);
    label    | scan | same |                                               outcome                                                
@@ -113,8 +113,8 @@ SELECT * FROM check_query('chained', $q$
    SELECT e.id, e.day, s.category, s2.k2
    FROM entries e
    JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
-                 FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
-   JOIN LATERAL (SELECT s.category || 'x' AS k2 FROM sources z WHERE z.id = e.source_id) s2 ON true)
+                 FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true
+   JOIN LATERAL (SELECT s.category || 'x' AS k2 FROM sources z WHERE z.id = e.src_id) s2 ON true)
  SELECT d.day, p.category, p.k2, count(DISTINCT p.id) AS n
  FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
  GROUP BY 1, 2, 3
@@ -128,7 +128,7 @@ $q$);
 SELECT * FROM check_query('limit', $q$
  WITH parsed AS (
    SELECT e.id, e.day, s.label FROM entries e
-   INNER JOIN LATERAL (SELECT l.label FROM labels l WHERE l.source_id = e.source_id ORDER BY l.label LIMIT 1) s ON true)
+   INNER JOIN LATERAL (SELECT l.label FROM labels l WHERE l.src_id = e.src_id ORDER BY l.label LIMIT 1) s ON true)
  SELECT d.day, p.label, count(*) FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
  label | scan | same |                                               outcome                                                
@@ -143,7 +143,7 @@ SELECT * FROM check_query('cast of an excluded row', $q$
  WITH parsed AS (
    SELECT e.id, e.day, s.category, CAST(s.value AS integer) AS score FROM entries e
    INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
-                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
+                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true
    WHERE e.id <> 20001)
  SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
@@ -156,7 +156,7 @@ SELECT * FROM check_query('cast out of range', $q$
  WITH parsed AS (
    SELECT e.id, e.day, s.category, CAST(s.value AS integer) AS score FROM entries e
    INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
-                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true)
+                       FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true)
  SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
        label       | scan | same |          outcome           
