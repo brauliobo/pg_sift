@@ -654,7 +654,7 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	int			ci = ex->jcombo[s];
 	ComboSt    *cs = &ex->cs[ci];
 	SiftAggCombo *cb = &ex->spec->combo[ci];
-	const bool	want = ex->spec->join[cb->join].kind == SJ_SEMI;
+	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI;
 	const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
 	const int32 *x = (const int32 *) v->data;
