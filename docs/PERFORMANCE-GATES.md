@@ -57,8 +57,9 @@ rare, and filtered terms; aggregate scan, group, distinct, filter, and table
 paths; and table point lookup, insert, update, and VACUUM space behavior.
 `smoke` selects three fixed cases: common BM25 top ten, aggregate scan, and table
 point lookup. These run on every PR that can change the built extension regardless of
-selected groups; the gate, its selector, the CI machinery and documentation select nothing,
-because both revisions would build the same extension. `bm25`,
+selected groups; the gate, its selector, the CI machinery, tests and documentation select nothing,
+because both revisions would build the same extension. Aggregate sources select `agg` only: the
+`storage` cases run no grouped query and no table source scan (`scripts/areas.tsv`, `{ci}`). `bm25`,
 `agg`, and `storage` add their cases; `--tier nightly` uses 32,768 rows
 (PR: 8,192) and adds phrase-count and high-cardinality group workloads, for 18 cases.
 This is a representative warm workload, not exhaustive feature or size coverage.
@@ -188,7 +189,10 @@ sampling, with the original 150 ms target and the same calibrated operation coun
 for both blocks. No post-verdict calibration or sample reuse occurs. Both blocks
 and every raw sample are retained separately, including interrupted blocks. Only the confirmation decides: lower bound above 1.10 is
 a regression (exit 1), upper bound at most 1.10 passes, and overlap is inconclusive
-(exit 2). Exhausted measurement budget is inconclusive unless completed normal
+(exit 2). An inconclusive confirmation takes one more fresh **sixteen-pair extension** that alone
+decides the case, only when the remaining budget covers it (predicted from the confirmation's pair
+time) plus 30 seconds for each later mutation case; otherwise the case stays inconclusive. Controlled
+INSERT and INSERT feasibility never extend. Exhausted measurement budget is inconclusive unless completed normal
 timing/size evidence already establishes a regression (exit1). No noisy cell becomes
 a silent pass. Intervals are per case, without a multiple-comparison guarantee;
 shared-host load and temporal drift remain limitations of paired elapsed timing.
