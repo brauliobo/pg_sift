@@ -309,6 +309,8 @@ register_preds(AggExec *ex)
 
 	for (int i = 0; i < s->npred; i++)
 		register_pred(ex, s->pred[i]);
+	for (int i = 0; i < s->npost; i++)
+		register_pred(ex, s->post[i]);
 	for (int i = 0; i < s->naggs; i++)
 		register_pred(ex, s->agg[i].filter);
 	for (int k = 0; k < s->narms; k++)
@@ -696,7 +698,7 @@ register_combos(AggExec *ex)
 				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
 		ex->clbase[ci] = ex->ncl;
 		ex->ncl += cb->nleaves;
-		if (cb->join >= 0)
+		if (cb->join >= 0 && !s->join[cb->join].scoped)
 			ex->jcombo[ex->nj++] = ci;
 	}
 	MemoryContextSwitchTo(old);
@@ -972,6 +974,7 @@ scan_buffers(AggExec *ex)
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		ex->xcout[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		if (s->combo[ci].join >= 0)
 		{
 			if (ex->cs[ci].map == NULL)

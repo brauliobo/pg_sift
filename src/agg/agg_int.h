@@ -89,6 +89,9 @@ typedef struct PredState
 	sift_i128	cn;				/* ... with this operand, or ... */
 	int			konst;			/* ... -1, or 1 / 0: it holds for every / no value */
 	bool		nan_res;		/* numeric operand: the comparison holds for a NaN (numeric orders it above every number and equal to itself) */
+	uint32		memo_row;		/* SAP_ELEM_EXISTS (valid while rowmask_ok): the answer for this row of the unit and these lookup rows */
+	uint32		memo_ref[SIFT_AGG_MAX_CLEAVES];
+	bool		memo_res;
 } PredState;
 
 /* distinct numbers to ids 1.. in order of appearance (open addressing) */
@@ -488,6 +491,7 @@ typedef struct AggExec
 	uint32	   *tidx;
 	uint32	   *ridx;
 	uint32	   *seid[SIFT_AGG_MAX_JOINS];	/* the entries of the tuples a stage that repeats them is working on */
+	uint32	   *xcout[SIFT_AGG_MAX_COMBOS];	/* per combo a scoped combo reads the output of: that row, repeated for the elements it resolves (elem_exists) */
 	/* scratch of combos */
 	uint64	   *cvid[SIFT_AGG_MAX_CLEAVES];
 	uint32	   *cfree[SIFT_AGG_MAX_COMBOS];	/* output row per tuple of a combo without a join */
@@ -814,6 +818,7 @@ void eval_operand(AggExec *ex, SiftAggPred *p, PredState *st);
 void rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out);
 uint64 *row_bitmap(AggExec *ex, SiftAggPred *p);
 void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
+bool elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p);
 
 /* lookup.c */
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);

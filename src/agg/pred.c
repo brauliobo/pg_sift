@@ -854,6 +854,62 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 	}
 }
 
+/*
+ * SAP_ELEM_EXISTS for tuple j: some element of the array of its row passes the element conjuncts (child[0]) and boolean slot `op` of the scoped
+ * combo `leaf`, whose inputs are the element's leaves, the row's and the lookup outputs of the tuple. The expressions cannot raise (the planner
+ * keeps those that may), so the elements go through the combo VEC at a time, up to the first batch with one that passes; the combo resolves each
+ * distinct input once (its lookup runs once for it). The answer is kept for the next tuples of the same row and lookup rows, which are the tuples
+ * a join or an unnest repeats.
+ */
+bool
+elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[p->leaf];
+	ComboSt    *cs = &ex->cs[p->leaf];
+	PredState  *st = &ex->ps[p->id];
+	const uint32 *offs = elem_offs(ex, p->leaf2);
+	uint32		r = t->ridx[j],
+				ref[SIFT_AGG_MAX_CLEAVES] = {0};
+	Tup			xt = {0};
+
+	for (int k = 0; k < cb->nleaves; k++)
+		if (cb->leaf[k] < 0)
+		{
+			ref[k] = t->cout[cb->refcombo[k]][j];
+			xt.cout[cb->refcombo[k]] = ex->xcout[cb->refcombo[k]];
+		}
+	if (st->rowmask_ok && st->memo_row == r && memcmp(ref, st->memo_ref, sizeof(ref)) == 0)
+		return st->memo_res;
+	st->memo_res = false;
+	for (uint32 s = offs[r]; s < offs[r + 1] && !st->memo_res; s += VEC)
+	{
+		int			n = Min(VEC, offs[r + 1] - s);
+		uint64		pass[VECW + PADW];
+
+		if (p->nchild > 0)
+			eval_pred(ex, p->child[0], 1, s, n, pass);
+		else
+			fill_ones(pass, n);
+		for (int i = 0; i < n; i++)
+		{
+			ex->pti[i] = s + i;
+			ex->pri[i] = r;
+			for (int k = 0; k < cb->nleaves; k++)
+				if (cb->leaf[k] < 0)
+					ex->xcout[cb->refcombo[k]][i] = ref[k];
+		}
+		combo_resolve(ex, p->leaf, 1, n, ex->pti, ex->pri, ex->peid, pass, &xt);
+		for (int i = 0; i < n && !st->memo_res; i++)
+			if (ex->peid[i] != COMBO_NONE)
+				for (uint32 o = 0; o < cs->ent[ex->peid[i]].nout && !st->memo_res; o++)
+					st->memo_res = combo_val(ex, p->leaf, cs->ent[ex->peid[i]].base + o, p->op) != 0;
+	}
+	st->rowmask_ok = true;
+	st->memo_row = r;
+	memcpy(st->memo_ref, ref, sizeof(ref));
+	return st->memo_res;
+}
+
 /* the bitmap of a row level predicate over the unit's rows, computed once */
 uint64 *
 row_bitmap(AggExec *ex, SiftAggPred *p)
@@ -964,6 +1020,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_TYPE:
 		case SAP_WIDE:
-			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source");
+		case SAP_ELEM_EXISTS:
+			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
 	}
 }

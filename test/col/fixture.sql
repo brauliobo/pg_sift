@@ -161,6 +161,12 @@ CREATE TABLE kinds_map (kind text NOT NULL, derived_kind text NOT NULL);
 INSERT INTO kinds_map SELECT upper(k), CASE WHEN k = 'gift' THEN '' ELSE k END
 FROM unnest(ARRAY['standard','express','pickup','digital','subscription','preorder','bundle','gift']) k;
 
+-- the lookup of an EXISTS over the items, by the kind of the store and the category and kind of an item: a key with two rows, NULL keys, a NULL mapped category, no row
+CREATE TABLE item_map (store_kind text, category text, kind text, derived_category text);
+INSERT INTO item_map VALUES ('flagship', 'Apparel', 'standard', 'fashion'), ('flagship', 'Apparel', 'standard', 'duplicate'), ('outlet', 'Apparel', 'standard', 'sale'),
+	('flagship', 'Home', 'express', 'living'), ('popup', 'Home', NULL, 'living'), (NULL, 'Shoes', 'standard', 'fashion'), ('outlet', 'Shoes', 'express', NULL),
+	('online', 'Toys', 'digital', 'play'), ('warehouse', 'Toys', 'standard', 'play'), ('flagship', 'Shoes', 'express', 'fashion');
+
 -- the traps of the lookup joins (the key is a category or a kind of the items): a key with two rows, NULL keys (never equal to anything),
 -- keys that differ by case only, a few of the keys, no row
 CREATE TABLE map_dup (category text, tag text);

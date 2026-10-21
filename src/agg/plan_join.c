@@ -318,6 +318,24 @@ planned_child(AggCtx *c, RelOptInfo *rel, JoinCtx *jc)
 	return true;
 }
 
+/* the path of a correlated child planned in jc->subroot: its cheapest path under a scan of the relation of the sub-select */
+static void
+child_scan_path(RelOptInfo *rel, JoinCtx *jc)
+{
+	RelOptInfo *final = fetch_upper_rel(jc->subroot, UPPERREL_FINAL, NULL);
+	SubqueryScanPath *p = makeNode(SubqueryScanPath);
+
+	set_cheapest(final);
+	p->path.pathtype = T_SubqueryScan;
+	p->path.parent = rel;
+	p->path.pathtarget = rel->reltarget;
+	p->subpath = final->cheapest_total_path;
+	p->path.rows = p->subpath->rows;
+	p->path.startup_cost = p->subpath->startup_cost;
+	p->path.total_cost = p->subpath->total_cost + cpu_tuple_cost * p->path.rows;
+	jc->cpath = (Path *) p;
+}
+
 /*
  * A sub-select or function that reads the query's other tables is planned in a query level of its own, with what it reads of them as
  * parameters: the scan gives it their values for each distinct input and runs the plan PostgreSQL makes of it (an Append of the arms of
@@ -333,8 +351,6 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	Query	   *q = e->rtekind == RTE_FUNCTION ? function_query(e) : copyObject(e->subquery),
 			   *derived;
 	List	   *saved = c->root->plan_params;
-	RelOptInfo *final;
-	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
 	/* the member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it and for a JSON null alike: a child reads it only through casts (a JSON null casts to NULL in PostgreSQL 18) */
 	if (c->func_key && bare_read_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, &(BareRead) {c->func_rti, 0}))
@@ -366,16 +382,123 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	if (jc->j.params == NIL)
 		return false;
 	jc->j.sig = sift_agg_child_sig((Node *) q, jc->j.params);
-	final = fetch_upper_rel(jc->subroot, UPPERREL_FINAL, NULL);
-	set_cheapest(final);
-	p->path.pathtype = T_SubqueryScan;
-	p->path.parent = rel;
-	p->path.pathtarget = rel->reltarget;
-	p->subpath = final->cheapest_total_path;
-	p->path.rows = p->subpath->rows;
-	p->path.startup_cost = p->subpath->startup_cost;
-	p->path.total_cost = p->subpath->total_cost + cpu_tuple_cost * p->path.rows;
-	jc->cpath = (Path *) p;
+	child_scan_path(rel, jc);
+	return true;
+}
+
+/* what a sub-select inside the elements of an array reads outside itself becomes a parameter whose value the scan computes (as derive_mutator's) */
+typedef struct LiftCtx
+{
+	PlannerInfo *root;
+	int			depth;			/* the query levels below the sub-select's own */
+	Index		offset;			/* added to the range table indexes of the EXISTS' own level, which the scan's expressions share with the query's */
+	List	   *args;			/* the expression each parameter stands for, in the terms of the merged range table */
+	List	   *params;
+	bool		bad;
+} LiftCtx;
+
+static Node *
+lift_param(LiftCtx *x, Node *outer)
+{
+	Param	   *prm = makeNode(Param);
+	int			at = -1;
+
+	for (int i = 0; i < list_length(x->args); i++)
+		if (equal(list_nth(x->args, i), outer))
+			at = i;
+	if (at < 0)
+	{
+		x->args = lappend(x->args, outer);
+		x->params = lappend_int(x->params, assign_special_exec_param(x->root));
+		at = list_length(x->args) - 1;
+	}
+	prm->paramkind = PARAM_EXEC;
+	prm->paramid = list_nth_int(x->params, at);
+	prm->paramtype = exprType(outer);
+	prm->paramtypmod = exprTypmod(outer);
+	prm->paramcollid = exprCollation(outer);
+	prm->location = -1;
+	return (Node *) prm;
+}
+
+/* the column as the scan reads it: of the query (two levels up) or of the EXISTS' tables (one up), in the merged range table */
+static Node *
+lift_outer(LiftCtx *x, Var *v)
+{
+	Var		   *own = copyObject(v);
+	int			up = v->varlevelsup - x->depth;
+
+	own->varlevelsup = 0;
+	if (up == 1)
+		own->varno += x->offset;
+	return (Node *) own;
+}
+
+static Node *
+lift_mutator(Node *n, LiftCtx *x)
+{
+	Var		   *v;
+
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Query))
+	{
+		Query	   *q;
+
+		x->depth++;
+		q = query_tree_mutator((Query *) n, lift_mutator, x, 0);
+		x->depth--;
+		return (Node *) q;
+	}
+	if (derivable_call(n) && IsA(v = (Var *) strip_relabel(linitial(func_args(n))), Var) && v->varlevelsup > x->depth && v->varlevelsup <= x->depth + 2)
+	{
+		Node	   *call = copyObject(n);
+
+		foreach_ptr(Node, other, func_args(call))
+			if (foreach_current_index(other) > 0 && !IsA(strip_relabel(other), Const))
+				return expression_tree_mutator(n, lift_mutator, x);
+		*(Var *) strip_relabel(linitial(func_args(call))) = *(Var *) lift_outer(x, v);
+		return lift_param(x, call);
+	}
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup > x->depth)
+	{
+		if (((Var *) n)->varlevelsup > x->depth + 2)
+			x->bad = true;
+		else
+			return lift_param(x, lift_outer(x, (Var *) n));
+	}
+	return expression_tree_mutator(n, lift_mutator, x);
+}
+
+/*
+ * The sub-select of a LEFT JOIN LATERAL inside an EXISTS over the elements of an array (a lookup of one row per element, LIMIT 1) as a child of
+ * the scan: it reads the element's columns (one query level up) and the row's (two up) as parameters, which become the inputs of jc's combo.
+ * *args are the expressions of the parameters in the merged range table (the query's, then the EXISTS' shifted by offset). Not planned: false.
+ */
+bool
+scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args)
+{
+	LiftCtx		x = {c->root, 0, offset};
+	Query	   *lifted = (Query *) query_tree_mutator(copyObject(sub), lift_mutator, &x, 0);
+	List	   *saved = c->root->plan_params;
+
+	if (x.bad || x.args == NIL || sub->rowMarks != NIL || contain_volatile_functions((Node *) sub))
+		return false;
+	/* the parameters are plan parameters of this level while the child is planned, as the derived calls' are (correlated_child) */
+	c->root->plan_params = NIL;
+	for (int i = 0; i < list_length(x.args); i++)
+	{
+		PlannerParamItem *item = makeNode(PlannerParamItem);
+
+		item->item = list_nth(x.args, i);
+		item->paramId = list_nth_int(x.params, i);
+		c->root->plan_params = lappend(c->root->plan_params, item);
+	}
+	jc->j.params = x.params;
+	jc->subroot = sift_subquery_planner(c->root->glob, lifted, c->root, jc->j.desc);
+	c->root->plan_params = saved;
+	child_scan_path(c->rel, jc);
+	*args = x.args;
 	return true;
 }
 
@@ -532,18 +655,23 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
  * can be too. The rest is the join's own.
  */
 static List *
-nullable_filters(AggCtx *c, FromScan *fs, List *quals)
+nullable_filters(AggCtx *c, FromScan *fs, List *quals, Index dim)
 {
 	List	   *rest = NIL;
-	Relids		own = bms_make_singleton(c->relid);
+	Relids		own = bms_make_singleton(c->relid),
+				nullable = NULL;
 
 	if (c->func_rti)
 		own = bms_add_member(own, c->func_rti);
+	/* an EXISTS may read any table of the nullable input: it filters the joined tuples */
+	foreach_int(rti, fs->rtis)
+		if (rti != dim)
+			nullable = bms_add_member(nullable, rti);
 	foreach_ptr(Node, q, quals)
 	{
 		Relids		v = pull_varnos(c->root, q);
 
-		if (!bms_is_empty(v) && bms_is_subset(v, own) && !contain_volatile_functions(q))
+		if (!bms_is_empty(v) && bms_is_subset(v, IsA(q, SubPlan) ? nullable : own) && !contain_volatile_functions(q))
 			fs->scan_quals = lappend(fs->scan_quals, q);
 		else
 			rest = lappend(rest, q);
@@ -574,7 +702,7 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 		if (lj->rti == rti)
 		{
 			jc->kind = lj->kind;
-			jc->clauses = lj->kind == SJ_RIGHT ? nullable_filters(c, fs, lj->quals) : lj->quals;
+			jc->clauses = lj->kind == SJ_RIGHT ? nullable_filters(c, fs, lj->quals, rti) : lj->quals;
 		}
 	jc->j.kind = jc->kind;
 	jc->j.desc = psprintf("%s%s", what ? (e->rtekind == RTE_VALUES ? "values" : psprintf("%s (%s)", e->eref->aliasname, what)) : get_rel_name(e->relid),
@@ -870,7 +998,7 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 			}
 		if (owner == NULL)
 			rest = lappend(rest, q);
-		else if (owner->kind == SJ_INNER && (nullable_input || !preserved_join(c)))
+		else if (owner->kind == SJ_INNER && (nullable_input || !preserved_join(c)) && !IsA(q, SubPlan))
 			owner->clauses = lappend(owner->clauses, q);
 		else
 			*post = lappend(*post, q);
@@ -982,6 +1110,17 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 		return false;
 	if (!join_quals(c, quals, post, false) || !join_quals(c, scan_quals, scan_post, true))
 		return false;
+	/* an EXISTS in the ON clause of an inner join filters its tuples, as in the WHERE (inside the nullable input of a preserved join, if there is one) */
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->kind == SJ_INNER)
+			foreach_ptr(Node, q, jc->clauses)
+				if (IsA(q, SubPlan))
+				{
+					List	  **dest = preserved_join(c) ? scan_post : post;
+
+					*dest = lappend(*dest, q);
+					jc->clauses = foreach_delete_current(jc->clauses, q);
+				}
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		List	   *conds = NIL;
@@ -1064,7 +1203,7 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 		Path	   *p;
 		Size		size;
 
-		if (jc->cpath == NULL)
+		if (jc->cpath == NULL || jc->j.scoped)
 			continue;
 		if (!child_cols_kept(c, jc))
 			return false;
