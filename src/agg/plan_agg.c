@@ -434,11 +434,148 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	return true;
 }
 
+/* count(*), and count of a constant or of a unique row id: the kinds that read no column */
+static bool
+count_rows_kind(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
+{
+	if (a->aggfnoid != F_COUNT_ANY)
+		return false;
+	if (a->aggdistinct == NIL && IsA(strip_relabel(arg), Const) && !((Const *) strip_relabel(arg))->constisnull)
+		out->kind = SAA_COUNT_STAR;
+	else if (a->aggdistinct != NIL && unique_row_column(c, arg))
+		out->kind = SAA_COUNT_ROWS;
+	else
+		return false;
+	return true;
+}
+
+/* sum, avg, min, max and count of a decimal expression */
+static bool
+compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
+{
+	Oid			fid = a->aggfnoid;
+	bool		sum = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC;
+
+	/* a sum of n values of D digits has D + log10(n) digits: 26 leave room for 10^12 rows in 128 bits */
+	if (!compile_nx(c, arg, sum ? 26 : SIFT_NUM_MAX_DIGITS, &out->num))
+		return compile_mapped(c, a, arg, out, ai);
+	out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
+		fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
+	out->argtype = NUMERICOID;
+	out->distinct = sum && a->aggdistinct != NIL;
+	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
+	return true;
+}
+
+/* sum and avg of an expression of float8 columns, evaluated by the vector expressions of the scan */
+static bool
+compile_float_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
+{
+	Oid			fid = a->aggfnoid;
+
+	out->vx = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggVx));
+	if (!compile_vx(c, arg, out) || (out->nvx < 2 && out->vx[0].op != SVX_LEAF))
+		return compile_mapped(c, a, arg, out, ai);
+	out->kind = fid == F_SUM_FLOAT8 ? SAA_SUM_F64 : SAA_AVG_F64;
+	out->argtype = FLOAT8OID;
+	out->desc = psprintf("%s(%s)", get_func_name(fid), expr_text(c, arg));
+	return true;
+}
+
+/* the kind of aggregate the function a is over the scalar leaf, or false when the scan has no kernel for it on that leaf */
+static bool
+leaf_agg_kind(AggCtx *c, Aggref *a, int leaf, SiftAggAgg *out)
+{
+	Oid			fid = a->aggfnoid;
+
+	switch (fid)
+	{
+		case F_COUNT_ANY:
+			if (a->aggdistinct != NIL)
+			{
+				if (!lut_leaf_ok(c, leaf))
+					return false;
+				out->kind = SAA_COUNT_DISTINCT;
+			}
+			else
+				out->kind = SAA_COUNT;
+			return true;
+		case F_SUM_INT4:
+		case F_SUM_INT2:
+			if (!leaf_numeric(c, leaf, SCV_I32, fid == F_SUM_INT4 ? INT4OID : INT2OID, InvalidOid) ||
+				leaf_of(c, leaf)->kind != SCL_SCALAR)
+				return false;
+			out->kind = SAA_SUM_INT;
+			return true;
+		case F_SUM_FLOAT8:				/* sum(float4) adds in float4: left to the normal plan */
+			if (!leaf_numeric(c, leaf, SCV_F64, FLOAT8OID, InvalidOid))
+				return false;
+			out->kind = SAA_SUM_F64;
+			return true;
+		case F_AVG_INT4:
+		case F_AVG_INT2:
+			if (!leaf_numeric(c, leaf, SCV_I32, fid == F_AVG_INT4 ? INT4OID : INT2OID, InvalidOid))
+				return false;
+			out->kind = SAA_AVG_INT;
+			return true;
+		case F_AVG_FLOAT8:
+		case F_AVG_FLOAT4:
+			if (!leaf_numeric(c, leaf, SCV_F64, fid == F_AVG_FLOAT8 ? FLOAT8OID : FLOAT4OID, InvalidOid))
+				return false;
+			out->kind = SAA_AVG_F64;
+			return true;
+		case F_MIN_INT2:
+		case F_MIN_INT4:
+		case F_MIN_INT8:
+		case F_MIN_DATE:
+		case F_MIN_TIMESTAMP:
+		case F_MIN_TIMESTAMPTZ:
+		case F_MIN_FLOAT4:
+		case F_MIN_FLOAT8:
+		case F_MAX_INT2:
+		case F_MAX_INT4:
+		case F_MAX_INT8:
+		case F_MAX_DATE:
+		case F_MAX_TIMESTAMP:
+		case F_MAX_TIMESTAMPTZ:
+		case F_MAX_FLOAT4:
+		case F_MAX_FLOAT8:
+			if (leaf_of(c, leaf)->vtype == SCV_CODE || leaf_of(c, leaf)->kind != SCL_SCALAR ||
+				leaf_of(c, leaf)->typid != a->aggtype)
+				return false;
+			out->kind = (fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
+						 fid == F_MIN_TIMESTAMP || fid == F_MIN_TIMESTAMPTZ || fid == F_MIN_FLOAT4 ||
+						 fid == F_MIN_FLOAT8) ? SAA_MIN : SAA_MAX;
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* an aggregate of one column of the table: a kernel of the scan, or the mapped path for an expression that is not a column */
+static bool
+compile_leaf_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
+{
+	Oid			fid = a->aggfnoid;
+	int			leaf = match_leaf(c, arg);
+
+	if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
+		return compile_mapped(c, a, arg, out, ai);
+	if (leaf_of(c, leaf)->wide && fid != F_COUNT_ANY)
+		return false;
+	out->leaf = leaf;
+	out->argtype = leaf_of(c, leaf)->typid;
+	if (!leaf_agg_kind(c, a, leaf, out))
+		return false;
+	use_leaf(c, leaf);
+	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", leaf_name(c, leaf));
+	return true;
+}
+
 static bool
 compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
-	int			leaf = -1;
-	Node	   *arg = NULL;
+	Node	   *arg;
 	Oid			fid = a->aggfnoid;
 	bool		ordered = a->aggkind == AGGKIND_ORDERED_SET;
 
@@ -449,119 +586,25 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (ordered)
 		return compile_ordered(c, a, out);
 	if (fid == F_COUNT_)
-		out->kind = SAA_COUNT_STAR;
-	else
 	{
-		if (list_length(a->args) != 1)
-			return false;
-		arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
-		if (fid == F_COUNT_ANY && IsA(strip_relabel(arg), Const) && !((Const *) strip_relabel(arg))->constisnull &&
-			a->aggdistinct == NIL)
-			out->kind = SAA_COUNT_STAR;
-		else if (fid == F_COUNT_ANY && a->aggdistinct != NIL && unique_row_column(c, arg))
-			out->kind = SAA_COUNT_ROWS;
-		else if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
-												 fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
-		{
-			bool		sum = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC;
-
-			/* a sum of n values of D digits has D + log10(n) digits: 26 leave room for 10^12 rows in 128 bits */
-			if (!compile_nx(c, arg, sum ? 26 : SIFT_NUM_MAX_DIGITS, &out->num))
-				return compile_mapped(c, a, arg, out, ai);
-			out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
-				fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
-			out->argtype = NUMERICOID;
-			out->distinct = sum && a->aggdistinct != NIL;
-			out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
-			return true;
-		}
-		else if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
-		{
-			out->vx = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggVx));
-			if (!compile_vx(c, arg, out) || (out->nvx < 2 && out->vx[0].op != SVX_LEAF))
-				return compile_mapped(c, a, arg, out, ai);
-			out->kind = fid == F_SUM_FLOAT8 ? SAA_SUM_F64 : SAA_AVG_F64;
-			out->argtype = FLOAT8OID;
-			out->desc = psprintf("%s(%s)", get_func_name(fid), expr_text(c, arg));
-			return true;
-		}
-		else
-		{
-			leaf = match_leaf(c, arg);
-			if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
-				return compile_mapped(c, a, arg, out, ai);
-			if (leaf_of(c, leaf)->wide && fid != F_COUNT_ANY)
-				return false;
-			out->leaf = leaf;
-			out->argtype = leaf_of(c, leaf)->typid;
-			switch (fid)
-			{
-				case F_COUNT_ANY:
-					if (a->aggdistinct != NIL)
-					{
-						if (!lut_leaf_ok(c, leaf))
-							return false;
-						out->kind = SAA_COUNT_DISTINCT;
-					}
-					else
-						out->kind = SAA_COUNT;
-					break;
-				case F_SUM_INT4:
-				case F_SUM_INT2:
-					if (!leaf_numeric(c, leaf, SCV_I32, fid == F_SUM_INT4 ? INT4OID : INT2OID, InvalidOid) ||
-						leaf_of(c, leaf)->kind != SCL_SCALAR)
-						return false;
-					out->kind = SAA_SUM_INT;
-					break;
-				case F_SUM_FLOAT8:				/* sum(float4) adds in float4: left to the normal plan */
-					if (!leaf_numeric(c, leaf, SCV_F64, FLOAT8OID, InvalidOid))
-						return false;
-					out->kind = SAA_SUM_F64;
-					break;
-				case F_AVG_INT4:
-				case F_AVG_INT2:
-					if (!leaf_numeric(c, leaf, SCV_I32, fid == F_AVG_INT4 ? INT4OID : INT2OID, InvalidOid))
-						return false;
-					out->kind = SAA_AVG_INT;
-					break;
-				case F_AVG_FLOAT8:
-				case F_AVG_FLOAT4:
-					if (!leaf_numeric(c, leaf, SCV_F64, fid == F_AVG_FLOAT8 ? FLOAT8OID : FLOAT4OID, InvalidOid))
-						return false;
-					out->kind = SAA_AVG_F64;
-					break;
-				case F_MIN_INT2:
-				case F_MIN_INT4:
-				case F_MIN_INT8:
-				case F_MIN_DATE:
-				case F_MIN_TIMESTAMP:
-				case F_MIN_TIMESTAMPTZ:
-				case F_MIN_FLOAT4:
-				case F_MIN_FLOAT8:
-				case F_MAX_INT2:
-				case F_MAX_INT4:
-				case F_MAX_INT8:
-				case F_MAX_DATE:
-				case F_MAX_TIMESTAMP:
-				case F_MAX_TIMESTAMPTZ:
-				case F_MAX_FLOAT4:
-				case F_MAX_FLOAT8:
-					if (leaf_of(c, leaf)->vtype == SCV_CODE || leaf_of(c, leaf)->kind != SCL_SCALAR ||
-						leaf_of(c, leaf)->typid != a->aggtype)
-						return false;
-					out->kind = (fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
-								 fid == F_MIN_TIMESTAMP || fid == F_MIN_TIMESTAMPTZ || fid == F_MIN_FLOAT4 ||
-								 fid == F_MIN_FLOAT8) ? SAA_MIN : SAA_MAX;
-					break;
-				default:
-					return false;
-			}
-			use_leaf(c, leaf);
-		}
+		out->kind = SAA_COUNT_STAR;
+		out->desc = pstrdup("count(*)");
+		return true;
 	}
-	out->desc = psprintf("%s%s", fid == F_COUNT_ ? "count(*)" : get_func_name(fid),
-						 leaf >= 0 ? psprintf("(%s%s)", a->aggdistinct ? "DISTINCT " : "", leaf_name(c, leaf)) : "");
-	return true;
+	if (list_length(a->args) != 1)
+		return false;
+	arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
+	if (count_rows_kind(c, a, arg, out))
+	{
+		out->desc = pstrdup(get_func_name(fid));
+		return true;
+	}
+	if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
+										fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
+		return compile_numeric_agg(c, a, arg, out, ai);
+	if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
+		return compile_float_agg(c, a, arg, out, ai);
+	return compile_leaf_agg(c, a, arg, out, ai);
 }
 
 /*
