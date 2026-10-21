@@ -5583,12 +5583,14 @@ child_path(RelOptInfo *rel, bool correlated)
 	return best;
 }
 
-/* the calls on one column of the enclosing query that never raise: the child takes the call's value instead of the column */
+/* the calls (function or operator) on one column of the enclosing query that never raise: the child takes the call's value instead of the column */
 static bool
-derivable_call(FuncExpr *f)
+derivable_call(Node *n)
 {
-	return !f->funcretset && list_length(f->args) >= 2 &&
-		(f->funcid == F_JSONB_EXISTS || f->funcid == F_JSONB_OBJECT_FIELD_TEXT || f->funcid == F_JSONB_TYPEOF);
+	Oid			fid = func_of(n);
+
+	return list_length(func_args(n)) >= 1 && !(IsA(n, FuncExpr) && ((FuncExpr *) n)->funcretset) &&
+		(fid == F_JSONB_EXISTS || fid == F_JSONB_OBJECT_FIELD_TEXT || fid == F_JSONB_TYPEOF);
 }
 
 typedef struct DeriveCtx
@@ -5603,7 +5605,6 @@ typedef struct DeriveCtx
 static Node *
 derive_mutator(Node *n, DeriveCtx *x)
 {
-	FuncExpr   *f;
 	Node	   *a;
 
 	if (n == NULL)
@@ -5617,17 +5618,16 @@ derive_mutator(Node *n, DeriveCtx *x)
 		x->depth--;
 		return (Node *) q;
 	}
-	if (IsA(n, FuncExpr) && derivable_call(f = (FuncExpr *) n) && IsA(a = strip_relabel(linitial(f->args)), Var) &&
-		((Var *) a)->varlevelsup == x->depth + 1)
+	if (derivable_call(n) && IsA(a = strip_relabel(linitial(func_args(n))), Var) && ((Var *) a)->varlevelsup == x->depth + 1)
 	{
-		FuncExpr   *call = copyObject(f);
+		Node	   *call = copyObject(n);
 		Param	   *prm = makeNode(Param);
 		int			at = -1;
 
-		foreach_ptr(Node, other, call->args)
+		foreach_ptr(Node, other, func_args(call))
 			if (foreach_current_index(other) > 0 && !IsA(strip_relabel(other), Const))
 				return expression_tree_mutator(n, derive_mutator, x);
-		((Var *) strip_relabel(linitial(call->args)))->varlevelsup = 0;
+		((Var *) strip_relabel(linitial(func_args(call))))->varlevelsup = 0;
 		for (int i = 0; i < list_length(x->calls); i++)
 			if (equal(list_nth(x->calls, i), call))
 				at = i;
@@ -5664,9 +5664,9 @@ derived_column_walker(Node *n, DeriveCtx *x)
 		return r;
 	}
 	if (IsA(n, Var) && ((Var *) n)->varlevelsup == x->depth + 1)
-		foreach_ptr(FuncExpr, call, x->calls)
+		foreach_ptr(Node, call, x->calls)
 		{
-			Var		   *v = (Var *) strip_relabel(linitial(call->args));
+			Var		   *v = (Var *) strip_relabel(linitial(func_args(call)));
 
 			if (v->varno == ((Var *) n)->varno && v->varattno == ((Var *) n)->varattno)
 				return true;
