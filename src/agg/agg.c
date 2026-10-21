@@ -98,6 +98,7 @@ bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
 bool		sift_agg_share_lookups = true;
 bool		sift_enable_topn = true;
+bool		sift_topn_walk = true;
 static bool sift_test_agg_wait = false;
 int		sift_agg_combo_cache = 1 << 20;
 
@@ -152,6 +153,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.enable_topn",
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.topn_walk",
+							 "Lets a top-N scan visit the units of a sort column that does not follow the table by the best value of their zones, and stop at the first that cannot beat the n-th.",
+							 NULL, &sift_topn_walk, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
@@ -526,6 +531,22 @@ topn_run(AggExec *ex)
 			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
 				sift_topn_probe(t, ex->unit.sb, &z);
 	sift_topn_start(t, nsb);
+	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
+	{
+		/* the match set of a search restarts when it is asked for superblocks it has passed: only the scans without one are walked */
+		sift_topn_walk_begin(t, nsb);
+		for (uint32 sb = 0; sb < nsb; sb++)
+		{
+			uint32		units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(t, 0), &z);
+
+			sift_topn_walk_add(t, sb, units, &z);
+		}
+		sift_topn_walk_sort(t);
+		while (sift_topn_walk_next(t, &lo))
+			scan_units(ex, lo, lo + 1);
+		sift_topn_finish(t);
+		return;
+	}
 	while (sift_topn_next_window(t, &lo, &hi, &best))
 	{
 		if (sift_topn_wants_zones(t) && !topn_window_viable(ex, lo, hi))

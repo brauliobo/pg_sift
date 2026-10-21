@@ -77,6 +77,21 @@ BEGIN
 	RETURN QUERY SELECT label, n, bad, pushed * 2 >= n, array_to_string(first, E'\n');
 END $$;
 
+-- the walk: a key in blocks of values reads the units that can hold the best rows, not all those whose zone can beat the n-th as it fills
+CREATE FUNCTION ow_units(q text, walk bool) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE line text; n int;
+BEGIN
+	PERFORM ow_mode(true);
+	PERFORM set_config('sift.topn_walk', walk::text, true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line ~ '^ *Units: ' THEN n := regexp_replace(line, '^ *Units: ', '')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT q, ow_units(q, true) <= 4 AS walk_reads_few, ow_units(q, true) < ow_units(q, false) AS fewer_than_without
+FROM (VALUES ('SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10'), ('SELECT id, k_band FROM ow ORDER BY k_band DESC, id LIMIT 10'),
+			 ('SELECT id, k_band FROM ow WHERE g = 2 ORDER BY k_band, id LIMIT 100')) v (q);
+
 SELECT * FROM ow_fuzz('build', 11, 120);
 
 -- ids 8000 to 8300 are deleted; the new versions of the updated rows are stored in other pages (the end of the table), far from the neighbours of their values
@@ -101,6 +116,11 @@ VACUUM ow;
 SELECT sift.col_promote('ow_col') >= 0 AS promoted;
 SELECT * FROM ow_fuzz('promoted', 14, 120);
 
+-- the same queries without the walk
+SET sift.topn_walk = off;
+SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
+RESET sift.topn_walk;
+
 DROP TABLE ow;
-DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int);
+DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool);
 DROP EXTENSION pg_sift;

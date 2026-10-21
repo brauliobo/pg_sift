@@ -69,6 +69,17 @@ extern bool sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *b
 extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
 extern void sift_topn_skip(SiftTopN *t);
 
+/*
+ * The walk, for a first sort column that does not follow the table: the zone of every superblock is added (sift_topn_walk_add, its number of
+ * units), the superblocks are sorted by the best row they can hold, and sift_topn_walk_next gives them in that order until the next
+ * cannot beat the n-th best so far; the units of the rest count as skipped.
+ */
+extern bool sift_topn_follows(const SiftTopN *t);
+extern void sift_topn_walk_begin(SiftTopN *t, uint32 nsb);
+extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);
+extern void sift_topn_walk_sort(SiftTopN *t);
+extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
+
 /* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */
 extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
 
