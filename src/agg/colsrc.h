@@ -450,6 +450,7 @@ typedef struct SiftSrcProvider
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+	uint32		(*unit_rollup_tuples) (void *impl, const SiftSrcUnit *unit, int list);
 	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
@@ -653,6 +654,13 @@ static inline void
 sift_colsrc_gpu_dict(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
 {
 	src->prov->gpu_dict(src->impl, unit, leaf, dict);
+}
+
+/* the tuples of the unit's rollup of the list, 0 when the unit has none or the source cannot tell */
+static inline uint32
+sift_colsrc_unit_rollup_tuples(SiftSrcSource *src, const SiftSrcUnit *unit, int list)
+{
+	return src->prov->unit_rollup_tuples == NULL ? 0 : src->prov->unit_rollup_tuples(src->impl, unit, list);
 }
 
 static inline bool

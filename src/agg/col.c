@@ -490,6 +490,12 @@ col_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
 	*dict = (SiftSrcDict) {(const void *) (uintptr_t) d.id, d.n, d.off, d.bytes};
 }
 
+static uint32
+col_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list)
+{
+	return sift_col_unit_rollup_tuples(&((ColSource *) impl)->unit, list);
+}
+
 static bool
 col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h)
 {
@@ -595,6 +601,7 @@ static const SiftSrcProvider col_provider = {
 	.gpu_dense = col_gpu_dense,
 	.gpu_chunk = col_gpu_chunk,
 	.gpu_dict = col_gpu_dict,
+	.unit_rollup_tuples = col_unit_rollup_tuples,
 	.unit_rollup = col_unit_rollup,
 	.unit_rollup_miss = col_unit_rollup_miss,
 };

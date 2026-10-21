@@ -3,6 +3,8 @@
 -- queue is served by a background worker, here by sift.col_rollup_refresh (sift.col_rollup_worker off), and the next SELECT answers from the rollups.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
+SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 SET sift.col_rollup_worker = off;

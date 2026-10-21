@@ -6,6 +6,8 @@
 -- after the VACUUM; `dirty` is a table with no VACUUM at all: every unit is scanned.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
+SET sift.agg_rollup_cost = 0;
 
 CREATE FUNCTION mk_items(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN g % 10 = 0 THEN NULL WHEN g % 10 = 1 THEN '[]' ELSE
