@@ -547,6 +547,7 @@ match_leaf(AggCtx *c, Node *e)
 	int			att;
 
 	c->rec_pending = 0;
+	c->cast_pending = 0;
 	e = strip_relabel(e);
 	if (IsA(e, Var) && ((Var *) e)->varno == c->func_rti && c->func_rti != 0)
 		return func_var_leaf(c, (Var *) e);
@@ -591,7 +592,12 @@ match_leaf(AggCtx *c, Node *e)
 		/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
 		if (cast_to != InvalidOid && json_cast_target(fid) != InvalidOid && cast_to == exprType(e) && r.att == 0 && c->func_kind == FK_EACH &&
 			r.fcol == 2 && (c->group >= 0 || c->func_key != NULL))
-			return c->func_key ? member_leaf(c, cast_to) : child_leaf(c, c->group, "value", cast_to);
+		{
+			int			leaf = c->func_key ? member_leaf(c, cast_to) : child_leaf(c, c->group, "value", cast_to);
+
+			c->cast_pending = leaf + 1;
+			return leaf;
+		}
 		return -1;
 	}
 	{

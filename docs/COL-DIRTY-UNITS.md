@@ -100,6 +100,11 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   array leaf take their values from a column of the index (the `value` column of the members, the array itself): `reads_overflow` follows
   them to it, so a flagged column keeps the normal plan (a numeric string converts, anything else raises PostgreSQL's error), and the scan
   checks it for a plan made before the value was written (`0A000`). They were read as NULL.
-- **Not done.** `jsonb_each` with `CAST(value AS float8)` keeps the normal plan (the same error as the normal plan, since it is the
-  normal plan). Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
+- **`jsonb_each` with a cast.** A member read only through `CAST(e.value AS float8)` (a wildcard path `col.* float8`) is read again like a
+  recordset column, with the cast's reading: a number as the cast gives it, any other JSON type the error the cast raises
+  (`cannot cast jsonb string to type double precision`, `22023`), kept for the row. The row raises it where it reaches the aggregate, after
+  its lookups, as the cast does in the normal plan, and not at all when a conjunct or a join drops it first. The plan stays normal when the
+  cast is evaluated for some members only (a `FILTER`, a `CASE` branch: no aggregate evaluates it for all of them), when a conjunct reads
+  the member or the key of the member, and for the member of one key (`LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`), whose error
+  would be the row's, not the key's. Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
   as before.

@@ -1,0 +1,239 @@
+-- A jsonb_each member read through a cast to a number (`CAST(e.value AS float8)`) is a float8 leaf of a sift_col index; a value of another JSON type
+-- (a string, a boolean, an object, an array) is an overflow value of the leaf. The cast raises for it in the normal plan, for the rows that reach it
+-- and nowhere else, so a flagged leaf does not keep the scan from answering the queries whose rows hold none: the scan raises the same error for a
+-- row that reaches the cast with such a value. Every query runs with and without the pushdown; the rows, or the error, must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, false); b text := runq(q, true);
+BEGIN
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- a day is a unit apart: the dirty rows sit in days 900 and up, and in the days of the sources 7 and 8
+CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
+INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
+CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, ratings jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO m_t
+SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'room', (i % 7) + 0.5, 'staff', i % 5)
+FROM generate_series(1, 6000) i;
+UPDATE m_t SET src = 7, ratings = jsonb_set(ratings, '{room}', '"9"') WHERE id = 100;
+UPDATE m_t SET ratings = jsonb_set(ratings, '{room}', '"9"') WHERE id = 6000;
+UPDATE m_t SET ratings = jsonb_set(ratings, '{staff}', 'true') WHERE id = 5990;
+UPDATE m_t SET ratings = jsonb_set(ratings, '{staff}', '{"a": 1}') WHERE id = 5980;
+UPDATE m_t SET ratings = jsonb_set(ratings, '{staff}', '[1]') WHERE id = 5970;
+CREATE INDEX m_col ON m_t USING sift_col (id, src, day, ratings) WITH (paths = 'ratings.* float8');
+VACUUM ANALYZE m_t;
+CREATE FUNCTION mq(sel text, keep text DEFAULT 'true', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT ' || sel || ' FROM m_t t JOIN LATERAL jsonb_each(t.ratings) e ON true WHERE ' || keep || ' GROUP BY ' || grp
+$$;
+-- the leaf is flagged and the scan is in the plan for the rows that hold no such value
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS clean_window_pushed;
+ clean_window_pushed 
+---------------------
+ t
+(1 row)
+
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 'day < 500')) AS clean_window;
+ clean_window 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8))', 'day BETWEEN 20 AND 400', 't.src, e.key')) AS clean_window_keys;
+ clean_window_keys 
+-------------------
+ same
+(1 row)
+
+-- the errors: a row that reaches the cast with a value that is no number, whatever its type
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600'), true) AS string;
+                           string                            
+-------------------------------------------------------------
+ ERR 22023 cannot cast jsonb string to type double precision
+(1 row)
+
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5990'), true) AS boolean;
+                           boolean                            
+--------------------------------------------------------------
+ ERR 22023 cannot cast jsonb boolean to type double precision
+(1 row)
+
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5980'), true) AS object;
+                           object                            
+-------------------------------------------------------------
+ ERR 22023 cannot cast jsonb object to type double precision
+(1 row)
+
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970'), true) AS array;
+                           array                            
+------------------------------------------------------------
+ ERR 22023 cannot cast jsonb array to type double precision
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600')) AS string_same;
+ string_same 
+-------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5990')) AS boolean_same;
+ boolean_same 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5980')) AS object_same;
+ object_same 
+-------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970')) AS array_same;
+ array_same 
+------------
+ same
+(1 row)
+
+-- several rows hold one: both plans raise, the one the scan reaches first may be another row's than the heap order's
+SELECT left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), false), 9) = left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), true), 9) AS whole_table_raises;
+ whole_table_raises 
+--------------------
+ t
+(1 row)
+
+-- a row filtered out reaches nothing: by a leaf of its row, by the key of the member, by a join that drops it
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900')) AS row_filtered;
+ row_filtered 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$room$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
+ member_filtered 
+-----------------
+ same
+(1 row)
+
+SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.ratings) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row;
+ join_drops_the_row 
+--------------------
+ same
+(1 row)
+
+SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.ratings) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row_pushed;
+ join_drops_the_row_pushed 
+---------------------------
+ t
+(1 row)
+
+-- a cast that only a FILTER or a CASE evaluates is evaluated for the members it keeps: the dirty one raises nothing here, so the plan stays
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
+ filter_only 
+-------------
+ same
+(1 row)
+
+SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
+ filter_only_pushed 
+--------------------
+ f
+(1 row)
+
+SELECT same(mq('sum(CASE WHEN e.key = $$overall$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
+ case_only 
+-----------
+ same
+(1 row)
+
+-- the same cast also in an unconditional aggregate: the dirty member raises
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
+ filter_and_plain 
+------------------
+ same
+(1 row)
+
+-- a conjunct that reads the leaf evaluates the cast before the aggregates: the plan stays
+SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct;
+ conjunct 
+----------
+ same
+(1 row)
+
+SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;
+ conjunct_pushed 
+-----------------
+ f
+(1 row)
+
+-- rows in the write buffer, updated and deleted ones, and after promotion
+INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "room": 4}'), (7002, 1, 11, '{"overall": "x"}');
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
+ write_buffer 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_clean;
+ write_buffer_clean 
+--------------------
+ same
+(1 row)
+
+UPDATE m_t SET ratings = '{"overall": 1}' WHERE id = 7002;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
+ after_update 
+--------------
+ same
+(1 row)
+
+SELECT sift.col_promote('m_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_promotion;
+ after_promotion 
+-----------------
+ same
+(1 row)
+
+DELETE FROM m_t WHERE id IN (100, 6000, 5990, 5980, 5970);
+VACUUM m_t;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete;
+ after_delete 
+--------------
+ same
+(1 row)
+
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete_pushed;
+ after_delete_pushed 
+---------------------
+ t
+(1 row)
+
+DROP FUNCTION mq(text, text, text);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE m_t, m_src;
+DROP EXTENSION pg_sift;
