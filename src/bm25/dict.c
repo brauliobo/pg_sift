@@ -514,15 +514,7 @@ find_block(SiftDict *d, const char *term, int len)
 				bhi;
 
 	/* root entries [rlo, rhi) may hold the block: rlo after the last < p */
-	while (lo < hi)
-	{
-		int64		mid = (lo + hi) / 2;
-
-		if (d->root[mid] < p)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int64, mid, lo, hi, d->root[mid] < p);
 	rlo = Max(lo - 1, 0);
 	for (rhi = lo; rhi < d->nroot && d->root[rhi] == p; rhi++)
 		;
@@ -533,15 +525,7 @@ find_block(SiftDict *d, const char *term, int len)
 	/* first block in [blo, bhi) with prefix >= p */
 	lo = blo;
 	hi = bhi;
-	while (lo < hi)
-	{
-		int64		mid = (lo + hi) / 2;
-
-		if (read_idx(d, mid).prefix < p)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int64, mid, lo, hi, read_idx(d, mid).prefix < p);
 	/*
 	 * The blocks of the run with prefix p (fixed-width ids share it for thousands of blocks) are ordered by
 	 * their first term: the run ends where a doubling step then a bisection of the prefixes finds it, and

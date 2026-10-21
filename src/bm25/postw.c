@@ -7,6 +7,7 @@
 #include "bm25/kernels.h"
 #include "bm25/posting.h"
 #include "bm25/posting_int.h"
+#include "core/cmp.h"
 
 int			sift_grouped_min_df = SIFT_GROUPED_MIN_DF;
 #ifdef SIFT_TESTING
@@ -229,15 +230,7 @@ group_end(const SiftPostingWriter *w, uint32 i, uint32 n)
 	uint32		lo = i + 1,
 				hi = n;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (SIFT_GID(w->keys[mid]) == SIFT_GID(w->keys[i]))
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, SIFT_GID(w->keys[mid]) == SIFT_GID(w->keys[i]));
 	return lo;
 }
 

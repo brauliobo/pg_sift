@@ -38,6 +38,7 @@
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "table/table.h"
+#include "core/cmp.h"
 
 #define MAX_MERGE_STEPS	16
 
@@ -238,15 +239,7 @@ dead_has(ItemPointer itemptr, void *state)
 
 	if (tid_has(itemptr, &v->dead_tids))
 		return true;
-	while (lo < hi)
-	{
-		int			mid = (lo + hi) / 2;
-
-		if (v->dead_runs.run[mid][0] <= key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int, mid, lo, hi, v->dead_runs.run[mid][0] <= key);
 	return lo > 0 && key <= v->dead_runs.run[lo - 1][1];
 }
 

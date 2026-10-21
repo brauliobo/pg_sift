@@ -8,6 +8,7 @@
 #include "col/gpu.h"
 #include "col/codec.h"
 #include "col/compress.h"
+#include "core/cmp.h"
 
 #define NHDR	16
 #define SIFT_CGPU_PAD	64		/* bytes after a decompressed node, as the codec leaves */
@@ -300,15 +301,7 @@ dict_bound(const SiftCGpuPlan *p, int64 v, bool after)
 	uint32		l = 0,
 				h = p->d;
 
-	while (l < h)
-	{
-		uint32		m = l + (h - l) / 2;
-
-		if (after ? p->dval[m] <= v : p->dval[m] < v)
-			l = m + 1;
-		else
-			h = m;
-	}
+	SIFT_BISECT(uint32, m, l, h, after ? p->dval[m] <= v : p->dval[m] < v);
 	return l;
 }
 
