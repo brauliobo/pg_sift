@@ -167,6 +167,13 @@ SELECT same(rec_q('o.c, count(*), avg(o.score)')) AS reached;
  same
 (1 row)
 
+-- a conjunct that may fail and leaves the rows that hold the error out: they never reach the function
+SELECT same(rec_q('o.c, count(*), avg(o.score)', '100 / (grp + 1) > 50')) AS late_conjunct_drops_them;
+ late_conjunct_drops_them 
+--------------------------
+ same
+(1 row)
+
 DELETE FROM d_t WHERE id IN (9001, 9002, 9003, 9005, 9007, 9008, 9009);
 VACUUM d_t;
 SELECT same(rec_q('o.c, count(*), avg(o.score), sum(o.n)')) AS after_vacuum;
