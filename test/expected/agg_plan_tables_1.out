@@ -8,7 +8,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ev (id int PRIMARY KEY, entity_id int, store_id int, region text, kind text, amount numeric(10, 2), memo text) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 300 END, 1 + i % 40, (ARRAY['north', 'south', 'east', 'west'])[1 + i % 4],
-       (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 500) / 10.0, (ARRAY['clean', 'broken', 'fast', 'late'])[1 + i % 4] || ' ' || (ARRAY['box', 'wifi', 'label'])[1 + i % 3]
+       (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 500) / 10.0, (ARRAY['cable', 'broken', 'fast', 'late'])[1 + i % 4] || ' ' || (ARRAY['box', 'wire', 'label'])[1 + i % 3]
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, entity_id, store_id, region, kind, amount);
 CREATE INDEX ev_fts ON ev USING sift (memo);
@@ -168,13 +168,13 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT region:
 (1 row)
 
 -- an aggregate over a ranked top-k: IN a BM25 scan ordered by score (the SiftScan stays the child), and the scan as a join with its score
-SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
                           plan                          | result_rows | vs_normal_plan 
 --------------------------------------------------------+-------------+----------------
  SiftAgg unnamed_subquery (subquery) (semi), semi table |           3 |              0
 (1 row)
 
-SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'clean wifi' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
+SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'cable wire' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
          plan         | result_rows | vs_normal_plan 
 ----------------------+-------------+----------------
  SiftAgg r (subquery) |           1 |              0
@@ -217,7 +217,7 @@ EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM
          ->  Index Scan using stores_pkey on stores
 (7 rows)
 
-EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC LIMIT 100);
+EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
                      QUERY PLAN                     
 ----------------------------------------------------
  Custom Scan (SiftAgg)
@@ -228,7 +228,7 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
          ->  Limit
                ->  Custom Scan (SiftScan) on ev
                      Index: ev_fts
-                     Query: 'clean'::text
+                     Query: 'cable'::text
                      Order: score DESC
                      Limit Hint: 100
 (11 rows)

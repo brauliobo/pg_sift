@@ -7,4 +7,4 @@
 -- error: yes
 -- prepare: (bigint, bigint)
 -- args: 10, -1
-SELECT id, store_id, total FROM orders WHERE memo @@> 'clean OR wifi' ORDER BY placed_at DESC, id DESC LIMIT $1 OFFSET $2
+SELECT id, store_id, total FROM orders WHERE memo @@> 'cable OR wire' ORDER BY placed_at DESC, id DESC LIMIT $1 OFFSET $2

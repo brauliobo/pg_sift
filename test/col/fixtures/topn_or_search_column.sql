@@ -3,4 +3,4 @@
 -- expect: plain
 -- key: -
 -- scenario: yes
-SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'clean' OR store_id = 3 ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'cable' OR store_id = 3 ORDER BY placed_at DESC, id DESC LIMIT 10
