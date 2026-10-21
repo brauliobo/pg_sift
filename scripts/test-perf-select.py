@@ -24,10 +24,9 @@ class SelectionTest(unittest.TestCase):
         for path, expected in {
             'src/bm25/sift_query.c': list(SELECT.ALL),
             'src/col/sift_colz.c': ['smoke', 'agg', 'storage'],
-            'src/agg/sift_agg.c': ['smoke', 'agg', 'storage'],
+            'src/agg/sift_agg.c': ['smoke', 'agg'],
+            'src/agg/sift_aggplan.c': ['smoke', 'agg'],
             'src/table/sift_table.c': ['smoke', 'storage'],
-            'test/sql/col_search.sql': ['smoke', 'agg', 'storage'],
-            'test/sql/count_scan.sql': ['smoke', 'bm25'],
             'sqlite/host/host.h': ['smoke'],
             '.github/workflows/assert.yml': [],
             'scripts/source-snapshot.sh': ['smoke'],
@@ -50,7 +49,10 @@ class SelectionTest(unittest.TestCase):
                      'test/t/lib/SiftTest.pm', '.github/workflows/ci.yml',
                      '.github/workflows/performance.yml', 'scripts/perf-select.py', 'scripts/test-perf-select.py',
                      'bench/steps/perf_gate.py', 'bench/perf/catalog.py', 'bench/perf/test_insert_trajectory.py',
-                     'bench/steps/store.py', 'Formula/pg_sift.rb'):
+                     'bench/steps/store.py', 'Formula/pg_sift.rb',
+                     'test/sql/col_search.sql', 'test/sql/count_scan.sql', 'test/expected/count_scan_1.out',
+                     'test/col/fixtures/k_keys_9.sql', 'test/isolation/specs/agg_correlated_snapshot.spec',
+                     'test/t/001_crash.pl', 'test/fixtures/compat30/a', 'test/fuzz/a', 'test/diff/a'):
             with self.subTest(path=path):
                 self.assertEqual(self.selected(path), [])
 
@@ -60,12 +62,30 @@ class SelectionTest(unittest.TestCase):
                          ['smoke', 'storage'])
         self.assertEqual(self.selected('scripts/areas.sh', 'src/core/sift_store.c'), list(SELECT.ALL))
         self.assertEqual(self.selected('scripts/ci.sh', 'sqlite/new.c'), ['smoke'])
+        self.assertEqual(self.selected('test/sql/count_scan.sql', 'src/table/sift_table.c'), ['smoke', 'storage'])
+
+    def test_aggregate_change_with_its_tests_selects_only_the_aggregate_group(self):
+        # The diff of an aggregate PR: sources, tests of every kind, fixtures and documentation.
+        self.assertEqual(self.selected(
+            'src/agg/sift_agg.c', 'src/agg/sift_aggspec.h', 'docs/AGG.md', 'README.md', 'test/sql/agg_semi_lut.sql',
+            'test/expected/agg_semi_lut.out', 'test/col/fixtures/k_keys_9.sql',
+            'test/isolation/specs/agg_correlated_snapshot.spec'), ['smoke', 'agg'])
+        # Only the aggregate sources keep the aggregate stack to the aggregate group: the column sources feed the table readers.
+        self.assertEqual(self.selected('src/col/sift_colz.c', 'test/sql/agg_semi_lut.sql'), ['smoke', 'agg', 'storage'])
+
+    def test_aggregate_change_still_runs_every_correctness_job_of_the_stack(self):
+        # The focused gate ignores {ci}; the CI jobs of the column and table groups keep running for an aggregate change.
+        regex = subprocess.check_output(['bash', str(ROOT/'scripts/ci.sh'), '--areas-regex', str(ROOT/'scripts/areas.tsv'),
+                                         'src/agg/sift_agg.c'], text=True).strip()
+        jobs = ['installcheck-agg_semi_lut', 'installcheck-col_search', 'installcheck-tbl_cap', 'difftest-col', 'isolation', 'fuzz', 'installcheck-count_scan']
+        picked = subprocess.check_output(['bash', '-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs], text=True).split()
+        self.assertEqual(picked, jobs[:5])
 
     def test_docs_and_unions(self):
         self.assertEqual(self.selected(), [])
         self.assertEqual(self.selected('README.md', 'docs/DESIGN.md', 'LICENSE'), [])
         self.assertEqual(self.selected('README.md', 'sqlite/new.c'), ['smoke'])
-        self.assertEqual(self.selected('src/table/a.c', 'test/sql/count_scan.sql'),
+        self.assertEqual(self.selected('src/table/a.c', 'scripts/old-lib-check.sh'),
                          ['smoke', 'bm25', 'storage'])
 
     def fixture(self, groups, rows, path, jobs, expected):
@@ -119,9 +139,9 @@ class SelectionTest(unittest.TestCase):
 
     def test_actual_ci_capture_expansion(self):
         for path,expected in {
-            'test/sql/col_search.sql':'^$|^installcheck-col_search$',
-            'test/t/001_crash.pl':r'^$|^tap(-shell)?-001_crash$',
-            'test/expected/count_scan_1.out':'^$|^installcheck-count_scan_1$|^installcheck-count_scan$',
+            'test/sql/col_search.sql':'^$|^installcheck-col_search$|(^gh:ci$)',
+            'test/t/001_crash.pl':r'^$|^tap(-shell)?-001_crash$|(^gh:ci$)',
+            'test/expected/count_scan_1.out':'^$|^installcheck-count_scan_1$|(^gh:ci$)|^installcheck-count_scan$|(^gh:ci$)',
             'scripts/source-snapshot.sh':'^$|^(hardened|assert|valgrind)$',
             'scripts/areas.sh':'^$|.|(^gh:perf$)',
         }.items():
