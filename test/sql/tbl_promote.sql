@@ -62,7 +62,10 @@ BEGIN; DELETE FROM s WHERE id < 100; ROLLBACK;
 BEGIN; SAVEPOINT a; UPDATE s SET i8 = 0 WHERE id BETWEEN 10 AND 20; ROLLBACK TO a; COMMIT;
 SELECT promote_compare('aborted changes');
 
+-- (half dead is the threshold here: the segments keep the dead rows this counts)
+SET sift.table_dead_rewrite_pct = 50;
 VACUUM s;
+RESET sift.table_dead_rewrite_pct;
 SELECT promote_compare('VACUUM clears the dead rows'), promote_layout();
 SELECT sum(dead_rows) > 0 AS dead_rows_counted FROM sift.table_segments('s') WHERE kind = 'columns';
 
