@@ -5,6 +5,7 @@
 #define SIFT_AGG_AGG_INT_H
 
 #include "executor/nodeAgg.h"
+#include "utils/sortsupport.h"
 #include "agg/back.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
