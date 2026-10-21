@@ -409,7 +409,7 @@ END $$;
 SELECT arms_shared($$SELECT store AS k, count(*) AS n, sum(id) AS s FROM o GROUP BY store UNION ALL SELECT id % 11, count(*), sum(id) FROM o GROUP BY id % 11$$) AS shared_other_leaves;
  shared_other_leaves 
 ---------------------
-                   0
+                   2
 (1 row)
 
 SELECT arms_shared($$SELECT id % 5 AS k, count(*) AS n, sum(id) AS s FROM o GROUP BY id % 5 UNION ALL SELECT id % 11, count(*), sum(id) FROM o GROUP BY id % 11 UNION ALL SELECT id % 3, count(*), sum(id) FROM o GROUP BY id % 3$$) AS shared_three;

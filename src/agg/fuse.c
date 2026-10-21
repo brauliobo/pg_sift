@@ -151,38 +151,41 @@ bool
 fuse_start(AggExec *ex)
 {
 	FuseReg    *r = fuse_reg(ex->css.ss.ps.state, false);
-	AggExec    *m[SIFT_AGG_MAX_FUSE];
-	SiftAggSpec *specs[SIFT_AGG_MAX_FUSE];
-	int			keyoff[SIFT_AGG_MAX_FUSE],
-				n = 0,
-				nk = 1;
 	EState	   *estate = ex->css.ss.ps.state;
+	List	   *m = list_make1(ex);
+	SiftAggSpec **specs;
+	int		  **keymap;
+	int			n = 1;
 	MemoryContext old;
 	FuseSt	   *fs;
 	AggExec    *F;
 
 	if (r == NULL)
 		return false;
-	m[n] = ex;
-	specs[n++] = ex->spec;
-	nk += ex->spec->nkeys;
+	specs = palloc(sizeof(SiftAggSpec *) * (list_length(r->nodes) + 1));
+	specs[0] = ex->spec;
 	foreach_ptr(AggExec, o, r->nodes)
-		if (o != ex && !o->started && nk + o->spec->nkeys <= SIFT_AGG_MAX_FUSE && sift_aggspec_fusable(ex->spec, o->spec))
+	{
+		specs[n] = o->spec;
+		if (o != ex && !o->started && sift_aggspec_fusable(specs, n + 1))
 		{
-			m[n] = o;
-			specs[n++] = o->spec;
-			nk += o->spec->nkeys;
+			m = lappend(m, o);
+			n++;
 		}
+	}
 	if (n < 2)
 		return false;
+	keymap = palloc(sizeof(int *) * n);
 	old = MemoryContextSwitchTo(estate->es_query_cxt);
 	F = palloc0(sizeof(AggExec));
-	F->spec = sift_aggspec_fuse(specs, n, keyoff);
+	F->spec = sift_aggspec_fuse(specs, n, keymap);
 	F->pack = sift_aggspec_pack(F->spec);
 	F->params = ex->params;
 	F->snap = ex->snap;
+	F->css.ss.ps.state = estate;
 	fs = palloc0(sizeof(FuseSt));
 	fs->F = F;
+	fs->keymap = keymap;
 	fs->refs = n;
 	engine_contexts(F, estate->es_query_cxt);
 	engine_rels(F);
@@ -195,11 +198,12 @@ fuse_start(AggExec *ex)
 	list_groups(F->gtab);
 	for (int i = 0; i < n; i++)
 	{
-		m[i]->fuse = fs;
-		m[i]->fuse_set = i;
-		m[i]->fuse_off = keyoff[i];
-		m[i]->started = true;
-		r->nodes = list_delete_ptr(r->nodes, m[i]);
+		AggExec    *o = list_nth(m, i);
+
+		o->fuse = fs;
+		o->fuse_set = i;
+		o->started = true;
+		r->nodes = list_delete_ptr(r->nodes, o);
 	}
 	return true;
 }
@@ -232,7 +236,7 @@ fuse_next(AggExec *ex, TupleTableSlot *slot)
 	g = ex->glist[ex->gpos++];
 	ExecClearTuple(slot);
 	for (int j = 0; j < ex->spec->nkeys; j++)
-		slot->tts_values[j] = key_datum(t, ex->fuse_off + j, g, &slot->tts_isnull[j]);
+		slot->tts_values[j] = key_datum(t, ex->fuse->keymap[ex->fuse_set][j], g, &slot->tts_isnull[j]);
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
 		int			c = ex->spec->nkeys + i;
