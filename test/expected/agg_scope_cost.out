@@ -1,0 +1,106 @@
+-- The plan the planner picks on its own costs when the keys of the scan come from a lookup whose size PostgreSQL cannot count: a list of ids read
+-- from a table by a filter on a jsonb path or an expression has no statistics, and PostgreSQL expects a row or two of it (the normal plan is
+-- a nested loop of index probes priced for that), while the lists the queries pass hold a good share of the table's parents. The normal plan's
+-- price is raised for the keys the distinct parents allow (sift.agg_param_set_size = 0 turns it off); a lookup whose filter PostgreSQL has
+-- statistics for keeps its estimate. Every statement is also run with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sc_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO sc_facts SELECT i, 1 + (i - 1) % 60, date '2024-01-01' + (i - 1) / 200, 'cat_' || chr(97 + i % 4), 1 + i % 17, CASE WHEN i % 29 = 0 THEN now() END FROM generate_series(1, 120000) i;
+CREATE INDEX sc_facts_parent ON sc_facts (parent_id, ts, deleted_at);
+CREATE INDEX sc_facts_col ON sc_facts USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
+CREATE TABLE sc_dims (id int PRIMARY KEY, settings jsonb NOT NULL);
+INSERT INTO sc_dims SELECT p, jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= 30 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, 60) p;
+VACUUM (FREEZE, ANALYZE) sc_facts, sc_dims;
+CREATE FUNCTION plan_of(q text, OUT plan text, OUT cost numeric) LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	plan := CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+	cost := (j -> 0 -> 'Plan' ->> 'Total Cost')::numeric;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := (plan_of(q)).plan;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE FUNCTION in_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
+WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+CREATE FUNCTION join_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f JOIN sc_dims d ON d.id = f.parent_id
+WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+-- a filter on a jsonb path or an expression: no statistics, so PostgreSQL's one row is a guess and the scan reads the units of the parents
+SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_b'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT * FROM same(in_scope('d.id % 3 = 1'));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_c'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+-- no parent: the same answer from either plan
+SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_none'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           0 |              0
+(1 row)
+
+-- a filter PostgreSQL has statistics for (the primary key and its values): its estimate stands and the btree plan reads the few parents
+SELECT * FROM same(in_scope('d.id IN (3, 4)'));
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           2 |              0
+(1 row)
+
+SELECT * FROM same(join_scope('d.id IN (3, 4)'));
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           2 |              0
+(1 row)
+
+-- the switch: the normal plan keeps the estimate
+SET sift.agg_param_set_size = 0;
+SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b'''))).plan AS plan_off;
+ plan_off 
+----------
+ normal
+(1 row)
+
+RESET sift.agg_param_set_size;
+-- the price of the list PostgreSQL knows does not move with the switch
+SET sift.agg_param_set_size = 0;
+CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)'));
+RESET sift.agg_param_set_size;
+SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)'))) = known AS known_unchanged FROM c_est;
+ known_unchanged 
+-----------------
+ t
+(1 row)
+
+DROP FUNCTION in_scope(text), join_scope(text), plan_of(text), same(text);
+DROP TABLE sc_facts, sc_dims;
+DROP EXTENSION pg_sift;
