@@ -3,20 +3,20 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
 INSERT INTO dim_a SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 49) i;
-CREATE TABLE mappings (kind text, category text, value_num text, derived_category text, mapped_subscore text);
+CREATE TABLE mappings (kind text, category text, val text, derived_category text, derived_val text);
 INSERT INTO mappings VALUES ('a', 'svc', '', 'service', NULL), ('a', 'svc', '', 'duplicate', NULL), ('b', 'svc', '', 'staff', NULL),
  ('b', 'clean', 'x', 'm_tidy', 'room'), ('a', 'nul', NULL, 'never', NULL);
 CREATE TABLE facts (id int, dim_a_id int, kind text, document jsonb, payload text);
 INSERT INTO facts
 SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
  jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","value_num":"","tone":"up","score":8}]'::jsonb
-   ELSE '[{"category":"svc","value_num":"","tone":"up","score":9},{"category":"clean","value_num":"x","tone":"down","score":3},{"category":"zzz","value_num":"","tone":"flat","score":null}]'::jsonb END)
+   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","tone":"up","score":8}]'::jsonb
+   ELSE '[{"category":"svc","val":"","tone":"up","score":9},{"category":"clean","val":"x","tone":"down","score":3},{"category":"zzz","val":"","tone":"flat","score":null}]'::jsonb END)
   || CASE WHEN i % 5 = 0 THEN '{"flag_a":false}'::jsonb WHEN i % 11 = 0 THEN '{"flag_a":null}'::jsonb ELSE '{}'::jsonb END,
  repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, document, jsonb_exists(document, 'flag_a'))
- WITH (paths = 'document.parts[]{category text,value_num text,score float8,tone text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,tone text}');
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
 CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
 INSERT INTO odd_facts
@@ -28,7 +28,7 @@ CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, json
 -- The same table without the indexed call: the child needs the whole document, which the index does not hold.
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
- WITH (paths = 'document.parts[]{category text,value_num text,score float8,tone text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,tone text}');
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
 SELECT id, dim_a_id, kind,
@@ -85,16 +85,16 @@ SELECT * FROM check_query($q$
 $q$);
 -- Mapped parts per item: the presence also chooses the category in the lateral's output, and the unmapped parts drop out.
 SELECT * FROM check_query($q$
- SELECT f.id, mo.category, mo.value_num, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.tone = 'up') AS positive
+ SELECT f.id, mo.category, mo.val, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.tone = 'up') AS positive
  FROM facts f INNER JOIN LATERAL (
   SELECT (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_category ELSE rm.derived_category END) AS category,
-         (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_subscore ELSE rm.mapped_subscore END) AS value_num, o.tone, o.score
-  FROM LATERAL (SELECT category AS source_category, value_num AS source_subscore, tone, score
-    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, value_num text, tone text, score float8) WHERE o.score IS NOT NULL) o
-  LEFT JOIN LATERAL (SELECT derived_category, mapped_subscore FROM mappings m WHERE m.derived_category IS NOT NULL AND m.kind = f.kind
-    AND m.category = o.source_category AND m.value_num = o.source_subscore AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
+         (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_val ELSE rm.derived_val END) AS val, o.tone, o.score
+  FROM LATERAL (SELECT category AS source_category, val AS source_val, tone, score
+    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, tone text, score float8) WHERE o.score IS NOT NULL) o
+  LEFT JOIN LATERAL (SELECT derived_category, derived_val FROM mappings m WHERE m.derived_category IS NOT NULL AND m.kind = f.kind
+    AND m.category = o.source_category AND m.val = o.source_val AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
  ) mo ON true
- WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category, mo.value_num
+ WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category, mo.val
 $q$);
 -- The mean of the per-item means over the same mapping (the items weigh equally whatever their part count).
 SELECT * FROM check_query($q$
@@ -102,10 +102,10 @@ SELECT * FROM check_query($q$
   SELECT f.id, mo.category, avg(mo.score) AS score
   FROM facts f INNER JOIN LATERAL (
    SELECT (CASE WHEN jsonb_exists(f.document, 'flag_a') THEN o.source_category ELSE rm.derived_category END) AS category, o.score
-   FROM LATERAL (SELECT category AS source_category, value_num AS source_subscore, score
-     FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, value_num text, score float8) WHERE o.score IS NOT NULL) o
+   FROM LATERAL (SELECT category AS source_category, val AS source_val, score
+     FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8) WHERE o.score IS NOT NULL) o
    LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND m.category = o.source_category
-     AND m.value_num = o.source_subscore AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
+     AND m.val = o.source_val AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) rm ON true
   ) mo ON true WHERE mo.category IS NOT NULL GROUP BY f.id, mo.category) per_item
  GROUP BY category
 $q$);

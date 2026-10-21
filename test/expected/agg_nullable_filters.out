@@ -14,7 +14,7 @@ SELECT i, '2026-01-01'::date + (i % 15), 1 + i % 60, CASE WHEN i % 17 = 0 THEN n
                    jsonb_build_object('name', 'x', 'tag', (ARRAY['hot', 'cold', 'dry'])[1 + i % 3], 'score', CASE WHEN i % 7 = 0 THEN NULL ELSE i % 10 END),
                    jsonb_build_object('name', 'y', 'tag', (ARRAY['hot', 'cold', 'dry'])[1 + (i / 3) % 3], 'score', i % 5))) END,
        CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN '[]'::jsonb
-            WHEN i % 5 = 2 THEN '[{"type": "staff"}]'::jsonb ELSE '[{"type": "vm"}, {"type": "staff"}]'::jsonb END
+            WHEN i % 5 = 2 THEN '[{"type": "staff"}]'::jsonb ELSE '[{"type": "actor"}, {"type": "staff"}]'::jsonb END
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at, doc, notes)
   WITH (paths = 'doc.items[]{name text, tag text, score float8}, notes[]{type text}');
@@ -71,9 +71,9 @@ $q$);
 
 -- A jsonpath test as the condition of the derived table and as the filter of an aggregate, over days that have no row.
 SELECT * FROM check_query($q$
- SELECT d.day, count(DISTINCT f.id) AS n, count(DISTINCT f.id) FILTER (WHERE f.vm IS TRUE) AS vm
+ SELECT d.day, count(DISTINCT f.id) AS n, count(DISTINCT f.id) FILTER (WHERE f.actor IS TRUE) AS actor
  FROM dates d LEFT JOIN (
-   SELECT f.id, f.day, jsonb_path_exists(f.notes, '$[*] ? (@.type == "vm")') AS vm
+   SELECT f.id, f.day, jsonb_path_exists(f.notes, '$[*] ? (@.type == "actor")') AS actor
    FROM facts f
    WHERE f.deleted_at IS NULL AND jsonb_path_exists(f.notes, '$[*] ? (@.type == "staff")')
  ) f ON f.day = d.day

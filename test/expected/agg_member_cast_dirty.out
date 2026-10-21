@@ -31,19 +31,19 @@ END $$;
 -- a day is a unit apart: the dirty rows sit in days 900 and up, and in the days of the sources 7 and 8
 CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
-CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics_a jsonb) WITH (autovacuum_enabled = false);
+CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t
 SELECT i, 1 + i % 2, i / 10, jsonb_build_object('mhead', i % 11, 'room', (i % 7) + 0.5, 'staff', i % 5)
 FROM generate_series(1, 6000) i;
-UPDATE m_t SET src = 7, metrics_a = jsonb_set(metrics_a, '{room}', '"9"') WHERE id = 100;
-UPDATE m_t SET metrics_a = jsonb_set(metrics_a, '{room}', '"9"') WHERE id = 6000;
-UPDATE m_t SET metrics_a = jsonb_set(metrics_a, '{staff}', 'true') WHERE id = 5990;
-UPDATE m_t SET metrics_a = jsonb_set(metrics_a, '{staff}', '{"a": 1}') WHERE id = 5980;
-UPDATE m_t SET metrics_a = jsonb_set(metrics_a, '{staff}', '[1]') WHERE id = 5970;
-CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics_a) WITH (paths = 'metrics_a.* float8');
+UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 100;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{room}', '"9"') WHERE id = 6000;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', 'true') WHERE id = 5990;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '{"a": 1}') WHERE id = 5980;
+UPDATE m_t SET metrics = jsonb_set(metrics, '{staff}', '[1]') WHERE id = 5970;
+CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM ANALYZE m_t;
 CREATE FUNCTION mq(sel text, keep text DEFAULT 'true', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
-	SELECT 'SELECT ' || sel || ' FROM m_t t JOIN LATERAL jsonb_each(t.metrics_a) e ON true WHERE ' || keep || ' GROUP BY ' || grp
+	SELECT 'SELECT ' || sel || ' FROM m_t t JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE ' || keep || ' GROUP BY ' || grp
 $$;
 -- the leaf is flagged and the scan is in the plan for the rows that hold no such value
 SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS clean_window_pushed;
@@ -133,13 +133,13 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$room$$ AND id 
  same
 (1 row)
 
-SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics_a) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row;
+SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row;
  join_drops_the_row 
 --------------------
  same
 (1 row)
 
-SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics_a) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row_pushed;
+SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row_pushed;
  join_drops_the_row_pushed 
 ---------------------------
  t
@@ -198,7 +198,7 @@ SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND 
  same
 (1 row)
 
-UPDATE m_t SET metrics_a = '{"mhead": 1}' WHERE id = 7002;
+UPDATE m_t SET metrics = '{"mhead": 1}' WHERE id = 7002;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
  after_update 
 --------------
