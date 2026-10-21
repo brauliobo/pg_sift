@@ -1,0 +1,40 @@
+-- jsonb_to_recordset reads every column it declares for the elements of the documents that reach it, also the ones the query does not read. The scan
+-- reads again the rows whose document holds a value such a column refuses (a string where it is a float8); when a conjunct of the rows reads the same list
+-- it cannot, as the error would come before the conjunct drops the row, so the query keeps its plan instead of failing with the scan's own error for a
+-- document PostgreSQL never gives to the function. Only whether the results agree is printed.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_preagg = off;
+CREATE TABLE docs (id int, doc jsonb);
+INSERT INTO docs
+SELECT i, jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', CASE WHEN i = 777 THEN 'z' ELSE 'a' || i % 3 END,
+                                                                            'score', CASE WHEN i = 777 THEN '"abc"'::jsonb ELSE to_jsonb(i % 5) END),
+                                                        jsonb_build_object('category', 'b', 'score', 2)))
+FROM generate_series(1, 5000) i;
+CREATE INDEX docs_col ON docs USING sift_col (id, doc) WITH (paths = 'doc.items[]{category text, score float8}');
+VACUUM (FREEZE, ANALYZE) docs;
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
+  RETURN result;
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
+-- the element 'z' fails the EXISTS, so its score is never read
+SELECT same($q$
+ SELECT e.category, count(*) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc->'items') e(category text, score float8)
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.doc->'items') x(category text) WHERE x.category = 'a1') GROUP BY 1
+$q$) AS exists_drops_row;
+-- the same without the conjunct: the document reaches the function, and both plans raise its error
+SELECT same($q$
+ SELECT e.category, count(*) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc->'items') e(category text, score float8) GROUP BY 1
+$q$) AS row_reaches_function;
+SELECT outcome($q$
+ SELECT e.category, count(*) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc->'items') e(category text, score float8) GROUP BY 1
+$q$, true) AS error;
+DROP FUNCTION same(text), outcome(text, bool);
+DROP TABLE docs;
+DROP EXTENSION pg_sift;

@@ -487,9 +487,10 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);
+	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
+	finish_leaves(c, s);
 	if (reads_overflow(c, s))
 		return false;
-	finish_leaves(c, s);
 	finish_combos(c, s);
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
 	if (c->search)
