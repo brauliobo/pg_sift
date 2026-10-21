@@ -242,23 +242,6 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 	sift_col_read_idx(unit, col, idx, m, vec);
 }
 
-void
-sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel, SiftColVec *vec)
-{
-	ColUnit    *cu = unit->priv;
-	const SiftColDef *def = &cu->src->schema->cols[col];
-	ColGroup   *g;
-	uint32	   *idx;
-
-	if (def->parent < 0)
-		elog(ERROR, "sift_col: leaf %d is not an element column", col);
-	g = unit_group(cu, def->parent);
-	memset(vec, 0, sizeof(SiftColVec));
-	idx = MemoryContextAlloc(cu->src->arena, (elemsel->count + SIFT_COL_IDXPAD) * sizeof(uint32));
-	sift_col_sel_idx(elemsel, idx);
-	read_positions(cu, col, idx, elemsel->count, g->nelems, vec);
-}
-
 uint32
 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known)
 {
@@ -393,12 +376,6 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 		sift_colk->bits_to_flags(nulls, n, isnull);
 		info->nulls = true;
 	}
-}
-
-uint32
-sift_col_group_elems(const SiftColUnit *unit, int group)
-{
-	return unit_group(unit->priv, group)->nelems;
 }
 
 void

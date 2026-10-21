@@ -538,22 +538,10 @@ sift_maint_after_seal(Relation index)
 	sift_mops_after_seal(&bm25_ops, index);
 }
 
-int
-sift_maint_promote(Relation index, bool wait)
-{
-	return sift_mops_promote(&bm25_ops, index, wait);
-}
-
 bool
 sift_maint_make_room(Relation index)
 {
 	return sift_mops_make_room(&bm25_ops, index);
-}
-
-bool
-sift_maint_merge_step(Relation index, bool wait)
-{
-	return sift_mops_merge_step(&bm25_ops, index, wait);
 }
 
 IndexBulkDeleteResult *

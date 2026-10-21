@@ -428,22 +428,6 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 	return true;
 }
 
-/*
- * Writes the column segment e again; the writer takes the free blocks lowest in the file first, so a segment above them moves down.
- * False when e was written for another column layout (before an ALTER TABLE), which only a rewrite of the table converts.
- */
-bool
-sift_tbl_rewrite(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
-{
-	const SiftTblLayout *l = layout_of(rel, st);
-
-	if (schema_of(rel, st, e)->hash != l->schema->hash)
-		return false;
-	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, e, 1, tbl_col_format(any_vers(e, 1)), NULL, NULL);
-	sift_tbl_refresh(rel, st);
-	return true;
-}
-
 /* ---------- dead rows of the column segments ---------- */
 
 int			sift_tbl_dead_rewrite_pct = SIFT_MERGE_DEAD_PCT;
