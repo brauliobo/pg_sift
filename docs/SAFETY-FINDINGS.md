@@ -102,6 +102,30 @@ host compiler (clang 23, gcc 16), where neither finding appears.
   test/fuzz/Makefile adds `-fno-sanitize=pointer-overflow` for gcc < 13. The production build (-O2) is not affected (the SIMD installcheck
   tests pass in that container). The input is in `test/fuzz/regress`: `make -C test/fuzz regress` replays it with the other inputs, and `scripts/fuzz.sh colchunk` adds it to the corpus it starts from.
 
+## Relation cache state kept across calls
+
+Reloading an index's relcache entry frees `rd_amcache`, and a lock on a relation (a heap or catalog open, the statistics update that another
+session's `VACUUM` or `ANALYZE` makes) is where a pending invalidation is accepted. A pointer into the cached state (the `SiftColRel` of
+`sift_col`, its embedded fields too) must not outlive a call that can take such a lock. The settings `sift.test_col_verify_inval` and
+`sift.test_col_rel_inval` (testing builds) overwrite the cached state and invalidate the entry at the places below.
+
+| Id | Where | Effect | Status |
+|---|---|---|---|
+| F-AMC-1 | src/col/verify.c, the heap check of `sift.col_verify(index, true)` | the state taken once was read after the reload for every tuple: a segmentation fault in `col_preagg_elem`, a UBSan report in `sift_col_make_row` | fixed: #113, test `verify_relcache` |
+| F-AMC-2 | src/col/build.c (serial and parallel build), src/agg/col_recheck.c `recheck_batch` | the same, kept for the whole heap scan (a worker crashed a `CREATE INDEX`) | fixed: #143, test `col_index_relcache` |
+| F-AMC-3 | src/agg/col.c `col_layout` | `natts` and `ncols` read from the embedded definitions after each index expression, whose parse looks up catalog rows | fixed: the definitions are copied first; the hook of `sift_col_att_expr` makes `col_index_relcache` plan the pushdown under the invalidation |
+
+Audit of the other holders (`rd_amcache`, `sift_col_rel(`, `sift_col_index_defs(`), read site by site: the schema, the policy and the shredder are
+allocated apart in `rd_indexcxt` and survive a reload of an open index; only the fields embedded in the state (`meta`, `pagg`, `hint`) and the state itself
+are freed.
+
+- src/bm25/wbuf.c `WbufHint`, held by `sift_wbuf_append`: the calls under it take buffer, page and relation-extension locks only; none accepts invalidations. Fine.
+- src/col/maint.c `promote_one`, `merge_next`, src/col/rollup.c `refresh_segment`: `&rel->pagg` is copied by `sift_colw_set_preagg` after segment reads and a
+  write target (the same kinds of locks). Fine.
+- src/col/am.c `sift_col_index_meta` copies at once; `aminsert` uses `&r->hint` inside the insert; src/col/scan.c keeps the schema only. Fine.
+- src/col/maint.c `sift_col_index_info` and src/col/am.c `leaf_cache_entry` keep the definitions over directory reads and segment opens (no lock). Fine, fragile.
+- src/agg/stub_src.c `stub_stats` keeps its sample over a sampling scan: part of the testing build only (`SIFT_TESTING`), not shipped.
+
 ## Other tools
 
 - MSan (clang 23, `make -C test/fuzz CC=clang SAN='-fsanitize=memory ...' DEFS= COLZ=`): `shred` reports inside libpgcommon's `snprintf`
