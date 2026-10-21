@@ -60,6 +60,7 @@ typedef struct ColRecheck
 	ItemPointerData *tid;
 	bool		active;			/* the unit the source is at is a recheck unit */
 	int64		nrechecked;		/* rows read again, in all */
+	int64		nunits;			/* the units they were in */
 	MemoryContext cxt;			/* the rows of the recheck unit, reset by the next one */
 	MemoryContext tmp;			/* one row */
 	ErrorData **err;			/* per row of the recheck unit: the error SQL raises for it (NULL: none) */

@@ -789,6 +789,18 @@ typedef struct CostAcc
 	double		rows_out;
 } CostAcc;
 
+/* The rows read again from the heap: AGG_RECHECK_FRAC of the rows of the units a leaf the scan rechecks flags (the share of units the zones say), one row of each at least */
+static double
+recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
+{
+	double		flagged = 0;
+
+	for (int i = 0; i < s->nleaves; i++)
+		if (s->recheck[i] != SRK_NONE)
+			flagged = Max(flagged, c->stats.ovf_units[s->leaves[i]]);
+	return Max(k->rows * flagged * AGG_RECHECK_FRAC, k->units * flagged) * AGG_RECHECK_ROW;
+}
+
 /* The rows read and tested, the zones kept and the units opened */
 static void
 cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
@@ -803,12 +815,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	for (int i = 0; i < s->nvleaf; i++)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);
-	for (int i = 0; i < s->nleaves; i++)
-		if (s->recheck[i] != SRK_NONE && c->stats.ovf[s->leaves[i]])
-		{
-			k->scan_cost += k->rows * AGG_RECHECK_FRAC * AGG_RECHECK_ROW;
-			break;
-		}
+	k->scan_cost += recheck_cost(c, s, k);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
 			k->scan_cost += k->rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], k->rows));

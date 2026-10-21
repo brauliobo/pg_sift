@@ -296,6 +296,8 @@ typedef struct SiftColLeafStats
 	int64		max;
 	double		span;			/* INT leaves: the widths (max - min + 1) of the zones of the units that hold a value, together */
 	double		nzone;			/* ... and the number of those units */
+	double		nunits;			/* the units of the leaf */
+	double		novf;			/* ... and the number flagged with an overflow value */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;
