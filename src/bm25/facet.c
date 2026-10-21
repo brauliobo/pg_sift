@@ -38,6 +38,7 @@
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "core/sql.h"
+#include "core/cmp.h"
 
 typedef uint64 Row[SIFT_OFFMASK_WORDS];
 
@@ -209,15 +210,7 @@ q_lower(const Facets *f, int lo, uint32 sb)
 {
 	int			hi = f->nqsb;
 
-	while (lo < hi)
-	{
-		int			mid = lo + (hi - lo) / 2;
-
-		if (f->qsb[mid].sb < sb)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int, mid, lo, hi, f->qsb[mid].sb < sb);
 	return lo;
 }
 
@@ -515,15 +508,7 @@ res_add(Facets *f, Res r)
 		int64		lo = 0,
 					hi = f->nres;
 
-		while (lo < hi)
-		{
-			int64		mid = lo + (hi - lo) / 2;
-
-			if (res_cmp(&f->res[mid], &r) > 0)
-				hi = mid;
-			else
-				lo = mid + 1;
-		}
+		SIFT_BISECT(int64, mid, lo, hi, res_cmp(&f->res[mid], &r) <= 0);
 		if ((pos = lo) == f->lim)
 			return;
 		if (f->nres == f->lim)

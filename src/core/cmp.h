@@ -1,6 +1,6 @@
 /*
- * core/cmp.h - three-way comparators shared by the sources: of scalars for qsort and bsearch (ascending, no overflow), and of
- * two terms as bytes then length, the order of the dictionary. Portable (C library only).
+ * core/cmp.h - ordering helpers shared by the sources: three-way comparators of scalars for qsort and bsearch (ascending, no overflow),
+ * of two terms as bytes then length (the order of the dictionary), and the bisection of a sorted range. Portable (C library only).
  */
 #ifndef SIFT_CMP_H
 #define SIFT_CMP_H
@@ -31,5 +31,22 @@ sift_term_cmp(const char *a, int alen, const char *b, int blen)
 
 	return c ? c : (alen > blen) - (alen < blen);
 }
+
+/*
+ * Bisects [lo, hi) to the first index at which `below` is false, a condition that holds for a prefix of the range and reads the
+ * candidate through m (declared here as a type); lo and hi are variables, equal on exit.
+ */
+#define SIFT_BISECT(type, m, lo, hi, below) \
+	do { \
+		while ((lo) < (hi)) \
+		{ \
+			type		m = (lo) + ((hi) - (lo)) / 2; \
+\
+			if (below) \
+				(lo) = m + 1; \
+			else \
+				(hi) = m; \
+		} \
+	} while (0)
 
 #endif							/* SIFT_CMP_H */

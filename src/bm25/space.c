@@ -34,6 +34,7 @@
 #include "core/ops.h"
 #include "core/sql.h"
 #include "core/visibility.h"
+#include "core/cmp.h"
 
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
 #define TRUNCATE_MIN_BLOCKS	1000
@@ -188,15 +189,7 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 		if (moved * BLCKSZ > budget || sift_store_free_below(rel, hwm, SPACE_MIN_RUN) < (int64) moved)
 			break;
 		/* the lowest end that holds them: the free blocks are taken from the start of the file up */
-		while (lo < hi)
-		{
-			BlockNumber mid = lo + (hi - lo) / 2;
-
-			if (sift_store_free_below(rel, mid, SPACE_MIN_RUN) >= (int64) moved)
-				hi = mid;
-			else
-				lo = mid + 1;
-		}
+		SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, SPACE_MIN_RUN) < (int64) moved);
 		end = Max(end, lo);
 		net = (int64) top - (int64) end;
 		if (net > *gain)

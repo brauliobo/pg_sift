@@ -14,6 +14,7 @@
 #include "col/seg_int.h"
 #include "col/ver.h"
 #include "core/live.h"
+#include "core/cmp.h"
 
 /* ---------- reader ---------- */
 
@@ -141,15 +142,7 @@ sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb)
 	uint32		lo = 0,
 				hi = seg->nsb;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (seg->sbdir[mid].sb < sb)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, seg->sbdir[mid].sb < sb);
 	return lo;
 }
 
@@ -611,15 +604,7 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
 	uint32		a = 0,
 				b = n;
 
-	while (a < b)
-	{
-		uint32		m = a + (b - a) / 2;
-
-		if (set[m] < lo)
-			a = m + 1;
-		else
-			b = m;
-	}
+	SIFT_BISECT(uint32, m, a, b, set[m] < lo);
 	return a < n && set[a] <= hi;
 }
 

@@ -13,6 +13,7 @@
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"
+#include "core/cmp.h"
 
 /* ---------- reader ---------- */
 
@@ -246,15 +247,7 @@ sb_search(DocMap *dm, uint32 sb)
 	int64		lo = 0,
 				hi = dm->nsb;
 
-	while (lo < hi)
-	{
-		int64		mid = (lo + hi) / 2;
-
-		if (dm->dir[mid].sb < sb)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int64, mid, lo, hi, dm->dir[mid].sb < sb);
 	return lo;
 }
 

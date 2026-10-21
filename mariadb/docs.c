@@ -24,15 +24,7 @@ lower_bound(const int64 *a, size_t n, int64 v)
 	size_t		lo = 0,
 				hi = n;
 
-	while (lo < hi)
-	{
-		size_t		mid = (lo + hi) / 2;
-
-		if (a[mid] < v)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(size_t, mid, lo, hi, a[mid] < v);
 	return lo;
 }
 
@@ -157,15 +149,7 @@ pk_of(const SiftIdx *ix, int64 docid)
 	size_t		lo = 0,
 				hi = ix->ndoc;
 
-	while (lo < hi)
-	{
-		size_t		mid = (lo + hi) / 2;
-
-		if (ix->ids[mid] < docid)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(size_t, mid, lo, hi, ix->ids[mid] < docid);
 	if (lo == ix->ndoc || ix->ids[lo] != docid)
 		fail("sift: document %lld has no row key in the event log", (long long) docid);
 	return ix->pks[lo];
