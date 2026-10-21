@@ -449,6 +449,24 @@ count_rows_kind(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 	return true;
 }
 
+/*
+ * sum(int8) and avg(int8) of a column: PostgreSQL gives a numeric from a sum that does not overflow, as the numeric aggregates of an exact
+ * 128-bit sum do (and avg is the same division of that sum by the count), so the program is the column itself and the stored sums of a unit
+ * answer it.
+ */
+static bool
+compile_int8_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
+{
+	int			leaf = match_leaf(c, arg);
+
+	if (leaf < 0 || leaf_of(c, leaf)->wide || leaf_of(c, leaf)->typid != INT8OID || !compile_nx(c, arg, 26, &out->num))
+		return false;
+	out->kind = a->aggfnoid == F_SUM_INT8 ? SAA_SUM_NUM : SAA_AVG_NUM;
+	out->argtype = NUMERICOID;
+	out->desc = psprintf("%s(%s)", get_func_name(a->aggfnoid), leaf_name(c, leaf));
+	return true;
+}
+
 /* sum, avg, min, max and count of a decimal expression */
 static bool
 compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
@@ -604,6 +622,8 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		return compile_numeric_agg(c, a, arg, out, ai);
 	if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
 		return compile_float_agg(c, a, arg, out, ai);
+	if ((fid == F_SUM_INT8 || fid == F_AVG_INT8) && a->aggdistinct == NIL && compile_int8_agg(c, a, arg, out))
+		return true;
 	return compile_leaf_agg(c, a, arg, out, ai);
 }
 
