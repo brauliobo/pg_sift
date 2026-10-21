@@ -6,7 +6,7 @@
 -- entities  ne ids; the facts per entity follow a zipf law (exponent 0.85) over a random permutation of the ids: at 3,000,000 facts and
 --           200,000 entities p50 5, p90 20, p99 135 and a largest entity of about 85,000 facts
 -- facts     nf rows in the order of id (the order of arrival: 85% of a day's facts arrive within 15 days, the rest up to 600 days late): dim_a_id,
---           30 sources (zipf 1.1), 40 languages (zipf 1.5), 3 tone_codes, a float8 score, a date from 2021-01-01 on (more facts towards the end),
+--           30 sources (zipf 1.1), 40 languages (zipf 1.5), 3 signals, a float8 score, a date from 2021-01-01 on (more facts towards the end),
 --           1.5% soft-deleted
 -- memberships  sets of entity ids drawn uniformly at random, sets overlap freely: 60 of 100, 20 of 1,000, 4 of 2,000, 4 of 5,000, 8 of 10,000, 2 of 100,000 (334,000 rows)
 \set ON_ERROR_STOP on
@@ -33,12 +33,12 @@ CREATE TEMP TABLE slice_total AS SELECT sum(power(r::float8, -0.85)) AS tot FROM
 ANALYZE slices, slice_total;
 
 CREATE TEMP TABLE facts_src AS
-SELECT row_number() OVER (ORDER BY created_at, rnd) AS id, dim_a_id, lookup_id, lang_id, tone_code, fact_date, score, deleted_at
+SELECT row_number() OVER (ORDER BY created_at, rnd) AS id, dim_a_id, foreign_id, lang_id, signal, fact_date, score, deleted_at
 FROM (
   SELECT s.id AS dim_a_id,
-         width_bucket(pg_temp.u(g.f, 2) * pg_temp.zipf_tot(30, 1.1), pg_temp.zipf_cum(30, 1.1))::int2 AS lookup_id,
+         width_bucket(pg_temp.u(g.f, 2) * pg_temp.zipf_tot(30, 1.1), pg_temp.zipf_cum(30, 1.1))::int2 AS foreign_id,
          width_bucket(pg_temp.u(g.f, 3) * pg_temp.zipf_tot(40, 1.5), pg_temp.zipf_cum(40, 1.5))::int2 AS lang_id,
-         (CASE WHEN pg_temp.u(g.f, 4) < .15 THEN 0 WHEN pg_temp.u(g.f, 5) < .18 THEN 1 ELSE 2 END)::int2 AS tone_code,
+         (CASE WHEN pg_temp.u(g.f, 4) < .15 THEN 0 WHEN pg_temp.u(g.f, 5) < .18 THEN 1 ELSE 2 END)::int2 AS signal,
          g.d AS fact_date,
          round(least(10, greatest(0, 8 + 1.8 * (pg_temp.u(g.f, 6) + pg_temp.u(g.f, 8) + pg_temp.u(g.f, 9) - 1.5) * 1.6))::numeric, 1)::float8 AS score,
          CASE WHEN pg_temp.u(g.f, 10) < 0.015 THEN timestamptz '2026-10-01' - pg_temp.u(g.f, 11) * interval '300 days' END AS deleted_at,
@@ -49,7 +49,7 @@ FROM (
   CROSS JOIN LATERAL (SELECT id FROM slices WHERE cum <= g.v ORDER BY cum DESC LIMIT 1) s
 ) q;
 
-CREATE TABLE facts AS SELECT id::bigint AS id, dim_a_id, lookup_id, lang_id, tone_code, fact_date, score, deleted_at FROM facts_src ORDER BY id;
+CREATE TABLE facts AS SELECT id::bigint AS id, dim_a_id, foreign_id, lang_id, signal, fact_date, score, deleted_at FROM facts_src ORDER BY id;
 
 CREATE TABLE memberships (group_id int, dim_a_id int, deleted_at timestamptz);
 DO $$

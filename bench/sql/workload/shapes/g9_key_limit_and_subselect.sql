@@ -2,9 +2,9 @@
 -- GAP 9: more than 5 group keys in one scan silently falls back to the heap (no message, no setting to raise it).
 -- Expected: SiftAgg for 6 keys (or an EXPLAIN note that names the limit).
 \echo -- 5 keys: pushed
-EXPLAIN (COSTS OFF) SELECT dim_a_id, lookup_id, foreign_id_b, country_code, label_a, count(*) FROM t_work r WHERE deleted_at IS NULL GROUP BY 1, 2, 3, 4, 5;
+EXPLAIN (COSTS OFF) SELECT dim_a_id, foreign_id, foreign_id_b, country_code, mix, count(*) FROM t_work r WHERE deleted_at IS NULL GROUP BY 1, 2, 3, 4, 5;
 \echo -- 6 keys: not pushed
-EXPLAIN (COSTS OFF) SELECT dim_a_id, lookup_id, foreign_id_b, country_code, label_a, item_date, count(*) FROM t_work r WHERE deleted_at IS NULL GROUP BY 1, 2, 3, 4, 5, 6;
+EXPLAIN (COSTS OFF) SELECT dim_a_id, foreign_id, foreign_id_b, country_code, mix, item_date, count(*) FROM t_work r WHERE deleted_at IS NULL GROUP BY 1, 2, 3, 4, 5, 6;
 -- GAP 10 (minor): `= ANY(ARRAY(SELECT ...))` is not pushed (InitPlan array), while `IN (SELECT ...)` is (Lookup Joins: t_work_dim (semi)) and so is a constant array.
 -- Expected: the same semi lookup for the ARRAY(sub-select) spelling, which the query builders emit for `where_any`.
 \echo -- sub-select IN: pushed

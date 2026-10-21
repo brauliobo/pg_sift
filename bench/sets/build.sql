@@ -8,9 +8,9 @@ SET max_parallel_maintenance_workers = 2;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 
 DROP TABLE IF EXISTS events CASCADE;
-CREATE TABLE events AS SELECT id, dim_a_id, channel_id, lang_id, tone_code, event_date, score, deleted_at FROM events_src ORDER BY id;
+CREATE TABLE events AS SELECT id, dim_a_id, channel_id, lang_id, signal, event_date, score, deleted_at FROM events_src ORDER BY id;
 CREATE INDEX ON events (dim_a_id, event_date);
 CREATE INDEX ON events (event_date);
-CREATE INDEX events_col ON events USING sift_col (dim_a_id, channel_id, lang_id, tone_code, event_date, score, deleted_at);
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, channel_id, lang_id, signal, event_date, score, deleted_at);
 VACUUM (ANALYZE) events, dim_a, group_members, cities, countries;
 SELECT relname, pg_size_pretty(pg_relation_size(oid)) AS size FROM pg_class WHERE relname IN ('events', 'events_col', 'dim_a', 'group_members') ORDER BY 1;
