@@ -202,7 +202,8 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 	int			ng = h->ngroups,
 				nw = (ng + 63) / 64;
 	uint64	   *keep = NULL;
-	uint32	   *data = NULL;
+	void	   *data = NULL;
+	bool		wide = ex->lay->leaf[ex->pa.dim].vtype == SCV_I64;
 
 	for (int i = 0; i < s->npred; i++)
 	{
@@ -214,13 +215,19 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 
 			keep = MemoryContextAlloc(ex->ucxt, (nw + PADW) * sizeof(uint64));
 			fill_ones(keep, ng);
-			data = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, ng * sizeof(uint32) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+			data = (void *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, ng * sizeof(int64) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 			for (int k = 0; k < ng - h->has_null; k++)
-				data[k] = (uint32) h->key[k];
+			{
+				if (wide)
+					((int64 *) data)[k] = h->key[k];
+				else
+					((uint32 *) data)[k] = (uint32) h->key[k];
+			}
 			if (h->has_null)
 			{
 				isnull[ng - 1] = 1;
-				data[ng - 1] = h->dict ? h->dict->n : 0;
+				if (!wide)
+					((uint32 *) data)[ng - 1] = h->dict ? h->dict->n : 0;
 			}
 			ex->uvec[ex->pa.dim] = (SiftSrcVec) {data, isnull, h->dict, ng, NULL};
 			ex->uvec_ok[ex->pa.dim] = true;
@@ -709,7 +716,19 @@ preagg_unit(AggExec *ex)
 {
 	if (ex->pa.list >= 0 && rollup_skip(ex))
 		return false;
-	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_zones(ex))
+	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex))
+		return false;
+	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
+	{
+		bool		ok;
+
+		/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
+		ex->pa.dim = ex->pa.hdim;
+		ok = preagg_zones(ex) && preagg_hist(ex);
+		ex->pa.dim = -1;
+		return ok;
+	}
+	if (!preagg_zones(ex))
 		return false;
 	if (ex->pa.list < 0)
 		return ex->pa.dim < 0 ? preagg_sums(ex) : preagg_hist(ex);
@@ -751,8 +770,17 @@ preagg_init(AggExec *ex)
 			eval_operand(ex, p, st);
 		if (ex->pa_on && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
 		{
-			ex->pa_on = false;
-			ex->pa_why = SPW_ZONE;
+			/* the groups of the dim's histogram test an IN list with gaps, which gives the zones no interval: the sums cannot answer */
+			if (!st->cnull && p->leaf == ex->pa.hdim)
+			{
+				ex->pa.dim = ex->pa.hdim;
+				ex->pa.hdim = -1;
+			}
+			else
+			{
+				ex->pa_on = false;
+				ex->pa_why = SPW_ZONE;
+			}
 		}
 	}
 }
