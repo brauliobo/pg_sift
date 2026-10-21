@@ -32,6 +32,26 @@ an excluded tuple does not evaluate a filter expression that could raise an erro
 Inner lookups are ordered by their dependencies within each join boundary. Statement-level materialized CTEs can be referenced from nested queries.
 Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates`, `agg_lookup_dependencies` and `agg_statement_cte_children`.
 
+## Join key filters and shared lookups
+
+An inner or semi lookup join whose key is one integer or date leaf of the index (`JOIN stores s ON s.id = o.store_id`, `IN (SELECT ..)`, `EXISTS`) needs a row of the table with that
+key, so the keys of the table, loaded when the scan starts with its own conditions already applied, are a conjunct of the scan: `leaf IN (keys)`. The conjunct is a byte table over the
+range of the keys (a range wider than 4 million values keeps the generic join), the same test, zone pruning and source filters as an `IN` list of constants: a unit whose zone misses the
+range is not read (`Units Pruned`) and the other rows are tested as a set before a tuple is made, where the join would resolve every tuple through the combo cache. A join on several
+key columns adds one conjunct per integer key. `EXPLAIN ANALYZE` shows `Join Key Filters`; `sift.agg_join_filter = off` gives the plain join back. The rows, the errors and the
+order of evaluation seen by an expression are those of the normal plan: a tuple the join drops never reaches an expression. `LEFT`, `RIGHT`, `FULL` and anti joins, text keys,
+element-level leaves, a plan with a preserved side and a top-N scan have no such conjunct. Test `agg_join_filter`, isolation spec `agg_join_filter`, fixtures `j_join_filter_*`, row J28.
+
+A combo of one input (a join key, a grouping expression of one leaf) finds the entry of an id below 4 million by array index; a larger or negative id, and combos of several inputs, use the hash table.
+
+`UNION ALL` arms (or a CTE read several times) of one statement that join the same table with the same key and output columns and the same conditions on it read the same rows in the
+same snapshot: the first node loads them into a context of the statement and the others use that table (`sift.agg_share_lookups`, `Shared Lookup Tables`). Arms that read other columns
+or conditions of the table, a table that is a plan, a preserved side and a parallel worker load their own; nothing is kept between statements. Test `agg_share_lookups`, isolation spec
+`agg_share_lookups`, fixture `j_share_arms`, row J29.
+
+Measured on a 500,000-row fact table and a 6,000-row entity table (median of 7, the scan alone): a selective inner join that returns a column 6.4 to 3.0 ms, a country-wide one 5.1 to 3.3 ms,
+a non-selective one 10.2 to 8.9 ms (the combo entry by index), an inner join to `sources` on a 99,000-review sample 7.8 to 3.6 ms.
+
 ## Outer joins that keep the other table
 
 A `RIGHT JOIN` or `FULL JOIN` to a table, and a `LEFT JOIN` whose right side is the indexed table, aggregate over the table that keeps its rows (`EXPLAIN`
