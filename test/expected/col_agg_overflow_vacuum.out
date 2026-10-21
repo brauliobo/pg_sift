@@ -54,7 +54,7 @@ FROM v_t t, jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n'
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS float_pushed, same(agg_q('l.k, avg(l.n)')) AS float_same;
  float_pushed | float_same 
 --------------+------------
- f            | t
+ t            | t
 (1 row)
 
 -- a live row that holds a string, updated without touching an indexed column (a HOT update: the TID of the index is now a redirect to the new
@@ -72,7 +72,7 @@ VACUUM (DISABLE_PAGE_SKIPPING) v_t;
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS hot_row_pushed, same(agg_q('l.k, avg(l.n)')) AS hot_row_same;
  hot_row_pushed | hot_row_same 
 ----------------+--------------
- f              | t
+ t              | t
 (1 row)
 
 -- and the row is still in the index
@@ -88,7 +88,7 @@ VACUUM (DISABLE_PAGE_SKIPPING) v_t;
 SELECT pushed(agg_q('l.k, avg(l.n)')) AS live_row_pushed, same(agg_q('l.k, avg(l.n)')) AS live_row_same;
  live_row_pushed | live_row_same 
 -----------------+---------------
- f               | t
+ t               | t
 (1 row)
 
 -- repair the last one: only dead rows hold a string, and the VACUUM of the index lets the scan read the leaf again

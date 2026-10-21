@@ -61,49 +61,49 @@ SELECT pushed(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS int2_push
        same_error(lines_q('h', 'int2', 'l.k, sum(l.h)')) AS int2_error;
  int2_pushed | int2_same | int2_error 
 -------------+-----------+------------
- f           | t         | t
+ t           | t         | t
 (1 row)
 
 SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)', 't.id < 1000')) AS int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)', 't.id < 1000')) AS int4_same,
        same_error(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)')) AS int4_error;
  int4_pushed | int4_same | int4_error 
 -------------+-----------+------------
- f           | t         | t
+ t           | t         | t
 (1 row)
 
 SELECT pushed(lines_q('b', 'int8', 'l.k, sum(l.b)', 't.id < 1000')) AS int8_pushed, same(lines_q('b', 'int8', 'l.k, sum(l.b)', 't.id < 1000')) AS int8_same,
        same_error(lines_q('b', 'int8', 'l.k, sum(l.b)')) AS int8_error;
  int8_pushed | int8_same | int8_error 
 -------------+-----------+------------
- f           | t         | t
+ t           | t         | t
 (1 row)
 
 SELECT pushed(lines_q('f', 'float4', 'l.k, avg(l.f)', 't.id < 1000')) AS float4_pushed, same(lines_q('f', 'float4', 'l.k, avg(l.f)', 't.id < 1000')) AS float4_same,
        same_error(lines_q('f', 'float4', 'l.k, avg(l.f)')) AS float4_error;
  float4_pushed | float4_same | float4_error 
 ---------------+-------------+--------------
- f             | t           | t
+ t             | t           | t
 (1 row)
 
 SELECT pushed(lines_q('d', 'float8', 'l.k, avg(l.d)', 't.id < 1000')) AS float8_pushed, same(lines_q('d', 'float8', 'l.k, avg(l.d)', 't.id < 1000')) AS float8_same,
        same_error(lines_q('d', 'float8', 'l.k, avg(l.d)')) AS float8_error;
  float8_pushed | float8_same | float8_error 
 ---------------+-------------+--------------
- f             | t           | t
+ t             | t           | t
 (1 row)
 
 -- as a group key and in a filter
 SELECT pushed(lines_q('n', 'int4', 'l.n, count(*)', 't.id < 1000', 'l.n')) AS key_pushed, same(lines_q('n', 'int4', 'l.n, count(*)', 't.id < 1000', 'l.n')) AS key_same;
  key_pushed | key_same 
 ------------+----------
- f          | t
+ t          | t
 (1 row)
 
 SELECT pushed(lines_q('n', 'int4', 'l.k, count(*) FILTER (WHERE l.n > 50)', 't.id < 1000')) AS filter_pushed,
        same(lines_q('n', 'int4', 'l.k, count(*) FILTER (WHERE l.n > 50)', 't.id < 1000')) AS filter_same;
  filter_pushed | filter_same 
 ---------------+-------------
- f             | t
+ t             | t
 (1 row)
 
 -- the leaf that holds no such value stays on the scan, whatever the other leaves hold
@@ -132,13 +132,13 @@ INSERT INTO r_t VALUES (100000, 1, '{"lines": [{"k": "a", "h": 1, "n": 500000000
 SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS buffer_int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS buffer_int4_same;
  buffer_int4_pushed | buffer_int4_same 
 --------------------+------------------
- f                  | t
+ t                  | t
 (1 row)
 
 SELECT pushed(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS buffer_int2_pushed, same(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS buffer_int2_same;
  buffer_int2_pushed | buffer_int2_same 
 --------------------+------------------
- f                  | t
+ t                  | t
 (1 row)
 
 SELECT sift.col_promote('r_t_col') >= 0 AS promoted;
@@ -150,7 +150,7 @@ SELECT sift.col_promote('r_t_col') >= 0 AS promoted;
 SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS promoted_int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS promoted_int4_same;
  promoted_int4_pushed | promoted_int4_same 
 ----------------------+--------------------
- f                    | t
+ t                    | t
 (1 row)
 
 -- the shared database of a plain installcheck goes on with the next test

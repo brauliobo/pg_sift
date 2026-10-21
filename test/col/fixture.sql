@@ -374,6 +374,23 @@ CREATE FUNCTION coldiff.fx_eo(first_id int, last_id int) RETURNS bigint LANGUAGE
 	SELECT count(*) FROM ins $$;
 SELECT coldiff.fx_eo(1, greatest(2000, :n / 2));
 
+-- documents that hold what a typed leaf cannot store (docs/COL-DIRTY-UNITS.md): the root that is an array, a string, a number or a JSON null, a number or a
+-- numeric string where a text, an int4, a float8 or a bool is declared. The rows of grp 6 whose id is a multiple of 13 hold a string that is no number
+-- (the error SQL raises for a row that reaches jsonb_to_recordset); the queries that must not raise filter them out with grp <> 6
+DROP TABLE IF EXISTS t_rc;
+CREATE TABLE t_rc (id integer PRIMARY KEY, grp integer NOT NULL, doc jsonb);
+CREATE FUNCTION coldiff.rc_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 17 WHEN 0 THEN '[1, 2]'::jsonb WHEN 1 THEN '"text"'::jsonb WHEN 2 THEN '5'::jsonb WHEN 3 THEN 'null'::jsonb
+		ELSE jsonb_build_object('l', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+			'k', CASE WHEN (i + j) % 11 = 0 THEN to_jsonb(j) ELSE to_jsonb('k' || (i + j) % 4) END,
+			'v', CASE WHEN i % 7 = 6 AND i % 13 = 0 AND j = 1 THEN to_jsonb('abc'::text) WHEN (i * 3 + j) % 7 = 0 THEN to_jsonb(((i + j) % 9)::text) ELSE to_jsonb(((i + j) % 9) * 0.5) END,
+			'n', CASE WHEN (i + j * 2) % 13 = 0 THEN to_jsonb(j::text) ELSE to_jsonb((i + j) % 5) END,
+			'ok', CASE WHEN (i + j) % 19 = 0 THEN to_jsonb('t'::text) ELSE to_jsonb((i + j) % 2 = 0) END) ORDER BY j), '[]') FROM generate_series(1, 1 + i % 4) j)) END $$;
+CREATE FUNCTION coldiff.fx_rc(first_id int, last_id int) RETURNS bigint LANGUAGE sql AS $$
+	WITH ins AS (INSERT INTO t_rc SELECT i, i % 7, coldiff.rc_doc(i) FROM generate_series(first_id, last_id) i RETURNING 1)
+	SELECT count(*) FROM ins $$;
+SELECT coldiff.fx_rc(1, greatest(2000, :n / 2));
+
 -- partitioned by year (the partition key is part of the primary key)
 CREATE TABLE orders_part (LIKE orders INCLUDING DEFAULTS) PARTITION BY RANGE (placed_at);
 CREATE TABLE orders_part_2022 PARTITION OF orders_part FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');
@@ -432,6 +449,7 @@ CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
 			   generate_series(m + 1, m + greatest(1, (frac * m)::int)) i RETURNING 1)
 	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) + (SELECT count(*) FROM j) +
 		   (SELECT coldiff.fx_eo(e + 1, e + greatest(1, (frac * e)::int)) FROM (SELECT max(id) AS e FROM t_eo) z) +
+		   (SELECT coldiff.fx_rc(r + 1, r + greatest(1, (frac * r)::int)) FROM (SELECT max(id) AS r FROM t_rc) q) +
 		   (SELECT coldiff.fx_part(p + 1, p + greatest(1, (frac * p)::int), 7) FROM (SELECT max(id) AS p FROM t_part) y) +
 		   (SELECT coldiff.fx_wl(w + 1, w + greatest(1, (frac * w)::int), 7) FROM (SELECT max(id) AS w FROM t_wl) v)
 	FROM (SELECT max(id) AS m FROM orders) x $$;
@@ -448,9 +466,10 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 p AS (UPDATE t_jp SET doc = coldiff.jp_doc(id + 1), mdoc = coldiff.jp_doc(id + 2) WHERE coldiff.sample(id, 906, frac) RETURNING 1),
 		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1),
 		 eo AS (UPDATE t_eo SET r4 = (r4 + 1) % 6, rf = rf + 0.5, doc = coldiff.eo_doc(id + 1) WHERE coldiff.sample(id, 911, frac) RETURNING 1),
+		 rc AS (UPDATE t_rc SET doc = coldiff.rc_doc(id + 7) WHERE coldiff.sample(id, 917, frac) RETURNING 1),
 		 wl AS (UPDATE t_wl SET entity_id = 1 + entity_id % 30, item_date = item_date + 1, ratings = coldiff.wl_ratings(id + 1, 3), doc = coldiff.wl_doc(id + 1, 3)
 				WHERE coldiff.sample(id, 913, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
+	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM rc) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
 CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM orders WHERE coldiff.sample(id, 903, frac) RETURNING 1),
@@ -458,9 +477,10 @@ CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 		 p AS (DELETE FROM t_jp WHERE coldiff.sample(id, 907, frac) RETURNING 1),
 		 pt AS (DELETE FROM t_part WHERE coldiff.sample(id, 909, frac) RETURNING 1),
 		 eo AS (DELETE FROM t_eo WHERE coldiff.sample(id, 912, frac) RETURNING 1),
+		 rc AS (DELETE FROM t_rc WHERE coldiff.sample(id, 918, frac) RETURNING 1),
 		 wl AS (DELETE FROM t_wl WHERE coldiff.sample(id, 914, frac) RETURNING 1),
 		 ws AS (UPDATE t_wl SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 915, frac) AND deleted_at IS NULL RETURNING 1)
-	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM ws) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
+	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM ws) + (SELECT count(*) FROM rc) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
 -- columns that no index holds (no new index entries: a HOT update when the page has room)
 CREATE FUNCTION coldiff.sc_hot(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1),
