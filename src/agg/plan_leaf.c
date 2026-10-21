@@ -660,6 +660,39 @@ nulltest_mutator(Node *n, AggCtx *c)
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
 
+/*
+ * jsonb_exists(doc, 'k') of the document whose list is unnested: a row of the list exists only where the list was read from an object, whose
+ * key the index holds as the JSON type of its member (a JSON null member exists, a missing one has no type). Any other document (an array
+ * holding the string, the string itself) answers the test and the index does not tell it, so the test is not rewritten elsewhere.
+ */
+static Node *
+exists_mutator(Node *n, AggCtx *c)
+{
+	JsonRef		r = {0};
+	Node	   *doc,
+			   *key;
+
+	if (n == NULL)
+		return NULL;
+	if (func_of(n) == F_JSONB_EXISTS && c->group >= 0 && leaf_of(c, c->group)->path != NIL)
+	{
+		doc = strip_relabel(linitial(func_args(n)));
+		key = strip_relabel(lsecond(func_args(n)));
+		if (IsA(key, Const) && !((Const *) key)->constisnull && json_access(c, doc, &r) && r.att == leaf_of(c, c->group)->attno && r.path == NIL)
+		{
+			NullTest   *out = makeNode(NullTest);
+			Node	   *field = (Node *) makeFuncExpr(F_JSONB_OBJECT_FIELD, JSONBOID, list_make2(doc, key), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+
+			out->arg = (Expr *) makeFuncExpr(F_JSONB_TYPEOF, TEXTOID, list_make1(field), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+			out->nulltesttype = IS_NOT_NULL;
+			out->location = -1;
+			if (typeof_leaf(c, field) >= 0)
+				return (Node *) out;
+		}
+	}
+	return expression_tree_mutator(n, exists_mutator, c);
+}
+
 /* the RTE_GROUP of the grouping sets of the query, 0 when there are none */
 static Index
 group_rti(AggCtx *c)
@@ -755,5 +788,5 @@ normalize_expr(AggCtx *c, Node *n)
 	if (c->root->group_rtindex > 0)
 		n = remove_nulling_relids(n, bms_make_singleton(c->root->group_rtindex), NULL);
 #endif
-	return nulltest_mutator(n, c);
+	return nulltest_mutator(exists_mutator(n, c), c);
 }

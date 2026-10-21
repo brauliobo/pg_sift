@@ -70,7 +70,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | differences 
 --------+-------------
- f      |           0
+ t      |           0
 (1 row)
 
 SELECT * FROM check_query($q$
