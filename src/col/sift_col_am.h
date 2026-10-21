@@ -94,6 +94,10 @@ extern Interval *sift_col_lanes_interval(int64 hi, int64 lo, int64 md);
 /* The leaves of one index tuple (values/isnull as the AM callbacks receive them), allocated in mcxt */
 extern void sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row,
 							  MemoryContext mcxt);
+/* The same with the values of the document read as a query's SQL reads them (sift_col_shred_row_rc) */
+struct SiftShredRecheck;
+extern void sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row, MemoryContext mcxt,
+								 struct SiftShredRecheck *rc);
 
 /* sift_col_widescan.c: the hooks of the column source for wide integers (two INT lanes): the pair test of a predicate, and the zone pruning of one */
 struct SiftColSegment;

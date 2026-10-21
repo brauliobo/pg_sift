@@ -2057,10 +2057,10 @@ zone_inline_matches(const SiftColPred *p, const SiftCZone *z)
 bool
 sift_ctest_zone(const SiftCTest *t, const SiftCZone *z)
 {
+	if (z->flags & SIFT_COLZ_OVERFLOW)	/* the zone does not describe the heap: the recheck of the unit's overflow rows may find the constant */
+		return true;
 	if (t->kind == SIFT_CT_NONE && !(z->flags & SIFT_COLZ_INLINE))	/* NONE: no constant is in the dictionary, which an inline unit does not use */
 		return false;
-	if (z->flags & SIFT_COLZ_OVERFLOW)
-		return true;
 	if (t->kind == SIFT_CT_ISNULL)
 		return z->nnull > 0;
 	if (z->nnull == z->nvals)

@@ -306,12 +306,14 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 }
 
 void
-sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first,
-				   MemoryContext mcxt)
+sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first,
+					  MemoryContext mcxt, SiftShredRecheck *rc)
 {
 	SiftShred  *sh = a->sh;
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 
+	if (rc)
+		sift_shred_recheck_begin(rc);
 	sift_shred_begin(sh);
 	sift_shred_enter(sh, false);
 	for (int i = 1; i <= a->natts; i++)
@@ -322,7 +324,7 @@ sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnu
 			continue;
 		k = sift_shred_key(sh, a->attr[i].name, strlen(a->attr[i].name));
 		if (k != SIFT_SHRED_SKIP)
-			sift_shred_container(sh, &DatumGetJsonbP(values[i - 1])->root);
+			sift_shred_container_rc(sh, &DatumGetJsonbP(values[i - 1])->root, rc);
 		if (k == SIFT_SHRED_STOP)
 			break;
 	}
@@ -343,4 +345,28 @@ sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnu
 		}
 	}
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt)
+{
+	sift_col_shred_row_rc(a, values, isnull, row, first, mcxt, NULL);
+}
+
+/* The recheck of the rows of the adapter's spec (sift_shred_pg.h): how the query reads leaf i of attribute attno, a column or a list of the shredder */
+SiftShredRecheck *
+sift_col_shred_recheck_create(MemoryContext mcxt, const SiftColShredAdapter *a)
+{
+	return sift_shred_recheck_create(mcxt, a->spec);
+}
+
+void
+sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode)
+{
+	const ShredLeaf *l = &a->attr[attno].leaf[i];
+
+	if (l->kind == LEAF_GROUP)
+		rc->grp[l->group] = mode;
+	else if (l->kind != LEAF_MAP_KEY)
+		rc->col[l->col] = mode;
 }

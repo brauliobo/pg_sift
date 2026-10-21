@@ -419,6 +419,7 @@ typedef struct SiftAggSpec
 	int			group;			/* leaf id of the array/object leaf the query unnests, -1: row level */
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
+	uint8	   *recheck;		/* per entry of leaves: how the query reads the leaf when the source holds a value it cannot store (SiftSrcRecheck, SRK_NONE: such a value is an error) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;
 	int			nkeys;

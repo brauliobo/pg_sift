@@ -52,6 +52,12 @@ extern int	sift_col_shred_nleaves(const SiftColShredAdapter *a, int attno);
 extern void sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *def);
 /* All the shredded attributes of one tuple (values/isnull as the index build gives them, indexed by attribute) into row->val / row->elem, whose leaf ids start at first[attno] */
 extern void sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt);
+/* The same read as the SQL of a query reads the values; rc is made by sift_col_shred_recheck_create and told how the query reads each leaf by _set (mode: SiftRecheckCol for a column, SiftRecheckGroup for a list) */
+struct SiftShredRecheck;
+extern void sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt,
+								  struct SiftShredRecheck *rc);
+extern struct SiftShredRecheck *sift_col_shred_recheck_create(MemoryContext mcxt, const SiftColShredAdapter *a);
+extern void sift_col_shred_recheck_set(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode);
 
 /* ---------------------------------------------------------------------------
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in sift_handler.c)

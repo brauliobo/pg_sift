@@ -181,6 +181,7 @@ typedef struct SiftShred
 	int			nframes;
 	int			maxframes;
 	bool		root_done;
+	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, sift_shred_recheck.h): no LENGTH overflow */
 	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 } SiftShred;
 
@@ -199,6 +200,25 @@ extern const char *sift_shred_object_key(const SiftShred *sh, int i, int *len);
 extern bool sift_shred_wants_number(const SiftShred *sh);
 /* the target is an astext column: pass the number as `->>` prints it (numeric_out), not normalized */
 extern bool sift_shred_wants_number_text(const SiftShred *sh);
+/*
+ * What the next value binds to, for a driver that decides per target (the recheck walk): a leaf (*id: its column), a list or map (*id:
+ * its group), an object (*id: the group whose element it sits in) that is an element of a list or map or is not, or nothing (not declared, or cut).
+ */
+typedef enum SiftShredTarget
+{
+	SIFT_SHRED_T_NONE,
+	SIFT_SHRED_T_LEAF,
+	SIFT_SHRED_T_LIST,
+	SIFT_SHRED_T_ELEM,
+	SIFT_SHRED_T_OBJECT
+} SiftShredTarget;
+
+extern SiftShredTarget sift_shred_target(const SiftShred *sh, int *id);
+/* The value the next event stands for is already of the leaf's type: a bool, integer or float leaf takes it as it is (no parsing, no overflow) */
+extern void sift_shred_value_i64(SiftShred *sh, int64 v);
+extern void sift_shred_value_f64(SiftShred *sh, double v);
+/* The list or map the current position is an element of cannot be read as the query does (SQL raises for it): the list is OVERFLOW, its elements are dropped by the consumer */
+extern void sift_shred_poison(SiftShred *sh);
 extern void sift_shred_null(SiftShred *sh);
 extern void sift_shred_bool(SiftShred *sh, bool b);
 extern void sift_shred_string(SiftShred *sh, const char *s, int len);

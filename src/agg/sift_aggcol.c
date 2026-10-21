@@ -12,8 +12,13 @@
 #include "access/genam.h"
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_type.h"
+#include "executor/executor.h"
+#include "nodes/execnodes.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "sift_aggkern.h"
@@ -24,8 +29,11 @@
 #include "sift_col.h"
 #include "sift_col_gpu.h"
 #include "sift_col_pagg.h"
+#include "sift_col_am.h"
+#include "sift_col_enc.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
+#include "sift_shred_pg.h"
 
 typedef struct ColLeafBuf
 {
@@ -35,8 +43,40 @@ typedef struct ColLeafBuf
 	uint64	   *ovf;			/* numeric leaves: the NaNs of the heap */
 } ColLeafBuf;
 
+/*
+ * The recheck of the rows that hold, in a leaf the query reads, a value the leaf cannot store: `live` takes them out of
+ * the stored unit and keeps their TIDs, the next unit is these rows read again from the heap as the query's SQL reads them.
+ */
+typedef struct ColRecheck
+{
+	Relation	heap;
+	Relation	index;
+	Snapshot	snap;
+	MemoryContext life;			/* of the source */
+	SiftShredRecheck *rc;
+	int			nleaf;
+	int			leaf[SIFT_COLSRC_MAX_LEAVES];	/* the leaves with a mode */
+	uint64		gen;			/* the unit (ColSource.ugen) the rows were collected for */
+	uint64	   *flag;			/* its flagged rows, live or not */
+	uint32		nrow;
+	bool		taken;			/* the live ones are in tid, to be returned as the next unit */
+	uint32		sb;
+	uint32		npend;
+	ItemPointerData *tid;
+	bool		active;			/* the unit the source is at is a recheck unit */
+	int64		nrechecked;		/* rows read again, in all */
+	MemoryContext cxt;			/* the rows of the recheck unit, reset by the next one */
+	MemoryContext tmp;			/* one row */
+	ErrorData **err;			/* per row of the recheck unit: the error SQL raises for it (NULL: none) */
+	IndexInfo  *info;
+	EState	   *estate;
+	TupleTableSlot *slot;
+	IndexFetchTableData *fetch;
+} ColRecheck;
+
 typedef struct ColSource
 {
+	ColRecheck *rck;			/* NULL: no leaf is rechecked */
 	SiftColSource *cs;
 	SiftColUnit unit;
 	SiftSrcLayout *lay;
@@ -44,6 +84,9 @@ typedef struct ColSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
 	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
+	Relation	heap;
+	Relation	index;
+	Snapshot	snapshot;
 	SiftAggSel	sel;			/* the match set the units are restricted to */
 	int			nflt;			/* the filters set_filters accepted, as engine predicates */
 	SiftColPred *fpred;
@@ -60,6 +103,9 @@ typedef struct ColSource
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
 	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];	/* the dictionaries of the dims of the last unit_rollup */
 } ColSource;
+
+static bool col_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
+static void recheck_close(ColRecheck *k);
 
 #define COL_MAX_STR_PRUNE	16
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
@@ -280,6 +326,9 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	ColSource  *src = palloc0(sizeof(ColSource));
 
 	src->cxt = mcxt;
+	src->heap = heap;
+	src->index = index;
+	src->snapshot = snapshot;
 	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
@@ -310,7 +359,11 @@ col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 static void
 col_close(void *impl)
 {
-	sift_col_close(((ColSource *) impl)->cs);
+	ColSource  *src = impl;
+
+	if (src->rck)
+		recheck_close(src->rck);
+	sift_col_close(src->cs);
 }
 
 static const SiftSrcLayout *
@@ -458,12 +511,237 @@ col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 	return rows_left(unit, rows);
 }
 
+/* ---- the recheck of the rows that hold a value a leaf cannot store ---- */
+
+static ColRecheck *
+recheck_init(ColSource *src)
+{
+	MemoryContext old = MemoryContextSwitchTo(src->cxt);
+	ColRecheck *k = palloc0(sizeof(ColRecheck));
+	SiftColRel *r = sift_col_rel(src->index);
+
+	k->heap = src->heap;
+	k->index = src->index;
+	k->snap = src->snapshot;
+	k->life = src->cxt;
+	k->cxt = AllocSetContextCreate(src->cxt, "sift recheck rows", ALLOCSET_DEFAULT_SIZES);
+	k->tmp = AllocSetContextCreate(src->cxt, "sift recheck row", ALLOCSET_DEFAULT_SIZES);
+	k->rc = sift_col_shred_recheck_create(src->cxt, r->shred);
+	k->rc->mcxt = k->cxt;
+	src->rck = k;
+	MemoryContextSwitchTo(old);
+	return k;
+}
+
+static void
+col_set_recheck(void *impl, int leaf, int mode)
+{
+	ColSource  *src = impl;
+	ColRecheck *k = src->rck ? src->rck : recheck_init(src);
+	SiftColRel *r = sift_col_rel(src->index);
+	int			att = src->lay->leaf[leaf].attno;
+
+	if (mode == SRK_NONE)
+		return;
+	sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : SRC_TEXTIO);
+	k->leaf[k->nleaf++] = leaf;
+}
+
+/* the rows whose slot of the leaf overflowed, an element of a child leaf counting for its row */
+static void
+recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
+{
+	const SiftColUnit *cu = &src->unit;
+	uint32		n;
+	const uint64 *ovf = sift_col_ovf_slots(cu, leaf, &n);
+	int			parent = src->lay->leaf[leaf].parent;
+	const uint32 *par = NULL,
+			   *counts;
+
+	if (ovf == NULL)
+		return;
+	if (parent >= 0)
+		sift_col_group_parents(cu, parent, &par, &counts);
+	for (uint32 w = 0; w < (n + 63) / 64; w++)
+		for (uint64 b = ovf[w]; b; b &= b - 1)
+		{
+			uint32		e = w * 64 + pg_rightmost_one_pos64(b),
+						r = par ? par[e] : e;
+
+			rows[r >> 6] |= UINT64CONST(1) << (r & 63);
+		}
+}
+
+/*
+ * Called by `live` for the stored unit the source is at: the rows that hold such a value and are live leave `bits`, their TIDs wait for the next
+ * call of col_next. Once per unit: the flagged rows are kept, a second call only takes them out of its bits again.
+ */
+static void
+recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
+{
+	ColRecheck *k = src->rck;
+	uint32		nw = SIFT_COL_NWORDS(nrow);
+
+	if (k->gen != src->ugen)
+	{
+		bool		any = false;
+
+		k->gen = src->ugen;
+		k->taken = false;
+		k->nrow = nrow;
+		k->flag = k->flag ? repalloc(k->flag, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
+		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
+		for (int i = 0; i < k->nleaf; i++)
+			if (col_overflow(src, NULL, k->leaf[i]))
+			{
+				recheck_flag_leaf(src, k->leaf[i], k->flag);
+				any = true;
+			}
+		if (!any)
+			return;
+	}
+	for (uint32 w = 0; w < nw; w++)
+		if (k->flag[w] & bits[w])
+		{
+			if (!k->taken)
+			{
+				uint32		m = 0;
+				uint32	   *ords;
+
+				for (uint32 v = 0; v < nw; v++)
+					m += pg_popcount64(k->flag[v] & bits[v]);
+				ords = palloc(m * sizeof(uint32));
+				m = 0;
+				for (uint32 v = 0; v < nw; v++)
+					for (uint64 b = k->flag[v] & bits[v]; b; b &= b - 1)
+						ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
+				k->tid = k->tid ? repalloc(k->tid, m * sizeof(ItemPointerData)) : MemoryContextAlloc(src->cxt, m * sizeof(ItemPointerData));
+				sift_col_row_tids(&src->unit, ords, m, k->tid);
+				pfree(ords);
+				k->npend = m;
+				k->sb = src->unit.sb;
+				k->taken = true;
+			}
+			break;
+		}
+	for (uint32 w = 0; w < nw; w++)
+		bits[w] &= ~k->flag[w];
+}
+
+/* the tuple the TID names for the snapshot (the version an index scan would find, following a HOT chain), in k->slot; false: no version is visible */
+static bool
+recheck_fetch(ColRecheck *k, ItemPointer tid)
+{
+	bool		call_again = false,
+				all_dead;
+
+	if (k->slot == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(k->life);
+
+		k->fetch = table_index_fetch_begin(k->heap);
+		k->slot = table_slot_create(k->heap, NULL);
+		k->estate = CreateExecutorState();
+		k->info = BuildIndexInfo(k->index);
+		MemoryContextSwitchTo(old);
+	}
+	ExecClearTuple(k->slot);
+	return table_index_fetch_tuple(k->fetch, tid, k->snap, k->slot, &call_again, &all_dead);
+}
+
+/* the rows of the TIDs read again from the heap, with the values of the document as the query's SQL gives them, as the batch of the unit that follows; NULL: none is visible */
+static SiftColBatch *
+recheck_batch(ColSource *src)
+{
+	ColRecheck *k = src->rck;
+	SiftColRel *r = sift_col_rel(k->index);
+	SiftColBatch *b;
+	uint32		n = 0;
+
+	MemoryContextReset(k->cxt);
+	b = sift_cbatch_create(k->cxt, sift_col_schema(src->cs));
+	sift_cbatch_reset(b, k->sb);
+	k->err = MemoryContextAllocZero(k->cxt, Max(k->npend, 1) * sizeof(ErrorData *));
+	for (uint32 i = 0; i < k->npend; i++)
+	{
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		SiftColRow	row;
+		MemoryContext old;
+
+		if (!recheck_fetch(k, &k->tid[i]))
+			continue;
+		GetPerTupleExprContext(k->estate)->ecxt_scantuple = k->slot;
+		old = MemoryContextSwitchTo(k->tmp);
+		FormIndexDatum(k->info, k->slot, k->estate, values, isnull);
+		sift_col_make_row_rc(r, &k->tid[i], values, isnull, &row, k->tmp, k->rc);
+		sift_cbatch_add(b, &row);
+		MemoryContextSwitchTo(old);
+		k->err[n++] = k->rc->err;
+		ResetPerTupleExprContext(k->estate);
+		MemoryContextReset(k->tmp);
+	}
+	k->npend = 0;
+	k->nrechecked += n;
+	return n > 0 ? b : NULL;
+}
+
+/* the unit that follows a stored one that had rows to recheck; false: none of them is visible */
+static bool
+recheck_next(ColSource *src, SiftSrcUnit *unit)
+{
+	SiftColBatch *b = recheck_batch(src);
+
+	if (b == NULL)
+		return false;
+	sift_col_unit_batch(src->cs, b, &src->unit);
+	src->ugen++;
+	src->rck->active = true;
+	unit->sb = src->unit.sb;
+	unit->nrow = src->unit.nrows;
+	unit->priv = src;
+	return true;
+}
+
+static void
+col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows)
+{
+	ColSource  *src = impl;
+	ColRecheck *k = src->rck;
+
+	if (k == NULL || !k->active)
+		return;
+	for (uint32 r = 0; r < unit->nrow; r++)
+		if (sift_colsrc_bit(rows, r) && k->err[r])
+			ThrowErrorData(k->err[r]);
+}
+
+static void
+recheck_close(ColRecheck *k)
+{
+	if (k->slot)
+	{
+		table_index_fetch_end(k->fetch);
+		ExecDropSingleTupleTableSlot(k->slot);
+		FreeExecutorState(k->estate);
+	}
+}
+
 static bool
 col_next(void *impl, SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
 	uint32		nrow;
 
+	if (src->rck)
+	{
+		bool		again = src->rck->taken && src->rck->npend > 0;
+
+		src->rck->active = false;
+		src->rck->taken = false;
+		if (again && recheck_next(src, unit))
+			return true;
+	}
 	do
 	{
 		if (!sift_col_next(src->cs, &src->unit))
@@ -832,6 +1110,8 @@ col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	ColSource  *src = impl;
 
 	sift_aggsel_live(&src->sel, &src->unit, bits);
+	if (src->rck && !src->rck->active)
+		recheck_collect(src, unit->nrow, bits);
 }
 
 static void
@@ -1042,6 +1322,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
 	c->heap_pages = cc->heap_pages;
+	c->rechecked = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nrechecked : 0;
 }
 
 /* ---- pre-aggregates (src/col/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
@@ -1195,6 +1476,8 @@ static const SiftSrcProvider col_provider = {
 	.read_sel = col_read_sel,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
+	.set_recheck = col_set_recheck,
+	.overflow_raise = col_overflow_raise,
 	.read_types = col_read_types,
 	.read_jnull = col_read_jnull,
 	.prune_str = col_prune_str,

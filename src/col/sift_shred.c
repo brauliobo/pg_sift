@@ -1133,6 +1133,60 @@ sift_shred_wants_number_text(const SiftShred *sh)
 	return t && t->kind == N_LEAF && t->type == SIFT_SHRED_ASTEXT;
 }
 
+SiftShredTarget
+sift_shred_target(const SiftShred *sh, int *id)
+{
+	NodeP		t = peek_target(sh);
+
+	if (t == NULL)
+		return SIFT_SHRED_T_NONE;
+	switch (t->kind)
+	{
+		case N_LEAF:
+			*id = t->col;
+			return SIFT_SHRED_T_LEAF;
+		case N_OBJ:
+			*id = t->group;
+			return sh->nframes > 0 && sh->frames[sh->nframes - 1].node->kind != N_OBJ ? SIFT_SHRED_T_ELEM : SIFT_SHRED_T_OBJECT;
+		default:
+			*id = t->group;
+			return SIFT_SHRED_T_LIST;
+	}
+}
+
+void
+sift_shred_value_i64(SiftShred *sh, int64 v)
+{
+	NodeP		t = take_target(sh);
+
+	sh->doc.col[t->col].val[sh->doc.grp[t->group].n - 1].i = v;
+	leaf_set(sh, t, SIFT_SHRED_VALUE, 0, SIFT_COLTAG_UNKNOWN);
+}
+
+void
+sift_shred_value_f64(SiftShred *sh, double v)
+{
+	NodeP		t = take_target(sh);
+
+	sh->doc.col[t->col].val[sh->doc.grp[t->group].n - 1].f = v;
+	leaf_set(sh, t, SIFT_SHRED_VALUE, 0, SIFT_COLTAG_UNKNOWN);
+}
+
+void
+sift_shred_poison(SiftShred *sh)
+{
+	for (int i = sh->nframes - 1; i >= 0; i--)
+	{
+		NodeP		n = sh->frames[i].node;
+
+		if (n->kind == N_OBJ)
+			continue;
+		list_set(sh, n, SIFT_SHRED_OVERFLOW);
+		flag_leaves(sh, n->elem, SIFT_SHRED_OVF_SHAPE);
+		return;
+	}
+}
+
 /* A scalar where a list or map is declared: null is its null, anything else cannot be a list */
 static void
 scalar_in_container(SiftShred *sh, NodeP t, bool is_null)
@@ -1192,7 +1246,7 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 
 	if (!SIFT_SHRED_IS_TEXTUAL(t->type))
 		leaf_overflow(sh, t, SIFT_SHRED_OVF_TYPE, sh->evtag);
-	else if ((uint32) len > t->maxlen)
+	else if ((uint32) len > t->maxlen && !sh->any_length)
 		leaf_overflow(sh, t, SIFT_SHRED_OVF_LENGTH, sh->evtag);
 	else if ((uint64) doc->ntext + len > sh->limits.max_bytes)
 		leaf_overflow(sh, t, SIFT_SHRED_OVF_TRUNC, sh->evtag);
