@@ -425,11 +425,41 @@ static struct
 	uint64		stamp;
 	int			ncols;
 	SiftColLeafStats *st;
+	SiftColZones *zones;
 }			leaf_cache[LEAF_STATS_CACHE];
 static int	leaf_cache_next;
 
-const SiftColLeafStats *
-sift_col_leaf_stats(Relation index)
+static void
+zones_free(SiftColZones *zs)
+{
+	for (int c = 0; c < zs->ncols; c++)
+		if (zs->lo[c] != NULL)
+			pfree(zs->lo[c]), pfree(zs->hi[c]);
+	pfree(zs->lo);
+	pfree(zs);
+}
+
+/* the sample of the integer scalar leaves, in the memory that stays (TopMemoryContext) */
+static SiftColZones *
+zones_new(const SiftColIndexMeta *d)
+{
+	SiftColZones *zs = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColZones));
+
+	zs->ncols = d->ncols;
+	zs->stride = 1;
+	zs->lo = MemoryContextAllocZero(TopMemoryContext, 2 * d->ncols * sizeof(int64 *));
+	zs->hi = zs->lo + d->ncols;
+	for (int c = 0; c < d->ncols; c++)
+		if (d->cols[c].store == SIFT_COLS_INT && d->cols[c].kind != SIFT_COLK_GROUP)
+		{
+			zs->lo[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
+			zs->hi[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
+		}
+	return zs;
+}
+
+static int
+leaf_cache_entry(Relation index)
 {
 	const SiftColIndexMeta *d = sift_col_index_defs(index);
 	SiftDirSnapshot dir;
@@ -443,15 +473,19 @@ sift_col_leaf_stats(Relation index)
 		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
 			slot = i;
 	if (slot >= 0 && leaf_cache[slot].stamp == stamp && leaf_cache[slot].ncols == d->ncols)
-		return leaf_cache[slot].st;
+		return slot;
 	if (slot < 0)
 		slot = leaf_cache_next++ % LEAF_STATS_CACHE;
 	if (leaf_cache[slot].st)
+	{
 		pfree(leaf_cache[slot].st);
+		zones_free(leaf_cache[slot].zones);
+	}
 	leaf_cache[slot].st = NULL;
 	{
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
 		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+		SiftColZones *zs = zones_new(d);
 
 		for (int c = 0; c < d->ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
@@ -464,6 +498,7 @@ sift_col_leaf_stats(Relation index)
 			seg = sift_cseg_open(index, &dir.segs[i], cx);
 			for (int c = 0; c < d->ncols; c++)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
+			sift_cseg_zone_sample(seg, zs);
 			sift_cseg_close(seg);
 		}
 		for (int i = 0; i < dir.nsegs; i++)
@@ -475,8 +510,21 @@ sift_col_leaf_stats(Relation index)
 		leaf_cache[slot].stamp = stamp;
 		leaf_cache[slot].ncols = d->ncols;
 		leaf_cache[slot].st = st;
-		return st;
+		leaf_cache[slot].zones = zs;
+		return slot;
 	}
+}
+
+const SiftColLeafStats *
+sift_col_leaf_stats(Relation index)
+{
+	return leaf_cache[leaf_cache_entry(index)].st;
+}
+
+const SiftColZones *
+sift_col_zones(Relation index)
+{
+	return leaf_cache[leaf_cache_entry(index)].zones;
 }
 
 bool

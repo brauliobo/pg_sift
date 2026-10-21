@@ -81,6 +81,19 @@ typedef struct SiftSrcLayout
 	SiftSrcLeaf *leaf;
 } SiftSrcLayout;
 
+/*
+ * The zones of a sample of the source's units, so that the planner tests the constants of a query against the real min and max of each unit
+ * instead of assuming how the values spread: lo[leaf] and hi[leaf] are n values each for an integer leaf of rows, NULL for the others. A unit
+ * the leaf has no value in has lo > hi. covered: the share of the source's units the sample describes (a write buffer's are not in it).
+ */
+typedef struct SiftSrcZones
+{
+	int			n;
+	double		covered;
+	const int64 *lo[SIFT_COLSRC_MAX_LEAVES];
+	const int64 *hi[SIFT_COLSRC_MAX_LEAVES];
+} SiftSrcZones;
+
 /* Planner side: statistics the cost model uses (all estimates, never errors) */
 typedef struct SiftSrcStats
 {
@@ -93,6 +106,7 @@ typedef struct SiftSrcStats
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
+	const SiftSrcZones *zones;	/* the zones of a sample of the units (NULL: the source has none to show, zone_span is the whole of it) */
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */
 	double		ovf_units[SIFT_COLSRC_MAX_LEAVES];	/* share of the units flagged with an overflow value of the leaf (at least one unit when ovf: a write buffer may hold one) */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
