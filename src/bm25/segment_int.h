@@ -1,5 +1,5 @@
 /*
- * bm25/segment_int.h - shared by the files of the segment code (segment.c, writer.c, live.c, walk.c, stream.c).
+ * bm25/segment_int.h - shared by the files of the segment code (segment.c, writer.c, liveness.c, walk.c, livestream.c).
  */
 #ifndef SIFT_SEGMENT_INT_H
 #define SIFT_SEGMENT_INT_H
