@@ -531,6 +531,7 @@ recheck_init(AggExec *ex)
 		{
 			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i]);
 			ex->recheck = true;
+			ex->recheck_late |= s->recheck[i] == SRK_CAST;
 		}
 }
 
