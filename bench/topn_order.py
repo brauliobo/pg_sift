@@ -7,7 +7,8 @@
 Keys: k_clu (follows the table), k_band12k / k_band3k / k_band300 (blocks of that many consecutive rows, each block a band of values, the
 blocks in a scrambled order: the zones of a unit cover a few bands, many bands, nearly the whole range), k_rand (no order), k_mix
 (500 values, one row in 11 NULL: ties and NULLs). Every query ends with the tie-break `id`, so both plans return the same rows.
-Plans: topn (the planner's own choice with the sort plan priced out: sift.enable_agg on) and sort (sift.enable_agg off, no index scan:
+Plans: topn (the planner's own choice with the sort plan priced out: sift.enable_agg on), topn_nowalk (the same with sift.topn_walk off: the units of a key that does
+not follow the table are visited in table order) and sort (sift.enable_agg off, no index scan:
 the rows are read and sorted). Each query runs RUNS + 1 times in one session (the first is dropped); the time is the Execution Time of
 EXPLAIN (ANALYZE, TIMING OFF), the units and superblocks are those it reports. Single backend, no parallel workers, warm cache.
 """
@@ -19,6 +20,7 @@ LIMITS = (10, 1000)
 FILTERS = (('none', ''), ('kind', "WHERE kind = 'cat_b'"))
 PLANS = {
     'topn': "SET sift.enable_agg = on; SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;",
+    'topn_nowalk': "SET sift.enable_agg = on; SET sift.topn_walk = off; SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;",
     'sort': "SET sift.enable_agg = off;",
 }
 
@@ -61,8 +63,8 @@ def run(db, runs):
                         units = re.findall(r'^ *Units: (\d+)', out, re.M)
                         skipped = re.findall(r'Superblocks Skipped By Top-N: (\d+)', out)
                         scanned = re.findall(r'Rows Scanned: (\d+)', out)
-                        if plan == 'topn' and 'Top-N:' not in out:
-                            plan = 'topn_not_used'
+                        if plan.startswith('topn') and 'Top-N:' not in out:
+                            plan += '_not_used'
                         print('\t'.join((str(rows), key, order, str(limit), fname, plan, f'{statistics.median(times):.3f}', f'{min(times):.3f}', f'{max(times):.3f}',
                                          units[-1] if units else '', skipped[-1] if skipped else '', scanned[-1] if scanned else '')), flush=True)
 
