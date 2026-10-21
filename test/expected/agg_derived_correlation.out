@@ -42,7 +42,7 @@ VACUUM (FREEZE, ANALYZE) odd_facts;
 VACUUM (FREEZE, ANALYZE) plain_facts;
 ANALYZE entities;
 ANALYZE mappings;
--- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
+-- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run (before PostgreSQL 18 its child plans pay the cost of a disabled scan for each distinct input: agg_derived_correlation_1.out)
 CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, eligible bool, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN

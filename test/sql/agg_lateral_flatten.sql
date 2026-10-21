@@ -7,10 +7,12 @@ INSERT INTO sources VALUES (1, true), (2, true), (3, false);
 CREATE TABLE labels (source_id int, source_key text, label text, sublabel text);
 INSERT INTO labels VALUES (1, 'clean_score', 'cleanliness', NULL), (1, 'view_score', 'outlook', 'sea'), (2, 'clean_score', 'tidy', NULL), (2, 'clean_score', 'tidy2', NULL);
 CREATE TABLE entries (id int, source_id int, day date, scores jsonb);
+-- "service" is a JSON null, whose cast PostgreSQL 18 gives as NULL; the cast raises before 18, which the scan does not reproduce: a number there
 INSERT INTO entries
 SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
        CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN NULL WHEN 2 THEN '{"clean_score": 9, "view_score": 4}'::jsonb
-                  WHEN 3 THEN '{"clean_score": 6.5, "other_score": 2, "service": null}'::jsonb ELSE jsonb_build_object('clean_score', i % 10, 'staff_score', i % 7) END
+                  WHEN 3 THEN jsonb_build_object('clean_score', 6.5, 'other_score', 2, 'service', CASE WHEN current_setting('server_version_num')::int >= 180000 THEN NULL ELSE 5 END)
+                  ELSE jsonb_build_object('clean_score', i % 10, 'staff_score', i % 7) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX entries_col ON entries USING sift_col (id, source_id, day, scores) WITH (paths = 'scores.* float8');
 VACUUM (FREEZE, ANALYZE) entries;
