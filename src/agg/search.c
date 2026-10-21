@@ -355,12 +355,6 @@ sift_search_matches(const SiftSearch *s)
 	return s->matches;
 }
 
-const char *
-sift_search_name(const SiftSearch *s)
-{
-	return RelationGetRelationName(s->index);
-}
-
 /* ---- rows the index leaves to their text ---- */
 
 static void

@@ -253,12 +253,6 @@ sift_topn_empty(const SiftTopN *t)
 }
 
 int
-sift_topn_nkey(const SiftTopN *t)
-{
-	return t->nkey;
-}
-
-int
 sift_topn_leaf(const SiftTopN *t, int j)
 {
 	return t->key[j].leaf;

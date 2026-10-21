@@ -50,7 +50,6 @@ extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation h
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
 
-extern int	sift_topn_nkey(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 
 /*
