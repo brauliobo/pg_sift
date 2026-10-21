@@ -115,12 +115,12 @@ SELECT pushed('SELECT o.c, avg(o.score) FROM d_t, jsonb_to_recordset(doc -> $$pa
 SELECT pushed('SELECT o.c, count(*) FROM d_t, jsonb_array_elements(doc -> $$parts$$) e, jsonb_to_record(e) AS o(c text) GROUP BY o.c') AS elements_pushed;
 
 -- the share of the units that hold such a value: the plan counts the units read again and prices only the flagged ones
-CREATE FUNCTION again(q text, attribute text) RETURNS numeric LANGUAGE plpgsql AS $$
+CREATE FUNCTION again(q text, pat text) RETURNS numeric LANGUAGE plpgsql AS $$
 DECLARE l text; n numeric := 0;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ attribute THEN n := regexp_replace(l, '\D', '', 'g')::numeric; END IF;
+		IF l ~ pat THEN n := regexp_replace(l, '\D', '', 'g')::numeric; END IF;
 	END LOOP;
 	RETURN n;
 END $$;
