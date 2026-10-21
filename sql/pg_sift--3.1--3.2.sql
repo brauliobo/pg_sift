@@ -33,3 +33,12 @@ END
 $fn$;
 
 CREATE EVENT TRIGGER sift_table_paths_drop ON sql_drop EXECUTE FUNCTION sift.table_paths_drop();
+
+-- VACUUM's work on the column segments and the file of a sift_table, without its indexes (so without the tombstone rewrite, which needs them): the
+-- dead rows are cleared, write buffers promoted, mostly dead segments rewritten, free space gathered and the free end of the file returned.
+-- busy: the table, or the lock of its end, is in use and the call did nothing there. Background maintenance does the same (sift.table_auto_defrag).
+CREATE FUNCTION sift.table_maintain(tbl regclass,
+									OUT busy bool, OUT dead_rows int8, OUT promoted int4, OUT merged int4,
+									OUT blocks_before int8, OUT blocks_after int8)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_table_maintain' LANGUAGE C STRICT VOLATILE;

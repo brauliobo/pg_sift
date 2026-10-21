@@ -14,12 +14,16 @@
 #include "access/generic_xlog.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/reloptions.h"
 #include "access/multixact.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_class.h"
+#include "commands/defrem.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
@@ -31,6 +35,7 @@
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/tuplesort.h"
 
@@ -419,6 +424,98 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	}
 	sift_maint_unlock(rel);
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
+}
+
+/* ---------- space maintenance without VACUUM ---------- */
+
+/*
+ * The heap reloption vacuum_truncate (a table access method has no options of its own, so the heap ones apply), read from the catalog row
+ * because the struct that holds it changes between releases
+ */
+static bool
+tbl_truncates(Relation rel)
+{
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(rel)));
+	bool		truncates = true;
+
+	if (HeapTupleIsValid(tup))
+	{
+		bool		isnull;
+		Datum		opts = SysCacheGetAttr(RELOID, tup, Anum_pg_class_reloptions, &isnull);
+
+		if (!isnull)
+			foreach_ptr(DefElem, e, untransformRelOptions(opts))
+			{
+				if (e->defnamespace == NULL && strcmp(e->defname, "vacuum_truncate") == 0)
+					truncates = defGetBoolean(e);
+			}
+		ReleaseSysCache(tup);
+	}
+	return truncates;
+}
+
+/*
+ * Step 2 of VACUUM alone: the liveness bits of the group rows whose deletion is committed and older than the horizon are cleared. The
+ * tombstone entries stay, and with them the dead set of the next VACUUM, which still hands every one of these TIDs to the indexes (this one
+ * does not touch them; it finds the entries as the rows of a VACUUM that stopped before its index cleanup). The rows of an aborted writer
+ * are not cleared: only the live bits say which they are, so the dead set would be lost.
+ */
+static int64
+clear_removable(Relation rel, SiftTblRel *st, VacState *v)
+{
+	uint32		sb_lo = PG_UINT32_MAX,
+				sb_hi = 0;
+	int64		removed = 0;
+
+	sift_tbl_tomb_sync(rel, st);
+	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
+	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
+	tid_sort(&v->dead_tids);
+	if (sb_lo <= sb_hi)
+	{
+		removed = sift_tbl_group_bulkdelete(rel, st, dead_has, v, sb_lo, sb_hi);
+		sift_tbl_refresh(rel, st);
+	}
+	return removed;
+}
+
+void
+sift_tbl_maintain(Relation rel, SiftTblMaintain *r)
+{
+	VacState	v = {0};
+	SiftTblRel *st = sift_tbl_rel(rel);
+	TransactionId oldest = GetOldestNonRemovableTransactionId(rel);
+
+	*r = (SiftTblMaintain) {.blocks_before = RelationGetNumberOfBlocks(rel)};
+	r->blocks_after = r->blocks_before;
+	v.oldest = v.newest_kept = oldest;
+	sift_tbl_refresh(rel, st);
+	if (!st->initialized)
+		return;
+	if (!sift_maint_lock(rel, false))
+	{
+		r->busy = true;
+		return;
+	}
+	/*
+	 * The rows of the write buffers are promoted first: their dead ones are not flagged here as VACUUM does (the flag is what its
+	 * promotion drops and also what keeps the row out of the dead set of a later VACUUM), so they are cleared as rows of a group
+	 */
+	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
+	r->promoted = sift_tbl_promote(rel, st, oldest, false);
+	r->dead_rows = clear_removable(rel, st, &v);
+	(void) sift_tbl_drop_dead_groups(rel, st);
+	(void) sift_tbl_freeze_groups(rel, st, oldest);
+	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st, oldest); i++)
+		r->merged++;
+	(void) sift_recycle(rel);
+	(void) sift_maint_orphan_sweep(rel);
+	if (tbl_truncates(rel))
+		sift_maint_space(rel, relocate_page, DEBUG2);
+	sift_maint_unlock(rel);
+	r->blocks_after = RelationGetNumberOfBlocks(rel);
+	if (v.dead_tids.tid)
+		pfree(v.dead_tids.tid);
 }
 
 /* ---------- rewrite: VACUUM FULL, CLUSTER ---------- */
