@@ -285,7 +285,10 @@ VACUUM (index_cleanup on, disable_page_skipping) a3;
 SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
 SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
+-- a serial rebuild gives the one layout of units the counts below are for: a parallel rebuild divides the rows among its workers as they run, and some divisions leave a query with no unit answered from the pre-aggregates
+SET max_parallel_maintenance_workers = 0;
 REINDEX INDEX a3_col;
+RESET max_parallel_maintenance_workers;
 CALL pa_settle();
 SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
 SELECT * FROM pa_sum('a3');
