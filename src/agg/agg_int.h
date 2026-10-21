@@ -765,6 +765,15 @@ typedef struct FuseSt
 
 /* agg.c */
 uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
+void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
+void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
+void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
+void table_reset(AggExec *ex);
+void scan_items(AggExec *ex);
+
+/* back_host.c */
+bool backend_begin(AggExec *ex);
+void backend_finish(AggExec *ex);
 
 #pragma GCC visibility pop
 

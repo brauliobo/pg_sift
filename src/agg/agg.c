@@ -8075,7 +8075,7 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 }
 
 /* group g takes rows rows, the aggregates their values v[] */
-static void
+void
 preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v)
 {
 	ex->seen[g] += rows;
@@ -8174,7 +8174,7 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
  * The ids of key ki for the kept groups or tuples: the unit's dictionary entries, or the integers. A group is NULL when isnull[g] (NULL: the
  * groups from nonnull on are, the NULL group of a histogram being its last)
  */
-static void
+void
 preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept,
 			   uint32 *ids)
 {
@@ -8210,7 +8210,7 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 }
 
 /* the groups of the table for n tuples that have the key ids ids[key * n + i]: compute_gids for ids that are known */
-static void
+void
 ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid)
 {
 	int			nk = ex->spec->nkeys;
@@ -9408,7 +9408,7 @@ table_init(AggExec *ex)
 }
 
 /* forgets every group (the dictionary maps hold key ids of the table) */
-static void
+void
 table_reset(AggExec *ex)
 {
 	int			nk = Max(ex->spec->nkeys + ex->spec->naggs, 1);
@@ -10350,7 +10350,7 @@ static void engine_rels(AggExec *ex);
 static void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
 static void engine_close(AggExec *ex);
 
-static void
+void
 scan_items(AggExec *ex)
 {
 	uint32		item;
@@ -10569,8 +10569,6 @@ par_finish(AggExec *ex)
 	par->pcxt = NULL;
 	ExitParallelMode();
 }
-
-#include "agg/back_host.h"
 
 static const char null_dict_id = 0;
 static const uint32 null_dict_off[1] = {0};
