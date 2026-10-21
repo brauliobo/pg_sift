@@ -83,10 +83,36 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 34) RETURNS 
 	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
 $$;
 
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 34) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 34) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE plpgsql AS $$
+DECLARE state text;
+BEGIN
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
-	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
-$$;
+	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
+	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
+	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
+	RAISE LOG 'pa_sum %: % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
+		(SELECT count(*) FROM sift.col_rollup_queue()),
+		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+	RETURN NEXT;
+END $$;
+
+-- a snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the pages of rows written
+-- since from becoming all-visible, so the units stay scanned. Wait for the conditions themselves: the queue drained and no such session.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
 
 -- absent, null and empty arrays, elements with missing and null members; quarter multiples keep the float sums exact in any order
 INSERT INTO rl
@@ -124,6 +150,7 @@ CREATE INDEX ro_col ON ro USING sift_col (id, grp, lines, tags, attrs)
 CREATE INDEX rx_col ON rx USING sift_col (id, grp, lines, tags, attrs)
 	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096,
 	      preagg = 'rollup(lines[].a, lines[].b: lines[].q, lines[].w, lines[].amt)');
+CALL pa_settle();
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
 SELECT sift.col_verify('rl_col', true), sift.col_verify('rd_col', true), sift.col_verify('rx_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('rl_col');
@@ -176,5 +203,6 @@ SELECT * FROM pa_sum('ro');
 
 DROP TABLE rl, rd, ro, rx, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int);
+DROP PROCEDURE pa_settle();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
