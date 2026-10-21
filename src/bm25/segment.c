@@ -170,6 +170,8 @@ index_sb(SiftSegment *seg, DocMap *dm)
 		for (int j = 0; j <= wd; j++)
 			ndocs += sift_pc64(om[j]);
 	}
+	if (ndocs != dm->dir[dm->cur].ndocs)
+		corrupt(seg, "DOCMAP record of SB %u has offsets for %u docs, its directory entry %u.", sb, ndocs, dm->dir[dm->cur].ndocs);
 	if (row > dm->rec + dm->reclen || ALIGN4(row - dm->rec) != dm->reclen)
 		corrupt(seg, "DOCMAP record of SB %u spans %llu bytes, its rows %llu.", sb, ULL(dm->reclen), ULL(row - dm->rec));
 	if (dm->dlcode != 0 && nslots > dm->xcap)

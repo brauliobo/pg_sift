@@ -231,8 +231,6 @@ chunk_run(void *a)
 		fz_bad("a valid DOCMAP chunk lists %u pages, its offsets are of another number", np);
 	for (uint32 k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
 		bits += sift_pc64(om[k]);
-	if (bits != sift_chunk_count(j->p))
-		fz_bad("a valid DOCMAP chunk counts %u offsets, its rows hold %u", sift_chunk_count(j->p), bits);
 	j->digest = mix(np, bits);
 }
 
