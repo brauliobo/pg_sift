@@ -130,7 +130,7 @@ Times are the serial plan at 300,000 items, best of 3, with `sift.enable_agg` of
 | g2 lookup keyed by a column of another joined table | pushed (regression and coverage verified) |  |  |
 | g1 `jsonb_exists` / `?` on an object | normal plan |  | follow-up |
 | g3 `(doc -> 'k')::int` | normal plan |  | follow-up |
-| g6 one string in a typed leaf flags its unit | normal plan, leaf named at `DEBUG1` |  | design note |
+| g6 one string in a typed leaf flags its unit | pushed for `jsonb_to_recordset` columns, the flagged rows read again from the heap; other reads: normal plan, leaf named at `DEBUG1` |  | design note |
 
 What the pushed shapes do:
 
