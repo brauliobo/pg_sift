@@ -433,6 +433,7 @@ typedef struct AggExec
 	struct AggPar *par;			/* workers launched by the leader */
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts */
 	int			nprune;
+	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
@@ -782,7 +783,6 @@ extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
-extern bool		sift_agg_join_filter;
 extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
