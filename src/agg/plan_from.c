@@ -612,12 +612,24 @@ cast_recheck_ok(AggCtx *c, int m)
 		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c));
 }
 
+/* can leaf m, a text path read only as `doc ->> 'k'`, be read again from the heap? The text of a value cannot raise: a container where a scalar is, a document of another kind than an object (a key of an array or scalar is NULL) */
+static bool
+text_recheck_ok(AggCtx *c, int m)
+{
+	const SiftSrcLeaf *l = leaf_of(c, m);
+
+	return m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->txt_ok) && !bms_is_member(m, c->txt_bad) && l->kind == SCL_SCALAR && l->parent < 0 &&
+		l->path != NIL && l->typid == TEXTOID && !l->wide && !c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true);
+}
+
 /* How the query reads leaf m when the source holds a value it cannot store (SRK_NONE: it does not, such a value is an error for the scan); docs/COL-DIRTY-UNITS.md */
 static SiftSrcRecheck
 leaf_recheck(AggCtx *c, int m)
 {
 	if (cast_recheck_ok(c, m))
 		return SRK_CAST;
+	if (text_recheck_ok(c, m))
+		return SRK_TEXT;
 	if (!recordset_recheck_ok(c))
 		return SRK_NONE;
 	if (m == c->group)
@@ -655,6 +667,9 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 				return SRK_NONE;
 		return SRK_CAST;
 	}
+	/* no error to raise, so no order to keep: the rows read again give the text any conjunct and key reads */
+	if (leaf_of(c, m)->parent < 0 && leaf_recheck(c, m) == SRK_TEXT)
+		return SRK_TEXT;
 	list = bms_add_member(list, c->group);
 	for (int i = 0; i < c->lay->nleaves; i++)
 		if (leaf_of(c, i)->parent == c->group)
