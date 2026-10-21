@@ -693,6 +693,35 @@ exists_mutator(Node *n, AggCtx *c)
 	return expression_tree_mutator(n, exists_mutator, c);
 }
 
+/*
+ * `(x -> 'k')::integer` (or `bigint`) of a member the index holds as float8: the cast reads the jsonb the stored float stands for,
+ * `to_jsonb(float8 member)`, the way a correlated child is given a member (a missing key and a JSON null are the same NULL, and the cast of a
+ * JSON null is NULL in PostgreSQL 18, so not before it). The cast stays PostgreSQL's: it rounds as numeric does and raises `integer out of range`
+ * for the rows that reach it.
+ */
+static Node *
+jsonb_int_mutator(Node *n, AggCtx *c)
+{
+#if PG_VERSION_NUM >= 180000
+	FuncExpr   *f = (FuncExpr *) n;
+
+	if (n != NULL && IsA(n, FuncExpr) && (f->funcid == F_INT4_JSONB || f->funcid == F_INT8_JSONB))
+	{
+		JsonRef		r = {0};
+		Node	   *arg = strip_relabel(linitial(f->args));
+		Node	   *num = (Node *) makeFuncExpr(F_FLOAT8_JSONB, FLOAT8OID, list_make1(arg), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+
+		if (json_access(c, arg, &r) && !r.as_text && match_leaf(c, num) >= 0)
+		{
+			f = copyObject(f);
+			f->args = list_make1(makeFuncExpr(F_TO_JSONB, JSONBOID, list_make1(num), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL));
+			return (Node *) f;
+		}
+	}
+#endif
+	return n == NULL ? NULL : expression_tree_mutator(n, jsonb_int_mutator, c);
+}
+
 /* the RTE_GROUP of the grouping sets of the query, 0 when there are none */
 static Index
 group_rti(AggCtx *c)
@@ -788,5 +817,5 @@ normalize_expr(AggCtx *c, Node *n)
 	if (c->root->group_rtindex > 0)
 		n = remove_nulling_relids(n, bms_make_singleton(c->root->group_rtindex), NULL);
 #endif
-	return nulltest_mutator(exists_mutator(n, c), c);
+	return jsonb_int_mutator(nulltest_mutator(exists_mutator(n, c), c), c);
 }
