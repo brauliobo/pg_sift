@@ -1,7 +1,7 @@
 /*
  * col/dict.c - L1 of the column engine: the dictionaries of strings (code = first-seen order).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"

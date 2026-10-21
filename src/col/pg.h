@@ -1,7 +1,7 @@
 /*
  * col/pg.h - the PostgreSQL-bound declarations of the column engine: the relcache and catalog accessors of a sift_col index, the
  * planner's index expressions, the shredder adapter, the reloptions and the SQL entry points. col/col.h keeps the host-independent
- * types and the key helpers, so the portable files (sift_col_enc.[ch], sift_colcodec.[ch], docs/COL-PORTS.md) never see this header.
+ * types and the key helpers, so the portable files (col/enc.[ch], col/codec.[ch], docs/COL-PORTS.md) never see this header.
  */
 #ifndef SIFT_COL_PG_H
 #define SIFT_COL_PG_H
@@ -60,7 +60,7 @@ extern struct SiftShredRecheck *sift_col_shred_recheck_create(MemoryContext mcxt
 extern void sift_col_shred_recheck_set(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode);
 
 /* ---------------------------------------------------------------------------
- * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in sift_handler.c)
+ * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
  * ------------------------------------------------------------------------- */
 
 typedef struct SiftColOptions

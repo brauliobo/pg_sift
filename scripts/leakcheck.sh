@@ -18,7 +18,7 @@
 # backend leaves behind (buffer pins, relcache, TupleDesc, snapshot, lock and file references, "you don't own a lock",
 # assertion failures, crashes) as log lines, and an ASan/UBSan/LeakSanitizer build reports memory errors and malloc leaks
 # when each server process exits (LeakSanitizer needs the clean exit of a fast shutdown, an immediate one reports nothing).
-# SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/sift_leak_test.c). Exit 1 on a finding.
+# SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/leak_test.c). Exit 1 on a finding.
 #
 # LEAK_PROC_MB (32): growth of a long-lived server process; LEAK_GROWTH_MB (8), LEAK_GROWTH_R2 (0.8): growth of a sampled
 # backend over the post-warmup samples that fails the soak (plus LEAK_QUARANTINE_MB on an ASan server).

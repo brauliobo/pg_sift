@@ -1,7 +1,7 @@
 /*
  * col/shred_kern_avx2.c - AVX2 kernels of the shredder output; the results equal col/shred_kern.c's.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/shred.h"
 

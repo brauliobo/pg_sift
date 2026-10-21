@@ -6,7 +6,7 @@
  * VPEXPANDB on Zen 5, docs/KERNELS.md). Register-form compress/expand only
  * (the memory forms are microcoded on Zen 4).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels_int.h"
 

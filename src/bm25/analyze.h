@@ -47,7 +47,7 @@
 #ifndef SIFT_ANALYZE_H
 #define SIFT_ANALYZE_H
 
-#include "sift.h"
+#include "core/sift.h"
 
 /* Bump on any change to tokenization, folding, stemming or hashing output */
 #define SIFT_ANALYZER_VERSION	2

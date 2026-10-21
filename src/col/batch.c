@@ -1,7 +1,7 @@
 /*
  * col/batch.c - L1 of the column engine: batches, the decoded rows of one superblock, and the decoding of a unit into one.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"

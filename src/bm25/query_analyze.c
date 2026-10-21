@@ -1,7 +1,7 @@
 /*
  * bm25/query_analyze.c - SiftQL analysis: normalization of a parsed query and the per-field weights.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <ctype.h>
 

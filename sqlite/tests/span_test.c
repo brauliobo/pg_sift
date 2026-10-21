@@ -1,5 +1,5 @@
 /*
- * span_test.c - unit and adversarial tests of src/core/sift_span.h (docs/SAFETY.md). No host, no database: the header is C library only.
+ * span_test.c - unit and adversarial tests of src/core/span.h (docs/SAFETY.md). No host, no database: the header is C library only.
  * Built by the portable flags of sqlite/Makefile (make span-test, make SIMD=none B=build-scalar span-test, make span-test-asan),
  * run by test.sh. The failure hook is the test's own: it longjmps when a check is expected to fail and aborts when it is not, so
  * a check that fires by mistake or one that does not fire both fail the run.
@@ -7,7 +7,7 @@
  *   - table of boundaries: every operation at len - 1, len, len + 1 and at offsets and counts that wrap size_t
  *   - the buffers are exact malloc blocks (ASan sees any over-read) and a block that ends at a PROT_NONE page (a read past the
  *     end is a SIGSEGV even without a sanitizer)
- *   - the varint: every length, the 64 bit extremes, overlong and truncated forms, against the encoder of sift_varint.h
+ *   - the varint: every length, the 64 bit extremes, overlong and truncated forms, against the encoder of core/varint.h
  *   - differential: random operation sequences on random buffers against a model that does its arithmetic in 128 bits
  */
 #include <setjmp.h>
@@ -16,8 +16,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "sift_span.h"
-#include "sift_varint.h"
+#include "core/span.h"
+#include "core/varint.h"
 
 static jmp_buf	fail_jmp;
 static int		expecting;

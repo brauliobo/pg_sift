@@ -1,5 +1,5 @@
 /*
- * host.h - the host interface of the portable core (src/core/sift_host.h) for MariaDB, selected with -DSIFT_HOST_MARIADB.
+ * host.h - the host interface of the portable core (src/core/host.h) for MariaDB, selected with -DSIFT_HOST_MARIADB.
  *
  * The vocabulary is the one of the SQLite host: memory contexts over malloc, ereport as a longjmp to the innermost handler,
  * StringInfo, List, hash tables, UTF-8 and regex helpers, atomics and locks, spool files. It is plain C over the C library and

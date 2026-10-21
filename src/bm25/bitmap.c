@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include "bm25/bitmap_kern.h"
 #include "bm25/bitmap_int.h"
-#include "sift_varint.h"
+#include "core/varint.h"
 
 const sift_kernels *sift_k = &sift_kern_scalar;
 static int cur_isa;

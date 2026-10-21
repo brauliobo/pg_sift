@@ -9,11 +9,11 @@
 #ifndef SIFT_COL_SEG_H
 #define SIFT_COL_SEG_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/preagg.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 #define SIFT_COL_SEG_MAGIC_UNIT		0x554C4F43	/* "COLU" */
 

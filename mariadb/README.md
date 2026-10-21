@@ -499,8 +499,8 @@ are off by 1 or 2 documents of tens of thousands.
 | --- | --- |
 | `udf.c`, `sql/` | MariaDB-specific: the UDFs (arguments, JSON, the local SQL connection) and the procedures / triggers |
 | `engine.c`, `engine.h`, `ix.h`, `query.c`, `feed.c`, `merge.c` | the index: manifest, event log, live segment, queries, drains, merge driver, locks |
-| `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/core/sift_host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) is compiled as it is, with `host_stubs.c` (no write buffers, no kept docmap directories) |
-| `host/store.c`, `host/store.h` | `src/core/sift_store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
+| `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/core/host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) is compiled as it is, with `host_stubs.c` (no write buffers, no kept docmap directories) |
+| `host/store.c`, `host/store.h` | `src/core/store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
 | `host/stubs.c` | the engine's own visibility, and the filter of a list of documents as the TID bitmap the shared filter builder reads |
 | `host/host_regex.c` | `pg_regcomp` / `pg_regexec` / `pg_regprefix`: a matcher for PostgreSQL's advanced regular expressions |
 | `cli.c` | `sift_cli`: the engine without a server |
@@ -509,12 +509,12 @@ are off by 1 or 2 documents of tens of thousands.
 
 Compiled from `src/` unmodified: every `.c` file of `src/portable.list`, except that `bm25/bitmap.c` is compiled from a copy whose seek limit is
 per thread (`sed`, checked by the build). No PostgreSQL header, library or code is involved: `scripts/check-portable.sh` guarantees that the
-files of the list reach their host only through `sift_host.h`.
+files of the list reach their host only through `core/host.h`.
 
 **What is shared, and what is not.** Taken from the core and not copied: the merge policy (`sift_merge_pick`, tiers from 1 MiB), the merge of
 segments through sorted runs (`sift_run_from_segment`, `sift_runs_write`), the inverted buffer of a drain (`SiftInvBuf`), the deletion of a
 document from a segment (`sift_seg_delete_key`: the merge deletes the engine's dead documents from its private copy of the pages, then
-rewrites them), the filter builder (`sift_filter_build`), the extent bookkeeping and padding of byte streams (`sift_stream.c`), the CPU
+rewrites them), the filter builder (`sift_filter_build`), the extent bookkeeping and padding of byte streams (`core/stream.c`), the CPU
 dispatch, the analyzer options. MariaDB's own: the manifest, the event log and the queue protocol (`engine.c`, `feed.c`, `sql/`), the
 local-connection host callbacks and the UDF glue (`udf.c`), the mapped store with its `MADV_POPULATE_READ`, the background merge thread, the
 live segment of a query. One implementation is kept apart on purpose: the regular expression matcher. The C library's POSIX matcher (what

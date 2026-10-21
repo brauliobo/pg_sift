@@ -24,9 +24,9 @@
 #include "bm25/analyze.h"
 #include "bm25/kernels.h"
 #include "bm25/wbuf.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 #include "bm25/segment.h"
-#include "sift_sql.h"
+#include "core/sql.h"
 
 #define corrupt SIFT_CORRUPT
 

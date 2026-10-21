@@ -26,7 +26,7 @@
 
 #include "col/kern.h"
 #include "table/table.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 #include "table/scan_int.h"
 
 /* ---------- TID fetches ---------- */

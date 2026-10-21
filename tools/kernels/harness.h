@@ -11,7 +11,7 @@
 #include <time.h>
 
 #include "bm25/kernels_int.h"
-#include "sift_testrng.h"
+#include "core/testrng.h"
 
 /* libc, not libpgport */
 #undef printf

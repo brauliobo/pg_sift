@@ -1,7 +1,7 @@
 /*
  * bm25/wbind.c - binds the docs of the write buffers to a plan: their matches, statistics and weights, and the export for parallel scans.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

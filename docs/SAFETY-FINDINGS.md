@@ -22,7 +22,7 @@ raw mode (`bm25-raw`, opt-in): the query path `sift_post_open` with `verify=fals
 | F-BM25-4 | medium | src/bm25/bitmap_kern.h:38,123,230 `sift_ld8` / `popcount_scalar` / `count_mask_scalar` | over-read: a count taken from the blob is not tied to the bytes present | fixed: 463951f (2.0.2, in 3.0.0) |
 | F-BM25-5 | medium | src/bm25/kernels_avx512.c:183 `nibbles64`, from src/bm25/posting.c:969 `sift_post_group_tf` | SEGV: the tf nibble stream length (from the dictionary sidecar) is not checked against the blob; only `sift_post_check` does | fixed: 7f59d1a (3.0.0; adad91a in 2.0.3) |
 | F-BM25-6 | low | src/bm25/bitmap.c:610 | undefined shift: `blob[1]` (the Rice parameter) is used as a shift count unchecked | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
-| F-BM25-1 | low | src/core/sift_varint.h:27 `sift_get_varint` | shift by 70 on a run of continuation bytes; ends only because 64 zero pad bytes follow a blob | fixed: 463951f, 0ddff29 (2.0.2, in 3.0.0); repro clean, no caller of the unbounded `sift_get_varint` is left |
+| F-BM25-1 | low | src/core/varint.h:27 `sift_get_varint` | shift by 70 on a run of continuation bytes; ends only because 64 zero pad bytes follow a blob | fixed: 463951f, 0ddff29 (2.0.2, in 3.0.0); repro clean, no caller of the unbounded `sift_get_varint` is left |
 | F-COL-2 | low | src/col/chunk.c, src/col/batch.c | `elog(ERROR)` (XX000, internal error) where ERRCODE_DATA_CORRUPTED belongs: `sift_cchunk_strs`, `unit_emit`, `sift_cunit_decode` | open: the three sites still `elog(ERROR)` |
 
 Repros (the target is chosen by the first byte for `bm25`):

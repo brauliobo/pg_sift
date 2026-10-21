@@ -39,7 +39,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/pushdown.h"
 
 /* Per bitmap tuple and per heap page of the mask: the tbm entry, then its mask row and AND in every block (measured: ~0.1 us) */

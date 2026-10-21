@@ -2,7 +2,7 @@
  * bm25/parallel.c - work distribution and threshold sharing of a parallel
  * SiftScan (bm25/parallel.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

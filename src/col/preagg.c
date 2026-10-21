@@ -1,7 +1,7 @@
 /*
  * col/preagg.c - pre-aggregates of a unit: exact integer sums, the mini cube (GROUP BY dim -> count, per measure non-NULL count and sum),
  * the rollups of the lists, their byte formats, their option and their verification. Design and the rules of use: docs/COL-PREAGG.md.
- * Portable (sift_host.h only).
+ * Portable (core/host.h only).
  *
  * Cube blob of a unit (all integers LEB128 varints unless said): u8 ndims, a directory of ndims x (leaf, bytes of its body) so that one dim is
  * found without reading the others, then the bodies:
@@ -19,7 +19,7 @@
  *     (INT measure: zigzag of the key; float measure: 8 bytes each)
  */
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 #include "col/preagg_int.h"

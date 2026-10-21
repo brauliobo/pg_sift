@@ -13,9 +13,9 @@
 #ifndef SIFT_PARALLEL_H
 #define SIFT_PARALLEL_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift.h"
+#include "core/sift.h"
 
 /* A ranked hit as exchanged between participants */
 typedef struct SiftParHit

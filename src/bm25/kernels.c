@@ -3,12 +3,12 @@
  * level matches bit for bit), dispatch, BM25 constants, bounds, tf stream
  * encoding and the top-k heap.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 
 #include "bm25/kernels_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 const SiftKernels *sift_kern = &sift_kernels_scalar;
 

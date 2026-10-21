@@ -1,7 +1,7 @@
 /*
  * col/schema.c - L1 of the column engine: the schema, the leaf list of an index (docs/COL.md 2.1).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"

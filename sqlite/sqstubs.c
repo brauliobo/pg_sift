@@ -8,7 +8,7 @@
 
 #include "bm25/eval.h"
 
-/* ---------- options (sift_handler.c) ---------- */
+/* ---------- options (core/handler.c) ---------- */
 
 const SiftOptions *
 sift_index_options(Relation index)
@@ -28,7 +28,7 @@ sift_options_fields(const SiftOptions *opts)
 	return ((const SqOptions *) opts)->fields;
 }
 
-/* ---------- visibility (sift_visibility.c): everything the index holds is visible ---------- */
+/* ---------- visibility (core/visibility.c): everything the index holds is visible ---------- */
 
 void
 sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
@@ -46,7 +46,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ---------- TID bitmap filters (src/core/sift_compat.h): only the PostgreSQL planner builds them ---------- */
+/* ---------- TID bitmap filters (src/core/compat.h): only the PostgreSQL planner builds them ---------- */
 
 SiftTbmIter *
 sift_tbm_begin(TIDBitmap *tbm)

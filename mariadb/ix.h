@@ -11,12 +11,12 @@
 #ifndef SIFT_MDB_IX_H
 #define SIFT_MDB_IX_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <errno.h>
 #include <pthread.h>
 
-#include "sift_page.h"
+#include "core/page.h"
 #include "bm25/segment.h"
 #include "engine.h"
 #include "store.h"

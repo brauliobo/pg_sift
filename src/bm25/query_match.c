@@ -1,7 +1,7 @@
 /*
  * bm25/query_match.c - SiftQL term matchers and the evaluation of an analyzed query on a document.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <ctype.h>
 

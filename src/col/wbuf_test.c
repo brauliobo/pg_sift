@@ -27,7 +27,7 @@
 #include "utils/rel.h"
 
 #include "col/wbuf.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_append);

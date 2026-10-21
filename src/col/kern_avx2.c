@@ -10,7 +10,7 @@
  * replace (docs/COL.md section 8, Measured). The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/kern_int.h"
 

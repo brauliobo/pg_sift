@@ -9,7 +9,7 @@
  * VPGATHERDD; the other selection decodes (for_i64_sel) stay scalar: gathers were slower than the loads they replace (docs/COL.md
  * section 8, Measured).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/kern_int.h"
 

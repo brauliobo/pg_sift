@@ -642,7 +642,7 @@ awk -F'\n' 'NR == FNR {w[n++] = $0; next} {for (i = 0; i < n; i++) print $0 "\t"
 
 nice gcc -O2 -fPIC -shared -I"$PG_INC" -o "$W/rx_oracle.so" "$HERE/tests/rx_oracle.c"
 nice gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
-	-I"$HERE/host" -I"$HERE/../src/core" -o "$W/regex_test" "$HERE/host/host_regex.c" "$HERE/tests/regex_test.c" -lm
+	-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/host/host_regex.c" "$HERE/tests/regex_test.c" -lm
 
 initdb -D "$W/pg" -A trust -E UTF8 --locale=C >/dev/null
 pg_ctl -D "$W/pg" -o "-k $W -p $PORT -c listen_addresses=''" -l "$W/pg.log" -w start >/dev/null

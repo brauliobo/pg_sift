@@ -10,7 +10,7 @@
 
 int			sift_max_expansions = 512;
 
-/* ---------- options (sift_handler.c): the strings of opts sit right after it, as offsets ---------- */
+/* ---------- options (core/handler.c): the strings of opts sit right after it, as offsets ---------- */
 
 const SiftOptions *
 sift_index_options(Relation index)
@@ -30,7 +30,7 @@ sift_options_fields(const SiftOptions *opts)
 	return opts->fields ? (const char *) opts + opts->fields : "";
 }
 
-/* ---------- visibility (sift_visibility.c): the engine's dead documents ---------- */
+/* ---------- visibility (core/visibility.c): the engine's dead documents ---------- */
 
 void
 sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
@@ -58,7 +58,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ---------- the TID bitmap of a list of documents (src/core/sift_compat.h) ---------- */
+/* ---------- the TID bitmap of a list of documents (src/core/compat.h) ---------- */
 
 struct TIDBitmap
 {

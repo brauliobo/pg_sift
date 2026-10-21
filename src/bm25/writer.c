@@ -1,11 +1,11 @@
 /*
  * bm25/writer.c - the segment writer: docmap, terms, header and directory entry (bm25/segment.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
-#include "sift_live.h"
-#include "sift_popcount.h"
+#include "core/live.h"
+#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"

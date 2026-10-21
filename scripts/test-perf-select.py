@@ -36,7 +36,7 @@ class SelectionTest(unittest.TestCase):
                 self.assertEqual(self.selected(path), expected)
 
     def test_shared_and_unknown(self):
-        for path in ('src/core/sift_store.c', 'src/core/sift_codec.h',
+        for path in ('src/core/store.c', 'src/core/sift_codec.h',
                      'src/portable.list', 'Makefile', 'src/areas.mk',
                      'pg_sift--3.0.sql', 'pg_sift.control', 'sql/pg_sift--3.0.sql',
                      'scripts/harden.mk', 'new/unknown.c'):
@@ -60,7 +60,7 @@ class SelectionTest(unittest.TestCase):
         # A harness change never hides a real source change in the same diff.
         self.assertEqual(self.selected('scripts/ci.sh', 'bench/perf/catalog.py', 'src/table/am.c'),
                          ['smoke', 'storage'])
-        self.assertEqual(self.selected('scripts/areas.sh', 'src/core/sift_store.c'), list(SELECT.ALL))
+        self.assertEqual(self.selected('scripts/areas.sh', 'src/core/store.c'), list(SELECT.ALL))
         self.assertEqual(self.selected('scripts/ci.sh', 'sqlite/new.c'), ['smoke'])
         self.assertEqual(self.selected('test/sql/count_scan.sql', 'src/table/am.c'), ['smoke', 'storage'])
 

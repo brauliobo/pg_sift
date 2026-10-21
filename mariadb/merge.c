@@ -17,7 +17,7 @@
 
 #include <unistd.h>
 
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "bm25/merge.h"
 #include "bm25/runs.h"
 

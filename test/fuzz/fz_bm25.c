@@ -23,7 +23,7 @@
 #include "bm25/bitmap.h"
 #include "bm25/dict.h"
 #include "bm25/posting.h"
-#include "sift_varint.h"
+#include "core/varint.h"
 
 #define NMODES 3
 #define PAD SIFT_KERN_PAD

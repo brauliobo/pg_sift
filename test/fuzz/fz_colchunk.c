@@ -27,7 +27,7 @@
 #include "col/enc.h"
 #include "col/codec.h"
 #include "fz_shim.h"
-#include "sift_testrng.h"
+#include "core/testrng.h"
 
 typedef uint64 CcgRng;
 

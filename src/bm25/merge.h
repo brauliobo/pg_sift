@@ -6,7 +6,7 @@
 #ifndef SIFT_MERGE_H
 #define SIFT_MERGE_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/segment.h"
 

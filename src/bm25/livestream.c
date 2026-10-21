@@ -1,11 +1,11 @@
 /*
  * bm25/livestream.c - the live part of a segment streamed: the input of a merge (sift_seg_stream) and the collecting dump.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
-#include "sift_live.h"
-#include "sift_popcount.h"
+#include "core/live.h"
+#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"

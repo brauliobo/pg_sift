@@ -3,7 +3,7 @@
  * the scalar table in col/codec_kern.c; slots past the last value of rle_expand32 are unspecified (the caller allocates SIFT_COL_PAD).
  */
 #if defined(__x86_64__)
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/codec_int.h"
 

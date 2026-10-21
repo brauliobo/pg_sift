@@ -1,7 +1,7 @@
 /*
- * store.c - the storage layer of src/core/sift_store.h on segment files instead of an index relation (store.h).
+ * store.c - the storage layer of src/core/store.h on segment files instead of an index relation (store.h).
  *
- * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/core/sift_page.h (block 0
+ * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/core/page.h (block 0
  * unused). The files are mapped into one reserved address range, a segment per slot of 4 GiB, so a block number is a pointer
  * and the "buffer" of a block is its page. There is no metapage, directory, free list or WAL: the directory is the manifest of
  * engine.c.

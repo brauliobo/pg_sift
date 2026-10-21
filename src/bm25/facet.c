@@ -37,7 +37,7 @@
 #include "bm25/eval.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
-#include "sift_sql.h"
+#include "core/sql.h"
 
 typedef uint64 Row[SIFT_OFFMASK_WORDS];
 

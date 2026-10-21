@@ -21,7 +21,7 @@
 #include "utils/rel.h"
 
 #include "bm25/am.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/wbuf.h"
 

@@ -10,7 +10,7 @@
 #include "utils/rel.h"
 
 #include "bm25/analyze.h"
-#include "sift_sql.h"
+#include "core/sql.h"
 
 /* Required-index lookup; callers decide when to use the default analyzer. */
 void

@@ -11,13 +11,13 @@
 #ifndef SIFT_COL_H
 #define SIFT_COL_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift.h"
-#include "sift_cpu.h"
+#include "core/sift.h"
+#include "core/cpu.h"
 #include "col/kern.h"
 #include "col/wide.h"
-#include "sift_filter.h"
+#include "core/filter.h"
 
 #define SIFT_COL_FORMAT_MINOR	6			/* the newest minor 3.2 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete (docs/COL.md 2.2) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
@@ -591,7 +591,7 @@ extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPre
 /* The elements of the unit's group that satisfy every predicate, for the rows of rowsel (NULL: all rows): elemsel has n = elements of the unit */
 extern uint32 sift_col_filter_elems(const SiftColUnit *unit, const SiftColGroupPred *gp, const SiftColSel *rowsel, SiftColSel *elemsel);
 
-/* AND with the TID masks of a TIDBitmap (sift_filter.c): a BM25 match, a btree or BRIN bitmap */
+/* AND with the TID masks of a TIDBitmap (core/filter.c): a BM25 match, a btree or BRIN bitmap */
 extern bool sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColSel *sel);
 
 /*

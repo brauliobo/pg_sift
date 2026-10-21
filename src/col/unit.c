@@ -1,11 +1,11 @@
 /*
  * col/unit.c - L1 of the column engine: reading a unit record, its row directory and its chunks (docs/COL.md 2.1).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 /* ---------------------------------------------------------------------------
  * 8. Units (docs/COL.md 2.1)

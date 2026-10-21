@@ -2,7 +2,7 @@
  * col/shred_kern_avx512.c - AVX-512 kernels of the shredder output (masked loads and stores: no scalar tails); the results
  * equal col/shred_kern.c's.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/shred.h"
 

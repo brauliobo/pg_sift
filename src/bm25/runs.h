@@ -16,7 +16,7 @@
 #ifndef SIFT_RUNS_H
 #define SIFT_RUNS_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/analyze.h"
 #include "bm25/segment.h"

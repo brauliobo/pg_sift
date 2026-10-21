@@ -15,7 +15,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "table/table.h"
 #include "table/store_int.h"
 

@@ -2,7 +2,7 @@
  * bm25/pushdown.h - planner side of the filter-mask pushdown (DESIGN.md, extras
  * item 10): a ranked SiftScan whose child is a bitmap scan over the other
  * quals of the relation; the executor turns the bitmap into masks the ranker
- * ANDs into its candidates (sift_filter.h).
+ * ANDs into its candidates (core/filter.h).
  */
 #ifndef SIFT_PUSHDOWN_H
 #define SIFT_PUSHDOWN_H

@@ -1,6 +1,6 @@
 # Column compression: encodings, selection and cost
 
-Research behind `src/col/sift_colcodec.[ch]`, the chunk codec of the column engine (`sift_col`, the index over a heap table, and `sift_table`, the table
+Research behind `src/col/codec.[ch]`, the chunk codec of the column engine (`sift_col`, the index over a heap table, and `sift_table`, the table
 access method). The interface for the engine is `docs/COL-CODEC.md`. Labels: **MEASURED** (the harness `tools/colcodec/research.c`, numbers
 reproducible with `make -C tools/colcodec research`), **SOURCE** (a URL), **ESTIMATE** (reasoned, not measured), **UNVERIFIED** (a source that
 could not be read in full).
