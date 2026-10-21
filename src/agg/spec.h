@@ -21,7 +21,6 @@
 
 /* Each physical key has one bit in the grouping/arm masks, including the set number. */
 #define SIFT_AGG_MAX_KEYS	(sizeof(uint32) * CHAR_BIT)
-#define SIFT_AGG_MAX_FUSE	5		/* keys of the arms one pass serves, with the arm number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	8	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
@@ -561,9 +560,9 @@ extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 
-/* Arms that read the same rows for the same aggregates and differ in their keys: can one scan serve them (sets of one spec, keyoff[i] the first key of arm i) */
-extern bool sift_aggspec_fusable(const SiftAggSpec *a, const SiftAggSpec *b);
-extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int *keyoff);
+/* Arms that read the same rows for the same aggregates and differ in their keys (and the leaves those read): can one scan serve them (m[0] starts it) (sets of one spec, keymap[i][j] the key of the fused spec that is key j of arm i) */
+extern bool sift_aggspec_fusable(SiftAggSpec *const *m, int n);
+extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);
 
 #endif							/* SIFT_AGGSPEC_H */
