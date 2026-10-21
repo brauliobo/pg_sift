@@ -388,11 +388,10 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 		{
 			uint32		off;
 			SiftPageEdit ed;
-			Size		slot_off;
 
 			ph = TBL_PAGE(page);
-			slot_off = SIFT_PAGE_DATA_OFFSET + offsetof(SiftTblPageHdr, slot) + ph->nrows * sizeof(ph->slot[0]);
-			sift_page_edit_begin(&ed, page, SIFT_PAGE_DATA_OFFSET + offsetof(SiftTblPageHdr, slot));
+			sift_page_edit_begin(&ed, buf, SIFT_PAGE_DATA_OFFSET + offsetof(SiftTblPageHdr, slot));
+			sift_page_edit_extra(&ed, SIFT_PAGE_DATA_OFFSET + offsetof(SiftTblPageHdr, slot) + ph->nrows * sizeof(ph->slot[0]), sizeof(ph->slot[0]));
 			at = SiftPageGetData(page) + SiftPageGetUsed(page);
 			memset(at, 0, need);
 			memcpy(at, &rec, sizeof(SiftTblRec));
@@ -402,7 +401,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 			off = ++ph->nrows;
 			SiftPageSetUsed(page, SiftPageGetUsed(page) + need);
 			ItemPointerSet(tid, ph->vblock, off);
-			sift_page_edit_end(rel, buf, &ed, slot_off, sizeof(ph->slot[0]));
+			sift_page_edit_end(rel, &ed, 1);
 			UnlockReleaseBuffer(buf);
 			return;
 		}
