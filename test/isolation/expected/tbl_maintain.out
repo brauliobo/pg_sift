@@ -1,0 +1,108 @@
+Parsed test spec with 4 sessions
+
+starting permutation: rb wd mm rc re mm mcount
+busy
+----
+f   
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS seen FROM iso_m;
+ seen
+-----
+30000
+(1 row)
+
+step wd: DELETE FROM iso_m WHERE id % 2 = 0;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |        0
+(1 row)
+
+step rc: SELECT count(*) AS seen FROM iso_m;
+ seen
+-----
+30000
+(1 row)
+
+step re: COMMIT;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |    15000
+(1 row)
+
+step mcount: SELECT count(*) AS live FROM iso_m;
+ live
+-----
+15000
+(1 row)
+
+
+starting permutation: rb wd wi mm rc re mm mcount
+busy
+----
+f   
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS seen FROM iso_m;
+ seen
+-----
+30000
+(1 row)
+
+step wd: DELETE FROM iso_m WHERE id % 2 = 0;
+step wi: INSERT INTO iso_m SELECT g, 'again' FROM generate_series(30001, 40000) g;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |        0
+(1 row)
+
+step rc: SELECT count(*) AS seen FROM iso_m;
+ seen
+-----
+30000
+(1 row)
+
+step re: COMMIT;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |    15000
+(1 row)
+
+step mcount: SELECT count(*) AS live FROM iso_m;
+ live
+-----
+25000
+(1 row)
+
+
+starting permutation: lb wd mm le mm mcount
+busy
+----
+f   
+(1 row)
+
+step lb: BEGIN; LOCK TABLE iso_m IN SHARE UPDATE EXCLUSIVE MODE;
+step wd: DELETE FROM iso_m WHERE id % 2 = 0;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+t   |        0
+(1 row)
+
+step le: COMMIT;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |    15000
+(1 row)
+
+step mcount: SELECT count(*) AS live FROM iso_m;
+ live
+-----
+15000
+(1 row)
+

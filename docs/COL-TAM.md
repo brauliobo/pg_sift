@@ -398,6 +398,14 @@ order a sort. A version deleted or updated by the rewriting transaction itself i
 `VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). `sift.table_space(tbl)` shows the file, the high-water mark
 and the free list.
 
+**`sift.table_maintain(tbl)`** does steps 2, 4 and 6 and nothing that needs the indexes: it promotes the write buffers, clears the liveness bits of the group rows whose
+deletion is committed and older than the horizon (`GetOldestNonRemovableTransactionId`, as the inline promotion uses), merges and rewrites the mostly dead segments,
+recycles, sweeps, relocates the tail segments and cuts the free end. The tombstone entries stay: they are the dead set the next VACUUM hands to the indexes
+(a cleared bit with its tombstone is the state of a VACUUM stopped before step 3), so the file ends near the VACUUM's size plus the tombstone log, which only that VACUUM
+shortens; the rows of an aborted writer are left to it too (only the live bits say which they are). It takes the table with `ShareUpdateExclusiveLock` and the maintenance
+lock only if they are free (`busy` in the result otherwise), the file's lock as VACUUM does (`ConditionalLockRelation`, given up at once), never waits for a reader or a writer, and
+refuses a read-only transaction, a standby and a role without `MAINTAIN`. It writes only what VACUUM writes (liveness pages, directory switches, free list, truncation: same crash points).
+
 **ANALYZE** (section 4): statistics columns as PostgreSQL computes them from the sample; jsonb shredded paths are not statistics targets.
 
 ---

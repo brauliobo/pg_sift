@@ -1,0 +1,214 @@
+-- sift.table_maintain: VACUUM's work on the column segments and the file without the indexes. On the same churn the table that is
+-- maintained keeps every row and answer, drops the dead rows from its segments and gives the space back like the table that is vacuumed,
+-- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
+CREATE EXTENSION pg_sift;
+CREATE TABLE mt (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE mv (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE mn (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);
+CREATE INDEX mt_id ON mt (id);
+CREATE INDEX mv_id ON mv (id);
+CREATE INDEX mn_id ON mn (id);
+INSERT INTO mt SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g;
+INSERT INTO mv SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g;
+INSERT INTO mn SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g;
+-- scattered deletes leave every segment a third to a half dead
+DELETE FROM mt WHERE id % 10 < 4;
+DELETE FROM mv WHERE id % 10 < 4;
+DELETE FROM mn WHERE id % 10 < 4;
+SELECT busy, dead_rows, merged > 0 AS rewrote, blocks_after <= blocks_before AS no_larger FROM sift.table_maintain('mt');
+ busy | dead_rows | rewrote | no_larger 
+------+-----------+---------+-----------
+ f    |     24000 | t       | t
+(1 row)
+
+VACUUM mv;
+SELECT (SELECT sum(dead_rows) FROM sift.table_segments('mt') WHERE kind = 'columns') AS dead_left,
+	(SELECT count(*) FROM sift.table_segments('mt') WHERE kind = 'tombstones') AS tombstone_segments;
+ dead_left | tombstone_segments 
+-----------+--------------------
+         0 |                  1
+(1 row)
+
+CREATE TEMP VIEW sizes AS
+	SELECT 'mt' AS t, relation_blocks AS b FROM sift.table_space('mt')
+	UNION ALL SELECT 'mv', relation_blocks FROM sift.table_space('mv')
+	UNION ALL SELECT 'mn', relation_blocks FROM sift.table_space('mn');
+SELECT (SELECT b FROM sizes WHERE t = 'mt') * 3 < (SELECT b FROM sizes WHERE t = 'mn') AS a_third_of_untouched,
+	(SELECT b FROM sizes WHERE t = 'mt') >= (SELECT b FROM sizes WHERE t = 'mv') AS tombstones_remain;
+ a_third_of_untouched | tombstones_remain 
+----------------------+-------------------
+ t                    | t
+(1 row)
+
+-- the same rows and answers, through a scan and through the index (its entries for the dead rows are still there)
+SELECT (SELECT count(*) FROM mt) = (SELECT count(*) FROM mv) AND (SELECT sum(v) FROM mt) = (SELECT sum(v) FROM mv) AND
+	(SELECT sum(v) FROM mt) = (SELECT sum(v) FROM mn) AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(v) FROM mt WHERE id BETWEEN 100 AND 5000;
+ count |   sum    
+-------+----------
+  2940 | 22504230
+(1 row)
+
+SELECT count(*), sum(v) FROM mv WHERE id BETWEEN 100 AND 5000;
+ count |   sum    
+-------+----------
+  2940 | 22504230
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- a second call finds nothing left to clear (the tombstones stay, so it looks at them again but clears no bit)
+SELECT busy, dead_rows, merged FROM sift.table_maintain('mt');
+ busy | dead_rows | merged 
+------+-----------+--------
+ f    |         0 |      0
+(1 row)
+
+-- the index still holds an entry for each dead row (read: returned by the index, fetched: found live), which a VACUUM after it removes
+-- and so ends at the size of the VACUUM alone
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+SET LOCAL sift.enable_agg = off;
+SELECT pg_stat_reset_single_table_counters('mt_id'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT sum(v) FROM mt WHERE id BETWEEN 1 AND 60000;
+    sum     
+------------
+ 3240162000
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+COMMIT;
+SELECT idx_tup_read - idx_tup_fetch AS dead_entries FROM pg_stat_user_indexes WHERE indexrelname = 'mt_id';
+ dead_entries 
+--------------
+        24000
+(1 row)
+
+VACUUM mt;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+SET LOCAL sift.enable_agg = off;
+SELECT pg_stat_reset_single_table_counters('mt_id'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT sum(v) FROM mt WHERE id BETWEEN 1 AND 60000;
+    sum     
+------------
+ 3240162000
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+COMMIT;
+SELECT idx_tup_read - idx_tup_fetch AS dead_entries FROM pg_stat_user_indexes WHERE indexrelname = 'mt_id';
+ dead_entries 
+--------------
+            0
+(1 row)
+
+SELECT abs((SELECT b FROM sizes WHERE t = 'mt') - (SELECT b FROM sizes WHERE t = 'mv')) * 10 <= (SELECT b FROM sizes WHERE t = 'mv') AS same_size_after_vacuum;
+ same_size_after_vacuum 
+------------------------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM mt) = (SELECT count(*) FROM mv) AND (SELECT sum(v) FROM mt) = (SELECT sum(v) FROM mv) AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+-- updates and a refill: the maintained table takes the rows back into its free blocks
+UPDATE mt SET v = v + 1 WHERE id % 3 = 0;
+INSERT INTO mt SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g WHERE g % 10 < 4;
+SELECT dead_rows > 0 AS cleared, blocks_after <= blocks_before AS no_larger FROM sift.table_maintain('mt');
+ cleared | no_larger 
+---------+-----------
+ t       | t
+(1 row)
+
+SELECT count(*), sum(v) FROM mt;
+ count |    sum     
+-------+------------
+ 60000 | 5400102000
+(1 row)
+
+SELECT count(*), sum(v) FROM mt WHERE id % 3 = 0;
+ count |    sum     
+-------+------------
+ 20000 | 1800102000
+(1 row)
+
+-- vacuum_truncate = false keeps the file as it is, as for VACUUM; the next call without it cuts the free end
+ALTER TABLE mt SET (vacuum_truncate = false);
+DELETE FROM mt WHERE id % 2 = 0;
+SELECT blocks_after >= blocks_before AS kept FROM sift.table_maintain('mt');
+ kept 
+------
+ t
+(1 row)
+
+ALTER TABLE mt RESET (vacuum_truncate);
+SELECT blocks_after < blocks_before AS truncated FROM sift.table_maintain('mt');
+ truncated 
+-----------
+ t
+(1 row)
+
+-- what it refuses
+SELECT sift.table_maintain('pg_class'::regclass);
+ERROR:  "pg_class" is not a sift_table
+CREATE TABLE mh (id int);
+SELECT sift.table_maintain('mh');
+ERROR:  "mh" is not a sift_table
+BEGIN READ ONLY;
+SELECT sift.table_maintain('mt');
+ERROR:  cannot execute sift.table_maintain() in a read-only transaction
+ROLLBACK;
+CREATE ROLE tbl_maintain_user;
+GRANT USAGE ON SCHEMA sift TO tbl_maintain_user;
+SET ROLE tbl_maintain_user;
+SELECT sift.table_maintain('mt');
+ERROR:  permission denied for table mt
+RESET ROLE;
+GRANT MAINTAIN ON mt TO tbl_maintain_user;
+SET ROLE tbl_maintain_user;
+SELECT busy FROM sift.table_maintain('mt');
+ busy 
+------
+ f
+(1 row)
+
+RESET ROLE;
+REVOKE MAINTAIN ON mt FROM tbl_maintain_user;
+REVOKE USAGE ON SCHEMA sift FROM tbl_maintain_user;
+DROP ROLE tbl_maintain_user;
+DROP VIEW sizes;
+DROP TABLE mt, mv, mn, mh;
+DROP EXTENSION pg_sift;
