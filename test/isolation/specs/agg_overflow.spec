@@ -1,7 +1,7 @@
 # A SiftAgg scan already running (its cursor planned before the write) when another session writes a value the
 # index cannot store: the rows are the normal plan's, with the writer in flight, committed or rolled back, in the
 # write buffer and once promoted into a segment.
-# requires: build
+# requires: build col
 
 setup
 {

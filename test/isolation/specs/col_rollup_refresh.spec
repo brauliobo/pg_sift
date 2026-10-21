@@ -1,6 +1,7 @@
 # The on-demand refresh of the rollups (docs/COL-PREAGG.md section 7) against writers and maintenance: a SELECT that scans exact units for lack of
 # their rollup queues their segments and writes nothing; the refresh rewrites a queued segment under the maintenance lock, so a writer in flight does not
 # wait for it and its rows are read as before.
+# requires: col
 
 setup
 {
