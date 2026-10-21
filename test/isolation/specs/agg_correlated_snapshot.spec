@@ -1,6 +1,6 @@
 # A SiftAgg scan whose lateral child (a LIMIT 1 mapping) and UNION ALL plan child read other tables, while another session writes them: the
 # child's rows are those of the cursor's snapshot, as in the normal plan, with the writer in flight, committed or rolled back.
-# requires: build
+# requires: build col
 
 setup
 {

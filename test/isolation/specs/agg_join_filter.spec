@@ -1,6 +1,6 @@
 # The keys of an inner join's table become a conjunct of the SiftAgg scan (sift.agg_join_filter): they are the rows the cursor's snapshot sees, as in
 # the normal plan, with a writer that adds or removes the matching entities in flight, committed or rolled back.
-# requires: build
+# requires: build col
 
 setup
 {
