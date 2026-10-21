@@ -70,12 +70,12 @@ typedef struct PredState
 	bool		in_hasnull;
 	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
-	int64		in_lo;
+	int64		in_lo;			/* the least and the greatest element, when there is one (in_nv) */
+	int64		in_hi;
+	uint32		in_nv;
 	uint32		in_nlut;
 	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
-	int32	   *in_sorted;		/* ... or, when the values are too far apart for one, the sorted values (an integer leaf) ... */
-	uint32		in_nsorted;
-	int64	   *in_htab;		/* ... or a hash table of the values (a 64-bit leaf), in_hmask + 1 slots, in_hused marks the full ones */
+	int64	   *in_htab;		/* ... or, when the values are too far apart for one, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */
 	uint8	   *in_hused;
 	uint64		in_hmask;
 	ExprState  *expr;			/* SAP_LUT */
@@ -274,6 +274,8 @@ typedef struct ComboSt
 	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */
 	int32		slo;
 	uint32		snlut;
+	bool		kfilt;			/* the scan's join key filter is the keys of the table, which hold its own conditions (join_filters) */
+	bool		spass;			/* ... and every tuple that reaches the join passes it: a semi join, or an inner one with unique keys, that returns no column */
 	ExprState **slot;
 	List       *args;			/* correlated child parameter expressions */
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* the join keys that are expressions */
@@ -446,6 +448,7 @@ typedef struct AggExec
 	SiftVis    *tid_vis;		/* a heap: the visible versions of its edge blocks' rows (a HOT chain's member, not the root the index keeps) */
 	TupleTableSlot *tid_slot;
 	int			njfilter;		/* the join key conjuncts join_filters added to the spec */
+	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
@@ -806,7 +809,7 @@ const uint32 *unit_parent(AggExec *ex);
 Datum scaled_numeric(__int128 v, int scale);
 
 /* pred.c */
-bool in_build(PredState *st, bool wide, bool table_only, const int64 *vals, int nv, int64 lo, int64 hi);
+void in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi);
 void eval_operand(AggExec *ex, SiftAggPred *p, PredState *st);
 void rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out);
 uint64 *row_bitmap(AggExec *ex, SiftAggPred *p);
@@ -816,6 +819,7 @@ void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
+bool map_unique(const MapTab *m);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 
 /* combo.c */

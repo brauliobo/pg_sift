@@ -358,6 +358,8 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 			ptr[k] = cs->in[j->keypos[k]].ptr[v[j->keypos[k]] - 1];
 			len[k] = cs->in[j->keypos[k]].len[v[j->keypos[k]] - 1];
 		}
+		else if (leaf_wide(&ex->lay->leaf[cb->leaf[j->keypos[k]]]))
+			iv[k] = cs->id64[j->keypos[k]].val[v[j->keypos[k]] - 1];
 		else
 			iv[k] = (int32) (v[j->keypos[k]] - 1);
 	}

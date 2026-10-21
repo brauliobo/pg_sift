@@ -243,7 +243,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 			!OidIsValid(op->inputcollid) || !get_collation_isdeterministic(op->inputcollid))
 			return false;
 	}
-	else if (lf->vtype != SCV_I32 || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
+	else if ((lf->vtype != SCV_I32 && lf->typid != INT8OID) || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
 	join_var(jc, (Var *) m);
