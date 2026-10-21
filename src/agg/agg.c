@@ -251,20 +251,25 @@ unmatched_tail(AggExec *ex)
 void
 run_scan(AggExec *ex)
 {
-	bool		ordered = sift_aggspec_ordered(ex->spec);
+	bool		ordered = sift_aggspec_ordered(ex->spec),
+				none;
 
 	ex->null_input = false;
 	ex->started = true;
 	ex->glist = NULL;
 	engine_open(ex, ex->snap, ex->params);
 	scan_buffers(ex);
-	if (!backend_begin(ex))
+	none = join_none(ex);
+	if (!backend_begin(ex) && !none)
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
 		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec));
 		shared_init(ex->shared, ex);
 	}
+	/* a join without a row to match leaves no tuple: no item of work to take */
+	if (none)
+		pg_atomic_write_u32(&ex->shared->next, ex->shared->nitems);
 	ex->lane_serial = ordered && ex->par == NULL;
 	ex->lanes = ordered && !ex->lane_serial;
 	table_init(ex);
