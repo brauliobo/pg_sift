@@ -20,6 +20,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
+#include "core/cmp.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -155,7 +156,7 @@ rowhash_cmp(const void *a, const void *b)
 	SiftKey		x = ((const RowHash *) a)->key,
 				y = ((const RowHash *) b)->key;
 
-	return x < y ? -1 : x > y;
+	return SIFT_CMP3(x, y);
 }
 
 #ifdef SIFT_TESTING

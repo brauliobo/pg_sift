@@ -23,6 +23,7 @@
 
 #include "col/preagg.h"
 #include "col/preagg_int.h"
+#include "core/cmp.h"
 
 /* ---------- varints ---------- */
 
@@ -122,7 +123,7 @@ cmp_group(const void *a, const void *b)
 
 	if (x->isnull != y->isnull)
 		return x->isnull ? 1 : -1;
-	return x->key < y->key ? -1 : x->key > y->key;
+	return SIFT_CMP3(x->key, y->key);
 }
 
 /* The writer keeps the overflow bitmap of a leaf once a unit needed it, zeroed for the next ones: no bit set is no overflow value */
@@ -381,9 +382,9 @@ cmp_tuple(const void *a, const void *b)
 		if (nx != ny)
 			return nx ? 1 : -1;
 		if (kx != ky)
-			return kx < ky ? -1 : 1;
+			return SIFT_CMP3(kx, ky);
 	}
-	return x < y ? -1 : x > y;
+	return SIFT_CMP3(x, y);
 }
 
 /* The distinct tuples of the dims over the elements, with the elements of each; false past the cap */

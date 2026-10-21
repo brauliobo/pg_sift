@@ -29,8 +29,8 @@ cmp_tomb(const void *a, const void *b)
 			   *y = b;
 
 	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return x->seq < y->seq ? -1 : x->seq > y->seq;
+		return SIFT_CMP3(x->key, y->key);
+	return SIFT_CMP3(x->seq, y->seq);
 }
 
 static void

@@ -6,6 +6,7 @@
 
 #include "col/preagg.h"
 #include "col/preagg_int.h"
+#include "core/cmp.h"
 
 typedef struct Rd
 {
@@ -537,8 +538,8 @@ cmp_proj(const void *a, const void *b)
 	if (nx != ny)
 		return nx ? 1 : -1;
 	if (!nx && proj_r->key[proj_j][x] != proj_r->key[proj_j][y])
-		return proj_r->key[proj_j][x] < proj_r->key[proj_j][y] ? -1 : 1;
-	return x < y ? -1 : x > y;
+		return SIFT_CMP3(proj_r->key[proj_j][x], proj_r->key[proj_j][y]);
+	return SIFT_CMP3(x, y);
 }
 
 bool

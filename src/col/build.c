@@ -17,6 +17,7 @@
 
 #include "col/build.h"
 #include "core/ops.h"
+#include "core/cmp.h"
 
 #define PROGRESS_ROWS	1024
 
@@ -321,8 +322,8 @@ seg_cmp(const void *a, const void *b)
 			   *y = b;
 
 	if (x->sb_lo != y->sb_lo)
-		return x->sb_lo < y->sb_lo ? -1 : 1;
-	return x->gen < y->gen ? -1 : x->gen > y->gen;
+		return SIFT_CMP3(x->sb_lo, y->sb_lo);
+	return SIFT_CMP3(x->gen, y->gen);
 }
 
 void

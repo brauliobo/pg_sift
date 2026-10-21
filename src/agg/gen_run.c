@@ -75,6 +75,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "core/cmp.h"
 
 /* the aggregated arguments of tuple j */
 static void
@@ -385,7 +386,7 @@ gen_pair_cmp(const void *pa, const void *pb, void *arg)
 	int32		c;
 
 	if (a->g != b->g)
-		return a->g < b->g ? -1 : 1;
+		return SIFT_CMP3(a->g, b->g);
 	if (a->id == 0 || b->id == 0)
 		return a->id == b->id ? 0 : a->id == 0 ? 1 : -1;
 	c = DatumGetInt32(FunctionCall2Coll(sa->st->cmp, sa->collid, sa->ot->val[a->id - 1], sa->ot->val[b->id - 1]));
