@@ -84,6 +84,14 @@ SELECT same($$SELECT kind AS k, count(*) AS n, sum(qty) AS s FROM ev GROUP BY ki
 SELECT arms_shared(:'line_arms') AS line_arms_shared, same(:'line_arms') AS line_arms_same;
 SELECT reread(:'line_arm') > 0 AS arm_rereads, reread(:'line_arms') = reread(:'line_arm') AS rereads_once;
 
+-- an arm without keys (the total) is a set of the pass too, and has its row when no row reached it; so has a total over a lookup join
+\set total_arms 'SELECT kind AS a, NULL::int AS b, count(*) AS n, sum(price) AS s FROM ev GROUP BY kind UNION ALL SELECT NULL, qty, count(*), sum(price) FROM ev GROUP BY qty UNION ALL SELECT NULL, NULL, count(*), sum(price) FROM ev'
+\set empty_total_arms 'SELECT kind AS a, count(*) AS n, sum(price) AS s FROM ev WHERE qty > 100 GROUP BY kind UNION ALL SELECT NULL, count(*), sum(price) FROM ev WHERE qty > 100'
+\set join_total_arms 'SELECT z.name AS a, count(*) AS n, sum(e.price) AS s FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY z.name UNION ALL SELECT NULL, count(*), sum(e.price) FROM ev e JOIN zones z ON z.id = e.zone_id'
+SELECT arms_shared(:'total_arms') AS total_arms_shared, same(:'total_arms') AS total_arms_same;
+SELECT arms_shared(:'empty_total_arms') AS empty_total_shared, same(:'empty_total_arms') AS empty_total_same;
+SELECT arms_shared(:'join_total_arms') AS join_total_shared, same(:'join_total_arms') AS join_total_same;
+
 -- not in one pass: another WHERE, other aggregates
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev WHERE qty > 2 GROUP BY kind UNION ALL SELECT zone_id::text, count(*) FROM ev GROUP BY zone_id$$) AS other_filter_shared;
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION ALL SELECT zone_id::text, sum(qty) FROM ev GROUP BY zone_id$$) AS other_aggregate_shared;
