@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: '23 4 * * 0'
   workflow_dispatch:
+    inputs:
+      valgrind_tests:
+        description: 'Regression tests for the memcheck job, space separated (empty: the default list of scripts/valgrind.sh)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -95,7 +100,13 @@ jobs:
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Memcheck over the regression subset
+        env:
+          SIFT_VALGRIND_TESTS: ${{ inputs.valgrind_tests }}
         run: SIFT_CI_JOBS=valgrind scripts/ci.sh quick
+
+      - name: Seconds of each memcheck test
+        if: always()
+        run: grep -h '^valgrind:' "$SIFT_CI_TMP"/logs/valgrind*.log || true
 
       - name: Keep the logs of a failed run
         if: failure()

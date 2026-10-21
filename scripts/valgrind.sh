@@ -28,6 +28,7 @@ source "$REPO/scripts/source-snapshot.sh"
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
+(( ${#TESTS[@]} )) || read -ra TESTS <<<"${SIFT_VALGRIND_TESTS:-}"
 (( ${#TESTS[@]} )) || TESTS=(store_basic col_index_basic tbl_basic shred_values)
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
@@ -118,7 +119,17 @@ for _ in $(seq 600); do pg_isready -q -h "$SOCK" -p "$PORT" && break; sleep 1; d
 pg_isready -q -h "$SOCK" -p "$PORT" || { echo "valgrind: the server did not start in 600 s"; tail -n 20 "$WORK/postgres.out"; rc=1; exit 1; }
 createdb -U postgres "${SIFT_DB:-sift}" 2>/dev/null || true
 
-timeout -k 60 "${SIFT_VALGRIND_TIMEOUT:-3000}" scripts/pgtest.sh regress "${TESTS[@]}" || { rc=1; echo "valgrind: a test failed or the ${SIFT_VALGRIND_TIMEOUT:-3000} s bound was hit"; }
+# one pg_regress per test: the seconds of each are printed (they size the default list), and the bound covers the whole loop
+t0=$SECONDS
+for t in "${TESTS[@]}"; do
+	left=$(( ${SIFT_VALGRIND_TIMEOUT:-3000} - (SECONDS - t0) ))
+	t1=$SECONDS
+	if (( left > 0 )) && timeout -k 60 "$left" scripts/pgtest.sh regress "$t"; then
+		echo "valgrind: test $t $((SECONDS - t1)) s"
+	else
+		rc=1; echo "valgrind: test $t failed or the ${SIFT_VALGRIND_TIMEOUT:-3000} s bound was hit after $((SECONDS - t1)) s"
+	fi
+done
 pg_ctl -D "$DATA" -m fast -t 600 stop >/dev/null 2>&1 || true
 
 # every error is a block between the markers in the log of its process
