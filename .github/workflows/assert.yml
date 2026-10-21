@@ -12,6 +12,10 @@ on:
         description: 'Regression tests for the memcheck job, space separated (empty: the default list of scripts/valgrind.sh)'
         required: false
         default: ''
+      valgrind_full:
+        description: 'Add the slow tests to the default list of the memcheck job'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -102,6 +106,7 @@ jobs:
       - name: Memcheck over the regression subset
         env:
           SIFT_VALGRIND_TESTS: ${{ inputs.valgrind_tests }}
+          SIFT_VALGRIND_FULL: ${{ inputs.valgrind_full && '1' || '' }}
         run: SIFT_CI_JOBS=valgrind scripts/ci.sh quick
 
       - name: Seconds of each memcheck test
