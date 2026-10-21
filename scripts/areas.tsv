@@ -20,18 +20,19 @@
 ^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas)\.|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
-^test/fixtures/	^tap-shell-compat_2x
-^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$
-^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$
-^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$
-^test/col/	^difftest-col|^coverage$
-^test/diff/	^difftest
-^test/fuzz/	^(fuzz|hardened)$
-^test/isolation/	^isolation
+^test/fixtures/	^tap-shell-compat_2x|{ci}
+^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
+^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
+^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
+^test/col/	^difftest-col|^coverage$|{ci}
+^test/diff/	^difftest|{ci}
+^test/fuzz/	^(fuzz|hardened)$|{ci}
+^test/isolation/	^isolation|{ci}
 # the source areas
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
 ^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
-^src/agg/	{col}|{agg}|{tbl}|{any}|gh:replication
+^src/agg/	{agg}|{any}|gh:replication
+^src/agg/	{col}|{tbl}|{ci}
 ^src/table/	{tbl}|{any}|gh:replication
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
 # the harness of one job
@@ -52,7 +53,10 @@
 
 # Focused performance uses the groups above; shared build/SQL cover every group. {perf} marks what cannot change the extension it builds twice
 # (the gate, its selector, the CI machinery): identical builds measure only noise, so they select nothing (the nightly run still measures everything).
+# {ci} marks the jobs a path can break but not slow: the tests are not built into the extension, and the SiftAgg code is not on the path of the storage cases
+# (no grouped query, no table source scan; the aggregate cases read the table through it), so the aggregate stack above it is correctness-only for the gate.
 =perf	^gh:perf$
+=ci	^gh:ci$
 ^sql/.*\.sql$	.
 ^scripts/(perf-select\.py|test-perf-select\.py)$	{perf}
 ^(bench/steps/perf_gate\.py|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
