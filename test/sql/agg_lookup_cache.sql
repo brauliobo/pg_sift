@@ -121,6 +121,10 @@ SELECT cached(:'q4');
 SELECT cached(:'q4');
 SELECT * FROM same(:'q4');
 RESET sift.agg_lookup_cache_kb;
+-- ... and is kept once the budget is larger (the refusal is of that budget): the memory of the rows decides, not the pages of the table
+SELECT cached(:'q4');
+SELECT cached(:'q4');
+SELECT * FROM same(:'q4');
 -- a condition that is not constant (a stable function) is another query's table every time: not kept
 SELECT cached('SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country < extract(day from current_date)::int - extract(day from current_date)::int + 10 GROUP BY 1');
 SELECT cached('SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country < extract(day from current_date)::int - extract(day from current_date)::int + 10 GROUP BY 1');
