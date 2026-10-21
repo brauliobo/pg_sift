@@ -8828,6 +8828,24 @@ unit_parent(AggExec *ex)
 	return ex->parent;
 }
 
+/* the row that owns each element of the array or object leaf `group` (the unnested one is unit_parent's) */
+static const uint32 *
+group_parent(AggExec *ex, int group)
+{
+	const uint32 *offs;
+	uint32	   *par;
+
+	if (group == ex->spec->group)
+	{
+		build_parents(ex);
+		return unit_parent(ex);
+	}
+	offs = elem_offs(ex, group);
+	par = MemoryContextAlloc(ex->ucxt, (Size) offs[ex->unit.nrow] * sizeof(uint32) + SIFT_AGG_PAD);
+	sift_colk->expand_parents(offs + 1, ex->unit.nrow, par);
+	return par;
+}
+
 /*
  * The conjuncts that evaluate an expression PostgreSQL may fail on (SiftAggPred.late) are applied to the items that passed every other
  * conjunct and the snapshot check, in the order of the query, each to the survivors of the ones before it: the normal plan never
@@ -9398,9 +9416,31 @@ topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
 }
 
+/* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */
+static void
+leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows)
+{
+	const SiftSrcLeaf *l = &ex->lay->leaf[leaf];
+	const SiftSrcVec *v;
+	const uint32 *par;
+
+	if (l->typid == NUMERICOID || !sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec(ex, leaf))->ovf)
+		return;
+	if (!*rows)
+		*rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
+	par = l->parent >= 0 ? group_parent(ex, l->parent) : NULL;
+	for (int64 e = 0; e < v->n; e++)
+		if (sift_colsrc_bit(v->ovf, e))
+		{
+			uint32		r = par ? par[e] : e;
+
+			(*rows)[r >> 6] |= UINT64CONST(1) << (r & 63);
+		}
+}
+
 /*
- * The rows of the unit that hold a value the index cannot store in a leaf the scan reads (numeric NaNs aside: the readers evaluate those),
- * NULL when there is none. An element of a child leaf counts for its row.
+ * The rows of the unit that hold a value the index cannot store in a leaf the scan reads, NULL when there is none. The leaves after the source's
+ * read their values from one of its leaves (the value column of a member of an object, the array of a length): theirs count too.
  */
 static uint64 *
 overflow_rows(AggExec *ex, bool rechecked)
@@ -9409,29 +9449,11 @@ overflow_rows(AggExec *ex, bool rechecked)
 	uint64	   *rows = NULL;
 
 	for (int i = 0; i < s->nleaves; i++)
-	{
-		int			leaf = s->leaves[i];
-		const SiftSrcLeaf *l = &ex->lay->leaf[leaf];
-		const SiftSrcVec *v;
-		const uint32 *par;
-
-		if (leaf >= ex->nbase || l->typid == NUMERICOID || (s->recheck[i] != SRK_NONE) != rechecked)
-			continue;
-		if (!sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec(ex, leaf))->ovf)
-			continue;
-		if (!rows)
-			rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
-		if (l->parent >= 0)
-			build_parents(ex);
-		par = l->parent >= 0 ? unit_parent(ex) : NULL;
-		for (int64 e = 0; e < v->n; e++)
-			if (sift_colsrc_bit(v->ovf, e))
-			{
-				uint32		r = par ? par[e] : e;
-
-				rows[r >> 6] |= UINT64CONST(1) << (r & 63);
-			}
-	}
+		if (s->leaves[i] < ex->nbase && (s->recheck[i] != SRK_NONE) == rechecked)
+			leaf_overflow_rows(ex, s->leaves[i], &rows);
+	for (int j = 0; j < s->nvleaf && !rechecked; j++)
+		if (!s->vleaf[j].types)
+			leaf_overflow_rows(ex, s->vleaf[j].count ? s->vleaf[j].obj : ex->vl[j].val, &rows);
 	return rows;
 }
 
