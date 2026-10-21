@@ -6,6 +6,8 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
+#include "access/rmgr.h"
+#include "access/xloginsert.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -316,6 +318,81 @@ sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int nla
 		return buf;
 	}
 	pg_unreachable();
+}
+
+#define EDIT_HEAD_FRAGS	6			/* regions of the head bytes; with the extra region and the appended bytes, 16 of the 20 chunks of a WAL record */
+#define EDIT_GAP		4			/* equal bytes between two changed ones that are logged with them: a region costs 4 bytes of header */
+
+void
+sift_page_edit_begin(SiftPageEdit *e, Page page, Size headlen)
+{
+	Assert(headlen <= SIFT_EDIT_HEAD);
+	e->page = page;
+	e->headlen = headlen;
+	e->lower = ((PageHeader) page)->pd_lower;
+	memcpy(e->head, page, headlen);
+#ifdef USE_ASSERTION_CHECKING
+	memcpy(e->image, page, BLCKSZ);
+#endif
+	START_CRIT_SECTION();
+}
+
+void
+sift_page_edit_end(Relation index, Buffer buf, SiftPageEdit *e, Size extra_off, Size extra_len)
+{
+	const char *page = (const char *) e->page;
+	uint16		frag[EDIT_HEAD_FRAGS + 2][2];	/* offset, length */
+	int			nf = 0;
+
+	for (Size i = 0; i < e->headlen;)
+	{
+		Size		end,
+					j;
+
+		if (page[i] == e->head[i])
+		{
+			i++;
+			continue;
+		}
+		end = i + 1;
+		for (j = end; j < e->headlen && j - end <= EDIT_GAP; j++)
+			if (page[j] != e->head[j])
+				end = j + 1;
+		if (nf == EDIT_HEAD_FRAGS - 1)
+			for (end = e->headlen; page[end - 1] == e->head[end - 1];)
+				end--;
+		frag[nf][0] = i;
+		frag[nf++][1] = end - i;
+		i = nf == EDIT_HEAD_FRAGS ? e->headlen : end;
+	}
+	if (extra_len > 0)
+	{
+		frag[nf][0] = extra_off;
+		frag[nf++][1] = extra_len;
+	}
+	if (((PageHeader) page)->pd_lower > e->lower)
+	{
+		frag[nf][0] = e->lower;
+		frag[nf++][1] = ((PageHeader) page)->pd_lower - e->lower;
+	}
+#ifdef USE_ASSERTION_CHECKING
+	for (int k = 0; k < nf; k++)
+		memcpy(e->image + frag[k][0], page + frag[k][0], frag[k][1]);
+	Assert(memcmp(e->image, page, BLCKSZ) == 0);
+#endif
+	MarkBufferDirty(buf);
+	if (RelationNeedsWAL(index))
+	{
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		for (int k = 0; k < nf; k++)
+		{
+			XLogRegisterBufData(0, (char *) frag[k], sizeof(frag[k]));
+			XLogRegisterBufData(0, page + frag[k][0], frag[k][1]);
+		}
+		PageSetLSN(e->page, XLogInsert(RM_GENERIC_ID, 0));
+	}
+	END_CRIT_SECTION();
 }
 
 Buffer

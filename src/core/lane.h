@@ -77,6 +77,29 @@ typedef void (*SiftLaneFill) (Page cur, Page np, Page hp, void *arg);
 extern Buffer sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Size hdrsize, uint32 limit,
 							 SiftLaneFill fill, void *arg, bool *crossed);
 
+/*
+ * An append to a locked page, logged as the generic WAL record (RM_GENERIC_ID) the page's own change would be, without the copy of the
+ * page, the comparison of its bytes and the copy back that GenericXLogFinish makes for every record: begin saves the first headlen bytes
+ * (at most SIFT_EDIT_HEAD: the page header and what the caller keeps in front of the records) and opens a critical section; the caller
+ * changes the page (no error may be raised: the bytes it touches are those head bytes, the optional region of the end call, and
+ * [pd_lower, new pd_lower) for the appended record); end logs the changed head bytes, the region and the appended bytes, marks the
+ * buffer dirty and closes the critical section. The record is replayed by generic_redo like any other.
+ */
+#define SIFT_EDIT_HEAD	96
+typedef struct SiftPageEdit
+{
+	Page		page;
+	Size		headlen;
+	uint16		lower;
+	char		head[SIFT_EDIT_HEAD];
+#ifdef USE_ASSERTION_CHECKING
+	char		image[BLCKSZ];		/* the page before: the logged regions must rebuild the page from it */
+#endif
+} SiftPageEdit;
+
+extern void sift_page_edit_begin(SiftPageEdit *e, Page page, Size headlen);
+extern void sift_page_edit_end(Relation index, Buffer buf, SiftPageEdit *e, Size extra_off, Size extra_len);
+
 /* ---------- walking ---------- */
 
 /* Copies a data page out under a share lock, so decoding holds no buffer */
