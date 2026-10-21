@@ -56,7 +56,7 @@ $q$);
  union all, filter, key | t    | t    | 22023 cannot cast jsonb null to type integer
 (1 row)
 
--- the number itself is the argument: its cast to numeric keeps the digits of the stored float
+-- a cast to numeric keeps the scale the document wrote, which the stored float does not: the normal plan (agg_child_member_value)
 SELECT * FROM check_query('numeric', $q$
  SELECT c.v, count(*) AS n
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
@@ -65,7 +65,7 @@ SELECT * FROM check_query('numeric', $q$
 $q$);
   label  | scan | same |                   outcome                    
 ---------+------+------+----------------------------------------------
- numeric | t    | t    | 22023 cannot cast jsonb null to type numeric
+ numeric | f    | t    | 22023 cannot cast jsonb null to type numeric
 (1 row)
 
 -- `x IS TRUE` over an existence test counts the rows the test selects, with or without a join

@@ -268,20 +268,30 @@ typedef struct BareRead
 {
 	Index		rti;			/* the unnested function */
 	int			level;			/* query levels below the child's own */
+	bool		key;			/* the key is read too: a row without the member has none */
 } BareRead;
 
-/* does the child read a column of the function other than as the argument of a cast of jsonb to a number or boolean */
+/* a cast the float8 of the leaf serves exactly: a numeric keeps the scale the document wrote, and a boolean is no float8 */
+static bool
+float_cast(Oid fid)
+{
+	Oid			to = json_cast_target(fid);
+
+	return to != InvalidOid && to != NUMERICOID && to != BOOLOID;
+}
+
+/* does the child read a column of the function other than as the argument of a cast the float8 of the leaf serves */
 static bool
 bare_read_walker(Node *n, BareRead *x)
 {
 	if (n == NULL)
 		return false;
-	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid && IsA(linitial(((FuncExpr *) n)->args), Var) &&
+	if (IsA(n, FuncExpr) && float_cast(((FuncExpr *) n)->funcid) && IsA(linitial(((FuncExpr *) n)->args), Var) &&
 		((Var *) linitial(((FuncExpr *) n)->args))->varno == x->rti && ((Var *) linitial(((FuncExpr *) n)->args))->varlevelsup == x->level &&
 		((Var *) linitial(((FuncExpr *) n)->args))->varattno == 2)
 		return false;
 	if (IsA(n, Var))
-		return ((Var *) n)->varno == x->rti && ((Var *) n)->varlevelsup == x->level;
+		return ((Var *) n)->varno == x->rti && ((Var *) n)->varlevelsup == x->level && (x->key || ((Var *) n)->varattno == 2);
 	if (IsA(n, Query))
 	{
 		bool		bare;
@@ -352,8 +362,13 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 			   *derived;
 	List	   *saved = c->root->plan_params;
 
-	/* the member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it and for a JSON null alike: a child reads it only through casts (a JSON null casts to NULL in PostgreSQL 18) */
-	if (c->func_key && bare_read_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, &(BareRead) {c->func_rti, 0}))
+	/*
+	 * The value a child is given is the jsonb of the float8 the leaf holds: it reads the member only through casts to a number that float8 serves
+	 * exactly. The member a LEFT JOIN LATERAL jsonb_each picks is NULL for a row without it and for a JSON null alike (a JSON null casts to NULL in
+	 * PostgreSQL 18): the child does not read its key either.
+	 */
+	if (c->func_kind == FK_EACH && bare_read_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery,
+													&(BareRead) {c->func_rti, 0, c->func_key != NULL}))
 		return false;
 	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
 		return false;
