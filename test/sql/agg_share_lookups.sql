@@ -17,7 +17,9 @@ INSERT INTO ents VALUES (7, 7, 7), (NULL, 1, 1);
 CREATE INDEX ents_country ON ents (country);
 CREATE TABLE srcs (id int PRIMARY KEY, name text, enabled boolean);
 INSERT INTO srcs SELECT i, 's' || i, i % 5 <> 0 FROM generate_series(1, 40) i;
-ANALYZE ents; ANALYZE srcs;
+CREATE TABLE grades (id int, tier int, grade int);
+INSERT INTO grades SELECT i, i % 9, (i / 3) % 9 FROM generate_series(1, 3000) i;
+ANALYZE ents; ANALYZE srcs; ANALYZE grades;
 
 -- the nodes of an EXPLAIN ANALYZE and the tables they shared
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -60,6 +62,9 @@ SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev
 SELECT * FROM same($$SELECT 'a' AS arm, kind AS k, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT id FROM ents WHERE country = 5) GROUP BY 2
 	UNION ALL SELECT 'b', kind, count(*) FROM ev WHERE NOT EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.dim_a_id AND e.country = 5) GROUP BY 2
 	UNION ALL SELECT 'c', e.tier::text, count(*) FROM ev LEFT JOIN ents e ON e.id = ev.dim_a_id AND e.country = 5 GROUP BY 2$$);
+-- the condition of a table reads its columns as parameters after the leaves of the join: the same text over another number of leaves is another condition
+SELECT * FROM same($$SELECT 'a' AS arm, g.tier::text AS k, g.grade AS g, count(*) AS n FROM ev JOIN grades g ON g.id = ev.dim_a_id AND g.grade > 5 GROUP BY 2, 3
+	UNION ALL SELECT 'b', (g.tier + ev.lookup_id)::text, g.grade, count(*) FROM ev JOIN grades g ON g.id = ev.dim_a_id AND g.tier > 5 GROUP BY 2, 3$$);
 -- a table that is a plan (a sub-select) is not shared
 SELECT * FROM same($$SELECT 'a' AS arm, s.country::text AS k, count(*) AS n FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2
 	UNION ALL SELECT 'b', s.country::text, count(*) FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2$$);
@@ -79,5 +84,5 @@ RESET sift.enable_agg;
 
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE ev, ents, srcs;
+DROP TABLE ev, ents, srcs, grades;
 DROP EXTENSION pg_sift;

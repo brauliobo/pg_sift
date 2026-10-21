@@ -38,8 +38,8 @@ An inner or semi lookup join whose key is one integer or date leaf of the index 
 key, so the keys of the table, loaded when the scan starts with its own conditions already applied, are a conjunct of the scan: `leaf IN (keys)`. The conjunct is a byte table over the
 range of the keys (a range wider than 4 million values keeps the generic join), the same test, zone pruning and source filters as an `IN` list of constants: a unit whose zone misses the
 range is not read (`Units Pruned`) and the other rows are tested as a set before a tuple is made, where the join would resolve every tuple through the combo cache. A join on several
-key columns adds one conjunct per integer key. `EXPLAIN ANALYZE` shows `Join Key Filters`; `sift.agg_join_filter = off` gives the plain join back. The rows, the errors and the
-order of evaluation seen by an expression are those of the normal plan: a tuple the join drops never reaches an expression. `LEFT`, `RIGHT`, `FULL` and anti joins, text keys,
+key columns adds one conjunct per integer key. `EXPLAIN ANALYZE` shows `Join Key Filters`; `sift.agg_join_filter = off` gives the plain join back. The rows are those of the normal plan, and a tuple the join drops never reaches an expression (as when the normal plan joins first; a conjunct on the fact rows that may raise
+is evaluated on the rows whose key the table holds, which is what a plan that joins before it filters does). `LEFT`, `RIGHT`, `FULL` and anti joins, text keys,
 element-level leaves, a plan with a preserved side and a top-N scan have no such conjunct. Test `agg_join_filter`, isolation spec `agg_join_filter`, fixtures `j_join_filter_*`, row J28.
 
 A combo of one input (a join key, a grouping expression of one leaf) finds the entry of an id below 4 million by array index; a larger or negative id, and combos of several inputs, use the hash table.
