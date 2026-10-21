@@ -6,16 +6,8 @@
 #include "utils/datum.h"
 
 #include "agg/wide.h"
+#include "core/cmp.h"
 #include "agg/agg_int.h"
-
-static int
-cmp_int64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
 
 /* the values of a hash table of an IN set, sorted */
 static int64 *
@@ -27,7 +19,7 @@ hash_values(const PredState *st)
 	for (uint64 h = 0; h <= st->in_hmask; h++)
 		if (st->in_hused[h])
 			vals[n++] = st->in_htab[h];
-	qsort(vals, n, sizeof(int64), cmp_int64);
+	qsort(vals, n, sizeof(int64), sift_cmp_i64);
 	return vals;
 }
 

@@ -62,6 +62,5 @@ extern void sift_search_close(SiftSearch *s);
 extern const SiftFilter *sift_search_range(SiftSearch *s, uint32 lo, uint32 hi);
 
 extern int64 sift_search_matches(const SiftSearch *s);
-extern const char *sift_search_name(const SiftSearch *s);
 
 #endif							/* SIFT_SEARCH_H */
