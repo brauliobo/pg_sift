@@ -747,6 +747,18 @@ reads_preserved_only(AggCtx *c, Node *e)
 	return bms_is_empty(rels);
 }
 
+/* does the expression read the table of a FULL join? A scanned row it finds no match for has NULL columns there, but a placeholder over them is NULL as a whole */
+static bool
+reads_full_lookup(AggCtx *c, Node *e)
+{
+	Relids		rels = pull_varnos(c->root, e);
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->kind == SJ_FULL && bms_is_member(jc->rti, rels))
+			return true;
+	return false;
+}
+
 /*
  * The outer joins that null a placeholder. The group expression of grouping sets is kept as it was below the join, without its own
  * nulling: the joins of the scan null it unless it reads the preserved side only.
@@ -776,7 +788,8 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 		PlaceHolderVar *ph = (PlaceHolderVar *) n;
 		Relids		nulling = placeholder_nulling(c, ph);
 
-		if (ph->phlevelsup == 0 && !bms_is_empty(nulling) && bms_is_subset(nulling, c->nulling))
+		/* the missing input is the scanned table's: a placeholder over a FULL join's table stays, and the plan with it is refused */
+		if (ph->phlevelsup == 0 && !bms_is_empty(nulling) && bms_is_subset(nulling, c->nulling) && !reads_full_lookup(c, (Node *) ph->phexpr))
 		{
 			CaseExpr   *out = makeNode(CaseExpr);
 			CaseWhen   *when = makeNode(CaseWhen);
