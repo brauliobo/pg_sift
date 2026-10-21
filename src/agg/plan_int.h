@@ -95,6 +95,9 @@ typedef struct AggCtx
 	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
 	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
 	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
+	int			cast_pending;	/* 1 + the leaf match_leaf just resolved from the cast of a jsonb_each member's jsonb value to a number (0: none), which the use_leaf that follows takes */
+	Bitmapset  *cast_ok;		/* leaves read through such a cast ... */
+	Bitmapset  *cast_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */

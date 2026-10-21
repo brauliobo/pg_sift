@@ -123,7 +123,7 @@ convert(SiftShred *sh, SiftShredRecheck *rc, int col, const char *text)
 	if (!ok)
 	{
 		keep_error(rc, esc.error_data);
-		if (rc->grp[rc->spec->cols[col].group] == SRG_RECORDSET)
+		if (rc->spec->cols[col].group >= 0 && rc->grp[rc->spec->cols[col].group] == SRG_RECORDSET)
 			rc->poison_grp = rc->spec->cols[col].group;
 		return false;
 	}
@@ -154,12 +154,36 @@ convert(SiftShred *sh, SiftShredRecheck *rc, int col, const char *text)
 	}
 }
 
+/* the error of a cast of a jsonb value that is no number: its type is named as jsonb_float8 names it */
+static void
+cast_error(SiftShredRecheck *rc, const JsonbValue *v)
+{
+	const char *type = v->type == jbvString ? "string" : v->type == jbvBool ? "boolean" : v->type == jbvNull ? "null" :
+		JsonContainerIsArray(v->val.binary.data) ? "array" : "object";
+	ErrorSaveContext esc = {T_ErrorSaveContext};
+	MemoryContext old = MemoryContextSwitchTo(rc->mcxt);
+
+	esc.details_wanted = true;
+	errsave((Node *) &esc, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("cannot cast jsonb %s to type %s", type, "double precision")));
+	keep_error(rc, esc.error_data);
+	MemoryContextSwitchTo(old);
+}
+
 /* a value where a leaf is declared, read as the query's expression reads it */
 static bool
 recheck_leaf(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc, int col)
 {
 	char	   *text;
 
+	if (rc->col[col] == SRC_JSONCAST)
+	{
+		if (v->type == jbvNumeric)
+			return convert(sh, rc, col, value_text(v));
+		/* a JSON null casts to NULL from PostgreSQL 18, and raises before */
+		if (v->type != jbvNull || PG_VERSION_NUM < 180000)
+			cast_error(rc, v);
+		return false;
+	}
 	if (rc->col[col] != SRC_TEXTIO || v->type == jbvNull)
 		return false;
 	text = value_text(v);

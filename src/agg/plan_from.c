@@ -566,10 +566,58 @@ recordset_columns(AggCtx *c)
 	return cols;
 }
 
+/* does the expression evaluate the cast of a member's jsonb value to float8 for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only */
+static bool
+unconditional_cast(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) == FLOAT8OID)
+	{
+		Node	   *arg = strip_relabel(linitial(((FuncExpr *) n)->args));
+
+		return IsA(arg, Var) && ((Var *) arg)->varno == c->func_rti && ((Var *) arg)->varattno == 2 && ((Var *) arg)->varlevelsup == 0;
+	}
+	if (IsA(n, Aggref))
+	{
+		Aggref	   *a = (Aggref *) n;
+
+		if (a->aggfilter != NULL)
+			return false;
+		foreach_ptr(Node, x, list_concat_copy(a->aggdirectargs, a->args))
+			if (unconditional_cast(IsA(x, TargetEntry) ? (Node *) ((TargetEntry *) x)->expr : x, c))
+				return true;
+		return false;
+	}
+	if (IsA(n, CaseExpr))
+		return unconditional_cast((Node *) ((CaseExpr *) n)->arg, c);
+	if (IsA(n, CoalesceExpr))
+		return unconditional_cast(linitial(((CoalesceExpr *) n)->args), c);
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop != NOT_EXPR)
+		return unconditional_cast(linitial(((BoolExpr *) n)->args), c);
+	if (IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, WindowFunc) || IsA(n, GroupingFunc))
+		return false;
+	return expression_tree_walker(n, unconditional_cast, c);
+}
+
+/* can leaf m, read only through the cast of a jsonb_each member's value to float8, be read again from the heap, so that a row with a value of another type raises where PostgreSQL's cast does? */
+static bool
+cast_recheck_ok(AggCtx *c, int m)
+{
+	Query	   *q = c->root->parse;
+
+	/* a leaf of the index, not the member of one key (a virtual leaf): the source reads the rows with a bad value in any member again, and the error is the row's, not the key's */
+	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && leaf_of(c, m)->typid == FLOAT8OID &&
+		!c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
+		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c));
+}
+
 /* How the query reads leaf m when the source holds a value it cannot store (SRK_NONE: it does not, such a value is an error for the scan); docs/COL-DIRTY-UNITS.md */
 static SiftSrcRecheck
 leaf_recheck(AggCtx *c, int m)
 {
+	if (cast_recheck_ok(c, m))
+		return SRK_CAST;
 	if (!recordset_recheck_ok(c))
 		return SRK_NONE;
 	if (m == c->group)
@@ -599,6 +647,14 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 
 	if (leaf_recheck(c, m) == SRK_NONE)
 		return SRK_NONE;
+	/* the row raises where it reaches the aggregate: no conjunct reads the leaf (the cast would run before the aggregates) and none of the members is dropped before it */
+	if (leaf_recheck(c, m) == SRK_CAST)
+	{
+		for (int i = 0; i < s->npred; i++)
+			if (s->pred[i]->level != 0 || pred_reads_any(s->pred[i], bms_make_singleton(m)))
+				return SRK_NONE;
+		return SRK_CAST;
+	}
 	list = bms_add_member(list, c->group);
 	for (int i = 0; i < c->lay->nleaves; i++)
 		if (leaf_of(c, i)->parent == c->group)

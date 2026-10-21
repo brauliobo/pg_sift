@@ -838,7 +838,7 @@ overflow_rows(AggExec *ex, bool rechecked)
  * has it, its values as SQL gives them) and what is left is the value SQL raises for. The source has the error of the row; it is raised when the
  * row reaches the expression, after the conjuncts of the rows, as SQL raises it.
  */
-static void
+static pg_noinline void
 check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 {
 	int			nrw = (ex->unit.nrow + 63) / 64;
@@ -853,6 +853,17 @@ check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 	if (rechecked)
 		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
 	overflow_error();
+}
+
+/* check_overflow for the rows that keep an element of the unit, at the point the aggregates read them (SRK_CAST) */
+static pg_noinline void
+check_overflow_elems(AggExec *ex, const uint64 *em)
+{
+	int			nrw = (ex->unit.nrow + 63) / 64;
+	uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+
+	rows_of_elems(ex->offs, ex->unit.nrow, em, rv);
+	check_overflow(ex, rv, true);
 }
 
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
@@ -941,12 +952,14 @@ process_unit(AggExec *ex)
 			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
 	}
 	ex->qlevel = elem;
-	if (ex->recheck)
+	if (ex->recheck && !ex->recheck_late)
 		check_overflow(ex, rmask, true);
 	if (!elem)
 	{
 		sift_colsrc_vet(ex->src, u, rmask);
 		apply_late(ex, rmask, nrow);
+		if (ex->recheck_late)
+			check_overflow(ex, rmask, true);
 		if (ex->topn)
 			topn_unit(ex, rmask, nrow);
 		else
@@ -1003,6 +1016,8 @@ process_unit(AggExec *ex)
 				}
 		}
 		apply_late(ex, em, m);
+		if (ex->recheck_late)
+			check_overflow_elems(ex, em);
 		for (int st = 0; st < m; st += VEC)
 			agg_chunk(ex, st, Min(VEC, m - st), em + st / 64);
 	}

@@ -67,7 +67,7 @@ col_set_recheck(void *impl, int leaf, int mode)
 
 	if (mode == SRK_NONE)
 		return;
-	sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : SRC_TEXTIO);
+	sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
 	k->leaf[k->nleaf++] = leaf;
 }
 
@@ -192,9 +192,12 @@ recheck_batch(ColSource *src)
 		bool		isnull[INDEX_MAX_KEYS];
 		SiftColRow	row;
 		MemoryContext old;
+		ItemPointerData visible;
 
 		CHECK_FOR_INTERRUPTS();
-		if (!recheck_fetch(k, &k->tid[i]))
+		/* the fetch moves the TID to the visible version of a HOT chain: the row keeps the index's own, the root's */
+		visible = k->tid[i];
+		if (!recheck_fetch(k, &visible))
 			continue;
 		GetPerTupleExprContext(k->estate)->ecxt_scantuple = k->slot;
 		old = MemoryContextSwitchTo(k->tmp);

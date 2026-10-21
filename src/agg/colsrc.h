@@ -734,7 +734,8 @@ typedef enum SiftSrcRecheck
 {
 	SRK_NONE,					/* not at all: such a value is an error for a row of the snapshot */
 	SRK_TEXT,					/* the text of the scalar (a record column of jsonb_to_recordset, `->>` and a cast of it) through the input function of the leaf's type; a key of an array is NULL */
-	SRK_RECORDSET				/* an array leaf unnested by jsonb_to_recordset: the whole list of a row raises when one of its values does, and a list that is not an array of objects raises */
+	SRK_RECORDSET,				/* an array leaf unnested by jsonb_to_recordset: the whole list of a row raises when one of its values does, and a list that is not an array of objects raises */
+	SRK_CAST					/* a member of jsonb_each read only through the cast of its jsonb value to the leaf's number type: a value of another JSON type raises where the row reaches the aggregate */
 } SiftSrcRecheck;
 
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */

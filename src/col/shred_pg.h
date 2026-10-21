@@ -23,6 +23,7 @@ extern void sift_shred_jsonb(SiftShred *sh, Jsonb *jb);
 typedef enum SiftRecheckCol
 {
 	SRC_OFF,					/* as the shredder does: a value the leaf cannot store is an overflow slot */
+	SRC_JSONCAST,				/* the value of a jsonb that the query casts to the leaf's number type (a jsonb_each member): a number as the cast gives it, any other type is the error the cast raises */
 	SRC_TEXTIO					/* the text of the scalar (a string as it is, a number as numeric_out prints it, true or false, a container as its JSON) through the input function of the leaf's type, as a record column of jsonb_to_recordset and (x->>'k')::type do */
 } SiftRecheckCol;
 
