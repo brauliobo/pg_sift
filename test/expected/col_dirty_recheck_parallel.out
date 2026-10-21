@@ -72,3 +72,8 @@ SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc 
  parallel same
 (1 row)
 
+DROP FUNCTION r_check(text);
+DROP FUNCTION r_mode(text);
+DROP FUNCTION r_rows(text, bool);
+DROP TABLE r_t;
+DROP EXTENSION pg_sift;
