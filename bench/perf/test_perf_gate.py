@@ -421,6 +421,72 @@ class Methodology(unittest.TestCase):
         self.assertNotEqual(result['initial']['samples'],result['confirmation']['samples'])
         self.assertIsNot(result['initial'],result['confirmation'])
 
+    def extended(self, confirm, extension, *, deadline=math.inf, reserve=0, case=None, **kwargs):
+        initial = dict(gate.interval([(1,1.2)]*6),samples=[(1,1.2)]*6)
+        confirm = dict(confirm,runtime_seconds=confirm['n']*0.5)
+        blocks = [initial,confirm] + ([dict(extension,samples=[])] if extension else [])
+        with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+             patch.object(gate,'calibrate',return_value={'operations':7}), \
+             patch.object(gate,'block',side_effect=blocks) as calls:
+            result = gate.measure([],case or gate.CASES[0],deadline,reserve=reserve,**kwargs)
+        return result, calls
+
+    def noisy(self, count, mean):
+        # Pair ratios around `mean` with the SD measured for the INSERT pairs on the hosted runner.
+        logs = [math.log(mean) + (-1)**i * 0.09 for i in range(count)]
+        return gate.interval([(1,math.exp(x)) for x in logs])
+
+    def test_inconclusive_confirmation_takes_one_fresh_extension(self):
+        for case in (gate.CASES[0],gate.CASES[14]):
+            with self.subTest(case=case.name):
+                result, calls = self.extended(self.noisy(6 if case.reset else 16,1.06),
+                                              gate.interval([(1,1.02)]*16),case=case)
+                self.assertEqual(result['confirmation']['n'],6 if case.reset else 16)
+                self.assertEqual(calls.call_count,3)
+                self.assertEqual(calls.call_args.kwargs['pair_count'],gate.EXTENSION_PAIRS)
+                self.assertEqual(result['extension']['n'],16)
+                self.assertEqual(result['status'],'pass')
+                self.assertEqual(result['timing_status'],'pass')
+
+    def test_extension_decides_regression_and_remaining_inconclusive(self):
+        confirm = self.noisy(6,1.2)
+        self.assertEqual(self.extended(confirm,gate.interval([(1,1.3)]*16))[0]['status'],'regression')
+        self.assertEqual(self.extended(confirm,self.noisy(16,1.1))[0]['status'],'inconclusive')
+
+    def test_extension_needs_the_budget_for_itself_and_the_cases_after_it(self):
+        confirm = self.noisy(6,1.06)
+        cost = gate.EXTENSION_PAIRS*0.5
+        for remaining, reserve, fits in ((cost+1,0,True),(cost-1,0,False),(cost+gate.CASE_RESERVE_SECONDS+1,gate.CASE_RESERVE_SECONDS,True),
+                                         (cost+gate.CASE_RESERVE_SECONDS-1,gate.CASE_RESERVE_SECONDS,False)):
+            with self.subTest(remaining=remaining,reserve=reserve), patch.object(gate.time,'monotonic',return_value=100):
+                result, calls = self.extended(confirm,gate.interval([(1,1)]*16) if fits else None,
+                                              deadline=100+remaining,reserve=reserve)
+                self.assertEqual(calls.call_count,3 if fits else 2)
+                self.assertEqual(result['extension_budget']['fits'],fits)
+                self.assertEqual(result['extension_budget']['predicted_seconds'],cost)
+                self.assertEqual(result['status'],'pass' if fits else 'inconclusive')
+                self.assertEqual('extension' in result,fits)
+
+    def test_decided_confirmation_and_controls_never_extend(self):
+        for confirm, kwargs in ((gate.interval([(1,1)]*6),{}),(gate.interval([(1,1.5)]*6),{}),
+                                (self.noisy(6,1.06),{'force_confirmation':True,'output':None}),
+                                (self.noisy(6,1.06),{'control':True})):
+            with self.subTest(kwargs=kwargs), patch.object(gate,'write_report'):
+                result, calls = self.extended(confirm,None,**kwargs)
+                self.assertEqual(calls.call_count,2)
+                self.assertNotIn('extension',result)
+
+    def test_budget_exhausted_inside_the_extension_keeps_the_case_inconclusive(self):
+        initial = dict(gate.interval([(1,1.2)]*6),samples=[(1,1.2)]*6)
+        confirm = dict(self.noisy(16,1.06),runtime_seconds=8)
+        with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+             patch.object(gate,'calibrate',return_value={'operations':7}), \
+             patch.object(gate,'block',side_effect=[initial,confirm,gate.BudgetExpired('extension exhausted')]):
+            with self.assertRaises(gate.BudgetExpired):
+                gate.measure([],gate.CASES[0],math.inf,sink=(saved:=[]))
+        self.assertEqual(saved[0]['status'],'inconclusive')
+        self.assertEqual(saved[0]['phase'],'extension')
+
     def test_initial_pass_does_not_confirm(self):
         with patch.object(gate,'validate_case',return_value={'size_checks':None}), \
              patch.object(gate,'calibrate',return_value={'operations':7}), \
