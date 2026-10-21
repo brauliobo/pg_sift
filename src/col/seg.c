@@ -413,6 +413,57 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 	}
 }
 
+void
+sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs)
+{
+	const ZoneArrays *z[SIFT_COL_MAX_COLS] = {NULL};
+
+	for (int c = 0; c < seg->schema->ncols && c < zs->ncols; c++)
+		if (zs->lo[c] != NULL)
+			z[c] = zone_arrays(seg, c);
+	for (uint32 u = 0; u < seg->nsb; u++, zs->units++)
+	{
+		if (zs->units % zs->stride != 0)
+			continue;
+		if (zs->n == SIFT_COL_ZONE_SAMPLE)
+		{
+			/* the units kept are the even ones: every other sample goes, and one unit in twice as many is sampled from here on */
+			for (int c = 0; c < zs->ncols; c++)
+				if (zs->lo[c] != NULL)
+					for (uint32 k = 0; k < SIFT_COL_ZONE_SAMPLE / 2; k++)
+					{
+						zs->lo[c][k] = zs->lo[c][2 * k];
+						zs->hi[c][k] = zs->hi[c][2 * k];
+					}
+			zs->n /= 2;
+			zs->stride *= 2;
+			if (zs->units % zs->stride != 0)
+				continue;
+		}
+		for (int c = 0; c < zs->ncols; c++)
+		{
+			if (z[c] == NULL)
+				continue;
+			if (z[c]->flags[u] & SIFT_COLZ_OVERFLOW)
+			{
+				zs->lo[c][zs->n] = PG_INT64_MIN;
+				zs->hi[c][zs->n] = PG_INT64_MAX;
+			}
+			else if (z[c]->nnull[u] >= z[c]->nvals[u])
+			{
+				zs->lo[c][zs->n] = PG_INT64_MAX;
+				zs->hi[c][zs->n] = PG_INT64_MIN;
+			}
+			else
+			{
+				zs->lo[c][zs->n] = z[c]->min[u];
+				zs->hi[c][zs->n] = z[c]->max[u];
+			}
+		}
+		zs->n++;
+	}
+}
+
 /* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
 
 /* Where the sidecar starts: after the zone blocks, which are laid out back to back */

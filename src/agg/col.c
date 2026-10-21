@@ -230,6 +230,27 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 	}
 }
 
+/* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide */
+static const SiftSrcZones *
+col_zones(Relation index, const SiftColIndexMeta *meta)
+{
+	const SiftColZones *zs = sift_col_zones(index);
+	SiftSrcZones *z;
+
+	if (zs->n == 0 || meta->stats.nunits <= 0)
+		return NULL;
+	z = palloc0(sizeof(SiftSrcZones));
+	z->n = zs->n;
+	z->covered = Min((double) zs->units / meta->stats.nunits, 1.0);
+	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (zs->lo[i] != NULL && !leaf_wide(&meta->cols[i]))
+		{
+			z->lo[i] = memcpy(palloc(zs->n * sizeof(int64)), zs->lo[i], zs->n * sizeof(int64));
+			z->hi[i] = memcpy(palloc(zs->n * sizeof(int64)), zs->hi[i], zs->n * sizeof(int64));
+		}
+	return z;
+}
+
 static void
 col_stats(Relation index, SiftSrcStats *st)
 {
@@ -249,6 +270,7 @@ col_stats(Relation index, SiftSrcStats *st)
 		wjnull[i] = (meta->stats.wbuf_jnull & SIFT_COL_OVF_BIT(i)) != 0;
 	}
 	sift_colsrc_leaf_stats(meta->cols, meta->ncols, sift_col_leaf_stats(index), wovf, wjnull, st);
+	st->zones = col_zones(index, meta);
 }
 
 static void *

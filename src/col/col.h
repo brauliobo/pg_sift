@@ -307,6 +307,23 @@ typedef struct SiftColLeafStats
 	bool		nokinds;		/* some segment of column format below SIFT_COL_FORMAT_KINDS holds NULL slots (or astext values) of the leaf: a JSON null and a missing key, or the type of a value, cannot be told in it */
 } SiftColLeafStats;
 
+/*
+ * The zones of the units themselves, for the planner to test a query's constants against the real min and max of each unit (no chunk read):
+ * an evenly spaced sample of the units of the immutable segments, the same units in every leaf (lo and hi are NULL for a leaf that is not an
+ * integer scalar). A unit with no value in the leaf has the empty zone [INT64_MAX, INT64_MIN], one whose zone overflowed the whole range.
+ */
+#define SIFT_COL_ZONE_SAMPLE	2048
+
+typedef struct SiftColZones
+{
+	int			ncols;
+	uint32		n;				/* units sampled */
+	uint64		units;			/* units of the immutable segments the sample is taken from */
+	uint64		stride;			/* one unit in stride is sampled */
+	int64	  **lo;				/* [ncols][SIFT_COL_ZONE_SAMPLE] */
+	int64	  **hi;
+} SiftColZones;
+
 typedef struct SiftColIndexMeta
 {
 	Oid			indexoid;

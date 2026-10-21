@@ -327,6 +327,7 @@ extern bool out_walker(Node *n, OutWalk *w);
 
 extern double elems_of(AggCtx *c, int grp);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
+extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
