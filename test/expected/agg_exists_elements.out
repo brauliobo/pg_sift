@@ -173,9 +173,9 @@ GROUP BY e.kind;
    Name: m (left, per element)
    ->  Limit
          ->  Result
-               One-Time Filter: (NOT $7)
+               One-Time Filter: (NOT (InitPlan input).col4)
                ->  Seq Scan on mappings lm
-                     Filter: ((mapped_category IS NOT NULL) AND (kind = $4) AND (category = $5) AND (subrating = $6))
+                     Filter: ((mapped_category IS NOT NULL) AND (kind = (InitPlan input).col1) AND (category = (InitPlan input).col2) AND (subrating = (InitPlan input).col3))
 (12 rows)
 
 -- Errors come from PostgreSQL's evaluation, for the rows and elements it reaches: an expression that may raise keeps the normal plan, and the
