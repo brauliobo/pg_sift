@@ -9,94 +9,180 @@
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 
-/* the values of a hash table of an IN set, sorted */
+/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, or a hash table of values far apart), sorted */
 static int64 *
-hash_values(const PredState *st)
+set_values(const PredState *st, int *n)
 {
 	int64	   *vals = palloc(st->in_nv * sizeof(int64));
-	uint32		n = 0;
 
-	for (uint64 h = 0; h <= st->in_hmask; h++)
-		if (st->in_hused[h])
-			vals[n++] = st->in_htab[h];
-	qsort(vals, n, sizeof(int64), sift_cmp_i64);
+	*n = 0;
+	if (st->in_htab)
+	{
+		for (uint64 h = 0; h <= st->in_hmask; h++)
+			if (st->in_hused[h])
+				vals[(*n)++] = st->in_htab[h];
+		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
+	}
+	else
+		for (uint32 i = 0; i < st->in_nlut; i++)
+			if (st->in_lut[i])
+				vals[(*n)++] = st->in_lo + i;
 	return vals;
 }
 
-void
-prune_init(AggExec *ex)
+/* the zone test of a comparison or IN list, false when it refuses no unit (a NULL constant) */
+static bool
+cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase);
+	PredState  *st = &ex->ps[p->id];
+	int64		lo = PG_INT64_MIN,
+				hi = PG_INT64_MAX;
 
-	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(cmps), 1) * sizeof(SiftSrcPrune));
-	foreach_ptr(SiftAggPred, p, cmps)
+	*z = (SiftSrcPrune) {.leaf = p->leaf};
+	if (!st->ready)
+		eval_operand(ex, p, st);
+	if (st->cnull)
+		return false;
+	if (p->kind == SAP_IN)
 	{
-		PredState  *st = &ex->ps[p->id];
-		SiftSrcPrune *z = NULL;
-		int64	   *vals = NULL;
-		int64		lo = PG_INT64_MIN,
-					hi = PG_INT64_MAX;
-
-		if (!st->ready)
-			eval_operand(ex, p, st);
-		if (st->cnull)
-			continue;
-		if (p->kind == SAP_IN)
+		/* no value in the set: a unit's zone holds none */
+		if (st->in_nv == 0)
 		{
-			/* no value in the set: a unit's zone holds none */
-			if (st->in_nv == 0)
+			lo = PG_INT64_MAX;
+			hi = PG_INT64_MIN;
+		}
+		else
+		{
+			lo = st->in_lo;
+			hi = st->in_hi;
+			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell */
+			if (!st->in_dense)
+				z->vals = set_values(st, &z->nvals);
+		}
+	}
+	else
+	{
+		bool		num = ex->lay->leaf[p->leaf].typid == NUMERICOID;
+		SiftCmpOp	op = num ? (SiftCmpOp) st->nop : (SiftCmpOp) p->op;
+		int64		c = num ? (int64) st->cn : st->ci;
+
+		if (num && st->konst >= 0)
+		{
+			/* one result for every number (a constant no scaled integer equals, or beyond all of them): the whole range passes, or no value does */
+			if (st->konst == 0)
 			{
 				lo = PG_INT64_MAX;
 				hi = PG_INT64_MIN;
 			}
-			else
-			{
-				lo = st->in_lo;
-				hi = st->in_hi;
-				/* values far apart: a unit whose zone holds none of them is not read, which their range cannot tell */
-				if (st->in_htab)
-					vals = hash_values(st);
-			}
 		}
 		else
 		{
-			bool		num = ex->lay->leaf[p->leaf].typid == NUMERICOID;
-			SiftCmpOp	op = num ? (SiftCmpOp) st->nop : (SiftCmpOp) p->op;
-			int64		c = num ? (int64) st->cn : st->ci;
-
-			if (num && st->konst >= 0)
-			{
-				/* one result for every number (a constant no scaled integer equals, or beyond all of them): the whole range passes, or no value does */
-				if (st->konst == 0)
-				{
-					lo = PG_INT64_MAX;
-					hi = PG_INT64_MIN;
-				}
-			}
-			else
-			{
-				if (op != SCMP_GT && op != SCMP_GE)
-					hi = op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c;
-				if (op != SCMP_LT && op != SCMP_LE)
-					lo = op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c;
-			}
-		}
-		for (int k = 0; k < ex->nprune; k++)
-			if (ex->prune[k].leaf == p->leaf)
-				z = &ex->prune[k];
-		if (z == NULL)
-		{
-			z = &ex->prune[ex->nprune++];
-			*z = (SiftSrcPrune) {p->leaf, PG_INT64_MIN, PG_INT64_MAX};
-		}
-		z->hi = Min(z->hi, hi);
-		z->lo = Max(z->lo, lo);
-		if (vals && z->nvals == 0)
-		{
-			z->nvals = st->in_nv;
-			z->vals = vals;
+			if (op != SCMP_GT && op != SCMP_GE)
+				hi = op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c;
+			if (op != SCMP_LT && op != SCMP_LE)
+				lo = op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c;
 		}
 	}
+	z->lo = lo;
+	z->hi = hi;
+	return true;
+}
+
+/* z, ANDed with the test of its leaf in tests (a leaf is one entry: its range narrows, the first set stays) */
+static List *
+and_zone(List *tests, const SiftSrcPrune *z)
+{
+	SiftSrcPrune *t = NULL;
+
+	foreach_ptr(SiftSrcPrune, e, tests)
+		if (e->nkids == 0 && e->leaf == z->leaf)
+			t = e;
+	if (t == NULL)
+		return lappend(tests, memcpy(palloc(sizeof(SiftSrcPrune)), z, sizeof(SiftSrcPrune)));
+	t->lo = Max(t->lo, z->lo);
+	t->hi = Min(t->hi, z->hi);
+	if (z->nvals > 0 && t->nvals == 0)
+	{
+		t->nvals = z->nvals;
+		t->vals = z->vals;
+	}
+	return tests;
+}
+
+static List *zone_tests(AggExec *ex, SiftAggPred *p, List *tests);
+
+/* the entry of tests (one, or an AND of them) that holds for p, NULL when p refuses no unit */
+static SiftSrcPrune *
+disjunct_zone(AggExec *ex, SiftAggPred *p)
+{
+	List	   *tests = zone_tests(ex, p, NIL);
+	SiftSrcPrune *z;
+
+	if (tests == NIL)
+		return NULL;
+	if (list_length(tests) == 1)
+		return linitial(tests);
+	z = palloc0(sizeof(SiftSrcPrune));
+	z->nkids = list_length(tests);
+	z->kids = palloc(z->nkids * sizeof(SiftSrcPrune));
+	for (int i = 0; i < z->nkids; i++)
+		((SiftSrcPrune *) z->kids)[i] = *(SiftSrcPrune *) list_nth(tests, i);
+	return z;
+}
+
+/* an OR refuses a unit only when each disjunct does: one that refuses none leaves the OR without a test */
+static List *
+or_zone(AggExec *ex, SiftAggPred *p, List *tests)
+{
+	SiftSrcPrune *z = palloc0(sizeof(SiftSrcPrune));
+	SiftSrcPrune *kids = palloc(p->nchild * sizeof(SiftSrcPrune));
+
+	for (int i = 0; i < p->nchild; i++)
+	{
+		SiftSrcPrune *k = disjunct_zone(ex, p->child[i]);
+
+		if (k == NULL)
+			return tests;
+		kids[i] = *k;
+	}
+	z->any = true;
+	z->nkids = p->nchild;
+	z->kids = kids;
+	return lappend(tests, z);
+}
+
+/* the zone tests p implies, appended to tests: those of an AND's conjuncts, a comparison's own, an OR's as one entry */
+static List *
+zone_tests(AggExec *ex, SiftAggPred *p, List *tests)
+{
+	SiftSrcPrune z;
+
+	if (p->kind == SAP_AND)
+		for (int i = 0; i < p->nchild; i++)
+			tests = zone_tests(ex, p->child[i], tests);
+	else if (p->kind == SAP_OR)
+		tests = or_zone(ex, p, tests);
+	else if (sift_aggspec_zone_cmp(p, ex->lay, ex->nbase) && cmp_zone(ex, p, &z))
+		tests = and_zone(tests, &z);
+	return tests;
+}
+
+/* the entries of the leaves the conjuncts compare (preagg_zones), then those of the ORs: all of them prune the scan */
+void
+prune_init(AggExec *ex)
+{
+	List	   *tests = NIL;
+
+	for (int i = 0; i < ex->spec->npred; i++)
+		tests = zone_tests(ex, ex->spec->pred[i], tests);
+	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
+	foreach_ptr(SiftSrcPrune, z, tests)
+		if (z->nkids == 0)
+			ex->prune[ex->nprune++] = *z;
+	ex->nzone = ex->nprune;
+	foreach_ptr(SiftSrcPrune, z, tests)
+		if (z->nkids > 0)
+			ex->prune[ex->nzone++] = *z;
 }
 
 /* The text tests of the query a source can run on the encoded form: they prune its units and narrow the rows of each (process_unit) */

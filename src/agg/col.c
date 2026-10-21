@@ -311,41 +311,78 @@ col_nsb(void *impl)
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
 }
 
+/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none */
+static void
+zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftColPred *out)
+{
+	vals[0].v.i = z->lo;
+	vals[1].v.i = z->hi;
+	out[0] = (SiftColPred) {z->leaf, SIFT_COLOP_GE, 1, &vals[0]};
+	out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_LE, 1, &vals[1]};
+	if (z->nvals > 0)
+	{
+		SiftColValue *set = MemoryContextAllocZero(cxt, z->nvals * sizeof(SiftColValue));
+
+		for (int i = 0; i < z->nvals; i++)
+			set[i].v.i = z->vals[i];
+		out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_IN, z->nvals, set};
+	}
+}
+
+/* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin) */
+static SiftColPrune
+zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
+{
+	SiftColPrune c = {.any = z->any, .nkids = z->nkids};
+
+	if (z->nkids == 0)
+	{
+		SiftColPred *preds = MemoryContextAlloc(cxt, 2 * sizeof(SiftColPred));
+
+		zone_preds(cxt, z, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
+		c.preds = preds;
+		c.npreds = 2;
+		return c;
+	}
+	c.kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));
+	for (int i = 0; i < z->nkids; i++)
+		((SiftColPrune *) c.kids)[i] = zone_tree(cxt, &z->kids[i]);
+	return c;
+}
+
 static void
 col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	ColSource  *src = impl;
 	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
 	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
-	int			n;
+	int			n = 0;
 
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
-	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none */
-	for (int k = 0; k < nprune; k++)
+	if (src->zfor != prune)
 	{
-		vals[2 * k].v.i = prune[k].lo;
-		vals[2 * k + 1].v.i = prune[k].hi;
-		preds[2 * k] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_GE, 1, &vals[2 * k]};
-		preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_LE, 1, &vals[2 * k + 1]};
-		if (prune[k].nvals > 0)
-		{
-			SiftColValue *set = MemoryContextAllocZero(src->cxt, prune[k].nvals * sizeof(SiftColValue));
-
-			for (int i = 0; i < prune[k].nvals; i++)
-				set[i].v.i = prune[k].vals[i];
-			preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_IN, prune[k].nvals, set};
-		}
+		src->zfor = prune;
+		src->nzone = 0;
+		src->zone = MemoryContextAlloc(src->cxt, Max(nprune, 1) * sizeof(SiftColPrune));
+		for (int k = 0; k < nprune; k++)
+			if (prune[k].nkids > 0)
+				src->zone[src->nzone++] = zone_tree(src->cxt, &prune[k]);
 	}
+	for (int k = 0; k < nprune; k++)
+		if (prune[k].nkids == 0)
+		{
+			zone_preds(src->cxt, &prune[k], &vals[n], &preds[n]);
+			n += 2;
+		}
 	for (int i = 0; i < src->nspred; i++)
-		preds[2 * nprune + i] = src->spred[i];
+		preds[n++] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)
-		preds[2 * nprune + src->nspred + i] = src->fpred[i];
-	n = 2 * nprune + src->nspred + src->nflt;
+		preds[n++] = src->fpred[i];
 	for (int i = 0; i < src->nwtest; i++)
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			preds[n++] = src->wtest[i].pred;
-	sift_col_begin(src->cs, preds, n, sb_lo, sb_hi);
+	sift_col_begin_zones(src->cs, preds, n, src->zone, src->nzone, sb_lo, sb_hi);
 }
 
 static bool
