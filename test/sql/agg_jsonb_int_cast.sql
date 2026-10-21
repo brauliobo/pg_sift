@@ -1,0 +1,69 @@
+-- The integer cast of a jsonb member the index holds as float8 (`(metrics -> 'k')::int`, `CAST(jsonb_extract_path(metrics, 'k') AS bigint)`) runs in
+-- the scan, in a filter, a group key and an aggregate: the cast is PostgreSQL's own over the jsonb the stored float stands for, so it rounds half away from
+-- zero, a missing key and a JSON null are NULL and an out of range member raises PostgreSQL's error for the rows that reach it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE facts (id int, entity_id int, day date, metrics jsonb);
+INSERT INTO facts
+SELECT i, 1 + i % 40, date '2026-01-01' + i % 30,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN CASE WHEN current_setting('server_version_num')::int >= 180000 THEN '{"overall": null}'::jsonb ELSE '{}' END WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL WHEN 5 THEN '{"overall": 2.5}'::jsonb WHEN 6 THEN '{"overall": -2.5}'::jsonb ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END
+FROM generate_series(1, 20000) i;
+CREATE TABLE entities (id int, kind text);
+INSERT INTO entities SELECT i, CASE WHEN i % 3 = 0 THEN 'a' ELSE 'b' END FROM generate_series(1, 40) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, day, metrics) WITH (paths = 'metrics.* float8');
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE entities;
+-- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
+CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE result text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', enabled::text, true);
+  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
+  RETURN result;
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text; found bool := false;
+BEGIN
+  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  RETURN found;
+END $$;
+-- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan and the column shows what 18 does
+CREATE FUNCTION check_query(name text, q text, in_scan bool DEFAULT true) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT name, runs_in_scan(q) OR (in_scan AND current_setting('server_version_num')::int < 180000),
+                      outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+END $$;
+-- a filter: 6.5 and 2.5 round up, -2.5 down, the JSON null and the missing keys are no row
+SELECT * FROM check_query('filter 7', 'SELECT count(*) FROM facts WHERE CAST(metrics -> ''overall'' AS integer) = 7');
+SELECT * FROM check_query('filter 3', 'SELECT count(*) FROM facts WHERE CAST(jsonb_extract_path(metrics, ''overall'') AS integer) = 3');
+SELECT * FROM check_query('filter -3', 'SELECT count(*) FROM facts WHERE (metrics -> ''overall'')::int = -3');
+SELECT * FROM check_query('bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''overall'')::bigint >= 5');
+-- with a dimension that filters and a range of days: the cast is tested for the tuples the join keeps
+SELECT * FROM check_query('join', $q$
+ SELECT e.kind, count(*) AS n, count(DISTINCT f.id) AS ids
+ FROM facts f JOIN entities e ON e.id = f.entity_id
+ WHERE f.day >= '2026-01-05' AND CAST(f.metrics -> 'overall' AS integer) = 3
+ GROUP BY 1
+$q$);
+-- a group key, an aggregate argument and an aggregate FILTER
+SELECT * FROM check_query('group key', 'SELECT (metrics -> ''overall'')::int AS score, count(*) AS n FROM facts GROUP BY 1');
+SELECT * FROM check_query('aggregate', 'SELECT entity_id % 4 AS g, sum((metrics -> ''overall'')::bigint) AS total FROM facts GROUP BY 1');
+SELECT * FROM check_query('filter clause', 'SELECT count(*) FILTER (WHERE (metrics -> ''overall'')::int = 3) AS threes, count(*) AS n FROM facts');
+-- an out of range member raises PostgreSQL's error when a row reaches the cast, and no error when another condition keeps the row away
+INSERT INTO facts VALUES (20001, 1, '2026-02-01', '{"overall": 3000000000}'), (20002, 2, '2026-02-02', '{"overall": 1}');
+VACUUM (FREEZE, ANALYZE) facts;
+SELECT * FROM check_query('out of range', 'SELECT count(*) FROM facts WHERE (metrics -> ''overall'')::int = 1');
+SELECT * FROM check_query('out of range, excluded', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''overall'')::int = 1');
+SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''overall'')::bigint = 3000000000');
+-- a member that is no number is a value the leaf cannot hold: the normal plan raises PostgreSQL's error
+INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"overall": "high"}');
+VACUUM (FREEZE, ANALYZE) facts;
+SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''overall'')::int = 1', false);
+SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''overall'')::int = 1', false);
+DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
+DROP TABLE facts, entities;
+DROP EXTENSION pg_sift;
