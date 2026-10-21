@@ -13,8 +13,8 @@ A `UNION ALL` or `UNION` of sub-selects, a sub-select of a statement-level CTE a
 The same holds for a `WITH` of a derived table (a ranked top-N over an aggregate): its CTEs are lookup plans while the derived table reads nothing of the queries around it, and a CTE of it that several aggregates read is planned inline like the statement's own (the cheaper plan wins). A lateral sub-select that reads the row around it keeps the normal plan. Test `agg_nested_ctes`, fixtures `nf_nested_cte_*`, row J32.
 
 The normal plan stays when the right side reads a volatile function, the join has no condition (`ON true`) and is not lateral, the right side is
-estimated above `sift.agg_lookup_max_rows` rows (a lateral one: its rows for each distinct input of the scanned table, together), or a condition on a column nothing else reads was
-pushed into the sub-select (its plan outputs NULL there). A scan with such a join runs without workers.
+estimated above `sift.agg_lookup_max_rows` rows (a lateral one: its rows for each distinct input of the scanned table, together), or its plan (an `Append`) outputs only the relation's columns and a
+condition reads another. A scan with such a join runs without workers.
 
 A lateral right side that reads the joined row (`LEFT JOIN LATERAL (SELECT .. LIMIT 1)`, a `UNION` or `UNION ALL` of arms, `generate_series`, `unnest` of
 an array column, a set-returning function) keeps PostgreSQL's parameterized plan of it as the child: the scan runs the child for each distinct value of the
@@ -41,6 +41,7 @@ Lookup keys, grouping expressions and predicates may also read earlier lookup ou
 Aggregate `FILTER` predicates can read lookup columns and source values together. They run for each surviving joined tuple, after all joins;
 an excluded tuple does not evaluate a filter expression that could raise an error.
 Inner lookups are ordered by their dependencies within each join boundary. Statement-level materialized CTEs can be referenced from nested queries.
+A condition over the columns of such a sub-select that PostgreSQL pushed down into it (the run condition of a ranking window, `rn <= 3`) is enforced by its plan, which then does not output the column the condition read: the scan does not test it again (a column the query reads keeps its place, and the condition is tested as usual). Test `agg_pushed_conditions`, fixtures `nf_pushed_*`, row J33.
 Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates`, `agg_lookup_dependencies` and `agg_statement_cte_children`.
 
 ## Join key filters and shared lookups

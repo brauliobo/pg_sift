@@ -1,0 +1,70 @@
+-- A condition over the columns of a joined sub-select that PostgreSQL pushed down into it (the run condition of a ranking window) is enforced by the plan
+-- of the sub-select, which then does not output the column: the scan joins its rows without testing the condition again.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
+INSERT INTO dim_a SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_series(1, 90) i;
+CREATE TABLE facts (id int, day date, dim_a_id int, deleted_at timestamp);
+INSERT INTO facts SELECT i, '2026-01-01'::date + (i % 15), 1 + (i * i) % 97, CASE WHEN i % 17 = 0 THEN now() END FROM generate_series(1, 40000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at);
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE dim_a;
+-- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
+CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, eligible bool, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  eligible := false;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+-- The entities of the top three of their kind: the semi join to the ranked sub-select, whose `rn <= 3` the window evaluates itself.
+SELECT * FROM check_query($q$
+ SELECT e.kind, count(*) AS n
+ FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+ WHERE f.dim_a_id IN (SELECT dim_a_id FROM (
+   SELECT dim_a_id, row_number() OVER (PARTITION BY kind ORDER BY n DESC, dim_a_id) AS rn
+   FROM (SELECT f2.dim_a_id, e2.kind, count(*) AS n FROM facts f2 JOIN dim_a e2 ON e2.id = f2.dim_a_id GROUP BY 1, 2) c) ranked
+   WHERE rn <= 3)
+ GROUP BY 1
+$q$);
+-- The same as an inner join, and as a LEFT JOIN whose ON clause holds the condition.
+SELECT * FROM check_query($q$
+ SELECT e.kind, count(*) AS n
+ FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+ JOIN (SELECT dim_a_id, row_number() OVER (PARTITION BY kind ORDER BY n DESC, dim_a_id) AS rn
+       FROM (SELECT f2.dim_a_id, e2.kind, count(*) AS n FROM facts f2 JOIN dim_a e2 ON e2.id = f2.dim_a_id GROUP BY 1, 2) c) ranked
+   ON ranked.dim_a_id = f.dim_a_id AND ranked.rn <= 2
+ GROUP BY 1
+$q$);
+SELECT * FROM check_query($q$
+ SELECT e.kind, count(*) AS n, count(ranked.dim_a_id) AS ranked_rows
+ FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+ LEFT JOIN (SELECT dim_a_id, row_number() OVER (PARTITION BY kind ORDER BY n DESC, dim_a_id) AS rn
+       FROM (SELECT f2.dim_a_id, e2.kind, count(*) AS n FROM facts f2 JOIN dim_a e2 ON e2.id = f2.dim_a_id GROUP BY 1, 2) c) ranked
+   ON ranked.dim_a_id = f.dim_a_id AND ranked.rn <= 2
+ GROUP BY 1
+$q$);
+-- The rank is read by the query too, so its column stays in the plan's output.
+SELECT * FROM check_query($q$
+ SELECT ranked.rn, count(*) AS n
+ FROM facts f JOIN (SELECT dim_a_id, row_number() OVER (PARTITION BY kind ORDER BY n DESC, dim_a_id) AS rn
+       FROM (SELECT f2.dim_a_id, e2.kind, count(*) AS n FROM facts f2 JOIN dim_a e2 ON e2.id = f2.dim_a_id GROUP BY 1, 2) c) ranked
+   ON ranked.dim_a_id = f.dim_a_id
+ WHERE ranked.rn <= 3
+ GROUP BY 1
+$q$);
+DROP FUNCTION check_query(text);
+DROP TABLE facts, dim_a;
+DROP EXTENSION pg_sift;
