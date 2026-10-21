@@ -74,6 +74,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: `SiftAgg` answers an inner lookup join that returns no column of the joined table (a dimension that only filters, `JOIN dim d ON d.id = f.dim_id WHERE d.country < 30`) from the byte table of the semi join when no key of the kept rows repeats; 100,000 of 200,000 dimension keys over 3,000,000 rows: 76 to 27 ms.
 - Added: the rollups of the elements of a list answer aggregates with `FILTER (WHERE ...)` on dims (`count(*) FILTER (WHERE band >= 8)`, the shares of a rating band): each filter runs on the tuples. A filter on a measure still scans.
 
 - Added: the rollups of the elements of a list answer a `GROUP BY` of a function of one dim (`left(day, 7)`, `upper(kind)`, a `CASE` band of an integer dim, `coalesce`), evaluated once per distinct value of the unit's tuples. Before, any expression key scanned every unit.
