@@ -94,8 +94,9 @@ $(OUT)/shred: $(OUT)/fz_shred.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
 
 # every file of regress/ is an input that crashed a target before its fix, named TARGET-what: replays them, fails if one comes back
+# (FZ_STRICT: an error of a class other than corruption is a failure too)
 regress: all
-	@for f in regress/*; do t=$${f#regress/}; $(OUT)/$${t%%-*} $$f >/dev/null 2>&1 || { echo "FAIL $$f"; exit 1; }; done; echo "regress: ok"
+	@for f in regress/*; do t=$${f#regress/}; FZ_STRICT=1 $(OUT)/$${t%%-*} $$f >/dev/null 2>&1 || { echo "FAIL $$f"; exit 1; }; done; echo "regress: ok"
 
 clean:
 	rm -rf $(OUT)
