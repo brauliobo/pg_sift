@@ -161,7 +161,7 @@ not spilled. A volatile function of the select list that PostgreSQL evaluates af
 
 ## Workload shapes
 
-The shapes of a check analytics workload (an item table with jsonb metrics_a, a document with an array of parts, entity and mapping tables) are
+The shapes of an event analytics workload (an item table with jsonb metrics, a document with an array of parts, entity and mapping tables) are
 the synthetic generator `test/col/workload.sql` and the files `bench/sql/workload/shapes/g*.sql` (`bench/sql/workload/run.sh build|plans|time`;
 the status of each shape is the first line of its file). Regress test `agg_workload_shapes`, fixtures `wl_*`, coverage rows `WL01` to `WL09`.
 Times are the serial plan at 300,000 items, best of 3, with `sift.enable_agg` off and on.
