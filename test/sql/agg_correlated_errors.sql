@@ -1,5 +1,5 @@
--- A lateral child runs for the rows that reach it, in the order PostgreSQL's plan chooses: the scan joins one that cannot raise, and one that can keeps the
--- normal plan, so no statement raises under the scan and not in the normal plan.
+-- A lateral child runs for the rows that reach it. The scan joins one that cannot raise; one that can is joined only when nothing else is (the filters of the
+-- scanned table come before it in both plans), else the normal plan stays: PostgreSQL may run the other joins first, and no statement raises only under the scan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, code text, payload text);
@@ -45,9 +45,15 @@ SELECT * FROM check_query($q$
  SELECT d.ok, sum(c.n) FROM facts f JOIN dims d ON d.id = f.dim_a_id
  JOIN LATERAL (SELECT f.code::int AS n UNION ALL SELECT 0) c ON true GROUP BY 1
 $q$);
--- Without the join the rows of entity 0 reach the child, and both plans raise the same error.
+-- Alone, a child that can raise is joined for the rows the filters of the scanned table leave: both plans raise the same error for entity 0, or none without it.
 SELECT * FROM check_query($q$
  SELECT sum(c.n) FROM facts f CROSS JOIN LATERAL (SELECT 10 / f.dim_a_id AS n LIMIT 1) c
+$q$);
+SELECT * FROM check_query($q$
+ SELECT sum(c.n) FROM facts f CROSS JOIN LATERAL (SELECT 10 / f.dim_a_id AS n LIMIT 1) c WHERE f.dim_a_id <> 0
+$q$);
+SELECT * FROM check_query($q$
+ SELECT sum(c.n) FROM facts f LEFT JOIN LATERAL (SELECT f.code::int AS n LIMIT 1) c ON true WHERE f.dim_a_id <> 0
 $q$);
 -- A sub-select of the child may return more than one row.
 SELECT * FROM check_query($q$

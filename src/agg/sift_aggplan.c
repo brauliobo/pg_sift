@@ -168,6 +168,7 @@ typedef struct AggCtx
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
 	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
+	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 } AggCtx;
 
@@ -5736,7 +5737,8 @@ planned_child(RelOptInfo *rel, JoinCtx *jc)
  * parameters: the scan gives it their values for each distinct input and runs the plan PostgreSQL makes of it (an Append of the arms of
  * a UNION ALL, an unnest of a joined table's array, a LIMIT lookup). A column it reads only through calls that never raise (key
  * presence) is replaced by the call's value, which the scan then needs, not the column. The scan runs the child for the distinct values of the
- * tuples that reach its join in its own order, PostgreSQL's plan in another, so a child that can raise (raising_walker) keeps the normal plan.
+ * tuples that reach its join, which are those PostgreSQL's plan reaches it with only when no other join or unnest can come before it: a child that can
+ * raise (raising_walker) keeps the normal plan unless it is the only one.
  */
 static bool
 correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
@@ -5748,7 +5750,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	RelOptInfo *final;
 	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
-	if (raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
+	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
 		return false;
 	if (rel->baserestrictinfo != NIL)
 		return e->rtekind == RTE_SUBQUERY && planned_child(rel, jc);
@@ -5769,7 +5771,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		item->paramId = list_nth_int(x.params, i);
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
-	jc->subroot = subquery_planner(c->root->glob, q, c->root, false, 0.0, NULL);
+	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
 	foreach_node(PlannerParamItem, item, c->root->plan_params)
 	{
 		jc->j.params = lappend_int(jc->j.params, item->paramId);
@@ -6527,6 +6529,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
 	if (c->rel == NULL || !find_source(c, &ii))
 		return false;
+	c->nsiblings = list_length(joined) + (c->func_rti != 0);
 	foreach_int(rti, joined)
 		if (!add_join(c, fs, rti))
 			return false;

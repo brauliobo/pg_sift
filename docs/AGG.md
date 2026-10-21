@@ -21,8 +21,9 @@ columns it reads (the lookup keys of the table, or another joined table's column
 NULL-extended rows included. A call of a document column that cannot raise (`jsonb_exists(doc, 'k')` or `doc ? 'k'`, `doc ->> 'k'`, `jsonb_typeof(doc)`) takes the
 call's value as the parameter, when the index holds it as an expression column spelled like the query's: `jsonb_exists(doc, 'k')` gives the key presence of any JSON
 root (a path leaf cannot tell a missing key from a JSON null). The scan runs the child for the values of the tuples that reach its join, in its own order and
-PostgreSQL's plan in another, so a child that can raise (a division, a cast of text, a sub-select) keeps the normal plan, and so does one that reads the whole
-document or a column of a query above the aggregate's own (a sub-select of an outer query: its value changes per row of that query).
+PostgreSQL's plan in another, so a child that can raise (a division, a cast of text, a sub-select) is joined only when the query joins nothing else (the
+conditions of the scanned table come before it in both plans), else the normal plan stays; so it does for a child that reads the whole document or a column of a
+query above the aggregate's own (a sub-select of an outer query: its value changes per row of that query).
 Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation` and `agg_append_children`.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
 Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
