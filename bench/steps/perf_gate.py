@@ -1490,14 +1490,8 @@ def parser():
     return p
 
 
-def main(argv=None):
-    global DEADLINE
-    args = parser().parse_args(argv)
-    groups_supplied = args.groups is not None
-    args.groups = args.groups or ''
-    args.output = args.output.resolve()
-    args.output.mkdir(parents=True,exist_ok=True)
-    report = dict(schema_version=4,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+def new_report(args):
+    return dict(schema_version=4,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
@@ -1507,6 +1501,122 @@ def main(argv=None):
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
                               insert_history_cap=INSERT_HISTORY_CAP,cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
+
+
+def verify_control(revisions,report,args,deadline):
+        report['physical_schedule_version']='acceptance_reads_sizes_infrastructure_then_composite_insert_v4'
+        report['acceptance_catalog_validation'] = {}
+        for catalog_case in CASES:
+            if catalog_case.lifecycle=='insert_trajectory':
+                continue
+            validation = dict(complete=False)
+            report['acceptance_catalog_validation'][catalog_case.name] = validation
+            with run_phase(report,'catalog_'+catalog_case.name):
+                validation.update(validate_case(revisions,catalog_case))
+            validation['complete'] = True
+        case = next(c for c in CASES if c.name=='storage_point_lookup')
+        unchanged = measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output)
+        unchanged['name'] = 'control_unchanged'
+        slowed = measure(revisions,case,deadline,True,sink=report['cases'],report=report,output=args.output)
+        slowed['name'] = 'control_sql_slowdown'
+        with run_phase(report,'churn_normal_sizes'):
+            report['size_checks'].append(churn_sizes(revisions))
+        with run_phase(report,'bm25_growth_logical_forks'):
+            before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
+            # Explicit acceptance-only SQL fault: force many small BM25 build segments.
+            revisions[1].conn.script('ALTER INDEX docs_bm25 SET (build_segments=64); REINDEX INDEX docs_bm25')
+            require_equal(before,revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs"),'size control logical rows')
+            report['size_control'] = size_snapshot(revisions,'control_build_segments_64')
+        prepare_control_costs(revisions,report,args.output)
+        insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
+        unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'],report=report,output=args.output)
+        unchanged_insert['name'] = 'control_insert_unchanged'
+        report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
+        write_report(args.output,report)
+        refresh_report_cost(report)
+        slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert,
+                                report=report,output=args.output)
+        slowed_insert['name'] = 'control_insert_per_row_slowdown'
+        report['acceptance_pass'] = (unchanged['status']=='pass' and slowed['timing_status']=='regression'
+                                     and unchanged_insert['status']=='pass' and slowed_insert['timing_status']=='regression'
+                                     and slowed_insert['confirmation']['n']==MUTATION_CONFIRMATION_PAIRS
+                                     and slowed_insert['confirmation']['lower']>MATERIAL
+                                     and all(s['status']=='pass' for s in normal_size_checks(report))
+                                     and report['size_control']['status']=='regression')
+
+
+def stop_revisions(revisions,scratch,report,args,cleanup_phase):
+    for rev in reversed(revisions):
+        try:
+            rev.stop(args.output)
+        except Exception as exc:
+            report.setdefault('cleanup_errors',[]).append(f'{type(exc).__name__}: {exc}')
+            cleanup_phase['error']='; '.join(report['cleanup_errors'])
+            if report['status']!='error':
+                report['status'],report['error']='error',f'cleanup failed: {exc}'
+        finally:
+            report.setdefault('server_logs',{})[rev.name]=rev.server_log_evidence
+    if scratch and not any(r.started for r in revisions) and not report.get('cleanup_errors'):
+        try:
+            shutil.rmtree(scratch)
+        except Exception as exc:
+            report.setdefault('cleanup_errors',[]).append(f'scratch removal: {exc}')
+            cleanup_phase['error']='; '.join(report['cleanup_errors'])
+            if report['status']!='error': report['status'],report['error']='error',f'scratch cleanup failed: {exc}'
+
+
+def write_terminal(report,args,start,end):
+    terminal=dict(status=report['status'],baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,
+                  accounting=reconcile_ledger(report,start,end),phase_ledger=report.get('phase_ledger',[]),
+                  driver_seconds=end-start,workflow_seconds=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start,
+                  measurement_deadline_exceeded=end>DEADLINE,
+                  workflow_budget_exceeded=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start>args.budget_seconds,
+                  boundary='through closed final results/summary writer; terminal sidecar write, device cleanup and artifact upload outside',
+                  errors=report.get('terminal_errors',[]),primary_error=report.get('error'),cleanup_errors=report.get('cleanup_errors',[]))
+    (args.output/'terminal-accounting.json').write_text(json.dumps(terminal,indent=2,allow_nan=False)+'\n')
+
+
+def record_source_identity(args,report):
+    report['postgresql'] = command([args.pg_config,'--version'])
+    if not report['postgresql'].startswith('PostgreSQL 18.'):
+        raise ValueError('performance gate requires PostgreSQL 18')
+    report['compiler'] = command(['cc','--version']).splitlines()[0]
+    report['pg_config'] = command([args.pg_config,'--configure'])
+    files = ('bench/steps/perf_gate.py','bench/perf/catalog.py','bench/perf/fixture.sql')
+    blobs = {}
+    for name in files:
+        blobs[name] = command(['git','rev-parse',args.candidate_ref+':'+name],cwd=ROOT)
+        require_equal(command(['git','hash-object',name],cwd=ROOT),blobs[name],'committed candidate harness '+name)
+    report['source_identity'] = dict(commit=args.candidate_ref,tree=command(['git','rev-parse',args.candidate_ref+'^{tree}'],cwd=ROOT),
+                                     harness_blobs=blobs,harness_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in files},
+                                     fixture_owner='candidate harness, loaded identically into both isolated exact-SHA builds')
+
+
+def check_fixture(revisions,report):
+    report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
+    digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
+    require_equal(digests[0],digests[1],'logical fixture')
+    report['fixture_digest'] = digests[0]
+    # The padded heap must really cross superblock boundaries.
+    for rev in revisions:
+        boundaries = int(rev.conn.rows("SELECT count(DISTINCT ((ctid::text::point)[0]::int/256)) FROM docs")[0][0])
+        if boundaries < 3:
+            raise ValueError('fixture fails multi-superblock boundary')
+    report['table_geometry'] = {r.name:table_geometry(r.conn,'store') for r in revisions}
+    for rev in revisions:
+        geometry = report['table_geometry'][rev.name]
+        if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
+            raise ValueError('actual sift_table fixture fails segment/page boundary')
+
+
+def main(argv=None):
+    global DEADLINE
+    args = parser().parse_args(argv)
+    groups_supplied = args.groups is not None
+    args.groups = args.groups or ''
+    args.output = args.output.resolve()
+    args.output.mkdir(parents=True,exist_ok=True)
+    report = new_report(args)
     revisions = []
     scratch = None
     start = time.monotonic()
@@ -1541,19 +1651,7 @@ def main(argv=None):
                 if (args.verify_control or any(c.lifecycle==lifecycle and (lifecycle=='insert_trajectory' or c.name=='storage_vacuum_space') for c in selected))]
             if args.insert_feasibility:
                 report['required_size_states'] = ['mutable_insert_trajectory']
-            report['postgresql'] = command([args.pg_config,'--version'])
-            if not report['postgresql'].startswith('PostgreSQL 18.'):
-                raise ValueError('performance gate requires PostgreSQL 18')
-            report['compiler'] = command(['cc','--version']).splitlines()[0]
-            report['pg_config'] = command([args.pg_config,'--configure'])
-            files = ('bench/steps/perf_gate.py','bench/perf/catalog.py','bench/perf/fixture.sql')
-            blobs = {}
-            for name in files:
-                blobs[name] = command(['git','rev-parse',args.candidate_ref+':'+name],cwd=ROOT)
-                require_equal(command(['git','hash-object',name],cwd=ROOT),blobs[name],'committed candidate harness '+name)
-            report['source_identity'] = dict(commit=args.candidate_ref,tree=command(['git','rev-parse',args.candidate_ref+'^{tree}'],cwd=ROOT),
-                                             harness_blobs=blobs,harness_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in files},
-                                             fixture_owner='candidate harness, loaded identically into both isolated exact-SHA builds')
+            record_source_identity(args,report)
             write_report(args.output,report)
             args.scratch_root.mkdir(parents=True,exist_ok=True)
             scratch = Path(tempfile.mkdtemp(prefix='perf-gate-',dir=args.scratch_root))
@@ -1573,20 +1671,7 @@ def main(argv=None):
             report['fixture_checkpoint_barrier'] = {}
             finalize_fixtures(revisions,DEADLINE,report['fixture_checkpoint_barrier'])
             report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
-            report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
-            digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
-            require_equal(digests[0],digests[1],'logical fixture')
-            report['fixture_digest'] = digests[0]
-            # The padded heap must really cross superblock boundaries.
-            for rev in revisions:
-                boundaries = int(rev.conn.rows("SELECT count(DISTINCT ((ctid::text::point)[0]::int/256)) FROM docs")[0][0])
-                if boundaries < 3:
-                    raise ValueError('fixture fails multi-superblock boundary')
-            report['table_geometry'] = {r.name:table_geometry(r.conn,'store') for r in revisions}
-            for rev in revisions:
-                geometry = report['table_geometry'][rev.name]
-                if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
-                    raise ValueError('actual sift_table fixture fails segment/page boundary')
+            check_fixture(revisions,report)
             if not args.insert_feasibility:
                 report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
                 report['size_checks'].append(size_snapshot(revisions,'settled_build'))
@@ -1599,45 +1684,7 @@ def main(argv=None):
                 write_report(args.output,report)
                 measure(revisions,insert,deadline,sink=report['cases'],force_confirmation=True,report=report,output=args.output)
             elif args.verify_control:
-                report['physical_schedule_version']='acceptance_reads_sizes_infrastructure_then_composite_insert_v4'
-                report['acceptance_catalog_validation'] = {}
-                for catalog_case in CASES:
-                    if catalog_case.lifecycle=='insert_trajectory':
-                        continue
-                    validation = dict(complete=False)
-                    report['acceptance_catalog_validation'][catalog_case.name] = validation
-                    with run_phase(report,'catalog_'+catalog_case.name):
-                        validation.update(validate_case(revisions,catalog_case))
-                    validation['complete'] = True
-                case = next(c for c in CASES if c.name=='storage_point_lookup')
-                unchanged = measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output)
-                unchanged['name'] = 'control_unchanged'
-                slowed = measure(revisions,case,deadline,True,sink=report['cases'],report=report,output=args.output)
-                slowed['name'] = 'control_sql_slowdown'
-                with run_phase(report,'churn_normal_sizes'):
-                    report['size_checks'].append(churn_sizes(revisions))
-                with run_phase(report,'bm25_growth_logical_forks'):
-                    before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
-                    # Explicit acceptance-only SQL fault: force many small BM25 build segments.
-                    revisions[1].conn.script('ALTER INDEX docs_bm25 SET (build_segments=64); REINDEX INDEX docs_bm25')
-                    require_equal(before,revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs"),'size control logical rows')
-                    report['size_control'] = size_snapshot(revisions,'control_build_segments_64')
-                prepare_control_costs(revisions,report,args.output)
-                insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
-                unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'],report=report,output=args.output)
-                unchanged_insert['name'] = 'control_insert_unchanged'
-                report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
-                write_report(args.output,report)
-                refresh_report_cost(report)
-                slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert,
-                                        report=report,output=args.output)
-                slowed_insert['name'] = 'control_insert_per_row_slowdown'
-                report['acceptance_pass'] = (unchanged['status']=='pass' and slowed['timing_status']=='regression'
-                                             and unchanged_insert['status']=='pass' and slowed_insert['timing_status']=='regression'
-                                             and slowed_insert['confirmation']['n']==MUTATION_CONFIRMATION_PAIRS
-                                             and slowed_insert['confirmation']['lower']>MATERIAL
-                                             and all(s['status']=='pass' for s in normal_size_checks(report))
-                                             and report['size_control']['status']=='regression')
+                verify_control(revisions,report,args,deadline)
             else:
                 for index, case in enumerate(selected):
                     later = sum(c.lifecycle != 'read' for c in selected[index+1:])
@@ -1661,23 +1708,7 @@ def main(argv=None):
             report['runtime_seconds']['measurement_validation'] = time.monotonic()-measurement_start
         phase = time.monotonic()
         with run_phase(report,'final_cluster_teardown') as cleanup_phase:
-            for rev in reversed(revisions):
-                try:
-                    rev.stop(args.output)
-                except Exception as exc:
-                    report.setdefault('cleanup_errors',[]).append(f'{type(exc).__name__}: {exc}')
-                    cleanup_phase['error']='; '.join(report['cleanup_errors'])
-                    if report['status']!='error':
-                        report['status'],report['error']='error',f'cleanup failed: {exc}'
-                finally:
-                    report.setdefault('server_logs',{})[rev.name]=rev.server_log_evidence
-            if scratch and not any(r.started for r in revisions) and not report.get('cleanup_errors'):
-                try:
-                    shutil.rmtree(scratch)
-                except Exception as exc:
-                    report.setdefault('cleanup_errors',[]).append(f'scratch removal: {exc}')
-                    cleanup_phase['error']='; '.join(report['cleanup_errors'])
-                    if report['status']!='error': report['status'],report['error']='error',f'scratch cleanup failed: {exc}'
+            stop_revisions(revisions,scratch,report,args,cleanup_phase)
         report['runtime_seconds']['cleanup'] = time.monotonic()-phase
         report['runtime_seconds']['total_before_final_reduce_write'] = time.monotonic()-start
         report['terminal_accounting_file']='terminal-accounting.json (includes final reducer/writer; excludes this sidecar write and outer upload)'
@@ -1705,14 +1736,7 @@ def main(argv=None):
                 report['status']='error'
                 report.setdefault('terminal_errors',[]).append(f'budget status publication failed: {exc}')
             end=time.monotonic()
-        terminal=dict(status=report['status'],baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,
-                      accounting=reconcile_ledger(report,start,end),phase_ledger=report.get('phase_ledger',[]),
-                      driver_seconds=end-start,workflow_seconds=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start,
-                      measurement_deadline_exceeded=end>DEADLINE,
-                      workflow_budget_exceeded=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start>args.budget_seconds,
-                      boundary='through closed final results/summary writer; terminal sidecar write, device cleanup and artifact upload outside',
-                      errors=report.get('terminal_errors',[]),primary_error=report.get('error'),cleanup_errors=report.get('cleanup_errors',[]))
-        (args.output/'terminal-accounting.json').write_text(json.dumps(terminal,indent=2,allow_nan=False)+'\n')
+        write_terminal(report,args,start,end)
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]
