@@ -769,6 +769,8 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
+void gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
+void gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at);
 void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void arm_chunk(AggExec *ex, Tup *t);
@@ -867,6 +869,17 @@ void pgagg_init(AggExec *ex);
 void mapped_finish(AggExec *ex);
 Datum mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull);
 int32 grouping_bits(AggExec *ex, const SiftAggAgg *a, uint32 g);
+
+/* gen.c */
+void gen_sort_begin(GenSt *st);
+void gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *nulls);
+void gen_open(AggExec *ex);
+void gen_close(AggExec *ex);
+void gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool *isnull);
+void gen_advance(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls);
+void gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
+void gen_state_merge(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const char **cur);
+void gen_final(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
