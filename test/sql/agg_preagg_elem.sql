@@ -181,6 +181,15 @@ FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
 SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
        (SELECT count(DISTINCT (segment, sb)) FROM sift.col_unit_hist('ap_col', 'items[].kind')) = 1 AS kind_selected,
        (SELECT count(DISTINCT (segment, sb)) FROM sift.col_unit_hist('ap_col', 'items[].n')) = 1 AS n_selected;
+CREATE EXTENSION IF NOT EXISTS pg_visibility;
+SELECT 'DIAGACT', pid, backend_type, backend_xmin::text, state, left(query, 50) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY pid;
+SELECT 'DIAGSLOT', slot_name, xmin::text, catalog_xmin::text FROM pg_replication_slots;
+SELECT 'DIAGPREP', count(*) FROM pg_prepared_xacts;
+SELECT 'DIAGCNT', * FROM sift.col_rollup_counters();
+SELECT 'DIAGQ', count(*) FROM sift.col_rollup_queue();
+SELECT 'DIAGVM', blkno, all_visible FROM pg_visibility_map('ap');
+SELECT 'DIAGAGG', segment, sb, exact FROM sift.col_unit_agg('ap_col', 'id');
+SELECT 'DIAGXMIN', pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_snapshot()::text;
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, e.n, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1, 2', true);
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1', false);
 TRUNCATE ap;
