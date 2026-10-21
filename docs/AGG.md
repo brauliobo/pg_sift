@@ -27,6 +27,7 @@ query above the aggregate's own (a sub-select of an outer query: its value chang
 The value of a `jsonb_each` member (`r.value`) is given to the child as the jsonb its stored float stands for (the member's number, or a JSON null when
 the member holds none), so the child may cast it (`CAST(r.value AS integer)`): the cast runs only for the members of the rows that reach the child, and
 raises PostgreSQL's own error (`integer out of range`). A document the index cannot hold as numbers (a string or object member) keeps the normal plan.
+A path declared `float8` holds floats, so a child reads the float: a number that is not exactly a float8 (`9007199254740993`, `1.50` as `numeric` or `text`) reads as the float.
 A lateral sub-select that PostgreSQL does not pull up because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`) is pulled up
 inside its own query level by the planner hook (`sift_aggflat.c`), which plans the query both ways and keeps the flat plan when it runs in the scan and costs
 less; a sub-select with a join of its own is attached through its leftmost table, as `(a JOIN jsonb_each(a.doc) r) LEFT JOIN m ON ..`.
