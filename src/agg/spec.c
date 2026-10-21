@@ -82,8 +82,8 @@ sift_aggspec_operand_int(Oid t, Datum d)
 }
 
 /* the types sift_aggspec_operand_int reads */
-static bool
-integer_type(Oid t)
+bool
+sift_aggspec_integer_type(Oid t)
 {
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
 }
@@ -102,7 +102,7 @@ zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 		return out;
 	lf = &lay->leaf[p->leaf];
 	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
-	if (lf->parent >= 0 || lf->lossy || !(num || (integer_type(p->argtype) && integer_type(lf->typid))))
+	if (lf->parent >= 0 || lf->lossy || !(num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid))))
 		return out;
 	return lappend(out, (void *) p);
 }

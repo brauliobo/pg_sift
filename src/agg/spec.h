@@ -483,6 +483,9 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 	return false;
 }
 
+/* the types sift_aggspec_operand_int reads */
+extern bool sift_aggspec_integer_type(Oid t);
+
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
 

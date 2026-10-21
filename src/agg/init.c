@@ -319,6 +319,29 @@ register_preds(AggExec *ex)
 }
 
 /* The interval each leaf's comparisons leave: a unit whose zone misses it holds no row that passes (docs/COL-PLAN.md, "Zone pruning") */
+static int
+cmp_int64(const void *a, const void *b)
+{
+	int64		x = *(const int64 *) a,
+				y = *(const int64 *) b;
+
+	return (x > y) - (x < y);
+}
+
+/* the values of a hash table of an IN set, sorted */
+static int64 *
+hash_values(const PredState *st)
+{
+	int64	   *vals = palloc(st->in_nv * sizeof(int64));
+	uint32		n = 0;
+
+	for (uint64 h = 0; h <= st->in_hmask; h++)
+		if (st->in_hused[h])
+			vals[n++] = st->in_htab[h];
+	qsort(vals, n, sizeof(int64), cmp_int64);
+	return vals;
+}
+
 void
 prune_init(AggExec *ex)
 {
@@ -329,6 +352,7 @@ prune_init(AggExec *ex)
 	{
 		PredState  *st = &ex->ps[p->id];
 		SiftSrcPrune *z = NULL;
+		int64	   *vals = NULL;
 		int64		lo = PG_INT64_MIN,
 					hi = PG_INT64_MAX;
 
@@ -348,6 +372,9 @@ prune_init(AggExec *ex)
 			{
 				lo = st->in_lo;
 				hi = st->in_hi;
+				/* values far apart: a unit whose zone holds none of them is not read, which their range cannot tell */
+				if (st->in_htab)
+					vals = hash_values(st);
 			}
 		}
 		else
@@ -383,6 +410,11 @@ prune_init(AggExec *ex)
 		}
 		z->hi = Min(z->hi, hi);
 		z->lo = Max(z->lo, lo);
+		if (vals && z->nvals == 0)
+		{
+			z->nvals = st->in_nv;
+			z->vals = vals;
+		}
 	}
 }
 
