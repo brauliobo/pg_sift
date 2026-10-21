@@ -453,8 +453,8 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 			for (int level = 0; level < e->ctelevelsup; level++)
 				owner = owner->parent_root;
 			*what = "cte";
-			/* A statement-level CTE has no changing outer-row inputs, wherever it is referenced. */
-			if (owner->parent_root != NULL || e->self_reference)
+			/* A CTE of a query level that reads nothing of the queries around it has no changing outer-row inputs, wherever it is referenced. */
+			if (e->self_reference || cte_owner_correlated(owner))
 				return false;
 			break;
 		}
