@@ -6988,7 +6988,7 @@ pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
 	return false;
 }
 
-/* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns */
+/* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns or is applied after the others (it may drop a row that the error would reach first) */
 static SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
@@ -7001,7 +7001,7 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 		if (leaf_of(c, i)->parent == c->group)
 			list = bms_add_member(list, i);
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 0 && pred_reads_any(s->pred[i], list))
+		if (s->pred[i]->level == 0 && (s->pred[i]->late || pred_reads_any(s->pred[i], list)))
 			return SRK_NONE;
 	return leaf_recheck(c, m);
 }

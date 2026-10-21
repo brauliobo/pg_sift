@@ -387,6 +387,8 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
 	int			n;
 
+	if (src->rck)
+		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
 	for (int k = 0; k < nprune; k++)
 	{
@@ -670,6 +672,7 @@ recheck_batch(ColSource *src)
 		SiftColRow	row;
 		MemoryContext old;
 
+		CHECK_FOR_INTERRUPTS();
 		if (!recheck_fetch(k, &k->tid[i]))
 			continue;
 		GetPerTupleExprContext(k->estate)->ecxt_scantuple = k->slot;
@@ -682,6 +685,7 @@ recheck_batch(ColSource *src)
 		ResetPerTupleExprContext(k->estate);
 		MemoryContextReset(k->tmp);
 	}
+	ExecClearTuple(k->slot);
 	k->npend = 0;
 	k->nrechecked += n;
 	return n > 0 ? b : NULL;

@@ -44,7 +44,6 @@ typedef struct SiftShredRecheck
 } SiftShredRecheck;
 
 extern SiftShredRecheck *sift_shred_recheck_create(MemoryContext mcxt, const SiftShredSpec *spec);
-extern void sift_shred_recheck_free(SiftShredRecheck *rc);
 /* sift_shred_container with the recheck: rc->err is reset by the caller (sift_shred_recheck_begin) */
 extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc);
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
