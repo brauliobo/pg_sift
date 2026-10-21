@@ -2,7 +2,7 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT w.label_a, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.value_num == "wire")')) AS no_wire
+SELECT w.mix, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.val == "wire")')) AS no_wire
 FROM t_work w
 GROUP BY 1
 ORDER BY 1 NULLS FIRST

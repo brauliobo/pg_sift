@@ -3,10 +3,10 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT w.label_a,
+SELECT w.mix,
 	   count(*) FILTER (WHERE coldiff.doc_norm(w.doc) @? '$.parts[*] ? (@.tone == "down" && @.category == "service")') AS neg_service,
 	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.category == "m_tidy" || @.category == "location")')) AS place,
-	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.value_num == "wire")')) AS wire,
+	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.val == "wire")')) AS wire,
 	   min(w.id) AS first_id
 FROM t_work w
 GROUP BY 1

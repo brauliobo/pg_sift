@@ -2,7 +2,7 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT w.label_a, count(*) AS n
+SELECT w.mix, count(*) AS n
 FROM t_work w
 WHERE w.id < 0 AND w.dim_a_id = ANY (ARRAY(SELECT 100 / (e.id - 5) FROM t_work_dim e))
 GROUP BY 1

@@ -1,4 +1,4 @@
--- A synthetic check analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of feedback items with jsonb metrics_a
+-- A synthetic event analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of feedback items with jsonb metrics
 -- (numbers, and dirty values: numbers as strings, JSON nulls, text), a jsonb comments array and a document with a nested array of parts and the flags
 -- of a mapping, dimension tables of entities (typed), sources and mappings, dates and a soft-delete column. Included by fixture.sql (small) and
 -- usable alone for a larger table:
@@ -17,14 +17,14 @@ CREATE OR REPLACE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RE
 
 DROP TABLE IF EXISTS t_work, t_work_dim, t_work_src, t_work_map CASCADE;
 
--- a score value: 80% a number with one decimal, 10% an integer, 4% a number written as a string, 2% a JSON null, 2% text, 2% a boolean
+-- a metric value: 80% a number with one decimal, 10% an integer, 4% a number written as a string, 2% a JSON null, 2% text, 2% a boolean
 CREATE OR REPLACE FUNCTION coldiff.wl_value(id bigint, draw int, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT CASE WHEN x < 0.04 THEN to_jsonb(d::text) WHEN x < 0.06 THEN 'null'::jsonb WHEN x < 0.08 THEN to_jsonb((ARRAY['n/a', 'none'])[1 + (id % 2)::int])
 				WHEN x < 0.10 THEN to_jsonb(d < 5) WHEN x < 0.20 THEN to_jsonb(d::int) ELSE to_jsonb(d::float8) END
 	FROM (SELECT coldiff.u(id, draw, seed) AS x, round((coldiff.u(id, draw + 500, seed) * 10)::numeric, 1) AS d) v $$;
 
--- the metrics_a object: the keys overall (95%), service, m_tidy, location, value and a key no mapping knows (10%)
-CREATE OR REPLACE FUNCTION coldiff.wl_metrics_a(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+-- the metrics object: the keys overall (95%), service, m_tidy, location, value and a key no mapping knows (10%)
+CREATE OR REPLACE FUNCTION coldiff.wl_metrics(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_object_agg(k, coldiff.wl_value(id, 100 + n::int, seed)) FILTER (WHERE coldiff.u(id, 90 + n::int, seed) < p), '{}')
 	FROM unnest(ARRAY['mhead', 'service', 'm_tidy', 'location', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
 
@@ -32,11 +32,11 @@ CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS json
 	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'manager', 'owner'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')
 	FROM generate_series(1, floor(coldiff.u(id, 109, seed) * 3)::int) j $$;
 
--- one part: a category, a subscore (empty, NULL or a name), a tone (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
+-- one part: a category, a val (empty, NULL or a name), a tone (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
 CREATE OR REPLACE FUNCTION coldiff.wl_part(id bigint, j int, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT jsonb_build_object(
 		'category', (ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc'])[1 + floor(coldiff.u(id, 120 + j, seed) ^ 1.5 * 8)::int],
-		'value_num', CASE floor(coldiff.u(id, 130 + j, seed) * 6)::int WHEN 0 THEN 'wire' WHEN 1 THEN 'pool' WHEN 2 THEN NULL ELSE '' END,
+		'val', CASE floor(coldiff.u(id, 130 + j, seed) * 6)::int WHEN 0 THEN 'wire' WHEN 1 THEN 'pool' WHEN 2 THEN NULL ELSE '' END,
 		'tone', CASE WHEN coldiff.u(id, 141 + j, seed) < 0.004 THEN 'null'::jsonb WHEN coldiff.u(id, 141 + j, seed) < 0.007 THEN '1'::jsonb
 							 WHEN coldiff.u(id, 141 + j, seed) < 0.009 THEN 'true'::jsonb
 							 ELSE to_jsonb((ARRAY['up', 'down', 'flat'])[1 + floor(coldiff.u(id, 140 + j, seed) * 3)::int]) END,
@@ -78,8 +78,8 @@ CREATE OR REPLACE FUNCTION coldiff.wl_txt(doc jsonb) RETURNS jsonb LANGUAGE sql 
 
 CREATE TABLE t_work_dim (id integer PRIMARY KEY, type text NOT NULL, name text);
 CREATE TABLE t_work_src (id integer PRIMARY KEY, name text NOT NULL, kind text);
--- a mapping of (entity type, category, subscore) to a normalized pair; NULL type rows apply to every type
-CREATE TABLE t_work_map (id integer PRIMARY KEY, entity_type text, category text NOT NULL, value_num text NOT NULL, derived_category text, mapped_subscore text);
+-- a mapping of (entity type, category, val) to a normalized pair; NULL type rows apply to every type
+CREATE TABLE t_work_map (id integer PRIMARY KEY, entity_type text, category text NOT NULL, val text NOT NULL, derived_category text, derived_val text);
 INSERT INTO t_work_dim SELECT i, (ARRAY['kind_a', 'kind_b', 'venue', 'transport'])[1 + i % 4], 'entity ' || i
 FROM generate_series(1, greatest(40, least(1000, :n / 300))) i;
 INSERT INTO t_work_src SELECT i, 'source ' || i, (ARRAY['web', 'app', 'partner'])[1 + i % 3] FROM generate_series(1, 12) i;
@@ -91,8 +91,8 @@ WHERE NOT (t = 'kind_b' AND c = 'food' AND s = 'pool');
 INSERT INTO t_work_map SELECT 1000 + row_number() OVER (), NULL, c, '', 'any_' || c, '' FROM unnest(ARRAY['m_tidy', 'service']) c;
 
 CREATE TABLE t_work (
-	id integer PRIMARY KEY, dim_a_id integer NOT NULL, lookup_id integer, foreign_id_b integer, item_date date, updated_at timestamp, deleted_at timestamp,
-	country_code varchar(2), label_a text, segment text, metrics_a jsonb DEFAULT '{}', tags_a jsonb DEFAULT '[]', doc jsonb DEFAULT '{}', title text
+	id integer PRIMARY KEY, dim_a_id integer NOT NULL, foreign_id integer, foreign_id_b integer, item_date date, updated_at timestamp, deleted_at timestamp,
+	country_code varchar(2), mix text, segment text, metrics jsonb DEFAULT '{}', tags_a jsonb DEFAULT '[]', doc jsonb DEFAULT '{}', title text
 ) WITH (fillfactor = 90);
 
 -- items first_id .. last_id: entity ~ u^2 over the entities, 3% without a source, 60% without a product, dates 2022-01-01 .. 2025-10-31 (1% NULL), 3% soft-deleted
@@ -108,7 +108,7 @@ CREATE OR REPLACE FUNCTION coldiff.fx_wl(first_id int, last_id int, seed int DEF
 			   CASE WHEN coldiff.u(i, 12, seed) < 0.05 THEN NULL ELSE (ARRAY['US', 'GB', 'DE', 'FR', 'ES', 'IT', 'NL', 'BR', 'JP', 'CA'])[1 + floor(coldiff.u(i, 13, seed) ^ 2 * 10)::int] END,
 			   CASE WHEN coldiff.u(i, 14, seed) < 0.1 THEN NULL ELSE (ARRAY['solo', 'couple', 'family', 'group', 'business', 'other'])[1 + floor(coldiff.u(i, 15, seed) * 6)::int] END,
 			   CASE WHEN coldiff.u(i, 16, seed) < 0.2 THEN NULL ELSE (ARRAY['leisure', 'work', 'event', 'transit', 'other'])[1 + floor(coldiff.u(i, 17, seed) * 5)::int] END,
-			   coldiff.wl_metrics_a(i, seed), coldiff.wl_comments(i, seed), coldiff.wl_doc(i, seed), 't' || i % 50
+			   coldiff.wl_metrics(i, seed), coldiff.wl_comments(i, seed), coldiff.wl_doc(i, seed), 't' || i % 50
 		FROM generate_series(first_id, last_id) i RETURNING 1)
 	SELECT count(*) FROM ins $$;
 SELECT coldiff.fx_wl(1, :n);

@@ -464,7 +464,7 @@ INSERT INTO t_part_op SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 366, i 
 INSERT INTO t_inh_a SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 182, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
 INSERT INTO t_inh_b SELECT 100000 + i, 1 + i % 5, date '2024-07-01' + (i * 7) % 184, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
 
--- the check analytics workload (workload.sql): a fact table of items with jsonb metrics_a and a document with a nested array of parts, its dimensions
+-- the event analytics workload (workload.sql): a fact table of items with jsonb metrics and a document with a nested array of parts, its dimensions
 \ir workload.sql
 
 -- ---------- the DML of the scenarios (heap states) ----------
@@ -495,7 +495,7 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1),
 		 eo AS (UPDATE t_eo SET r4 = (r4 + 1) % 6, rf = rf + 0.5, doc = coldiff.eo_doc(id + 1) WHERE coldiff.sample(id, 911, frac) RETURNING 1),
 		 rc AS (UPDATE t_rc SET doc = coldiff.rc_doc(id + 7) WHERE coldiff.sample(id, 917, frac) RETURNING 1),
-		 wl AS (UPDATE t_work SET dim_a_id = 1 + dim_a_id % 30, item_date = item_date + 1, metrics_a = coldiff.wl_metrics_a(id + 1, 3), doc = coldiff.wl_doc(id + 1, 3)
+		 wl AS (UPDATE t_work SET dim_a_id = 1 + dim_a_id % 30, item_date = item_date + 1, metrics = coldiff.wl_metrics(id + 1, 3), doc = coldiff.wl_doc(id + 1, 3)
 				WHERE coldiff.sample(id, 913, frac) RETURNING 1)
 	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM rc) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
