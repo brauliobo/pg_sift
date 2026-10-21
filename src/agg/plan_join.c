@@ -550,10 +550,54 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 }
 
 /*
- * `column = value` among the table's own conditions (the value reads no column, is not volatile and takes no executor parameter): the rows of
- * the table that can match are those of an index scan on the column, when the table has a btree on it (the executor looks, map_load).
- * The conjunct stays in the filter; this only narrows what is read.
+ * `column = value` or `column = ANY (array)` (IN (list)) among the table's own conditions (the value reads no column, is not volatile and takes no
+ * executor parameter): the rows of the table that can match are those of an index scan on the column, when the table has a btree on it (the executor
+ * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A list that keeps a large share of the table is read faster by
+ * the heap scan than through the index, so it is only for a list the statistics of the table expect to keep a small share.
  */
+static bool
+index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, Node **val, bool *any)
+{
+	Node	   *l,
+			   *r;
+
+	if (IsA(q, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) q)->useOr)
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) q;
+
+		*opno = sa->opno;
+		*coll = sa->inputcollid;
+		l = strip_relabel(linitial(sa->args));
+		r = lsecond(sa->args);
+		*any = true;
+		if (join_of_var(c, l) != jc || clause_selectivity(c->root, q, jc->rti, JOIN_INNER, NULL) * AGG_IDX_ROW >= AGG_JOIN_ROW)
+			return false;
+	}
+	else if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2)
+	{
+		OpExpr	   *op = (OpExpr *) q;
+
+		*opno = op->opno;
+		*coll = op->inputcollid;
+		l = strip_relabel(linitial(op->args));
+		r = strip_relabel(lsecond(op->args));
+		*any = false;
+		if (join_of_var(c, l) != jc)
+		{
+			if (join_of_var(c, r) != jc)
+				return false;
+			*opno = get_commutator(*opno);
+			l = r;
+			r = strip_relabel(linitial(op->args));
+		}
+	}
+	else
+		return false;
+	*col = l;
+	*val = r;
+	return OidIsValid(*opno) && op_mergejoinable(*opno, exprType(l)) && !unsupported_clause(c, r) && !contain_var_clause(r);
+}
+
 static void
 join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
 {
@@ -563,33 +607,18 @@ join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
 		return;
 	foreach_ptr(Node, q, conds)
 	{
-		OpExpr	   *op;
-		Node	   *l,
-				   *r,
+		Node	   *col,
 				   *val;
-		Oid			opno;
+		Oid			opno,
+					coll;
+		bool		any;
 
-		if (!IsA(q, OpExpr) || j->nidx == SIFT_AGG_MAX_JIDX || list_length(((OpExpr *) q)->args) != 2)
+		if (j->nidx == SIFT_AGG_MAX_JIDX || !index_qual(c, jc, q, &opno, &coll, &col, &val, &any))
 			continue;
-		op = (OpExpr *) q;
-		l = strip_relabel(linitial(op->args));
-		r = strip_relabel(lsecond(op->args));
-		opno = op->opno;
-		if (join_of_var(c, l) == jc)
-			val = r;
-		else if (join_of_var(c, r) == jc)
-		{
-			val = l;
-			l = r;
-			opno = get_commutator(opno);
-		}
-		else
-			continue;
-		if (!OidIsValid(opno) || !op_mergejoinable(opno, exprType(l)) || unsupported_clause(c, val) || contain_var_clause(val))
-			continue;
-		j->idxatt[j->nidx] = ((Var *) l)->varattno;
+		j->idxatt[j->nidx] = ((Var *) col)->varattno;
 		j->idxop[j->nidx] = opno;
-		j->idxcoll[j->nidx] = op->inputcollid;
+		j->idxcoll[j->nidx] = coll;
+		j->idxany[j->nidx] = any;
 		j->idxval[j->nidx++] = val;
 	}
 }

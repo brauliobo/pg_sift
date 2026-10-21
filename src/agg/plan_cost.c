@@ -74,8 +74,6 @@
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
 #define AGG_KEY_ROW			1.0		/* a group key id */
 #define AGG_COMBO_ROW		2.5		/* a tuple's entry in a combo: gathers and a hash probe */
-#define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
-#define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
 #define AGG_SEMI_ROW		1.0		/* a tuple tested against a semi or anti join: one byte of the lookup table, or a hash probe */
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
