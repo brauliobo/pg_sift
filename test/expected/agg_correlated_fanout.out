@@ -88,7 +88,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 SELECT * FROM check_query($q$
@@ -97,7 +97,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 -- Stays native: the fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out), so it
