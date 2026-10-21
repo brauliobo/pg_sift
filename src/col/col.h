@@ -293,6 +293,8 @@ typedef struct SiftColLeafStats
 	double		sum;			/* total of a GROUP leaf's counts (its elements), when has_sum */
 	int64		min;			/* INT leaves, when has_range: the smallest and largest value of any unit */
 	int64		max;
+	double		span;			/* INT leaves: the widths (max - min + 1) of the zones of the units that hold a value, together */
+	double		nzone;			/* ... and the number of those units */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;

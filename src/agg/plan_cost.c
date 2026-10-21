@@ -474,23 +474,107 @@ leaf_correlation(AggCtx *c, int leaf)
 }
 
 /*
- * The share of the units a zone test leaves: a comparison keeps the fraction f of the rows (its selectivity, which for a
- * comparison is also the fraction of the leaf's range); the units are consecutive in the heap, so their zones are narrow in the
- * share the column is correlated with the heap order (corr^2) and as wide as the range otherwise: kept = f + (1 - f) * (1 - corr^2).
- * The most selective comparison counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
+ * The share of the units whose zone a test on an integer leaf overlaps. A test on the fraction f of the leaf's range overlaps the zone
+ * of a unit when its range and the zone's meet: f plus the mean width of the zones (the index stores it: a column the units follow
+ * has narrow zones, one they do not has the whole range in each). A source without zones has the correlation of the heap column: the
+ * units are consecutive in the heap, so their zones are narrow in the share the column is correlated with (corr^2).
  */
 static double
-zone_kept(AggCtx *c, SiftAggSpec *s)
+zone_overlap(AggCtx *c, int leaf, double f)
+{
+	double		span = c->stats.zone_span[leaf],
+				corr;
+
+	if (span > 0)
+		return Min(f + span, 1.0);
+	corr = leaf_correlation(c, leaf);
+	return f + (1.0 - f) * (1.0 - corr * corr);
+}
+
+/* the lookup join whose key is the earlier lookup's column `col` (a later inner or semi join: its rows are the only ones that complete a tuple) */
+static const JoinCtx *
+dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
+{
+	foreach_ptr(JoinCtx, dj, c->joins)
+	{
+		const SiftAggCombo *cb = &s->combo[dj->combo];
+		const SiftAggJoin *j = &s->join[cb->join];
+
+		if (dj == jc || (j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL)
+			continue;
+		for (int k = 0; k < j->nkey; k++)
+		{
+			Node	   *kx = j->keyexpr[k];
+			int			pos = kx && IsA(kx, Param) ? ((Param *) kx)->paramid : -1;
+
+			if (pos >= 0 && pos < cb->nleaves && cb->leaf[pos] == -1 && cb->refcombo[pos] == jc->combo)
+				return dj;
+		}
+	}
+	return NULL;
+}
+
+/* the rows of a joined table or plan: what the scan loads */
+static double
+lookup_rows(AggCtx *c, const JoinCtx *jc)
+{
+	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
+}
+
+/*
+ * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
+ * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
+ * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
+ * a comparison. *n: the filters the scan applies.
+ */
+static double
+join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 {
 	double		kept = 1.0;
 
-	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, c->lay, c->lay->nleaves))
+	*n = 0;
+	if (!sift_agg_join_filter || s->topn)
+		return kept;
+	foreach_ptr(JoinCtx, jc, c->joins)
 	{
-		double		f = Min(Max(p->sel, 0.0), 1.0),
-					corr = leaf_correlation(c, p->leaf);
+		const SiftAggCombo *cb = &s->combo[jc->combo];
+		const SiftAggJoin *j = &s->join[cb->join];
+		const JoinCtx *dj = dependent_join(c, s, jc);
+		double		keys = Min(lookup_rows(c, jc), dj ? lookup_rows(c, dj) : HUGE_VAL);
 
-		kept = Min(kept, f + (1.0 - f) * (1.0 - corr * corr));
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
+			continue;
+		for (int k = 0; k < j->nkey; k++)
+		{
+			int			leaf = j->keypos[k] < 0 ? -1 : cb->leaf[j->keypos[k]];
+			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
+			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+			double		nd,
+						f;
+
+			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
+				(nd = column_distinct(c, (Var *) e)) <= 0)
+				continue;
+			f = Min(keys / nd, 1.0);
+			/* a key is a point of the range: it meets the zones that hold it, a zone's width a key */
+			kept = Min(kept, c->stats.zone_span[leaf] > 0 ? Min(keys * c->stats.zone_span[leaf], 1.0) : zone_overlap(c, leaf, f));
+			(*n)++;
+		}
 	}
+	return kept;
+}
+
+/*
+ * The share of the units the zone tests leave: the comparisons (their selectivity is also the fraction of the leaf's range they keep),
+ * the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
+ */
+static double
+zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
+{
+	double		kept = join_key_zone(c, s, nkeyfilters);
+
+	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, c->lay, c->lay->nleaves))
+		kept = Min(kept, zone_overlap(c, p->leaf, Min(Max(p->sel, 0.0), 1.0)));
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_TID)
 			kept = Min(kept, s->pred[i]->sel);
@@ -693,7 +777,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				gen_cost = 0,
 				exact,
 				agg_rows,
-				scan_rows;
+				scan_rows,
+				zone_kept_v;
+	int			nkeyfilters;
 	Cost		startup,
 				child_cost = 0;
 
@@ -703,7 +789,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
 	for (int i = 0; i < s->nleaves; i++)
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
-	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
+	zone_kept_v = zone_kept(c, s, &nkeyfilters);
+	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
 		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
@@ -720,7 +807,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			scan_cost += rows * leaf_distinct_frac(c, s->pred[i]->leaf, rows) * AGG_WIDE_TEST;
-	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
+	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept_v, 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	/* the lookup joins filter before the groups: no more tuples reach them than the rows PostgreSQL expects of the join */
 	if (c->joins != NIL)
@@ -775,7 +862,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
-	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
+	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept_v, 1.0 / units);
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 		scan_cost = (scan_cost - open_cost) * c->topn_frac + open_cost;

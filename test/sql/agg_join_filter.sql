@@ -130,7 +130,35 @@ SET sift.agg_join_filter = off;
 EXECUTE by_country(3);
 RESET sift.agg_join_filter;
 
+-- keys spread over more than 4 million values: a unit whose zone holds none of them is not read, though the range of the keys covers every zone
+CREATE TABLE ev_far (id int, entity_id int, amount numeric(10, 2));
+INSERT INTO ev_far SELECT i, 1 + (i - 1) / 20 * 1000, (i % 100)::numeric FROM generate_series(1, 300000) i;
+CREATE INDEX ev_far_col ON ev_far USING sift_col (entity_id, amount);
+CREATE TABLE ents_far (id int, label text);
+INSERT INTO ents_far VALUES (1, 'a'), (5001, 'b'), (9000001, 'c'), (14000001, 'd'), (-7, 'none'), (NULL, 'nokey');
+VACUUM (FREEZE, ANALYZE) ev_far;
+ANALYZE ents_far;
+SELECT * FROM same($$SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev_far JOIN ents_far e ON e.id = ev_far.entity_id GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev_far WHERE entity_id IN (5001, 9000001, 14000001, 3)$$);
+
+-- the cost of the SiftAgg node follows the units the keys leave: two entities cost less than all of them, and less with the filter than without
+CREATE FUNCTION agg_cost_of(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	IF j::text NOT LIKE '%"SiftAgg"%' THEN RETURN NULL; END IF;
+	RETURN (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
+END $$;
+SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.id IN (5, 4000) GROUP BY 1$$) <
+       agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.id < 15000 GROUP BY 1$$) AS fewer_keys_cost_less;
+CREATE TEMP TABLE with_filter AS SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.id IN (5, 4000) GROUP BY 1$$) AS c;
+SET sift.agg_join_filter = off;
+SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.id IN (5, 4000) GROUP BY 1$$) > (SELECT c FROM with_filter) AS filter_costs_less;
+RESET sift.agg_join_filter;
+DROP TABLE with_filter;
+DROP FUNCTION agg_cost_of(text);
+
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE ev, ents, ents8, pairs, days, nothing, ents2, grps;
+DROP TABLE ev, ents, ents8, pairs, days, nothing, ev_far, ents_far, ents2, grps;
 DROP EXTENSION pg_sift;
