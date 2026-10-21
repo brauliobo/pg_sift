@@ -4,7 +4,7 @@
 #
 #   scripts/pg19-build.sh PREFIX COMMIT     fetches that commit only (shallow, from the GitHub mirror: git.postgresql.org dropped a clone with an early EOF)
 #
-# The recipe is this file: the cache key of the action hashes it, so a change of the flags builds again. ccache is used when it is installed.
+# The recipe is this file: the cache key of the action hashes it, so a change of the flags builds again. ccache is used when its compiler links are installed.
 set -euo pipefail
 
 PREFIX=$1
@@ -16,7 +16,8 @@ git -C "$SRC" init -q
 git -C "$SRC" fetch -q --depth 1 https://github.com/postgres/postgres.git "$COMMIT"
 git -C "$SRC" checkout -q FETCH_HEAD
 cd "$SRC"
-command -v ccache >/dev/null && export CC="ccache gcc"
+# ccache through its compiler links, not CC: the compiler named in the installed pgxs tree is the one that builds the extension against it later
+[[ ! -d /usr/lib/ccache ]] || export PATH=/usr/lib/ccache:$PATH
 ./configure --prefix="$PREFIX" --enable-cassert --enable-tap-tests --with-icu --without-readline --without-zlib CFLAGS="-O1" >/dev/null
 make -j"$(nproc)" -s
 make -s install
