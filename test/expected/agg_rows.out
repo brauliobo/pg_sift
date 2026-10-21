@@ -1,0 +1,151 @@
+-- count(DISTINCT) over the rows of a plan that reads Custom Scan (SiftAgg) nodes: the outer aggregate of per-row aggregates joined to a spine
+-- of periods is grouped by Custom Scan (SiftAggRows) instead of a sort of every row. Every query runs with the node, without it
+-- (sift.agg_rows off: PostgreSQL's sort and GroupAggregate over the same scans) and without the pushdown, and the answers must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE facts (id int PRIMARY KEY, entity_id int, bucket int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 50 END, i % 2,
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE jsonb_build_object('items', coalesce((SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                                   'n', CASE WHEN (i + j) % 13 = 0 THEN NULL ELSE (i * j) % 10 END))
+                                              FROM generate_series(1, i % 5) j), '[]')) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
+VACUUM (FREEZE, ANALYZE) facts;
+-- the spine has a period no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
+CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
+	                  cells AS (SELECT f.id, f.entity_id, f.bucket, i.k, avg(i.n) AS score, count(*) FILTER (WHERE i.n > 5) AS big
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.entity_id, f.bucket, i.k
+	                            UNION ALL
+	                            SELECT f.id, f.entity_id, f.bucket, NULL::text, avg(i.n), count(*) FILTER (WHERE i.n > 5)
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.entity_id, f.bucket)
+	               SELECT c.k, p.label, %s
+	               FROM periods p LEFT JOIN cells c ON c.bucket = p.bucket GROUP BY c.k, p.label %s$q$, filt, filt, aggs, tail)
+$$;
+CREATE FUNCTION plan_has(q text, node text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%' || node || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- the answers with the node, without it, and without the pushdown; the node is in the first plan only
+CREATE FUNCTION check_report(name text, q text) RETURNS TABLE (label text, rows_node bool, rows_off bool, same_rows_off bool, same_native bool, n bigint) LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; c bigint; n bigint; pn bool; po bool;
+BEGIN
+	SET sift.enable_agg = on; SET sift.agg_rows = on;
+	pn := plan_has(q, 'SiftAggRows');
+	EXECUTE format('CREATE TEMP TABLE r_node AS %s', q);
+	SET sift.agg_rows = off;
+	po := plan_has(q, 'SiftAggRows');
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_native AS %s', q);
+	RESET sift.enable_agg; RESET sift.agg_rows;
+	SELECT count(*) INTO a FROM ((TABLE r_node EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_node)) d;
+	SELECT count(*) INTO b FROM ((TABLE r_node EXCEPT TABLE r_native) UNION ALL (TABLE r_native EXCEPT TABLE r_node)) d;
+	SELECT count(*) INTO n FROM r_node;
+	DROP TABLE r_node, r_off, r_native;
+	RETURN QUERY SELECT name, pn, po, a = 0, b = 0, n;
+END $$;
+SELECT * FROM check_report('ids and entities', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'));
+      label       | rows_node | rows_off | same_rows_off | same_native | n 
+------------------+-----------+----------+---------------+-------------+---
+ ids and entities | t         | f        | t             | t           | 9
+(1 row)
+
+-- the aggregates a report reads: FILTERs on the per-row aggregate (the same argument, several FILTERs share a set), count(*), count of a column with NULLs, sum of a bigint, avg
+SELECT * FROM check_report('filters', report($a$count(DISTINCT c.id) AS ids, count(DISTINCT c.id) FILTER (WHERE c.score >= 6) AS high,
+	count(DISTINCT c.id) FILTER (WHERE c.score < 3) AS low, count(DISTINCT c.id) FILTER (WHERE c.score IS NULL) AS no_score,
+	count(DISTINCT c.entity_id) FILTER (WHERE c.big > 0) AS entities, count(*) AS n, count(c.entity_id) AS with_entity,
+	sum(c.big) AS big, avg(c.score) AS mean, count(*) FILTER (WHERE c.k = 'a') AS a$a$));
+  label  | rows_node | rows_off | same_rows_off | same_native | n 
+---------+-----------+----------+---------------+-------------+---
+ filters | t         | f        | t             | t           | 9
+(1 row)
+
+SELECT * FROM check_report('where', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities', 'f.entity_id < 25 OR f.entity_id IS NULL'));
+ label | rows_node | rows_off | same_rows_off | same_native | n 
+-------+-----------+----------+---------------+-------------+---
+ where | t         | f        | t             | t           | 9
+(1 row)
+
+-- HAVING, and an aggregate the node leaves to the normal plan (min over a column)
+SELECT * FROM check_report('having', report('count(DISTINCT c.id) AS ids', 'true', 'HAVING count(DISTINCT c.entity_id) > 10'));
+ label  | rows_node | rows_off | same_rows_off | same_native | n 
+--------+-----------+----------+---------------+-------------+---
+ having | t         | f        | t             | t           | 8
+(1 row)
+
+SELECT * FROM check_report('min keeps the plan', report('count(DISTINCT c.id) AS ids, min(c.score) AS lowest'));
+       label        | rows_node | rows_off | same_rows_off | same_native | n 
+--------------------+-----------+----------+---------------+-------------+---
+ min keeps the plan | f         | f        | t             | t           | 9
+(1 row)
+
+-- grouping sets are PostgreSQL's
+SELECT * FROM check_report('rollup keeps the plan', replace(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'), 'GROUP BY c.k, p.label', 'GROUP BY ROLLUP (c.k, p.label)'));
+         label         | rows_node | rows_off | same_rows_off | same_native | n  
+-----------------------+-----------+----------+---------------+-------------+----
+ rollup keeps the plan | f         | f        | t             | t           | 14
+(1 row)
+
+-- the scans in workers
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT * FROM check_report('workers', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities, sum(c.big) AS big'));
+  label  | rows_node | rows_off | same_rows_off | same_native | n 
+---------+-----------+----------+---------------+-------------+---
+ workers | t         | f        | t             | t           | 9
+(1 row)
+
+SET max_parallel_workers_per_gather = 0;
+-- more pairs than hash_mem holds: the pairs go through a sort and the answer is the same
+SET work_mem = '64kB';
+SELECT * FROM check_report('spill', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities, count(DISTINCT c.id) FILTER (WHERE c.score >= 6) AS high'));
+ label | rows_node | rows_off | same_rows_off | same_native | n 
+-------+-----------+----------+---------------+-------------+---
+ spill | t         | f        | t             | t           | 9
+(1 row)
+
+RESET work_mem;
+-- what EXPLAIN ANALYZE shows of the node: its columns and distinct counts, and that the small hash_mem sent a set to the sort
+CREATE FUNCTION node_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '(SiftAggRows|Group Columns|Distinct Counts|Distinct Sets Spilled)' THEN RETURN NEXT trim(l); END IF;
+	END LOOP;
+END $$;
+SET work_mem = '64kB';
+SELECT * FROM node_lines(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'));
+                      node_lines                      
+------------------------------------------------------
+ Custom Scan (SiftAggRows) (actual rows=9.00 loops=1)
+ Group Columns: 2
+ Distinct Counts: 2
+ Distinct Sets Spilled: 1
+(4 rows)
+
+RESET work_mem;
+SELECT * FROM node_lines(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'));
+                      node_lines                      
+------------------------------------------------------
+ Custom Scan (SiftAggRows) (actual rows=9.00 loops=1)
+ Group Columns: 2
+ Distinct Counts: 2
+ Distinct Sets Spilled: 0
+(4 rows)
+
+DROP FUNCTION node_lines(text), check_report(text, text), plan_has(text, text), report(text, text, text);
+DROP TABLE facts;
+DROP EXTENSION pg_sift;
