@@ -1,0 +1,205 @@
+-- The keys of the joined table of an inner or semi lookup join are a conjunct of the scan (Join Key Filters) for an int8 leaf and for int4 keys that span more
+-- than the byte table can hold (a hash table of the keys). A join that returns no column of the table and whose keys are unique then passes every tuple
+-- that the filter let through (Join Key Passes), where the byte table of a semi join (Semi Lookup Tables) cannot hold the keys. Every statement is run as it is, with sift.agg_join_filter = off and with sift.enable_agg = off:
+-- the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+-- events with an int8 key, a sparse int4 key (a range past 4 million values) and a dense int4 key
+CREATE TABLE ev (id int PRIMARY KEY, k8 int8, ks int4, kd int4, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL WHEN i % 991 = 0 THEN -4611686018427387904 + i ELSE 1 + (i::bigint * 7919) % 30000 END,
+       CASE WHEN i % 997 = 0 THEN NULL ELSE (1 + (i::bigint * 7919) % 30000)::int * 1000 END,
+       CASE WHEN i % 997 = 0 THEN NULL ELSE (1 + (i::bigint * 7919) % 30000)::int END,
+       (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 300000) i;
+INSERT INTO ev VALUES (300001, 4611686018427387904, 2147483647, 2147483647, 'a', 1), (300002, 30001, -2147483648, -2147483648, 'b', 2);
+CREATE INDEX ev_col ON ev USING sift_col (k8, ks, kd, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+-- dimensions: int8 keys with a key past int4 and a negative one, int4 keys 1000 apart, a dense int4 key, a repeated int8 key
+CREATE TABLE d8 (id int8 PRIMARY KEY, country int, label text);
+INSERT INTO d8 SELECT i, i % 60, 'e' || i FROM generate_series(1, 30000) i;
+INSERT INTO d8 VALUES (4611686018427387904, 7, 'far'), (-4611686018427387904 + 991, 7, 'neg'), (30001, 7, 'edge');
+CREATE TABLE ds (id int PRIMARY KEY, country int, label text);
+INSERT INTO ds SELECT i * 1000, i % 60, 'e' || i FROM generate_series(1, 30000) i;
+INSERT INTO ds VALUES (2147483647, 7, 'max'), (-2147483648, 7, 'min');
+CREATE TABLE dd (id int PRIMARY KEY, country int, label text);
+INSERT INTO dd SELECT i, i % 60, 'e' || i FROM generate_series(1, 30000) i;
+CREATE TABLE d8_dup (id int8, country int);
+INSERT INTO d8_dup SELECT i, i % 60 FROM generate_series(1, 30000) i;
+INSERT INTO d8_dup VALUES (11, 11), (NULL, 11);
+CREATE TABLE d4_for8 (id int4, country int);
+INSERT INTO d4_for8 SELECT i, i % 60 FROM generate_series(1, 30000) i;
+ANALYZE d8; ANALYZE ds; ANALYZE dd; ANALYZE d8_dup; ANALYZE d4_for8;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Join Key Filters:%' OR l LIKE '%Semi Lookup Tables:%' OR l LIKE '%Join Key Passes:%' THEN r := r || ',' || trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_filter bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_join_filter = off;
+	EXECUTE format('CREATE TEMP TABLE r_no ON COMMIT DROP AS %s', q);
+	RESET sift.agg_join_filter;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_no_filter := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_no) UNION ALL (TABLE r_no EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_no, r_off;
+	RETURN NEXT;
+END $$;
+-- an int8 leaf: the joined columns are read, the table only filters, a semi join, EXISTS, a key past int4, a negative one, NULL leaves
+SELECT * FROM same('SELECT d.label, count(*) AS n FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country = 7 GROUP BY d.label ORDER BY 2 DESC, 1 LIMIT 5');
+            plan             | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1 |           5 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country < 30 GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE k8 IN (SELECT id FROM d8 WHERE country < 30) GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM d8 d WHERE d.id = ev.k8 AND d.country = 7) GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.label IN (''far'', ''neg'', ''edge'')');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           1 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country = 999 GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           0 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(d.country) AS n, sum(d.country) AS s FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country < 30');
+            plan             | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |            0 |              0
+(1 row)
+
+-- a repeated key repeats the tuple, a NOT EXISTS keeps the events without a row: no tuple is passed untested
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d8_dup d ON d.id = ev.k8 WHERE d.country = 11 GROUP BY kind');
+            plan             | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM d8 d WHERE d.id = ev.k8 AND d.country < 30) GROUP BY kind');
+  plan   | result_rows | vs_no_filter | vs_normal_plan 
+---------+-------------+--------------+----------------
+ SiftAgg |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev LEFT JOIN d8 d ON d.id = ev.k8 AND d.country = 7 GROUP BY d.country');
+  plan   | result_rows | vs_no_filter | vs_normal_plan 
+---------+-------------+--------------+----------------
+ SiftAgg |           2 |            0 |              0
+(1 row)
+
+-- int4 keys 1000 apart (a range of 30 million values), with the keys at both ends of int4
+SELECT * FROM same('SELECT d.label, count(*) AS n FROM ev JOIN ds d ON d.id = ev.ks WHERE d.country = 7 GROUP BY d.label ORDER BY 2 DESC, 1 LIMIT 5');
+            plan             | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1 |           5 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev JOIN ds d ON d.id = ev.ks WHERE d.country < 30 GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE ks IN (SELECT id FROM ds WHERE country < 30 OR country = 7) GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN ds d ON d.id = ev.ks WHERE d.label IN (''max'', ''min'')');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           1 |            0 |              0
+(1 row)
+
+-- the dense key keeps the byte table
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dd d ON d.id = ev.kd WHERE d.country < 30 GROUP BY kind');
+                       plan                        | result_rows | vs_no_filter | vs_normal_plan 
+---------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           4 |            0 |              0
+(1 row)
+
+-- an int4 column against an int8 leaf, an int8 column against an int4 leaf
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d4_for8 d ON d.id = ev.k8 WHERE d.country < 30 GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d8 d ON d.id = ev.kd WHERE d.country < 30 GROUP BY kind');
+                       plan                        | result_rows | vs_no_filter | vs_normal_plan 
+---------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           4 |            0 |              0
+(1 row)
+
+-- the events' own conditions next to the join, a prepared statement with a generic plan
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country < 30 AND kind <> ''a'' AND amount > 20 GROUP BY kind');
+                      plan                      | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------------------+-------------+--------------+----------------
+ SiftAgg,Join Key Filters: 1,Join Key Passes: 1 |           3 |            0 |              0
+(1 row)
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE by_country(int) AS SELECT kind, count(*) AS n FROM ev JOIN d8 d ON d.id = ev.k8 WHERE d.country = $1 GROUP BY kind ORDER BY kind;
+EXECUTE by_country(7);
+ kind |  n   
+------+------
+ a    |    1
+ b    |    1
+ c    | 4990
+ d    |    1
+(4 rows)
+
+EXECUTE by_country(999);
+ kind | n 
+------+---
+(0 rows)
+
+SET sift.enable_agg = off;
+EXECUTE by_country(7);
+ kind |  n   
+------+------
+ a    |    1
+ b    |    1
+ c    | 4990
+ d    |    1
+(4 rows)
+
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, d8, ds, dd, d8_dup, d4_for8;
+DROP EXTENSION pg_sift;

@@ -655,15 +655,16 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	ComboSt    *cs = &ex->cs[ci];
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI;
-	const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);
+	const bool	pass = cs->spass;
+	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
-	const int32 *x = (const int32 *) v->data;
+	const int32 *x = pass ? NULL : (const int32 *) v->data;
 	Tup		   *own = &ex->stage[s];
 	int			k = 0;
 
 	for (int i = 0; i < in->n; i++)
 	{
-		bool		hit = !(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo];
+		bool		hit = pass || (!(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo]);
 
 		if (hit != want)
 			continue;
@@ -704,7 +705,7 @@ join_stage(AggExec *ex, int s, Tup *in)
 		if (n == 0)
 			return;
 	}
-	if (cs->slut)
+	if (cs->slut || cs->spass)
 	{
 		semi_stage(ex, s, in);
 		return;

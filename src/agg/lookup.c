@@ -233,6 +233,17 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 	return m;
 }
 
+/* does no key repeat among the rows of a table with one key? */
+bool
+map_unique(const MapTab *m)
+{
+	for (uint32 r = 0; r < m->nrow; r++)
+		for (uint32 x = m->head[m->hv[r] & (m->nslot - 1)]; x != 0; x = m->next[x - 1])
+			if (x - 1 != r && m->kint[x - 1] == m->kint[r])
+				return false;
+	return true;
+}
+
 /* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match) */
 static void
 map_index_rows(MapTab *m)
