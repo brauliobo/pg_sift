@@ -80,6 +80,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 - Added: `EXPLAIN (ANALYZE, VERBOSE)` of a `SiftAgg` node that does not answer units from the pre-aggregates prints `Pre-aggregates: <reason>` (the aggregate is `count(DISTINCT)`, has `FILTER`, a group key is an expression, a conjunct tests a measure, a joined table, grouping sets, and so on). Test `agg_rollup_shapes` lists the shapes of an element-level analytics query with their reason and the units answered.
 - Changed: `SiftAgg` loads the joined table of a lookup join through its btree for a `column IN (list)` condition (`dim.country IN (3, 17, 41)`) as for `column = value`, when the statistics expect the list to keep a small share of the table; with a 200,000-row dimension a filter on 3 countries loads 10,000 rows instead of 200,000.
+- Changed: `SiftAgg`: a joined table that is joined to another joined table by their key (`fact.k = a.id AND a.id = b.id`, inner joins) is probed with the column of the scanned table, so the keys of `b` (a materialized set of ids) prune units and filter rows like a table joined to the fact directly. A selective set reached through a dimension no longer reads every unit.
 
 - Added: SiftAgg lookup keys and expressions may read earlier lookup outputs, retaining duplicate matches and NULL extensions. Materialized CTEs can supply lookup rows through their PostgreSQL plans.
 

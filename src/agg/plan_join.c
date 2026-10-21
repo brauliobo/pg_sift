@@ -846,6 +846,88 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 	return true;
 }
 
+/* the two columns of `a = b` (the same type and collation, no cast); false for any other conjunct */
+static bool
+column_equality(Node *q, Var **a, Var **b, Oid *opno)
+{
+	OpExpr	   *op;
+
+	if (!IsA(q, OpExpr) || list_length(((OpExpr *) q)->args) != 2)
+		return false;
+	op = (OpExpr *) q;
+	*a = (Var *) strip_relabel(linitial(op->args));
+	*b = (Var *) strip_relabel(lsecond(op->args));
+	*opno = op->opno;
+	return IsA(*a, Var) && IsA(*b, Var) && (*a)->varlevelsup == 0 && (*b)->varlevelsup == 0 && (*a)->varnullingrels == NULL &&
+		(*b)->varnullingrels == NULL && (*a)->vartype == (*b)->vartype && (*a)->varcollid == (*b)->varcollid && op_mergejoinable(op->opno, (*a)->vartype);
+}
+
+/* the column of the scanned table that inner lookup column v equals in one of the conjuncts (NULL: none) */
+static Var *
+scanned_key(AggCtx *c, List *quals, Var *v, Oid opno)
+{
+	foreach_ptr(Node, q, quals)
+	{
+		Var		   *a,
+				   *b;
+		Oid			o;
+
+		if (!column_equality(q, &a, &b, &o) || o != opno)
+			continue;
+		if (a->varno == c->relid && b->varno == v->varno && b->varattno == v->varattno)
+			return a;
+		if (b->varno == c->relid && a->varno == v->varno && a->varattno == v->varattno)
+			return b;
+	}
+	return NULL;
+}
+
+/*
+ * `scanned.k = A.id AND A.id = B.id` (A and B inner lookups) holds the same rows as `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a
+ * column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
+ * when B is joined to the table itself: the units they miss are not read.
+ */
+static List *
+rekey_chains(AggCtx *c, List *quals)
+{
+	List	   *out = list_copy(quals);
+	bool		changed = true;
+
+	while (changed)
+	{
+		changed = false;
+		for (int i = 0; i < list_length(out); i++)
+		{
+			Var		   *a,
+					   *b,
+					   *key;
+			Oid			opno;
+			JoinCtx    *ja,
+					   *jb;
+			OpExpr	   *op;
+
+			if (!column_equality(list_nth(out, i), &a, &b, &opno) || (ja = join_of_var(c, (Node *) a)) == NULL ||
+				(jb = join_of_var(c, (Node *) b)) == NULL || ja->kind != SJ_INNER || jb->kind != SJ_INNER)
+				continue;
+			if (scanned_key(c, out, a, opno) == NULL)
+			{
+				Var		   *t = a;
+
+				a = b;
+				b = t;
+			}
+			if (scanned_key(c, out, b, opno) != NULL || (key = scanned_key(c, out, a, opno)) == NULL)
+				continue;
+			op = copyObject((OpExpr *) list_nth(out, i));
+			linitial(op->args) = copyObject(key);
+			lsecond(op->args) = copyObject(b);
+			list_nth_cell(out, i)->ptr_value = op;
+			changed = true;
+		}
+	}
+	return out;
+}
+
 bool
 setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
 {
@@ -853,6 +935,7 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 
 	*quals = drop_pushed(c, *quals);
 	*scan_quals = drop_pushed(c, *scan_quals);
+	*quals = rekey_chains(c, *quals);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		jc->clauses = drop_pushed(c, jc->clauses);
 	probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
