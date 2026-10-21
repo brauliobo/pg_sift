@@ -549,6 +549,8 @@ map_load(AggExec *ex, int ci)
 {
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 
+	if (ex->pmaps && ex->pmaps[ci])
+		return map_share_attach(ex->pmaps[ci], j, ex->cxt);
 	if (j->params != NIL)
 		return map_new(j, false, ex->cxt);
 	if (j->child >= 0)

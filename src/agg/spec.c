@@ -357,9 +357,9 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 {
 	if (s->narms)
 		return false;
-	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's */
+	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan run per combination of leaves (params) is not */
 	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].child >= 0 || s->join[i].params != NIL)
+		if (s->join[i].params != NIL)
 			return false;
 	/* the rows nothing matched are known when every row of the table was seen: by one scan */
 	for (int i = 0; i < s->njoin; i++)

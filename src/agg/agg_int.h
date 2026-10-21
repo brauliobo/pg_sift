@@ -172,6 +172,8 @@ typedef struct AggExec
 	uint64		lookup_loaded;
 	int			lookup_index;
 	uint64		lookup_us;
+	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
+	const char **pmaps;			/* in a worker: per combo, the table of its join in the shared memory, NULL when it has none (map_load) */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;

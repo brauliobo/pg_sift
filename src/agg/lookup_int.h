@@ -75,6 +75,26 @@ map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, 
 	return n;
 }
 
+typedef struct MapShared
+{
+	uint32		nkey;
+	uint32		ncol;
+	uint32		nrow;
+	uint32		nslot;
+	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	bool		filtered;
+	Size		klen;			/* offsets from the start of the segment */
+	Size		kint;
+	Size		koff;			/* text keys: offset in the data of the bytes, MAP_NOOFF for a NULL */
+	Size		cval;			/* a column: the value itself, or the offset in the data of a by-reference one */
+	Size		cnull;
+	Size		hv;
+	Size		next;
+	Size		head;
+	Size		data;
+	Size		size;
+} MapShared;
+
 /* what a table is, page by page, when its rows are kept for another query (lookcache.c) */
 typedef struct LookFinger
 {
@@ -92,6 +112,11 @@ void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
 bool map_unique(const MapTab *m);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
+
+/* lookshare.c */
+Size map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l);
+void map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char *dst);
+MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt);
 
 /* lookcache.c */
 LookFinger *lookcache_finger(Relation rel);
