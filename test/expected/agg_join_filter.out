@@ -87,15 +87,15 @@ SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev JOIN ents e ON e.id
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN nothing e ON e.id = ev.entity_id$$);
-                plan                | result_rows | vs_no_filter | vs_normal_plan 
-------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 units pruned |           1 |            0 |              0
+         plan          | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 |           1 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 999$$);
-                plan                | result_rows | vs_no_filter | vs_normal_plan 
-------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 units pruned |           1 |            0 |              0
+         plan          | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 |           1 |            0 |              0
 (1 row)
 
 -- semi joins: IN and EXISTS
