@@ -558,6 +558,9 @@ extern void sift_tbl_bulk_tuple(SiftTblBulk *b, HeapTuple tup);
 extern bool sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep keep, void *arg);
 extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 
+/* The default of sift.table_dead_rewrite_pct: segments kept up to a third dead hold the file near 1.4 times its live size */
+#define SIFT_TBL_DEAD_PCT	30
+
 /* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone */
 extern bool sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;

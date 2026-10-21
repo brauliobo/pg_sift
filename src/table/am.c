@@ -85,7 +85,7 @@ sift_tbl_define_gucs(void)
 #endif
 	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
 							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
-							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_MERGE_DEAD_PCT, 1, 100,
+							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_TBL_DEAD_PCT, 1, 100,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
