@@ -6713,7 +6713,8 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 
 /*
  * A column of a sub-select that only a condition pushed down into it read is a NULL in its plan (remove_unused_subquery_outputs), so the
- * spec, which reads the condition again, must not read it: the normal plan stays.
+ * spec, which reads the condition again, must not read it: the normal plan stays. The plan of a sub-select, VALUES list or function keeps
+ * the columns of the conditions it evaluates; an Append or MergeAppend outputs the relation's target only.
  */
 static bool
 child_cols_kept(AggCtx *c, JoinCtx *jc)
@@ -6722,8 +6723,9 @@ child_cols_kept(AggCtx *c, JoinCtx *jc)
 	Bitmapset  *used = NULL;
 
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
-	foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
-		pull_varattnos((Node *) ri->clause, rel->relid, &used);
+	if (projects_columns(jc->cpath))
+		foreach_ptr(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
+			pull_varattnos((Node *) ri->clause, rel->relid, &used);
 	foreach_ptr(Var, v, jc->cvars)
 		if (!bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, used))
 			return false;
