@@ -103,11 +103,11 @@ SELECT * FROM same($$SELECT s.id, count(*) AS n FROM ev e JOIN (SELECT id FROM s
  SiftAgg s (subquery) |           7 |              0
 (1 row)
 
--- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there, the normal plan stays
+-- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there and enforces the condition, which the scan does not test again
 SELECT * FROM same($$SELECT e.kind, count(*) AS n FROM ev e JOIN (SELECT entity_id, count(*) AS n FROM ev GROUP BY entity_id) s ON e.entity_id = s.entity_id WHERE s.n > 19 GROUP BY e.kind$$);
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           3 |              0
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, max(s.n) AS busiest, count(*) AS n FROM ev e JOIN (SELECT entity_id, count(*) AS n FROM ev GROUP BY entity_id) s ON e.entity_id = s.entity_id WHERE s.n > 19 GROUP BY e.kind$$);

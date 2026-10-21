@@ -57,7 +57,7 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n, sum(amount) AS s FROM ev e JO
 SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e LEFT JOIN (SELECT id, kind FROM stores ORDER BY id LIMIT 12) s ON e.store_id = s.id GROUP BY s.kind$$);
 SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT DISTINCT id, kind FROM stores WHERE id % 2 = 0 OFFSET 0) s ON e.store_id = s.id GROUP BY s.kind$$);
 SELECT * FROM same($$SELECT s.id, count(*) AS n FROM ev e JOIN (SELECT id FROM stores WHERE id < 5 UNION SELECT id FROM stores WHERE id < 8) s ON e.store_id = s.id GROUP BY s.id$$);
--- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there, the normal plan stays
+-- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there and enforces the condition, which the scan does not test again
 SELECT * FROM same($$SELECT e.kind, count(*) AS n FROM ev e JOIN (SELECT entity_id, count(*) AS n FROM ev GROUP BY entity_id) s ON e.entity_id = s.entity_id WHERE s.n > 19 GROUP BY e.kind$$);
 SELECT * FROM same($$SELECT e.kind, max(s.n) AS busiest, count(*) AS n FROM ev e JOIN (SELECT entity_id, count(*) AS n FROM ev GROUP BY entity_id) s ON e.entity_id = s.entity_id WHERE s.n > 19 GROUP BY e.kind$$);
 -- the table is the fact table and the sub-select (a child with a scan of its own), and the sub-select groups a column with NULLs
