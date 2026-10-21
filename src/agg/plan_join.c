@@ -502,11 +502,26 @@ scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args)
 	return true;
 }
 
+/* the tuples that can reach a child: the scanned table's rows, each joined to all the rows of another table whose columns the child reads */
+static double
+child_reach(AggCtx *c, JoinCtx *jc)
+{
+	Relids		rels = pull_varnos(c->root, (Node *) jc->args);
+	double		reach = c->rel->tuples;
+
+	for (int rti = -1; (rti = bms_next_member(rels, rti)) >= 0;)
+		if (rti != c->relid && c->root->simple_rel_array[rti] != NULL)
+			reach *= Max(c->root->simple_rel_array[rti]->tuples, 1.0);
+	return reach;
+}
+
 /* the rows the scan keeps of a correlated child, those of its plan for each distinct input, are bounded as the rows of a plan read once are */
 static bool
 child_rows_fit(AggCtx *c, JoinCtx *jc)
 {
-	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, c->rel->tuples, NULL, NULL), c->rel->tuples) <= sift_agg_lookup_max_rows;
+	double		reach = child_reach(c, jc);
+
+	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach) <= sift_agg_lookup_max_rows;
 }
 
 static Node *
