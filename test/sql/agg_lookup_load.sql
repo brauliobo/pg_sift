@@ -58,7 +58,7 @@ SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE e
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id IN (SELECT entity_id FROM members_bare WHERE group_id = 7 AND deleted_at IS NULL) GROUP BY kind');
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE EXISTS (SELECT 1 FROM members m WHERE m.entity_id = ev.entity_id AND m.group_id = 7) GROUP BY kind');
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM members m WHERE m.entity_id = ev.entity_id AND m.group_id = 7) GROUP BY kind');
--- a group with a NULL key and a duplicate, two groups (no equality on the leading column: the table is read whole and filtered while loading), a group with no rows
+-- a group with a NULL key and a duplicate, two groups (a list on the leading column is an index scan too), a group with no rows
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELECT entity_id FROM members WHERE group_id = 3) GROUP BY kind');
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELECT entity_id FROM members WHERE group_id IN (3, 4)) GROUP BY kind');
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE entity_id IN (SELECT entity_id FROM members WHERE group_id = 999) GROUP BY kind');

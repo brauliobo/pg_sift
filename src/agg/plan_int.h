@@ -215,6 +215,9 @@ extern bool null_input_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
+#define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
+
 extern Node *strip_relabel(Node *n);
 extern Oid func_of(Node *n);
 extern List *func_args(Node *n);

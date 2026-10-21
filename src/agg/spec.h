@@ -360,9 +360,10 @@ typedef struct SiftAggJoin
 	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo; -1: the key is keyexpr */
 	Node	   *keyexpr[SIFT_AGG_MAX_JKEYS];	/* an expression of the combo's leaves (Params), evaluated per distinct tuple of their values */
 	int			fslot;			/* slot of the combo that is the rest of the ON clause (leaves and columns of the row), -1 none: a row matches if it holds */
-	int			nidx;			/* conjuncts of the rest of the ON clause `column = value` (a constant, parameter or stable expression): a btree index can load the rows */
+	int			nidx;			/* conjuncts of the rest of the ON clause `column = value` or `column = ANY (array)` (a constant, parameter or stable expression): a btree index can load the rows */
 	int			idxatt[SIFT_AGG_MAX_JIDX];
 	Oid			idxop[SIFT_AGG_MAX_JIDX];		/* the equality operator, column on the left */
+	bool		idxany[SIFT_AGG_MAX_JIDX];		/* the value is an array: the column equals one of its elements */
 	Oid			idxcoll[SIFT_AGG_MAX_JIDX];
 	Node	   *idxval[SIFT_AGG_MAX_JIDX];
 	int			ncol;

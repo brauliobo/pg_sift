@@ -227,6 +227,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, j->idxatt[k]);
 			put_int(p, (int) j->idxop[k]);
 			put_int(p, (int) j->idxcoll[k]);
+			put_int(p, j->idxany[k]);
 			put_node(p, j->idxval[k]);
 		}
 		put_int(p, j->nkey);
@@ -565,6 +566,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->idxatt[k] = get_int(u);
 			j->idxop[k] = (Oid) get_int(u);
 			j->idxcoll[k] = (Oid) get_int(u);
+			j->idxany[k] = get_int(u);
 			j->idxval[k] = get_node(u);
 		}
 		j->nkey = get_int(u);
