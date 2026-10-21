@@ -1,11 +1,11 @@
 -- The plan the planner picks on its own costs (no page cost or enable_* setting steers it): the aggregate scan on a table of many rows when
--- the scope keeps a large share of it, the btree plan when the scope is a few entities. The statements are the shapes of review analytics: a
+-- the scope keeps a large share of it, the btree plan when the scope is a few entities. The statements are the shapes of event analytics: a
 -- date spine (a set-returning function in the select list) joined to the rows of two periods with no key the scan can use, and the same
 -- aggregate without it. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE nc_entities (id int PRIMARY KEY, kind text NOT NULL);
-INSERT INTO nc_entities SELECT i, (ARRAY['hotel', 'museum', 'diner'])[1 + i % 3] FROM generate_series(1, 400) i;
+INSERT INTO nc_entities SELECT i, (ARRAY['site', 'museum', 'diner'])[1 + i % 3] FROM generate_series(1, 400) i;
 -- written entity by entity, as a crawler appends them; the day is not ordered
 CREATE TABLE nc_rows (id int PRIMARY KEY, entity_id int NOT NULL, day date NOT NULL, deleted_at timestamptz, scores jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO nc_rows SELECT i, 1 + (i - 1) / 500, date '2025-01-01' + (hashint4(i) & 1023) % 700, CASE WHEN i % 29 = 0 THEN now() END,

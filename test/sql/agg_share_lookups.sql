@@ -5,11 +5,11 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
-CREATE TABLE ev (id int PRIMARY KEY, entity_id int, source_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+CREATE TABLE ev (id int PRIMARY KEY, entity_id int, src_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + i % 3000 END, 1 + i % 40, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 120000) i;
-CREATE INDEX ev_col ON ev USING sift_col (entity_id, source_id, day, kind, amount);
+CREATE INDEX ev_col ON ev USING sift_col (entity_id, src_id, day, kind, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE ents (id int, country int, tier int);
 INSERT INTO ents SELECT i, i % 30, i % 4 FROM generate_series(1, 3000) i;
@@ -50,7 +50,7 @@ BEGIN
 END $$;
 
 -- three arms of one inlined CTE: the two that read the same aggregate share one pass (their tables are loaded once for it), the third has a pass of its own
-SELECT * FROM same($$WITH b AS NOT MATERIALIZED (SELECT ev.*, e.country, e.tier, s.name FROM ev JOIN ents e ON e.id = ev.entity_id JOIN srcs s ON s.id = ev.source_id AND s.enabled WHERE e.country < 10)
+SELECT * FROM same($$WITH b AS NOT MATERIALIZED (SELECT ev.*, e.country, e.tier, s.name FROM ev JOIN ents e ON e.id = ev.entity_id JOIN srcs s ON s.id = ev.src_id AND s.enabled WHERE e.country < 10)
 	SELECT 'a' AS arm, country::text AS k, count(*) AS n FROM b GROUP BY 2 UNION ALL SELECT 'b', name, count(*) FROM b GROUP BY 2 UNION ALL SELECT 'c', tier::text || kind, sum(amount)::bigint FROM b GROUP BY 2$$);
 -- other conditions of the table: not the same rows, not shared
 SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id WHERE e.country = 3 GROUP BY 2
@@ -64,10 +64,10 @@ SELECT * FROM same($$SELECT 'a' AS arm, kind AS k, count(*) AS n FROM ev WHERE e
 	UNION ALL SELECT 'c', e.tier::text, count(*) FROM ev LEFT JOIN ents e ON e.id = ev.entity_id AND e.country = 5 GROUP BY 2$$);
 -- the condition of a table reads its columns as parameters after the leaves of the join: the same text over another number of leaves is another condition
 SELECT * FROM same($$SELECT 'a' AS arm, g.tier::text AS k, g.grade AS g, count(*) AS n FROM ev JOIN grades g ON g.id = ev.entity_id AND g.grade > 5 GROUP BY 2, 3
-	UNION ALL SELECT 'b', (g.tier + ev.source_id)::text, g.grade, count(*) FROM ev JOIN grades g ON g.id = ev.entity_id AND g.tier > 5 GROUP BY 2, 3$$);
+	UNION ALL SELECT 'b', (g.tier + ev.src_id)::text, g.grade, count(*) FROM ev JOIN grades g ON g.id = ev.entity_id AND g.tier > 5 GROUP BY 2, 3$$);
 -- no condition reads the leaves: the arms load the same rows whatever number of leaves their join keys read
 SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.entity_id GROUP BY 2
-	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id + (ev.source_id - ev.source_id) GROUP BY 2$$);
+	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.entity_id + (ev.src_id - ev.src_id) GROUP BY 2$$);
 -- a table that is a plan (a sub-select) is not shared
 SELECT * FROM same($$SELECT 'a' AS arm, s.country::text AS k, count(*) AS n FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.entity_id GROUP BY 2
 	UNION ALL SELECT 'b', s.country::text, count(*) FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.entity_id GROUP BY 2$$);
