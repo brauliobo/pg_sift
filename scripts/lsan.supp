@@ -3,7 +3,9 @@
 # from it reports them again at exit. Anything else, sift's included, is a finding. A suppression matches any frame of the
 # allocation stack, so add a function only when all of its allocations are meant to stay.
 leak:save_ps_display_args
-leak:PostmasterMain
+# the copy of -D the postmaster keeps in a local of PostmasterMain. Not PostmasterMain itself: a server whose binary keeps frame pointers
+# (the PGDG packages) unwinds a backend's allocation through postmaster_child_launch up to it, which would suppress every leak of every backend
+leak:strdup
 
 # PostgreSQL's own client programs (pg_dump, pg_upgrade, pg_resetwal, psql, vacuumdb), which scripts start under the preload
 # together with the servers (pg_upgrade runs them all) and which exit without freeing; so does libpq, the walreceiver's
