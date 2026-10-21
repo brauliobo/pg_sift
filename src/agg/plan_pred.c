@@ -151,13 +151,18 @@ new_pred(AggCtx *c, SiftAggPredKind kind)
 	return p;
 }
 
+/* a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows) */
 static Node *
 display_expr_mutator(Node *n, void *context)
 {
+	Node	   *arm;
+
 	if (n == NULL)
 		return NULL;
 	if (IsA(n, PlaceHolderVar))
 		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
+	if ((arm = null_guarded_arm(n)) != NULL)
+		return display_expr_mutator(arm, context);
 	return expression_tree_mutator(n, display_expr_mutator, context);
 }
 
