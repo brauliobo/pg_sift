@@ -509,6 +509,7 @@ extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 typedef struct SiftAggPaShape
 {
 	int			dim;
+	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
 	int			rdim[SIFT_SRC_MAX_RDIMS];
@@ -520,7 +521,8 @@ typedef struct SiftAggPaShape
  * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, agg/colsrc.h SiftSrcUnitAgg)? A scan of one source without joins, combos
  * or sets. Over the rows: at most one group key, that is a column of a histogram, and aggregates of the stored measures: count(*), count(m), sum
  * and avg of an integer or numeric m, and min and max when there is no key. Conjuncts on other leaves must be zone comparisons (a unit answers
- * when its zone lies inside them), the rest must test the key's leaf (or, without a key, one leaf: dim).
+ * when its zone lies inside them), the rest must test the key's leaf (or, without a key, one leaf: dim). Without a key, a unit whose zone is not
+ * inside a zone comparison on a dim of a histogram (hdim) answers from the groups of that histogram that pass it.
  * Over the elements of a list (an array of objects or scalars, a map): any number of group keys, conjuncts and count(leaf) over the dims of its
  * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
  * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
