@@ -772,7 +772,10 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
-void scan_items(AggExec *ex);
+void engine_contexts(AggExec *ex, MemoryContext parent);
+void engine_rels(AggExec *ex);
+void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
+void engine_close(AggExec *ex);
 
 /* leaf.c */
 void ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid);
@@ -916,6 +919,18 @@ void scan_buffers(AggExec *ex);
 /* blob.c */
 void blob_dump(AggExec *ex, int lane, StringInfo b);
 void blob_merge(AggExec *g, const char *p);
+
+/* par.c */
+Size shared_size(const SiftAggSpec *s);
+void shared_init(ScanShared *sh, AggExec *ex);
+void scan_units(AggExec *ex, uint32 lo, uint32 hi);
+void empty_set_groups(AggExec *ex);
+AggExec *result_view(AggExec *ex);
+void final_checks(AggExec *g, int64 ntuples);
+void lane_fold(AggExec *ex);
+void scan_items(AggExec *ex);
+void par_launch(AggExec *ex);
+void par_finish(AggExec *ex);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
