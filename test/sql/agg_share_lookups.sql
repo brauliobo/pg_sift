@@ -1,0 +1,83 @@
+-- The Custom Scan (SiftAgg) nodes of one statement (UNION ALL arms, an inlined CTE read several times) that join the same table with the same columns and
+-- conditions share the rows the first one loaded (sift.agg_share_lookups; "Shared Lookup Tables" of EXPLAIN ANALYZE). The rows are the statement's snapshot,
+-- never kept for another statement. Every statement is run shared, with sift.agg_share_lookups = off and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, lookup_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + i % 3000 END, 1 + i % 40, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 120000) i;
+CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, lookup_id, day, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE ents (id int, country int, tier int);
+INSERT INTO ents SELECT i, i % 30, i % 4 FROM generate_series(1, 3000) i;
+INSERT INTO ents VALUES (7, 7, 7), (NULL, 1, 1);
+CREATE INDEX ents_country ON ents (country);
+CREATE TABLE srcs (id int PRIMARY KEY, name text, enabled boolean);
+INSERT INTO srcs SELECT i, 's' || i, i % 5 <> 0 FROM generate_series(1, 40) i;
+ANALYZE ents; ANALYZE srcs;
+
+-- the nodes of an EXPLAIN ANALYZE and the tables they shared
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; nodes int := 0; shared int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
+		IF l LIKE '%Shared Lookup Tables:%' THEN shared := shared + trim(split_part(l, ':', 2))::int; END IF;
+	END LOOP;
+	RETURN format('%s SiftAgg nodes, %s shared tables', nodes, shared);
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_unshared bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_share_lookups = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_share_lookups;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_unshared := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- three arms of one inlined CTE: the lookups are loaded once
+SELECT * FROM same($$WITH b AS NOT MATERIALIZED (SELECT ev.*, e.country, e.tier, s.name FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN srcs s ON s.id = ev.lookup_id AND s.enabled WHERE e.country < 10)
+	SELECT 'a' AS arm, country::text AS k, count(*) AS n FROM b GROUP BY 2 UNION ALL SELECT 'b', name, count(*) FROM b GROUP BY 2 UNION ALL SELECT 'c', tier::text || kind, sum(amount)::bigint FROM b GROUP BY 2$$);
+-- other conditions of the table: not the same rows, not shared
+SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 3 GROUP BY 2
+	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 4 GROUP BY 2$$);
+-- the same conditions, another filter on the leaves and other columns read: the arms keep their own tables
+SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 3 GROUP BY 2
+	UNION ALL SELECT 'b', e.tier::text || ev.kind, sum(amount)::bigint FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 3 AND day >= '2025-01-01' GROUP BY 2$$);
+-- a semi join and an inner join to the same rows, an anti join and a left join
+SELECT * FROM same($$SELECT 'a' AS arm, kind AS k, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT id FROM ents WHERE country = 5) GROUP BY 2
+	UNION ALL SELECT 'b', kind, count(*) FROM ev WHERE NOT EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.dim_a_id AND e.country = 5) GROUP BY 2
+	UNION ALL SELECT 'c', e.tier::text, count(*) FROM ev LEFT JOIN ents e ON e.id = ev.dim_a_id AND e.country = 5 GROUP BY 2$$);
+-- a table that is a plan (a sub-select) is not shared
+SELECT * FROM same($$SELECT 'a' AS arm, s.country::text AS k, count(*) AS n FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2
+	UNION ALL SELECT 'b', s.country::text, count(*) FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2$$);
+
+-- a later statement reads the table as it is then: nothing is kept between statements
+PREPARE arms AS SELECT 'a' AS arm, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 3
+	UNION ALL SELECT 'b', count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 3;
+EXECUTE arms;
+DELETE FROM ents WHERE id % 60 = 3;
+EXECUTE arms;
+INSERT INTO ents SELECT i, 3, 1 FROM generate_series(4000, 4100) i;
+UPDATE ev SET dim_a_id = 4000 + id % 100 WHERE id % 50 = 0;
+EXECUTE arms;
+SET sift.enable_agg = off;
+EXECUTE arms;
+RESET sift.enable_agg;
+
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, ents, srcs;
+DROP EXTENSION pg_sift;
