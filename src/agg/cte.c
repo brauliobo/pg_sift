@@ -60,15 +60,30 @@ shared_cte_over_column_index(CommonTableExpr *cte)
 	return false;
 }
 
+/* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With *inline_them they are all written NOT MATERIALIZED (the walk is of a copy of the query, and goes on) */
+static bool
+shared_cte_walker(Node *n, bool *inline_them)
+{
+	if (n == NULL)
+		return false;
+	if (!IsA(n, Query))
+		return expression_tree_walker(n, shared_cte_walker, inline_them);
+	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
+		if (shared_cte_over_column_index(cte))
+		{
+			if (!*inline_them)
+				return true;
+			cte->ctematerialized = CTEMaterializeNever;
+		}
+	return query_tree_walker((Query *) n, shared_cte_walker, inline_them, 0);
+}
+
 static bool
 has_shared_cte(Query *parse)
 {
-	if (parse->commandType != CMD_SELECT || parse->rowMarks != NIL)
-		return false;
-	foreach_node(CommonTableExpr, cte, parse->cteList)
-		if (shared_cte_over_column_index(cte))
-			return true;
-	return false;
+	bool		inline_them = false;
+
+	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &inline_them);
 }
 
 static bool uses_sift_agg(Plan *plan);
@@ -183,9 +198,7 @@ plan_cte(SIFT_PLANNER_PARAMS)
 		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
 			standard_planner(SIFT_PLANNER_ARGS(parse));
 	inline_parse = copyObject(parse);
-	foreach_node(CommonTableExpr, cte, inline_parse->cteList)
-		if (shared_cte_over_column_index(cte))
-			cte->ctematerialized = CTEMaterializeNever;
+	shared_cte_walker((Node *) inline_parse, &(bool) {true});
 	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
 		standard_planner(SIFT_PLANNER_ARGS(parse));
 	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
