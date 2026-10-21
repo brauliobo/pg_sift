@@ -637,6 +637,39 @@ size_t sift_chunk_bound(uint32_t npages) { return 4 + 32 + (size_t)npages * SIFT
 uint32_t sift_chunk_count(const uint8_t *chunk) { return ld32(chunk) >> 8; }
 uint32_t sift_chunk_width(const uint8_t *chunk) { return ld32(chunk) & 0x7f; }
 
+/*
+ * NULL when the chunk of len bytes is what its header says, so that the readers below stay inside it and inside their outputs, else what is
+ * wrong: a width a page row can hold, as many offsets as the header counts, pages below 256 and offsets below the width, entries in
+ * ascending order (the rows of a dense chunk hold as many bits as counted)
+ */
+const char *sift_chunk_check(const uint8_t *chunk, uint32_t len)
+{
+	if (len < 4) return "shorter than its header";
+	uint32_t h = ld32(chunk), n = h >> 8, w = h & 0x7f;
+	if (w < 1 || w > SIFT_MAX_W) return "offset width out of range";
+	if (!(h & 0x80)) {
+		uint64_t np = 0, bits = 0;
+		if (len < 36) return "shorter than its page mask";
+		for (int j = 0; j < 4; j++) np += sift_pc64(ld64(chunk + 4 + 8 * j));
+		if (len < 36 + np * w) return "shorter than the offsets of its pages";
+		for (uint64_t r = 0; r < np; r++) {
+			const uint8_t *row = chunk + 36 + r * w;
+			for (uint32_t b = 0; b < w; b += 8) bits += sift_pc64(ld_upto8(row + b, row + w));
+		}
+		return bits == n ? NULL : "counts other offsets than its rows hold";
+	}
+	uint32_t es = w <= 32 ? 2 : 4, last_pg = 0, last_o = 0;
+	if (4 + (uint64_t)n * es > len) return "shorter than its entries";
+	for (uint32_t k = 0; k < n; k++) {
+		uint32_t e = es == 2 ? (uint32_t)chunk[4 + 2 * k] | (uint32_t)chunk[4 + 2 * k + 1] << 8 : ld32(chunk + 4 + 4 * k);
+		uint32_t pg = es == 2 ? e >> 8 : e >> 16, o = es == 2 ? e & 0xff : e & 0xffff;
+		if (pg >= 64 * SIFT_PAGEMASK_WORDS || o >= 8 * w) return "an entry is outside the pages or the offset width";
+		if (k && (pg < last_pg || (pg == last_pg && o <= last_o))) return "entries are not ascending";
+		last_pg = pg, last_o = o;
+	}
+	return NULL;
+}
+
 size_t sift_chunk_encode(const uint64_t pm[4], const uint64_t *om, int ctype, uint8_t *out)
 {
 	uint32_t np = pages_pc(pm), count = 0, maxbit = 1;
