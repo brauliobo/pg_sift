@@ -1,5 +1,5 @@
 
--- Synthetic data of the set filter benchmarks (docs/SET-FILTERS.md): entities (a dimension table with a city, country, category, rating class,
+-- Synthetic data of the set filter benchmarks (docs/SET-FILTERS.md): entities (a dimension table with a city, country, category, metric class,
 -- chain and region), a fact table of events (zipf events per entity, dates with a backfill tail, 1.5% soft-deleted) and group_members
 -- (a membership table: 60 groups of 100, 20 of 1,000, 8 of 10,000 and 2 of 100,000 entities).
 --   psql -v np=200000 -v nr=3000000 -v sch=sets -f gen.sql      deterministic (setseed); the sizes of the published runs
@@ -40,12 +40,12 @@ CREATE TEMP TABLE ptot AS SELECT sum(w) AS tot FROM pw;
 ANALYZE pc;
 
 CREATE TABLE events_src AS
-SELECT row_number() OVER (ORDER BY created_at, rnd) AS id, entity_id, channel_id, lang_id, sentiment, event_date, score, deleted_at
+SELECT row_number() OVER (ORDER BY created_at, rnd) AS id, entity_id, channel_id, lang_id, signal, event_date, score, deleted_at
 FROM (
   SELECT pcl.id AS entity_id,
          width_bucket(random() * pg_temp.zipf_tot(30, 1.1), pg_temp.zipf_cum(30, 1.1))::int2 AS channel_id,
          width_bucket(random() * pg_temp.zipf_tot(40, 1.5), pg_temp.zipf_cum(40, 1.5))::int2 AS lang_id,
-         (CASE WHEN random() < .15 THEN 0 WHEN random() < .18 THEN 1 ELSE 2 END)::int2 AS sentiment,
+         (CASE WHEN random() < .15 THEN 0 WHEN random() < .18 THEN 1 ELSE 2 END)::int2 AS signal,
          d AS event_date,
          round(least(10, greatest(0, 8 + 1.8 * (random() + random() + random() - 1.5) * 1.6))::numeric, 1)::float8 AS score,
          CASE WHEN random() < 0.015 THEN now() - random() * interval '300 days' END AS deleted_at,

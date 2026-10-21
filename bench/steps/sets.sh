@@ -66,15 +66,15 @@ sq -d sets >/dev/null <<-'EOF'
 	SET max_parallel_maintenance_workers = 2;
 	CREATE INDEX facts_entity_date ON facts (entity_id, fact_date);
 	CREATE INDEX facts_date ON facts (fact_date);
-	CREATE INDEX facts_col ON facts USING sift_col (entity_id, source_id, lang_id, sentiment, fact_date, score, deleted_at, (date_trunc('month', fact_date::timestamp)::date));
+	CREATE INDEX facts_col ON facts USING sift_col (entity_id, src_id, lang_id, signal, fact_date, score, deleted_at, (date_trunc('month', fact_date::timestamp)::date));
 	CREATE INDEX IF NOT EXISTS memberships_group_entity ON memberships (group_id, entity_id);
 	-- the same facts with the entity key as int8, text and date: the arrays of the key-type rows
-	CREATE TABLE facts_by_int8 AS SELECT id, entity_id::int8 AS entity_id, source_id, lang_id, sentiment, fact_date, score, deleted_at FROM facts;
-	CREATE TABLE facts_by_text AS SELECT id, 'ent-' || lpad(entity_id::text, 7, '0') AS entity_id, source_id, lang_id, sentiment, fact_date, score, deleted_at FROM facts;
-	CREATE TABLE facts_by_date AS SELECT id, date '2000-01-01' + entity_id AS entity_id, source_id, lang_id, sentiment, fact_date, score, deleted_at FROM facts;
+	CREATE TABLE facts_by_int8 AS SELECT id, entity_id::int8 AS entity_id, src_id, lang_id, signal, fact_date, score, deleted_at FROM facts;
+	CREATE TABLE facts_by_text AS SELECT id, 'ent-' || lpad(entity_id::text, 7, '0') AS entity_id, src_id, lang_id, signal, fact_date, score, deleted_at FROM facts;
+	CREATE TABLE facts_by_date AS SELECT id, date '2000-01-01' + entity_id AS entity_id, src_id, lang_id, signal, fact_date, score, deleted_at FROM facts;
 	SELECT format('CREATE INDEX %1$s_entity_date ON %1$s (entity_id, fact_date)', t) FROM unnest(ARRAY['facts_by_int8', 'facts_by_text', 'facts_by_date']) t \gexec
 	SELECT format('CREATE INDEX %1$s_date ON %1$s (fact_date)', t) FROM unnest(ARRAY['facts_by_int8', 'facts_by_text', 'facts_by_date']) t \gexec
-	SELECT format('CREATE INDEX %1$s_col ON %1$s USING sift_col (entity_id, source_id, lang_id, sentiment, fact_date, score, deleted_at, (date_trunc(''month'', fact_date::timestamp)::date))', t)
+	SELECT format('CREATE INDEX %1$s_col ON %1$s USING sift_col (entity_id, src_id, lang_id, signal, fact_date, score, deleted_at, (date_trunc(''month'', fact_date::timestamp)::date))', t)
 		FROM unnest(ARRAY['facts_by_int8', 'facts_by_text', 'facts_by_date']) t \gexec
 	VACUUM (ANALYZE) facts_by_int8, facts_by_text, facts_by_date;
 	VACUUM (ANALYZE) facts, entities, memberships;
@@ -89,13 +89,13 @@ if [[ -n $CH ]]; then
 	for _ in $(seq 1 60); do docker exec "$CHC" clickhouse-client -q 'select 1' >/dev/null 2>&1 && break; sleep 1; done
 	chq() { docker exec -i "$CHC" clickhouse-client --max_threads 3 "$@"; }
 	chq -n <<-'EOF'
-		CREATE TABLE facts_ins (id UInt64, entity_id UInt32, source_id UInt8, lang_id UInt8, sentiment UInt8, fact_date Date, score Float64, deleted_at Nullable(DateTime)) ENGINE = MergeTree ORDER BY id;
-		CREATE TABLE facts_tuned (id UInt64, entity_id UInt32, source_id UInt8, lang_id UInt8, sentiment UInt8, fact_date Date, score Float64, deleted_at Nullable(DateTime))
-			ENGINE = MergeTree PARTITION BY toYYYYMM(fact_date) ORDER BY (source_id, entity_id, fact_date, id);
+		CREATE TABLE facts_ins (id UInt64, entity_id UInt32, src_id UInt8, lang_id UInt8, signal UInt8, fact_date Date, score Float64, deleted_at Nullable(DateTime)) ENGINE = MergeTree ORDER BY id;
+		CREATE TABLE facts_tuned (id UInt64, entity_id UInt32, src_id UInt8, lang_id UInt8, signal UInt8, fact_date Date, score Float64, deleted_at Nullable(DateTime))
+			ENGINE = MergeTree PARTITION BY toYYYYMM(fact_date) ORDER BY (src_id, entity_id, fact_date, id);
 		CREATE TABLE memberships (group_id UInt32, entity_id UInt32, deleted_at Nullable(DateTime)) ENGINE = MergeTree ORDER BY (group_id, entity_id);
 	EOF
 	copy_out() { sq -d sets -c "\\copy ($1) to stdout with (format csv, null '\\N')"; }
-	copy_out "SELECT id, entity_id, source_id, lang_id, sentiment, fact_date, score, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM facts ORDER BY id" |
+	copy_out "SELECT id, entity_id, src_id, lang_id, signal, fact_date, score, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM facts ORDER BY id" |
 		chq --query 'INSERT INTO facts_ins FORMAT CSV'
 	copy_out "SELECT group_id, entity_id, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM memberships" | chq --query 'INSERT INTO memberships FORMAT CSV'
 	chq --query 'INSERT INTO facts_tuned SELECT * FROM facts_ins'
