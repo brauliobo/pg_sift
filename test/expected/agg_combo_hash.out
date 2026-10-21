@@ -1,0 +1,57 @@
+-- A lookup join keyed by three text columns makes one combo entry per distinct combination of the fact values. Tens of thousands of combinations
+-- of small dictionary ids must spread over the entry table (they once piled up in a few slots, a probe walked thousands of entries): the rows are
+-- the same as the normal plan's, and the node is the aggregate scan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE ev (id int PRIMARY KEY, kind text, bucket text, sub text, day date, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, 'k' || (abs(hashint4(i)) % 40), 'b' || (abs(hashint4(i + 1000000)) % 60), 's' || (abs(hashint4(i + 2000000)) % 50), date '2024-01-01' + i % 700, (i % 1000) / 10.0
+FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (kind, bucket, sub, day, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE maps (kind text, bucket text, sub text, label text) WITH (autovacuum_enabled = false);
+INSERT INTO maps
+SELECT 'k' || k, 'b' || b, 's' || s, 'L' || ((k + b + s) % 25)
+FROM generate_series(0, 39) k, generate_series(0, 59) b, generate_series(0, 49) s
+WHERE (k * 7 + b * 3 + s) % 5 <> 0;
+CREATE INDEX maps_idx ON maps (kind, bucket, sub);
+VACUUM (FREEZE, ANALYZE) maps;
+SELECT count(DISTINCT (kind, bucket, sub)) > 40000 AS many_combinations FROM ev;
+ many_combinations 
+-------------------
+ t
+(1 row)
+
+\set q 'SELECT coalesce(m.label, ''none'') AS label, count(*) AS n, sum(ev.amount) AS total FROM ev LEFT JOIN maps m ON m.kind = ev.kind AND m.bucket = ev.bucket AND m.sub = ev.sub WHERE ev.day >= date ''2024-03-01'' GROUP BY 1'
+EXPLAIN (COSTS OFF) :q;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: ev_col
+   Filters: day >= '03-01-2024'::date
+   Group Keys: kind, bucket, sub: COALESCE(m.label, 'none'::text)
+   Pushed Aggregates: count(*), sum(ev.amount)
+   Lookup Joins: maps (left)
+(6 rows)
+
+CREATE TEMP TABLE r_on AS :q;
+SET sift.enable_agg = off;
+CREATE TEMP TABLE r_off AS :q;
+RESET sift.enable_agg;
+SELECT count(*) AS labels, (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d) AS differences FROM r_on;
+ labels | differences 
+--------+-------------
+     26 |           0
+(1 row)
+
+SELECT label, n FROM r_on WHERE label IN ('none', 'L0', 'L24') ORDER BY label;
+ label |   n   
+-------+-------
+ L0    |  1715
+ L24   |  1779
+ none  | 11080
+(3 rows)
+
+DROP TABLE ev, maps;
+DROP EXTENSION pg_sift;
