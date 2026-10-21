@@ -25,7 +25,7 @@ no vector files (the dispatchers are `__x86_64__`-guarded); nothing was linked o
 PostgreSQL-bound, and staying so: the page/buffer store behind `core/store.h` (PG: `core/store.c`, buffer manager, generic WAL; SQLite
 already implements the same interface in `sqlite/store.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
 `col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
-(`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
+(`col/am.c`, `col/build.c`, `col/maint.c`, `col/verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
 (`agg/*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
 interface: the segment's liveness bits and an atomically published manifest give a single-writer host a snapshot by
 construction (how the BM25 SQLite host already works).

@@ -9,8 +9,8 @@
  * long merge stalls nobody. sift.verify() holds it in ShareLock, which keeps the steps out; VACUUM,
  * the orphan sweep and the SQL functions hold it exclusive: nothing else is then at work on the index.
  * A claimed segment can only be changed by its holder. Readers are safe through the store's
- * Promotion and merge steps are in step.c; the orphan sweep, truncation and the space step in space.c.
- * safexid protocol (core/store.h P4).
+ * safexid protocol (core/store.h P4). Promotion and merge steps are in step.c; the orphan sweep,
+ * truncation and the space step in space.c.
  */
 #include "postgres.h"
 

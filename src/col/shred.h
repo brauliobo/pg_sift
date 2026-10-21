@@ -181,7 +181,7 @@ typedef struct SiftShred
 	int			nframes;
 	int			maxframes;
 	bool		root_done;
-	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, sift_shred_recheck.h): no LENGTH overflow */
+	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, col/shred_recheck.c): no LENGTH overflow */
 	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 } SiftShred;
 
