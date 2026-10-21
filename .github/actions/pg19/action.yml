@@ -1,0 +1,68 @@
+name: PostgreSQL 19
+description: >
+  The PostgreSQL 19 server (scripts/pg19-build.sh) in ~/pg19, from the cache of the newest commit of the branch. With exact set, the commit
+  that is the head of the branch now (the nightly run and the pre-warm workflow); otherwise any build of the same recipe is good enough, so
+  that a pull request never waits for a build and PostgreSQL 19 is at most as old as the last pre-warm run.
+
+inputs:
+  ref:
+    description: The branch of the git tree
+    default: REL_19_STABLE
+  exact:
+    description: Build the head of the branch when the cache has no build of that very commit
+    default: 'false'
+
+outputs:
+  commit:
+    description: The commit the server in ~/pg19 was built from
+    value: ${{ steps.commit.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    # the full ref: a bare name can match several refs, and two lines would break GITHUB_OUTPUT
+    - id: head
+      shell: bash
+      run: echo "sha=$(git ls-remote --exit-code https://github.com/postgres/postgres.git "refs/heads/${{ inputs.ref }}" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+    # a build of the same recipe (the hash of the script) of an older commit is the fallback: the newest one the cache has
+    - id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/pg19
+        key: pg19-${{ runner.os }}-${{ hashFiles('scripts/pg19-build.sh') }}-${{ steps.head.outputs.sha }}
+        restore-keys: pg19-${{ runner.os }}-${{ hashFiles('scripts/pg19-build.sh') }}-
+
+    - id: build
+      if: ${{ steps.cache.outputs.cache-matched-key == '' || (inputs.exact == 'true' && steps.cache.outputs.cache-hit != 'true') }}
+      shell: bash
+      run: echo "needed=true" >> "$GITHUB_OUTPUT"
+
+    # the objects of the last build: a new commit of the branch recompiles the few files it touched
+    - id: ccache
+      if: ${{ steps.build.outputs.needed == 'true' }}
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ccache
+        key: ccache-pg19-${{ runner.os }}-${{ steps.head.outputs.sha }}
+        restore-keys: ccache-pg19-${{ runner.os }}-
+
+    - if: ${{ steps.build.outputs.needed == 'true' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl libicu-dev ccache
+        export CCACHE_DIR="$HOME/.cache/ccache"
+        ccache --max-size=200M
+        scripts/pg19-build.sh "$HOME/pg19" "${{ steps.head.outputs.sha }}"
+        ccache --show-stats
+
+    - if: ${{ steps.build.outputs.needed == 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: ~/pg19
+        key: pg19-${{ runner.os }}-${{ hashFiles('scripts/pg19-build.sh') }}-${{ steps.head.outputs.sha }}
+
+    - id: commit
+      shell: bash
+      run: echo "commit=$(cat ~/pg19/.commit)" | tee -a "$GITHUB_OUTPUT"
