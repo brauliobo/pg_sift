@@ -69,6 +69,8 @@
  * one to three keys and aggregates), and the elements per row of an array whose statistics are missing.
  */
 #define AGG_SCAN_LEAF		0.7		/* a leaf read (decode, null flags) */
+#define AGG_SPARSE_MAX		0.125	/* the share of the rows a unit keeps up to which its leaves are decoded at the kept rows only */
+#define AGG_SPARSE_LEAF		1.5		/* a leaf read at the kept rows costs this many times the share of the rows it reads (the positions are gathered) */
 #define AGG_FILTER_VALUE	0.5		/* a predicate on a value */
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
@@ -824,15 +826,34 @@ recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	return Max(k->rows * flagged * AGG_RECHECK_FRAC, k->units * flagged) * AGG_RECHECK_ROW;
 }
 
+/* is the leaf one the source tests on its stored values (a comparison, IN list or null test of the query's WHERE): decoded for every row of a unit */
+static bool
+leaf_filtered(const SiftAggSpec *s, int leaf)
+{
+	for (int i = 0; i < s->npred; i++)
+		if ((s->pred[i]->kind == SAP_CMP || s->pred[i]->kind == SAP_IN || s->pred[i]->kind == SAP_NULL || s->pred[i]->kind == SAP_AND) &&
+			pred_uses_leaf(s->pred[i], leaf))
+			return true;
+	return false;
+}
+
 /* The rows read and tested, the zones kept and the units opened */
 static void
 cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
 	int			nkeyfilters;
+	double		sparse;
 
-	for (int i = 0; i < s->nleaves; i++)
-		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	k->zone_kept = zone_kept(c, s, &nkeyfilters);
+	/*
+	 * A unit that few rows pass the filters is read at those rows only (docs/COL-SEARCH.md: a unit with a kept row in eight or fewer is
+	 * compacted, its leaves decoded for the kept rows): the leaves the filters test are read whole, the others for the share that passes.
+	 */
+	sparse = Min(k->sel_rows / (k->rows * Max(k->zone_kept, 1.0 / k->units)), 1.0);
+	sparse = sparse <= AGG_SPARSE_MAX ? Min(sparse * AGG_SPARSE_LEAF, 1.0) : 1.0;
+	for (int i = 0; i < s->nleaves; i++)
+		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
+			(leaf_filtered(s, s->leaves[i]) ? 1.0 : sparse);
 	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
