@@ -226,6 +226,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
 			st->min[i] = (double) ls[i].min;
 			st->max[i] = (double) ls[i].max;
+			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / ((double) ls[i].max - (double) ls[i].min + 1.0), 1.0);
 		}
 	}
 }
@@ -316,14 +317,13 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
-	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
+	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none */
 	for (int k = 0; k < nprune; k++)
 	{
 		vals[2 * k].v.i = prune[k].lo;
 		vals[2 * k + 1].v.i = prune[k].hi;
 		preds[2 * k] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_GE, 1, &vals[2 * k]};
 		preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_LE, 1, &vals[2 * k + 1]};
-	}
 		if (prune[k].nvals > 0)
 		{
 			SiftColValue *set = MemoryContextAllocZero(src->cxt, prune[k].nvals * sizeof(SiftColValue));
@@ -332,6 +332,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 				set[i].v.i = prune[k].vals[i];
 			preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_IN, prune[k].nvals, set};
 		}
+	}
 	for (int i = 0; i < src->nspred; i++)
 		preds[2 * nprune + i] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)

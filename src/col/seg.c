@@ -395,6 +395,8 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		{
 			acc->min = Min(acc->min, z->min[u]);
 			acc->max = Max(acc->max, z->max[u]);
+			acc->span += (double) z->max[u] - (double) z->min[u] + 1.0;
+			acc->nzone++;
 		}
 		else if (def->store != SIFT_COLS_INT)
 			acc->has_range = false;
@@ -594,8 +596,6 @@ sift_cseg_preagg_units(SiftColSegment *seg)
 	return n;
 }
 
-void
-sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 /* does the sorted set hold a key in [lo, hi]? */
 static bool
 set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
@@ -615,6 +615,8 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
 	return a < n && set[a] <= hi;
 }
 
+void
+sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 {
 	const ZoneArrays *z = zone_arrays(seg, col);
 	uint32		n = seg->nsb,
@@ -636,12 +638,12 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
 		case SIFT_CT_RANGE:
 			sift_colk->zone_range(z->min, z->max, n, t->lo, t->hi, tmp);
 			sift_colk->bits_and(keep, tmp, nw);
-			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
-			if (t->fold_valid && z->set)
 			if (t->kind == SIFT_CT_SET)
 				for (uint32 u = 0; u < n; u++)
 					if ((keep[u / 64] >> (u % 64) & 1) && z->nnull[u] < z->nvals[u] && !set_meets(t->set, t->nset, z->min[u], z->max[u]))
 						keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
+			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
+			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set, n, t->fold, keep);
 			break;
 		case SIFT_CT_LUT:
