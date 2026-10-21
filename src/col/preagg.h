@@ -223,7 +223,6 @@ extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint
 /* The rollup of the list group in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
 extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, int group, uint32 *len);
 /* The dim with this leaf, NULL if the unit has none (the cap, the budget, an overflow) */
-extern const SiftCHistDim *sift_cpagg_find(const SiftCHist *h, int leaf);
 /* The measure slot of leaf m in the dim, -1 if it is not stored */
 extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 

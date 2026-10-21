@@ -16,6 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "../../src/bm25/bitmap.h"
+#include "../../src/core/cmp.h"
 
 #define PAD 64
 #define MAXN 20000
@@ -37,8 +38,6 @@ static void on_alarm(int sig)
 	_exit(3);
 }
 
-static int cmp64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return (x > y) - (x < y); }
-
 static uint32_t gen_set(sift_tid *t, uint8_t *tf)
 {
 	static const uint32_t offs[] = { 1, 7, 8, 9, 17, 33, 65, 100, 255, 257, 291, 450, 512 };
@@ -48,7 +47,7 @@ static uint32_t gen_set(sift_tid *t, uint8_t *tf)
 		uint64_t blk = base + rndn(span);
 		t[i] = SIFT_TID(blk > 0xffffffffull ? 0xffffffffull : blk, 1 + rndn(maxoff));
 	}
-	qsort(t, n, 8, cmp64);
+	qsort(t, n, 8, sift_cmp_u64);
 	uint32_t k = 0;
 	for (uint32_t i = 0; i < n; i++)
 		if (!k || t[i] != t[k - 1]) t[k++] = t[i];

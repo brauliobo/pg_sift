@@ -26,14 +26,6 @@
 #include "core/visibility.h"
 #include "col/scan_int.h"
 
-/* Sets bits [lo, hi) */
-static void
-set_range(uint64 *bits, uint32 lo, uint32 hi)
-{
-	for (uint32 i = lo; i < hi; i++)
-		sift_col_bit_set(bits, i);
-}
-
 static bool
 range_any(const uint64 *bits, uint32 lo, uint32 hi)
 {
@@ -288,26 +280,6 @@ sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftC
 			sift_col_bit_clear(sel->bits, r);
 	});
 	return sift_col_sel_count(sel) > 0;
-}
-
-uint32
-sift_col_filter_elems(const SiftColUnit *unit, const SiftColGroupPred *gp, const SiftColSel *rowsel, SiftColSel *elemsel)
-{
-	ColUnit    *cu = unit->priv;
-	ColGroup   *g = unit_group(cu, gp->group);
-	uint64	   *unknown;
-
-	group_elems_sel(cu, gp, elemsel, &unknown);
-	sift_colk->bits_or(elemsel->bits, unknown, elemsel->nwords);
-	if (rowsel != NULL)
-	{
-		SiftColSel	mask;
-
-		sift_col_sel_alloc(cu->src, g->nelems, &mask);
-		FOREACH_BIT(rowsel->bits, (rowsel->n + 63) / 64, r, { set_range(mask.bits, g->eoff[r], g->eoff[r + 1]); });
-		sift_colk->bits_and(elemsel->bits, mask.bits, elemsel->nwords);
-	}
-	return sift_col_sel_count(elemsel);
 }
 
 /* The pages of a unit in order: the heap page (in the superblock) of page index 0, 1, 2, ... (sift_cunit_page_block finds one by scanning the mask) */
