@@ -190,7 +190,7 @@ table of section 4 already makes cheap to fill. It was not attempted here.
 
 The other way to answer "events of the entities of a country" is to have the country in the event row: `country_id` becomes a column of the fact table's `sift_col` index and the filter is `country_id = 7`, an
 ordinary comparison with zone pruning. `bench/sets/denorm.sql` builds the two copies measured here, `events_dn_u` (insertion order) and `events_dn` (stored in `(country_id, event_date, id)` order, a `CREATE TABLE ... AS SELECT ... ORDER BY`),
-with `sift_col` indexes over `(dim_a_id, channel_id, lang_id, tone_code, event_date, score, deleted_at, country_id, category_id)` (23 MB and 16 MB, against 19 MB for the table without the two columns).
+with `sift_col` indexes over `(dim_a_id, channel_id, lang_id, signal, event_date, score, deleted_at, country_id, category_id)` (23 MB and 16 MB, against 19 MB for the table without the two columns).
 
 | query (3M events) | normal plan | semi join to `entities` (section 3) | `country_id = 7`, insertion order | `country_id = 7`, clustered |
 |---|---|---|---|---|
