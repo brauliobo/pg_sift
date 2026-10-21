@@ -42,6 +42,7 @@ TMP=${SIFT_TMP:-/tmp/sift-arch}
 PORT=${SIFT_PORT:-56100}
 DB=${SIFT_DB:-sift}
 ROOT=${SIFT_ROOT:-$TMP/root}
+export SIFT_ROOT=$ROOT
 DATA=$TMP/data
 SOCK=$TMP/sock
 SANDIR=$TMP/sanitizer

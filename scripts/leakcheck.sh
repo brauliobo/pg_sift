@@ -21,8 +21,12 @@
 # SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/leak_test.c). Exit 1 on a finding.
 #
 # LEAK_PROC_MB (32): growth of a long-lived server process; LEAK_GROWTH_MB (8), LEAK_GROWTH_R2 (0.8): growth of a sampled
-# backend over the post-warmup samples that fails the soak (plus LEAK_QUARANTINE_MB on an ASan server).
+# backend over the post-warmup samples that fails the soak (both plus LEAK_QUARANTINE_MB on an ASan server).
 LEAK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# leak_quarantine_mb: what an ASan server holds in its quarantine of freed memory (the ASan default, 256 MB) before it is a leak: a checkpointer
+# that unlinks files all day grows by it, a few hundred kB for each checkpoint, then stays
+leak_quarantine_mb() { echo "${LEAK_QUARANTINE_MB:-$([[ $(cat "${SIFT_ROOT:-/nonexistent}/.flavor" 2>/dev/null) == asan* ]] && echo 256 || echo 0)}"; }
 
 # regex <TAB> a sample log line it must match: one row per kind of leak. The selftest feeds every sample to the scanner.
 LEAK_RULES=(
@@ -126,7 +130,7 @@ leak_finding() { echo "leaked server state: $*" | tee -a "${SIFT_TMP:-/tmp/sift-
 
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
 leak_cluster() {
-	local data=$1 bad=0 line pid start kb name now
+	local data=$1 bad=0 line pid start kb name now max=$(( ${LEAK_PROC_MB:-32} + $(leak_quarantine_mb) ))
 	while read -r line; do leak_finding "$line"; bad=1; done < <(leak_psql <<-'SQL' 2>&1 || echo "cannot query the cluster"
 		SELECT format('session %s %s holds %s on %s', a.pid, a.state, l.mode, coalesce(l.relation::regclass::text, l.locktype))
 		FROM pg_stat_activity a JOIN pg_locks l USING (pid)
@@ -140,7 +144,7 @@ leak_cluster() {
 	while read -r pid start kb name; do
 		[[ -r /proc/$pid/stat && $(cut -d' ' -f22 "/proc/$pid/stat") == "$start" ]] || continue
 		now=$(leak_anon_kb "$pid")
-		(( now - kb <= ${LEAK_PROC_MB:-32} * 1024 )) || { leak_finding "$name (pid $pid) grew $(( (now - kb) / 1024 )) MB since the start"; bad=1; }
+		(( now - kb <= max * 1024 )) || { leak_finding "$name (pid $pid) grew $(( (now - kb) / 1024 )) MB since the start"; bad=1; }
 	done <"$data/leakcheck.baseline" 2>/dev/null
 	return $bad
 }
@@ -178,7 +182,7 @@ leak_watch_stop() {
 # that grows by LEAK_GROWTH_MB or more over that window along a straight line (R2 >= LEAK_GROWTH_R2) is leaking. An ASan
 # server first fills its quarantine of freed memory (LEAK_QUARANTINE_MB, 256, the ASan default), which is no leak either.
 leak_growth() {
-	local slack=${LEAK_QUARANTINE_MB:-$([[ $(cat "${SIFT_ROOT:-/nonexistent}/.flavor" 2>/dev/null) == asan* ]] && echo 256 || echo 0)}
+	local slack=$(leak_quarantine_mb)
 	sort -k2,2n -k1,1n "$1" | awk -v mb="$(( ${LEAK_GROWTH_MB:-8} + slack ))" -v r2min="${LEAK_GROWTH_R2:-0.8}" '
 		{ n[$2]++; t[$2, n[$2]] = $1; v[$2, n[$2]] = $3 }
 		END {
