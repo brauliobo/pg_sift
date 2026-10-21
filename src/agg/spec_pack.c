@@ -327,7 +327,10 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->npost);
 	put_int(p, s->nprepost);
 	for (int i = 0; i < s->npost; i++)
+	{
 		put_pred(p, s->post[i]);
+		put_int(p, s->postsets ? (int) s->postsets[i] : 0);
+	}
 	put_int(p, s->nvleaf);
 	for (int i = 0; i < s->nvleaf; i++)
 	{
@@ -678,8 +681,12 @@ sift_aggspec_unpack(const List *items)
 	s->npost = get_int(u);
 	s->nprepost = get_int(u);
 	s->post = palloc(Max(s->npost, 1) * sizeof(SiftAggPred *));
+	s->postsets = palloc0(Max(s->npost, 1) * sizeof(uint32));
 	for (int i = 0; i < s->npost; i++)
+	{
 		s->post[i] = get_pred(u);
+		s->postsets[i] = (uint32) get_int(u);
+	}
 	s->nvleaf = get_int(u);
 	for (int i = 0; i < s->nvleaf; i++)
 	{
