@@ -404,7 +404,7 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  10 | same
  11 | same
  12 | same
- 13 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22P02
+ 13 | not pushed
  14 | same
  15 | same
  16 | same
