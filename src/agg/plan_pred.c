@@ -521,6 +521,48 @@ compile_bool(AggCtx *c, BoolExpr *b)
 	return p;
 }
 
+/* is the predicate false (not true) for a tuple of NULL leaves, the one an absent input contributes? */
+static bool
+false_on_absent(SiftAggPred *p)
+{
+	switch (p->kind)
+	{
+		case SAP_FALSE:
+		case SAP_CMP:
+		case SAP_IN:
+		case SAP_NCMP:
+			return true;
+		case SAP_NULL:
+			return p->op == 1;
+		case SAP_ANY_ELEM:
+			return p->op == 0;
+		case SAP_AND:
+			for (int i = 0; i < p->nchild; i++)
+				if (false_on_absent(p->child[i]))
+					return true;
+			return false;
+		case SAP_OR:
+			for (int i = 0; i < p->nchild; i++)
+				if (!false_on_absent(p->child[i]))
+					return false;
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
+ * `CASE WHEN <input absent> THEN NULL ELSE x END` keeps the rows x does when x is not true for an absent input: its NULL leaves give
+ * the NULL of the CASE, so the guard changes no row (under NOT it would, and compile_bool does not come here).
+ */
+static SiftAggPred *
+compile_guarded(AggCtx *c, Node *arm)
+{
+	SiftAggPred *p = compile_pred(c, arm);
+
+	return p != NULL && false_on_absent(p) ? p : NULL;
+}
+
 /* a condition that reads no column and nothing the query changes (stable functions, parameters): PostgreSQL's one-time filter */
 static bool
 is_gate(Node *n)
@@ -552,6 +594,8 @@ compile_pred(AggCtx *c, Node *n)
 	}
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
+	if (null_guarded_arm(n) != NULL)
+		return compile_guarded(c, null_guarded_arm(n));
 	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
 	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_TRUE)
 		return compile_pred(c, (Node *) ((BooleanTest *) n)->arg);
