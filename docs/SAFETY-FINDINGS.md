@@ -76,14 +76,14 @@ host compiler (clang 23, gcc 16), where neither finding appears.
   container, `bm25` target, the seed corpus alone); fixed: `ls_seek` indexes the window with `i - bi` and keeps the pointer inside the
   array. The input is `test/fuzz/regress/bm25-list-window` (it trips clang 14 only; 90 s of `bm25` under clang 14 are clean since).
 - **AVX-512 `range_u32` returns set bits for values outside the range under gcc 12 -O1 with UBSan `pointer-overflow`**
-  (theory: a toolchain problem, not proven). The `colchunk` target reports `FINDING: mode 0: SIMD level 2 decodes differently from
-  scalar`; the input is `docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin` (26909 bytes, sha1 26292c50...). Replay, in the
+  (a gcc 12 miscompile, see below). The `colchunk` target reports `FINDING: mode 0: SIMD level 2 decodes differently from
+  scalar`; the input is `test/fuzz/regress/colchunk-gcc12-pointer-overflow` (26909 bytes, sha1 26292c50..., moved from docs/safety). Replay, in the
   container with `build-essential postgresql-server-dev-17 liblz4-dev libzstd-dev`:
 
       make -s -C test/fuzz OUT=/tmp/o /tmp/o/colchunk
-      /tmp/o/colchunk docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin      # FINDING (gcc 12.2, the sanitizers of test/fuzz/Makefile at -O1)
+      /tmp/o/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # FINDING (gcc 12.2, the sanitizers of test/fuzz/Makefile at -O1)
       make -s -C test/fuzz OUT=/tmp/p "SAN=-fsanitize=address,undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" /tmp/p/colchunk
-      /tmp/p/colchunk docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin      # clean
+      /tmp/p/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # clean
 
   What was seen (on the first artifact of this kind, `FZ_TRACE=1` and prints in `nd_filter`): decode and `decode_off32` agree at every
   level, the `filter` step differs; the column is a DELTA node (n = 5000, W = 19, off32), filtered by decoding to a `uint32` array
@@ -93,10 +93,14 @@ host compiler (clang 23, gcc 16), where neither finding appears.
   sanitizers, with ASan alone, or with `-fno-sanitize=pointer-overflow`. A 20-line copy of the masked-load pattern
   (`_mm512_maskz_loadu_epi32` + `_mm512_mask_cmple_epu32_mask` in the `BITS512` shape) did not reproduce it. The installcheck SIMD tests
   (`col_kernels_simd`, `col_enc`) pass in that container. The host compiler replays this file clean (clang 23 libFuzzer with ASan and
-  UBSan, -O1; ran by hand: the gate's `fuzz` job does not replay it, the file is not in `test/fuzz/regress`). Open at 3.0.2 (planned for 3.0.1, not done): run
-  the replay under valgrind and MSan on the masked-load path of `range32v` / `BITS512` (an over-read of the array tail, or an uninitialised
-  lane), decide whether it is a gcc 12 miscompile (then `-fno-sanitize=pointer-overflow` for gcc < 13 in test/fuzz/Makefile) or a
-  kernel bug, and move the file to `test/fuzz/regress/colchunk-*` so the fuzz job replays it first.
+  UBSan, -O1). Reproduced on an AVX-512 hosted runner (AMD EPYC 9V45, gcc 12.2.0 of `postgres:17-bookworm`): the recorded build aborts with
+  the FINDING above, the build without `pointer-overflow` is clean. Cause, from the disassembly of `range_u32_avx512` in that build: gcc 12 spills
+  the 16 bit mask of the first `range32v` with `kmovw %k2,0x80(%rsp)` and reloads it with `mov 0x80(%rsp),%rcx`, so the upper 48 bits of
+  the result word are whatever the stack slot held (the calls with a different answer, the bits that "are not in its arguments"). The
+  C is right (the mask is returned as `uint64`, which is a zero extension); this is a gcc 12 code generation bug at -O1 with the
+  instrumentation of `pointer-overflow` adding calls between the lanes. **Refuted as a kernel defect; fixed in the harness**:
+  test/fuzz/Makefile adds `-fno-sanitize=pointer-overflow` for gcc < 13. The production build (-O2) is not affected (the SIMD installcheck
+  tests pass in that container). The input is now in `test/fuzz/regress`, so the fuzz job and `make -C test/fuzz regress` replay it first.
 
 ## Other tools
 

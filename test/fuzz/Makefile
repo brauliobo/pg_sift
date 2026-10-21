@@ -34,6 +34,11 @@ endif
 # not instrumented), valgrind needs SAN='-fno-omit-frame-pointer' DSAN= COV= FZ_DRIVER=1 (docs/SAFETY.md)
 SAN     ?= -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer
 DSAN    ?= -fsanitize=address,undefined
+# gcc before 13 miscompiles the AVX-512 kernels at -O1 under pointer-overflow: it spills a 16 bit mask with kmovw and reloads 64 bits (docs/SAFETY-FINDINGS.md)
+ifneq ($(shell printf '\043if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 13\nyes\n\043endif\n' | $(CC) -E -x c - 2>/dev/null | grep -x yes),)
+SAN     += -fno-sanitize=pointer-overflow
+DSAN    += -fno-sanitize=pointer-overflow
+endif
 DEFS    ?= -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
 COLZ    ?= -lzstd -llz4
 CFLAGS  += -std=gnu11 -O1 -g $(SAN) -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
