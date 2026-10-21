@@ -5,7 +5,7 @@
 #
 #   scripts/valgrind.sh [--major 17|18] [TEST...]       (SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
 #
-# Memcheck is 20 to 50 times slower, so the default tests are a representative few: BM25 store, column index, table AM and the shredder
+# Memcheck is 20 to 50 times slower, so the default tests are the memory-sensitive paths (list below; SIFT_VALGRIND_FULL=1 adds the slow ones)
 # (`col_enc` alone takes over 30 minutes: name it to run it). The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
 # backend run under valgrind with --error-exitcode=99 (a backend with an error exits 99 and the postmaster restarts: the test fails) and
 # the logs ($WORK/vg/PID.log) are scanned for error markers, so that an error in a process that did not affect a test still fails the lane.
@@ -29,7 +29,15 @@ PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || read -ra TESTS <<<"${SIFT_VALGRIND_TESTS:-}"
-(( ${#TESTS[@]} )) || TESTS=(store_basic col_index_basic tbl_basic shred_values)
+# the default list is the memory-sensitive paths that are cheap under memcheck (seconds measured in CI): store 33, table AM 9, shredder 154,
+# the relcache pointer of the column index 34 + 11, dictionary and lookup caches 16 + 21 + 32 + 116, write buffer 66 + 12, parallel build 58,
+# aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
+# agg_bucket 188, agg_dense 114. col_index_dict_tests is in neither: under memcheck a background flush splits one more segment and its counters differ.
+if (( ! ${#TESTS[@]} )); then
+	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
+		agg_lookup_cache col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
+	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel agg_bucket agg_dense)
+fi
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
 
