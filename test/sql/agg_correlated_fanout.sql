@@ -4,11 +4,11 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE entities (id int PRIMARY KEY, labels text[], region text);
 INSERT INTO entities SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN ARRAY[]::text[] WHEN 2 THEN ARRAY['one', 'one', 'two'] WHEN 3 THEN ARRAY['two', NULL] ELSE ARRAY['three'] END,
  CASE WHEN i % 4 = 0 THEN 'north' ELSE 'south' END FROM generate_series(0, 49) i;
-CREATE TABLE facts (id int, entity_id int, amount float8, metrics jsonb, payload text);
+CREATE TABLE facts (id int, entity_id int, amount float8, metrics jsonb, code text, payload text);
 INSERT INTO facts
-SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('overall', i % 10), repeat('payload', 50)
+SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('overall', i % 10), CASE WHEN i % 101 = 0 THEN 'none' ELSE (i % 10)::text END, repeat('payload', 50)
 FROM generate_series(1, 60000) i;
-CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, amount, metrics) WITH (paths = 'metrics.* float8');
+CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE entities;
 -- pushed: the plan PostgreSQL costs cheapest; eligible: the plan when its own table scans are off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
@@ -59,7 +59,22 @@ SELECT * FROM check_query($q$
  SELECT e.region, label, count(*) AS n FROM facts f JOIN entities e ON e.id = f.entity_id
  CROSS JOIN LATERAL unnest(e.labels) label GROUP BY e.region, label
 $q$);
--- Stays native: the fan-out casts a joined JSON value, which can raise, so it is not computed ahead of the rows that need it.
+-- Stays native: the fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out), so it
+-- is not computed for the rows that PostgreSQL's plan has not joined yet.
+SELECT * FROM check_query($q$
+ SELECT c.category, count(*) AS n
+ FROM facts f JOIN entities e ON e.id = f.entity_id
+ JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN f.code::int > 6 THEN 'high' ELSE 'low' END) c ON true
+ GROUP BY 1
+$q$);
+-- The same fan-out on a comparison of the text, which cannot raise, is joined by the scan.
+SELECT * FROM check_query($q$
+ SELECT c.category, count(*) AS n
+ FROM facts f JOIN entities e ON e.id = f.entity_id
+ JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN f.code > '6' THEN 'high' ELSE 'low' END) c ON true
+ GROUP BY 1
+$q$);
+-- Stays native: the fan-out reads a column of jsonb_each, which the index does not hold.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
