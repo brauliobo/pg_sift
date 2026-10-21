@@ -42,7 +42,7 @@ key columns adds one conjunct per integer key. `EXPLAIN ANALYZE` shows `Join Key
 is evaluated on the rows whose key the table holds, which is what a plan that joins before it filters does). `LEFT`, `RIGHT`, `FULL` and anti joins, text keys,
 element-level leaves, a plan with a preserved side and a top-N scan have no such conjunct. Test `agg_join_filter`, isolation spec `agg_join_filter`, fixtures `j_join_filter_*`, row J28.
 
-A combo of one input (a join key, a grouping expression of one leaf) finds the entry of an id below 4 million by array index; a larger or negative id, and combos of several inputs, use the hash table.
+A combo of one input (a join key, a grouping expression of one leaf) finds the entry of an id below 65,536 by array index; a larger or negative id, and combos of several inputs, use the hash table.
 
 `UNION ALL` arms (or a CTE read several times) of one statement that join the same table with the same key and output columns and the same conditions on it read the same rows in the
 same snapshot: the first node loads them into a context of the statement and the others use that table (`sift.agg_share_lookups`, `Shared Lookup Tables`). Arms that read other columns
