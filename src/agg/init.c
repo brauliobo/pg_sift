@@ -338,10 +338,17 @@ prune_init(AggExec *ex)
 			continue;
 		if (p->kind == SAP_IN)
 		{
+			/* no value in the set: a unit's zone holds none */
 			if (st->in_nv == 0)
-				continue;
-			lo = st->in_lo;
-			hi = st->in_hi;
+			{
+				lo = PG_INT64_MAX;
+				hi = PG_INT64_MIN;
+			}
+			else
+			{
+				lo = st->in_lo;
+				hi = st->in_hi;
+			}
 		}
 		else
 		{
@@ -725,8 +732,46 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	return lf->kind == SCL_SCALAR && lf->parent < 0 && (lf->vtype == SCV_I32 || lf->typid == INT8OID);
 }
 
+/*
+ * The rows of the table of combo ci that make a tuple: a later inner or semi join keyed by columns of the row alone (`JOIN ids ON ids.id =
+ * p.id` after `JOIN p ON p.id = f.p_id`) drops the rows it has no match for, so the keys of the others are all that can pass. NULL: every row.
+ */
+static bool *
+join_live_rows(AggExec *ex, int ci, MemoryContext caller)
+{
+	const MapTab *m = ex->cs[ci].map;
+	bool	   *live = NULL;
+
+	for (int cd = 0; cd < ex->spec->ncombo; cd++)
+	{
+		if (!combo_prior_keyed(ex, cd, ci))
+			continue;
+		if (ex->cs[cd].map == NULL)
+		{
+			/* a child plan runs in the context the scan was started in */
+			MemoryContext old = MemoryContextSwitchTo(caller);
+
+			ex->cs[cd].map = map_load(ex, cd);
+			MemoryContextSwitchTo(old);
+		}
+		if (live == NULL)
+		{
+			live = palloc(Max(m->nrow, 1) * sizeof(bool));
+			memset(live, true, m->nrow);
+		}
+		for (uint32 r = 0; r < m->nrow; r++)
+		{
+			live[r] = live[r] && combo_prior_matches(ex, cd, ci, r);
+			if ((r & 1023) == 1023)
+				ResetExprContext(ex->lutcx);
+		}
+		ResetExprContext(ex->lutcx);
+	}
+	return live;
+}
+
 static SiftAggPred *
-join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id)
+join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -742,8 +787,8 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id)
 	{
 		int64		v = m->kint[(size_t) r * m->nkey + k];
 
-		if (ex->lay->leaf[leaf].vtype == SCV_I32 && (v < PG_INT32_MIN || v > PG_INT32_MAX))
-			continue;				/* no int4 value equals it */
+		if ((live && !live[r]) || (ex->lay->leaf[leaf].vtype == SCV_I32 && (v < PG_INT32_MIN || v > PG_INT32_MAX)))
+			continue;				/* no int4 value equals it, or no tuple of the row survives the joins after it */
 		vals[nv++] = v;
 		lo = Min(lo, v);
 		hi = Max(hi, v);
@@ -769,9 +814,6 @@ join_filters(AggExec *ex, MemoryContext caller)
 	List	   *add = NIL;
 	int			total = s->npreds_total;
 
-	for (int j = 0; j < s->njoin; j++)
-		if (sift_aggjoin_preserves(s->join[j].kind))
-			goto done;
 	if (!sift_agg_join_filter || s->topn)
 		goto done;
 	for (int ci = 0; ci < s->ncombo; ci++)
@@ -785,6 +827,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 		for (int k = 0; k < j->nkey; k++)
 		{
 			SiftAggPred *p;
+			bool	   *live;
 
 			if (!join_filter_leaf(ex, ci, k, &leaf))
 				continue;
@@ -800,12 +843,15 @@ join_filters(AggExec *ex, MemoryContext caller)
 			/* the table of the predicate is the state of the id it is given: make room first */
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
 			memset(&ex->ps[total], 0, sizeof(PredState));
-			if ((p = join_filter_pred(ex, ci, k, leaf, total)) != NULL)
+			live = join_live_rows(ex, ci, caller);
+			if ((p = join_filter_pred(ex, ci, k, leaf, total, live)) != NULL)
 			{
 				add = lappend(add, p);
 				total++;
 				ex->cs[ci].kfilt = j->nkey == 1 && (ex->cs[ci].map->filtered || j->fslot < 0);
 			}
+			if (live)
+				pfree(live);
 		}
 	}
 	if (add != NIL)
