@@ -52,7 +52,7 @@ endif
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
 TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_% tbl_cap tbl_vblocks tbl_bigtx tbl_writepath col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds
-TESTING_REGRESS += col_preagg_elem agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh
+TESTING_REGRESS += col_dict_cache col_preagg_elem agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql

@@ -7,6 +7,7 @@
 
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
+#include "col/seg_int.h"
 
 /* ---------- docmap directories (bm25/docdir.c): not kept between queries ---------- */
 
@@ -22,6 +23,14 @@ sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_
 void
 sift_docdir_ready(void *handle)
 {
+}
+
+/* ---------- parsed column dictionaries (col/dictcache.c): not kept between queries ---------- */
+
+SiftCDict *
+sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
+{
+	return load(seg, col, seg->mcxt);
 }
 
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
