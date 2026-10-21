@@ -587,6 +587,25 @@ elem_leaf(AggExec *ex)
 	return -1;
 }
 
+/*
+ * Units in a row that must cost at least a quarter more from the rollup than from the elements before the next ones are scanned without even looking
+ * at them (their exactness, their rollup), and how many are skipped before one is looked at again: the units of an index look alike, and
+ * looking costs buffer reads that a scan the cost chose anyway does not need.
+ */
+#define PA_SCAN_RUN		3
+#define PA_SCAN_RESAMPLE	16
+
+static bool
+rollup_skip(AggExec *ex)
+{
+	if (ex->pa_scan_run < PA_SCAN_RUN)
+		return false;
+	if (++ex->pa_scan_run > PA_SCAN_RUN + PA_SCAN_RESAMPLE)
+		ex->pa_scan_run = 0;
+	ex->n_rollup_cost++;
+	return true;
+}
+
 /* does the unit's rollup cost less than its elements (the unit scans when not)? Unknown sizes: the rollup */
 static bool
 rollup_cheaper(AggExec *ex)
@@ -594,10 +613,15 @@ rollup_cheaper(AggExec *ex)
 	uint32		nt = sift_colsrc_unit_rollup_tuples(ex->src, &ex->unit, ex->pa.list);
 	int			leaf = elem_leaf(ex);
 	SiftSrcUnitAgg ua;
+	double		tuples,
+				elems;
 
 	if (nt == 0 || leaf < 0 || !sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua))
 		return true;
-	return nt * ex->pa_tuple_cost * sift_agg_rollup_cost <= ua.nvals * ex->pa_elem_cost;
+	tuples = nt * ex->pa_tuple_cost * sift_agg_rollup_cost;
+	elems = ua.nvals * ex->pa_elem_cost;
+	ex->pa_scan_run = tuples >= 1.25 * elems && sift_agg_rollup_cost > 0 ? ex->pa_scan_run + 1 : 0;
+	return tuples <= elems;
 }
 
 /* the ids of key k for the kept tuples of the rollup */
@@ -762,6 +786,8 @@ preagg_rechecked(AggExec *ex)
 static bool
 preagg_unit(AggExec *ex)
 {
+	if (ex->pa.list >= 0 && rollup_skip(ex))
+		return false;
 	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_zones(ex))
 		return false;
 	if (ex->pa.list < 0)
@@ -793,6 +819,7 @@ preagg_init(AggExec *ex)
 	{
 		rollup_need(ex);
 		sift_aggspec_unit_costs(ex->spec, ex->lay, &ex->pa_elem_cost, &ex->pa_tuple_cost);
+		ex->pa_scan_run = 0;
 	}
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
