@@ -492,16 +492,27 @@ col_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
 }
 
 static bool
-col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, SiftSrcRollup *h)
+col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h)
 {
 	ColSource  *src = impl;
 	SiftCRollup r;
+	SiftCRollupNeed cn;
 	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
 
+	cn.ndims = need->ndims;
+	cn.nmeas = need->nmeas;
+	for (int j = 0; j < need->ndims; j++)
+		cn.dim[j] = need->dim[j];
+	for (int m = 0; m < need->nmeas; m++)
+	{
+		cn.meas[m].leaf = need->meas[m].leaf;
+		cn.meas[m].sums = need->meas[m].sums;
+		cn.meas[m].minmax = need->meas[m].minmax;
+	}
 	if (src->pre.pcx == NULL)
 		src->pre.pcx = AllocSetContextCreate(src->pre.cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextReset(src->pre.pcx);
-	if (!sift_col_unit_rollup(&src->unit, list, src->pre.pcx, &r, dict))
+	if (!sift_col_unit_rollup(&src->unit, list, src->pre.pcx, need->all ? NULL : &cn, &r, dict))
 		return false;
 	memset(h, 0, sizeof(*h));
 	h->ntuples = r.ntuples;

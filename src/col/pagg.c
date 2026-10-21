@@ -94,7 +94,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 }
 
 bool
-sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, SiftCRollup *r, SiftColDict *dict)
+sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
 {
 	SiftColSegment *seg;
 	uint32		u,
@@ -106,7 +106,7 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, Sift
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode(seg->schema, blob, len, mcxt, r))
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r))
 		corrupt_cube(seg, u);
 	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
 	for (int j = 0; j < r->ndims; j++)
