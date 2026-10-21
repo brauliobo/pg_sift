@@ -23,7 +23,7 @@ class SelectionTest(unittest.TestCase):
     def test_exact_owners(self):
         for path, expected in {
             'src/bm25/query.c': list(SELECT.ALL),
-            'src/col/sift_colz.c': ['smoke', 'agg', 'storage'],
+            'src/col/compress.c': ['smoke', 'agg', 'storage'],
             'src/agg/sift_agg.c': ['smoke', 'agg'],
             'src/agg/sift_aggplan.c': ['smoke', 'agg'],
             'src/table/sift_table.c': ['smoke', 'storage'],
@@ -71,7 +71,7 @@ class SelectionTest(unittest.TestCase):
             'test/expected/agg_semi_lut.out', 'test/col/fixtures/k_keys_9.sql',
             'test/isolation/specs/agg_correlated_snapshot.spec'), ['smoke', 'agg'])
         # Only the aggregate sources keep the aggregate stack to the aggregate group: the column sources feed the table readers.
-        self.assertEqual(self.selected('src/col/sift_colz.c', 'test/sql/agg_semi_lut.sql'), ['smoke', 'agg', 'storage'])
+        self.assertEqual(self.selected('src/col/compress.c', 'test/sql/agg_semi_lut.sql'), ['smoke', 'agg', 'storage'])
 
     def test_aggregate_change_still_runs_every_correctness_job_of_the_stack(self):
         # The focused gate ignores {ci}; the CI jobs of the column and table groups keep running for an aggregate change.

@@ -353,7 +353,7 @@ sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnu
 	sift_col_shred_row_rc(a, values, isnull, row, first, mcxt, NULL);
 }
 
-/* The recheck of the rows of the adapter's spec (sift_shred_pg.h): how the query reads leaf i of attribute attno, a column or a list of the shredder */
+/* The recheck of the rows of the adapter's spec (col/shred_pg.h): how the query reads leaf i of attribute attno, a column or a list of the shredder */
 SiftShredRecheck *
 sift_col_shred_recheck_create(MemoryContext mcxt, const SiftColShredAdapter *a)
 {
