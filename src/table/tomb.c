@@ -83,6 +83,8 @@ tomb_add(SiftTblRel *st, SiftTblTomb *batch, uint32 n)
 		tomb_flatten(st);
 }
 
+#define TOMB_PAGE_CAP	((SIFT_PAGE_PAYLOAD - TBL_TOMB_PAGE_INIT) / sizeof(SiftTblTomb))
+
 void
 sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 {
@@ -93,6 +95,7 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 	SiftTblTomb *batch = NULL;
 	uint32		nbatch = 0,
 				capbatch = 0;
+	BlockNumber visited = 0;
 
 	if (e == NULL)
 	{
@@ -116,6 +119,11 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, e->gen);
 		tp = TBL_TOMB_PAGE(BufferGetPage(buf));
+		if (tp->nent > TOMB_PAGE_CAP || from > tp->nent)
+			corrupt(rel, "Tombstone page %u lists %u entries, %u fit.", blk, tp->nent, (uint32) TOMB_PAGE_CAP);
+		/* appenders add pages meanwhile, so the chain is not bounded by the header's count: a chain longer than the file loops */
+		if (++visited > 4096 && visited > RelationGetNumberOfBlocks(rel))
+			corrupt(rel, "The tombstone pages form a loop.");
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
 			capbatch = Max(64, Max(capbatch * 2, nbatch + tp->nent));
