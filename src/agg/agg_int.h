@@ -765,10 +765,9 @@ typedef struct FuseSt
 
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_share_lookups;
+extern int		sift_agg_combo_cache;
 
 /* agg.c */
-uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
-void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
@@ -807,6 +806,16 @@ void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j,
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
+
+/* combo.c */
+void combo_bind_leaves(AggExec *ex, int ci, const uint64 *v);
+uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
+void combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint32 nout);
+ComboEnt combo_unmatched(AggExec *ex, int ci, const uint32 *prior);
+void combo_reset(AggExec *ex, int ci);
+void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
+void combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o);
+const uint32 *combo_outs(AggExec *ex, int ci);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
