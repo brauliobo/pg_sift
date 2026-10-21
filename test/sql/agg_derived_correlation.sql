@@ -10,13 +10,13 @@ CREATE TABLE facts (id int, entity_id int, kind text, document jsonb, payload te
 INSERT INTO facts
 SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
  jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","polarity":"positive","score":8}]'::jsonb
-   ELSE '[{"category":"svc","val":"","polarity":"positive","score":9},{"category":"clean","val":"x","polarity":"negative","score":3},{"category":"zzz","val":"","polarity":"neutral","score":null}]'::jsonb END)
+   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","sign":"positive","score":8}]'::jsonb
+   ELSE '[{"category":"svc","val":"","sign":"positive","score":9},{"category":"clean","val":"x","sign":"negative","score":3},{"category":"zzz","val":"","sign":"neutral","score":null}]'::jsonb END)
   || CASE WHEN i % 5 = 0 THEN '{"mapped":false}'::jsonb WHEN i % 11 = 0 THEN '{"mapped":null}'::jsonb ELSE '{}'::jsonb END,
  repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, kind, document, jsonb_exists(document, 'mapped'))
- WITH (paths = 'document.parts[]{category text,val text,score float8,polarity text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,sign text}');
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
 CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
 INSERT INTO odd_facts
@@ -28,7 +28,7 @@ CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, json
 -- The same table without the indexed call: the child needs the whole document, which the index does not hold.
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
- WITH (paths = 'document.parts[]{category text,val text,score float8,polarity text}');
+ WITH (paths = 'document.parts[]{category text,val text,score float8,sign text}');
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
 SELECT id, entity_id, kind,
@@ -85,12 +85,12 @@ SELECT * FROM check_query($q$
 $q$);
 -- Mapped parts per item: the presence also chooses the category in the lateral's output, and the unmapped parts drop out.
 SELECT * FROM check_query($q$
- SELECT f.id, mo.category, mo.val, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.polarity = 'positive') AS positive
+ SELECT f.id, mo.category, mo.val, avg(mo.score) AS score, count(f.id) FILTER (WHERE mo.sign = 'positive') AS positive
  FROM facts f INNER JOIN LATERAL (
   SELECT (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_category ELSE rm.mapped_category END) AS category,
-         (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_val ELSE rm.mapped_val END) AS val, o.polarity, o.score
-  FROM LATERAL (SELECT category AS source_category, val AS source_val, polarity, score
-    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, polarity text, score float8) WHERE o.score IS NOT NULL) o
+         (CASE WHEN jsonb_exists(f.document, 'mapped') THEN o.source_val ELSE rm.mapped_val END) AS val, o.sign, o.score
+  FROM LATERAL (SELECT category AS source_category, val AS source_val, sign, score
+    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, sign text, score float8) WHERE o.score IS NOT NULL) o
   LEFT JOIN LATERAL (SELECT mapped_category, mapped_val FROM mappings m WHERE m.mapped_category IS NOT NULL AND m.kind = f.kind
     AND m.category = o.source_category AND m.val = o.source_val AND NOT jsonb_exists(f.document, 'mapped') LIMIT 1) rm ON true
  ) mo ON true

@@ -8,7 +8,7 @@ FROM stores s LEFT JOIN (
   SELECT x.id, x.entity_id, jsonb_path_exists(x.comments, '$[*] ? (@.type == "manager")') AS managed
   FROM t_load x
   WHERE x.deleted_at IS NULL
-    AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, polarity, score FROM jsonb_to_recordset(coldiff.load_norm(x.doc) -> 'parts') AS o(category text, polarity text, score float8) WHERE o.score IS NOT NULL) o WHERE o.polarity = 'positive')
+    AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, sign, score FROM jsonb_to_recordset(coldiff.load_norm(x.doc) -> 'parts') AS o(category text, sign text, score float8) WHERE o.score IS NOT NULL) o WHERE o.sign = 'positive')
 ) w ON w.entity_id = s.id
 WHERE s.id <= 40
 GROUP BY 1

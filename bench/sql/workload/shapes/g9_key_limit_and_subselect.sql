@@ -8,6 +8,6 @@ EXPLAIN (COSTS OFF) SELECT entity_id, src_id, prod_id, country_code, mix, item_d
 -- GAP 10 (minor): `= ANY(ARRAY(SELECT ...))` is not pushed (InitPlan array), while `IN (SELECT ...)` is (Lookup Joins: t_load_entity (semi)) and so is a constant array.
 -- Expected: the same semi lookup for the ARRAY(sub-select) spelling, which the query builders emit for `where_any`.
 \echo -- sub-select IN: pushed
-EXPLAIN (COSTS OFF) SELECT count(*) FROM t_load r WHERE entity_id IN (SELECT id FROM t_load_entity WHERE type = 'accommodation') AND deleted_at IS NULL;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t_load r WHERE entity_id IN (SELECT id FROM t_load_entity WHERE type = 'cat_a') AND deleted_at IS NULL;
 \echo -- ARRAY(sub-select): not pushed
-EXPLAIN (COSTS OFF) SELECT count(*) FROM t_load r WHERE entity_id = ANY(ARRAY(SELECT id FROM t_load_entity WHERE type = 'accommodation')) AND deleted_at IS NULL;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t_load r WHERE entity_id = ANY(ARRAY(SELECT id FROM t_load_entity WHERE type = 'cat_a')) AND deleted_at IS NULL;

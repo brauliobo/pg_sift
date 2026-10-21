@@ -181,7 +181,7 @@ Times are the serial plan at 300,000 items, best of 3, with `sift.enable_agg` of
 | Shape | Status | Off | On |
 | --- | --- | --- | --- |
 | g8 `EXISTS` over `jsonb_to_recordset(expr -> 'parts')` of an index expression (was a plan error, `invalid attnum`) | pushed | 1.64 s | 3 ms |
-| g8 nested jsonpath `$.parts[*] ? (@.category == "x" && @.polarity == "y")` | pushed | 1.52 s | 3 ms |
+| g8 nested jsonpath `$.parts[*] ? (@.category == "x" && @.sign == "y")` | pushed | 1.52 s | 3 ms |
 | g9 / g10 `x = ANY (ARRAY (SELECT ...))`, eight keys | pushed | 116 ms | 2 ms |
 | g5 per-item arms, `avg(n::float8)` over a text leaf, count of the items | fused | 2.83 s | 0.07 s |
 | g4 a second `count(DISTINCT)` over another column of the row | arms one by one | | follow-up |

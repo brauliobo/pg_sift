@@ -5,6 +5,6 @@
 -- scenario: yes
 SELECT w.entity_id % 5 AS g, count(*) AS n, sum(w.id) AS ids
 FROM t_load w
-WHERE w.deleted_at IS NULL AND jsonb_path_exists(coldiff.load_norm(w.doc), '$.parts[*] ? (@.polarity == "positive")')
+WHERE w.deleted_at IS NULL AND jsonb_path_exists(coldiff.load_norm(w.doc), '$.parts[*] ? (@.sign == "positive")')
 GROUP BY 1
 ORDER BY 1
