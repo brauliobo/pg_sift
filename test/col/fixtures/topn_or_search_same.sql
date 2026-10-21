@@ -3,4 +3,4 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'clean' OR memo @@> 'clean' ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'cable' OR memo @@> 'cable' ORDER BY placed_at DESC, id DESC LIMIT 10

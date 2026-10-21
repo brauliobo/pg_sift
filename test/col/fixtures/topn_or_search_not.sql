@@ -3,4 +3,4 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'clean NOT wifi' OR memo @@> 'express NOT clean' ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, store_id, placed_at FROM orders WHERE memo @@> 'cable NOT wire' OR memo @@> 'express NOT cable' ORDER BY placed_at DESC, id DESC LIMIT 10

@@ -5,5 +5,5 @@
 -- scenario: yes
 SELECT status, count(*) AS n
 FROM orders
-WHERE id IN (SELECT id FROM orders WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC LIMIT 100)
+WHERE id IN (SELECT id FROM orders WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100)
 GROUP BY status ORDER BY status NULLS FIRST

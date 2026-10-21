@@ -3,4 +3,4 @@
 -- expect: plain
 -- key: -
 -- scenario: yes
-SELECT id, store_id, placed_at FROM orders WHERE NOT (memo @@> 'clean' OR memo @@> 'wifi') ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, store_id, placed_at FROM orders WHERE NOT (memo @@> 'cable' OR memo @@> 'wire') ORDER BY placed_at DESC, id DESC LIMIT 10

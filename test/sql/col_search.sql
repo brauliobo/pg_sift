@@ -10,7 +10,7 @@ CREATE TABLE cs (id serial PRIMARY KEY, store int, status text, amount numeric(1
 ALTER TABLE cs ALTER COLUMN pad SET STORAGE PLAIN;
 CREATE FUNCTION cs_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
-							 'thanks','wrong','size','color','clean','wifi','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
+							 'thanks','wrong','size','color','cable','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
 	FROM generate_series(1, 3 + seed % 5) w $$;
 INSERT INTO cs (store, status, amount, placed, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40,
@@ -64,32 +64,32 @@ END $$;
 
 CREATE TABLE cs_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO cs_q VALUES
-	('term',      $q$SELECT status, count(*) AS n, sum(amount) AS s, min(placed) AS d FROM cs WHERE memo @@> 'wifi' GROUP BY status ORDER BY status$q$),
-	('and',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'clean wifi' GROUP BY status ORDER BY status$q$),
+	('term',      $q$SELECT status, count(*) AS n, sum(amount) AS s, min(placed) AS d FROM cs WHERE memo @@> 'wire' GROUP BY status ORDER BY status$q$),
+	('and',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'cable wire' GROUP BY status ORDER BY status$q$),
 	('or',        $q$SELECT store, count(*) AS n FROM cs WHERE memo @@> 'damaged OR broken' GROUP BY store ORDER BY store$q$),
-	('not',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wifi NOT clean' GROUP BY status ORDER BY status$q$),
-	('phrase',    $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '"clean wifi"' GROUP BY status ORDER BY status$q$),
-	('notphrase', $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wifi NOT "clean wifi"' GROUP BY status ORDER BY status$q$),
+	('not',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wire NOT cable' GROUP BY status ORDER BY status$q$),
+	('phrase',    $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '"cable wire"' GROUP BY status ORDER BY status$q$),
+	('notphrase', $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wire NOT "cable wire"' GROUP BY status ORDER BY status$q$),
 	('prefix',    $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wi*' GROUP BY status ORDER BY status$q$),
 	('wildcard',  $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'b?x' GROUP BY status ORDER BY status$q$),
 	('regex',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '/br.k.n/' GROUP BY status ORDER BY status$q$),
-	('fuzzy',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wifii~1' GROUP BY status ORDER BY status$q$),
-	('boost',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '(damaged OR broken) AND wifi^3' GROUP BY status ORDER BY status$q$),
+	('fuzzy',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wiree~1' GROUP BY status ORDER BY status$q$),
+	('boost',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '(damaged OR broken) AND wire^3' GROUP BY status ORDER BY status$q$),
 	('none',      $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'zzzzzz' GROUP BY status ORDER BY status$q$),
 	('none_all',  $q$SELECT count(*) AS n, sum(amount) AS s FROM cs WHERE memo @@> 'zzzzzz'$q$),
 	('null',      $q$SELECT count(*) AS n FROM cs WHERE memo @@> NULL::text$q$),
-	('two',       $q$SELECT count(*) AS n, max(amount) AS m FROM cs WHERE memo @@> 'wifi' AND memo @@> 'clean'$q$),
+	('two',       $q$SELECT count(*) AS n, max(amount) AS m FROM cs WHERE memo @@> 'wire' AND memo @@> 'cable'$q$),
 	('filters',   $q$SELECT store, count(*) AS n, sum(amount) AS s FROM cs WHERE memo @@> 'gift' AND status = 'paid' AND amount > 100 GROUP BY store ORDER BY store$q$),
 	('global',    $q$SELECT count(*) AS n, sum(amount) AS s, min(placed) AS a, max(placed) AS b, count(DISTINCT store) AS d FROM cs WHERE memo @@> 'express OR pickup'$q$),
 	('float_sum', $q$SELECT status, round(avg(amount::float8)::numeric, 2) AS a, round(sum(amount::float8)::numeric, 1) AS s FROM cs WHERE memo @@> 'gift OR express' GROUP BY status ORDER BY status$q$),
-	('col_or',    $q$SELECT count(*) AS n FROM cs WHERE (status = 'paid' OR store < 10) AND memo @@> 'wifi'$q$),
+	('col_or',    $q$SELECT count(*) AS n FROM cs WHERE (status = 'paid' OR store < 10) AND memo @@> 'wire'$q$),
 	('nulls',     $q$SELECT status IS NULL AS no_status, count(*) AS n FROM cs WHERE memo @@> 'late' GROUP BY 1 ORDER BY 1$q$),
 	('having',    $q$SELECT store, count(*) AS n FROM cs WHERE memo @@> 'size OR color' GROUP BY store HAVING count(*) > 12 ORDER BY store$q$),
 	('expr_key',  $q$SELECT date_trunc('month', placed)::date AS m, count(*) AS n FROM cs WHERE memo @@> 'label' GROUP BY 1 ORDER BY 1$q$),
 	('generic',   $q$SELECT status, string_agg(DISTINCT store::text, ',') AS stores, array_agg(DISTINCT placed) AS d FROM cs WHERE memo @@> 'refund' GROUP BY status ORDER BY status$q$),
-	('in_or',     $q$SELECT count(*) AS n FROM cs WHERE memo @@> 'wifi' OR status = 'paid'$q$),
-	('not_match',  $q$SELECT count(*) AS n FROM cs WHERE NOT (memo @@> 'wifi')$q$),
-	('idx_func',  $q$SELECT status, count(*) AS n FROM cs WHERE sift.match_idx(memo, 'clean wifi', 'cs_bm'::regclass) GROUP BY status ORDER BY status$q$);
+	('in_or',     $q$SELECT count(*) AS n FROM cs WHERE memo @@> 'wire' OR status = 'paid'$q$),
+	('not_match',  $q$SELECT count(*) AS n FROM cs WHERE NOT (memo @@> 'wire')$q$),
+	('idx_func',  $q$SELECT status, count(*) AS n FROM cs WHERE sift.match_idx(memo, 'cable wire', 'cs_bm'::regclass) GROUP BY status ORDER BY status$q$);
 
 CREATE FUNCTION cs_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
 	SELECT name, string_agg(tag || '=' || cs_check(q), E'\n' ORDER BY tag) FROM cs_q $$;
@@ -98,25 +98,25 @@ SELECT * FROM cs_stage('build');
 SET sift.test_search_chunk_sbs = 1;
 SELECT * FROM cs_stage('chunks of one superblock');
 RESET sift.test_search_chunk_sbs;
-SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status', 'clean wifi') AS param;
-SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> ($1 || '' wifi'') GROUP BY status ORDER BY status', 'clean') AS param_expr;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status', 'cable wire') AS param;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> ($1 || '' wire'') GROUP BY status ORDER BY status', 'cable') AS param_expr;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status') AS param_null;
 
 -- the scan reads the rows the index matches and no other: the matches, the rows of the units (a rare query reads them by position) and the
 -- tuples aggregated, against the rows of the table
-SELECT cs_stat(q, 'Search Matches') = (SELECT count(*) FROM cs WHERE memo @@> 'clean wifi') AS matches,
+SELECT cs_stat(q, 'Search Matches') = (SELECT count(*) FROM cs WHERE memo @@> 'cable wire') AS matches,
 	   cs_stat(q, 'Rows Scanned') = cs_stat(q, 'Search Matches') AS only_matches,
-	   cs_stat(q, 'Tuples Aggregated') = (SELECT count(*) FROM cs WHERE memo @@> 'clean wifi' AND amount > 50) AS aggregated,
+	   cs_stat(q, 'Tuples Aggregated') = (SELECT count(*) FROM cs WHERE memo @@> 'cable wire' AND amount > 50) AS aggregated,
 	   cs_stat(q, 'Rows Vetted By Heap') AS vetted
-FROM (SELECT $q$SELECT status, count(*) FROM cs WHERE memo @@> 'clean wifi' AND amount > 50 GROUP BY status$q$ AS q) x;
+FROM (SELECT $q$SELECT status, count(*) FROM cs WHERE memo @@> 'cable wire' AND amount > 50 GROUP BY status$q$ AS q) x;
 SELECT cs_stat(q, 'Units') > 1 AS units, cs_stat(q, 'Units Pruned') AS pruned_none
-FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'wifi'$q$ AS q) x;
+FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'wire'$q$ AS q) x;
 SELECT cs_stat(q, 'Units Pruned') > 0 AS units_without_matches_skipped
 FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$ AS q) x;
 
 BEGIN;
 SELECT cs_mode(true);
-EXPLAIN (COSTS OFF) SELECT status, count(*) FROM cs WHERE memo @@> 'clean wifi' AND amount > 50 GROUP BY status;
+EXPLAIN (COSTS OFF) SELECT status, count(*) FROM cs WHERE memo @@> 'cable wire' AND amount > 50 GROUP BY status;
 ROLLBACK;
 
 -- inserts land in the write buffers of both indexes, unvacuumed
@@ -126,7 +126,7 @@ FROM generate_series(1, 2000) i;
 SELECT * FROM cs_stage('insert');
 
 -- updates make new versions (new TIDs, new text); the old ones are dead but not vacuumed
-UPDATE cs SET memo = memo || ' wifi' WHERE id % 9 = 0;
+UPDATE cs SET memo = memo || ' wire' WHERE id % 9 = 0;
 UPDATE cs SET status = 'paid' WHERE id % 10 = 0;
 SELECT * FROM cs_stage('update');
 
@@ -135,7 +135,7 @@ SELECT * FROM cs_stage('delete');
 
 -- rows of this transaction are seen by this transaction only; a rolled back insert is seen by nobody
 BEGIN;
-INSERT INTO cs (store, status, amount, placed, memo) SELECT 1, 'paid', 500 + i, date '2026-01-01', 'clean wifi broken box' FROM generate_series(1, 30) i;
+INSERT INTO cs (store, status, amount, placed, memo) SELECT 1, 'paid', 500 + i, date '2026-01-01', 'cable wire broken box' FROM generate_series(1, 30) i;
 DELETE FROM cs WHERE id % 17 = 0;
 SELECT * FROM cs_stage('own');
 ROLLBACK;
@@ -166,9 +166,9 @@ INSERT INTO cs_t (store, status, amount, placed, memo) SELECT store, status, amo
 CREATE INDEX cs_t_bm ON cs_t USING sift (memo);
 INSERT INTO cs_t (store, status, amount, placed, memo) SELECT store, status, amount::int, placed, memo FROM cs WHERE id % 5 = 0;
 DELETE FROM cs_t WHERE id % 11 = 0;
-SELECT cs_check('SELECT status, count(*) AS n, sum(amount) AS s FROM cs_t WHERE memo @@> ''clean wifi'' GROUP BY status ORDER BY status') AS tbl_and;
+SELECT cs_check('SELECT status, count(*) AS n, sum(amount) AS s FROM cs_t WHERE memo @@> ''cable wire'' GROUP BY status ORDER BY status') AS tbl_and;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_t WHERE memo @@> ''damaged OR broken'' AND amount > 50 GROUP BY store ORDER BY store') AS tbl_or;
-SELECT cs_check('SELECT status, count(*) AS n FROM cs_t WHERE memo @@> ''"clean wifi"'' GROUP BY status ORDER BY status') AS tbl_phrase;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs_t WHERE memo @@> ''"cable wire"'' GROUP BY status ORDER BY status') AS tbl_phrase;
 
 -- long strings (300 bytes) as the values of text tests under a match set
 CREATE TABLE cs_l (id serial PRIMARY KEY, store int, note text, memo text);
@@ -177,7 +177,7 @@ SELECT 1 + i % 20, repeat(chr(97 + i % 4), 300) || (i % 7), cs_words(i) FROM gen
 CREATE INDEX cs_l_bm ON cs_l USING sift (memo);
 CREATE INDEX cs_l_col ON cs_l USING sift_col (store, note);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) cs_l;
-SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''clean wifi'' AND note <> repeat(''a'', 300) || ''1'' GROUP BY store ORDER BY store') AS long_ne;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''cable wire'' AND note <> repeat(''a'', 300) || ''1'' GROUP BY store ORDER BY store') AS long_ne;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''gift'' AND note = repeat(''b'', 300) || ''2'' GROUP BY store ORDER BY store') AS long_eq;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''fast OR late'' AND note LIKE ''cccc%'' GROUP BY store ORDER BY store') AS long_prefix;
 SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect'' AND note IN (repeat(''a'', 300) || ''0'', repeat(''d'', 300) || ''3'') GROUP BY note ORDER BY note') AS long_in;
