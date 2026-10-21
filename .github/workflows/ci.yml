@@ -2,8 +2,9 @@ name: ci
 
 # A push or pull request runs what its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`): the base of a push is the last green run of main, so a red
 # or cancelled push is not forgotten by the next one. The nightly run and a dispatch run every job of the quick tier ("Full scope" in the first job is the
-# mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs) and the
-# experimental PostgreSQL 19. The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
+# mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs).
+# The experimental PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, and fails nothing.
+# The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 # No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:
   push:
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       heavy:
-        description: Also run the full tier (make check-full) and PostgreSQL 19
+        description: Also run the full tier (make check-full)
         type: boolean
         default: false
 
@@ -24,10 +25,6 @@ permissions:
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  # PostgreSQL 19 is built from this branch of the git tree until the PGDG packages carry it (from the GitHub mirror: git.postgresql.org dropped a clone with an early EOF)
-  PG19_REF: REL_19_STABLE
 
 jobs:
   changes:
@@ -75,8 +72,9 @@ jobs:
         run: |
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
           jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" '
-            (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}] else [] end)
-            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: ".", experimental: true}] else [] end' |
+            (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
+              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, experimental: true}] else [] end)
+            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
   # no PostgreSQL: the syntax of every script, the portable core, the map of areas against the tests, the workflows
@@ -126,41 +124,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
-      - name: Resolve the PostgreSQL 19 commit
+      # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
+      - name: Get PostgreSQL 19
         if: ${{ matrix.experimental }}
-        id: pg19
-        # the full ref: a bare name can match several refs, and two lines would break GITHUB_OUTPUT
-        run: echo "sha=$(git ls-remote --exit-code https://github.com/postgres/postgres.git "refs/heads/$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache PostgreSQL 19
-        if: ${{ matrix.experimental }}
-        id: pg19-cache
-        uses: actions/cache@v5
+        uses: ./.github/actions/pg19
         with:
-          path: ~/pg19
-          key: pg19-contrib-v2-${{ runner.os }}-${{ steps.pg19.outputs.sha }}
-
-      - name: Build PostgreSQL 19
-        if: ${{ matrix.experimental && steps.pg19-cache.outputs.cache-hit != 'true' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl
-          git clone --depth 1 --branch "$PG19_REF" https://github.com/postgres/postgres.git "$RUNNER_TEMP/postgresql"
-          cd "$RUNNER_TEMP/postgresql"
-          ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --enable-tap-tests --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
-          make -j4 -s
-          make -s install
-          # what the suites use besides the server: the TAP modules and contrib modules
-          make -s -C src/test/perl install
-          make -s -C contrib/amcheck install
-          make -s -C contrib/pg_walinspect install
-          make -s -C contrib/dblink install
-          make -s -C contrib/pageinspect install
+          exact: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Use PostgreSQL 19
         if: ${{ matrix.experimental }}
         run: |
-          sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev
+          sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
 
       # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories
