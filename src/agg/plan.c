@@ -783,9 +783,11 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
 }
 
-void
-sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
-					 void *extra)
+int			agg_index_pick;
+int			agg_index_usable;
+
+static void
+upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	Query	   *parse = root->parse;
 
@@ -816,6 +818,33 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		return;
 	}
 	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
+}
+
+static bool
+has_agg_path(RelOptInfo *rel)
+{
+	foreach_ptr(Path, p, rel->pathlist)
+		if (IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods)
+			return true;
+	return false;
+}
+
+/* a table with several column indexes is scanned through the first of them that gives a plan: each may hold other columns and paths */
+void
+sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+{
+	int			outer_pick = agg_index_pick,
+				outer_usable = agg_index_usable;
+
+	agg_index_usable = 0;
+	for (agg_index_pick = 0;; agg_index_pick++)
+	{
+		upper_paths_on(root, stage, input_rel, output_rel, extra);
+		if (has_agg_path(output_rel) || agg_index_pick + 1 >= agg_index_usable)
+			break;
+	}
+	agg_index_pick = outer_pick;
+	agg_index_usable = outer_usable;
 }
 
 /* ---------- plan ---------- */
