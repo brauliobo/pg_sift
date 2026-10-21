@@ -265,10 +265,10 @@ SELECT * FROM pa_sum('a3');
 (1 row)
 
 SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
- n  |    shape    | pre | same 
-----+-------------+-----+------
-  1 | key text    | all | t
- 26 | bad measure | -   | t
+ n  |    shape    | pre  | same 
+----+-------------+------+------
+  1 | key text    | some | t
+ 26 | bad measure | -    | t
 (2 rows)
 
 SELECT count(DISTINCT sb) FILTER (WHERE nn IS NULL) AS units_without_n, count(DISTINCT sb) FILTER (WHERE nn IS NOT NULL) AS units_with_n
