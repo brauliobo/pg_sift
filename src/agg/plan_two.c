@@ -546,6 +546,182 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 	return true;
 }
 
+/* What planning one two level aggregate builds up: the arms, the spec and the scan's target list */
+typedef struct TwoLevel
+{
+	PlannerInfo *root;
+	Index		srti;			/* the outer query's FROM item */
+	List	   *roots;			/* the planned roots of the arms */
+	List	   *gates;
+	ArmIn		arms[AGG_MAX_ARMS];
+	int			narms;
+	int			ncols;			/* the columns every arm returns */
+	AggCtx		ctx;
+	SiftAggSpec *s;
+	OutWalk		ow;
+	List	   *scan_tlist;
+} TwoLevel;
+
+/* The arms of the FROM item and the scan they share; NULL when they are not arms of one scan */
+static PlannerInfo *
+two_arms(TwoLevel *t)
+{
+	PlannerInfo *base = NULL;
+
+	t->roots = outer_arms(t->root, t->srti, &t->gates);
+	if (t->roots == NIL || list_length(t->roots) > AGG_MAX_ARMS)
+		return NULL;
+	foreach_ptr(PlannerInfo, ar, t->roots)
+	{
+		PlannerInfo *b = arm_base(ar, &t->arms[t->narms]);
+
+		if (b == NULL || (base != NULL && b != base && !(b == ar && same_scan(base, b))))
+			return NULL;
+		if (base == NULL)
+			base = b;
+		t->arms[t->narms].sub.tlist = b->parse->targetList;
+		t->narms++;
+	}
+	return base;
+}
+
+/* arm k in the terms of the scanned table: its columns, group expressions, filter and HAVING */
+static bool
+two_arm_terms(TwoLevel *t, int k)
+{
+	AggCtx	   *c = &t->ctx;
+	Query	   *aq = ((PlannerInfo *) list_nth(t->roots, k))->parse;
+	ArmIn	   *in = &t->arms[k];
+	int			nid = 0,
+				nagg;
+	List	   *rest = NIL;
+
+	foreach_node(TargetEntry, te, aq->targetList)
+		if (!te->resjunk)
+			in->cols = lappend(in->cols, normalize_expr(c, cte_sub_mutator((Node *) te->expr, &in->sub)));
+	if (k == 0)
+		t->ncols = list_length(in->cols);
+	else if (t->ncols != list_length(in->cols))
+		return false;
+	foreach_node(SortGroupClause, sgc, aq->groupClause)
+	{
+		Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
+
+		in->group = lappend(in->group, g);
+		in->gsgc = lappend(in->gsgc, sgc);
+		if (unique_row_column(c, g))
+		{
+			in->id = g;
+			nid++;
+		}
+	}
+	if (nid != 1)
+		return false;
+	if (in->sub.rti != 0 && aq->jointree->quals != NULL)
+		foreach_ptr(Node, q, (List *) aq->jointree->quals)
+			in->quals = lappend(in->quals, normalize_expr(c, cte_sub_mutator(q, &in->sub)));
+	in->out = palloc0(sizeof(SiftAggArm));
+	in->out->colsrc = palloc(Max(t->ncols, 1) * sizeof(int));
+	for (int i = 0; i < t->ncols; i++)
+		in->out->colsrc[i] = -1;
+	nagg = t->ncols;
+	count_aggs_walker(aq->havingQual, &nagg);
+	in->out->inner = palloc0((nagg + 1) * sizeof(SiftAggAgg));
+	in->out->having = palloc0(Max(list_length((List *) aq->havingQual), 1) * sizeof(SiftAggCond));
+	foreach_ptr(Node, q, (List *) aq->havingQual)
+	{
+		Node	   *hq = normalize_expr(c, cte_sub_mutator(q, &in->sub));
+
+		if (arm_having(c, in, hq, &in->out->having[in->out->nhaving]))
+			in->out->nhaving++;
+		else
+			rest = lappend(rest, hq);
+	}
+	if (rest != NIL && !arm_having_expr(c, in, rest))
+		return false;
+	in->out->filter = palloc(Max(list_length(in->quals), 1) * sizeof(SiftAggPred *));
+	foreach_ptr(Node, q, in->quals)
+	{
+		SiftAggPred *p = compile_combo_pred(c, q);
+
+		if (p == NULL || unsupported_clause(c, q))
+			return false;
+		in->out->filter[in->out->nfilter++] = p;
+	}
+	return true;
+}
+
+/* the outer keys: columns that every arm groups by or has as NULL */
+static bool
+two_keys(TwoLevel *t)
+{
+	AggCtx	   *c = &t->ctx;
+	SiftAggSpec *s = t->s;
+	Query	   *parse = t->root->parse;
+	int			nkeyslots = list_length(parse->groupClause) + 1;
+	int			okey[SIFT_AGG_MAX_KEYS];
+
+	for (int k = 0; k < t->narms; k++)
+		nkeyslots += list_length(t->arms[k].group);
+	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
+	foreach_node(SortGroupClause, sgc, parse->groupClause)
+	{
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, t->root->processed_tlist);
+		Node	   *def = NULL;
+
+		if (!IsA(e, Var) || ((Var *) e)->varno != t->srti || ((Var *) e)->varlevelsup != 0 || ((Var *) e)->varattno > t->ncols)
+			return false;
+		okey[s->nkeys] = ((Var *) e)->varattno - 1;
+		for (int k = 0; k < t->narms; k++)
+		{
+			Node	   *x = list_nth(t->arms[k].cols, okey[s->nkeys]);
+
+			if (null_const(x))
+				continue;
+			if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
+				return false;
+			def = x;
+			t->arms[k].used = lappend(t->arms[k].used, x);
+			t->arms[k].out->keymask |= (uint32) 1 << s->nkeys;
+		}
+		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
+			return false;
+		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
+		t->ow.keys = lappend(t->ow.keys, e);
+		t->scan_tlist = lappend(t->scan_tlist, makeTargetEntry((Expr *) e, list_length(t->scan_tlist) + 1, NULL, false));
+		s->nkeys++;
+	}
+	if (!hidden_keys(c, s, t->arms, t->narms, &t->scan_tlist, parse->groupingSets != NIL))
+		return false;
+	if (parse->groupingSets != NIL)
+		add_sets(parse, s, &t->scan_tlist);
+	return true;
+}
+
+/* the outer aggregates: those of the target list and of HAVING */
+static bool
+two_aggs(TwoLevel *t, RelOptInfo *output_rel, GroupPathExtraData *gextra)
+{
+	SiftAggSpec *s = t->s;
+
+	foreach_ptr(Node, e, output_rel->reltarget->exprs)
+		out_walker(e, &t->ow);
+	if (gextra && gextra->havingQual)
+		out_walker((Node *) gextra->havingQual, &t->ow);
+	if (t->ow.bad)
+		return false;
+	s->agg = palloc0(Max(list_length(t->ow.aggs), 1) * sizeof(SiftAggAgg));
+	foreach_ptr(Node, a, t->ow.aggs)
+	{
+		if (!(IsA(a, GroupingFunc) ? compile_grouping(t->root->parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
+			  IsA(a, Aggref) && outer_agg(&t->ctx, s, (Aggref *) a, t->srti, t->arms, t->narms, &s->agg[s->naggs])))
+			return false;
+		t->scan_tlist = lappend(t->scan_tlist, makeTargetEntry((Expr *) a, list_length(t->scan_tlist) + 1, NULL, false));
+		s->naggs++;
+	}
+	return true;
+}
+
 /*
  * The outer query aggregates the rows of its FROM item, the arms: a UNION ALL of aggregates (or one) of the same scan, each grouped by
  * a unique row id and by outer keys (a NULL constant where an arm has none of them): see SiftAggArm. The arms are read from their
@@ -556,165 +732,31 @@ void
 sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 {
 	Query	   *parse = root->parse;
-	Index		srti = ((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex;
-	List	   *roots;
-	ArmIn		arms[AGG_MAX_ARMS] = {0};
-	int			narms = 0;
-	PlannerInfo *base = NULL;
-	AggCtx		ctx = {0},
-			   *c = &ctx;
+	TwoLevel	t = {.root = root, .srti = ((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex};
+	AggCtx	   *c = &t.ctx;
 	FromScan	fs = {.ok = true};
-	SiftAggSpec *s;
-	OutWalk		ow = {NIL, NIL, false};
-	List	   *scan_tlist = NIL;
-	int			okey[SIFT_AGG_MAX_KEYS];
-	int			ncols = 0;
-	List	   *gates = NIL;
-	int			nkeyslots = list_length(parse->groupClause) + 1;
+	PlannerInfo *base;
 
 	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
 		return;
-	roots = outer_arms(root, srti, &gates);
-	if (roots == NIL || list_length(roots) > AGG_MAX_ARMS)
+	if ((base = two_arms(&t)) == NULL)
 		return;
-	foreach_ptr(PlannerInfo, ar, roots)
-	{
-		PlannerInfo *b = arm_base(ar, &arms[narms]);
-
-		if (b == NULL || (base != NULL && b != base && !(b == ar && same_scan(base, b))))
-			return;
-		if (base == NULL)
-			base = b;
-		arms[narms].sub.tlist = b->parse->targetList;
-		narms++;
-	}
 	if (!agg_base(c, base, NULL, &fs) || c->nparts > 0)
 		return;
-	s = agg_spec_new(c);
-	if (!agg_quals(c, s, &fs) || !arm_gates(c, s, gates))
+	t.s = agg_spec_new(c);
+	if (!agg_quals(c, t.s, &fs) || !arm_gates(c, t.s, t.gates))
 		return;
-
-	/* the arms in the terms of the scanned table */
-	for (int k = 0; k < narms; k++)
-	{
-		Query	   *aq = ((PlannerInfo *) list_nth(roots, k))->parse;
-		ArmIn	   *in = &arms[k];
-		int			nid = 0,
-					nagg;
-		List	   *rest = NIL;
-
-		foreach_node(TargetEntry, te, aq->targetList)
-			if (!te->resjunk)
-				in->cols = lappend(in->cols, normalize_expr(c, cte_sub_mutator((Node *) te->expr, &in->sub)));
-		if (k == 0)
-			ncols = list_length(in->cols);
-		else if (ncols != list_length(in->cols))
+	for (int k = 0; k < t.narms; k++)
+		if (!two_arm_terms(&t, k))
 			return;
-		foreach_node(SortGroupClause, sgc, aq->groupClause)
-		{
-			Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
-
-			in->group = lappend(in->group, g);
-			in->gsgc = lappend(in->gsgc, sgc);
-			if (unique_row_column(c, g))
-			{
-				in->id = g;
-				nid++;
-			}
-		}
-		if (nid != 1)
-			return;
-		if (in->sub.rti != 0 && aq->jointree->quals != NULL)
-			foreach_ptr(Node, q, (List *) aq->jointree->quals)
-				in->quals = lappend(in->quals, normalize_expr(c, cte_sub_mutator(q, &in->sub)));
-		in->out = palloc0(sizeof(SiftAggArm));
-		in->out->colsrc = palloc(Max(ncols, 1) * sizeof(int));
-		for (int i = 0; i < ncols; i++)
-			in->out->colsrc[i] = -1;
-		nagg = ncols;
-		count_aggs_walker(aq->havingQual, &nagg);
-		in->out->inner = palloc0((nagg + 1) * sizeof(SiftAggAgg));
-		in->out->having = palloc0(Max(list_length((List *) aq->havingQual), 1) * sizeof(SiftAggCond));
-		foreach_ptr(Node, q, (List *) aq->havingQual)
-		{
-			Node	   *hq = normalize_expr(c, cte_sub_mutator(q, &in->sub));
-
-			if (arm_having(c, in, hq, &in->out->having[in->out->nhaving]))
-				in->out->nhaving++;
-			else
-				rest = lappend(rest, hq);
-		}
-		if (rest != NIL && !arm_having_expr(c, in, rest))
-			return;
-		in->out->filter = palloc(Max(list_length(in->quals), 1) * sizeof(SiftAggPred *));
-		foreach_ptr(Node, q, in->quals)
-		{
-			SiftAggPred *p = compile_combo_pred(c, q);
-
-			if (p == NULL || unsupported_clause(c, q))
-				return;
-			in->out->filter[in->out->nfilter++] = p;
-		}
-	}
-
-	/* the outer keys: columns that every arm groups by or has as NULL */
-	for (int k = 0; k < narms; k++)
-		nkeyslots += list_length(arms[k].group);
-	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
-	foreach_node(SortGroupClause, sgc, parse->groupClause)
-	{
-		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
-		Node	   *def = NULL;
-
-		if (!IsA(e, Var) || ((Var *) e)->varno != srti || ((Var *) e)->varlevelsup != 0 || ((Var *) e)->varattno > ncols)
-			return;
-		okey[s->nkeys] = ((Var *) e)->varattno - 1;
-		for (int k = 0; k < narms; k++)
-		{
-			Node	   *x = list_nth(arms[k].cols, okey[s->nkeys]);
-
-			if (null_const(x))
-				continue;
-			if (!list_member(arms[k].group, x) || equal(x, arms[k].id) || (def != NULL && !equal(x, def)))
-				return;
-			def = x;
-			arms[k].used = lappend(arms[k].used, x);
-			arms[k].out->keymask |= (uint32) 1 << s->nkeys;
-		}
-		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
-			return;
-		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
-		ow.keys = lappend(ow.keys, e);
-		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
-		s->nkeys++;
-	}
-	if (!hidden_keys(c, s, arms, narms, &scan_tlist, parse->groupingSets != NIL))
+	if (!two_keys(&t) || !two_aggs(&t, output_rel, gextra))
 		return;
-	if (parse->groupingSets != NIL)
-		add_sets(parse, s, &scan_tlist);
-
-	/* the outer aggregates */
-	foreach_ptr(Node, e, output_rel->reltarget->exprs)
-		out_walker(e, &ow);
-	if (gextra && gextra->havingQual)
-		out_walker((Node *) gextra->havingQual, &ow);
-	if (ow.bad)
-		return;
-	s->agg = palloc0(Max(list_length(ow.aggs), 1) * sizeof(SiftAggAgg));
-	foreach_ptr(Node, a, ow.aggs)
+	t.s->narms = t.narms;
+	t.s->arm = palloc0(t.narms * sizeof(SiftAggArm));
+	for (int k = 0; k < t.narms; k++)
 	{
-		if (!(IsA(a, GroupingFunc) ? compile_grouping(parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
-			  IsA(a, Aggref) && outer_agg(c, s, (Aggref *) a, srti, arms, narms, &s->agg[s->naggs])))
-			return;
-		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
-		s->naggs++;
+		t.s->arm[k] = *t.arms[k].out;
+		t.s->arm[k].ncol = t.ncols;
 	}
-	s->narms = narms;
-	s->arm = palloc0(narms * sizeof(SiftAggArm));
-	for (int k = 0; k < narms; k++)
-	{
-		s->arm[k] = *arms[k].out;
-		s->arm[k].ncol = ncols;
-	}
-	agg_finish(c, s, root, input_rel, output_rel, output_rel->reltarget, ow.keys, scan_tlist);
+	agg_finish(c, t.s, root, input_rel, output_rel, output_rel->reltarget, t.ow.keys, t.scan_tlist);
 }
