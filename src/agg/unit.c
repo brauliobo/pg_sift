@@ -479,46 +479,51 @@ rollup_dim(const SiftSrcRollup *r, int leaf)
 	return -1;
 }
 
-/* the tuples of the rollup that pass the element conjuncts (a bitmap; NULL: all): they run on the tuples as on the elements, each dim's vector being the tuples' keys */
-static uint64 *
-rollup_keep(AggExec *ex, const SiftSrcRollup *r)
+/* the dims of the rollup as the vectors of the tuples, which the element tests read as they read the elements' */
+static void
+rollup_bind(AggExec *ex, const SiftSrcRollup *r)
 {
-	SiftAggSpec *s = ex->spec;
-	int			nt = r->ntuples,
-				nw = (nt + 63) / 64;
-	uint64	   *keep = NULL;
+	int			nt = r->ntuples;
 
-	for (int i = 0; i < s->npred; i++)
+	for (int d = 0; d < ex->pa.ndims; d++)
 	{
-		if (s->pred[i]->level != 1)
-			continue;
-		if (keep == NULL)
-		{
-			keep = MemoryContextAlloc(ex->ucxt, (nw + PADW) * sizeof(uint64));
-			fill_ones(keep, nt);
-			for (int d = 0; d < ex->pa.ndims; d++)
-			{
-				int			j = rollup_dim(r, ex->pa.rdim[d]);
-				uint32	   *data = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, nt * sizeof(uint32) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+		int			j = rollup_dim(r, ex->pa.rdim[d]);
+		uint32	   *data = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, nt * sizeof(uint32) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 
-				for (int t = 0; t < nt; t++)
-					data[t] = r->isnull[j] && r->isnull[j][t] ? (r->dict[j] ? r->dict[j]->n : 0) : (uint32) r->key[j][t];
-				ex->uvec[ex->pa.rdim[d]] = (SiftSrcVec) {data, r->isnull[j], r->dict[j], nt, NULL};
-				ex->uvec_ok[ex->pa.rdim[d]] = true;
-			}
-		}
-		for (int st = 0; st < nt; st += VEC)
-		{
-			int			n = Min(VEC, nt - st);
-			uint64		t[VECW + PADW];
-
-			eval_pred(ex, s->pred[i], 1, st, n, t);
-			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
-		}
+		for (int t = 0; t < nt; t++)
+			data[t] = r->isnull[j] && r->isnull[j][t] ? (r->dict[j] ? r->dict[j]->n : 0) : (uint32) r->key[j][t];
+		ex->uvec[ex->pa.rdim[d]] = (SiftSrcVec) {data, r->isnull[j], r->dict[j], nt, NULL};
+		ex->uvec_ok[ex->pa.rdim[d]] = true;
 	}
-	for (int d = 0; keep && d < ex->pa.ndims; d++)
-		ex->uvec_ok[ex->pa.rdim[d]] = false;
+}
+
+/* the tuples that pass the conjunct p (an element test): a bitmap, the vectors of rollup_bind read */
+static uint64 *
+rollup_pass(AggExec *ex, const SiftAggPred *p, int nt, uint64 *keep)
+{
+	if (keep == NULL)
+	{
+		keep = MemoryContextAlloc(ex->ucxt, ((nt + 63) / 64 + PADW) * sizeof(uint64));
+		fill_ones(keep, nt);
+	}
+	for (int st = 0; st < nt; st += VEC)
+	{
+		int			n = Min(VEC, nt - st);
+		uint64		t[VECW + PADW];
+
+		eval_pred(ex, (SiftAggPred *) p, 1, st, n, t);
+		sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
+	}
 	return keep;
+}
+
+static bool
+has_filter(const SiftAggSpec *s)
+{
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (s->agg[ai].filter)
+			return true;
+	return false;
 }
 
 /* The unit's rollup of the list: its tuples that pass the conjuncts, folded into the groups of the keys. false: the unit lacks a dim or a measure the query reads */
@@ -532,7 +537,8 @@ preagg_rollup(AggExec *ex)
 	uint32	   *kept,
 			   *ids,
 			   *gid;
-	uint64	   *keep;
+	uint64	   *keep,
+			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
 	ex->pa_miss = true;
@@ -569,7 +575,16 @@ preagg_rollup(AggExec *ex)
 		}
 		slot[ai] = m;
 	}
-	keep = rollup_keep(ex, &r);
+	if (s->npred > 0 || has_filter(s))
+		rollup_bind(ex, &r);
+	keep = NULL;
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->level == 1)
+			keep = rollup_pass(ex, s->pred[i], r.ntuples, keep);
+	for (int ai = 0; ai < s->naggs; ai++)
+		fkeep[ai] = s->agg[ai].filter ? rollup_pass(ex, s->agg[ai].filter, r.ntuples, NULL) : NULL;
+	for (int d = 0; d < ex->pa.ndims; d++)
+		ex->uvec_ok[ex->pa.rdim[d]] = false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
 	for (uint32 t = 0; t < r.ntuples; t++)
 		if (keep == NULL || sift_colsrc_bit(keep, t))
@@ -592,6 +607,11 @@ preagg_rollup(AggExec *ex)
 			int			m = slot[ai];
 
 			v[ai] = (PaVal) {.rows = r.count[t], .nn = r.count[t]};
+			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], t))
+			{
+				v[ai].rows = v[ai].nn = 0;				/* the elements of the tuple fail the FILTER: they add nothing to this aggregate */
+				continue;
+			}
 			if (m <= -2)
 				v[ai].nn = r.isnull[-2 - m] && r.isnull[-2 - m][t] ? 0 : r.count[t];
 			else if (m >= 0)

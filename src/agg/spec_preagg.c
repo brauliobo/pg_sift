@@ -129,7 +129,7 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 				mm = false;
 	SiftSrcVecType vt;
 
-	if (a->filter)
+	if (a->filter && group < 0)
 		return SPW_AGG_FILTER;
 	if (a->distinct)
 		return SPW_AGG_DISTINCT;
@@ -317,6 +317,9 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 
 		if (why != SPW_OK)
 			return why;
+		/* FILTER (WHERE ...) runs on the tuples: it may test dims only */
+		if (a->filter && !pred_dims(a->filter, lay, nbase, group, dims, &nd))
+			return SPW_AGG_FILTER;
 		if (leaf < 0)
 			continue;
 		/* count(leaf) is the count of the dim's tuples that are not NULL, or the count of the measure */
