@@ -569,7 +569,7 @@ param_set_ratio(AggCtx *c)
 	return Min(f, Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
 }
 
-/* the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers */
+/* the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers, or the probes a nested loop makes of one per key */
 static Path *
 row_scan_of(Path *p)
 {
@@ -600,15 +600,25 @@ row_scan_of(Path *p)
 			case T_ProjectionPath:
 				p = ((ProjectionPath *) p)->subpath;
 				break;
+			case T_NestPath:
+				{
+					/* the keys of a lookup drive the probes of an index or bitmap scan of the table: the plan costs a probe a key */
+					Path	   *inner = ((NestPath *) p)->jpath.innerjoinpath;
+
+					if (IsA(inner, MemoizePath))
+						inner = ((MemoizePath *) inner)->subpath;
+					return (IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL ? inner : NULL;
+				}
 			default:
 				return NULL;
 		}
 }
 
+/* the paths that fetch the rows one set element or key at a time are charged the elements of the array parameters and the keys of the lookups that sift.agg_param_set_size and lookup_set_ratio assume */
 static void
-param_set_penalty(AggCtx *c, RelOptInfo *output_rel)
+param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	double		f = param_set_ratio(c);
+	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel);
 
 	if (f <= 1.0)
 		return;
@@ -628,7 +638,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 
 	if (!spec_finish(c, s, root, input_rel, keys) || !first_fits(s) || !child_paths(c, s))
 		return;
-	param_set_penalty(c, output_rel);
+	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
 	if (nworkers > 0)

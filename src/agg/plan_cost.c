@@ -575,6 +575,96 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 	return kept;
 }
 
+/* does PostgreSQL know the values a filter of a table compares (statistics of the column or of an expression index)? Its guess of what the filter keeps is a default otherwise */
+static bool
+filter_has_stats(PlannerInfo *root, RestrictInfo *ri)
+{
+	List	   *args = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->args :
+		IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->args : NIL;
+	VariableStatData vardata;
+	Node	   *other;
+	bool		varonleft,
+				known;
+
+	if (list_length(args) != 2 || !get_restriction_variable(root, args, 0, &vardata, &other, &varonleft))
+		return true;
+	known = HeapTupleIsValid(vardata.statsTuple) || vardata.isunique;
+	ReleaseVariableStats(vardata);
+	return known;
+}
+
+/*
+ * Are the rows PostgreSQL expects of a lookup its statistics' count? A table whose filters all have statistics, a VALUES list and a function of
+ * constants (unnest of a list) are; a sub-select, a CTE or a function of other arguments is estimated through its own joins and defaults.
+ */
+static bool
+lookup_counted(AggCtx *c, JoinCtx *jc)
+{
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+
+	if (rte->rtekind == RTE_VALUES)
+		return true;
+	if (rte->rtekind == RTE_FUNCTION)
+	{
+		RangeTblFunction *rtf = list_length(rte->functions) == 1 ? linitial_node(RangeTblFunction, rte->functions) : NULL;
+
+		if (rtf == NULL || !IsA(rtf->funcexpr, FuncExpr))
+			return false;
+		foreach_ptr(Node, a, ((FuncExpr *) rtf->funcexpr)->args)
+			if (!IsA(a, Const))
+				return false;
+		return true;
+	}
+	if (rte->rtekind != RTE_RELATION)
+		return false;
+	foreach_node(RestrictInfo, ri, c->root->simple_rel_array[jc->rti]->baserestrictinfo)
+		if (!filter_has_stats(c->root, ri))
+			return false;
+	return true;
+}
+
+/*
+ * How many times more keys than PostgreSQL expects the scope lists of the query hold, for the normal plan's price. A lookup join on a
+ * column of the scanned table (a list of ids, the rows of a sub-select) is counted by PostgreSQL from its own rows, and those are a
+ * default guess (a row or two) when the filters of the lookup read a jsonb path, an expression or the output of a plan: the normal plan
+ * is then priced for a handful of keys, though the lists the queries pass hold a good share of the table's distinct values. The keys
+ * are taken as the geometric mean of the rows PostgreSQL expects and the distinct values of the scanned column (as child_rows does for
+ * the rows of a set-returning function). A lookup PostgreSQL has statistics for keeps its estimate.
+ */
+double
+lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	double		f = 1.0;
+
+	if (!sift_agg_join_filter || s->topn || sift_agg_param_set_size <= 0)
+		return f;
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		const SiftAggCombo *cb = &s->combo[jc->combo];
+		const SiftAggJoin *j = &s->join[cb->join];
+		double		keys = lookup_rows(c, jc),
+					nd = 0;
+
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
+			continue;
+		if (lookup_counted(c, jc))
+			continue;
+		for (int k = 0; k < j->nkey; k++)
+		{
+			int			leaf = j->keypos[k] < 0 ? -1 : cb->leaf[j->keypos[k]];
+			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
+			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+
+			if (lf != NULL && lf->kind == SCL_SCALAR && lf->parent < 0 && e != NULL && IsA(e, Var))
+				nd = Max(nd, column_distinct(c, (Var *) e));
+		}
+		if (nd > keys)
+			f *= sqrt(nd / keys);
+	}
+	/* the normal plan reads no more than the rows the table's own filters keep, whatever the keys */
+	return Min(f, Max(c->rel->rows / Max(input_rel->rows, 1.0), 1.0));
+}
+
 /*
  * The share of the units the zone tests of p leave (the scan tests each disjunct of an OR on its own, init_filter.c): a comparison keeps the
  * zones its selectivity overlaps, an AND the most selective of its conjuncts' share, an OR the sum of its disjuncts' (1: none refuses a unit).
