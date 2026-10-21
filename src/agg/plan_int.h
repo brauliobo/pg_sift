@@ -212,6 +212,8 @@ typedef struct OutWalk
 #define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 
 extern const CustomPathMethods agg_path_methods;
+extern int	agg_index_pick;		/* the column index of the scanned table the stage plans on: the nth of those it has, ... */
+extern int	agg_index_usable;	/* ... and how many of them the stage has met (a table with several is scanned through the first that gives a plan) */
 
 extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
 extern int leaf_level(AggCtx *c, int id);
