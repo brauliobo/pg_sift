@@ -300,7 +300,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/visibility.c) which today reads the heap's
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
   candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM.
-- **SiftAgg over the table** (`src/table/src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
+- **SiftAgg over the table** (`src/table/src.c`, the table provider of the seam `src/agg/colsrc.h`, docs/COL-PLAN.md): the leaves are the
   columns of the table, in the order of its column layout. The groups are read by the engine, one `sift_col_open_table` source per column layout
   the segments were written for (the leaves of an older layout are matched by attribute number; a column the segment lacks reads as the
   catalog's default for rows that lack it, null or the constant of `ADD COLUMN .. DEFAULT`), with the table's visibility as the engine's
@@ -496,4 +496,4 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | `SIFT_COLS_VAR` (exact datum images, engine), `exceptions` leaf (table layout) | used |
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
 | `sift_colw_set_tag` (segment xmin of a bulk write) | removed with the write path of 3.1: the engine writer takes the `xmin`/`cmin` of every row from the batch (`sift_cbatch_add_ver`), and the direct column writes of a rewrite are frozen (no versions) |
-| `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`table/src.c`) |
+| `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `agg/colsrc.h` | used by the table provider (`table/src.c`) |

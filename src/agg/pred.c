@@ -1,0 +1,986 @@
+/*
+ * agg/pred.c - row and element predicates evaluated to bitmaps
+ */
+#include "postgres.h"
+
+#include <float.h>
+#include <math.h>
+
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/parallel.h"
+#include "access/relation.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/pg_aggregate.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_proc.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
+#include "access/xact.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_index.h"
+#include "catalog/pg_type.h"
+#include "commands/explain.h"
+#include "common/hashfn.h"
+#include "common/int.h"
+#include "executor/executor.h"
+#include "executor/nodeAgg.h"
+#include "executor/nodeHash.h"
+#include "executor/nodeSubplan.h"
+#include "miscadmin.h"
+#include "nodes/extensible.h"
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
+#include "portability/instr_time.h"
+#include "parser/parse_agg.h"
+#include "storage/predicate.h"
+#include "storage/proc.h"
+#include "storage/shm_mq.h"
+#include "storage/shm_toc.h"
+#include "utils/acl.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/date.h"
+#include "utils/datum.h"
+#include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
+#include "utils/expandeddatum.h"
+#include "utils/float.h"
+#include "utils/guc.h"
+#include "utils/numeric.h"
+#include "utils/lsyscache.h"
+#include "utils/numeric.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/syscache.h"
+#include "utils/timestamp.h"
+#include "utils/tuplesort.h"
+#include "utils/wait_event.h"
+#include "utils/typcache.h"
+
+#include "agg/agg.h"
+#include "agg/wide.h"
+#include "agg/back.h"
+#include "agg/kern.h"
+#include "agg/part.h"
+#include "agg/spec.h"
+#include "col/kern.h"
+#include "agg/colsrc.h"
+#include "agg/search.h"
+#include "agg/topn.h"
+#include "core/visibility.h"
+#include "core/popcount.h"
+#include "agg/agg_int.h"
+
+static void
+lut_put(uint64 *lut, uint32 code, bool v)
+{
+	lut[code >> 6] |= (uint64) v << (code & 63);
+}
+
+static uint64 *
+dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
+{
+	uint64	   *lut = s->lut[p->id];
+	PredState  *st = &ex->ps[p->id];
+	MemoryContext old;
+
+	if (lut)
+		return lut;
+	lut = MemoryContextAllocZero(ex->cxt, ((d->n + 64) / 64) * sizeof(uint64));
+	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		Datum		v = text_datum(st->param->paramtype, st->param->paramtypmod, d->bytes + d->off[c],
+								   d->off[c + 1] - d->off[c]);
+
+		lut_put(lut, c, eval_bool(ex, st->expr, v, false));
+	}
+	lut_put(lut, d->n, eval_bool(ex, st->expr, (Datum) 0, true));
+	MemoryContextSwitchTo(old);
+	s->lut[p->id] = lut;
+	return lut;
+}
+
+/* the row that owns each element of the array leaf in the unit */
+static const uint32 *
+array_parent(AggExec *ex, int leaf)
+{
+	if (ex->gpar[leaf] == NULL)
+	{
+		const uint32 *offs = elem_offs(ex, leaf);
+
+		ex->gpar[leaf] = MemoryContextAlloc(ex->ucxt, (Size) offs[ex->unit.nrow] * sizeof(uint32) + SIFT_AGG_PAD);
+		sift_colk->expand_parents(offs + 1, ex->unit.nrow, ex->gpar[leaf]);
+	}
+	return ex->gpar[leaf];
+}
+
+/* ---------- predicates ---------- */
+
+static int
+int32_cmp_asc(const void *a, const void *b)
+{
+	return pg_cmp_s32(*(const int32 *) a, *(const int32 *) b);
+}
+
+/*
+ * c (a numeric) floored (up: ceilinged) to a multiple of 10^-scale, as that integer: PostgreSQL's own numeric_mul, numeric_floor and
+ * numeric_ceil do the arithmetic. -1 / 1 when it is below / above every integer within lim, which is where NaN (numeric order puts it
+ * above every number), the infinities and the digits the scaled values cannot hold go.
+ */
+static int
+scaled_bound(Datum c, int scale, bool up, sift_i128 lim, sift_i128 *out)
+{
+	Datum		unit = DirectFunctionCall3(numeric_in, CStringGetDatum(psprintf("1e%d", scale)), ObjectIdGetDatum(InvalidOid),
+										   Int32GetDatum(-1)),
+				t = DirectFunctionCall2(numeric_mul, c, unit);
+	char	   *txt = DatumGetCString(DirectFunctionCall1(numeric_out, DirectFunctionCall1(up ? numeric_ceil : numeric_floor, t)));
+	int			ignored;
+
+	if (strcmp(txt, "-Infinity") == 0)
+		return -1;
+	if (strcmp(txt, "NaN") == 0 || strcmp(txt, "Infinity") == 0 || !sift_parse_decimal(txt, out, &ignored))
+		return txt[0] == '-' ? -1 : 1;
+	return *out > lim ? 1 : *out < -lim ? -1 : 0;
+}
+
+/*
+ * `value op c` for integers scaled by 10^scale, c a numeric of any scale: the comparison st->nop with st->cn that holds for exactly the
+ * same values (st->konst: the one result of every value). x = c needs c to be a multiple of the unit, x < c is x < ceil(c), x <= c is
+ * x <= floor(c), x > c is x > floor(c), x >= c is x >= ceil(c).
+ */
+static void
+numeric_operand(PredState *st, int op, int scale, sift_i128 lim, Datum c)
+{
+	sift_i128	fl,
+				ce,
+				v;
+	int			sf = scaled_bound(c, scale, false, lim, &fl),
+				sc = scaled_bound(c, scale, true, lim, &ce),
+				side;
+
+	st->konst = -1;
+	switch (op)
+	{
+		case SCMP_EQ:
+		case SCMP_NE:
+			if (sf == 0 && sc == 0 && fl == ce)
+			{
+				st->nop = op;
+				st->cn = fl;
+			}
+			else
+				st->konst = op == SCMP_NE;
+			return;
+		case SCMP_LT:
+		case SCMP_GE:
+			side = sc;
+			v = ce;
+			break;
+		default:
+			side = sf;
+			v = fl;
+	}
+	if (side)
+		st->konst = (op == SCMP_LT || op == SCMP_LE) == (side > 0);
+	else
+	{
+		st->nop = op;
+		st->cn = v;
+	}
+}
+
+/* does `NaN op c` hold, c a NaN or a number: NaN is greater than every number and equal to itself */
+static bool
+nan_compares(int op, bool cnan)
+{
+	switch (op)
+	{
+		case SCMP_EQ:
+			return cnan;
+		case SCMP_NE:
+			return !cnan;
+		case SCMP_LT:
+			return false;
+		case SCMP_LE:
+			return cnan;
+		case SCMP_GT:
+			return !cnan;
+		default:
+			return true;
+	}
+}
+
+static inline uint64
+in_hash64(uint64 x)
+{
+	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	return x ^ (x >> 32);
+}
+
+/* the values of a 64-bit IN list in an open-addressing table of at most half full slots */
+static void
+in_hash_build(PredState *st, const int64 *vals, int nv)
+{
+	uint64		cap = 16;
+
+	while (cap < (uint64) nv * 2)
+		cap <<= 1;
+	st->in_hmask = cap - 1;
+	st->in_htab = palloc(cap * sizeof(int64));
+	st->in_hused = palloc0(cap);
+	for (int i = 0; i < nv; i++)
+	{
+		uint64		h = in_hash64((uint64) vals[i]) & st->in_hmask;
+
+		while (st->in_hused[h] && st->in_htab[h] != vals[i])
+			h = (h + 1) & st->in_hmask;
+		st->in_hused[h] = 1;
+		st->in_htab[h] = vals[i];
+	}
+}
+
+static bool
+in_hash_has(const PredState *st, int64 x)
+{
+	uint64		h = in_hash64((uint64) x) & st->in_hmask;
+
+	for (; st->in_hused[h]; h = (h + 1) & st->in_hmask)
+		if (st->in_htab[h] == x)
+			return true;
+	return false;
+}
+
+/* the test of an IN list of nv values within [lo, hi]: a byte table over the range, else the sorted values (an int4 leaf) or a hash table (an int8 leaf); false (nothing built) when only a table is wanted and the range is too wide */
+bool
+in_build(PredState *st, bool wide, bool table_only, const int64 *vals, int nv, int64 lo, int64 hi)
+{
+	uint64		span = nv > 0 ? (uint64) hi - (uint64) lo + 1 : 0;	/* 0: all the 2^64 values */
+
+	if (nv > 0 && (span == 0 || span > MAX_RANGE) && table_only)
+		return false;
+	st->in_lut = palloc0(SIFT_AGG_PAD);
+	if (nv == 0)
+		return true;
+	if (span == 0 || span > MAX_RANGE)
+	{
+		if (wide)
+			in_hash_build(st, vals, nv);
+		else
+		{
+			st->in_sorted = palloc(nv * sizeof(int32));
+			for (int i = 0; i < nv; i++)
+				st->in_sorted[i] = (int32) vals[i];
+			qsort(st->in_sorted, nv, sizeof(int32), int32_cmp_asc);
+			st->in_nsorted = nv;
+		}
+		return true;
+	}
+	st->in_lo = lo;
+	st->in_nlut = (uint32) span;
+	st->in_lut = palloc0(span + SIFT_AGG_PAD);
+	for (int i = 0; i < nv; i++)
+		st->in_lut[vals[i] - lo] = 1;
+	st->in_dense = memchr(st->in_lut, 0, span) == NULL;
+	return true;
+}
+
+void
+eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
+{
+	bool		isnull;
+	Datum		d;
+	ExprState  *e;
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+	st->cnull = isnull;
+	if (p->kind == SAP_GATE)
+		st->konst = !isnull && DatumGetBool(d);
+	else if ((p->kind == SAP_CMP || p->kind == SAP_NCMP) && !isnull)
+	{
+		if (p->argtype == NUMERICOID)
+		{
+			st->nan_res = nan_compares(p->op, numeric_is_nan(DatumGetNumeric(d)));
+			if (p->kind == SAP_NCMP)
+				numeric_operand(st, p->op, p->num.scale, sift_pow10(SIFT_NUM_MAX_DIGITS), d);
+			else
+				numeric_operand(st, p->op, ex->lay->leaf[p->leaf].scale, PG_INT64_MAX, d);
+		}
+		else if (p->argtype == FLOAT4OID)
+			st->cd = DatumGetFloat4(d);
+		else if (p->argtype == FLOAT8OID)
+			st->cd = DatumGetFloat8(d);
+		else
+			st->ci = sift_aggspec_operand_int(p->argtype, d);
+	}
+	else if (p->kind == SAP_IN && !isnull)
+	{
+		ArrayType  *arr = DatumGetArrayTypeP(d);
+		Datum	   *el;
+		bool	   *nl;
+		int			ne,
+					nv = 0;
+		int16		len;
+		bool		byval;
+		char		align;
+		int64		lo = PG_INT64_MAX,
+					hi = PG_INT64_MIN;
+		int64	   *vals;
+		bool		wide = ex->lay->leaf[p->leaf].vtype == SCV_I64;
+
+		get_typlenbyvalalign(p->argtype, &len, &byval, &align);
+		deconstruct_array(arr, p->argtype, len, byval, align, &el, &nl, &ne);
+		st->in_empty = ne == 0;
+		vals = palloc(Max(ne, 1) * sizeof(int64));
+		for (int i = 0; i < ne; i++)
+		{
+			int64		v;
+
+			if (nl[i])
+			{
+				st->in_hasnull = true;
+				continue;
+			}
+			v = sift_aggspec_operand_int(p->argtype, el[i]);
+			if (!wide && (v < PG_INT32_MIN || v > PG_INT32_MAX))
+				continue;		/* no int4 value equals it */
+			vals[nv++] = v;
+			lo = Min(lo, v);
+			hi = Max(hi, v);
+		}
+		in_build(st, wide, false, vals, nv, lo, hi);
+	}
+	MemoryContextSwitchTo(old);
+	st->ready = true;
+}
+
+/* rows whose leaf value is NULL are not in out */
+static void
+clear_nulls(AggExec *ex, const SiftSrcVec *v, int start, int n, uint64 *out)
+{
+	if (v->isnull)
+	{
+		sift_colk_nonzero(v->isnull + start, n, ex->tmpm);
+		sift_colk->bits_andnot(out, ex->tmpm, (n + 63) / 64);
+	}
+}
+
+/*
+ * bit i of out = (v[i] op c) for an int4 or int8 column (slot SIFT_COLW_32 / SIFT_COLW_64), c within the type: the values the
+ * comparison keeps are one range, [lo, hi] wrapping (x <> c is [c + 1, c - 1]), which is what the column kernels test
+ */
+static void
+cmp_int(uint64 *out, const void *v, int slot, int n, SiftCmpOp op, int64 c)
+{
+	const uint64 wmax = slot == SIFT_COLW_32 ? PG_UINT32_MAX : PG_UINT64_MAX;
+	const int64 tmin = slot == SIFT_COLW_32 ? PG_INT32_MIN : PG_INT64_MIN,
+				tmax = slot == SIFT_COLW_32 ? PG_INT32_MAX : PG_INT64_MAX;
+	uint64		lo,
+				hi;
+
+	switch (op)
+	{
+		case SCMP_EQ:
+			lo = hi = c;
+			break;
+		case SCMP_NE:
+			lo = (uint64) c + 1;
+			hi = (uint64) c - 1;
+			break;
+		case SCMP_LT:
+			lo = tmin;
+			hi = (uint64) c - 1;
+			break;
+		case SCMP_LE:
+			lo = tmin;
+			hi = c;
+			break;
+		case SCMP_GT:
+			lo = (uint64) c + 1;
+			hi = tmax;
+			break;
+		default:
+			lo = c;
+			hi = tmax;
+	}
+	if ((op == SCMP_LT && c == tmin) || (op == SCMP_GT && c == tmax))
+		clear_words(out, n);
+	else
+		sift_colk->range[slot](v, n, lo & wmax, (hi - lo) & wmax, out);
+}
+
+/* the rows of `rows` (n bits) are in out (res) or are not */
+static void
+set_rows(const uint64 *rows, int n, bool res, uint64 *out)
+{
+	for (int w = 0; w < (n + 63) / 64; w++)
+	{
+		uint64		m = (n - w * 64 >= 64) ? rows[w] : rows[w] & ((UINT64CONST(1) << (n - w * 64)) - 1);
+
+		out[w] = res ? out[w] | m : out[w] & ~m;
+	}
+}
+
+static void
+eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, p->leaf);
+	const SiftSrcLeaf *lf = &ex->lay->leaf[p->leaf];
+	SiftCmpOp	op = (SiftCmpOp) p->op;
+
+	if (st->cnull)
+	{
+		clear_words(out, n);
+		return;
+	}
+	switch (lf->vtype)
+	{
+		case SCV_I32:
+			{
+				int64		c = st->ci;
+
+				if (c > PG_INT32_MAX || c < PG_INT32_MIN)
+				{
+					/* beyond int32 the comparison is the same for every value */
+					bool		above = c > PG_INT32_MAX,
+								res;
+
+					switch (op)
+					{
+						case SCMP_EQ:
+							res = false;
+							break;
+						case SCMP_NE:
+							res = true;
+							break;
+						case SCMP_LT:
+						case SCMP_LE:
+							res = above;
+							break;
+						default:
+							res = !above;
+					}
+					if (res)
+						fill_ones(out, n);
+					else
+						clear_words(out, n);
+				}
+				else
+					cmp_int(out, (const int32 *) v->data + start, SIFT_COLW_32, n, op, c);
+			}
+			break;
+		case SCV_I64:
+			if (lf->typid != NUMERICOID)
+				cmp_int(out, (const int64 *) v->data + start, SIFT_COLW_64, n, op, st->ci);
+			else if (st->konst >= 0)
+			{
+				if (st->konst)
+					fill_ones(out, n);
+				else
+					clear_words(out, n);
+			}
+			else
+				cmp_int(out, (const int64 *) v->data + start, SIFT_COLW_64, n, (SiftCmpOp) st->nop, (int64) st->cn);
+			break;
+		case SCV_F64:
+			sift_aggk->cmp_f64(out, (const double *) v->data + start, n, op, st->cd);
+			break;
+		default:
+			elog(ERROR, "sift: comparison on a dictionary leaf");
+	}
+	if (v->ovf && lf->typid == NUMERICOID)
+		set_rows(v->ovf + start / 64, n, st->nan_res, out);
+	clear_nulls(ex, v, start, n, out);
+}
+
+/* bit (sign + 1) of the mask of a SiftCmpOp: the comparison holds when the three-way result has that sign */
+static const uint8 cmp_signs[] = {2, 5, 1, 3, 4, 6};
+
+/* the program's values against the scaled operand, the NULL rows out */
+static void
+eval_ncmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
+{
+	const sift_i128 *x;
+
+	clear_words(out, n);
+	if (st->cnull || (st->konst == 0 && !st->nan_res))
+		return;
+	for (int i = 0; i < n; i++)
+		ex->pix[i] = start + i;
+	x = eval_nx(ex, &p->num, n, ex->pix, ex->pix, ex->nb, ex->alive);
+	for (int i = 0; i < n; i++)
+		if (!ex->nb[i] && (x[i] == SIFT_NX_NAN ? st->nan_res : st->konst == 1 || (st->konst < 0 && (cmp_signs[st->nop] >> ((x[i] > st->cn) - (x[i] < st->cn) + 1) & 1))))
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
+static inline int64
+vec_int(const void *data, SiftSrcVecType t, int64 i)
+{
+	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
+}
+
+/* PostgreSQL's order of float8: NaN equals NaN and is greater than every number, -0 equals 0 */
+static inline int
+float_order(double a, double b)
+{
+	return isnan(a) ? !isnan(b) : isnan(b) ? -1 : (a > b) - (a < b);
+}
+
+/* an element leaf against a leaf of its row: the value of the row for each element is gathered by the owner of the element, NULL on either side is not true */
+static void
+eval_elem_row(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *ev = get_vec(ex, p->leaf),
+			   *rv = get_vec(ex, p->leaf2);
+	const SiftSrcLeaf *el = &ex->lay->leaf[p->leaf],
+			   *rl = &ex->lay->leaf[p->leaf2];
+	const uint32 *par = array_parent(ex, el->parent) + start;
+	uint8		sign = cmp_signs[p->op];
+
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+	{
+		int			c;
+
+		if ((ev->isnull && ev->isnull[start + i]) || (rv->isnull && rv->isnull[par[i]]))
+			continue;
+		if (el->vtype == SCV_F64)
+			c = float_order(((const double *) ev->data)[start + i], ((const double *) rv->data)[par[i]]);
+		else
+		{
+			int64		a = vec_int(ev->data, el->vtype, start + i),
+						b = vec_int(rv->data, rl->vtype, par[i]);
+
+			c = (a > b) - (a < b);
+		}
+		out[i >> 6] |= (uint64) (sign >> (c + 1) & 1) << (i & 63);
+	}
+}
+
+/* out = ~out, then the NULL rows out */
+static void
+negate(AggExec *ex, uint64 *out, int n)
+{
+	uint64	   *all = ex->tmpm2;
+
+	fill_ones(all, n);
+	sift_colk->bits_andnot(all, out, (n + 63) / 64);
+	memcpy(out, all, ((n + 63) / 64) * sizeof(uint64));
+}
+
+static void
+eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, p->leaf);
+
+	if (st->cnull || (p->op && st->in_hasnull))
+	{
+		clear_words(out, n);	/* x IN NULL, x NOT IN (.., NULL): never true */
+		return;
+	}
+	if (p->op && st->in_empty)
+	{
+		fill_ones(out, n);
+		return;
+	}
+	if (ex->lay->leaf[p->leaf].vtype == SCV_I64)
+	{
+		const int64 *x = (const int64 *) v->data + start;
+
+		clear_words(out, n);
+		if (st->in_htab)
+			for (int i = 0; i < n; i++)
+				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+		else
+			for (int i = 0; i < n; i++)
+			{
+				uint64		u = (uint64) x[i] - (uint64) st->in_lo;
+
+				out[i >> 6] |= (uint64) (u < st->in_nlut && st->in_lut[u]) << (i & 63);
+			}
+	}
+	else if (st->in_sorted)
+	{
+		const int32 *x = (const int32 *) v->data + start;
+
+		clear_words(out, n);
+		for (int i = 0; i < n; i++)
+			if (bsearch(&x[i], st->in_sorted, st->in_nsorted, sizeof(int32), int32_cmp_asc))
+				out[i >> 6] |= UINT64CONST(1) << (i & 63);
+	}
+	else
+		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, (int32) st->in_lo, st->in_nlut, st->in_lut);
+	if (p->op)
+		negate(ex, out, n);
+	clear_nulls(ex, v, start, n, out);
+}
+
+/* the JSON nulls of the leaf's NULL slots in the unit, read once (SNULL_JSON, SNULL_MISSING) */
+static const uint64 *
+jnull_bits(AggExec *ex, SiftAggPred *p, int nslots)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->rowmask_ok)
+	{
+		st->rowmask = MemoryContextAllocZero(ex->ucxt, ((nslots + 63) / 64 + PADW) * sizeof(uint64));
+		sift_colsrc_read_jnull(ex->src, &ex->unit, p->leaf, st->rowmask);
+		st->rowmask_ok = true;
+	}
+	return st->rowmask;
+}
+
+static void
+eval_null(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, p->leaf);
+
+	if (p->op >= SNULL_JSON)
+	{
+		const uint64 *jn = jnull_bits(ex, p, v->n) + start / 64;
+
+		memcpy(out, jn, ((n + 63) / 64) * sizeof(uint64));
+		if (p->op == SNULL_MISSING && v->isnull != NULL)
+		{
+			uint64		nul[VECW + PADW];
+
+			sift_colk_nonzero(v->isnull + start, n, nul);
+			sift_colk->bits_andnot(nul, out, (n + 63) / 64);
+			memcpy(out, nul, ((n + 63) / 64) * sizeof(uint64));
+		}
+		else if (p->op == SNULL_MISSING)
+			clear_words(out, n);
+		return;
+	}
+	if (v->isnull == NULL)
+	{
+		if (p->op)
+			fill_ones(out, n);
+		else
+			clear_words(out, n);
+		return;
+	}
+	sift_colk_nonzero(v->isnull + start, n, out);
+	if (p->op)
+		negate(ex, out, n);
+}
+
+/* boolean slot p->op of a combo without a join, over [start, start + n) of the elements (qlevel 1) or rows; only the items alive in ex->alive are evaluated */
+static void
+eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out)
+{
+	ComboSt    *cs = &ex->cs[p->leaf];
+
+	const uint32 *par = qlevel ? unit_parent(ex) : NULL;
+
+	for (int i = 0; i < n; i++)
+	{
+		ex->pti[i] = start + i;
+		ex->pri[i] = qlevel ? par[start + i] : start + i;
+	}
+	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive, NULL);
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+		if (ex->peid[i] != COMBO_NONE && combo_val(ex, p->leaf, cs->ent[ex->peid[i]].base, p->op))
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
+typedef struct LutFill
+{
+	AggExec    *ex;
+	SiftAggPred *p;
+} LutFill;
+
+static void
+pred_lut_fill(void *arg, int32 v, void *entry)
+{
+	LutFill    *f = arg;
+	PredState  *st = &f->ex->ps[f->p->id];
+
+	*(uint8 *) entry = eval_bool(f->ex, st->expr, leaf_datum(st->param->paramtype, v), false);
+}
+
+/* The rows of tmpm, each tested on its own: the values are too far apart for a table (what the statistics did not show) */
+static void
+lut_rows(AggExec *ex, PredState *st, const int32 *vals, int n, uint64 *out)
+{
+	Oid			typ = st->param->paramtype;
+
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+		if ((ex->tmpm[i >> 6] >> (i & 63)) & 1 && eval_bool(ex, st->expr, leaf_datum(typ, vals[i]), false))
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
+static void
+eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, p->leaf);
+	const SiftSrcLeaf *lf = &ex->lay->leaf[p->leaf];
+
+	if (lf->vtype == SCV_CODE)
+	{
+		DictSlot   *s = dict_slot(ex, v->dict);
+		uint64	   *lut = dict_lut(ex, s, v->dict, p);
+		const uint32 *codes = (const uint32 *) v->data + start;
+
+		if (v->isnull)
+		{
+			for (int i = 0; i < n; i++)
+				ex->tmpu32[i] = v->isnull[start + i] ? v->dict->n : codes[i];
+			codes = ex->tmpu32;
+		}
+		sift_colk->lut[SIFT_COLW_32](codes, n, lut, out);
+	}
+	else
+	{
+		const int32 *vals = (const int32 *) v->data + start;
+		int32		mn,
+					mx;
+		LutFill		f = {ex, p};
+		int			nw = (n + 63) / 64;
+
+		fill_ones(ex->tmpm, n);
+		if (v->isnull)
+		{
+			sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
+			sift_colk->bits_andnot(ex->tmpm, ex->tmpm2, nw);
+		}
+		if (sift_aggk->minmax_i32(&mn, &mx, vals, ex->tmpm, n))
+		{
+			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+			if (rt_span(&st->rt, mn, mx) > MAX_RANGE)
+				lut_rows(ex, st, vals, n, out);
+			else
+			{
+				rt_cover(&st->rt, mn, mx, pred_lut_fill, &f);
+				/* a null row reads whatever its slot holds: the result is replaced below */
+				sift_aggk->lut_i32(out, vals, n, st->rt.lo, (uint32) ((int64) st->rt.hi - st->rt.lo + 1), (uint8 *) st->rt.tab);
+			}
+			MemoryContextSwitchTo(old);
+		}
+		else
+			clear_words(out, n);
+		if (v->isnull)
+		{
+			sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
+			sift_colk->bits_andnot(out, ex->tmpm2, nw);
+			if (st->null_result)
+				sift_colk->bits_or(out, ex->tmpm2, nw);
+		}
+	}
+}
+
+/*
+ * The rows (nrow bits in out) that own an element whose bit is set in eb, the elements of row r being [offs[r], offs[r + 1]). eb has a
+ * word of room past its elements. A row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows
+ * take the slow way).
+ */
+void
+rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
+{
+	memset(out, 0, ((nrow + 63) / 64) * sizeof(uint64));
+	for (int r = 0; r < nrow; r++)
+	{
+		uint32		lo = offs[r],
+					len = offs[r + 1] - lo;
+		uint64		x;
+
+		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
+		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
+		if (len > 56)
+			x |= last_bit(eb, lo, lo + len) >= 0;
+		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
+	}
+}
+
+/*
+ * A row of a heap is at the TID of the root of its HOT chain in the index, and its ctid is the visible version's, on the same page: the rows of the
+ * blocks inside the range pass, those of its first and last block are fetched for the version the snapshot sees (none: the row is not the scan's).
+ */
+static bool
+tid_row_in(AggExec *ex, ItemPointerData *tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumberNoCheck(tid);
+	uint64		key;
+
+	if (blk < ex->tid_blo || blk > ex->tid_bhi)
+		return false;
+	if (blk > ex->tid_blo && blk < ex->tid_bhi)
+		return true;
+	if (ex->tid_vis && !sift_vis_fetch(ex->tid_vis, tid, ex->tid_slot))
+		return false;
+	key = (uint64) ItemPointerGetBlockNumberNoCheck(tid) << 16 | ItemPointerGetOffsetNumberNoCheck(tid);
+	return key >= ex->tid_lo && key < ex->tid_hi;
+}
+
+/* SAP_TID on the rows [start, start + n) of the unit: the first conjunct tests the range of all, a unit inside it needs no TID */
+static void
+eval_tid(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	uint64		first = (uint64) ex->unit.sb * SIFT_SB_PAGES << 16,
+				last = first + ((uint64) SIFT_SB_PAGES << 16) - 1;
+	if (p->id != ex->tid_pred || (ex->tid_lo <= first && last < ex->tid_hi))
+	{
+		fill_ones(out, n);
+		return;
+	}
+	clear_words(out, n);
+	if (ex->tid_hi <= first || ex->tid_lo > last)
+		return;
+	for (int i = 0; i < n; i++)
+		ex->tid_rows[i] = start + i;
+	sift_colsrc_tids(ex->src, &ex->unit, ex->tid_rows, n, ex->tid_tids);
+	for (int i = 0; i < n; i++)
+		out[i >> 6] |= (uint64) tid_row_in(ex, &ex->tid_tids[i]) << (i & 63);
+}
+
+/* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
+static void
+any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
+{
+	const uint32 *offs = elem_offs(ex, p->leaf);
+	int			nrow = ex->unit.nrow,
+				nw = (nrow + 63) / 64;
+	uint32		m = offs[nrow];
+	uint64	   *eb = MemoryContextAllocZero(ex->ucxt, ((m + 63) / 64 + PADW + 1) * sizeof(uint64));
+	uint64		t[VECW + PADW];
+
+	for (uint32 s = 0; s < m; s += VEC)
+	{
+		int			n = Min(VEC, m - s);
+
+		eval_pred(ex, p->child[0], 1, s, n, t);
+		memcpy(eb + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
+	}
+	rows_of_elems(offs, nrow, eb, out);
+	if (p->op)
+	{
+		for (int w = 0; w < nw; w++)
+			out[w] = ~out[w];
+		if (nrow & 63)
+			out[nw - 1] &= (UINT64CONST(1) << (nrow & 63)) - 1;
+	}
+}
+
+/* the bitmap of a row level predicate over the unit's rows, computed once */
+uint64 *
+row_bitmap(AggExec *ex, SiftAggPred *p)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->rowmask_ok)
+	{
+		int			nrow = ex->unit.nrow;
+
+		st->rowmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
+		if (p->kind == SAP_ANY_ELEM)
+			any_elem_rows(ex, p, st->rowmask);
+		else
+			for (int s = 0; s < nrow; s += VEC)
+				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
+		st->rowmask_ok = true;
+	}
+	return st->rowmask;
+}
+
+void
+eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out)
+{
+	PredState  *st = &ex->ps[p->id];
+	int			nw = (n + 63) / 64;
+
+	if (p->level < qlevel && !p->late && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
+	{
+		/* a row level predicate seen from the elements */
+		sift_aggk->gather_bits(out, row_bitmap(ex, p), unit_parent(ex) + start, n);
+		return;
+	}
+	if (!st->ready && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NCMP || p->kind == SAP_GATE))
+		eval_operand(ex, p, st);
+	switch (p->kind)
+	{
+		case SAP_TRUE:
+			fill_ones(out, n);
+			break;
+		case SAP_GATE:
+			if (st->konst)
+				fill_ones(out, n);
+			else
+				clear_words(out, n);
+			break;
+		case SAP_FALSE:
+			clear_words(out, n);
+			break;
+		case SAP_AND:
+		case SAP_OR:
+			{
+				uint64		tmp[VECW + PADW],
+							live[VECW + PADW];
+				const uint64 *alive0 = ex->alive;
+
+				eval_pred(ex, p->child[0], qlevel, start, n, out);
+				for (int i = 1; i < p->nchild; i++)
+				{
+					/* AND takes the next argument only for the items still true, OR for the items still false (an argument may raise an error) */
+					if (p->late)
+					{
+						if (alive0)
+							memcpy(live, alive0, nw * sizeof(uint64));
+						else
+							fill_ones(live, n);
+						if (p->kind == SAP_AND)
+							sift_colk->bits_and(live, out, nw);
+						else
+							sift_colk->bits_andnot(live, out, nw);
+						ex->alive = live;
+					}
+					eval_pred(ex, p->child[i], qlevel, start, n, tmp);
+					ex->alive = alive0;
+					if (p->kind == SAP_AND)
+						sift_colk->bits_and(out, tmp, nw);
+					else
+						sift_colk->bits_or(out, tmp, nw);
+				}
+			}
+			break;
+		case SAP_CMP:
+			eval_cmp(ex, p, st, start, n, out);
+			break;
+		case SAP_NCMP:
+			eval_ncmp(ex, p, st, start, n, out);
+			break;
+		case SAP_IN:
+			eval_in(ex, p, st, start, n, out);
+			break;
+		case SAP_NULL:
+			eval_null(ex, p, start, n, out);
+			break;
+		case SAP_LUT:
+			eval_lut(ex, p, st, start, n, out);
+			break;
+		case SAP_COMBO:
+			eval_combo(ex, p, qlevel, start, n, out);
+			break;
+		case SAP_ANY_ELEM:
+			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
+			break;
+		case SAP_ELEM_ROW:
+			eval_elem_row(ex, p, start, n, out);
+			break;
+		case SAP_TID:
+			eval_tid(ex, p, start, n, out);
+			break;
+		case SAP_TYPE:
+		case SAP_WIDE:
+			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source");
+	}
+}

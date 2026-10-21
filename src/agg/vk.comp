@@ -1,0 +1,106 @@
+#version 450
+// Filtered count / sums / low cardinality group-by straight on the chunks of the column codec (docs/GPU.md, src/agg/vk.h).
+//
+// Chunk layouts (docs/COL-CODEC.md): bit-packed fields in the vertical layout, 32 rows of 32 lanes per block (a tile of 1024 values): value
+// i = block * 1024 + row * 32 + lane, the field of lane l and row r at bit r*W of the lane's word stream, word k of lane l at
+// words[block * 32 * W + 32 * k + l]; or plain little endian fields of 1, 2 or 4 bytes.
+//
+// One workgroup = 128 threads = the 4 x 8 rows of a tile (thread = lane, so a warp reads 32 consecutive words), and up to 32 tiles of one unit.
+// Every predicate is a range test on the field, (f - flo) <= span in unsigned arithmetic (the host turned the key range into the field range
+// of the chunk, as the codec's own filter does). Counts and sums are integers: a sum is added as the 16-bit halves of its field, so 32-bit
+// accumulators cannot overflow in 32768 values and the result is the same whatever the order of the additions. The host adds the parts.
+//
+// No extension is needed: core Vulkan 1.0 compute, shared memory atomics, a barrier.
+
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) readonly buffer Words { uint words[]; };
+layout(std430, binding = 1) readonly buffer Desc { uvec4 desc[]; };		// [unit * nslots + slot] = word offset, mode, flo, span
+layout(std430, binding = 2) readonly buffer Wgs { uvec4 wgs[]; };		// workgroup -> unit, first tile, tiles, rows of the unit
+layout(std430, binding = 3) writeonly buffer Out { uint outv[]; };		// [workgroup][group][count, lo, hi, lo, hi ..]
+
+layout(push_constant) uniform PC
+{
+	uint npred, nsum, groups;
+} pc;
+
+const uint MAXRS = 9u;
+shared uint acc[64u * MAXRS];
+
+uint field(uvec4 d, uint tile, uint l, uint r)
+{
+	uint W = d.y & 0xFFu;
+	if (W == 0u)
+		return 0u;
+	if ((d.y & 0x100u) != 0u)
+	{
+		uint bo = (tile * 1024u + r * 32u + l) * (W >> 3);
+		uint w = words[d.x + (bo >> 2)];
+		return W == 32u ? w : ((w >> ((bo & 3u) * 8u)) & ((1u << W) - 1u));
+	}
+	uint bp = r * W;
+	uint k = bp >> 5;
+	uint s = bp & 31u;
+	uint o = d.x + tile * 32u * W + l;
+	uint x = words[o + k * 32u] >> s;
+	if (s + W > 32u)
+		x |= words[o + (k + 1u) * 32u] << (32u - s);
+	return W < 32u ? (x & ((1u << W) - 1u)) : x;
+}
+
+void main()
+{
+	uvec4 wg = wgs[gl_WorkGroupID.x];
+	uint t = gl_LocalInvocationID.x;
+	uint l = t & 31u;
+	uint q = t >> 5;
+	uint nslots = pc.npred + 1u + pc.nsum;
+	uint rs = 1u + 2u * pc.nsum;
+	bool grouped = pc.groups != 0u;
+	uint ng = grouped ? pc.groups : 1u;
+	uint nacc = grouped ? 64u : 32u;		// ungrouped: one copy per lane, summed at the end, so that threads do not queue on one word
+
+	for (uint i = t; i < nacc * rs; i += 128u)
+		acc[i] = 0u;
+	barrier();
+
+	uint ubase = wg.x * nslots;
+	for (uint ti = 0u; ti < wg.z; ti++)
+	{
+		uint tile = wg.y + ti;
+		for (uint rr = 0u; rr < 8u; rr++)
+		{
+			uint r = q * 8u + rr;
+			if (tile * 1024u + r * 32u + l >= wg.w)
+				break;
+			bool pass = true;
+			for (uint p = 0u; p < pc.npred && pass; p++)
+			{
+				uvec4 d = desc[ubase + p];
+				bool inr = (field(d, tile, l, r) - d.z) <= d.w;
+				pass = inr != ((d.y & 0x200u) != 0u);
+			}
+			if (!pass)
+				continue;
+			uint g = grouped ? (field(desc[ubase + pc.npred], tile, l, r) & 63u) : l;
+			atomicAdd(acc[g * rs], 1u);
+			for (uint s = 0u; s < pc.nsum; s++)
+			{
+				uint f = field(desc[ubase + pc.npred + 1u + s], tile, l, r);
+				atomicAdd(acc[g * rs + 1u + 2u * s], f & 0xFFFFu);
+				atomicAdd(acc[g * rs + 2u + 2u * s], f >> 16);
+			}
+		}
+	}
+	barrier();
+	for (uint i = t; i < ng * rs; i += 128u)
+	{
+		uint v = 0u;
+		if (grouped)
+			v = acc[i];
+		else
+			for (uint c = 0u; c < 32u; c++)
+				v += acc[c * rs + i];
+		outv[gl_WorkGroupID.x * ng * rs + i] = v;
+	}
+}

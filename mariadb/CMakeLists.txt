@@ -39,7 +39,7 @@ file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/VERSION SIFT_VERSION LIMIT_COUNT 1)
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(SRC ${ROOT}/src)
 # the sources include each other by their path from src/ (src/agg and src/compat: see src/areas.mk)
-set(SIFT_INCDIRS ${SRC} ${SRC}/agg ${SRC}/compat)
+set(SIFT_INCDIRS ${SRC})
 set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN})
 

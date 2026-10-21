@@ -24,8 +24,8 @@ class SelectionTest(unittest.TestCase):
         for path, expected in {
             'src/bm25/query.c': list(SELECT.ALL),
             'src/col/compress.c': ['smoke', 'agg', 'storage'],
-            'src/agg/sift_agg.c': ['smoke', 'agg'],
-            'src/agg/sift_aggplan.c': ['smoke', 'agg'],
+            'src/agg/agg.c': ['smoke', 'agg'],
+            'src/agg/plan.c': ['smoke', 'agg'],
             'src/table/am.c': ['smoke', 'storage'],
             'sqlite/host/host.h': ['smoke'],
             '.github/workflows/assert.yml': [],
@@ -67,7 +67,7 @@ class SelectionTest(unittest.TestCase):
     def test_aggregate_change_with_its_tests_selects_only_the_aggregate_group(self):
         # The diff of an aggregate PR: sources, tests of every kind, fixtures and documentation.
         self.assertEqual(self.selected(
-            'src/agg/sift_agg.c', 'src/agg/sift_aggspec.h', 'docs/AGG.md', 'README.md', 'test/sql/agg_semi_lut.sql',
+            'src/agg/agg.c', 'src/agg/spec.h', 'docs/AGG.md', 'README.md', 'test/sql/agg_semi_lut.sql',
             'test/expected/agg_semi_lut.out', 'test/col/fixtures/k_keys_9.sql',
             'test/isolation/specs/agg_correlated_snapshot.spec'), ['smoke', 'agg'])
         # Only the aggregate sources keep the aggregate stack to the aggregate group: the column sources feed the table readers.
@@ -76,7 +76,7 @@ class SelectionTest(unittest.TestCase):
     def test_aggregate_change_still_runs_every_correctness_job_of_the_stack(self):
         # The focused gate ignores {ci}; the CI jobs of the column and table groups keep running for an aggregate change.
         regex = subprocess.check_output(['bash', str(ROOT/'scripts/ci.sh'), '--areas-regex', str(ROOT/'scripts/areas.tsv'),
-                                         'src/agg/sift_agg.c'], text=True).strip()
+                                         'src/agg/agg.c'], text=True).strip()
         jobs = ['installcheck-agg_semi_lut', 'installcheck-col_search', 'installcheck-tbl_cap', 'difftest-col', 'isolation', 'fuzz', 'installcheck-count_scan']
         picked = subprocess.check_output(['bash', '-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs], text=True).split()
         self.assertEqual(picked, jobs[:5])

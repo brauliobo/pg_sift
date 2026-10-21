@@ -45,7 +45,7 @@ F-COL-1 is fixed: `chunk_lut` gives a table of at most 16 bits a bit for every c
 above 16 bits, the codec's offsets in `cc_lut`) with `codes_below` before the LUT kernels read them (ERRCODE_DATA_CORRUPTED). The inputs of the
 three paths (FOR32, PACK, CC with a valid check word) are in test/fuzz/regress/, replayed by `make -C test/fuzz regress` and first in every
 `colchunk` run; scripts/fuzz.sh no longer skips the LUT check. The same check guards the code lanes the aggregate executor
-indexes its dictionary tables with (`eval_lut` in src/agg/sift_agg.c, the group maps; P1-6): `sift_cchunk_decode_codes` in `sift_col_read_lane` and
+indexes its dictionary tables with (`eval_lut` in src/agg/pred.c, the group maps; P1-6): `sift_cchunk_decode_codes` in `sift_col_read_lane` and
 `sift_ccodes_below` in `read_positions` raise ERRCODE_DATA_CORRUPTED for a code above the dictionary size (the tables have one entry more, for NULL).
 Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no code above the dictionary is ever returned).
 
@@ -54,7 +54,7 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 | Where | Corruption to try | Effect | Status at 3.0.2 |
 |---|---|---|---|
 | src/col/scan_unit.c `unit_group`, src/col/batch.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
-| (fixed, P1-6) src/col/scan_read.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/sift_agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
+| (fixed, P1-6) src/col/scan_read.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
 | src/bm25/posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
 | src/bm25/segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
 | src/bm25/bitmap.c `sift_chunk_pagemask` | DOCMAP chunk byte0 0xB0, entry 00 00 FF FF | writes `pm[1023]` | open (source read: the page index is not bounded) |

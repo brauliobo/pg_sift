@@ -107,7 +107,7 @@ tapcheck:
 difftest fuzz soak:
 	scripts/$@.sh
 
-# Rebuilds src/agg/sift_aggvk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
+# Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
 	scripts/gen-aggvk-spv.sh
 	scripts/gen-aggvk-min.py
