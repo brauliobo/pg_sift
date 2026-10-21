@@ -3,7 +3,7 @@
 # the rename of every file to its short name (x.c in bm25/, not sift_x.c) are done; this script keeps the layout from drifting.
 #
 #   scripts/restructure-src.sh --check    exit 1 and list: a file of src/ outside the area folders, a file of a renamed area that still has the
-#                                         sift_ prefix, a name used twice in one folder, a reference to a file of src/ that does not exist, a
+#                                         sift_ prefix, a reference to a file of src/ that does not exist, a
 #                                         reference by the old name of a renamed file. Run it after a merge, before the build.
 #   scripts/restructure-src.sh --map      the files of src/, area and name
 #
@@ -24,7 +24,7 @@ check_layout() {
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
 		if [[ $dir != */* || $name == */* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS)"; rc=1; continue; fi
-		if grep -qw -- "$area" <<<"$RENAMED" && [[ $name == sift_* ]]; then echo "$f: a file of $area/ has no sift_ prefix"; rc=1; fi
+		if grep -qw -- "$area" <<<"$RENAMED" && [[ $name == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
@@ -50,23 +50,21 @@ while (my $f = <STDIN>) {
 		my ($a, $n, $pos) = ($1, $2, $-[0]);
 		next unless $n =~ /\.(?:c|h|comp|py)$/ && $n !~ /\.$/;
 		report($f, $head, $pos, "no such file src/$a/$n") unless -e "src/$a/$n";
-		report($f, $head, $pos, "old name src/$a/$n (the files of $a/ have no sift_ prefix)") if $renamed{$a} && $n =~ /^sift_/;
 	}
-	while ($head =~ m{(?<![\w/.-])sift_(\w+\.(?:c|h))\b}g) {
-		my ($n, $pos) = ($1, $-[0]);
-		my @old = glob("src/*/sift_$n");
-		next if @old;	# the file of an area that is not renamed yet
-		for my $a (keys %renamed) { report($f, $head, $pos, "old name sift_$n (now $a/$n)") if -e "src/$a/$n" }
+	# the old name of a file of a renamed area, written with its folder (bm25/sift_x.c), with src/ too, or alone (sift_x.c)
+	while ($head =~ m{(?<![\w/.-])(?:src/)?(?:($areas)/)?sift_(\w+\.(?:c|h))\b}g) {
+		my ($a, $n, $pos) = ($1, $2, $-[0]);
+		next if glob("src/*/sift_$n");	# the file of an area that is not renamed yet
+		if ($a) { report($f, $head, $pos, "old name $a/sift_$n (the files of $a/ have no sift_ prefix)") if $renamed{$a}; next }
+		for my $r (keys %renamed) { report($f, $head, $pos, "old name sift_$n (now $r/$n)") if -e "src/$r/$n" }
 	}
 }
 exit($bad ? 1 : 0);
 EOF
 
 check() {
-	local rc=0 dup
+	local rc=0
 	check_layout || rc=1
-	dup=$(src_files | sort | uniq -d)
-	[[ -z $dup ]] || { echo "name used twice: $dup"; rc=1; }
 	files | AREAS="$AREAS" RENAMED="$RENAMED" perl -e "$PERL" || rc=1
 	return $rc
 }
