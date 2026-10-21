@@ -146,6 +146,24 @@ DROP TABLE e;
 CREATE INDEX bad1 ON d USING sift (cat) WITH (analyzer = keyword, stemmer = en);
 CREATE INDEX bad2 ON d USING sift (cat) WITH (analyzer = keyword, fields = 'a');
 CREATE INDEX bad3 ON d USING sift (cat) WITH (analyzer = nope);
+-- the refusal of the options is the leader's own error, also when workers are planned (which of the two errors the leader read first was a race)
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+DO $$
+DECLARE ctx text; n int := 0;
+BEGIN
+	FOR i IN 1..30 LOOP
+		BEGIN
+			CREATE INDEX bad_par ON d USING sift (cat) WITH (analyzer = keyword, stemmer = en);
+		EXCEPTION WHEN OTHERS THEN
+			GET STACKED DIAGNOSTICS ctx = PG_EXCEPTION_CONTEXT;
+			IF ctx LIKE '%parallel worker%' THEN n := n + 1; END IF;
+		END;
+	END LOOP;
+	IF n > 0 THEN RAISE EXCEPTION 'the error came from a parallel worker % times', n; END IF;
+END $$;
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
 SELECT * FROM sift.facets('d_body', 'd_body', 'common');
 SELECT * FROM sift.facets('d_cat', 'd_cat', 'common');
 SELECT * FROM sift.facets('d_body', 'd_pkey', 'common');
