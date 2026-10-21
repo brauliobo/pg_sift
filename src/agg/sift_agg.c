@@ -9695,10 +9695,7 @@ filter_init(AggExec *ex)
 		}
 }
 
-/*
- * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
- * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
- */
+/* the leaves the source reads again from the heap for the rows that hold a value they cannot store */
 static void
 recheck_init(AggExec *ex)
 {
@@ -9712,6 +9709,10 @@ recheck_init(AggExec *ex)
 		}
 }
 
+/*
+ * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
+ * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
+ */
 static void
 type_init(AggExec *ex)
 {
