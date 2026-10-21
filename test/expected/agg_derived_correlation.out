@@ -29,6 +29,14 @@ CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, json
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
  WITH (paths = 'document.parts[]{category text,value_num text,score float8,tone text}');
+-- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
+CREATE TABLE ops_facts AS
+SELECT id, dim_a_id, kind,
+ CASE WHEN id % 4 = 0 THEN document || '{"tag":"svc"}' WHEN id % 4 = 1 THEN document || '{"tag":"clean"}' WHEN id % 13 = 2 THEN '[1]'::jsonb ELSE document END AS document, payload
+FROM facts;
+CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, dim_a_id, kind, document, (document ? 'flag_a'), (document ->> 'tag'), jsonb_typeof(document))
+ WITH (paths = 'document.parts[]{category text}');
+VACUUM (FREEZE, ANALYZE) ops_facts;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (FREEZE, ANALYZE) odd_facts;
 VACUUM (FREEZE, ANALYZE) plain_facts;
@@ -147,6 +155,39 @@ $q$);
  f      | f        |           0
 (1 row)
 
+-- The operator ? is the call jsonb_exists, as the index column spells it.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND NOT (f.document ? 'flag_a') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- ->> of a key: a NULL for the documents that are arrays or lack the key.
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND m.category = (f.document ->> 'tag') LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- The type of the whole document (one argument).
+SELECT * FROM check_query($q$
+ SELECT m.derived_category, count(*) AS n FROM ops_facts f
+ LEFT JOIN LATERAL (SELECT derived_category FROM mappings m WHERE m.kind = f.kind AND jsonb_typeof(f.document) = 'object' AND m.category = 'svc' LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
 DROP FUNCTION check_query(text);
-DROP TABLE facts, odd_facts, plain_facts, dim_a, mappings;
+DROP TABLE facts, odd_facts, plain_facts, ops_facts, dim_a, mappings;
 DROP EXTENSION pg_sift;
