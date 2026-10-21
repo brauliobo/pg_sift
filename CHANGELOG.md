@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: pg_sift: `sift.col_verify(index, true)` no longer crashes the backend when another session's `VACUUM` or `ANALYZE` updates the index's statistics while it checks the heap: the check kept the index's cached state, which that update frees, across the tuples. Test `verify_relcache` (`sift.test_col_verify_inval`, testing builds).
 - Changed: pg_sift: SiftAgg prices a scan filtered by a lookup join by the units the zones of its keys leave (the mean zone width of the leaf, a key a point of the range), and a key filter of widely spread keys skips the units whose zone holds none of them
 
 - Added: the rollups of the elements of a list answer `GROUPING SETS`, `ROLLUP` and `CUBE` over the dims (each set folds the tuples again under its own columns, the keys outside it NULL), also with `FILTER`, tests on dims and derived keys; `GROUPING()` and the sets over the rows keep the scan.
