@@ -769,9 +769,6 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
-void gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
-void gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at);
-void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void arm_chunk(AggExec *ex, Tup *t);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
@@ -880,6 +877,13 @@ void gen_advance(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const Datum *arg
 void gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
 void gen_state_merge(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const char **cur);
 void gen_final(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g);
+
+/* gen_run.c */
+void gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
+void gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at);
+void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
+void gen_flush(AggExec *ex);
+void gen_finish(AggExec *ex);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
