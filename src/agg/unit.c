@@ -349,7 +349,7 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 		if (dict)
 			ids[j] = map[PA_NULL(g) ? dict->n : (uint32) key[g]];
 		else if (PA_NULL(g))
-			ids[j] = 0;
+			ids[j] = key_null_id(ex, ki);
 		else
 			ids[j] = cover ? ((const uint32 *) k->rt.tab)[(int32) key[g] - k->rt.lo] : ident_wide_id(ex, k, (int32) key[g]);
 	}
