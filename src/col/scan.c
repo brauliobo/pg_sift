@@ -206,7 +206,9 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 		src->capmem = Max(16, src->capmem * 2);
 		src->mem = src->mem ? repalloc(src->mem, src->capmem * sizeof(ColMem)) : MemoryContextAlloc(src->mcxt, src->capmem * sizeof(ColMem));
 	}
-	src->mem[src->nmem++] = (ColMem) {b, src->nmem, lane};
+	uint32		id = ++src->nmem;
+
+	src->mem[id - 1] = (ColMem) {b, id, lane};
 }
 
 void
