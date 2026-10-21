@@ -21,7 +21,7 @@ Arms (the set is the members of one group of the membership table: 1k, 2k, 5k en
   member_in_agg_lut_off   the same with sift.agg_semi_lut = off (only where the setting exists)
   array_generic_T / normal_plan_T   the array parameter and the literal list on a copy of the facts whose entity key is of type T (int8, text, date), 1k and 5k
   ch_literal_ins / ch_literal_tuned / ch_member_tuned   ClickHouse, a literal list / IN (SELECT ...) on a table in the order of id / on one
-                   partitioned by month and ordered by (source_id, entity_id, fact_date, id), max_threads 3
+                   partitioned by month and ordered by (src_id, entity_id, fact_date, id), max_threads 3
 """
 import argparse
 import datetime
@@ -48,7 +48,7 @@ TYPES = {   # key type -> (table, array cast, key of entity id N in the text of 
     'date': ('facts_by_date', 'date[]', lambda n: str(datetime.date(2000, 1, 1) + datetime.timedelta(days=n))),
 }
 WINDOW = "fact_date >= date '2025-10-01'"
-SELECT = "SELECT source_id, count(*), round(avg(score)::numeric, 4) FROM {T} WHERE deleted_at IS NULL AND " + WINDOW + " AND entity_id {P} GROUP BY 1 ORDER BY 1"
+SELECT = "SELECT src_id, count(*), round(avg(score)::numeric, 4) FROM {T} WHERE deleted_at IS NULL AND " + WINDOW + " AND entity_id {P} GROUP BY 1 ORDER BY 1"
 COMMON = ['set max_parallel_workers_per_gather = 2', 'set jit = off']
 FORCE = ['set seq_page_cost = 1000', 'set random_page_cost = 1000']   # keeps the SiftAgg plan when the normal plan would be picked
 CH_WINDOW = "fact_date >= toDate('2025-10-01')"
@@ -130,7 +130,7 @@ def cells(db, container, have_lut, group):
         for arm, (gucs, stmt) in pg.items():
             out.append((arm, size, 'pg', gucs, stmt))
         if container:
-            chsel = ("SELECT source_id, count(), round(avg(score), 4) FROM {t} WHERE deleted_at IS NULL AND " + CH_WINDOW + " AND entity_id IN ({P}) GROUP BY 1 ORDER BY 1")
+            chsel = ("SELECT src_id, count(), round(avg(score), 4) FROM {t} WHERE deleted_at IS NULL AND " + CH_WINDOW + " AND entity_id IN ({P}) GROUP BY 1 ORDER BY 1")
             chsub = "SELECT entity_id FROM memberships WHERE group_id = %d AND deleted_at IS NULL" % g
             out.append(('ch_literal_ins', size, 'ch', [], chsel.format(t='facts_ins', P=lst)))
             out.append(('ch_literal_tuned', size, 'ch', [], chsel.format(t='facts_tuned', P=lst)))

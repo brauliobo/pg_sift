@@ -57,8 +57,8 @@ for t in ('events_dn', 'events_dn_u'):
 	add('units', 'country_id = 7 on %s' % t, u, 'units')
 	add('units_pruned', 'country_id = 7 on %s' % t, p, 'units')
 psql("drop table if exists events_dn_late; create table events_dn_late as select * from events_dn;\n"
-	 "create index events_dn_late_col on events_dn_late using sift_col (entity_id, channel_id, lang_id, sentiment, event_date, score, deleted_at, country_id, category_id);\n"
-	 "insert into events_dn_late select id + 100000000, entity_id, channel_id, lang_id, sentiment, event_date, score, deleted_at, country_id, category_id "
+	 "create index events_dn_late_col on events_dn_late using sift_col (entity_id, channel_id, lang_id, signal, event_date, score, deleted_at, country_id, category_id);\n"
+	 "insert into events_dn_late select id + 100000000, entity_id, channel_id, lang_id, signal, event_date, score, deleted_at, country_id, category_id "
 	 "from events_dn_u where random() < 0.03;\nvacuum analyze events_dn_late;")
 u0, p0 = prune('events_dn', 'country_id = 7')
 u1, p1 = prune('events_dn_late', 'country_id = 7')

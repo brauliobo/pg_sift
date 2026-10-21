@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The shapes of a review analytics workload against the synthetic table of test/col/workload.sql (docs/AGG.md, "Workload shapes").
+# The shapes of an event analytics workload against the synthetic table of test/col/workload.sql (docs/AGG.md, "Workload shapes").
 #
 #   bench/sql/workload/run.sh build [ROWS]       a database (WL_DB, default sift_workload) with ROWS items (default 300000) and its column index
 #   bench/sql/workload/run.sh plans [FILE...]    the plan nodes of every shape (shapes/*.sql): the aggregate pushdown of the natural plan, then with

@@ -126,7 +126,7 @@ def sets_section(meta, rows):
         '3,000,000 facts of 200,000 entities (facts per entity: zipf, p50 5, p90 20, p99 135, the largest about 85,000), 30 sources, 40 languages, 1.5%% soft-deleted; the set is the members '
         'of one group of a 334,000-row membership table (60 groups of 100, 20 of 1,000, 4 of 2,000, 4 of 5,000, 8 of 10,000, 2 of 100,000). The sets of up to a few thousand ids are the ones the workload '
         'has today, larger ones are headroom. One client, the median of %s timed runs of the statement '
-        '`SELECT source_id, count(*), avg(score) ... WHERE deleted_at IS NULL AND fact_date >= <12 months ago> AND entity_id <set> GROUP BY 1`, in milliseconds, planning included '
+        '`SELECT src_id, count(*), avg(score) ... WHERE deleted_at IS NULL AND fact_date >= <12 months ago> AND entity_id <set> GROUP BY 1`, in milliseconds, planning included '
         '(lower is better); the plan the statement ran is in brackets. Build: pg_sift %s. %s %s' % (rows[0]['n'] if rows else '?', meta.get('build', sift), footer(meta), meta.get('method', '')),
         '',
     ] + table(['arm', 'statement'] + ['%s ids' % s for s in sizes], body, ['---', '---'] + ['---:'] * len(sizes))
