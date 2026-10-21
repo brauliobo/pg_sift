@@ -1,0 +1,33 @@
+name: neutral
+
+# The wording guard (scripts/check-neutral.sh, CONTRIBUTING.md): the tracked files, the commits of the pull request and its title and body. The title and the body
+# are edited without a push, so this workflow also runs on `edited`; it is apart from ci.yml, whose run an edit would cancel and repeat.
+# pull_request, not pull_request_target: the code of the pull request runs without a token that can write. The title and the body reach the script through the
+# environment only and are never part of the text of a command.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neutral-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  neutral:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Files, commits, pull request text
+        env:
+          NEUTRAL_PR_TITLE: ${{ github.event.pull_request.title }}
+          NEUTRAL_PR_BODY: ${{ github.event.pull_request.body }}
+          NEUTRAL_VOCAB: ${{ secrets.NEUTRAL_VOCAB }}
+        run: scripts/check-neutral.sh

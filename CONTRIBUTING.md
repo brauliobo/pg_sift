@@ -59,7 +59,7 @@ release tag.
 
 `src/` has one folder per area. A source includes another by its path from `src/` (`#include "bm25/query.h"`), a file is named for what it holds without the `sift_` prefix or its folder's name, and a new file goes to the folder of its area (`scripts/restructure-src.sh --check` fails for a file outside them or a stale path).
 
-`scripts/check-neutral.sh` fails a tracked file or a commit subject of the branch that holds a product-specific name: data, tests and docs use generic names (fact table, entities, `dim_a_id`, `group_members`). `scripts/ci.sh affected` runs it first, whatever the diff touches.
+`scripts/check-neutral.sh` keeps the repository generic. It fails a tracked file (name or text), a commit of the branch (subject or body) or the title or body of the pull request that holds a name of the private vocabulary (product, machine and application-domain names; it is read from `NEUTRAL_VOCAB_FILE` or the `NEUTRAL_VOCAB` secret, and without it only the structural rules run), a name that the naming vocabulary of `test/README.md` replaced, an address of a private range, a local domain name or the home directory of a person. Data, tests, benchmarks and docs use generic names (orders, events, docs, facts, `dim_a_id`, `tenant_id`). A generic use of a listed word goes into the private vocabulary with a path, a text pattern and the reason; the inet and cidr test data may use `10.0.0.x` and `192.168.x.x` (`scripts/neutral.allow`). `scripts/ci.sh affected` runs the guard first, whatever the diff touches; `.github/workflows/neutral.yml` runs it on every pull request, also when only the title or body is edited (they reach the script through the environment).
 
 Before sending a change:
 
