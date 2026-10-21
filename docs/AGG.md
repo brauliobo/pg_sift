@@ -159,6 +159,18 @@ or the estimated groups times the bytes of their best rows are more than the mem
 not spilled. A volatile function of the select list that PostgreSQL evaluates after the rows are picked does not matter. Fixtures `do_*`, `t_distinct_on`,
 `pa_distinct_on`, test `agg_distinct_on`.
 
+## Counting distinct values over the rows of a scan
+
+A report that aggregates per-row aggregates (`GROUP BY id, key`, a `UNION ALL` of such arms) and counts `count(DISTINCT id)` per group above them reads their rows through
+a join (a spine of periods) and a sort of every row on the group columns and the id. When the plan reads `Custom Scan (SiftAgg)` nodes and an aggregate counts distinct
+`int2`, `int4` or `int8` values, `Custom Scan (SiftAggRows)` takes the rows instead: a hash table of the groups (the first spelling of a key is the one shown), `count`, `sum`
+and `avg` per group (PostgreSQL's own transition and final functions, so the types and errors are the same), and for each argument of `count(DISTINCT x)` one set of
+(group, value) pairs with a bit for every aggregate of that argument that took the row, so `FILTER`s share it. The set is bounded by `hash_mem`; past it the pairs go to a
+tuplesort of narrow tuples and equal pairs are counted when the rows are done (`Distinct Sets Spilled` in `EXPLAIN ANALYZE`). The projection of the child plan evaluates the
+group expressions, arguments and `FILTER`s, so any expression is allowed there. Grouping sets, ordered or `DISTINCT` aggregates other than `count`, and aggregates other than
+`count`, `sum` and `avg` keep the normal plan. Sums and averages of floats add in arrival order (the sort adds in the order of the id), so the last digits can differ, as
+between the scan's own aggregates and the normal plan's. `sift.agg_rows = off` restores the sort.
+
 ## Workload shapes
 
 The shapes of an event analytics workload (an item table with jsonb metrics, a document with an array of parts, entity and mapping tables) are
