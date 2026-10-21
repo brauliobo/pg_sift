@@ -15,6 +15,7 @@
 #include "bm25/analyze.h"
 #include "bm25/analyze_tables.h"
 #include "core/varint.h"
+#include "core/cmp.h"
 
 /* Code point classes (bm25/analyze_tables.h entries >> 13) */
 enum
@@ -665,7 +666,7 @@ term_cmp(const SiftTermFreq *x, const SiftTermFreq *y)
 	int			c;
 
 	if (x->hash != y->hash)
-		return x->hash < y->hash ? -1 : 1;
+		return SIFT_CMP3(x->hash, y->hash);
 	c = memcmp(x->term, y->term, Min(x->len, y->len));
 	return c ? c : (int) x->len - (int) y->len;
 }

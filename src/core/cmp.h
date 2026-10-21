@@ -19,6 +19,9 @@ name(const void *a, const void *b) \
 	return (x > y) - (x < y); \
 }
 
+/* -1, 0 or 1: the order of two integers or enums, as fields of a comparator (not for floats: a NaN is neither above nor below) */
+#define SIFT_CMP3(a, b) (((a) > (b)) - ((a) < (b)))
+
 SIFT_DEFINE_CMP(sift_cmp_i64, int64_t)
 SIFT_DEFINE_CMP(sift_cmp_u64, uint64_t)
 SIFT_DEFINE_CMP(sift_cmp_u32, uint32_t)

@@ -478,7 +478,7 @@ sort_term_cmp(const void *x, const void *y, void *arg)
 			   *tc = &b->terms[c->idx];
 
 	if (a->prefix != c->prefix)
-		return a->prefix < c->prefix ? -1 : 1;
+		return SIFT_CMP3(a->prefix, c->prefix);
 	return sift_term_cmp(b->tbytes + ta->term_off, ta->len, b->tbytes + tc->term_off, tc->len);
 }
 

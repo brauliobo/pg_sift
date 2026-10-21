@@ -27,6 +27,7 @@
 #include "col/seg.h"
 #include "core/visibility.h"
 #include "col/scan_int.h"
+#include "core/cmp.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_jitter_us = 0;
@@ -242,8 +243,8 @@ mem_cmp(const void *a, const void *b)
 			   *y = *(ColMem *const *) b;
 
 	if (x->b->sb != y->b->sb)
-		return x->b->sb < y->b->sb ? -1 : 1;
-	return x->id < y->id ? -1 : x->id > y->id;
+		return SIFT_CMP3(x->b->sb, y->b->sb);
+	return SIFT_CMP3(x->id, y->id);
 }
 
 static bool
