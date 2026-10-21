@@ -28,7 +28,7 @@ renice -n 19 $$ >/dev/null
 WORK=$(mktemp -d "${SIFT_TMP:-/tmp}/sift-static-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 PGINC=$(pg_config --includedir-server)
-INC=(-I"$REPO/src" -I"$REPO/src/agg" -I"$REPO/src/compat")
+INC=(-I"$REPO/src")
 CFLAGS=(-std=gnu11 "${INC[@]}" -isystem "$PGINC" -isystem "$(pg_config --includedir-internal 2>/dev/null || echo "$PGINC")" -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD -D_GNU_SOURCE -march=x86-64)
 [[ -n $FILES ]] || FILES=$(cd "$REPO" && ls src/*/*.c | grep -v -E '_test\.c$')
 mapfile -t SRCS < <(tr ' ' '\n' <<<"$FILES" | sed '/^$/d')

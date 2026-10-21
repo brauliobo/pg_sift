@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 AREAS='core bm25 col agg table'
-RENAMED='bm25 col table core'
+RENAMED='bm25 col agg table core'
 KEEP='areas.mk portable.list portable-col.list'
 
 src_files() { git ls-files -- src | grep -v -E "^src/($(tr ' ' '|' <<<"$KEEP"))\$" || true; }
@@ -23,14 +23,14 @@ check_layout() {
 	local f dir area name rc=0
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
-		if [[ $dir != */* || $name == */* ]] || ! grep -qw -- "$area" <<<"$AREAS compat"; then echo "$f: not in a folder of src/ ($AREAS)"; rc=1; continue; fi
+		if [[ $dir != */* || $name == */* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS)"; rc=1; continue; fi
 		if grep -qw -- "$area" <<<"$RENAMED" && [[ $name == sift_* ]]; then echo "$f: a file of $area/ has no sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|bench/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|scripts/test-perf-select\.py$|src/(agg|compat)/)'	# src/agg keeps the old names until it is renamed; src/compat forwards them
+EXCLUDE='^(releases/|results/|bench/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|scripts/test-perf-select\.py$)'
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true
