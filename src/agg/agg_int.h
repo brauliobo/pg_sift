@@ -764,12 +764,14 @@ typedef struct FuseSt
 #pragma GCC visibility push(hidden)
 
 extern bool		sift_agg_dense;
+extern bool		sift_agg_semi_lut;
+extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
+extern bool		sift_agg_join_filter;
 extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
-void table_reset(AggExec *ex);
 void scan_items(AggExec *ex);
 
 /* leaf.c */
@@ -892,6 +894,24 @@ void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, 
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
 void preagg_init(AggExec *ex);
 void process_unit(AggExec *ex);
+
+/* init.c */
+void extend_layout(AggExec *ex);
+void init_states(AggExec *ex);
+void register_preds(AggExec *ex);
+void prune_init(AggExec *ex);
+void str_init(AggExec *ex);
+void filter_init(AggExec *ex);
+void recheck_init(AggExec *ex);
+void type_init(AggExec *ex);
+void wide_init(AggExec *ex);
+void tid_init(AggExec *ex, Snapshot snapshot);
+void register_key(AggExec *ex, int ki);
+void register_combos(AggExec *ex);
+void join_filters(AggExec *ex, MemoryContext caller);
+void table_init(AggExec *ex);
+void table_reset(AggExec *ex);
+void scan_buffers(AggExec *ex);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
