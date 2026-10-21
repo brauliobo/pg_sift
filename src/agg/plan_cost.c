@@ -604,9 +604,11 @@ static double
 zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
 	double		kept = join_key_zone(c, s, nkeyfilters);
+	List	   *rest;
 
-	for (int i = 0; i < s->npred; i++)
-		kept = Min(kept, s->pred[i]->kind == SAP_TID ? s->pred[i]->sel : pred_zone_kept(c, s->pred[i]));
+	kept = Min(kept, zone_sample_kept(c, s, &rest));
+	foreach_ptr(SiftAggPred, p, rest)
+		kept = Min(kept, p->kind == SAP_TID ? p->sel : pred_zone_kept(c, p));
 	return kept;
 }
 
