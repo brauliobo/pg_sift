@@ -91,9 +91,11 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   `float4`, `float8`, `text` leaves, read as the record column reads them, alone or inside an expression: a key, a filter, a bucket). It still refuses when anything else reads the leaf or its
   list (a path read, `jsonb_array_length` of the list, a test of the list at the top level, a top-level conjunct that may fail
   and is applied after the others, search) and when the provider cannot read rows again (`sift_table`, whose rows have no index
-  expressions). A value the shredder cannot store even after the coercion (the string `-0` in a float column, a list of more than
-  2^20 elements) stays an overflow and the scan raises its generic `0A000` error for it: the planner cannot know it beforehand.
-  A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is `AGG_RECHECK_FRAC` (2%) of the
+  expressions). A row read again is shredded with wider limits (2^24 list elements, 256 MB of text) and the string `-0` of a float
+  column is stored as 0 (a leaf never holds -0): the scan raises its generic `0A000` error only for a value written after the plan was made
+  and for a list or a text beyond those limits. A result that is all zeros prints the sign of the zero the scan accumulates, not of the `-0` SQL gives.
+  A filter or a key on the member of one key of a map leaf (`jsonb_extract_path(doc, 'k')`) next to a `jsonb_each` cast reads the rows read again like the others: a dirty value of another key
+  raises nothing for the rows that filter drops, as the normal plan. A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is `AGG_RECHECK_FRAC` (2%) of the
   rows of the units the leaf flags (the share of units whose zone carries the overflow flag, from the zones the planner reads anyway; one row
   for each flagged unit at least) at `AGG_RECHECK_ROW` (60) operator costs, so a few dirty rows in one unit cost one unit's rows, not 2% of the
   table. The per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that would make the price exact and was not needed for the numbers

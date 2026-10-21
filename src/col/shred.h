@@ -22,6 +22,8 @@
 #define SIFT_SHRED_DEFAULT_ELEMS	(1 << 20)
 #define SIFT_SHRED_DEFAULT_BYTES	(16 << 20)
 #define SIFT_SHRED_DEFAULT_KEYS		65536
+#define SIFT_SHRED_RECHECK_ELEMS	(1 << 24)	/* the limits of a row read again from the heap (sift_col_shred_row_rc) */
+#define SIFT_SHRED_RECHECK_BYTES	(256 << 20)
 #define SIFT_SHRED_MAX_KEY_BYTES	255
 #define SIFT_SHRED_NO_KEY			PG_UINT32_MAX
 /* the arrays of a document that grew past this many elements are released by the next sift_shred_begin */
