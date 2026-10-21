@@ -95,6 +95,7 @@ typedef struct SiftSrcStats
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
+	bool		jnull[SIFT_COLSRC_MAX_LEAVES];	/* some unit may hold a JSON null in the leaf (a write buffer, or a segment that cannot tell it from a missing key, may): its cast to a number raises before PostgreSQL 18 */
 	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value (column format below minor 6, docs/COL.md 2.2): a test that needs it raises the REINDEX error */
 } SiftSrcStats;
 
@@ -578,9 +579,9 @@ extern void sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnu
 /* The leaf of leaf def i of a shredded jsonb attribute (a sift_col index, or the declared paths of a sift_table); desc names the attribute and gives its type */
 struct SiftColDef;
 extern void sift_colsrc_def_leaf(const struct SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
-/* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries (ls[i], docs/COL.md "Statistics of a leaf"); wovf[i]: a write buffer holds an overflow value of leaf i */
+/* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries (ls[i], docs/COL.md "Statistics of a leaf"); wovf[i], wjnull[i]: a write buffer holds an overflow value, a JSON null, of leaf i */
 struct SiftColLeafStats;
-extern void sift_colsrc_leaf_stats(const struct SiftColDef *cols, int ncols, const struct SiftColLeafStats *ls, const bool *wovf, SiftSrcStats *st);
+extern void sift_colsrc_leaf_stats(const struct SiftColDef *cols, int ncols, const struct SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st);
 
 /* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
 static inline void

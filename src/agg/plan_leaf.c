@@ -537,8 +537,8 @@ func_var_leaf(AggCtx *c, Var *v)
  * The leaf an expression reads, -1 if it is not exactly a stored value: an attribute or index expression, a Var of the
  * unnested function's row type, a typed jsonb path of either, or the length of an array leaf.
  */
-int
-match_leaf(AggCtx *c, Node *e)
+static int
+match_leaf_node(AggCtx *c, Node *e)
 {
 	JsonRef		r = {0};
 	Oid			fid,
@@ -623,6 +623,19 @@ match_leaf(AggCtx *c, Node *e)
 	return -1;
 }
 
+/* match_leaf_node, noting the leaves read by the cast function of jsonb: before PostgreSQL 18 it raises for a JSON null (reads_json_null_cast) */
+int
+match_leaf(AggCtx *c, Node *e)
+{
+	int			leaf = match_leaf_node(c, e);
+
+#if PG_VERSION_NUM < 180000
+	if (leaf >= 0 && json_cast_target(func_of(strip_relabel(e))) != InvalidOid)
+		c->jcast = bms_add_member(c->jcast, leaf);
+#endif
+	return leaf;
+}
+
 /*
  * `x->>'k' IS [NOT] NULL` on a path whose leaf has another type than text (`attributes->normalized bool`) is the null test of that
  * leaf (`->>` turns a JSON null into NULL, so both are NULL for a missing key and a JSON null, both not NULL for a value). The
@@ -702,13 +715,12 @@ exists_mutator(Node *n, AggCtx *c)
 /*
  * `(x -> 'k')::integer` (or `bigint`) of a member the index holds as float8: the cast reads the jsonb the stored float stands for,
  * `to_jsonb(float8 member)`, the way a correlated child is given a member (a missing key and a JSON null are the same NULL, and the cast of a
- * JSON null is NULL in PostgreSQL 18, so not before it). The cast stays PostgreSQL's: it rounds as numeric does and raises `integer out of range`
- * for the rows that reach it.
+ * JSON null is NULL in PostgreSQL 18 and an error before it: there the leaf is a cast read, which spec_finish refuses when a unit may hold a JSON
+ * null, reads_json_null_cast). The cast stays PostgreSQL's: it rounds as numeric does and raises `integer out of range` for the rows that reach it.
  */
 static Node *
 jsonb_int_mutator(Node *n, AggCtx *c)
 {
-#if PG_VERSION_NUM >= 180000
 	FuncExpr   *f = (FuncExpr *) n;
 
 	if (n != NULL && IsA(n, FuncExpr) && (f->funcid == F_INT4_JSONB || f->funcid == F_INT8_JSONB))
@@ -724,7 +736,6 @@ jsonb_int_mutator(Node *n, AggCtx *c)
 			return (Node *) f;
 		}
 	}
-#endif
 	return n == NULL ? NULL : expression_tree_mutator(n, jsonb_int_mutator, c);
 }
 

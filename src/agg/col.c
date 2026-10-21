@@ -204,7 +204,7 @@ col_layout(Relation index)
  * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
  */
 void
-sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, SiftSrcStats *st)
+sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st)
 {
 	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
@@ -213,6 +213,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 
 		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
 		st->nokinds[i] = ls[i].nokinds;
+		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
@@ -235,7 +236,8 @@ static void
 col_stats(Relation index, SiftSrcStats *st)
 {
 	SiftColIndexMeta *meta = sift_col_index_meta(index);
-	bool		wovf[SIFT_COLSRC_MAX_LEAVES];
+	bool		wovf[SIFT_COLSRC_MAX_LEAVES],
+				wjnull[SIFT_COLSRC_MAX_LEAVES];
 
 	memset(st, 0, sizeof(*st));
 	st->nrows = meta->stats.nrows;
@@ -244,8 +246,11 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->allvisible_frac = meta->stats.allvisible_frac;
 	st->exact_frac = st->allvisible_frac;
 	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+	{
 		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
-	sift_colsrc_leaf_stats(meta->cols, meta->ncols, sift_col_leaf_stats(index), wovf, st);
+		wjnull[i] = (meta->stats.wbuf_jnull & SIFT_COL_OVF_BIT(i)) != 0;
+	}
+	sift_colsrc_leaf_stats(meta->cols, meta->ncols, sift_col_leaf_stats(index), wovf, wjnull, st);
 }
 
 static void *

@@ -384,6 +384,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->nvals += z->nvals[u];
 		acc->nnull += z->nnull[u];
 		acc->nokinds |= !leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]);
+		acc->has_jnull |= (z->flags[u] & SIFT_COLZ_JNULL) != 0;
 		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
 		{
 			acc->has_range = acc->has_sum = false;

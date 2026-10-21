@@ -92,6 +92,13 @@ zone_of_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n,
 		z->flags |= ovf[w] ? SIFT_COLZ_OVERFLOW : 0;
 }
 
+/* SIFT_COLZ_JNULL when the kinds mask (bit t: some slot is of kind t) has the JSON null */
+static inline uint32
+zone_jnull(uint32 kmask)
+{
+	return (kmask >> SIFT_COLTAG_JNULL & 1) ? SIFT_COLZ_JNULL : 0;
+}
+
 /* The zone of an inline STR chunk: the prefix keys of the smallest and largest value; no set, so none prunes (docs/COL.md 2.9) */
 static void
 istr_zone(const uint64 *nulls, const uint64 *ovf, uint32 n, const uint32 *off, const char *bytes, SiftCZone *z)
@@ -139,13 +146,15 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
 		istr_zone(c->nulls, c->ovf, c->n, off, bytes, z);
 		pfree(off);
 		pfree(bytes);
-		pfree(key);
-		return;
 	}
-	if (c->enc == SIFT_COLENC_CC)
-		sift_cc_close(cc_open(c, true));
-	sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
-	zone_of_keys(key, c->nulls, c->ovf, c->n, store, z);
+	else
+	{
+		if (c->enc == SIFT_COLENC_CC)
+			sift_cc_close(cc_open(c, true));
+		sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
+		zone_of_keys(key, c->nulls, c->ovf, c->n, store, z);
+	}
+	z->flags |= zone_jnull(c->kmask);
 	pfree(key);
 }
 
@@ -321,6 +330,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 	uint8		head[8];
 
 	zone_of_keys(key, nulls, ovf, n, store, z);
+	z->flags |= zone_jnull(kmask);
 	flags = chunk_flags(z, tags, kmask);
 	span = (uint64) z->max - (uint64) z->min;
 	codec_choose(span, n, &enc, &bits);
@@ -390,6 +400,7 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 		off[i + 1] = (uint32) bytes.len;
 	}
 	istr_zone(v->nulls, v->ovf, n, off, bytes.data, z);
+	z->flags |= zone_jnull(kmask);
 	head[2] = chunk_flags(z, tags, kmask);
 	memcpy(head + 4, &n, sizeof(n));
 	put_bytes(out, head, sizeof(head));

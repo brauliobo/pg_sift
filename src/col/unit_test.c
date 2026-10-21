@@ -238,7 +238,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 			SiftCChunk	codes;
 
 			check_strs(t, what, &ref, &ch);
-			check_zone_inline(t, what, &ref, &zones[col]);
+			check_zone_inline(t, what, &ref, &zones[col], tags);
 			CHECK(t, sift_cchunk_istr_codes(&ch, CurrentMemoryContext, &own, &codes), "%s: no codes of an inline chunk", what);
 			check_decode(t, what, &s->cols[col], own, &ref, &codes);
 			check_tests(t, what, &s->cols[col], own, &ref, &codes, &zones[col], false);
@@ -247,7 +247,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 			continue;
 		}
 		check_decode(t, what, &s->cols[col], dicts[col], &ref, &ch);
-		check_zone(t, what, &s->cols[col], dicts[col], &ref, &zones[col]);
+		check_zone(t, what, &s->cols[col], dicts[col], &ref, &zones[col], tags);
 		check_tests(t, what, &s->cols[col], dicts[col], &ref, &ch, &zones[col], false);
 		if (s->cols[col].store == SIFT_COLS_VAR)
 			check_lengths(t, what, &ref, &ch);

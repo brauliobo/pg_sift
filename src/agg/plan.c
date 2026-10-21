@@ -467,6 +467,32 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 	return false;
 }
 
+/*
+ * Does the spec cast the value of a leaf that may hold a JSON null with the cast function of jsonb? Before PostgreSQL 18 the cast raises for it
+ * (NULL since), as the scan, which reads the NULL slot, would not: the normal plan keeps the query. A leaf of a unit without JSON nulls keeps the scan.
+ */
+static bool
+reads_json_null_cast(AggCtx *c)
+{
+	Bitmapset  *casts = bms_intersect(c->jcast, c->read);
+	int			m = -1,
+				first = c->lay->nleaves - c->nvleaf;
+
+	while ((m = bms_next_member(casts, m)) >= 0)
+	{
+		int			src = m < first ? m : vleaf_source(c, m - first);
+
+		if (src >= 0 && c->stats.jnull[src])
+		{
+			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not cast \"%s\": some unit may hold a JSON null there, which the cast raises for before PostgreSQL 18",
+									leaf_name(c, src)),
+							 errhint("docs/COL.md 2.2")));
+			return true;
+		}
+	}
+	return false;
+}
+
 /* the leaves the spec reads and the combos; false when the spec cannot be run. keys: the group expressions of root's query */
 bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
@@ -489,7 +515,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	c->used = bms_union(c->used, c->elem_used);
 	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
 	finish_leaves(c, s);
-	if (reads_overflow(c, s))
+	if (reads_overflow(c, s) || reads_json_null_cast(c))
 		return false;
 	finish_combos(c, s);
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
