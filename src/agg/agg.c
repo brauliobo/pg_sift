@@ -115,6 +115,10 @@ sift_agg_init(void)
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.agg_rollup_cost",
+							 "Scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit is answered from its rollup only when that costs less (0: always).",
+							 NULL, &sift_agg_rollup_cost, 1.0, 0.0, 1000.0,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_dense",
 							 "Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples.",
 							 NULL, &sift_agg_dense, true,
@@ -884,6 +888,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			{
 				explain_pa_leaves(ex, es);
 				ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
+				if (c->n_rollup_cost > 0)
+					ExplainPropertyInteger("Units Scanned By Cost", NULL, c->n_rollup_cost, es);
 				if (c->n_rollup_queued > 0)
 					ExplainPropertyInteger("Rollup Refresh Queued", NULL, c->n_rollup_queued, es);
 			}

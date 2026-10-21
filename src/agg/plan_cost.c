@@ -553,6 +553,29 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	return cost;
 }
 
+/*
+ * The operators one unit costs from the pre-aggregates: the groups of a histogram, or the tuples of the rollup of the list (the product of the distinct
+ * values of its dims, at most the elements of the unit and the 4096 a unit holds), which the executor leaves for the scan of the elements when they cost less.
+ */
+static double
+preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double rows_out)
+{
+	double		tuples = 1.0,
+				elems,
+				ecost,
+				tcost;
+
+	if (s->group < 0)
+		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP;
+	for (int r = 0; r < c->pa.nrollups; r++)
+		if (c->pa.rollup[r].list == s->group)
+			for (int d = 0; d < c->pa.rollup[r].ndims; d++)
+				tuples *= Max(c->stats.ndistinct[c->pa.rollup[r].dim[d]], 2.0);
+	elems = rows / units * elems_of(c, s->group);
+	sift_aggspec_unit_costs(s, c->lay, &ecost, &tcost);
+	return Min(Min(tuples, 4096.0) * tcost * sift_agg_rollup_cost, elems * ecost) / SIFT_AGG_INSTR_PER_OP;
+}
+
 /* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 double
 preagg_share(AggCtx *c, SiftAggSpec *s)
@@ -745,7 +768,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);
 	if (exact > 0)
-		scan_cost += exact * (units * (AGG_UNIT_COST + Min(rows_out, 256.0) * AGG_PREAGG_GROUP) * cpu_operator_cost - scan_cost);
+	{
+		double		pre_cost = units * (AGG_UNIT_COST + preagg_unit_ops(c, s, units, rows, rows_out)) * cpu_operator_cost;
+
+		scan_cost += exact * (Min(pre_cost, scan_cost) - scan_cost);
+	}
 	startup = AGG_START_COST * cpu_operator_cost + child_cost + c->subplan_cost;
 	if (s->nworkers > 0)
 	{

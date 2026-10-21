@@ -3,6 +3,8 @@
 -- `pre` says how many of the units the first one answered from the rollups: all, some or none ('-': the node does not use them).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
+SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 

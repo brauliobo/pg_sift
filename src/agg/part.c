@@ -448,6 +448,12 @@ part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return true;
 }
 
+static uint32
+part_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list)
+{
+	return sift_colsrc_unit_rollup_tuples(cur_of(impl), unit_of(impl), list);
+}
+
 static bool
 part_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
 {
@@ -525,6 +531,7 @@ static const SiftSrcProvider part_provider = {
 	.unit_exact = part_unit_exact,
 	.unit_agg = part_unit_agg,
 	.unit_hist = part_unit_hist,
+	.unit_rollup_tuples = part_unit_rollup_tuples,
 	.unit_rollup = part_unit_rollup,
 	.unit_rollup_miss = part_unit_rollup_miss,
 	.gpu_unit = part_gpu_unit,

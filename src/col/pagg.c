@@ -115,6 +115,22 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 	return true;
 }
 
+uint32
+sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+	const uint8 *blob;
+
+	if (!sift_col_unit_preagg_ok(unit))
+		return 0;
+	sift_col_unit_stored(unit, &seg, &u);
+	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
+		return 0;
+	return sift_cpagg_rollup_tuples(blob, len);
+}
+
 bool
 sift_col_unit_rollup_miss(const SiftColUnit *unit)
 {

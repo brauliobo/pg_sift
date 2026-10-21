@@ -550,6 +550,15 @@ typedef enum SiftPaWhy
 extern SiftPaWhy sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 extern const char *sift_pawhy_name(SiftPaWhy why);
 
+/*
+ * What the two ways to answer a unit cost, in user instructions measured on the rollup benchmark (docs/COL-PREAGG.md section 6): *elem for an element of the
+ * list scanned, *tuple for a tuple of its rollup (varint decode of the columns the query reads, the fold into the groups). The rollup answers a unit when its
+ * tuples cost less than its elements; sift.agg_rollup_cost scales the tuple (0: always the rollup).
+ */
+extern void sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *elem, double *tuple);
+extern double sift_agg_rollup_cost;
+#define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
+
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);
 
