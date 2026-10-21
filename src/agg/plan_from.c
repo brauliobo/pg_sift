@@ -406,12 +406,13 @@ part_source(AggCtx *c)
 	return false;
 }
 
-/* Opens the source of the rel and its layout; false if none */
+/* Opens the source of the rel and its layout, the agg_index_pick-th of its column indexes (agg_index_usable: how many there are); false if none */
 bool
 find_source(AggCtx *c, IndexOptInfo **ixout)
 {
 	RangeTblEntry *rte = planner_rt_fetch(c->relid, c->root);
 	Relation	rel;
+	int			n = 0;
 
 	*ixout = NULL;
 	if (rte->relkind == RELKIND_PARTITIONED_TABLE)
@@ -427,19 +428,18 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		return true;
 	}
 	foreach_node(IndexOptInfo, ii, c->rel->indexlist)
-	{
-		if (!sift_colsrc_is_index(ii->relam) || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
-			continue;
-		rel = index_open(ii->indexoid, AccessShareLock);
-		c->lay = sift_colsrc_layout(rel);
-		sift_colsrc_stats(rel, &c->stats);
-		sift_colsrc_preagg(rel, &c->pa);
-		index_close(rel, AccessShareLock);
-		c->indexoid = ii->indexoid;
-		*ixout = ii;
-		return true;
-	}
-	return false;
+		if (sift_colsrc_is_index(ii->relam) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK) && n++ == agg_index_pick)
+			*ixout = ii;
+	agg_index_usable = Max(agg_index_usable, n);
+	if (*ixout == NULL)
+		return false;
+	rel = index_open((*ixout)->indexoid, AccessShareLock);
+	c->lay = sift_colsrc_layout(rel);
+	sift_colsrc_stats(rel, &c->stats);
+	sift_colsrc_preagg(rel, &c->pa);
+	index_close(rel, AccessShareLock);
+	c->indexoid = (*ixout)->indexoid;
+	return true;
 }
 
 static List *
