@@ -356,6 +356,10 @@ sift_col_att_expr(Relation index, int attno)
 {
 	AttrNumber	heapatt = index->rd_index->indkey.values[attno - 1];
 
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);	/* reading the index expressions can take a lock that reloads the entry (and frees its cached state) */
+#endif
+
 	if (heapatt != 0)
 	{
 		Oid			typid = TupleDescAttr(RelationGetDescr(index), attno - 1)->atttypid;
