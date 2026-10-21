@@ -11,6 +11,9 @@
  *                                              sift_post_open_verified (blob, sidecar, tf stream, group scores, position checkpoints),
  *                                              per group tf and positions, the position reader, sift_post_check
  *
+ *   3  DOCMAP chunk                            the page mask and the offsets of a chunk of a segment's DOCMAP record (sift_chunk_pagemask,
+ *                                              sift_chunk_offsets), on a buffer of exactly its length
+ *
  *   FZ_GEN=DIR target     writes the seed corpus from the writers (sift_encode, sift_postw_*) and exits
  */
 #include "postgres.h"
@@ -24,9 +27,10 @@
 #include "bm25/dict.h"
 #include "bm25/posting.h"
 #include "core/cmp.h"
+#include "core/popcount.h"
 #include "core/varint.h"
 
-#define NMODES 3
+#define NMODES 4
 #define PAD SIFT_KERN_PAD
 
 /* ---------- mode 0 and 1: the term blob ---------- */
@@ -206,6 +210,32 @@ term_run(void *a)
 	}
 }
 
+/* ---------- mode 3: a DOCMAP chunk ---------- */
+
+static void
+chunk_run(void *a)
+{
+	Job		   *j = a;
+	uint64		pm[SIFT_PAGEMASK_WORDS],
+				all[SIFT_PAGEMASK_WORDS] = {~0ULL, ~0ULL, ~0ULL, ~0ULL};
+	uint64	   *om = palloc(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
+	uint32		np = 0,
+				bits = 0;
+
+	if (sift_chunk_check(j->p, j->len) != NULL)
+		return;
+	sift_chunk_pagemask(j->p, pm);
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		np += sift_pc64(pm[w]);
+	if (sift_chunk_offsets(j->p, all, om) != np)
+		fz_bad("a valid DOCMAP chunk lists %u pages, its offsets are of another number", np);
+	for (uint32 k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
+		bits += sift_pc64(om[k]);
+	if (bits != sift_chunk_count(j->p))
+		fz_bad("a valid DOCMAP chunk counts %u offsets, its rows hold %u", sift_chunk_count(j->p), bits);
+	j->digest = mix(np, bits);
+}
+
 int
 LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
@@ -223,7 +253,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	j.len = size - 5;
 	if (mode == 2 && j.len < 25)
 		return 0;
-	run = mode == 0 ? blob_run : mode == 1 ? checked_run : term_run;
+	run = mode == 0 ? blob_run : mode == 1 ? checked_run : mode == 2 ? term_run : chunk_run;
 	nl = fz_levels(lv);
 	for (int isa = 0; isa < SIFT_NISA; isa++)
 	{
@@ -244,7 +274,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		pgshim_reset();
 		if (isa == 0)
 			first = j.digest;
-		else if (j.digest != first && mode != 2)
+		else if (j.digest != first && mode < 2)
 			fz_bad("mode %d: ISA %d decodes differently from scalar (%llx vs %llx)", mode, isa, (unsigned long long) j.digest,
 				   (unsigned long long) first);
 	}
@@ -294,6 +324,46 @@ pos_record(uint8 *out, uint32 nocc, uint32 base, uint64 *s)
 	for (uint32 i = 1; i < nocc; i++)
 		p = sift_put_varint(p, rnd(s) % 5);
 	return (size_t) (p - out);
+}
+
+/* DOCMAP chunks of the writer: dense and array, narrow and wide offsets */
+static void
+gen_chunks(const char *dir)
+{
+	uint64		s = 0x2545F4914F6CDD1Dull;
+
+	for (int k = 0; k < 8; k++)
+	{
+		uint64		pm[SIFT_PAGEMASK_WORDS] = {0};
+		uint64	   *om = palloc0(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
+		uint32		np = 0;
+		uint8	   *chunk;
+		size_t		len;
+		char		name[32];
+		uint32		span = k < 4 ? 40 : 500;	/* offsets below 64 or up to 512 */
+
+		for (uint32 pg = 0; pg < SIFT_SB_PAGES; pg++)
+			if (rnd(&s) % (k % 2 ? 3 : 40) == 0)
+			{
+				pm[pg / 64] |= 1ull << (pg % 64);
+				for (int b = 0; b < 1 + (int) (rnd(&s) % 6); b++)
+				{
+					uint32		o = (uint32) (rnd(&s) % span);
+
+					om[np * SIFT_OFFMASK_WORDS + o / 64] |= 1ull << (o % 64);
+				}
+				np++;
+			}
+		if (np == 0)
+			continue;
+		len = sift_chunk_encode(pm, om, k % 4 < 2 ? SIFT_CT_AUTO : (k % 4 == 2 ? SIFT_CT_ARRAY : SIFT_CT_BITMAP), NULL);
+		chunk = palloc0(len);
+		sift_chunk_encode(pm, om, k % 4 < 2 ? SIFT_CT_AUTO : (k % 4 == 2 ? SIFT_CT_ARRAY : SIFT_CT_BITMAP), chunk);
+		if (sift_chunk_check(chunk, (uint32) len) != NULL)
+			fz_bad("the writer's DOCMAP chunk %d is rejected: %s", k, sift_chunk_check(chunk, (uint32) len));
+		snprintf(name, sizeof(name), "chunk-%d", k);
+		emit(dir, name, 3, 0, NULL, 0, chunk, len);
+	}
 }
 
 static void
@@ -419,6 +489,7 @@ LLVMFuzzerInitialize(int *argc, char ***argv)
 	{
 		mkdir(dir, 0755);
 		gen_terms(dir);
+		gen_chunks(dir);
 		_exit(0);
 	}
 	return 0;
