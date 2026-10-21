@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include "utils/typcache.h"
+
 #include "agg/agg.h"
 #include "agg/wide.h"
 #include "agg/agg_int.h"
