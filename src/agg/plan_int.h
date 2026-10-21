@@ -78,6 +78,7 @@ typedef struct AggCtx
 	int			nparts;			/* a partitioned table: its live partitions, which the scan reads one after the other (indexoid is the first's) */
 	Oid		   *partheap;
 	Oid		   *partindex;
+	List	   *partprune;		/* the conditions on the partition key that the scan evaluates when it starts (part_prune_clauses) */
 	double		part_pages;		/* ... and the pages of their heaps */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
