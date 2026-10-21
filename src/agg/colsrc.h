@@ -286,6 +286,21 @@ typedef struct SiftSrcRollup
 	const double *maxf[SIFT_SRC_MAX_MEAS];
 } SiftSrcRollup;
 
+/* The dims and measures of a rollup a unit_rollup caller reads; the arrays of the others may be NULL in the result (the source skips them) */
+typedef struct SiftSrcRollupNeed
+{
+	bool		all;			/* more leaves than the arrays hold: every column */
+	int			ndims;
+	int			dim[SIFT_SRC_MAX_RDIMS + SIFT_SRC_MAX_MEAS];	/* leaf ids: the dims of the query and the leaves of count(leaf) */
+	int			nmeas;
+	struct
+	{
+		int			leaf;
+		bool		sums;			/* sum / sumf */
+		bool		minmax;			/* min and max, minf and maxf */
+	}			meas[SIFT_SRC_MAX_MEAS];	/* nn is always given */
+} SiftSrcRollupNeed;
+
 /*
  * Planner: the histograms and rollups the index writes (a unit may still lack one, or hold fewer dims of a rollup); ndims 0 when none.
  * aggs: units have unit_agg sums (always, even with ndims 0)
@@ -436,7 +451,7 @@ typedef struct SiftSrcProvider
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
-	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, SiftSrcRollup *r);
+	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
 	/*
@@ -642,9 +657,9 @@ sift_colsrc_gpu_dict(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, Sift
 }
 
 static inline bool
-sift_colsrc_unit_rollup(SiftSrcSource *src, const SiftSrcUnit *unit, int list, SiftSrcRollup *r)
+sift_colsrc_unit_rollup(SiftSrcSource *src, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
 {
-	return src->prov->unit_rollup != NULL && src->prov->unit_rollup(src->impl, unit, list, r);
+	return src->prov->unit_rollup != NULL && src->prov->unit_rollup(src->impl, unit, list, need, r);
 }
 
 static inline bool

@@ -518,6 +518,57 @@ rollup_pass(AggExec *ex, const SiftAggPred *p, int nt, uint64 *keep)
 }
 
 static bool
+in_dims(const SiftSrcRollupNeed *n, int leaf)
+{
+	for (int d = 0; d < n->ndims; d++)
+		if (n->dim[d] == leaf)
+			return true;
+	return false;
+}
+
+/* the columns of the rollup the aggregates read: the dims of the shape, the measure of each aggregate with the parts of it the aggregate adds up */
+static void
+rollup_need(AggExec *ex)
+{
+	SiftSrcRollupNeed *n = &ex->pa_need;
+	const SiftAggSpec *s = ex->spec;
+
+	memset(n, 0, sizeof(*n));
+	n->ndims = ex->pa.ndims;
+	memcpy(n->dim, ex->pa.rdim, ex->pa.ndims * sizeof(int));
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+		int			leaf = pa_leaf(a),
+					m = 0;
+
+		if (leaf < 0)
+			continue;
+		/* count(leaf) of a dim reads the NULLs of the dim, of a measure its non-NULL counts: ask for both, the blob has the one it has */
+		if (a->kind == SAA_COUNT && !in_dims(n, leaf))
+		{
+			if (n->ndims == lengthof(n->dim))
+				n->all = true;
+			else
+				n->dim[n->ndims++] = leaf;
+		}
+		while (m < n->nmeas && n->meas[m].leaf != leaf)
+			m++;
+		if (m == n->nmeas)
+		{
+			if (n->nmeas == lengthof(n->meas))
+			{
+				n->all = true;
+				return;
+			}
+			n->meas[n->nmeas++].leaf = leaf;
+		}
+		n->meas[m].sums |= a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX;
+		n->meas[m].minmax |= a->kind == SAA_MIN || a->kind == SAA_MAX;
+	}
+}
+
+static bool
 has_filter(const SiftAggSpec *s)
 {
 	for (int ai = 0; ai < s->naggs; ai++)
@@ -542,7 +593,7 @@ preagg_rollup(AggExec *ex)
 	int			nkept = 0;
 
 	ex->pa_miss = true;
-	if (!sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &r))
+	if (!sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &ex->pa_need, &r))
 		return false;
 	for (int d = 0; d < ex->pa.ndims; d++)
 		if (rollup_dim(&r, ex->pa.rdim[d]) < 0)
@@ -669,6 +720,8 @@ preagg_init(AggExec *ex)
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
+	if (ex->pa_on && ex->pa.list >= 0)
+		rollup_need(ex);
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
 	{

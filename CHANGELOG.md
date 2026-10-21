@@ -74,6 +74,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: a unit answered from its rollup decodes only the dims and measures the query reads (and of a measure only the counts, the sums or the minima and maxima it adds up); the other columns are passed over without being stored. 100,000 documents, 29 units of 1,440 tuples: 17.3 against 24.6 million user instructions for `GROUP BY kind` with `count`, `avg`, and 22.6 against 28.7 for three keys.
+
 - Added: the rollups of the elements of a list answer aggregates with `FILTER (WHERE ...)` on dims (`count(*) FILTER (WHERE band >= 8)`, the shares of a rating band): each filter runs on the tuples. A filter on a measure still scans.
 
 - Added: the rollups of the elements of a list answer a `GROUP BY` of a function of one dim (`left(day, 7)`, `upper(kind)`, a `CASE` band of an integer dim, `coalesce`), evaluated once per distinct value of the unit's tuples. Before, any expression key scanned every unit.
