@@ -6,15 +6,15 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE FUNCTION rb_norm(d jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT CASE WHEN jsonb_typeof(d) <> 'object' THEN NULL
-		ELSE jsonb_set(d, '{opinions}', (SELECT coalesce(jsonb_agg(o ORDER BY ord), '[]') FROM jsonb_array_elements(d -> 'opinions') WITH ORDINALITY t(o, ord)))
+		ELSE jsonb_set(d, '{parts}', (SELECT coalesce(jsonb_agg(o ORDER BY ord), '[]') FROM jsonb_array_elements(d -> 'parts') WITH ORDINALITY t(o, ord)))
 	END $$;
 -- 1 800 rows, 3 per page: 600 pages, 3 superblocks of 256 pages; a few documents hold a numeric string in the float8 path
 CREATE TABLE rb (id int, g int, doc jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = off);
 INSERT INTO rb
-SELECT i, i % 7, jsonb_build_object('opinions', jsonb_build_array(jsonb_build_object('c', 'a', 'score', i % 10), jsonb_build_object('c', 'b', 'score', (i % 7) + 0.5))),
+SELECT i, i % 7, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', i % 10), jsonb_build_object('c', 'b', 'score', (i % 7) + 0.5))),
 	   repeat('x', 100)
 FROM generate_series(1, 1800) i;
-UPDATE rb SET doc = '{"opinions": [{"c": "a", "score": "8.5"}, {"c": "b", "score": 2}]}' WHERE id % 50 = 5;
+UPDATE rb SET doc = '{"parts": [{"c": "a", "score": "8.5"}, {"c": "b", "score": 2}]}' WHERE id % 50 = 5;
 VACUUM ANALYZE rb;
 SELECT pg_relation_size('rb') / 8192 >= 2 * 256 AS two_superblocks;
  two_superblocks 
@@ -29,7 +29,7 @@ SET min_parallel_table_scan_size = 0;
 -- The build, serial and with two workers: the index is complete and verifies against the heap
 SET sift.test_col_rel_inval = on;
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX rb_ser ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.opinions[]{c text, score float8}');
+CREATE INDEX rb_ser ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.parts[]{c text, score float8}');
 SELECT current_setting('sift.test_col_workers') AS workers, sum(rows) = (SELECT count(*) FROM rb) AS all_rows, col_verified('rb_ser') AS verified
 FROM sift.col_segments('rb_ser');
  workers | all_rows | verified 
@@ -38,7 +38,7 @@ FROM sift.col_segments('rb_ser');
 (1 row)
 
 SET max_parallel_maintenance_workers = 2;
-CREATE INDEX rb_par ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.opinions[]{c text, score float8}');
+CREATE INDEX rb_par ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.parts[]{c text, score float8}');
 SELECT current_setting('sift.test_col_workers')::int > 0 AS parallel, sum(rows) = (SELECT count(*) FROM rb) AS all_rows, col_verified('rb_par') AS verified
 FROM sift.col_segments('rb_par');
  parallel | all_rows | verified 
@@ -52,21 +52,21 @@ DROP INDEX rb_ser, rb_par;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
-CREATE INDEX rb_col ON rb USING sift_col (id, g, doc) WITH (paths = 'doc.opinions[]{c text, score float8}');
+CREATE INDEX rb_col ON rb USING sift_col (id, g, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
 VACUUM ANALYZE rb;
 CREATE FUNCTION rb_q(agg bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
 	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (
-		SELECT o.c, count(*), sum(o.score) FROM rb CROSS JOIN LATERAL jsonb_to_recordset(doc -> ''opinions'') AS o(c text, score float8) GROUP BY o.c) t' INTO r;
+		SELECT o.c, count(*), sum(o.score) FROM rb CROSS JOIN LATERAL jsonb_to_recordset(doc -> ''parts'') AS o(c text, score float8) GROUP BY o.c) t' INTO r;
 	RETURN r;
 END $$;
 CREATE FUNCTION rb_pushed() RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT o.c, count(*), sum(o.score) FROM rb CROSS JOIN LATERAL jsonb_to_recordset(doc -> ''opinions'') AS o(c text, score float8) GROUP BY o.c' LOOP
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT o.c, count(*), sum(o.score) FROM rb CROSS JOIN LATERAL jsonb_to_recordset(doc -> ''parts'') AS o(c text, score float8) GROUP BY o.c' LOOP
 		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
