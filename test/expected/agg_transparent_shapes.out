@@ -59,7 +59,7 @@ $q$);
  t      | t        |           0
 (1 row)
 
--- Native correlated UNION children read JSONB values with their native cast semantics.
+-- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics.
 SELECT * FROM check_shape($q$
  SELECT category, count(DISTINCT f.id) AS ids,
  count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "reply")')) AS replies
@@ -69,7 +69,7 @@ SELECT * FROM check_shape($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ t      | t        |           0
 (1 row)
 
 -- Preserve the mean of per-item means across UNION ALL arms and a preserved date relation.
