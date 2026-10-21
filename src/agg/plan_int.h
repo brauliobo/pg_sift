@@ -228,6 +228,7 @@ extern int match_leaf(AggCtx *c, Node *e);
 extern Node *normalize_expr(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
+extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
 extern bool single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll);

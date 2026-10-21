@@ -10,6 +10,7 @@ one of the normal plan (`EXPLAIN ANALYZE` has `Lookup Rows Read`). A rescan repl
 by the child plan as in any plan.
 
 A `UNION ALL` or `UNION` of sub-selects, a sub-select of a statement-level CTE and a nested `WITH` inside the sub-select are plans in the same way.
+The same holds for a `WITH` of a derived table (a ranked top-N over an aggregate): its CTEs are lookup plans while the derived table reads nothing of the queries around it, and a CTE of it that several aggregates read is planned inline like the statement's own (the cheaper plan wins). A lateral sub-select that reads the row around it keeps the normal plan. Test `agg_nested_ctes`, fixtures `nf_nested_cte_*`, row J32.
 
 The normal plan stays when the right side reads a volatile function, the join has no condition (`ON true`) and is not lateral, the right side is
 estimated above `sift.agg_lookup_max_rows` rows (a lateral one: its rows for each distinct input of the scanned table, together), or a condition on a column nothing else reads was

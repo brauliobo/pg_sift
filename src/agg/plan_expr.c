@@ -76,6 +76,18 @@ typedef struct LeafWalk
 } LeafWalk;
 
 /*
+ * Does a CTE of this query level change with the rows of a query above it? One of the top level never does; one of a sub-select that reads
+ * nothing of the queries around it (a WITH inside a derived table) does not either, but a lateral or correlated one does.
+ */
+bool
+cte_owner_correlated(PlannerInfo *owner)
+{
+	OuterRef	oref = {owner, 0, 0};
+
+	return owner->parent_root != NULL && query_tree_walker(owner->parse, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+}
+
+/*
  * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
  * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
  */
@@ -97,7 +109,7 @@ outer_ref_walker(Node *n, OuterRef *o)
 			return false;
 		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
 			owner = owner->parent_root;
-		return owner == NULL || owner->parent_root != NULL;
+		return owner == NULL || cte_owner_correlated(owner);
 	}
 	if (IsA(n, Query))
 	{
