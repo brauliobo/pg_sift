@@ -8,7 +8,7 @@ FROM tenants s LEFT JOIN (
   SELECT x.id, x.dim_a_id, jsonb_path_exists(x.tags_a, '$[*] ? (@.type == "manager")') AS managed
   FROM t_work x
   WHERE x.deleted_at IS NULL
-    AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, tone, score FROM jsonb_to_recordset(coldiff.doc_norm(x.doc) -> 'parts') AS o(category text, tone text, score float8) WHERE o.score IS NOT NULL) o WHERE o.tone = 'up')
+    AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, dir_a, score FROM jsonb_to_recordset(coldiff.doc_norm(x.doc) -> 'parts') AS o(category text, dir_a text, score float8) WHERE o.score IS NOT NULL) o WHERE o.dir_a = 'up')
 ) w ON w.dim_a_id = s.id
 WHERE s.id <= 40
 GROUP BY 1

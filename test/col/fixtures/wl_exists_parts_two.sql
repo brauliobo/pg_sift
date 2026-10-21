@@ -4,7 +4,7 @@
 -- key: -
 -- scenario: yes
 SELECT w.mix,
-	   count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(category text, tone text) WHERE o.category = 'service' AND o.tone = 'down')) AS service_neg,
+	   count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(category text, dir_a text) WHERE o.category = 'service' AND o.dir_a = 'down')) AS service_neg,
 	   count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(category text) WHERE o.category IN ('food', 'comfort'))) AS in_list,
 	   count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(val text) WHERE o.val = 'wire')
 					   OR EXISTS (SELECT 1 FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(val text) WHERE o.val = '')) AS or_not

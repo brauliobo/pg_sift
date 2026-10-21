@@ -9,12 +9,12 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ents (id int PRIMARY KEY, type text NOT NULL);
 INSERT INTO ents SELECT i, (ARRAY['site', 'museum', 'diner', 'ferry'])[1 + i % 4] FROM generate_series(1, 60) i;
 
--- the sections of an item: a category, a tone and a score that is a number, a numeric string or text
+-- the sections of an item: a category, a sign and a score that is a number, a numeric string or text
 CREATE FUNCTION op_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN i % 301 = 0 THEN '[]'::jsonb ELSE jsonb_build_object('lang', (ARRAY['en', 'de', 'fr'])[1 + i % 3], 'sections', (
 		SELECT coalesce(jsonb_agg(jsonb_build_object(
 			'category', (ARRAY['service', 'food', 'view', 'price'])[1 + (i * j) % 4],
-			'tone', (ARRAY['up', 'down', 'flat'])[1 + (i + j) % 3],
+			'dir_a', (ARRAY['up', 'down', 'flat'])[1 + (i + j) % 3],
 			'score', CASE (i + j) % 11 WHEN 0 THEN to_jsonb('n/a'::text) WHEN 1 THEN to_jsonb(((i * j) % 10)::text) ELSE to_jsonb(((i * j) % 100) / 10.0) END) ORDER BY j), '[]')
 		FROM generate_series(1, i % 5) j)) END $$;
 -- the same with the scores as text (what a client that keeps the values as they are reads); a document that is no object is NULL
@@ -26,7 +26,7 @@ CREATE FUNCTION op_txt(doc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, deleted_at timestamptz, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + (i * 7) % 60, CASE WHEN i % 17 = 0 THEN now() END, op_doc(i) FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, deleted_at, (op_txt(doc)))
-	WITH (paths = 'op_txt.lang astext, op_txt.sections[]{category astext, tone astext, score astext}');
+	WITH (paths = 'op_txt.lang astext, op_txt.sections[]{category astext, dir_a astext, score astext}');
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE ents;
 
@@ -64,14 +64,14 @@ SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SE
 SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT 60 / (id - 7) FROM ents))$$) AS raising_division;
 
 -- EXISTS over the sections of an index expression, with the members of one element and the other elements not counting
-SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text, tone text)
-	WHERE o.category = 'service' AND o.tone = 'down')) AS service_negative, count(*) AS n FROM ev$$);
+SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text, dir_a text)
+	WHERE o.category = 'service' AND o.dir_a = 'down')) AS service_negative, count(*) AS n FROM ev$$);
 SELECT * FROM same($$SELECT op_txt(doc) ->> 'lang' AS lang, count(*) AS n FROM ev
 	WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text) WHERE o.category IN ('view', 'price')) GROUP BY 1$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'sections') AS o(category text) WHERE o.category = 'food')$$);
 -- nested jsonpath tests over the sections
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.sections[*] ? (@.category == "service" && @.tone == "down")')$$);
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.sections[*] ? (@.tone != "flat")'$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.sections[*] ? (@.category == "service" && @.dir_a == "down")')$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.sections[*] ? (@.dir_a != "flat")'$$);
 -- a score is text in the leaf: a number literal is not the text of a string score, so the comparison keeps the normal plan
 SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.sections[*] ? (@.score == 7)')$$) AS number_against_text_leaf;
 -- a strict path raises for a document that has no such key: the heap raises, the scan must not answer instead

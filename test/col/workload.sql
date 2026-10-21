@@ -32,12 +32,12 @@ CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS json
 	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'manager', 'owner'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')
 	FROM generate_series(1, floor(coldiff.u(id, 109, seed) * 3)::int) j $$;
 
--- one part: a category, a val (empty, NULL or a name), a tone (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
+-- one part: a category, a val (empty, NULL or a name), a sign (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
 CREATE OR REPLACE FUNCTION coldiff.wl_part(id bigint, j int, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT jsonb_build_object(
 		'category', (ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc'])[1 + floor(coldiff.u(id, 120 + j, seed) ^ 1.5 * 8)::int],
 		'val', CASE floor(coldiff.u(id, 130 + j, seed) * 6)::int WHEN 0 THEN 'wire' WHEN 1 THEN 'pool' WHEN 2 THEN NULL ELSE '' END,
-		'tone', CASE WHEN coldiff.u(id, 141 + j, seed) < 0.004 THEN 'null'::jsonb WHEN coldiff.u(id, 141 + j, seed) < 0.007 THEN '1'::jsonb
+		'dir_a', CASE WHEN coldiff.u(id, 141 + j, seed) < 0.004 THEN 'null'::jsonb WHEN coldiff.u(id, 141 + j, seed) < 0.007 THEN '1'::jsonb
 							 WHEN coldiff.u(id, 141 + j, seed) < 0.009 THEN 'true'::jsonb
 							 ELSE to_jsonb((ARRAY['up', 'down', 'flat'])[1 + floor(coldiff.u(id, 140 + j, seed) * 3)::int]) END,
 		'score', CASE WHEN coldiff.u(id, 150 + j, seed) < 0.03 THEN to_jsonb(round((coldiff.u(id, 160 + j, seed) * 10)::numeric, 1)::text)
@@ -80,14 +80,14 @@ CREATE TABLE t_work_dim (id integer PRIMARY KEY, type text NOT NULL, name text);
 CREATE TABLE t_work_src (id integer PRIMARY KEY, name text NOT NULL, kind text);
 -- a mapping of (entity type, category, val) to a normalized pair; NULL type rows apply to every type
 CREATE TABLE t_work_map (id integer PRIMARY KEY, entity_type text, category text NOT NULL, val text NOT NULL, derived_category text, derived_val text);
-INSERT INTO t_work_dim SELECT i, (ARRAY['kind_a', 'kind_b', 'venue', 'transport'])[1 + i % 4], 'entity ' || i
+INSERT INTO t_work_dim SELECT i, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4], 'entity ' || i
 FROM generate_series(1, greatest(40, least(1000, :n / 300))) i;
 INSERT INTO t_work_src SELECT i, 'source ' || i, (ARRAY['web', 'app', 'partner'])[1 + i % 3] FROM generate_series(1, 12) i;
 INSERT INTO t_work_map SELECT row_number() OVER (), t, c, s,
-	CASE WHEN c = 'misc' AND t = 'transport' THEN NULL ELSE 'group_' || (ascii(c) % 5) END, CASE WHEN s = '' THEN '' ELSE 'sub_' || s END
-FROM unnest(ARRAY['kind_a', 'kind_b', 'venue', 'transport']) t, unnest(ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc']) c,
+	CASE WHEN c = 'misc' AND t = 'cat_d' THEN NULL ELSE 'group_' || (ascii(c) % 5) END, CASE WHEN s = '' THEN '' ELSE 'sub_' || s END
+FROM unnest(ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d']) t, unnest(ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc']) c,
 	 unnest(ARRAY['', 'wire', 'pool']) s
-WHERE NOT (t = 'kind_b' AND c = 'food' AND s = 'pool');
+WHERE NOT (t = 'cat_b' AND c = 'food' AND s = 'pool');
 INSERT INTO t_work_map SELECT 1000 + row_number() OVER (), NULL, c, '', 'any_' || c, '' FROM unnest(ARRAY['m_tidy', 'service']) c;
 
 CREATE TABLE t_work (

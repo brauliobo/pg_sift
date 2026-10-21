@@ -4,8 +4,8 @@
 -- key: -
 -- scenario: yes
 SELECT w.mix,
-	   count(*) FILTER (WHERE w.dim_a_id = ANY (ARRAY(SELECT e.id FROM t_work_dim e WHERE e.type = 'kind_a'))) AS in_type,
-	   count(*) FILTER (WHERE w.dim_a_id <> ALL (ARRAY(SELECT e.id FROM t_work_dim e WHERE e.type = 'kind_a'))) AS not_in_type,
+	   count(*) FILTER (WHERE w.dim_a_id = ANY (ARRAY(SELECT e.id FROM t_work_dim e WHERE e.type = 'cat_a'))) AS in_type,
+	   count(*) FILTER (WHERE w.dim_a_id <> ALL (ARRAY(SELECT e.id FROM t_work_dim e WHERE e.type = 'cat_a'))) AS not_in_type,
 	   count(*) FILTER (WHERE w.dim_a_id = ANY (ARRAY(SELECT e.id FROM t_work_dim e WHERE e.id < 0))) AS empty_array,
 	   count(*) FILTER (WHERE w.foreign_id_b = ANY (ARRAY(SELECT x.foreign_id_b FROM t_work x WHERE x.id <= 40))) AS with_null,
 	   count(*) FILTER (WHERE NOT (w.foreign_id_b = ANY (ARRAY(SELECT x.foreign_id_b FROM t_work x WHERE x.id <= 40)))) AS not_with_null,

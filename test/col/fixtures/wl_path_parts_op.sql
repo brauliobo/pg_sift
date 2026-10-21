@@ -4,7 +4,7 @@
 -- key: -
 -- scenario: yes
 SELECT w.mix,
-	   count(*) FILTER (WHERE coldiff.doc_norm(w.doc) @? '$.parts[*] ? (@.tone == "down" && @.category == "service")') AS neg_service,
+	   count(*) FILTER (WHERE coldiff.doc_norm(w.doc) @? '$.parts[*] ? (@.dir_a == "down" && @.category == "service")') AS neg_service,
 	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.category == "m_tidy" || @.category == "location")')) AS place,
 	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.val == "wire")')) AS wire,
 	   min(w.id) AS first_id

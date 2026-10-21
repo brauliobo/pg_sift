@@ -2,6 +2,6 @@
 -- shape: trap
 -- expect: plain
 -- key: -
-SELECT count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.tone == "1")')) AS one,
-	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.tone == "true")')) AS tru
+SELECT count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.dir_a == "1")')) AS one,
+	   count(*) FILTER (WHERE jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.dir_a == "true")')) AS tru
 FROM t_work w

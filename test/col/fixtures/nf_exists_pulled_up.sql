@@ -5,6 +5,6 @@
 -- scenario: yes
 SELECT w.dim_a_id % 5 AS g, count(*) AS n, sum(w.id) AS ids
 FROM t_work w
-WHERE w.deleted_at IS NULL AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, tone, score FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(category text, tone text, score float8) WHERE o.score IS NOT NULL) o WHERE o.tone = 'up')
+WHERE w.deleted_at IS NULL AND EXISTS (SELECT * FROM LATERAL (SELECT category AS c, dir_a, score FROM jsonb_to_recordset(coldiff.doc_norm(w.doc) -> 'parts') AS o(category text, dir_a text, score float8) WHERE o.score IS NOT NULL) o WHERE o.dir_a = 'up')
 GROUP BY 1
 ORDER BY 1
