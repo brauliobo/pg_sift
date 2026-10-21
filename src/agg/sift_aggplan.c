@@ -6932,7 +6932,7 @@ recordset_recheck_ok(AggCtx *c)
 	int			m = -1;
 
 	if (c->func_kind != FK_RECORDSET || c->group < 0 || c->search || bms_is_member(c->group, c->rec_bad) ||
-		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+		!OidIsValid(c->indexoid) || !sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
 		return false;
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].obj == c->group)	/* the length of the list: a row that raises has no length */
