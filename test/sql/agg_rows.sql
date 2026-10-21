@@ -20,7 +20,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 -- the spine has a period no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
 CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
-	                  cells AS (SELECT f.id, f.entity_id, f.bucket, i.k, avg(i.n) AS score, count(*) FILTER (WHERE i.n > 5) AS big
+	                  cells AS (SELECT f.id, f.entity_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big
 	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
 	                            WHERE %s GROUP BY f.id, f.entity_id, f.bucket, i.k
 	                            UNION ALL
@@ -62,14 +62,14 @@ END $$;
 
 SELECT * FROM check_report('ids and entities', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'));
 -- the aggregates a report reads: FILTERs on the per-row aggregate (the same argument, several FILTERs share a set), count(*), count of a column with NULLs, sum of a bigint, avg
-SELECT * FROM check_report('filters', report($a$count(DISTINCT c.id) AS ids, count(DISTINCT c.id) FILTER (WHERE c.score >= 6) AS high,
-	count(DISTINCT c.id) FILTER (WHERE c.score < 3) AS low, count(DISTINCT c.id) FILTER (WHERE c.score IS NULL) AS no_score,
+SELECT * FROM check_report('filters', report($a$count(DISTINCT c.id) AS ids, count(DISTINCT c.id) FILTER (WHERE c.val >= 6) AS high,
+	count(DISTINCT c.id) FILTER (WHERE c.val < 3) AS low, count(DISTINCT c.id) FILTER (WHERE c.val IS NULL) AS no_val,
 	count(DISTINCT c.entity_id) FILTER (WHERE c.big > 0) AS entities, count(*) AS n, count(c.entity_id) AS with_entity,
-	sum(c.big) AS big, avg(c.score) AS mean, count(*) FILTER (WHERE c.k = 'a') AS a$a$));
+	sum(c.big) AS big, avg(c.val) AS mean, count(*) FILTER (WHERE c.k = 'a') AS a$a$));
 SELECT * FROM check_report('where', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities', 'f.entity_id < 25 OR f.entity_id IS NULL'));
 -- HAVING, and an aggregate the node leaves to the normal plan (min over a column)
 SELECT * FROM check_report('having', report('count(DISTINCT c.id) AS ids', 'true', 'HAVING count(DISTINCT c.entity_id) > 10'));
-SELECT * FROM check_report('min keeps the plan', report('count(DISTINCT c.id) AS ids, min(c.score) AS lowest'));
+SELECT * FROM check_report('min keeps the plan', report('count(DISTINCT c.id) AS ids, min(c.val) AS lowest'));
 
 -- grouping sets are PostgreSQL's
 SELECT * FROM check_report('rollup keeps the plan', replace(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities'), 'GROUP BY c.k, p.label', 'GROUP BY ROLLUP (c.k, p.label)'));
@@ -83,7 +83,7 @@ SET max_parallel_workers_per_gather = 0;
 
 -- more pairs than hash_mem holds: the pairs go through a sort and the answer is the same
 SET work_mem = '64kB';
-SELECT * FROM check_report('spill', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities, count(DISTINCT c.id) FILTER (WHERE c.score >= 6) AS high'));
+SELECT * FROM check_report('spill', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.entity_id) AS entities, count(DISTINCT c.id) FILTER (WHERE c.val >= 6) AS high'));
 RESET work_mem;
 
 -- what EXPLAIN ANALYZE shows of the node: its columns and distinct counts, and that the small hash_mem sent a set to the sort
