@@ -323,6 +323,14 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 		preds[2 * k] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_GE, 1, &vals[2 * k]};
 		preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_LE, 1, &vals[2 * k + 1]};
 	}
+		if (prune[k].nvals > 0)
+		{
+			SiftColValue *set = MemoryContextAllocZero(src->cxt, prune[k].nvals * sizeof(SiftColValue));
+
+			for (int i = 0; i < prune[k].nvals; i++)
+				set[i].v.i = prune[k].vals[i];
+			preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_IN, prune[k].nvals, set};
+		}
 	for (int i = 0; i < src->nspred; i++)
 		preds[2 * nprune + i] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)

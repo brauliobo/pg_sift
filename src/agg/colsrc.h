@@ -148,8 +148,8 @@ typedef struct SiftSrcUnit
 
 /*
  * A zone test the source may use to skip a unit without reading it: the unit is skipped when no value of the
- * integer-typed (I32/I64) leaf can lie in [lo, hi]. Conservative; the executor filters again. Only leaves of rows (not
- * children of a group).
+ * integer-typed (I32/I64) leaf can lie in [lo, hi], nor in vals when there are nvals (sorted values, within [lo, hi]: a set too
+ * sparse for the interval to tell). Conservative; the executor filters again. Only leaves of rows (not children of a group).
  */
 typedef struct SiftSrcPrune
 {
@@ -157,6 +157,8 @@ typedef struct SiftSrcPrune
 	int64		lo;
 	int64		hi;
 } SiftSrcPrune;
+	int			nvals;
+	const int64 *vals;
 
 /*
  * A test on a text leaf (SCV_CODE, top level scalar) that a source may run on the encoded form of its units instead of the executor

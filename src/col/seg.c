@@ -596,6 +596,25 @@ sift_cseg_preagg_units(SiftColSegment *seg)
 
 void
 sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
+/* does the sorted set hold a key in [lo, hi]? */
+static bool
+set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
+{
+	uint32		a = 0,
+				b = n;
+
+	while (a < b)
+	{
+		uint32		m = a + (b - a) / 2;
+
+		if (set[m] < lo)
+			a = m + 1;
+		else
+			b = m;
+	}
+	return a < n && set[a] <= hi;
+}
+
 {
 	const ZoneArrays *z = zone_arrays(seg, col);
 	uint32		n = seg->nsb,
@@ -613,12 +632,16 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 		case SIFT_CT_NONE:
 			memset(keep, 0, nw * sizeof(uint64));
 			break;
-		case SIFT_CT_SET:			/* lo..hi bound the keys that can match */
+		case SIFT_CT_SET:			/* lo..hi bound the keys that can match; a unit whose zone holds none of them is out */
 		case SIFT_CT_RANGE:
 			sift_colk->zone_range(z->min, z->max, n, t->lo, t->hi, tmp);
 			sift_colk->bits_and(keep, tmp, nw);
 			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
 			if (t->fold_valid && z->set)
+			if (t->kind == SIFT_CT_SET)
+				for (uint32 u = 0; u < n; u++)
+					if ((keep[u / 64] >> (u % 64) & 1) && z->nnull[u] < z->nvals[u] && !set_meets(t->set, t->nset, z->min[u], z->max[u]))
+						keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 				sift_colk->zone_set(z->set, n, t->fold, keep);
 			break;
 		case SIFT_CT_LUT:
