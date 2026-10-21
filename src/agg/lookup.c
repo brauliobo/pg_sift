@@ -280,7 +280,85 @@ map_loaded(AggExec *ex, int nrows, instr_time t0)
 	ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
 }
 
-/* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree */
+static char *shared_map_key(AggExec *ex, int ci);
+
+/*
+ * A table is kept when the scan only reads it and what narrows its load is the same for every query: the table's own columns (the Params after
+ * the leaves) and constants. A preserved side is written to by the scan (the rows a tuple matched), and is loaded for its query alone.
+ */
+typedef struct KeptWalk
+{
+	int			first;
+	int			last;
+} KeptWalk;
+
+static bool
+kept_cond_bad(Node *n, KeptWalk *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param))
+		return ((Param *) n)->paramkind != PARAM_EXEC || ((Param *) n)->paramid < w->first || ((Param *) n)->paramid >= w->last;
+	if (IsA(n, SubPlan) || IsA(n, SubLink))
+		return true;
+	return expression_tree_walker(n, kept_cond_bad, w);
+}
+
+static bool
+map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)
+{
+	KeptWalk	w = {cb->nleaves, cb->nleaves + j->ncol};
+
+	if (sift_aggjoin_preserves(j->kind))
+		return false;
+	if (own && (kept_cond_bad((Node *) cb->slot[j->fslot].expr, &w) || contain_mutable_functions((Node *) cb->slot[j->fslot].expr)))
+		return false;
+	for (int i = 0; i < j->nidx; i++)
+		if (kept_cond_bad((Node *) j->idxval[i], &w) || contain_mutable_functions((Node *) j->idxval[i]))
+			return false;
+	return true;
+}
+
+/* a table kept for the queries that follow (lookcache.c): where its rows are loaded, and the pages it was loaded from */
+typedef struct KeptTry
+{
+	char	   *key;
+	LookFinger *before;
+	MemoryContext cx;
+} KeptTry;
+
+/* the rows of an earlier query when the table is as they were; else t->cx is where to load them, in a context the cache can take */
+static MapTab *
+map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, KeptTry *t)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	MapTab	   *m;
+
+	t->cx = cxt;
+	if (!map_kept_conds(cb, j, own) || (t->before = lookcache_finger(rel)) == NULL)
+		return NULL;
+	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci));
+	if ((m = lookcache_find(t->key, t->before, cxt)) != NULL)
+	{
+		ex->ncached++;
+		return m;
+	}
+	t->cx = AllocSetContextCreate(cxt, "sift cache lookup table", ALLOCSET_DEFAULT_SIZES);
+	return NULL;
+}
+
+/* keeps the rows just loaded for the next query, when the table was not written to meanwhile */
+static void
+map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
+{
+	LookFinger *after;
+
+	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
+		lookcache_keep(t->key, t->before, after, m, t->cx, cxt);
+}
+
+/* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 static MapTab *
 map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 {
@@ -297,6 +375,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	int			nkeys = 0;
 	bool		none = false;
 	Relation	idx;
+	KeptTry		kept = {.cx = cxt};
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -311,7 +390,16 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
-	m = map_new(j, own != NULL, cxt);
+	if (idx == NULL && !none && (m = map_kept_find(ex, ci, rel, cxt, own != NULL, &kept)) != NULL)
+	{
+		MemoryContextSwitchTo(old);
+		ExecDropSingleTupleTableSlot(slot);
+		table_close(rel, NoLock);
+		map_loaded(ex, 0, t0);
+		return m;
+	}
+	MemoryContextSwitchTo(kept.cx);
+	m = map_new(j, own != NULL, kept.cx);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
@@ -340,6 +428,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	map_index_rows(m);
 	MemoryContextSwitchTo(old);
+	map_kept_keep(rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
 	map_loaded(ex, m->nrow, t0);
