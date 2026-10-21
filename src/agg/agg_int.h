@@ -769,7 +769,6 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
-void osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void arm_chunk(AggExec *ex, Tup *t);
@@ -854,6 +853,14 @@ void agg_tuples(AggExec *ex, Tup *t);
 void join_stage(AggExec *ex, int s, Tup *in);
 void dense_init(AggExec *ex);
 void agg_chunk(AggExec *ex, int start, int n, const uint64 *mask);
+
+/* osa.c */
+Osa *osa_new(AggExec *ex);
+void osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt);
+void osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
+void osa_sort(Osa *o);
+bool osa_next(Osa *o, OsaRun *r);
+void osa_finish_all(AggExec *ex);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
