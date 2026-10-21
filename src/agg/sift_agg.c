@@ -94,6 +94,7 @@ static bool sift_agg_semi_lut = true;
 static int	sift_agg_semi_lut_size = 4096;
 static bool sift_agg_lookup_pushdown = true;
 static bool sift_agg_join_filter = true;
+static bool sift_agg_share_lookups = true;
 bool		sift_enable_topn = true;
 static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
@@ -137,6 +138,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_join_filter",
 							 "Tests the integer key leaf of an inner or semi lookup join against the keys of the loaded table before tuples are made (zone pruning, source filters, row bitmaps).",
 							 NULL, &sift_agg_join_filter, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_share_lookups",
+							 "Lets the Custom Scan (SiftAgg) nodes of one statement that join the same table share the rows they load (UNION ALL arms).",
+							 NULL, &sift_agg_share_lookups, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
@@ -535,6 +540,7 @@ typedef struct MapTab
 	uint32	   *next;			/* row + 1 of the next row of the bucket */
 	uint32		nslot;
 	uint32	   *head;
+	MemoryContext cxt;			/* where the rows live: the scan's, or the statement's for a table its arms share (map_load_shared) */
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves */
 	bool	   *nokey;			/* keep: the rows with a NULL key, which no tuple matches and are not in the chains */
@@ -757,6 +763,7 @@ typedef struct AggExec
 	SiftVis    *tid_vis;		/* a heap: the visible versions of its edge blocks' rows (a HOT chain's member, not the root the index keeps) */
 	TupleTableSlot *tid_slot;
 	int			njfilter;		/* the join key conjuncts join_filters added to the spec */
+	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
@@ -2268,17 +2275,17 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	{
 		m->cap = Max(m->cap * 2, 256);
 		m->kptr = m->kptr ? repalloc(m->kptr, (size_t) m->cap * m->nkey * sizeof(char *)) :
-			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(char *));
+			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(char *));
 		m->klen = m->klen ? repalloc(m->klen, (size_t) m->cap * m->nkey * sizeof(uint32)) :
-			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(uint32));
+			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(uint32));
 		m->kint = m->kint ? repalloc(m->kint, (size_t) m->cap * m->nkey * sizeof(int64)) :
-			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(int64));
+			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(int64));
 		m->col = m->col ? repalloc(m->col, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum)) :
-			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum));
+			MemoryContextAlloc(m->cxt, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum));
 		m->cnull = m->cnull ? repalloc(m->cnull, (size_t) m->cap * Max(m->ncol, 1)) :
-			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1));
+			MemoryContextAlloc(m->cxt, (size_t) m->cap * Max(m->ncol, 1));
 		if (m->keep)
-			m->nokey = m->nokey ? repalloc(m->nokey, m->cap) : MemoryContextAlloc(ex->cxt, m->cap);
+			m->nokey = m->nokey ? repalloc(m->nokey, m->cap) : MemoryContextAlloc(m->cxt, m->cap);
 	}
 	if (m->keep)
 		m->nokey[m->nrow] = anynull;
@@ -2394,10 +2401,11 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 
 /* an empty table of the rows of a join; filtered: only rows that hold the ON clause's own conditions are loaded (map_row) */
 static MapTab *
-map_new(const SiftAggJoin *j, bool filtered)
+map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 {
 	MapTab	   *m = palloc0(sizeof(MapTab));
 
+	m->cxt = cxt;
 	m->nkey = j->nkey;
 	m->ncol = j->ncol;
 	m->filtered = filtered;
@@ -2445,7 +2453,7 @@ map_loaded(AggExec *ex, int nrows, instr_time t0)
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree */
 static MapTab *
-map_load_table(AggExec *ex, int ci)
+map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -2454,7 +2462,7 @@ map_load_table(AggExec *ex, int ci)
 	MapTab	   *m;
 	Relation	rel = table_open(j->relid, AccessShareLock);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
 	ScanKeyData keys[SIFT_AGG_MAX_JIDX];
 	Datum		val[SIFT_AGG_MAX_JIDX];
 	int			nkeys = 0;
@@ -2474,7 +2482,7 @@ map_load_table(AggExec *ex, int ci)
 	}
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
-	m = map_new(j, own != NULL);
+	m = map_new(j, own != NULL, cxt);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
@@ -2518,7 +2526,7 @@ map_load_child(AggExec *ex, int ci)
 		ex->cs[ci].slot[j->fslot] : NULL;
 	PlanState  *child = list_nth(ex->css.custom_ps, j->child);
 	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
-	MapTab	   *m = map_new(j, own != NULL);
+	MapTab	   *m = map_new(j, own != NULL, ex->cxt);
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -2539,6 +2547,82 @@ map_load_child(AggExec *ex, int ci)
 	return m;
 }
 
+/*
+ * The arms of one statement (UNION ALL, an inlined CTE read several times) that join the same table with the same columns and own conditions read
+ * the same rows in the same snapshot: the first arm loads them into a context of the statement and the others use that table, which no scan changes.
+ * A table is shared within one EState only; the entry goes with the context (a parallel worker has no EState and loads its own).
+ */
+typedef struct SharedMap
+{
+	EState	   *estate;
+	char	   *key;
+	MapTab	   *map;
+	MemoryContextCallback cb;
+} SharedMap;
+
+static List *shared_maps = NIL;
+
+static void
+shared_map_forget(void *arg)
+{
+	shared_maps = list_delete_ptr(shared_maps, arg);
+}
+
+/* what decides the rows of a table: the relation, its key and output columns and the conditions that narrow the load */
+static char *
+shared_map_key(AggExec *ex, int ci)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	bool		own = sift_agg_lookup_pushdown && j->fslot >= 0 && !slot_reads_leaf(cb, j->fslot);
+	StringInfoData k;
+
+	initStringInfo(&k);
+	appendStringInfo(&k, "%u %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, j->nkey);
+	for (int i = 0; i < j->nkey; i++)
+		appendStringInfo(&k, "%d/%u ", j->keyatt[i], j->keytype[i]);
+	appendStringInfo(&k, "|%d|", j->ncol);
+	for (int i = 0; i < j->ncol; i++)
+		appendStringInfo(&k, "%d/%u ", j->colatt[i], j->coltype[i]);
+	if (own)
+		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
+	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
+		appendStringInfo(&k, "|%d/%u/%u/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], nodeToString(j->idxval[i]));
+	return k.data;
+}
+
+static MapTab *
+map_load_shared(AggExec *ex, int ci)
+{
+	EState	   *estate = ex->css.ss.ps.state;
+	char	   *key;
+	SharedMap  *sm;
+	MemoryContext mcxt;
+	MemoryContext old;
+
+	if (estate == NULL)
+		return map_load_table(ex, ci, ex->cxt);
+	key = shared_map_key(ex, ci);
+	foreach_ptr(SharedMap, e, shared_maps)
+		if (e->estate == estate && strcmp(e->key, key) == 0)
+		{
+			ex->nshared++;
+			return e->map;
+		}
+	mcxt = AllocSetContextCreate(estate->es_query_cxt, "sift agg shared lookup", ALLOCSET_DEFAULT_SIZES);
+	sm = MemoryContextAlloc(mcxt, sizeof(SharedMap));
+	sm->estate = estate;
+	sm->key = MemoryContextStrdup(mcxt, key);
+	sm->map = map_load_table(ex, ci, mcxt);
+	sm->cb.func = shared_map_forget;
+	sm->cb.arg = sm;
+	MemoryContextRegisterResetCallback(mcxt, &sm->cb);
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	shared_maps = lappend(shared_maps, sm);
+	MemoryContextSwitchTo(old);
+	return sm->map;
+}
+
 /* the rows of the joined table or plan, hashed by key */
 static MapTab *
 map_load(AggExec *ex, int ci)
@@ -2546,8 +2630,10 @@ map_load(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 
 	if (j->params != NIL)
-		return map_new(j, false);
-	return j->child >= 0 ? map_load_child(ex, ci) : map_load_table(ex, ci);
+		return map_new(j, false, ex->cxt);
+	if (j->child >= 0)
+		return map_load_child(ex, ci);
+	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) ? map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
 }
 
 static void
@@ -12285,6 +12371,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		if (c->njfilter > 0)
 			ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
+		if (c->nshared > 0)
+			ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
 		if (c->nsemi > 0)
 		{
 			ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);
