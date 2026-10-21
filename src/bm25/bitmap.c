@@ -639,8 +639,8 @@ uint32_t sift_chunk_width(const uint8_t *chunk) { return ld32(chunk) & 0x7f; }
 
 /*
  * NULL when the chunk of len bytes is what its header says, so that the readers below stay inside it and inside their outputs, else what is
- * wrong: a width a page row can hold, as many offsets as the header counts, pages below 256 and offsets below the width, entries in
- * ascending order (the rows of a dense chunk hold as many bits as counted)
+ * wrong: a width a page row can hold, the pages and offsets the length covers, pages below 256 and offsets below the width, entries in
+ * ascending order. A dense chunk's rows are not counted here (a load per superblock): index_sb ties their bits to the docs of the superblock
  */
 const char *sift_chunk_check(const uint8_t *chunk, uint32_t len)
 {
@@ -648,15 +648,10 @@ const char *sift_chunk_check(const uint8_t *chunk, uint32_t len)
 	uint32_t h = ld32(chunk), n = h >> 8, w = h & 0x7f;
 	if (w < 1 || w > SIFT_MAX_W) return "offset width out of range";
 	if (!(h & 0x80)) {
-		uint64_t np = 0, bits = 0;
+		uint64_t np = 0;
 		if (len < 36) return "shorter than its page mask";
 		for (int j = 0; j < 4; j++) np += sift_pc64(ld64(chunk + 4 + 8 * j));
-		if (len < 36 + np * w) return "shorter than the offsets of its pages";
-		for (uint64_t r = 0; r < np; r++) {
-			const uint8_t *row = chunk + 36 + r * w;
-			for (uint32_t b = 0; b < w; b += 8) bits += sift_pc64(ld_upto8(row + b, row + w));
-		}
-		return bits == n ? NULL : "counts other offsets than its rows hold";
+		return len < 36 + np * w ? "shorter than the offsets of its pages" : NULL;
 	}
 	uint32_t es = w <= 32 ? 2 : 4, last_pg = 0, last_o = 0;
 	if (4 + (uint64_t)n * es > len) return "shorter than its entries";
