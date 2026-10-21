@@ -5524,6 +5524,7 @@ typedef struct OuterRef
 {
 	PlannerInfo *root;			/* the query the examined RTE belongs to */
 	int			depth;			/* the query levels below that RTE the walk is in */
+	int			skip;			/* the levels above the RTE's query whose references do not count: 0 counts the query's own */
 } OuterRef;
 
 /*
@@ -5536,15 +5537,15 @@ outer_ref_walker(Node *n, OuterRef *o)
 	if (n == NULL)
 		return false;
 	if (IsA(n, Var))
-		return ((Var *) n)->varlevelsup > o->depth;
-	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth)
+		return ((Var *) n)->varlevelsup > o->depth + o->skip;
+	if (IsA(n, Aggref) && ((Aggref *) n)->agglevelsup > o->depth + o->skip)
 		return true;
 	if (IsA(n, RangeTblEntry))
 	{
 		RangeTblEntry *e = (RangeTblEntry *) n;
 		PlannerInfo *owner = o->root;
 
-		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth)
+		if (e->rtekind != RTE_CTE || e->ctelevelsup <= o->depth + o->skip)
 			return false;
 		for (int up = e->ctelevelsup - o->depth - 1; up > 0 && owner != NULL; up--)
 			owner = owner->parent_root;
@@ -5776,6 +5777,35 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	return true;
 }
 
+/* a parameter that a query above carries into the tree (PostgreSQL has replaced a column of it in the expressions of the query itself) */
+static bool
+ancestor_param_walker(Node *n, PlannerInfo *root)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		for (PlannerInfo *up = root->parent_root; up != NULL; up = up->parent_root)
+			foreach_node(PlannerParamItem, item, up->plan_params)
+				if (item->paramId == ((Param *) n)->paramid)
+					return true;
+	return expression_tree_walker(n, ancestor_param_walker, root);
+}
+
+/* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
+static bool
+reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
+{
+	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
+	OuterRef	oref = {c->root, e->rtekind == RTE_SUBQUERY ? 0 : -1, skip};
+	Node	   *expr = e->rtekind == RTE_VALUES ? (Node *) e->values_lists : (Node *) e->functions;
+
+	if (e->rtekind == RTE_SUBQUERY)
+		return query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+	if (e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION)
+		return false;
+	return outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
+}
+
 /*
  * The right side of a join that is a plan: a sub-select PostgreSQL did not pull up (GROUP BY, LIMIT, DISTINCT, a set operation), a VALUES list
  * or a function that reads nothing of the query's other tables. Its rows are those of PostgreSQL's plan of it, read once when the scan starts
@@ -5785,8 +5815,6 @@ static bool
 add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **what)
 {
 	RelOptInfo *rel = c->root->simple_rel_array[rti];
-	OuterRef	oref = {c->root, 0};
-	bool		outer;
 
 	switch (e->rtekind)
 	{
@@ -5800,31 +5828,31 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 			/* A statement-level CTE has no changing outer-row inputs, wherever it is referenced. */
 			if (owner->parent_root != NULL || e->self_reference)
 				return false;
-			outer = false;
 			break;
 		}
 		case RTE_SUBQUERY:
 			*what = "subquery";
 			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
 				return false;
-			outer = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
 			break;
 		case RTE_VALUES:
 			*what = "values";
 			if (contain_volatile_functions((Node *) e->values_lists))
 				return false;
-			outer = outer_ref_walker((Node *) e->values_lists, &oref);
 			break;
 		default:
 			*what = "function";
 			if (contain_volatile_functions((Node *) e->functions))
 				return false;
-			outer = outer_ref_walker((Node *) e->functions, &oref);
 			break;
 	}
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL)
+	/*
+	 * A column of a query above the aggregate's own reaches the child as a parameter of that query's plan, which changes per row of it; the
+	 * scan replays its groups when rescanned (agg_rescan) and never sees it. Only the query's own tables are an input of the child.
+	 */
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
 		return false;
-	if (outer || !bms_is_empty(rel->lateral_relids))
+	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
 		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && correlated_child(c, e, rel, jc);
 	if ((jc->cpath = child_path(rel, false)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
 		return false;
