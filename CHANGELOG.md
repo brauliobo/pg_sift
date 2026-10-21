@@ -73,6 +73,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: the rollups of the elements of a list answer aggregates with `FILTER (WHERE ...)` on dims (`count(*) FILTER (WHERE band >= 8)`, the shares of a rating band): each filter runs on the tuples. A filter on a measure still scans.
+
 - Added: the rollups of the elements of a list answer a `GROUP BY` of a function of one dim (`left(day, 7)`, `upper(kind)`, a `CASE` band of an integer dim, `coalesce`), evaluated once per distinct value of the unit's tuples. Before, any expression key scanned every unit.
 
 - Added: `EXPLAIN (ANALYZE, VERBOSE)` of a `SiftAgg` node that does not answer units from the pre-aggregates prints `Pre-aggregates: <reason>` (the aggregate is `count(DISTINCT)`, has `FILTER`, a group key is an expression, a conjunct tests a measure, a joined table, grouping sets, and so on). Test `agg_rollup_shapes` lists the shapes of an element-level analytics query with their reason and the units answered.

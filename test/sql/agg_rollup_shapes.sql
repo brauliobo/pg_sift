@@ -65,7 +65,10 @@ INSERT INTO pa_q VALUES
 	(16, 'key: coalesce',     'SELECT coalesce(e.kind, ''none''), count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(17, 'key: band / 4',     'SELECT e.band / 4, e.flag, count(*), avg(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2'),
 	(18, 'key: lut and leaf, filter', 'SELECT upper(e.kind), e.band, min(e.score), max(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.flag <> ''fb'' GROUP BY 1, 2'),
-	(19, 'key: month, filter on it', 'SELECT left(e.seen, 7), e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE left(e.seen, 7) = ''2026-02'' GROUP BY 1, 2');
+	(19, 'key: month, filter on it', 'SELECT left(e.seen, 7), e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE left(e.seen, 7) = ''2026-02'' GROUP BY 1, 2'),
+	(20, 'filter on dims',       'SELECT e.kind, avg(e.score) FILTER (WHERE e.flag = ''fa''), sum(e.qty) FILTER (WHERE e.flag <> ''fb'' OR e.band > 5), count(e.band) FILTER (WHERE e.kind IS NULL), min(e.score) FILTER (WHERE e.flag = ''zz'') FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
+	(21, 'filter and key, where', 'SELECT left(e.seen, 7), count(*) FILTER (WHERE e.band >= 8), count(*) FILTER (WHERE e.band IS NULL), max(e.qty) FILTER (WHERE e.kind = ''k1'') FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.flag <> ''fc'' GROUP BY 1'),
+	(22, 'filter on a measure',   'SELECT e.kind, count(*) FILTER (WHERE e.score > 5) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1');
 
 CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
@@ -79,24 +82,24 @@ SELECT * FROM pa_check('ev');
 -- rows change: the units they are on are scanned, the others answer; the derived keys follow
 UPDATE ev SET items = '[{"kind": "k1", "flag": "fa", "band": 9, "seen": "2026-02-10", "score": 1.5, "qty": 2}]' WHERE id BETWEEN 100 AND 150;
 DELETE FROM ev WHERE id BETWEEN 7000 AND 7100;
-SELECT n, shape, pre, why, same FROM pa_check('ev', 1, 7) UNION ALL SELECT n, shape, pre, why, same FROM pa_check('ev', 16, 19) ORDER BY 1;
+SELECT * FROM pa_check('ev');
 VACUUM (index_cleanup on, disable_page_skipping) ev;
-SELECT n, shape, pre, why, same FROM pa_check('ev', 1, 7) UNION ALL SELECT n, shape, pre, why, same FROM pa_check('ev', 16, 19) ORDER BY 1;
+SELECT * FROM pa_check('ev');
 
 -- rows in the write buffer, then sealed
 INSERT INTO ev SELECT g, g % 7, '[{"kind": null, "flag": "fc", "band": null, "seen": "2026-03-01", "score": 2.5, "qty": 3}, {"kind": "k2", "flag": "fa", "band": 4, "seen": "2026-01-02"}]', repeat('p', 200)
 FROM generate_series(20001, 20800) g;
-SELECT n, shape, pre, why, same FROM pa_check('ev', 1, 7) UNION ALL SELECT n, shape, pre, why, same FROM pa_check('ev', 16, 19) ORDER BY 1;
+SELECT * FROM pa_check('ev');
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;
 VACUUM (index_cleanup on, disable_page_skipping) ev;
-SELECT n, shape, pre, why, same FROM pa_check('ev', 1, 7) UNION ALL SELECT n, shape, pre, why, same FROM pa_check('ev', 16, 19) ORDER BY 1;
+SELECT * FROM pa_check('ev');
 SELECT sift.col_verify('ev_col', true);
 
 -- merged: the dead rows are gone and every unit is stored with its rollup again
 SELECT sift.col_merge('ev_col', true) >= 0 AS merged;
 VACUUM (index_cleanup on, disable_page_skipping) ev;
 SELECT sift.col_verify('ev_col', true);
-SELECT n, shape, pre, why, same FROM pa_check('ev', 1, 7) UNION ALL SELECT n, shape, pre, why, same FROM pa_check('ev', 16, 19) ORDER BY 1;
+SELECT * FROM pa_check('ev');
 
 DROP TABLE ev, ev_dim, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int);
