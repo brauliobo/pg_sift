@@ -44,8 +44,9 @@ build() {
 	if [[ ! -f $dir/root/.flavor ]]; then
 		mkdir -p "$dir/src"
 		if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
-		# the production flavor, the library users get; its own scratch and port (the port is only checked, the cluster is not started)
-		( cd "$dir/src" && SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
+		# the production flavor, the library users get (not the ASan one of a sanitized run: the older server does not preload the runtime); its own
+		# scratch and port (the port is only checked, the cluster is not started)
+		( cd "$dir/src" && SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= SANITIZE= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
 			{ tail -20 "$dir/build.log" >&2; echo "FAIL building $OLD_REF" >&2; exit 1; }
 	fi
 	echo "$dir/root"
