@@ -197,6 +197,44 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	return plain;
 }
 
+/* does the query, or one it holds, read a table that has a column index? */
+static bool
+reads_column_index(Query *q)
+{
+	foreach_node(RangeTblEntry, rte, q->rtable)
+		if ((rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid)) ||
+			(rte->rtekind == RTE_SUBQUERY && reads_column_index(rte->subquery)))
+			return true;
+	foreach_node(CommonTableExpr, cte, q->cteList)
+		if (reads_column_index(castNode(Query, cte->ctequery)))
+			return true;
+	return false;
+}
+
+/*
+ * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (sift_aggflat.c): the flat plan wins if it
+ * runs in the scan and costs less. Both are plans of the same query.
+ */
+static PlannedStmt *
+plan_flat(SIFT_PLANNER_PARAMS)
+{
+	Query	   *flat = NULL;
+	PlannedStmt *plain,
+			   *flatplan;
+
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	{
+		flat = copyObject(parse);
+		sift_agg_flatten_laterals(flat);
+	}
+	plain = plan_cte(SIFT_PLANNER_ARGS(parse));
+	if (flat == NULL)
+		return plain;
+	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat));
+	return (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && flatplan->planTree->total_cost < plain->planTree->total_cost ?
+		flatplan : plain;
+}
+
 /*
  * The cost of a SiftAgg plan turns on JIT (jit_above_cost) for work that does not use it: the node reads columns, and the nodes
  * above it handle its groups. Compiling their projections takes 3 to 5 ms of a 15 to 40 ms query.
@@ -204,7 +242,7 @@ plan_cte(SIFT_PLANNER_PARAMS)
 static PlannedStmt *
 sift_planner(SIFT_PLANNER_PARAMS)
 {
-	PlannedStmt *stmt = plan_cte(SIFT_PLANNER_ARGS(parse));
+	PlannedStmt *stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
 
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 		stmt->jitFlags = PGJIT_NONE;
