@@ -20,6 +20,7 @@ CREATE INDEX t_float_col ON t_float USING sift_col (id, grp, f4, f8);
 CREATE INDEX t_text_col ON t_text USING sift_col (id, grp, t, vc);
 CREATE INDEX t_jp_col ON t_jp USING sift_col (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}');
 CREATE INDEX t_eo_col ON t_eo USING sift_col (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}');
+CREATE INDEX t_rc_col ON t_rc USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}');
 CREATE INDEX t_wl_col ON t_wl USING sift_col (id, entity_id, source_id, product_id, item_date, updated_at, deleted_at, country_code, composition, segment, ratings, comments, (coldiff.wl_norm(doc)), (coldiff.wl_txt(doc)))
 	WITH (paths = 'ratings.* astext, comments[]{type text}, wl_norm.lang astext, wl_norm.mapped astext, wl_norm.opinions[]{category astext, subrating astext, polarity astext, score float8}, wl_txt.opinions[]{category astext, score astext}');
 

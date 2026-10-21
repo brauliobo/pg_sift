@@ -61,7 +61,7 @@ INSERT INTO b_t VALUES (100001, '{"lines": [{"k": "a", "n": "7", "s": "abc"}, {"
 SELECT pushed('EXECUTE agg_n') AS n_pushed, pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
  n_pushed | s_pushed | k_pushed 
 ----------+----------+----------
- f        | t        | t
+ t        | t        | t
 (1 row)
 
 SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same,
@@ -75,7 +75,7 @@ SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('
 SELECT pushed(unnest_q('l.k, avg(l.n)', 'l.k')) AS n_pushed, pushed(unnest_q('l.k, count(*)', 'l.k')) AS k_pushed;
  n_pushed | k_pushed 
 ----------+----------
- f        | t
+ t        | t
 (1 row)
 
 SELECT same(unnest_q('l.k, avg(l.n)', 'l.k'), unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same(unnest_q('l.k, count(*)', 'l.k'), unnest_q('l.k, count(*)', 'l.k')) AS k_same;
@@ -89,7 +89,7 @@ INSERT INTO b_t VALUES (100002, '{"lines": [{"k": "c", "n": 2, "s": "longer than
 SELECT pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
  s_pushed | k_pushed 
 ----------+----------
- f        | t
+ t        | t
 (1 row)
 
 SELECT same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same, same('EXECUTE agg_k', unnest_q('l.k, count(*)', 'l.k')) AS k_same;
@@ -108,7 +108,7 @@ SELECT sift.col_promote('b_t_col') >= 0 AS promoted;
 SELECT pushed('EXECUTE agg_n') AS n_pushed, pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
  n_pushed | s_pushed | k_pushed 
 ----------+----------+----------
- f        | f        | t
+ t        | t        | t
 (1 row)
 
 SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same,

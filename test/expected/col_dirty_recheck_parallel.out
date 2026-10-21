@@ -1,0 +1,74 @@
+-- Rows that hold a value a typed leaf cannot store, read again from the heap by the workers of a parallel aggregate scan: the plan is a Gather
+-- over SiftAgg with two workers, the rows are the rows of the normal plan and the error a worker raises is the error of the normal plan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE r_t (id int, grp int, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO r_t
+SELECT i, i % 7,
+       CASE i % 11 WHEN 0 THEN '[1]'::jsonb
+                   WHEN 1 THEN jsonb_build_object('l', jsonb_build_array(jsonb_build_object('k', 'a', 'v', (i % 9)::text)))
+                   WHEN 2 THEN '"text"'::jsonb
+                   ELSE jsonb_build_object('l', jsonb_build_array(jsonb_build_object('k', 'k' || i % 5, 'v', i % 13), jsonb_build_object('k', 'z', 'v', i % 4 + 0.5))) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX r_col ON r_t USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8}');
+VACUUM ANALYZE r_t;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 10000;
+CREATE FUNCTION r_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION r_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; gather bool := false; agg bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		gather := gather OR l LIKE '%Workers Planned: 2%';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN CASE WHEN gather AND agg THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
+END $$;
+CREATE FUNCTION r_check(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT r_mode(q) || ' ' || CASE WHEN r_rows(q, false) = r_rows(q, true) THEN 'same' ELSE 'DIFF' END
+$$;
+SELECT r_check('SELECT l.k, count(*), min(l.v), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) GROUP BY l.k') AS grouped;
+   grouped   
+-------------
+ serial same
+(1 row)
+
+SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) WHERE l.k <> $$z$$ GROUP BY grp') AS filtered;
+   filtered    
+---------------
+ parallel same
+(1 row)
+
+-- a row that SQL rejects: the error of the normal plan, raised by a worker or the leader
+UPDATE r_t SET doc = '{"l": [{"k": "a", "v": "abc"}]}' WHERE id = 15000;
+VACUUM r_t;
+SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) GROUP BY grp') AS error_row;
+   error_row   
+---------------
+ parallel same
+(1 row)
+
+SELECT r_rows('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) GROUP BY grp', true) AS the_error;
+                            the_error                            
+-----------------------------------------------------------------
+ ERR 22P02 invalid input syntax for type double precision: "abc"
+(1 row)
+
+SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) WHERE id < 15000 GROUP BY grp') AS error_row_filtered_out;
+ error_row_filtered_out 
+------------------------
+ parallel same
+(1 row)
+

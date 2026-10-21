@@ -53,31 +53,31 @@ $$;
 SELECT pushed(unnest_q('l.k, avg(l.n)')) AS float_path_pushed, same(unnest_q('l.k, avg(l.n)')) AS float_path_same;
  float_path_pushed | float_path_same 
 -------------------+-----------------
- f                 | t
+ t                 | t
 (1 row)
 
 SELECT pushed(unnest_q('l.k, count(l.n), sum(l.n)')) AS float_count_pushed, same(unnest_q('l.k, count(l.n), sum(l.n)')) AS float_count_same;
  float_count_pushed | float_count_same 
 --------------------+------------------
- f                  | t
+ t                  | t
 (1 row)
 
 SELECT pushed(unnest_q('l.k, count(*) FILTER (WHERE l.n > 3)')) AS float_filter_pushed, same(unnest_q('l.k, count(*) FILTER (WHERE l.n > 3)')) AS float_filter_same;
  float_filter_pushed | float_filter_same 
 ---------------------+-------------------
- f                   | t
+ t                   | t
 (1 row)
 
 SELECT pushed(unnest_q('l.s, count(*)', 'l.s')) AS text_path_pushed, same(unnest_q('l.s, count(*)', 'l.s')) AS text_path_same;
  text_path_pushed | text_path_same 
 ------------------+----------------
- f                | t
+ t                | t
 (1 row)
 
 SELECT pushed(unnest_q('l.k, count(*) FILTER (WHERE l.s = $$abc$$)')) AS text_filter_pushed, same(unnest_q('l.k, count(*) FILTER (WHERE l.s = $$abc$$)')) AS text_filter_same;
  text_filter_pushed | text_filter_same 
 --------------------+------------------
- f                  | t
+ t                  | t
 (1 row)
 
 -- the leaves without such values stay on the scan
@@ -108,7 +108,7 @@ SELECT pushed(unnest_q('l.k, avg(l.n)')) AS repaired_float_pushed, same(unnest_q
 SELECT pushed(unnest_q('l.s, count(*)', 'l.s')) AS still_text_pushed, same(unnest_q('l.s, count(*)', 'l.s')) AS still_text_same;
  still_text_pushed | still_text_same 
 -------------------+-----------------
- f                 | t
+ t                 | t
 (1 row)
 
 -- a string again, in a live row, promoted from the write buffer to a segment: the leaf is read by the normal plan until the row goes
@@ -124,7 +124,7 @@ VACUUM (INDEX_CLEANUP on) o_t;
 SELECT pushed(unnest_q('l.k, avg(l.n)')) AS live_string_pushed, same(unnest_q('l.k, avg(l.n)')) AS live_string_same;
  live_string_pushed | live_string_same 
 --------------------+------------------
- f                  | t
+ t                  | t
 (1 row)
 
 UPDATE o_t SET doc = jsonb_set(doc, '{lines,0,n}', '7') WHERE id = 100;

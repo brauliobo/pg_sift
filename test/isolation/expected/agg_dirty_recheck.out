@@ -1,0 +1,81 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1pushed s1decl s2ins s1got s1same s1end
+step s1pushed: SELECT iso_rc_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_rc t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2ins: INSERT INTO iso_rc VALUES (100001, jsonb_build_object('lines', jsonb_build_array(jsonb_build_object('k', 'a', 'n', 'x'))));
+step s1got: CREATE TEMP TABLE got AS SELECT iso_rc_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_rc_normal() AS same, (SELECT r FROM got) !~ '^ERR' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1pushed s1decl s2begin s2ins s1got s1same s2commit s1end
+step s1pushed: SELECT iso_rc_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_rc t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_rc VALUES (100001, jsonb_build_object('lines', jsonb_build_array(jsonb_build_object('k', 'a', 'n', 'x'))));
+step s1got: CREATE TEMP TABLE got AS SELECT iso_rc_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_rc_normal() AS same, (SELECT r FROM got) !~ '^ERR' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1pushed s1decl s2begin s2ins s2abort s1got s1same s1end
+step s1pushed: SELECT iso_rc_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_rc t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_rc VALUES (100001, jsonb_build_object('lines', jsonb_build_array(jsonb_build_object('k', 'a', 'n', 'x'))));
+step s2abort: ROLLBACK;
+step s1got: CREATE TEMP TABLE got AS SELECT iso_rc_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_rc_normal() AS same, (SELECT r FROM got) !~ '^ERR' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1pushed s2ins s1decl s1got s1same s1end
+step s1pushed: SELECT iso_rc_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s2ins: INSERT INTO iso_rc VALUES (100001, jsonb_build_object('lines', jsonb_build_array(jsonb_build_object('k', 'a', 'n', 'x'))));
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_rc t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s1got: CREATE TEMP TABLE got AS SELECT iso_rc_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_rc_normal() AS same, (SELECT r FROM got) !~ '^ERR' AS rows;
+same|rows
+----+----
+t   |f   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
