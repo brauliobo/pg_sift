@@ -748,8 +748,8 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	}
 	else
 	{
-		int32		mn,
-					mx;
+		int32		mn = 0,
+					mx = 0;
 		int			nw = (nsel + 63) / 64;
 
 		/* the range of the non-null values */
