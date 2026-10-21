@@ -867,6 +867,8 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 	{
 		ExplainPropertyInteger("Lookup Rows Read", NULL, c->lookup_read, es);
 		ExplainPropertyInteger("Lookup Rows Loaded", NULL, c->lookup_loaded, es);
+		if (c->lookup_shared > 0)
+			ExplainPropertyInteger("Lookup Rows Shared", NULL, c->lookup_shared, es);
 		if (c->lookup_index > 0)
 			ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
 		if (es->timing)

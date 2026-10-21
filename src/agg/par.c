@@ -225,7 +225,10 @@ final_checks(AggExec *g, int64 ntuples)
 #define KEY_PARAMS	UINT64CONST(0x53494654A003)
 #define KEY_SNAP	UINT64CONST(0x53494654A004)
 #define KEY_MQ		UINT64CONST(0x53494654A005)
+#define KEY_MAP		UINT64CONST(0x53494654B000)	/* + the combo: the table of its join (agg/lookshare.c) */
 #define MQ_SIZE		(1 << 20)
+/* the lookup tables the workers share, together: a larger set is read by the leader alone */
+#define SHARE_MAX	((Size) 1 << 30)
 #define DONE_MAGIC	0x53414732
 
 typedef struct WorkerDone
@@ -318,6 +321,9 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	shm_mq_set_sender(mq, MyProc);
 	ex->mqh = shm_mq_attach(mq, seg, NULL);
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
+	ex->pmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		ex->pmaps[ci] = shm_toc_lookup(toc, KEY_MAP + ci, true);
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
@@ -365,8 +371,27 @@ par_launch(AggExec *ex)
 	int			nw = ex->spec->nworkers;
 	ScanShared  *ps;
 	AggPar	   *par;
+	MapShared  *ml;
+	Size		msize = 0;
+	int			nmaps = 0;
 
 	if (nw <= 0 || IsParallelWorker())
+		return;
+	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
+	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+	{
+		const SiftAggCombo *cb = &ex->spec->combo[ci];
+		MapTab	   *m = ex->cs[ci].map;
+
+		if (cb->join < 0)
+			continue;
+		if (m == NULL || m->keep || ex->spec->join[cb->join].params != NIL)
+			return;
+		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
+		nmaps++;
+	}
+	if (msize > SHARE_MAX)
 		return;
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
@@ -375,7 +400,10 @@ par_launch(AggExec *ex)
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
-	shm_toc_estimate_keys(&pcxt->estimator, 5);
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		if (ex->spec->combo[ci].join >= 0)
+			shm_toc_estimate_chunk(&pcxt->estimator, ml[ci].size);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps);
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -399,6 +427,18 @@ par_launch(AggExec *ex)
 	for (int i = 0; i < nw; i++)
 		shm_mq_set_receiver(shm_mq_create(p + (Size) i * MQ_SIZE, MQ_SIZE), MyProc);
 	shm_toc_insert(pcxt->toc, KEY_MQ, p);
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+	{
+		const SiftAggCombo *cb = &ex->spec->combo[ci];
+		char	   *mp;
+
+		if (cb->join < 0)
+			continue;
+		mp = shm_toc_allocate(pcxt->toc, ml[ci].size);
+		map_share_write(ex->cs[ci].map, &ex->spec->join[cb->join], &ml[ci], mp);
+		shm_toc_insert(pcxt->toc, KEY_MAP + ci, mp);
+		ex->lookup_shared += ml[ci].nrow;
+	}
 	LaunchParallelWorkers(pcxt);
 	if (pcxt->nworkers_launched == 0)
 	{
