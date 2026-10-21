@@ -759,14 +759,19 @@ combo_unmatched(AggExec *ex, int ci, const uint32 *prior)
 	return ent;
 }
 
+/* the ids are small and dense: every input is multiplied in and folded, or the entries of a few hundred thousand combinations pile up in a few slots */
 static inline uint32
 combo_hash(const uint64 *v, int ninputs, bool null_input)
 {
 	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
 
 	for (int p = 0; p < ninputs; p++)
-		h ^= v[p] + UINT64CONST(0x9E3779B97F4A7C15) + (h << 6) + (h >> 2);
-	return (uint32) (h ^ (h >> 32)) ^ (null_input ? 0x85EBCA6BU : 0);
+	{
+		h = (h ^ v[p]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h ^= h >> 32;
+	}
+	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	return (uint32) (h >> 32) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 
 /* room for one more entry */
