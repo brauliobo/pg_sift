@@ -55,7 +55,7 @@ A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared 
 
 PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
 PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).
-PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), is experimental: it runs the same jobs in one shard and fails nothing.
+PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in one shard and fails the run like 17 and 18.
 `scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
 the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18. `assert.yml`
 (assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks (`bench/bench final --docs`) are a separate step, not part of a release.
