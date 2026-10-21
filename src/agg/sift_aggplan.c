@@ -150,6 +150,9 @@ typedef struct AggCtx
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	List	   *dpctx;			/* deparse context of expr_text */
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
+	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
+	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
+	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
@@ -616,7 +619,12 @@ func_var_leaf(AggCtx *c, Var *v)
 			if (v->varattno < 1 || v->varattno > list_length(f->funccolnames) ||
 				v->vartype != list_nth_oid(f->funccoltypes, v->varattno - 1))
 				return -1;
-			return child_leaf(c, c->group, strVal(list_nth(f->funccolnames, v->varattno - 1)), v->vartype);
+			{
+				int			leaf = child_leaf(c, c->group, strVal(list_nth(f->funccolnames, v->varattno - 1)), v->vartype);
+
+				c->rec_pending = leaf + 1;
+				return leaf;
+			}
 		case FK_EACH:
 		case FK_EACH_TEXT:
 			if (v->varattno == 1)
@@ -645,6 +653,7 @@ match_leaf(AggCtx *c, Node *e)
 	Node	   *inner;
 	int			att;
 
+	c->rec_pending = 0;
 	e = strip_relabel(e);
 	if (IsA(e, Var) && ((Var *) e)->varno == c->func_rti && c->func_rti != 0)
 		return func_var_leaf(c, (Var *) e);
@@ -1492,6 +1501,11 @@ cmp_text(int op)
 static void
 use_leaf(AggCtx *c, int leaf)
 {
+	if (c->rec_pending == leaf + 1)
+		c->rec_ok = bms_add_member(c->rec_ok, leaf);
+	else
+		c->rec_bad = bms_add_member(c->rec_bad, leaf);
+	c->rec_pending = 0;
 	c->used = bms_add_member(c->used, leaf);
 	c->read = bms_add_member(c->read, leaf);
 	if (leaf_of(c, leaf)->parent >= 0 && leaf_of(c, leaf)->parent != c->group)
@@ -2840,6 +2854,7 @@ compile_typeof(AggCtx *c, Node *n)
 	p->leaf = leaf;
 	p->level = leaf_level(c, leaf);
 	c->used = bms_add_member(c->used, leaf);
+	c->rec_bad = bms_add_member(c->rec_bad, leaf);
 	p->op = types;
 	p->desc = expr_text(c, n);
 	return p;
@@ -4976,6 +4991,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
+#define AGG_RECHECK_FRAC	0.02	/* share of the rows the source reads again from the heap when a leaf the scan rechecks is flagged (the index does not count them) */
+#define AGG_RECHECK_ROW		60.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
@@ -5463,6 +5480,12 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->nvleaf; i++)
 		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	scan_cost += rows * inline_text_cost(c, s);
+	for (int i = 0; i < s->nleaves; i++)
+		if (s->recheck[i] != SRK_NONE && c->stats.ovf[s->leaves[i]])
+		{
+			scan_cost += rows * AGG_RECHECK_FRAC * AGG_RECHECK_ROW;
+			break;
+		}
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
 			scan_cost += rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], rows));
@@ -6444,17 +6467,37 @@ cmp_int(const void *a, const void *b)
 	return *(const int *) a - *(const int *) b;
 }
 
+static SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
+static bool recordset_recheck_ok(AggCtx *c);
+static Bitmapset *recordset_columns(AggCtx *c);
+
 static void
 finish_leaves(AggCtx *c, SiftAggSpec *s)
 {
 	int			n = 0,
 				m = -1;
 
+	/* the columns of jsonb_to_recordset that nothing reads but a value they cannot store makes it raise: the source reads those rows again */
+	if (recordset_recheck_ok(c))
+	{
+		Bitmapset  *cols = recordset_columns(c);
+
+		while ((m = bms_next_member(cols, m)) >= 0)
+			if (c->stats.ovf[m])
+			{
+				c->used = bms_add_member(c->used, m);
+				c->rec_ok = bms_add_member(c->rec_ok, m);
+			}
+		m = -1;
+	}
 	s->leaves = palloc(Max(bms_num_members(c->used), 1) * sizeof(int));
 	while ((m = bms_next_member(c->used, m)) >= 0)
 		s->leaves[n++] = m;
 	s->nleaves = n;
 	qsort(s->leaves, n, sizeof(int), cmp_int);
+	s->recheck = palloc0(Max(n, 1));
+	for (int i = 0; i < n; i++)
+		s->recheck[i] = s->leaves[i] < c->lay->nleaves ? spec_recheck(c, s, s->leaves[i]) : SRK_NONE;
 }
 
 /*
@@ -6857,11 +6900,117 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *o
 	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
 }
 
+/* can SQL read a leaf of this type from the text of a scalar through its input function (the leaf types of the shredder)? */
+static bool
+text_io_leaf(const SiftSrcLeaf *l)
+{
+	if (l->wide || l->kind != SCL_SCALAR)
+		return false;
+	switch (l->typid)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case FLOAT4OID:
+		case FLOAT8OID:
+		case TEXTOID:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
+ * Does jsonb_to_recordset read the unnested list alone: nothing else reads it or one of its columns, and each column the query reads is read as
+ * a column of the record (and has a type SQL reads from the text of a scalar)? Then a row whose document holds a value the leaves cannot store is
+ * read again by the source as the function reads it.
+ */
+static bool
+recordset_recheck_ok(AggCtx *c)
+{
+	int			m = -1;
+
+	if (c->func_kind != FK_RECORDSET || c->group < 0 || c->search || bms_is_member(c->group, c->rec_bad) ||
+		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+		return false;
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].obj == c->group)	/* the length of the list: a row that raises has no length */
+			return false;
+	while ((m = bms_next_member(c->used, m)) >= 0)
+		if (leaf_of(c, m)->parent == c->group && (!bms_is_member(m, c->rec_ok) || bms_is_member(m, c->rec_bad) || !text_io_leaf(leaf_of(c, m))))
+			return false;
+	return true;
+}
+
+/*
+ * The columns the function declares that have a leaf in the index: it reads all of them for every element, whether the query does or not, and
+ * raises for a value its type does not take.
+ */
+static Bitmapset *
+recordset_columns(AggCtx *c)
+{
+	Bitmapset  *cols = NULL;
+	RangeTblFunction *f = c->func;
+
+	for (int i = 0; i < list_length(f->funccolnames); i++)
+	{
+		int			leaf = child_leaf(c, c->group, strVal(list_nth(f->funccolnames, i)), list_nth_oid(f->funccoltypes, i));
+
+		if (leaf >= 0 && text_io_leaf(leaf_of(c, leaf)))
+			cols = bms_add_member(cols, leaf);
+	}
+	return cols;
+}
+
+/* How the query reads leaf m when the source holds a value it cannot store (SRK_NONE: it does not, such a value is an error for the scan); docs/COL-DIRTY-UNITS.md */
+static SiftSrcRecheck
+leaf_recheck(AggCtx *c, int m)
+{
+	if (!recordset_recheck_ok(c))
+		return SRK_NONE;
+	if (m == c->group)
+		return SRK_RECORDSET;
+	return leaf_of(c, m)->parent == c->group && (bms_is_member(m, c->used) || bms_is_member(m, recordset_columns(c))) ? SRK_TEXT : SRK_NONE;
+}
+
+/* does a conjunct of the rows read one of the leaves? Those rows would be dropped before the error of the list they hold is raised */
+static bool
+pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
+{
+	if (p->leaf >= 0 && bms_is_member(p->leaf, leaves))
+		return true;
+	if (p->leaf2 >= 0 && bms_is_member(p->leaf2, leaves))
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_reads_any(p->child[i], leaves))
+			return true;
+	return false;
+}
+
+/* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns */
+static SiftSrcRecheck
+spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
+{
+	Bitmapset  *list = NULL;
+
+	if (leaf_recheck(c, m) == SRK_NONE)
+		return SRK_NONE;
+	list = bms_add_member(list, c->group);
+	for (int i = 0; i < c->lay->nleaves; i++)
+		if (leaf_of(c, i)->parent == c->group)
+			list = bms_add_member(list, i);
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->level == 0 && pred_reads_any(s->pred[i], list))
+			return SRK_NONE;
+	return leaf_recheck(c, m);
+}
+
 /*
  * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when a row of its snapshot has one
- * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. A numeric leaf is not one: its only such value
- * is NaN, which the scan evaluates (SiftSrcVec.ovf). Nor is the leaf of a jsonb_typeof conjunct (SAP_TYPE): the source keeps the rows of
- * the types and tells the type of each value it cannot store.
+ * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. Unless the source reads the rows again as SQL reads
+ * them (spec_recheck). A numeric leaf is not one: its only such value is NaN, which the scan evaluates (SiftSrcVec.ovf). Nor is the leaf of a
+ * jsonb_typeof conjunct (SAP_TYPE): the source keeps the rows of the types and tells the type of each value it cannot store.
  */
 static bool
 reads_overflow(AggCtx *c, const SiftAggSpec *s)
@@ -6873,7 +7022,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		if (s->pred[i]->kind == SAP_TYPE)
 			typed = bms_add_member(typed, s->pred[i]->leaf);
 	while ((m = bms_next_member(c->used, m)) >= 0)
-		if (c->stats.ovf[m] && !bms_is_member(m, typed))
+		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE)
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m)),
 							 errhint("docs/COL-DIRTY-UNITS.md")));

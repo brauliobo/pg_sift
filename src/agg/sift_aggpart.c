@@ -321,6 +321,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->bytes += pc.bytes;
 		c->rows_vetted += pc.rows_vetted;
 		c->heap_pages += pc.heap_pages;
+		c->rechecked += pc.rechecked;
 	}
 }
 
@@ -395,6 +396,21 @@ part_tolerate_ovf(void *impl, int leaf)
 
 	for (int i = 0; i < ps->n; i++)
 		sift_colsrc_tolerate_ovf(ps->src[i], leaf);
+}
+
+static void
+part_set_recheck(void *impl, int leaf, int mode)
+{
+	PartSource *ps = impl;
+
+	for (int i = 0; i < ps->n; i++)
+		sift_colsrc_set_recheck(ps->src[i], leaf, mode);
+}
+
+static void
+part_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows)
+{
+	sift_colsrc_overflow_raise(cur_of(impl), unit_of(impl), rows);
 }
 
 static void
@@ -498,6 +514,8 @@ static const SiftSrcProvider part_provider = {
 	.read_sel = part_read_sel,
 	.filter_types = part_filter_types,
 	.tolerate_ovf = part_tolerate_ovf,
+	.set_recheck = part_set_recheck,
+	.overflow_raise = part_overflow_raise,
 	.read_types = part_read_types,
 	.read_jnull = part_read_jnull,
 	.prune_str = part_prune_str,

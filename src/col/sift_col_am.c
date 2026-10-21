@@ -464,7 +464,8 @@ sift_col_am_oid(void)
 }
 
 void
-sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row, MemoryContext mcxt)
+sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row, MemoryContext mcxt,
+					 struct SiftShredRecheck *rc)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	int			ncols = r->schema->ncols;
@@ -489,9 +490,15 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 	{
 		int		   *first = r->first;
 
-		sift_col_shred_row(r->shred, values, isnull, row, first, mcxt);
+		sift_col_shred_row_rc(r->shred, values, isnull, row, first, mcxt, rc);
 	}
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const bool *isnull, SiftColRow *row, MemoryContext mcxt)
+{
+	sift_col_make_row_rc(r, tid, values, isnull, row, mcxt, NULL);
 }
 
 /* ---------- aminsert ---------- */
