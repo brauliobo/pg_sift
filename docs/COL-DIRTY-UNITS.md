@@ -1,6 +1,6 @@
 # Dirty units: a value a leaf cannot store
 
-Design note for 3.2. Status: the diagnostic below is implemented; the recheck is a follow-up.
+Design note for 3.2. Status: the diagnostic (C) and the recheck of option A for the columns of `jsonb_to_recordset` are implemented ("What is implemented"); other reads of a flagged leaf keep the normal plan.
 
 ## The problem
 
@@ -30,7 +30,7 @@ keeps typed leaves clean and is the faster form.
 
 ## Options
 
-**A. Recheck the flagged rows from the heap (the one the 3.0.1 notes announced).**
+**A. Recheck the flagged rows from the heap (the one the 3.0.1 notes announced; implemented for recordset columns, below).**
 The unit stays usable. The scan evaluates the unit's rows as usual, with the flagged slots as NULL, but marks the rows whose slot
 overflowed in a row mask (the overflow bitmap of the chunk already has it). Those rows leave the vectorized path (selection,
 group ids, accumulators) and go to a per-row path that fetches the heap tuple by TID (visibility as for `sift_col_vet`), deforms the
@@ -71,3 +71,29 @@ Per-item arms with a count of the items, serial, best of 2 and 3 (`bench/sql/wor
 | `astext` leaf + guarded cast, fused arms (g5) | 2.83 s | 0.073 s |
 
 The first row is the gap: it needs option A.
+
+## What is implemented (option A, no format change)
+
+The flagged rows are read again by the source, not by a per-row path through the executor: the unit is presented as the stored
+unit without those rows (they leave the live mask, their TIDs are kept) followed by a replacement unit built from the heap, so
+selection, group ids, accumulators, the cell path, parallel workers and partitions need no change.
+
+- **Fetch.** `table_index_fetch_tuple` with the scan's snapshot (a HOT chain followed, a version the snapshot does not see gives no
+  row), the index expressions evaluated with `FormIndexDatum`, the document shredded again by the walk of `sift_shred_recheck.c`.
+- **Semantics.** The scalar under a declared column goes through the input function of the column's type as its text (`"8.5"` into
+  `float8`, `12` into `text`, `true` into `text`), a container into a `text` column as its JSON text, a key of an array or of a scalar is
+  NULL. Errors are those of `jsonb_to_recordset` (a string that is no number `22P02`, `cannot call jsonb_to_recordset on a non-array`
+  `22023`, `argument of jsonb_to_recordset must be an array of objects` `22023`) and are kept in the replacement unit with the list
+  poisoned; the executor raises the recorded error after the row-level conjuncts (`check_overflow` late), so a row filtered out by a
+  leaf of its own row raises nothing, as in the normal plan. The columns the query does not read are coerced too (PostgreSQL coerces
+  every declared column), so a flagged unread column is read as well.
+- **Planner.** `reads_overflow` no longer refuses a flagged leaf that is a column of a recordset (`bool`, `int2`, `int4`, `int8`,
+  `float4`, `float8`, `text` leaves, read as the record column reads them). It still refuses when anything else reads the leaf or its
+  list (a path read, `jsonb_array_length` of the list, a test of the list at the top level, search), when the provider cannot read
+  rows again (`sift_table`, whose rows have no index expressions) and for a value the shredder cannot store after coercing it
+  (NaN, an infinity, `-0` from a string: the generic overflow error of the scan stays). The price is `AGG_RECHECK_FRAC` (2%) of the
+  rows at `AGG_RECHECK_ROW` (60) operator costs; the per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that
+  would make the price exact and was not needed for the numbers below.
+- **Not done.** `jsonb_each` with `CAST(value AS float8)` keeps the normal plan (the same error as the normal plan, since it is the
+  normal plan). Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
+  as before.
