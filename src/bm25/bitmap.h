@@ -176,6 +176,7 @@ static inline float sift_blk_ub(const sift_cur *c, int b)
 #define SIFT_OFFMASK_WORDS  8
 size_t sift_chunk_bound(uint32_t npages);   /* for SIFT_CT_AUTO / SIFT_CT_BITMAP */
 size_t sift_chunk_encode(const uint64_t pagemask[4], const uint64_t *offmasks, int ctype, uint8_t *out);
+const char *sift_chunk_check(const uint8_t *chunk, uint32_t len);   /* NULL, or what is wrong; the readers below take no length: check first */
 uint32_t sift_chunk_count(const uint8_t *chunk);
 uint32_t sift_chunk_width(const uint8_t *chunk);   /* bytes of offsets of a page, the same for every page */
 void sift_chunk_pagemask(const uint8_t *chunk, uint64_t pagemask[4]);

@@ -190,6 +190,7 @@ load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 	uint64		len = (i + 1 < dm->nsb ? dm->dir[i + 1].off : dm->dir_off) - r->off;
 	uint64		all[SIFT_PAGEMASK_WORDS] = {~0ULL, ~0ULL, ~0ULL, ~0ULL};
 	uint32	   *h;
+	const char *bad;
 
 	if (dm->cur == i)
 		return;
@@ -210,6 +211,8 @@ load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 		corrupt(seg, "DOCMAP record of SB %u has %u docs and a chunk of %u bytes.", r->sb, h[0], h[1]);
 	if (dm->dlcode > 2)
 		corrupt(seg, "DOCMAP record of SB %u has dl rows of width code %d.", r->sb, dm->dlcode);
+	if ((bad = sift_chunk_check(dm->rec + 8, h[1])) != NULL)
+		corrupt(seg, "DOCMAP record of SB %u has a page chunk of %u bytes that is %s.", r->sb, h[1], bad);
 	sift_chunk_pagemask(dm->rec + 8, dm->pagemask);
 	dm->np = 0;
 	for (int j = 0; j < SIFT_PAGEMASK_WORDS; j++)
