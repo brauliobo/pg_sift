@@ -40,13 +40,245 @@ parse_child(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t len, uint3
 	return nd;
 }
 
+/* The node being parsed: at p (8-aligned, avail bytes) of n values of a chunk of kind, depth levels down */
+typedef struct CcParse
+{
+	MemoryContext cx;
+	SiftCcKind	kind;
+	const uint8 *p;
+	size_t		avail;
+	uint32		n;
+	int			depth;
+} CcParse;
+
+/* the child node of n values in the len bytes at off */
+static CcNode *
+parse_sub(const CcParse *ps, size_t off, size_t len, uint32 n)
+{
+	return parse_child(ps->cx, SIFT_CC_INT, ps->p + off, len, n, ps->depth + 1);
+}
+
+/* Each parse_<encoding> fills the fields of nd from its header and returns the node's size */
+
+static size_t
+parse_const(const CcParse *ps, CcNode *nd)
+{
+	nd->base = get64(ps->p + 8);
+	return CC_NHDR;
+}
+
+static size_t
+parse_forbit(const CcParse *ps, CcNode *nd)
+{
+	size_t		len;
+
+	nd->W = ps->p[1];
+	if (nd->W < 1 || nd->W > 32)
+		CC_CORRUPT("bit width out of range");
+	nd->base = get64(ps->p + 8);
+	len = CC_NHDR + CC_RUP8(4 * (size_t) sift_cc_words(ps->n, nd->W));
+	need(ps->avail, len);
+	nd->words = ps->p + CC_NHDR;
+	return len;
+}
+
+static size_t
+parse_forbyte(const CcParse *ps, CcNode *nd)
+{
+	size_t		len;
+
+	nd->B = ps->p[1];
+	if (nd->B < 1 || nd->B > 8)
+		CC_CORRUPT("byte width out of range");
+	nd->base = get64(ps->p + 8);
+	len = CC_NHDR + CC_RUP8((size_t) ps->n * nd->B);
+	need(ps->avail, len);
+	nd->words = ps->p + CC_NHDR;
+	return len;
+}
+
+static size_t
+parse_delta(const CcParse *ps, CcNode *nd)
+{
+	const uint8 *p = ps->p;
+	uint32		n = ps->n;
+	size_t		len;
+
+	if (n < 2)
+		CC_CORRUPT("delta node with fewer than two values");
+	nd->W = p[1];
+	if (nd->W > 32)
+		CC_CORRUPT("bit width above 32");
+	need(ps->avail, CC_NHDR + 8);
+	nd->base = get64(p + 8);
+	nd->mind = get64(p + 16);
+	len = CC_NHDR + 8 + 8 * (size_t) ((n - 1) / 1024) + CC_RUP8(4 * (size_t) sift_cc_words(n, nd->W));
+	need(ps->avail, len);
+	nd->chk = p + CC_NHDR + 8;
+	nd->words = nd->chk + 8 * (size_t) ((n - 1) / 1024);
+	return len;
+}
+
+static size_t
+parse_rle(const CcParse *ps, CcNode *nd)
+{
+	const uint8 *p = ps->p;
+	uint32		n = ps->n,
+				vl = get32(p + 8),
+				ll = get32(p + 12);
+	uint32	   *lens;
+	uint64		sum = 0;
+	size_t		len;
+
+	nd->nruns = get32(p + 4);
+	if (nd->nruns < 1 || nd->nruns > n)
+		CC_CORRUPT("run count out of range");
+	len = CC_NHDR + (size_t) vl + ll;
+	need(ps->avail, len);
+	nd->a = parse_sub(ps, CC_NHDR, vl, nd->nruns);
+	nd->b = parse_sub(ps, CC_NHDR + vl, ll, nd->nruns);
+	lens = rd_alloc(ps->cx, sizeof(uint32) * CC_CAP32(nd->nruns));
+	nd_u32(nd->b, 0, lens);
+	nd->rstart = rd_alloc(ps->cx, sizeof(uint32) * (nd->nruns + 1));
+	for (uint32 r = 0; r < nd->nruns; r++)
+	{
+		if (lens[r] == 0)
+			CC_CORRUPT("empty run");
+		nd->rstart[r] = (uint32) sum;
+		sum += lens[r];
+		if (sum > n)
+			CC_CORRUPT("runs longer than the chunk");
+	}
+	if (sum != n)
+		CC_CORRUPT("runs shorter than the chunk");
+	nd->rstart[nd->nruns] = n;
+	pfree(lens);
+	return len;
+}
+
+static size_t
+parse_dict(const CcParse *ps, CcNode *nd)
+{
+	const uint8 *p = ps->p;
+	uint32		dl = get32(p + 8),
+				cl = get32(p + 12);
+	size_t		len;
+
+	nd->d = get32(p + 4);
+	if (nd->d < 1 || nd->d > ps->n)
+		CC_CORRUPT("dictionary size out of range");
+	len = CC_NHDR + (size_t) dl + cl;
+	need(ps->avail, len);
+	nd->a = parse_sub(ps, CC_NHDR, dl, nd->d);
+	nd->b = parse_sub(ps, CC_NHDR + dl, cl, ps->n);
+	nd->dict = rd_alloc(ps->cx, sizeof(int64) * (nd->d + 8));
+	nd_i64(nd->a, nd->dict);
+	for (uint32 i = 1; i < nd->d; i++)
+		if (nd->dict[i] <= nd->dict[i - 1])
+			CC_CORRUPT("dictionary is not sorted");
+	return len;
+}
+
+/* the positions of the exceptions of an ALP node: strictly increasing, inside the chunk */
+static void
+parse_alp_positions(const CcParse *ps, CcNode *nd, size_t off, uint32 len)
+{
+	int64	   *tmp = rd_alloc(ps->cx, sizeof(int64) * (nd->nexc + 8));
+
+	nd->b = parse_sub(ps, off, len, nd->nexc);
+	nd_i64(nd->b, tmp);
+	nd->pos = rd_alloc(ps->cx, sizeof(uint32) * nd->nexc);
+	for (uint32 i = 0; i < nd->nexc; i++)
+	{
+		if (tmp[i] < 0 || tmp[i] >= (int64) ps->n || (i && tmp[i] <= tmp[i - 1]))
+			CC_CORRUPT("exception positions out of order");
+		nd->pos[i] = (uint32) tmp[i];
+	}
+	pfree(tmp);
+}
+
+static size_t
+parse_alp(const CcParse *ps, CcNode *nd)
+{
+	const uint8 *p = ps->p;
+	uint32		dl = get32(p + 8),
+				pl = get32(p + 12);
+	int			emax = ps->kind == SIFT_CC_F8 ? SIFT_CC_ALP_EMAX_F8 : SIFT_CC_ALP_EMAX_F4;
+	size_t		len;
+
+	if (ps->kind == SIFT_CC_INT)
+		CC_CORRUPT("decimal node in an integer chunk");
+	need(ps->avail, 32);
+	nd->e = p[1];
+	nd->nexc = get32(p + 4);
+	nd->dmin = get64(p + 16);
+	nd->dmax = get64(p + 24);
+	int64		lim = ps->kind == SIFT_CC_F8 ? ((int64) 1 << 52) : ((int64) 1 << 24);
+
+	if (nd->e > emax || nd->nexc > ps->n || nd->dmax < nd->dmin || nd->dmin < -lim || nd->dmax > lim ||
+		(uint64) nd->dmax - (uint64) nd->dmin > 0xFFFFFFFFu)
+		CC_CORRUPT("decimal node parameters out of range");
+	if ((nd->nexc == 0) != (pl == 0))
+		CC_CORRUPT("exception list length does not match");
+	len = 32 + (size_t) dl + pl + 8 * (size_t) nd->nexc;
+	need(ps->avail, len);
+	nd->a = parse_sub(ps, 32, dl, ps->n);
+	if (nd->nexc)
+		parse_alp_positions(ps, nd, 32 + dl, pl);
+	nd->ekeys = p + 32 + dl + pl;
+	return len;
+}
+
+static size_t
+parse_scale(const CcParse *ps, CcNode *nd)
+{
+	uint32		f1 = get32(ps->p + 4);
+	size_t		len;
+
+	need(ps->avail, 24);
+	nd->base = get64(ps->p + 8);
+	nd->mind = get64(ps->p + 16);	/* the divisor */
+	if (nd->mind < 2)
+		CC_CORRUPT("scale factor below 2");
+	len = 24 + (size_t) f1;
+	need(ps->avail, len);
+	nd->a = parse_sub(ps, 24, f1, ps->n);
+	return len;
+}
+
+static size_t
+parse_wrap(const CcParse *ps, CcNode *nd)
+{
+	const uint8 *p = ps->p;
+	uint32		f1 = get32(p + 4),
+				cl = get32(p + 8);
+	uint8	   *buf;
+	size_t		len,
+				u;
+
+	nd->alg = p[1];
+	len = CC_NHDR + CC_RUP8(cl);
+	need(ps->avail, len);
+	if (!sift_colz_available(nd->alg))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg)));
+	if (f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) ps->n * 9 + 4096 + 64)
+		CC_CORRUPT("wrapped length out of range");
+	buf = rd_alloc(ps->cx, (size_t) f1 + SIFT_COL_PAD);
+	if (!sift_colz_decompress(nd->alg, p + CC_NHDR, cl, buf, f1))
+		CC_CORRUPT("compressed stream is damaged");
+	nd->a = parse_node(ps->cx, ps->kind, buf, f1, ps->n, ps->depth + 1, &u);
+	if (u != f1)
+		CC_CORRUPT("wrapped node length does not match");
+	return len;
+}
+
 /* Parses one node at p (8-aligned) of n values; *used is its size */
 CcNode *
 parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint32 n, int depth, size_t *used)
 {
+	CcParse		ps = {cx, kind, p, avail, n, depth};
 	CcNode	   *nd;
-	size_t		len;
-	uint32		f1;
 
 	if (depth > SIFT_CC_MAXDEPTH)
 		CC_CORRUPT("nodes nested too deep");
@@ -55,174 +287,39 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 	nd->tag = p[0];
 	nd->kind = (uint8) kind;
 	nd->n = n;
-	f1 = get32(p + 4);
 	switch (nd->tag)
 	{
 		case SIFT_CCN_CONST:
-			nd->base = get64(p + 8);
-			len = CC_NHDR;
+			*used = parse_const(&ps, nd);
 			break;
 		case SIFT_CCN_FORBIT:
-			nd->W = p[1];
-			if (nd->W < 1 || nd->W > 32)
-				CC_CORRUPT("bit width out of range");
-			nd->base = get64(p + 8);
-			len = CC_NHDR + CC_RUP8(4 * (size_t) sift_cc_words(n, nd->W));
-			need(avail, len);
-			nd->words = p + CC_NHDR;
+			*used = parse_forbit(&ps, nd);
 			break;
 		case SIFT_CCN_FORBYTE:
-			nd->B = p[1];
-			if (nd->B < 1 || nd->B > 8)
-				CC_CORRUPT("byte width out of range");
-			nd->base = get64(p + 8);
-			len = CC_NHDR + CC_RUP8((size_t) n * nd->B);
-			need(avail, len);
-			nd->words = p + CC_NHDR;
+			*used = parse_forbyte(&ps, nd);
 			break;
 		case SIFT_CCN_DELTA:
-			if (n < 2)
-				CC_CORRUPT("delta node with fewer than two values");
-			nd->W = p[1];
-			if (nd->W > 32)
-				CC_CORRUPT("bit width above 32");
-			need(avail, CC_NHDR + 8);
-			nd->base = get64(p + 8);
-			nd->mind = get64(p + 16);
-			len = CC_NHDR + 8 + 8 * (size_t) ((n - 1) / 1024) + CC_RUP8(4 * (size_t) sift_cc_words(n, nd->W));
-			need(avail, len);
-			nd->chk = p + CC_NHDR + 8;
-			nd->words = nd->chk + 8 * (size_t) ((n - 1) / 1024);
+			*used = parse_delta(&ps, nd);
 			break;
 		case SIFT_CCN_RLE:
-			{
-				uint32		vl = get32(p + 8),
-							ll = get32(p + 12);
-				uint32	   *lens;
-				uint64		sum = 0;
-
-				nd->nruns = f1;
-				if (nd->nruns < 1 || nd->nruns > n)
-					CC_CORRUPT("run count out of range");
-				len = CC_NHDR + (size_t) vl + ll;
-				need(avail, len);
-				nd->a = parse_child(cx, SIFT_CC_INT, p + CC_NHDR, vl, nd->nruns, depth + 1);
-				nd->b = parse_child(cx, SIFT_CC_INT, p + CC_NHDR + vl, ll, nd->nruns, depth + 1);
-				lens = rd_alloc(cx, sizeof(uint32) * CC_CAP32(nd->nruns));
-				nd_u32(nd->b, 0, lens);
-				nd->rstart = rd_alloc(cx, sizeof(uint32) * (nd->nruns + 1));
-				for (uint32 r = 0; r < nd->nruns; r++)
-				{
-					if (lens[r] == 0)
-						CC_CORRUPT("empty run");
-					nd->rstart[r] = (uint32) sum;
-					sum += lens[r];
-					if (sum > n)
-						CC_CORRUPT("runs longer than the chunk");
-				}
-				if (sum != n)
-					CC_CORRUPT("runs shorter than the chunk");
-				nd->rstart[nd->nruns] = n;
-				pfree(lens);
-				break;
-			}
+			*used = parse_rle(&ps, nd);
+			break;
 		case SIFT_CCN_DICT:
-			{
-				uint32		dl = get32(p + 8),
-							cl = get32(p + 12);
-
-				nd->d = f1;
-				if (nd->d < 1 || nd->d > n)
-					CC_CORRUPT("dictionary size out of range");
-				len = CC_NHDR + (size_t) dl + cl;
-				need(avail, len);
-				nd->a = parse_child(cx, SIFT_CC_INT, p + CC_NHDR, dl, nd->d, depth + 1);
-				nd->b = parse_child(cx, SIFT_CC_INT, p + CC_NHDR + dl, cl, n, depth + 1);
-				nd->dict = rd_alloc(cx, sizeof(int64) * (nd->d + 8));
-				nd_i64(nd->a, nd->dict);
-				for (uint32 i = 1; i < nd->d; i++)
-					if (nd->dict[i] <= nd->dict[i - 1])
-						CC_CORRUPT("dictionary is not sorted");
-				break;
-			}
+			*used = parse_dict(&ps, nd);
+			break;
 		case SIFT_CCN_ALP:
-			{
-				uint32		dl = get32(p + 8),
-							pl = get32(p + 12);
-				int			emax = kind == SIFT_CC_F8 ? SIFT_CC_ALP_EMAX_F8 : SIFT_CC_ALP_EMAX_F4;
-
-				if (kind == SIFT_CC_INT)
-					CC_CORRUPT("decimal node in an integer chunk");
-				need(avail, 32);
-				nd->e = p[1];
-				nd->nexc = f1;
-				nd->dmin = get64(p + 16);
-				nd->dmax = get64(p + 24);
-				int64		lim = kind == SIFT_CC_F8 ? ((int64) 1 << 52) : ((int64) 1 << 24);
-
-				if (nd->e > emax || nd->nexc > n || nd->dmax < nd->dmin || nd->dmin < -lim || nd->dmax > lim ||
-					(uint64) nd->dmax - (uint64) nd->dmin > 0xFFFFFFFFu)
-					CC_CORRUPT("decimal node parameters out of range");
-				if ((nd->nexc == 0) != (pl == 0))
-					CC_CORRUPT("exception list length does not match");
-				len = 32 + (size_t) dl + pl + 8 * (size_t) nd->nexc;
-				need(avail, len);
-				nd->a = parse_child(cx, SIFT_CC_INT, p + 32, dl, n, depth + 1);
-				if (nd->nexc)
-				{
-					int64	   *tmp = rd_alloc(cx, sizeof(int64) * (nd->nexc + 8));
-
-					nd->b = parse_child(cx, SIFT_CC_INT, p + 32 + dl, pl, nd->nexc, depth + 1);
-					nd_i64(nd->b, tmp);
-					nd->pos = rd_alloc(cx, sizeof(uint32) * nd->nexc);
-					for (uint32 i = 0; i < nd->nexc; i++)
-					{
-						if (tmp[i] < 0 || tmp[i] >= (int64) n || (i && tmp[i] <= tmp[i - 1]))
-							CC_CORRUPT("exception positions out of order");
-						nd->pos[i] = (uint32) tmp[i];
-					}
-					pfree(tmp);
-				}
-				nd->ekeys = p + 32 + dl + pl;
-				break;
-			}
+			*used = parse_alp(&ps, nd);
+			break;
 		case SIFT_CCN_SCALE:
-			need(avail, 24);
-			nd->base = get64(p + 8);
-			nd->mind = get64(p + 16);	/* the divisor */
-			if (nd->mind < 2)
-				CC_CORRUPT("scale factor below 2");
-			len = 24 + (size_t) f1;
-			need(avail, len);
-			nd->a = parse_child(cx, SIFT_CC_INT, p + 24, f1, n, depth + 1);
+			*used = parse_scale(&ps, nd);
 			break;
 		case SIFT_CCN_WRAP:
-			{
-				uint32		cl = get32(p + 8);
-				uint8	   *buf;
-				size_t		u;
-
-				nd->alg = p[1];
-				len = CC_NHDR + CC_RUP8(cl);
-				need(avail, len);
-				if (!sift_colz_available(nd->alg))
-					ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg)));
-				if (f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) n * 9 + 4096 + 64)
-					CC_CORRUPT("wrapped length out of range");
-				buf = rd_alloc(cx, (size_t) f1 + SIFT_COL_PAD);
-				if (!sift_colz_decompress(nd->alg, p + CC_NHDR, cl, buf, f1))
-					CC_CORRUPT("compressed stream is damaged");
-				nd->a = parse_node(cx, kind, buf, f1, n, depth + 1, &u);
-				if (u != f1)
-					CC_CORRUPT("wrapped node length does not match");
-				break;
-			}
+			*used = parse_wrap(&ps, nd);
+			break;
 		default:
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							errmsg("column chunk uses encoding %d, which this build does not know", nd->tag)));
 	}
-	*used = len;
 	return nd;
 }
 

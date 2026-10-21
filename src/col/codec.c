@@ -545,153 +545,161 @@ alp_digit_range(const CcNode *nd, int64 lo, int64 hi, int64 *dlo, int64 *dhi)
 	*dhi = a - 1;
 }
 
+static void nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits);
+
 static void
-nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits)
+filter_const(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
+{
+	if (nd->base >= lo && nd->base <= hi)
+		sift_cc_set_ones(bits, nd->n);
+	else
+		set_zeros(bits, nd->n);
+}
+
+static void
+filter_forbit(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
+{
+	uint64		l,
+				span;
+
+	if (!off_range(nd->base, nd->W >= 32 ? 0xFFFFFFFFu : (UINT64CONST(1) << nd->W) - 1, lo, hi, &l, &span))
+	{
+		set_zeros(bits, nd->n);
+		return;
+	}
+	sift_cck->unpack_range32((const uint32 *) nd->words, nd->W, rows_for(nd->n), (uint32) l, (uint32) span, bits);
+	clear_tail(bits, nd->n);
+}
+
+/* false for a width without a range kernel: the caller decodes the node */
+static bool
+filter_forbyte(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
+{
+	uint64		l,
+				span;
+
+	if (nd->B != 1 && nd->B != 2 && nd->B != 4 && nd->B != 8)
+		return false;
+	if (!off_range(nd->base, nd->B == 8 ? ~UINT64CONST(0) : (UINT64CONST(1) << (8 * nd->B)) - 1, lo, hi, &l, &span))
+		set_zeros(bits, nd->n);
+	else
+		sift_colk->range[nd->B == 1 ? 0 : nd->B == 2 ? 1 : nd->B == 4 ? 2 : 3] (nd->words, nd->n, l, span, bits);
+	return true;
+}
+
+static void
+filter_rle(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits)
+{
+	uint64	   *rb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
+	uint32		start = 0;
+	bool		open = false;
+
+	nd_filter(nd->a, lo, hi, sub, off32, rb);
+	set_zeros(bits, nd->n);
+	for (uint32 r = 0; r < nd->nruns; r++)
+	{
+		bool		hit = (rb[r / 64] >> (r % 64)) & 1;
+
+		if (hit && !open)
+		{
+			start = nd->rstart[r];
+			open = true;
+		}
+		else if (!hit && open)
+		{
+			set_range(bits, start, nd->rstart[r]);
+			open = false;
+		}
+	}
+	if (open)
+		set_range(bits, start, nd->n);
+	pfree(rb);
+}
+
+static void
+filter_dict(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
+{
+	uint32		a = 0,
+				b = nd->d,
+				cl,
+				ch;
+
+	while (a < b)
+	{
+		uint32		m = (a + b) / 2;
+
+		if (nd->dict[m] < lo)
+			a = m + 1;
+		else
+			b = m;
+	}
+	cl = a;
+	b = nd->d;
+	while (a < b)
+	{
+		uint32		m = (a + b) / 2;
+
+		if (nd->dict[m] <= hi)
+			a = m + 1;
+		else
+			b = m;
+	}
+	ch = a;
+	if (cl >= ch)
+		set_zeros(bits, nd->n);
+	else
+		nd_filter(nd->b, cl, (int64) ch - 1, 0, true, bits);
+}
+
+static void
+filter_alp(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
+{
+	int64		dlo,
+				dhi;
+
+	alp_digit_range(nd, lo, hi, &dlo, &dhi);
+	if (dlo > dhi)
+		set_zeros(bits, nd->n);
+	else
+		nd_filter(nd->a, dlo, dhi, nd->dmin, true, bits);
+	for (uint32 k = 0; k < nd->nexc; k++)
+	{
+		uint32		p = nd->pos[k];
+		int64		key = get64(nd->ekeys + 8 * (size_t) k);
+
+		bits[p / 64] &= ~(UINT64CONST(1) << (p % 64));
+		if (key >= lo && key <= hi)
+			bits[p / 64] |= UINT64CONST(1) << (p % 64);
+	}
+}
+
+static void
+filter_scale(const CcNode *nd, int64 lo, int64 hi, bool off32, uint64 *bits)
+{
+	/* base + g * w in [lo, hi]  <=>  w in [ceil((lo - base) / g), floor((hi - base) / g)] */
+	uint64		g = (uint64) nd->mind,
+				d = lo <= nd->base ? 0 : (uint64) lo - (uint64) nd->base,
+				wlo = d / g + (d % g != 0),
+				whi;
+
+	if (hi < nd->base)
+		whi = 0, wlo = 1;
+	else
+		whi = ((uint64) hi - (uint64) nd->base) / g;
+	if (wlo > whi || wlo > (uint64) INT64_MAX)
+		set_zeros(bits, nd->n);
+	else
+		nd_filter(nd->a, (int64) wlo, (int64) whi, 0, off32, bits);
+}
+
+/* DELTA, and FORBYTE of an odd width: decode, then the range kernel on the plain array */
+static void
+filter_decoded(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits)
 {
 	uint32		n = nd->n;
 	uint64		l,
 				span;
 
-	if (lo > hi)
-	{
-		set_zeros(bits, n);
-		return;
-	}
-	switch (nd->tag)
-	{
-		case SIFT_CCN_CONST:
-			if (nd->base >= lo && nd->base <= hi)
-				sift_cc_set_ones(bits, n);
-			else
-				set_zeros(bits, n);
-			return;
-		case SIFT_CCN_FORBIT:
-			if (!off_range(nd->base, nd->W >= 32 ? 0xFFFFFFFFu : (UINT64CONST(1) << nd->W) - 1, lo, hi, &l, &span))
-			{
-				set_zeros(bits, n);
-				return;
-			}
-			sift_cck->unpack_range32((const uint32 *) nd->words, nd->W, rows_for(n), (uint32) l, (uint32) span, bits);
-			clear_tail(bits, n);
-			return;
-		case SIFT_CCN_FORBYTE:
-			if (nd->B == 1 || nd->B == 2 || nd->B == 4 || nd->B == 8)
-			{
-				if (!off_range(nd->base, nd->B == 8 ? ~UINT64CONST(0) : (UINT64CONST(1) << (8 * nd->B)) - 1, lo, hi, &l, &span))
-				{
-					set_zeros(bits, n);
-					return;
-				}
-				sift_colk->range[nd->B == 1 ? 0 : nd->B == 2 ? 1 : nd->B == 4 ? 2 : 3] (nd->words, n, l, span, bits);
-				return;
-			}
-			break;
-		case SIFT_CCN_RLE:
-			{
-				uint64	   *rb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
-				uint32		start = 0;
-				bool		open = false;
-
-				nd_filter(nd->a, lo, hi, sub, off32, rb);
-				set_zeros(bits, n);
-				for (uint32 r = 0; r < nd->nruns; r++)
-				{
-					bool		hit = (rb[r / 64] >> (r % 64)) & 1;
-
-					if (hit && !open)
-					{
-						start = nd->rstart[r];
-						open = true;
-					}
-					else if (!hit && open)
-					{
-						set_range(bits, start, nd->rstart[r]);
-						open = false;
-					}
-				}
-				if (open)
-					set_range(bits, start, n);
-				pfree(rb);
-				return;
-			}
-		case SIFT_CCN_DICT:
-			{
-				uint32		a = 0,
-							b = nd->d,
-							cl,
-							ch;
-
-				while (a < b)
-				{
-					uint32		m = (a + b) / 2;
-
-					if (nd->dict[m] < lo)
-						a = m + 1;
-					else
-						b = m;
-				}
-				cl = a;
-				b = nd->d;
-				while (a < b)
-				{
-					uint32		m = (a + b) / 2;
-
-					if (nd->dict[m] <= hi)
-						a = m + 1;
-					else
-						b = m;
-				}
-				ch = a;
-				if (cl >= ch)
-					set_zeros(bits, n);
-				else
-					nd_filter(nd->b, cl, (int64) ch - 1, 0, true, bits);
-				return;
-			}
-		case SIFT_CCN_ALP:
-			{
-				int64		dlo,
-							dhi;
-
-				alp_digit_range(nd, lo, hi, &dlo, &dhi);
-				if (dlo > dhi)
-					set_zeros(bits, n);
-				else
-					nd_filter(nd->a, dlo, dhi, nd->dmin, true, bits);
-				for (uint32 k = 0; k < nd->nexc; k++)
-				{
-					uint32		p = nd->pos[k];
-					int64		key = get64(nd->ekeys + 8 * (size_t) k);
-
-					bits[p / 64] &= ~(UINT64CONST(1) << (p % 64));
-					if (key >= lo && key <= hi)
-						bits[p / 64] |= UINT64CONST(1) << (p % 64);
-				}
-				return;
-			}
-		case SIFT_CCN_SCALE:
-			{
-				/* base + g * w in [lo, hi]  <=>  w in [ceil((lo - base) / g), floor((hi - base) / g)] */
-				uint64		g = (uint64) nd->mind,
-							d = lo <= nd->base ? 0 : (uint64) lo - (uint64) nd->base,
-							wlo = d / g + (d % g != 0),
-							whi;
-
-				if (hi < nd->base)
-					whi = 0, wlo = 1;
-				else
-					whi = ((uint64) hi - (uint64) nd->base) / g;
-				if (wlo > whi || wlo > (uint64) INT64_MAX)
-					set_zeros(bits, n);
-				else
-					nd_filter(nd->a, (int64) wlo, (int64) whi, 0, off32, bits);
-				return;
-			}
-		case SIFT_CCN_WRAP:
-			nd_filter(nd->a, lo, hi, sub, off32, bits);
-			return;
-	}
-	/* DELTA, and FORBYTE of an odd width: decode, then the range kernel on the plain array */
 	if (off32)
 	{
 		uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
@@ -713,6 +721,45 @@ nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *b
 		sift_colk->range[3](tmp, n, (uint64) lo, (uint64) hi - (uint64) lo, bits);
 		pfree(tmp);
 	}
+}
+
+static void
+nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits)
+{
+	if (lo > hi)
+	{
+		set_zeros(bits, nd->n);
+		return;
+	}
+	switch (nd->tag)
+	{
+		case SIFT_CCN_CONST:
+			filter_const(nd, lo, hi, bits);
+			return;
+		case SIFT_CCN_FORBIT:
+			filter_forbit(nd, lo, hi, bits);
+			return;
+		case SIFT_CCN_FORBYTE:
+			if (filter_forbyte(nd, lo, hi, bits))
+				return;
+			break;
+		case SIFT_CCN_RLE:
+			filter_rle(nd, lo, hi, sub, off32, bits);
+			return;
+		case SIFT_CCN_DICT:
+			filter_dict(nd, lo, hi, bits);
+			return;
+		case SIFT_CCN_ALP:
+			filter_alp(nd, lo, hi, bits);
+			return;
+		case SIFT_CCN_SCALE:
+			filter_scale(nd, lo, hi, off32, bits);
+			return;
+		case SIFT_CCN_WRAP:
+			nd_filter(nd->a, lo, hi, sub, off32, bits);
+			return;
+	}
+	filter_decoded(nd, lo, hi, sub, off32, bits);
 }
 
 void
