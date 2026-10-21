@@ -62,9 +62,13 @@ static inline int
 map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
 {
 	uint32		h = map_hash(m, ptr, len, iv);
-	int			n = 0;
+	int			n = 0,
+				nmax = 0;
 
-	*rows = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	/* the chain of the slot bounds the matches: not a row of the table for each probe */
+	for (uint32 r = m->head[h & (m->nslot - 1)]; r != 0; r = m->next[r - 1])
+		nmax++;
+	*rows = palloc(Max(nmax, 1) * sizeof(uint32));
 	for (uint32 r = m->head[h & (m->nslot - 1)]; r != 0; r = m->next[r - 1])
 		if (m->hv[r - 1] == h && map_key_eq(m, r - 1, ptr, len, iv))
 			(*rows)[n++] = r - 1;
