@@ -1,0 +1,23 @@
+# Generic uses of the words of scripts/neutral.words and of the address pattern (scripts/check-neutral.sh). A row is
+#   PATH-ERE <TAB> TEXT-ERE <TAB> why
+# PATH-ERE selects the files (or, for the pseudo paths <commit> and <pr>, the commit messages and the pull request title and body); the text that TEXT-ERE
+# matches is removed from the line and the rest of the line is scanned again, so a line that holds an allowed use and a forbidden word still fails.
+# The match is case-sensitive unless TEXT-ERE starts with (?i). This file is not scanned for those words; it still is for scripts/neutral.denylist.
+
+^\.coderabbit\.yaml$	^reviews:|auto_(incremental_)?review	the keys of the code review bot configuration
+^bench/(README\.md|engines/elasticsearch\.sh|steps/facets\.sh|steps/facets_es\.py|sql/store/es\.json)$	log4j2\.properties|\\?"properties\\?": \{	Elasticsearch: the log4j file and the mapping key
+^bench/steps/cell\.py$	@property	the Python decorator
+^bench/steps/store_engine\.py$	\(guest is in user\)	a virtual machine guest in the CPU time of /proc/stat
+^bench/perf/test_production_insert\.py$	Round[0-9]+ review	a round of code review in a test comment
+^bench/steps/final\.sh$	review git diff	a step of the benchmark procedure
+^docs/RELEASE\.md$	^Review the URL	a release step
+^docs/SIZING\.md$	the review's churn tests	the code review of a change
+^scripts/static\.sh$	\(review the diff:	a step of the baseline update
+^docs/(perf/VACUUM-SPACE\.md|results/vacuum-space\.log)$	[Pp]ost-review|review-[a-z0-9-]+\.log	code review rounds and their log files
+^(docs|test|tools|scripts)/	(?i)property (tests?|harnesses|name|is only)|properties over random|property of (the|a)\b|fuzz property|Property: sift_blob_check	property based testing and a property of a format
+^mariadb/CMakeLists\.txt$	set_(target|source_files)_properties|\bPROPERTIES\b	the CMake commands
+^src/	get_(op_opfamily|ordering_op)_properties|VK_MEMORY_PROPERTY_[A-Z_]+	the PostgreSQL operator property functions and the Vulkan memory flags
+^mariadb/host/regex\.c$	character properties	Unicode character properties
+^<(commit|pr)>$	(?i)\b(code review|review (pass|round|comments?|findings?|feedback)|post-review|coderabbit( reviews?)?)\b	code review of the change itself
+^scripts/check-neutral\.sh$	code review of the plan	the sample of the self test
+^(docs/|test/|CHANGELOG\.md$)	\b(10\.0\.0\.[0-9]{1,3}|10\.0\.249\.1|10\.9\.9\.9|192\.168\.(0\.0|1\.[0-9]{1,3}))\b	addresses and networks that are the data of the inet and cidr tests
