@@ -131,13 +131,19 @@ cache_init(void)
 SiftCDict *
 sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 {
-	DictKey		k = {.rel = seg->index->rd_locator, .gen = seg->entry.gen, .ndocs = seg->entry.ndocs, .header_blk = seg->entry.header_blk,
-	.col = col};
+	DictKey		k;
 	DictEnt    *e;
 	MemoryContext cx;
 	SiftCDict  *d;
 	Size		size;
 
+	/* the table hashes the bytes of the key, padding included */
+	memset(&k, 0, sizeof(k));
+	k.rel = seg->index->rd_locator;
+	k.gen = seg->entry.gen;
+	k.ndocs = seg->entry.ndocs;
+	k.header_blk = seg->entry.header_blk;
+	k.col = col;
 	if (cache == NULL)
 		cache_init();
 	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
