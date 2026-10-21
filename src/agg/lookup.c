@@ -408,8 +408,8 @@ shared_map_key(AggExec *ex, int ci)
 	StringInfoData k;
 
 	initStringInfo(&k);
-	/* the condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
-	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, cb->nleaves, j->nkey);
+	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
+	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
 		appendStringInfo(&k, "%d/%u ", j->keyatt[i], j->keytype[i]);
 	appendStringInfo(&k, "|%d|", j->ncol);
