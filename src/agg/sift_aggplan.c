@@ -8224,6 +8224,28 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 
 /* ---------- plan ---------- */
 
+/* the native plans of the correlated children, made now that the plan has its place in the statement; true when the spec holds their IDs */
+static bool
+plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
+{
+	bool		planned = false;
+
+	for (int i = 0; i < spec->njoin; i++)
+		if (spec->join[i].params != NIL)
+		{
+			Path	   *subpath = list_nth(((SiftAggPath *) best)->correlated, i);
+			PlannerInfo *subroot = list_nth(((SiftAggPath *) best)->subroots, i);
+			Plan       *plan = create_plan(subroot, subpath);
+
+			root->glob->subplans = lappend(root->glob->subplans, plan);
+			root->glob->subpaths = lappend(root->glob->subpaths, subpath);
+			root->glob->subroots = lappend(root->glob->subroots, subroot);
+			spec->join[i].subplan = list_length(root->glob->subplans);
+			planned = true;
+		}
+	return planned;
+}
+
 static Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
@@ -8237,19 +8259,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	cs->scan.scanrelid = 0;
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = copyObject(scan_tlist);
-	for (int i = 0; i < spec->njoin; i++)
-		if (spec->join[i].params != NIL)
-		{
-			Path	   *subpath = list_nth(((SiftAggPath *) best)->correlated, i);
-			PlannerInfo *subroot = list_nth(((SiftAggPath *) best)->subroots, i);
-			Plan       *plan = create_plan(subroot, subpath);
-
-			root->glob->subplans = lappend(root->glob->subplans, plan);
-			root->glob->subpaths = lappend(root->glob->subpaths, subpath);
-			root->glob->subroots = lappend(root->glob->subroots, subroot);
-			spec->join[i].subplan = list_length(root->glob->subplans);
-		}
-	cs->custom_private = sift_aggspec_pack(spec);
+	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
 	cs->methods = &sift_agg_plan_methods;
 	if (root->hasHavingQual && root->parse->havingQual)
 		cs->scan.plan.qual = (List *) copyObject(root->parse->havingQual);
