@@ -3,4 +3,4 @@
 -- expect: any
 -- key: -
 -- scenario: yes
-SELECT id, placed_at FROM orders WHERE memo @@> '"clean wire"' ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, placed_at FROM orders WHERE memo @@> '"cable wire"' ORDER BY placed_at DESC, id DESC LIMIT 10

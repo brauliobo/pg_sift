@@ -9,7 +9,7 @@ CREATE TABLE ct (id serial, store int, status text, amount numeric(10,2), placed
 				 pad text DEFAULT repeat('x', 1500)) USING sift_table;
 CREATE FUNCTION ct_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
-							 'thanks','wrong','size','color','clean','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
+							 'thanks','wrong','size','color','cable','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
 	FROM generate_series(1, 3 + seed % 5) w $$;
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40,
@@ -63,7 +63,7 @@ CREATE TABLE ct_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO ct_q VALUES
 	('newest',     $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$),
 	('oldest',     $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts, id LIMIT 7$q$),
-	('filters',    $q$SELECT id, ts, amount FROM ct WHERE memo @@> 'clean wire' AND status = 'paid' AND store > 10 AND placed > date '2024-06-01' ORDER BY ts DESC, id LIMIT 12$q$),
+	('filters',    $q$SELECT id, ts, amount FROM ct WHERE memo @@> 'cable wire' AND status = 'paid' AND store > 10 AND placed > date '2024-06-01' ORDER BY ts DESC, id LIMIT 12$q$),
 	('offset',     $q$SELECT id, ts FROM ct WHERE memo @@> 'express OR pickup' ORDER BY ts DESC, id DESC LIMIT 5 OFFSET 7$q$),
 	('date_desc',  $q$SELECT id, placed FROM ct WHERE memo @@> 'late' ORDER BY placed DESC, id LIMIT 15$q$),
 	('date_nl',    $q$SELECT id, placed FROM ct WHERE memo @@> 'late' ORDER BY placed DESC NULLS LAST, id LIMIT 15$q$),
@@ -80,9 +80,9 @@ INSERT INTO ct_q VALUES
 	('no_search',  $q$SELECT id, ts FROM ct WHERE status = 'shipped' AND store < 10 ORDER BY ts DESC, id DESC LIMIT 10$q$),
 	('no_filter',  $q$SELECT id, ts FROM ct ORDER BY ts DESC, id DESC LIMIT 10$q$),
 	('id_desc',    $q$SELECT id FROM ct WHERE memo @@> 'wire' ORDER BY id DESC LIMIT 6$q$),
-	('phrase',     $q$SELECT id, ts FROM ct WHERE memo @@> '"clean wire"' ORDER BY ts DESC, id LIMIT 10$q$),
+	('phrase',     $q$SELECT id, ts FROM ct WHERE memo @@> '"cable wire"' ORDER BY ts DESC, id LIMIT 10$q$),
 	('prefix',     $q$SELECT id, ts FROM ct WHERE memo @@> 'exch*' ORDER BY ts, id LIMIT 10$q$),
-	('fuzzy',      $q$SELECT id, ts FROM ct WHERE memo @@> 'wifii~1' ORDER BY ts, id LIMIT 10$q$),
+	('fuzzy',      $q$SELECT id, ts FROM ct WHERE memo @@> 'wiree~1' ORDER BY ts, id LIMIT 10$q$),
 	('boolean',    $q$SELECT id, ts FROM ct WHERE memo @@> '(damaged OR broken) AND NOT refund' ORDER BY ts DESC, id LIMIT 10$q$),
 	('none',       $q$SELECT id, ts FROM ct WHERE memo @@> 'zzzzzz' ORDER BY ts DESC, id LIMIT 10$q$),
 	('few',        $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' AND store = 3 AND status = 'paid' ORDER BY ts DESC, id LIMIT 5000$q$),
@@ -102,7 +102,7 @@ SELECT * FROM ct_stage('build');
 SET sift.test_search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
 RESET sift.test_search_chunk_sbs;
-SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'clean wire') AS param;
+SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
 
@@ -144,7 +144,7 @@ SELECT * FROM ct_stage('delete');
 -- rows of this transaction are seen by this transaction only; a rolled back insert is seen by nobody
 BEGIN;
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
-SELECT 1, 'paid', 500 + i, date '2026-01-01', timestamp '2027-01-01' + i * interval '1 second', 900000 + i, i, 'clean wire broken box gift thanks perfect' FROM generate_series(1, 30) i;
+SELECT 1, 'paid', 500 + i, date '2026-01-01', timestamp '2027-01-01' + i * interval '1 second', 900000 + i, i, 'cable wire broken box gift thanks perfect' FROM generate_series(1, 30) i;
 DELETE FROM ct WHERE id % 17 = 0;
 SELECT * FROM ct_stage('own');
 ROLLBACK;

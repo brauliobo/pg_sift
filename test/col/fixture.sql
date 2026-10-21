@@ -80,7 +80,7 @@ CREATE FUNCTION coldiff.fx_orders(first_id int, last_id int, seed int DEFAULT 0)
 															 'text', 'note ' || j) ORDER BY j), '[]'::jsonb)
 				FROM generate_series(0, floor(coldiff.u(g.id, 24, seed) * 4)::int - 1) j),
 			   (SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
-										 'thanks','wrong','size','color','clean','wire','box','label'])[1 + floor(coldiff.u(g.id, 700 + w, seed) * 20)::int], ' ')
+										 'thanks','wrong','size','color','cable','wire','box','label'])[1 + floor(coldiff.u(g.id, 700 + w, seed) * 20)::int], ' ')
 				FROM generate_series(1, 3 + (g.id % 5)) w),
 			   CASE WHEN coldiff.u(g.id, 6, seed) < 0.02 THEN timestamp '2025-11-01 00:00:00' END
 		FROM generate_series(first_id, last_id) AS g(id)

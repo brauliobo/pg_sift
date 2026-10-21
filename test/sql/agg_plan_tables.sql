@@ -9,7 +9,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, tenant_id int, region text, kind text, amount numeric(10, 2), memo text) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 300 END, 1 + i % 40, (ARRAY['north', 'south', 'east', 'west'])[1 + i % 4],
-       (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 500) / 10.0, (ARRAY['clean', 'broken', 'fast', 'late'])[1 + i % 4] || ' ' || (ARRAY['box', 'wire', 'label'])[1 + i % 3]
+       (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 500) / 10.0, (ARRAY['cable', 'broken', 'fast', 'late'])[1 + i % 4] || ' ' || (ARRAY['box', 'wire', 'label'])[1 + i % 3]
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, tenant_id, region, kind, amount);
 CREATE INDEX ev_fts ON ev USING sift (memo);
@@ -73,8 +73,8 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id::big
 SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT region::varchar AS region, 'x' AS kind FROM ev GROUP BY region) s ON e.region = s.region GROUP BY s.kind$$);
 
 -- an aggregate over a ranked top-k: IN a BM25 scan ordered by score (the SiftScan stays the child), and the scan as a join with its score
-SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
-SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'clean wire' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
+SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'cable wire' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
 
 -- the plan: the sub-plan is the child of the node, in EXPLAIN as well; the keys of a sub-select with LIMIT are a byte table (semi join)
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N'), ('east', 'E')) m(region, label) ON e.region = m.region GROUP BY m.label$$) AS values_join;
@@ -82,7 +82,7 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM te
 SELECT plan_of($$SELECT count(*) FROM ev WHERE tenant_id IN (SELECT id FROM tenants ORDER BY id LIMIT 5)$$) AS semi_limit;
 SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$) AS function_join;
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind;
-EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC LIMIT 100);
+EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
 
 -- what keeps the normal plan: a volatile side, ON true, or a side above sift.agg_lookup_max_rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).

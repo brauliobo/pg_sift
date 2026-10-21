@@ -3,4 +3,4 @@
 -- expect: any
 -- key: -
 -- scenario: yes
-SELECT lang, count(*) AS n, sum(tenant_id) AS s FROM orders WHERE memo @@> '"clean wire"' GROUP BY lang ORDER BY lang
+SELECT lang, count(*) AS n, sum(tenant_id) AS s FROM orders WHERE memo @@> '"cable wire"' GROUP BY lang ORDER BY lang

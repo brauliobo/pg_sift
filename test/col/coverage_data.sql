@@ -114,7 +114,7 @@ INSERT INTO cv_places SELECT i, (ARRAY['Greenville', 'Greenwich', 'Hollis', 'Hol
 	(ARRAY['North', 'South'])[1 + i % 2], (ARRAY['US', 'GB', 'NL'])[1 + i % 3] FROM generate_series(1, 600) i;
 CREATE INDEX cv_places_sift ON cv_places USING sift ((name || chr(29) || admin1 || ' ' || country)) WITH (fields = 'name', prefix_index = 3);
 CREATE TABLE cv_stem (id int PRIMARY KEY, body text);
-INSERT INTO cv_stem SELECT i, (ARRAY['runners were running', 'she runs every day', 'a quiet pool', 'cafes near the office'])[1 + i % 4] FROM generate_series(1, 400) i;
+INSERT INTO cv_stem SELECT i, (ARRAY['runners were running', 'she runs every day', 'a quiet pond', 'cafes near the office'])[1 + i % 4] FROM generate_series(1, 400) i;
 CREATE INDEX cv_stem_body ON cv_stem USING sift (body) WITH (stemmer = 'en');
 -- tables of the doc-claim rows (D, L, S rows): the probes of test/col/coverage.sql and the `pre` lines of the table run on them
 CREATE EXTENSION dblink;

@@ -3,4 +3,4 @@
 -- expect: plain
 -- key: -
 -- scenario: yes
-SELECT id, tenant_id, placed_at FROM orders WHERE memo @@> 'clean' OR lang @@> 'en' ORDER BY placed_at DESC, id DESC LIMIT 10
+SELECT id, tenant_id, placed_at FROM orders WHERE memo @@> 'cable' OR lang @@> 'en' ORDER BY placed_at DESC, id DESC LIMIT 10

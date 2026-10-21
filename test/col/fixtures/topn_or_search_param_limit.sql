@@ -6,4 +6,4 @@
 -- guc: plan_cache_mode = force_generic_plan
 -- prepare: (bigint)
 -- args: NULL
-SELECT id, tenant_id, placed_at FROM orders WHERE memo @@> 'clean' OR memo @@> 'wire' ORDER BY placed_at DESC, id DESC LIMIT $1
+SELECT id, tenant_id, placed_at FROM orders WHERE memo @@> 'cable' OR memo @@> 'wire' ORDER BY placed_at DESC, id DESC LIMIT $1

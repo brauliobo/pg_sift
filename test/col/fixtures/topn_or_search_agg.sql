@@ -3,4 +3,4 @@
 -- expect: any
 -- key: -
 -- scenario: yes
-SELECT source, count(*) AS n FROM orders WHERE memo @@> 'clean' OR memo @@> 'wire' GROUP BY source ORDER BY source
+SELECT source, count(*) AS n FROM orders WHERE memo @@> 'cable' OR memo @@> 'wire' GROUP BY source ORDER BY source
