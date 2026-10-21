@@ -163,7 +163,7 @@ recheck_fetch(ColRecheck *k, ItemPointer tid)
 	{
 		MemoryContext old = MemoryContextSwitchTo(k->life);
 
-		k->fetch = table_index_fetch_begin(k->heap);
+		k->fetch = sift_table_index_fetch_begin(k->heap);
 		k->slot = table_slot_create(k->heap, NULL);
 		k->estate = CreateExecutorState();
 		k->info = BuildIndexInfo(k->index);
