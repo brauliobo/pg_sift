@@ -71,136 +71,21 @@
 #include "agg/spec.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
-
-typedef enum FuncKind
-{
-	FK_NONE,
-	FK_RECORDSET,				/* jsonb_to_recordset(array) AS t(f type, ...) */
-	FK_ELEMENTS,				/* jsonb_array_elements(array) */
-	FK_ELEMENTS_TEXT,			/* jsonb_array_elements_text(array of strings): one text column, the element */
-	FK_EACH,					/* jsonb_each(object) */
-	FK_EACH_TEXT				/* jsonb_each_text(object) */
-} FuncKind;
-
-/* a table joined by equality to leaves (SiftAggJoin) and the combos that evaluate expressions of leaves and its columns (SiftAggCombo) */
-typedef struct JoinCtx
-{
-	Index		rti;
-	SiftJoinKind kind;
-	List	   *clauses;		/* the ON clause (all of the WHERE quals that read the table of an inner join) */
-	SiftAggJoin j;
-	Node	   *kexpr[SIFT_AGG_MAX_JKEYS];	/* the key expressions, in terms of the query's Vars */
-	int			combo;
-	Path	   *cpath;			/* a right side that is a plan (sub-select, VALUES, function): the path of its rows, NULL for a table */
-	List	   *args;			/* parent expressions passed to a correlated native child */
-	PlannerInfo *subroot;		/* the query level its native plan was made in */
-	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
-} JoinCtx;
-
-typedef struct SlotReq
-{
-	Node	   *expr;
-	bool		is_key;
-	int			key;
-	int			agg;
-	bool		direct;			/* the value itself (SiftAggSlot.direct) */
-	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
-} SlotReq;
-
-typedef struct ComboCtx
-{
-	int			join;			/* index in AggCtx.joins, -1 none */
-	int			nl;
-	int			leaf[SIFT_AGG_MAX_CLEAVES];
-	int			refcombo[SIFT_AGG_MAX_CLEAVES];
-	int			refcol[SIFT_AGG_MAX_CLEAVES];
-	bool		typed[SIFT_AGG_MAX_CLEAVES];
-	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
-	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
-	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
-	List	   *slots;			/* SlotReq */
-} ComboCtx;
-
-/* a parameter of the EXISTS sub-plan being compiled and the leaf of the outer row it stands for */
-typedef struct OuterParam
-{
-	int			id;
-	int			leaf;
-} OuterParam;
-
-typedef struct AggCtx
-{
-	PlannerInfo *root;
-	RelOptInfo *rel;
-	Index		relid;
-	Oid			heapoid;
-	Oid			indexoid;
-	SiftSrcLayout *lay;
-	int			nparts;			/* a partitioned table: its live partitions, which the scan reads one after the other (indexoid is the first's) */
-	Oid		   *partheap;
-	Oid		   *partindex;
-	double		part_pages;		/* ... and the pages of their heaps */
-	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
-	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
-	Index		func_rti;
-	FuncKind	func_kind;
-	RangeTblFunction *func;
-	const char *func_key;		/* LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k': r.value is the member k of each row, no unnest */
-	int			func_obj;		/* ... and the object leaf of doc */
-	Bitmapset  *func_ovf;		/* ... and the leaves that make the scan unfit when a unit holds what they cannot store (a document that is no object raises in jsonb_each) */
-	int			group;			/* leaf of the unnested array/object, -1 */
-	Bitmapset  *used;			/* leaves the spec reads */
-	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
-	List	   *dpctx;			/* deparse context of expr_text */
-	bool		other_group;	/* a leaf of an array the query does not unnest is read */
-	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
-	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
-	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
-	int			npred;			/* ids handed out to predicate nodes */
-	List	   *joins;			/* JoinCtx */
-	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
-	List	   *combos;			/* ComboCtx */
-	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
-	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
-	List	   *rtable;			/* the range table expr_text resolves Vars in; NIL: the query's */
-	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
-	List	   *oparams;		/* OuterParam of the EXISTS sub-plan whose test is being compiled */
-	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
-	SiftSrcStats stats;
-	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
-	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
-	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
-	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
-	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
-	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
-	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
-	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
-	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
-} AggCtx;
-
-/* Planner-only paths of correlated children are planned in their own query level. */
-typedef struct SiftAggPath
-{
-	CustomPath path;
-	List       *correlated;		/* the native path of each correlated child, NULL for the other joins */
-	List       *subroots;		/* and the query level it belongs to */
-} SiftAggPath;
+#include "agg/plan_int.h"
 
 /* ---------- small helpers ---------- */
 
-static SiftSrcLeaf *
+SiftSrcLeaf *
 leaf_of(AggCtx *c, int id)
 {
 	return &c->lay->leaf[id];
 }
 
-static int
+int
 leaf_level(AggCtx *c, int id)
 {
 	return leaf_of(c, id)->parent >= 0;
 }
-
-static char *expr_text(AggCtx *c, Node *n);
 
 /* the name of an index attribute: its heap column, or the index expression */
 static const char *
@@ -222,7 +107,7 @@ att_name(AggCtx *c, int attno)
 	return text;
 }
 
-static const char *
+const char *
 leaf_name(AggCtx *c, int id)
 {
 	StringInfoData s;
@@ -247,10 +132,8 @@ leaf_name(AggCtx *c, int id)
 	return s.data;
 }
 
-static bool array_initplan_ok(AggCtx *c, Param *prm);
-
 /* Local expression slots share parameter numbers with PostgreSQL, but not their identity. */
-static bool
+bool
 null_input_param(Node *n)
 {
 	return IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC &&
@@ -262,7 +145,7 @@ null_input_param(Node *n)
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
  * compile_exists and array_initplan_ok proved the ones it kept.
  */
-static bool
+bool
 has_exec_param_walker(Node *node, void *context)
 {
 	if (node == NULL)
@@ -276,13 +159,13 @@ has_exec_param_walker(Node *node, void *context)
 	return expression_tree_walker(node, has_exec_param_walker, context);
 }
 
-static bool
+bool
 pseudo_const(Node *n)
 {
 	return !contain_var_clause(n) && !contain_volatile_functions(n) && !has_exec_param_walker(n, NULL);
 }
 
-static Node *
+Node *
 strip_relabel(Node *n)
 {
 	while (n && IsA(n, RelabelType))
@@ -290,7 +173,7 @@ strip_relabel(Node *n)
 	return n;
 }
 
-static Oid
+Oid
 func_of(Node *n)
 {
 	if (IsA(n, FuncExpr))
@@ -303,13 +186,13 @@ func_of(Node *n)
 	return InvalidOid;
 }
 
-static List *
+List *
 func_args(Node *n)
 {
 	return IsA(n, FuncExpr) ? ((FuncExpr *) n)->args : IsA(n, OpExpr) ? ((OpExpr *) n)->args : NIL;
 }
 
-static bool
+bool
 paths_equal(List *a, List *b)
 {
 	if (list_length(a) != list_length(b))
@@ -323,7 +206,7 @@ paths_equal(List *a, List *b)
 /* ---------- leaf references ---------- */
 
 /* the attribute whose index (table) expression is e, 0 if none */
-static int
+int
 attr_of_expr(AggCtx *c, Node *e)
 {
 	for (int a = 0; a < list_length(c->attexpr); a++)
@@ -351,7 +234,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 	return -1;
 }
 
-static int
+int
 child_leaf(AggCtx *c, int group, const char *name, Oid typid)
 {
 	for (int i = 0; i < c->lay->nleaves; i++)
@@ -423,9 +306,6 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	return v->id;
 }
 
-static int	typeof_leaf(AggCtx *c, Node *e);
-static bool source_can_types(AggCtx *c);
-
 /*
  * `jsonb_typeof(x->'k')` of a typed scalar leaf: a scalar leaf after the source's, text, whose values the executor takes from the JSON types of the
  * values of the leaf (SiftAggVLeaf.types): the name of the type, NULL where the path has no value.
@@ -487,17 +367,8 @@ vleaf_source(AggCtx *c, int j)
 	return sift_aggvleaf_member(v) ? child_leaf(c, v->obj, "value", leaf_of(c, c->lay->nleaves - c->nvleaf + j)->typid) : -1;
 }
 
-typedef struct JsonRef
-{
-	int			att;			/* attribute holding the jsonb root; 0: a column of the unnested function */
-	int			fcol;			/* that column (1-based) */
-	List	   *path;
-	bool		as_text;
-	Oid			cast_to;
-} JsonRef;
-
 /* the text keys of a `#>` / `#>>` path operand, false if not constant */
-static bool
+bool
 path_keys(Node *n, List **keys)
 {
 	n = strip_relabel(n);
@@ -534,7 +405,7 @@ path_keys(Node *n, List **keys)
 }
 
 /* x -> 'k', x ->> 'k', x #> '{..}', x #>> '{..}' chains down to the root; the root is an attribute or a column of the unnested function */
-static bool
+bool
 json_access(AggCtx *c, Node *e, JsonRef *r)
 {
 	Oid			fid;
@@ -603,7 +474,7 @@ attr:
 	}
 }
 
-static Oid
+Oid
 json_cast_target(Oid fid)
 {
 	switch (fid)
@@ -624,8 +495,6 @@ json_cast_target(Oid fid)
 			return InvalidOid;
 	}
 }
-
-static int match_leaf(AggCtx *c, Node *e);
 
 /* the member of the row's object that `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` picks (NULL where the row has none), as a row level leaf */
 static int
@@ -678,7 +547,7 @@ func_var_leaf(AggCtx *c, Var *v)
  * The leaf an expression reads, -1 if it is not exactly a stored value: an attribute or index expression, a Var of the
  * unnested function's row type, a typed jsonb path of either, or the length of an array leaf.
  */
-static int
+int
 match_leaf(AggCtx *c, Node *e)
 {
 	JsonRef		r = {0};
@@ -836,7 +705,7 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 	return expression_tree_mutator(n, nullable_expr_mutator, c);
 }
 
-static Node *
+Node *
 normalize_expr(AggCtx *c, Node *n)
 {
 	if (c->nulling)
@@ -865,20 +734,11 @@ typedef struct LeafWalk
 	List	   *subparams;		/* the output Params of the sub-plans met: the only executor parameters an expression may hold */
 } LeafWalk;
 
-static bool raising_walker(Node *n, void *context);
-
-typedef struct OuterRef
-{
-	PlannerInfo *root;			/* the query the examined RTE belongs to */
-	int			depth;			/* the query levels below that RTE the walk is in */
-	int			skip;			/* the levels above the RTE's query whose references do not count: 0 counts the query's own */
-} OuterRef;
-
 /*
  * Does the tree read a column or an aggregate of a query above it, or a common table expression of an enclosing subquery (a plan per
  * row, not a list)? A statement-level common table expression is read once wherever it is referenced.
  */
-static bool
+bool
 outer_ref_walker(Node *n, OuterRef *o)
 {
 	if (n == NULL)
@@ -938,7 +798,7 @@ subplan_runs_at_start(AggCtx *c, SubPlan *sp)
 	return q->rowMarks == NIL && !contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c) && !reads_outer_query(c, q);
 }
 
-static bool
+bool
 lut_subplan_ok(AggCtx *c, SubPlan *sp)
 {
 	return sp->subLinkType == ANY_SUBLINK && sp->useHashTable && sp->testexpr != NULL && sp->parParam == NIL && sp->args == NIL &&
@@ -950,7 +810,7 @@ lut_subplan_ok(AggCtx *c, SubPlan *sp)
  * the test needs it): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan (a scalar
  * sub-select raises for a second row) or one of an outer query keeps the normal plan.
  */
-static bool
+bool
 array_initplan_ok(AggCtx *c, Param *prm)
 {
 	if (null_input_param((Node *) prm))
@@ -1013,7 +873,7 @@ leaf_walker(Node *n, LeafWalk *w)
 }
 
 /* the one leaf an expression reads (and the type it reads it as); false if it reads none, several, or something else */
-static bool
+bool
 single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll)
 {
 	LeafWalk	w = {c, -1, InvalidOid, -1, InvalidOid, false, NIL};
@@ -1041,7 +901,7 @@ typedef struct SubstCtx
  * value the executor tests (a dictionary of 200k entries against 5000 elements takes seconds). The executor builds the hash table on the
  * first call and keeps it, so the parameter is read once.
  */
-static void
+void
 hash_param_saop(ScalarArrayOpExpr *sa)
 {
 	Node	   *arr = lsecond(sa->args);
@@ -1094,7 +954,7 @@ subst_mutator(Node *n, SubstCtx *s)
 }
 
 /* e with the leaf reference replaced by Param 0 (PARAM_EXEC) of the type it had */
-static Node *
+Node *
 substitute_leaf(AggCtx *c, Node *e, Oid ptype, int32 ptypmod, Oid pcoll)
 {
 	Param	   *p = makeNode(Param);
@@ -1109,7 +969,7 @@ substitute_leaf(AggCtx *c, Node *e, Oid ptype, int32 ptypmod, Oid pcoll)
 	return subst_mutator(e, &s);
 }
 
-static bool
+bool
 lut_leaf_ok(AggCtx *c, int leaf)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
@@ -1118,7 +978,7 @@ lut_leaf_ok(AggCtx *c, int leaf)
 }
 
 /* a leaf an expression PostgreSQL evaluates may read: a combo gives an id to each distinct value of a dictionary, integer, 64-bit integer (numeric included) or float leaf */
-static bool
+bool
 combo_leaf_ok(AggCtx *c, int leaf)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
@@ -1147,7 +1007,7 @@ safe_int_divisor(const char *name, List *args)
  * evaluates its expression on every value of the dictionary or of the range of the unit, also on values no selected row has; the combos
  * evaluate it for the values of the tuples that reach it (docs/COL-PLAN.md, "Expressions PostgreSQL evaluates").
  */
-static bool
+bool
 raising_walker(Node *n, void *context)
 {
 	static const char *const names[] = {"int2div", "int4div", "int8div", "int24div", "int42div", "int28div", "int82div", "int48div", "int84div",
@@ -1187,7 +1047,7 @@ raising_walker(Node *n, void *context)
 }
 
 /* the span of the values the statistics of an integer column (histogram, most common values) have seen; false: none, or the leaf is not a plain column */
-static bool
+bool
 leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
@@ -1232,7 +1092,7 @@ lut_range_ok(AggCtx *c, int leaf)
 }
 
 /* is an expression of one dictionary or integer leaf evaluated by a lookup table (once per value of the dictionary or of the range of the leaf)? */
-static bool
+bool
 lut_expr_ok(AggCtx *c, int leaf, Node *expr)
 {
 	return lut_leaf_ok(c, leaf) && !raising_walker(expr, NULL) && (leaf_of(c, leaf)->vtype == SCV_CODE || lut_range_ok(c, leaf));
@@ -1366,7 +1226,7 @@ bucket_key_groups(AggCtx *c, const SiftAggKey *k)
 }
 
 /* the groups of a key whose number the planner knows: a calendar bucket from the statistics of its column, a function of the JSON type of a path (at most seven); 0: unknown */
-static double
+double
 key_groups(AggCtx *c, const SiftAggKey *k)
 {
 	int			nbase = c->lay->nleaves - c->nvleaf;
@@ -1377,14 +1237,14 @@ key_groups(AggCtx *c, const SiftAggKey *k)
 }
 
 /* EXPLAIN: the step a key on a timestamp is evaluated for */
-static const char *
+const char *
 bucket_text(int secs)
 {
 	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : " (per day)";
 }
 
 /* the seconds a key on the timestamp leaf is evaluated once for, 0 when it is not a calendar expression */
-static int
+int
 bucket_key_secs(AggCtx *c, int leaf, Node *expr)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
@@ -1396,19 +1256,7 @@ bucket_key_secs(AggCtx *c, int leaf, Node *expr)
 
 /* ---------- predicates ---------- */
 
-typedef enum TypeClass
-{
-	TC_NONE,
-	TC_INT,
-	TC_DATE,
-	TC_TS,
-	TC_TSTZ,
-	TC_FLOAT,
-	TC_BOOL,
-	TC_NUMERIC
-} TypeClass;
-
-static TypeClass
+TypeClass
 type_class(Oid t)
 {
 	switch (t)
@@ -1436,7 +1284,7 @@ type_class(Oid t)
 }
 
 /* the comparison a builtin operator is: SiftCmpOp, or -1 */
-static int
+int
 builtin_cmp(Oid opno, Oid *lt, Oid *rt)
 {
 	char	   *name;
@@ -1464,7 +1312,7 @@ builtin_cmp(Oid opno, Oid *lt, Oid *rt)
 	return op;
 }
 
-static int
+int
 commute(int op)
 {
 	switch (op)
@@ -1482,7 +1330,7 @@ commute(int op)
 	}
 }
 
-static SiftAggPred *
+SiftAggPred *
 new_pred(AggCtx *c, SiftAggPredKind kind)
 {
 	SiftAggPred *p = palloc0(sizeof(SiftAggPred));
@@ -1506,7 +1354,7 @@ display_expr_mutator(Node *n, void *context)
 }
 
 /* the expression as EXPLAIN shows it, its Vars resolved through the query's range table */
-static char *
+char *
 expr_text(AggCtx *c, Node *n)
 {
 	if (c->dpctx == NIL)
@@ -1524,7 +1372,7 @@ expr_text(AggCtx *c, Node *n)
 	return deparse_expression(display_expr_mutator(n, NULL), c->dpctx, true, false);
 }
 
-static const char *
+const char *
 cmp_text(int op)
 {
 	static const char *const t[] = {"=", "<>", "<", "<=", ">", ">="};
@@ -1532,7 +1380,7 @@ cmp_text(int op)
 	return t[op];
 }
 
-static void
+void
 use_leaf(AggCtx *c, int leaf)
 {
 	if (c->rec_pending == leaf + 1)
@@ -1546,7 +1394,7 @@ use_leaf(AggCtx *c, int leaf)
 		c->other_group = true;
 }
 
-static SiftAggPred *
+SiftAggPred *
 make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf)
 {
 	SiftAggPred *p = new_pred(c, kind);
@@ -1559,7 +1407,7 @@ make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf)
 
 /* ---------- lookup joins and combos ---------- */
 
-static JoinCtx *
+JoinCtx *
 join_of_var(AggCtx *c, Node *n)
 {
 	Var		   *v;
@@ -1604,7 +1452,7 @@ join_col(JoinCtx *jc, Var *v)
 }
 
 /* the position of leaf `id` in the combo (added if new), its type fixed by the first reference that has one; -1 when it does not fit */
-static int
+int
 combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod, Oid pcoll)
 {
 	int			p = 0;
@@ -1632,7 +1480,7 @@ combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod, Oid pcoll
 	return p;
 }
 
-static ComboCtx *
+ComboCtx *
 new_combo(AggCtx *c, int join)
 {
 	ComboCtx   *cb = palloc0(sizeof(ComboCtx));
@@ -1642,7 +1490,7 @@ new_combo(AggCtx *c, int join)
 	return cb;
 }
 
-static int
+int
 combo_index(AggCtx *c, ComboCtx *cb)
 {
 	foreach_ptr(ComboCtx, x, c->combos)
@@ -1662,7 +1510,7 @@ combo_level(AggCtx *c, ComboCtx *cb)
 }
 
 /* An input from an earlier lookup is identified by that output row, including its NULL extension. */
-static int
+int
 combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
 {
 	int			col = join_col(jc, v),
@@ -1689,7 +1537,7 @@ combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
 }
 
 /* `column = leaf` of the joined table: the equality of a dictionary leaf with a text column, of an integer leaf with an integer column */
-static bool
+bool
 join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 {
 	OpExpr	   *op;
@@ -1751,22 +1599,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	return true;
 }
 
-typedef struct ComboWalk
-{
-	AggCtx	   *c;
-	JoinCtx    *jc;
-	List	   *vars;			/* Vars of the joined table */
-	int			nl;
-	int			leaf[SIFT_AGG_MAX_CLEAVES];
-	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
-	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
-	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
-	bool		null_input;
-	bool		bad;
-	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
-} ComboWalk;
-
-static bool
+bool
 combo_walker(Node *n, ComboWalk *w)
 {
 	int			id;
@@ -1931,12 +1764,11 @@ may_raise_walker(Node *n, AggCtx *c)
 	return expression_tree_walker(n, may_raise_walker, c);
 }
 
-
 /*
  * `column = expression of leaves` of the joined table: PostgreSQL evaluates the expression once per distinct tuple of the leaves'
  * values and the table is probed with the result (the key is not a leaf, so there is no id to read it from).
  */
-static bool
+bool
 join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 {
 	OpExpr	   *op;
@@ -2010,7 +1842,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
  * fit. `force`: the join whose combo holds the slot, though the expression may read no column of its table (the rest of an ON clause).
  * `after_joins`: a deferred combo reads lookup outputs as inputs, so the expression is evaluated only for surviving joined tuples.
  */
-static bool
+bool
 combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si)
 {
 	ComboWalk	w = {c};
@@ -2071,7 +1903,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 	return true;
 }
 
-static bool
+bool
 combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si)
 {
 	return combo_slot_in(c, NULL, expr, is_key, false, ci, si);
@@ -2141,7 +1973,7 @@ combo_sub_mutator(Node *n, ComboSub *s)
 }
 
 /* the joins and combos of the query as the spec holds them: the slots' expressions over Params */
-static void
+void
 finish_combos(AggCtx *c, SiftAggSpec *s)
 {
 	s->njoin = list_length(c->joins);
@@ -2192,7 +2024,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 }
 
 /* EXPLAIN: the leaves a combo reads */
-static char *
+char *
 combo_text(AggCtx *c, int ci, Node *expr)
 {
 	ComboCtx   *cb = list_nth(c->combos, ci);
@@ -2204,10 +2036,8 @@ combo_text(AggCtx *c, int ci, Node *expr)
 	return psprintf("%s: %s", s.data, expr_text(c, expr));
 }
 
-static SlotReq *slot_req(AggCtx *c, int combo, int slot);
-
 /* a boolean expression of several leaves, or of leaves and the columns of the matching row of a joined table */
-static SiftAggPred *
+SiftAggPred *
 compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins)
 {
 	int			ci,
@@ -2227,7 +2057,7 @@ compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins)
 	return p;
 }
 
-static SiftAggPred *
+SiftAggPred *
 compile_combo_pred(AggCtx *c, Node *n)
 {
 	return compile_combo_pred_at(c, n, false);
@@ -2236,7 +2066,7 @@ compile_combo_pred(AggCtx *c, Node *n)
 /* ---------- numeric expressions ---------- */
 
 /* digits an integer or numeric(p, s) column may hold: from the type modifier of its reference, else what the storage holds */
-static int
+int
 leaf_digits(Oid typid, int32 typmod)
 {
 	if (typid == INT2OID)
@@ -2285,7 +2115,7 @@ nx_const(Const *k, SiftAggNum *o, int *scale, int *dig)
 }
 
 /* left op right, the result scale the larger one (numeric_add, numeric_sub); *scale and *dig are the left operand's on entry */
-static bool
+bool
 nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2)
 {
 	int			s1 = *scale,
@@ -2314,7 +2144,7 @@ nx_rescale(SiftAggNum *o, SiftAggNxOp op, int n, int *scale, int *dig)
  * error to reproduce). Anything else (division, other functions, parameters inside the arithmetic, a result of more than
  * SIFT_NUM_MAX_DIGITS digits) is false: its scale or its errors are not known here.
  */
-static bool
+bool
 nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig)
 {
 	int			leaf,
@@ -2382,7 +2212,7 @@ nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig)
 }
 
 /* the program of e, at most maxdig digits wide */
-static bool
+bool
 compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 {
 	int			dig;
@@ -2393,7 +2223,7 @@ compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 }
 
 /* the level (0 row, 1 element) of the leaves of a program, -1 when it mixes them */
-static int
+int
 nx_level(AggCtx *c, const SiftAggNum *o)
 {
 	int			lvl = -1;
@@ -2411,7 +2241,7 @@ nx_level(AggCtx *c, const SiftAggNum *o)
 }
 
 /* does the program raise for a NaN (a cast to an integer)? */
-static bool
+bool
 nx_raises(const SiftAggNum *o)
 {
 	for (int k = 0; k < o->n; k++)
@@ -2668,12 +2498,8 @@ compile_lut(AggCtx *c, Node *n)
 	return p;
 }
 
-static SiftAggPred *compile_pred(AggCtx *c, Node *n);
-static SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **nullable_target);
-static bool target_not_null(AggCtx *c, Node *target);
-
 /* an AND / OR node of nchild children, the children to be set (junction_done after) */
-static SiftAggPred *
+SiftAggPred *
 new_junction(AggCtx *c, SiftAggPredKind kind, int nchild)
 {
 	SiftAggPred *p = new_pred(c, kind);
@@ -2683,7 +2509,7 @@ new_junction(AggCtx *c, SiftAggPredKind kind, int nchild)
 	return p;
 }
 
-static void
+void
 junction_done(SiftAggPred *p)
 {
 	StringInfoData s;
@@ -2698,7 +2524,7 @@ junction_done(SiftAggPred *p)
 	p->desc = psprintf("(%s)", s.data);
 }
 
-static SiftAggPred *
+SiftAggPred *
 compile_junction(AggCtx *c, SiftAggPredKind kind, List *args)
 {
 	SiftAggPred *p = new_junction(c, kind, list_length(args));
@@ -2768,7 +2594,7 @@ typeof_type(Oid typid)
 }
 
 /* the leaf of the jsonb value `x->'k'` whose chunks know the JSON type of the path: a scalar of a type a JSON value of one type fills, or the text of any scalar (astext), whose chunks keep the number and boolean kinds */
-static int
+int
 typeof_leaf(AggCtx *c, Node *e)
 {
 	JsonRef		r = {0};
@@ -2786,7 +2612,7 @@ typeof_leaf(AggCtx *c, Node *e)
 	return -1;
 }
 
-static bool
+bool
 source_can_types(AggCtx *c)
 {
 	return OidIsValid(c->indexoid) ? sift_colsrc_can_types(get_rel_relam(c->indexoid), true) : sift_colsrc_can_types(get_rel_relam(c->heapoid), false);
@@ -2875,7 +2701,7 @@ types_need_kinds(uint32 types, bool astext)
  * a stored value by the type of the leaf and the values it could not hold by the type the chunk kept for them (SAP_TYPE). Not as a branch of OR:
  * the reads of the leaf give the values of the other rows as NULL, which only a conjunct that drops those rows makes safe.
  */
-static SiftAggPred *
+SiftAggPred *
 compile_typeof(AggCtx *c, Node *n)
 {
 	Node	   *call;
@@ -2975,7 +2801,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
  * A test of a wide leaf as a conjunct of the query: the source keeps the rows that pass (SAP_WIDE) and the executor never reads the values, which
  * is why it is only a conjunct: an OR, a CASE, a FILTER or a key would have to read them.
  */
-static SiftAggPred *
+SiftAggPred *
 compile_wide(AggCtx *c, Node *n)
 {
 	int			leaf,
@@ -3033,7 +2859,7 @@ is_ctid(AggCtx *c, Node *n)
  * tests the TIDs of the rows of its edges (SAP_TID, sift_aggspec_tid_range). Not as a branch of OR, an expression or a key; not for a partitioned
  * table, whose rows have a TID in each partition.
  */
-static SiftAggPred *
+SiftAggPred *
 compile_tid(AggCtx *c, Node *n)
 {
 	Node	   *l,
@@ -3070,7 +2896,7 @@ compile_tid(AggCtx *c, Node *n)
  * The type of a path tested by an expression (a FILTER, a CASE, an OR, a key) while the query reads the values of the path: the leaf cannot hold
  * the strings among its numbers, so the scan would raise where PostgreSQL's guard skips them. Only a conjunct of the query (SAP_TYPE) guards a read.
  */
-static bool
+bool
 types_guard_reads(AggCtx *c)
 {
 	for (int j = 0; j < c->nvleaf; j++)
@@ -3080,7 +2906,7 @@ types_guard_reads(AggCtx *c)
 }
 
 /* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
-static void
+void
 typeof_reads(AggCtx *c, SiftAggSpec *s)
 {
 	for (int i = 0; i < s->npred; i++)
@@ -3088,7 +2914,7 @@ typeof_reads(AggCtx *c, SiftAggSpec *s)
 			s->pred[i]->op |= SIFT_SRC_JT_READ;
 }
 
-static SiftAggPred *
+SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
 	SiftAggPred *p;
@@ -3133,14 +2959,14 @@ compile_pred(AggCtx *c, Node *n)
 
 /* ---------- keys and aggregates ---------- */
 
-static SlotReq *
+SlotReq *
 slot_req(AggCtx *c, int combo, int slot)
 {
 	return list_nth(((ComboCtx *) list_nth(c->combos, combo))->slots, slot);
 }
 
 /* the output table of a combo's key slot is the one of key `key` */
-static void
+void
 combo_set_key(AggCtx *c, SiftAggKey *k, int key)
 {
 	if (k->kind == SAK_COMBO)
@@ -3163,7 +2989,7 @@ compile_combo_key(AggCtx *c, Node *expr, SiftAggKey *k)
 	return true;
 }
 
-static bool
+bool
 compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 {
 	int			leaf;
@@ -3210,7 +3036,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 }
 
 /* count(DISTINCT x) of a column that is unique per row: a unique single-column index on a NOT NULL attribute */
-static bool
+bool
 unique_row_column(AggCtx *c, Node *arg)
 {
 	Var		   *v;
@@ -3374,7 +3200,7 @@ same_sorted_input(const SiftAggAgg *a, const SiftAggAgg *b)
 	return true;
 }
 
-static void
+void
 share_ordered(SiftAggSpec *s)
 {
 	for (int i = 0; i < s->naggs; i++)
@@ -3505,19 +3331,6 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 
 /* ---------- generic aggregates: PostgreSQL's own transition and final functions (SAA_GEN) ---------- */
 
-#define AGG_GEN_ROW			12.0	/* a transition function call through fmgr, and the Datum of a leaf (the function's own procost comes on top) */
-#define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
-#define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */
-#define AGG_GEN_FIRST		1.0		/* a row of a DISTINCT ON column: the compare of its sort keys with the best row of the group, the value read when it wins */
-#define AGG_GEN_FIRST_KEY	1.2		/* ... and each sort key's compare */
-#define AGG_GEN_FOLLOW		0.3		/* a row of the other DISTINCT ON columns: the answer of the first one */
-#define AGG_GEN_HYP			200.0	/* a row of a hypothetical-set aggregate: sorted by the scan for its groups, then again by the aggregate (no gain over the normal plan) */
-#define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
-#define AGG_GEN_GROUP		150.0	/* a group's final function and state, or the sort of an ordered-set group */
-
-static void
-record_deps(PlannerInfo *root, Node *n);
-
 /* a leaf the executor can turn into a Datum of its type */
 static bool
 gen_leaf_ok(AggCtx *c, int id)
@@ -3628,7 +3441,7 @@ gen_sub_mutator(Node *n, GenWalk *w)
 }
 
 /* does the expression read a column of a joined table */
-static bool
+bool
 arg_joined(AggCtx *c, Node *arg)
 {
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -3722,7 +3535,7 @@ gen_parallel_ok(Oid agg, Oid transfn, Oid combfn, Oid serfn, Oid deserfn, Oid tr
 	return true;
 }
 
-static bool
+bool
 compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	HeapTuple	tup;
@@ -3991,7 +3804,7 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
  * The aggregate a: a kernel of the scan when there is one, else PostgreSQL's own functions on the decoded values (compile_gen).
  * What the kernel attempt marked as used is undone when it fails.
  */
-static bool
+bool
 compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	SiftAggAgg	fresh;
@@ -4024,25 +3837,6 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 /* ---------- the query ---------- */
 
-typedef struct LeftJoin
-{
-	Index		rti;			/* the right side, a table */
-	List	   *quals;			/* its ON clause */
-	SiftJoinKind kind;
-} LeftJoin;
-
-typedef struct FromScan
-{
-	List	   *rtis;			/* range table indexes, in FROM order */
-	List	   *quals;
-	List	   *scan_quals;		/* conditions inside the nullable scanned input, before preservation */
-	List	   *lefts;			/* LeftJoin */
-	bool		ok;
-	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
-	bool		flippable;		/* a LEFT or FULL JOIN of two tables was met: the scan may be the other one */
-	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
-} FromScan;
-
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
 static RangeTblRef *
 right_table(Node *n)
@@ -4051,8 +3845,6 @@ right_table(Node *n)
 		n = linitial(((FromExpr *) n)->fromlist);
 	return IsA(n, RangeTblRef) ? (RangeTblRef *) n : NULL;
 }
-
-static void scan_from(Node *n, FromScan *f);
 
 /*
  * A LEFT JOIN with the scanned table on its right (the left side is preserved: flip), or a FULL JOIN of two tables: the table that is
@@ -4096,7 +3888,7 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	return true;
 }
 
-static void
+void
 scan_from(Node *n, FromScan *f)
 {
 	if (n == NULL)
@@ -4142,7 +3934,7 @@ scan_from(Node *n, FromScan *f)
 		f->ok = false;
 }
 
-static FuncKind
+FuncKind
 func_kind_of(RangeTblFunction *f)
 {
 	FuncExpr   *fe;
@@ -4168,14 +3960,14 @@ func_kind_of(RangeTblFunction *f)
 }
 
 /* the kind of group leaf a set-returning function reads */
-static SiftSrcLeafKind
+SiftSrcLeafKind
 func_leaf_kind(FuncKind k)
 {
 	return k == FK_EACH || k == FK_EACH_TEXT ? SCL_OBJECT : SCL_ARRAY;
 }
 
 /* the group leaf of the given kind the keys below an expression lead to: the jsonb array (object) leaf an unnested function reads */
-static int
+int
 group_leaf_below(AggCtx *c, Node *arg, List *keys, SiftSrcLeafKind kind)
 {
 	JsonRef		r = {0};
@@ -4193,15 +3985,13 @@ group_leaf_below(AggCtx *c, Node *arg, List *keys, SiftSrcLeafKind kind)
 	return -1;
 }
 
-static int
+int
 group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
 {
 	return group_leaf_below(c, arg, NIL, kind);
 }
 
 /* ---------- existential predicates: some element of one array passes (SAP_ANY_ELEM) ---------- */
-
-static double elems_of(AggCtx *c, int grp);
 
 /*
  * The element predicate is compiled with the array in scope as the query's group (so its leaves are element leaves of that array,
@@ -4885,7 +4675,7 @@ compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
  * never NULL for EXISTS; the others are NULL for a NULL document, which the executor (like WHERE) treats as false: *target is that
  * document's expression, for the negation to prove it NOT NULL.
  */
-static SiftAggPred *
+SiftAggPred *
 compile_existential(AggCtx *c, Node *n, Node **target)
 {
 	Oid			fid;
@@ -4915,7 +4705,7 @@ compile_existential(AggCtx *c, Node *n, Node **target)
 }
 
 /* the document is a column with a NOT NULL constraint */
-static bool
+bool
 target_not_null(AggCtx *c, Node *target)
 {
 	Var		   *v = (Var *) strip_relabel(target);
@@ -4923,9 +4713,6 @@ target_not_null(AggCtx *c, Node *target)
 	return IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0 &&
 		bms_is_member(v->varattno, c->rel->notnullattnums);
 }
-
-static void
-record_deps(PlannerInfo *root, Node *n);
 
 static bool
 dep_walker(Node *n, PlannerInfo *root)
@@ -4949,14 +4736,14 @@ dep_walker(Node *n, PlannerInfo *root)
 	return expression_tree_walker(n, dep_walker, root);
 }
 
-static void
+void
 record_deps(PlannerInfo *root, Node *n)
 {
 	dep_walker(n, root);
 }
 
 /* the tree of preds as one flat array, ids ascending, to count them */
-static void
+void
 pred_deps(PlannerInfo *root, SiftAggPred *p)
 {
 	if (p == NULL)
@@ -4966,15 +4753,7 @@ pred_deps(PlannerInfo *root, SiftAggPred *p)
 		pred_deps(root, p->child[i]);
 }
 
-/* Aggrefs of the output, each once; false if a column is used outside the keys and aggregates */
-typedef struct OutWalk
-{
-	List	   *keys;			/* group expressions */
-	List	   *aggs;
-	bool		bad;
-} OutWalk;
-
-static bool
+bool
 out_walker(Node *n, OutWalk *w)
 {
 	if (n == NULL || w->bad)
@@ -5025,7 +4804,6 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNIT_COST		200.0
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
-#define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
@@ -5040,7 +4818,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
 #define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
 
-static double
+double
 elems_of(AggCtx *c, int grp)
 {
 	return c->stats.elems_per_row[grp] > 0 ? c->stats.elems_per_row[grp] : AGG_DEFAULT_ELEMS;
@@ -5417,7 +5195,7 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 }
 
 /* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
-static double
+double
 preagg_share(AggCtx *c, SiftAggSpec *s)
 {
 	SiftAggPaShape shape;
@@ -5451,7 +5229,7 @@ scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
 	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
 }
 
-static bool
+bool
 extern_param_walker(Node *node, void *context)
 {
 	if (node == NULL)
@@ -5487,13 +5265,13 @@ join_index_usable(RelOptInfo *rel, const SiftAggJoin *j)
 }
 
 /* the heap pages of the scanned table: those of the partitions of a partitioned table */
-static double
+double
 rel_pages(AggCtx *c)
 {
 	return c->nparts > 0 ? c->part_pages : c->rel->pages;
 }
 
-static void
+void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
 	double		rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0)),
@@ -5630,9 +5408,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 /* ---------- the path ---------- */
 
-static const CustomPathMethods agg_path_methods;
-
-static bool
+bool
 unsupported_clause(AggCtx *c, Node *n)
 {
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
@@ -6059,7 +5835,7 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 }
 
 /* a table or plan in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
-static bool
+bool
 add_join(AggCtx *c, FromScan *fs, Index rti)
 {
 	RangeTblEntry *e = rt_fetch(rti, c->root->parse->rtable);
@@ -6152,7 +5928,7 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 	return true;
 }
 
-static bool
+bool
 preserved_join(AggCtx *c)
 {
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -6296,7 +6072,7 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 	return true;
 }
 
-static bool
+bool
 setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
 {
 	List	   *probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
@@ -6530,7 +6306,7 @@ part_source(AggCtx *c)
 }
 
 /* Opens the source of the rel and its layout; false if none */
-static bool
+bool
 find_source(AggCtx *c, IndexOptInfo **ixout)
 {
 	RangeTblEntry *rte = planner_rt_fetch(c->relid, c->root);
@@ -6581,7 +6357,7 @@ vars_of_rel(AggCtx *c, List *exprs)
 	return out;
 }
 
-static void
+void
 build_attexprs(AggCtx *c)
 {
 	c->attexpr = vars_of_rel(c, c->lay->attexprs);
@@ -6594,11 +6370,10 @@ cmp_int(const void *a, const void *b)
 	return *(const int *) a - *(const int *) b;
 }
 
-static SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 static bool recordset_recheck_ok(AggCtx *c);
 static Bitmapset *recordset_columns(AggCtx *c);
 
-static void
+void
 finish_leaves(AggCtx *c, SiftAggSpec *s)
 {
 	int			n = 0,
@@ -6668,7 +6443,7 @@ left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 #endif
 }
 
-static bool
+bool
 agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	Query	   *parse = root->parse;
@@ -6795,7 +6570,7 @@ agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *f
 	return agg_base(c, root, input_rel, fs);
 }
 
-static SiftAggSpec *
+SiftAggSpec *
 agg_spec_new(AggCtx *c)
 {
 	SiftAggSpec *s = palloc0(sizeof(SiftAggSpec));
@@ -6827,7 +6602,7 @@ tid_share(AggCtx *c, SiftAggSpec *s)
 }
 
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
-static bool
+bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 {
 	List	   *quals = fs->quals,
@@ -6961,7 +6736,7 @@ child_pos(List *vars, int att)
 }
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
-static void
+void
 add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers)
 {
 	SiftAggPath *ap = (SiftAggPath *) newNode(sizeof(SiftAggPath), T_CustomPath);
@@ -7010,7 +6785,7 @@ child_cols_kept(AggCtx *c, JoinCtx *jc)
  * The plans the joins read, as paths that output the columns the spec reads (the columns of the joined rows are positions of that output): the
  * path PostgreSQL chose for the rows of the sub-select, VALUES list or function, projected on them. The scan nodes project any column.
  */
-static bool
+bool
 child_paths(AggCtx *c, SiftAggSpec *s)
 {
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -7160,7 +6935,7 @@ pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
 }
 
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns or is applied after the others (it may drop a row that the error would reach first) */
-static SiftSrcRecheck
+SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	Bitmapset  *list = NULL;
@@ -7208,7 +6983,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 }
 
 /* the leaves the spec reads and the combos; false when the spec cannot be run. keys: the group expressions of root's query */
-static bool
+bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
 	if (c->other_group || types_guard_reads(c))
@@ -7329,10 +7104,8 @@ param_set_penalty(AggCtx *c, RelOptInfo *output_rel)
 		}
 }
 
-static bool first_fits(SiftAggSpec *s);
-
 /* the cost; adds the paths to output_rel */
-static void
+void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
 	int			nworkers;
@@ -7357,7 +7130,7 @@ key_of_ref(Query *parse, int ref)
 }
 
 /* GROUPING(columns): the keys of its arguments; the executor makes its bitmask of the set of each group */
-static bool
+bool
 compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out)
 {
 	if (g->agglevelsup != 0 || parse->groupingSets == NIL)
@@ -7378,7 +7151,7 @@ compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out)
  * duplicates as written): a mask over the group columns for each, and the number of the set as one more key, so that the groups of
  * two sets never meet. The scan emits it as a constant column, which nothing reads.
  */
-static void
+void
 add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist)
 {
 	SiftAggKey *k = &s->key[s->nkeys];
@@ -7403,10 +7176,6 @@ add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist)
 													   list_length(*scan_tlist) + 1, NULL, false));
 	s->nkeys++;
 }
-
-static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra);
-
-static void topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
 /* Does the grouping have a key that is not a constant? */
 static bool
@@ -7508,7 +7277,7 @@ first_aggref(AggCtx *c, Node *e, List *more)
  * The output of DISTINCT ON: the ON columns are the group keys; any other expression of the output (the select list, and the sort columns
  * the sort above reads) is the value of the first row of its group, one aggregate for each, in the scan tuple at the place of the expression.
  */
-static bool
+bool
 first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 {
 	/* the normal plan evaluates a volatile function for every row, before it picks one */
@@ -7534,7 +7303,7 @@ first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 }
 
 /* a DISTINCT ON aggregate keeps the best row instead of sorting the rows of the group; the first of them compares the sort keys, the others follow its answer */
-static void
+void
 first_mode(SiftAggAgg *out, int nsort, bool leader)
 {
 	SiftAggGen *g = out->gen;
@@ -7547,7 +7316,7 @@ first_mode(SiftAggAgg *out, int nsort, bool leader)
 }
 
 /* do the best rows of the groups fit the memory a hash aggregate gets? */
-static bool
+bool
 first_fits(SiftAggSpec *s)
 {
 	double		bytes = 0;
@@ -7565,7 +7334,7 @@ first_fits(SiftAggSpec *s)
 }
 
 /* the sort columns after the DISTINCT ON columns, when the ORDER BY is a total order of the rows */
-static bool
+bool
 distinct_on_more(AggCtx *c, Query *parse, List **more)
 {
 	List	   *sortexprs = NIL;
@@ -7827,7 +7596,7 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
 	return true;
 }
 
-static void
+void
 topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	Query	   *parse = root->parse;
@@ -8381,7 +8150,7 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
  * planned roots, so that group expressions and constants are in the planner's final form; an arm that reads a common table
  * expression is looked through to it.
  */
-static void
+void
 sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 {
 	Query	   *parse = root->parse;
@@ -8600,6 +8369,6 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	return &cs->scan.plan;
 }
 
-static const CustomPathMethods agg_path_methods = {"SiftAgg", agg_plan_path, NULL};
+const CustomPathMethods agg_path_methods = {"SiftAgg", agg_plan_path, NULL};
 
 const CustomScanMethods sift_agg_plan_methods = {"SiftAgg", sift_agg_create_state};
