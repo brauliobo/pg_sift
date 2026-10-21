@@ -183,7 +183,7 @@ What the pushed shapes do:
 
 - **Text-valued leaves (`astext`) in paths and recordsets.** `jsonb_to_recordset(expr -> 'a') AS o(k text)` reads the leaf of a list of objects whose
   member is declared `astext`; a text literal tests it for equality (`=`, `IN`) only when no number or boolean prints as that text (it does not start with a digit or `-` and is not `true` or `false`), so the leaf's text of the number 7 is never taken for the string `'7'`.
-  A number or boolean literal against such a leaf, a strict path and a NOT of a test that may be NULL keep the normal plan (plain traps in `wl_path_opinions_*`).
+  A number or boolean literal against such a leaf, a strict path and a NOT of a test that may be NULL keep the normal plan (plain traps in `wl_path_parts_*`).
 - **`EXISTS` over an index expression's array.** The planner deparses the expression with the query's own range table; the same expression in a
   sub-select's range table is what raised `invalid attnum`. The members of one element are tested together, as for a column.
 - **`x = ANY (ARRAY (SELECT ...))`.** An uncorrelated, stable sub-select that cannot raise is an InitPlan; the scan runs it once when it starts and the

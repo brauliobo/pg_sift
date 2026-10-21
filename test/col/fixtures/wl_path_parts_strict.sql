@@ -3,5 +3,5 @@
 -- expect: plain
 -- key: -
 -- error: yes
-SELECT count(*) FILTER (WHERE jsonb_path_exists(coldiff.wl_norm(w.doc), 'strict $.opinions[*] ? (@.polarity == "positive")')) AS n
-FROM t_wl w
+SELECT count(*) FILTER (WHERE jsonb_path_exists(coldiff.load_norm(w.doc), 'strict $.parts[*] ? (@.polarity == "positive")')) AS n
+FROM t_load w

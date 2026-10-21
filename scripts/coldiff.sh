@@ -247,7 +247,7 @@ col_index() {
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
 		t_rc) ddl="CREATE INDEX t_rc_col ON t_rc USING $AM (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}')" ;;
 		t_vd) ddl="CREATE INDEX t_vd_col ON t_vd USING $AM (id, grp, doc) WITH (paths = 'doc.m.* float8, doc.k float8, doc.l[]{v float8}, doc.n[]{x float8}')" ;;
-		t_wl) ddl="CREATE INDEX t_wl_col ON t_wl USING $AM (id, entity_id, source_id, product_id, item_date, updated_at, deleted_at, country_code, composition, segment, ratings, comments, (coldiff.wl_norm(doc)), (coldiff.wl_txt(doc))) WITH (paths = 'ratings.* astext, comments[]{type text}, wl_norm.lang astext, wl_norm.mapped astext, wl_norm.opinions[]{category astext, subrating astext, polarity astext, score float8}, wl_txt.opinions[]{category astext, score astext}')" ;;
+		t_load) ddl="CREATE INDEX t_load_col ON t_load USING $AM (id, entity_id, src_id, prod_id, item_date, updated_at, deleted_at, country_code, mix, segment, metrics, comments, (coldiff.load_norm(doc)), (coldiff.wl_txt(doc))) WITH (paths = 'metrics.* astext, comments[]{type text}, load_norm.lang astext, load_norm.mapped astext, load_norm.parts[]{category astext, val astext, polarity astext, score float8}, wl_txt.parts[]{category astext, score astext}')" ;;
 		t_tags) ddl="CREATE INDEX t_tags_col ON t_tags USING $AM (id, grp, tags) WITH (paths = 'tags[] text')" ;;
 		t_part) ddl="CREATE INDEX t_part_col ON t_part USING $AM (id, grp, d, qty, amount, tag, doc, note) WITH (paths = 'doc->k int4, doc->s text')" ;;
 		t_part_ni) ddl="CREATE INDEX t_part_ni_a_col ON t_part_ni_a USING $AM (id, grp, d, qty)" ;;
@@ -277,7 +277,7 @@ col_paths() {
 	END { print out }' <<<"$COL_PATHS"
 }
 
-# fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_wl its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
+# fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_load its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
 	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
@@ -289,13 +289,13 @@ fixture_tables() {
 		done
 		sql -c "VACUUM FULL $t" || return 1
 	done
-	for t in orders_part t_part t_part_ni t_part_op t_inh t_wl t_rc t_vd t_partial; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
+	for t in orders_part t_part t_part_ni t_part_op t_inh t_load t_rc t_vd t_partial; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
 }
 
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_wl t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_load t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }

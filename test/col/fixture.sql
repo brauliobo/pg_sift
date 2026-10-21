@@ -464,7 +464,7 @@ INSERT INTO t_part_op SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 366, i 
 INSERT INTO t_inh_a SELECT i, 1 + i % 5, date '2024-01-01' + (i * 7) % 182, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
 INSERT INTO t_inh_b SELECT 100000 + i, 1 + i % 5, date '2024-07-01' + (i * 7) % 184, i % 40 FROM generate_series(1, greatest(:n / 4, 400)) i;
 
--- the review analytics workload (workload.sql): a fact table of items with jsonb ratings and a document with a nested array of opinions, its dimensions
+-- the event analytics workload (workload.sql): a fact table of items with jsonb metrics and a document with a nested array of parts, its dimensions
 \ir workload.sql
 
 -- ---------- the DML of the scenarios (heap states) ----------
@@ -479,7 +479,7 @@ CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
 		   (SELECT coldiff.fx_eo(e + 1, e + greatest(1, (frac * e)::int)) FROM (SELECT max(id) AS e FROM t_eo) z) +
 		   (SELECT coldiff.fx_rc(r + 1, r + greatest(1, (frac * r)::int)) FROM (SELECT max(id) AS r FROM t_rc) q) +
 		   (SELECT coldiff.fx_part(p + 1, p + greatest(1, (frac * p)::int), 7) FROM (SELECT max(id) AS p FROM t_part) y) +
-		   (SELECT coldiff.fx_wl(w + 1, w + greatest(1, (frac * w)::int), 7) FROM (SELECT max(id) AS w FROM t_wl) v)
+		   (SELECT coldiff.fx_wl(w + 1, w + greatest(1, (frac * w)::int), 7) FROM (SELECT max(id) AS w FROM t_load) v)
 	FROM (SELECT max(id) AS m FROM orders) x $$;
 -- indexed columns (a new tuple version with a new TID) and the jsonb documents
 CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE sql AS $$
@@ -495,7 +495,7 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1),
 		 eo AS (UPDATE t_eo SET r4 = (r4 + 1) % 6, rf = rf + 0.5, doc = coldiff.eo_doc(id + 1) WHERE coldiff.sample(id, 911, frac) RETURNING 1),
 		 rc AS (UPDATE t_rc SET doc = coldiff.rc_doc(id + 7) WHERE coldiff.sample(id, 917, frac) RETURNING 1),
-		 wl AS (UPDATE t_wl SET entity_id = 1 + entity_id % 30, item_date = item_date + 1, ratings = coldiff.wl_ratings(id + 1, 3), doc = coldiff.wl_doc(id + 1, 3)
+		 wl AS (UPDATE t_load SET entity_id = 1 + entity_id % 30, item_date = item_date + 1, metrics = coldiff.wl_metrics(id + 1, 3), doc = coldiff.wl_doc(id + 1, 3)
 				WHERE coldiff.sample(id, 913, frac) RETURNING 1)
 	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM rc) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
@@ -506,12 +506,12 @@ CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 		 pt AS (DELETE FROM t_part WHERE coldiff.sample(id, 909, frac) RETURNING 1),
 		 eo AS (DELETE FROM t_eo WHERE coldiff.sample(id, 912, frac) RETURNING 1),
 		 rc AS (DELETE FROM t_rc WHERE coldiff.sample(id, 918, frac) RETURNING 1),
-		 wl AS (DELETE FROM t_wl WHERE coldiff.sample(id, 914, frac) RETURNING 1),
-		 ws AS (UPDATE t_wl SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 915, frac) AND deleted_at IS NULL RETURNING 1)
+		 wl AS (DELETE FROM t_load WHERE coldiff.sample(id, 914, frac) RETURNING 1),
+		 ws AS (UPDATE t_load SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 915, frac) AND deleted_at IS NULL RETURNING 1)
 	SELECT (SELECT count(*) FROM wl) + (SELECT count(*) FROM ws) + (SELECT count(*) FROM rc) + (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
 -- columns that no index holds (no new index entries: a HOT update when the page has room)
 CREATE FUNCTION coldiff.sc_hot(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1),
 		 pt AS (UPDATE t_part SET note = 'h' || id % 3 WHERE coldiff.sample(id, 910, frac) RETURNING 1),
-		 wl AS (UPDATE t_wl SET title = 'h' || id % 3 WHERE coldiff.sample(id, 916, frac) RETURNING 1)
+		 wl AS (UPDATE t_load SET title = 'h' || id % 3 WHERE coldiff.sample(id, 916, frac) RETURNING 1)
 	SELECT (SELECT count(*) FROM u) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM wl) $$;
