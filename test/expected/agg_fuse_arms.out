@@ -132,8 +132,25 @@ SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION
                       0
 (1 row)
 
+-- the rest of an ON clause that only one arm has: an inner join drops the rows it refuses in the arm's set only; a left join keeps them (another set of rows)
+\set inner_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
+\set inner_rest 'SELECT e.kind::text, count(*), sum(e.price) FROM ev e JOIN zones z ON z.id = e.zone_id AND z.tier > 0 GROUP BY e.kind'
+\set left_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e LEFT JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
+\set left_rest 'SELECT e.kind::text, count(*), sum(e.price) FROM ev e LEFT JOIN zones z ON z.id = e.zone_id AND z.tier > 0 GROUP BY e.kind'
+SELECT arms_shared(:'inner_rest' || ' UNION ALL ' || :'inner_plain') AS inner_rest_shared, same(:'inner_rest' || ' UNION ALL ' || :'inner_plain') AS inner_rest_same;
+ inner_rest_shared | inner_rest_same 
+-------------------+-----------------
+                 2 | t
+(1 row)
+
+SELECT arms_shared(:'left_rest' || ' UNION ALL ' || :'left_plain') AS left_rest_shared, same(:'left_rest' || ' UNION ALL ' || :'left_plain') AS left_rest_same;
+ left_rest_shared | left_rest_same 
+------------------+----------------
+                0 | t
+(1 row)
+
 -- arms that look the mapped names of each line up with a correlated LIMIT 1 sub-select: the arms read other columns of it (one the mapped kind, one
--- also the mapped part), the lines without a mapping are no row of the first two arms and a row of the third (a LEFT JOIN, another set of rows: it stays apart)
+-- also the mapped part), the lines without a mapping are no row of the first two arms (an inner join) and a row of the third (a left join): one pass keeps them for that arm only
 -- (the scan of the table is made dearer than the index's, and the lookups are not cached: the plan with the sub-select as a child of the scan is the one PostgreSQL costs cheapest)
 SET enable_seqscan = off;
 SET enable_indexscan = off;
@@ -158,14 +175,15 @@ SELECT arms_shared(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || 
        same(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_same;
  mapped_three_shared | mapped_three_same 
 ---------------------+-------------------
-                   2 | t
+                   3 | t
 (1 row)
 
 SELECT reread(:'mapped' || :'arm_names') > 0 AS mapped_arm_rereads,
-       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind') = reread(:'mapped' || :'arm_names') AS mapped_rereads_once;
- mapped_arm_rereads | mapped_rereads_once 
---------------------+---------------------
- t                  | t
+       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind') = reread(:'mapped' || :'arm_names') AS mapped_rereads_once,
+       reread(:'mapped' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') = reread(:'mapped' || :'arm_names') AS mapped_three_rereads_once;
+ mapped_arm_rereads | mapped_rereads_once | mapped_three_rereads_once 
+--------------------+---------------------+---------------------------
+ t                  | t                   | t
 (1 row)
 
 RESET enable_seqscan;

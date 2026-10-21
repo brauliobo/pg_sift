@@ -21,6 +21,8 @@ typedef struct FuseArm
 	int		   *combo;			/* per combo */
 	int		  **col;			/* per join: the column of each of its columns in the pass */
 	int		  **slot;			/* per combo: the slot of each of its slots in the pass */
+	int		   *fslot;			/* per join: the slot of the rest of its ON clause in the pass, -1 none */
+	int		   *fcombo;			/* per join: the combo of that slot in the pass */
 	SiftAggSpec a;				/* the arm over the joins and combos of the pass */
 } FuseArm;
 
@@ -29,15 +31,19 @@ typedef struct Fuse
 	int			n;
 	FuseArm	   *arm;
 	SiftAggSpec u;				/* the joins and combos of the pass, the leaves of all the arms */
+	int			npost;			/* the conjuncts over the joined rows of the arms, each once, and the arms (bit i) that apply it; 0: all of them */
+	SiftAggPred **post;
+	uint32	   *postsets;
 } Fuse;
 
-/* the arm's join with what an arm may differ in left out: its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
+/* the arm's join with what an arm may differ in left out: an inner join is a left join whose arm drops the tuples without a row (SAP_MATCHED), its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
 static List *
 join_shell(const SiftAggJoin *j)
 {
 	SiftAggJoin x = *j;
 	SiftAggSpec t = {.njoin = 1, .join = &x};
 
+	x.kind = x.kind == SJ_INNER ? SJ_LEFT : x.kind;
 	x.ncol = 0;
 	x.subplan = 0;
 	x.params = NIL;
@@ -106,6 +112,8 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 		u->ncol = 0;
 		u->fslot = -1;
 	}
+	if (mj->kind == SJ_LEFT)
+		u->kind = SJ_LEFT;
 	arm->col[j] = palloc(Max(mj->ncol, 1) * sizeof(int));
 	for (int c = 0; c < mj->ncol; c++)
 	{
@@ -180,19 +188,43 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 }
 
 /* the ON clause of a join is a slot of its combo: the arms that share the join must have the same one */
-static bool
-fuse_fslot(Fuse *f, FuseArm *arm, int j)
+static void
+fuse_fslot(FuseArm *arm, int j)
 {
 	const SiftAggJoin *mj = &arm->s->join[j];
-	SiftAggJoin *u = &f->u.join[arm->join[j]];
-	int			fs = -1;
 
+	arm->fslot[j] = -1;
 	for (int ci = 0; mj->fslot >= 0 && ci < arm->s->ncombo; ci++)
 		if (arm->s->combo[ci].join == j)
-			fs = arm->slot[ci][mj->fslot];
-	if (u->fslot == -1)
-		u->fslot = fs;
-	return u->fslot == fs;
+		{
+			arm->fslot[j] = arm->slot[ci][mj->fslot];
+			arm->fcombo[j] = arm->combo[ci];
+		}
+}
+
+/* the rest of the ON clause of a join: the pass's when every arm has the same, else the inner joins of the arms that have it test it on the rows (posts) */
+static bool
+fuse_fslots(Fuse *f)
+{
+	for (int k = 0; k < f->u.njoin; k++)
+	{
+		int			fs = -2;
+		bool		same = true,
+					outer = false;
+
+		for (int i = 0; i < f->n; i++)
+			for (int j = 0; j < f->arm[i].s->njoin; j++)
+				if (f->arm[i].join[j] == k)
+				{
+					same &= fs == -2 || fs == f->arm[i].fslot[j];
+					fs = f->arm[i].fslot[j];
+					outer |= f->arm[i].fslot[j] >= 0 && f->arm[i].s->join[j].kind != SJ_INNER;
+				}
+		if (!same && outer)
+			return false;
+		f->u.join[k].fslot = same ? fs : -1;
+	}
+	return true;
 }
 
 static SiftAggPred *
@@ -222,6 +254,98 @@ static bool
 agg_reads_combo(const SiftAggAgg *a)
 {
 	return (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG || (a->kind >= SAA_X_COUNT && a->kind <= SAA_X_AVG);
+}
+
+static SiftAggPred *
+pred_noid(const SiftAggPred *p)
+{
+	SiftAggPred *o = palloc(sizeof(SiftAggPred));
+
+	*o = *p;
+	o->id = 0;
+	if (p->nchild > 0)
+		o->child = palloc(p->nchild * sizeof(SiftAggPred *));
+	for (int i = 0; i < p->nchild; i++)
+		o->child[i] = pred_noid(p->child[i]);
+	return o;
+}
+
+/* a conjunct as a spec of its own: two conjuncts of arms over the same combos are the same when these are equal */
+static List *
+post_pack(const SiftAggPred *p)
+{
+	SiftAggPred *q = pred_noid(p);
+	SiftAggSpec t = {.npost = 1, .post = &q};
+
+	return sift_aggspec_pack(&t);
+}
+
+/* a conjunct of the arm: added to the pass's, with the arm among those that apply it */
+static void
+fuse_post(Fuse *f, const SiftAggPred *p, int arm)
+{
+	List	   *k = post_pack(p);
+	int			at = 0;
+
+	while (at < f->npost && !equal(post_pack(f->post[at]), k))
+		at++;
+	if (at == f->npost)
+	{
+		f->post[f->npost] = (SiftAggPred *) p;
+		f->postsets[f->npost++] = 0;
+	}
+	f->postsets[at] |= (uint32) 1 << arm;
+}
+
+static SiftAggPred *
+join_pred(SiftAggPredKind kind, int combo, int slot, char *desc)
+{
+	SiftAggPred *p = palloc0(sizeof(SiftAggPred));
+
+	p->kind = kind;
+	p->leaf = combo;
+	p->leaf2 = -1;
+	p->op = slot;
+	p->level = 2;
+	p->desc = desc;
+	return p;
+}
+
+/* the conjuncts of the arms: their own, and a row of the join where the arm has an inner join and the pass a left one */
+static bool
+fuse_posts(Fuse *f)
+{
+	int			total = 0;
+
+	for (int i = 0; i < f->n; i++)
+		total += f->arm[i].s->npost + 2 * f->arm[i].s->njoin;
+	f->npost = 0;
+	f->post = palloc(Max(total, 1) * sizeof(SiftAggPred *));
+	f->postsets = palloc0(Max(total, 1) * sizeof(uint32));
+	for (int i = 0; i < f->n; i++)
+	{
+		const FuseArm *arm = &f->arm[i];
+
+		for (int j = 0; j < arm->s->npost; j++)
+			fuse_post(f, arm->a.post[j], i);
+		for (int ci = 0; ci < arm->s->ncombo; ci++)
+			if (arm->s->combo[ci].join >= 0 && arm->s->join[arm->s->combo[ci].join].kind != f->u.join[arm->join[arm->s->combo[ci].join]].kind)
+				fuse_post(f, join_pred(SAP_MATCHED, arm->combo[ci], 0, "a row of the join"), i);
+		for (int j = 0; j < arm->s->njoin; j++)
+			if (arm->fslot[j] >= 0 && f->u.join[arm->join[j]].fslot < 0)
+				fuse_post(f, join_pred(SAP_COMBO, arm->fcombo[j], arm->fslot[j], "join condition"), i);
+	}
+	for (int k = 0; k < f->npost; k++)
+	{
+		bool		all = f->postsets[k] == (((uint32) 1 << f->n) - 1);
+
+		/* a conjunct that raises an error runs on the tuples that reach it: after the conjuncts of every set, as it does in its arm */
+		if (!all && f->post[k]->late)
+			return false;
+		if (all)
+			f->postsets[k] = 0;
+	}
+	return true;
 }
 
 /* the arm over the joins and combos of the pass */
@@ -264,6 +388,18 @@ fuse_adapt(Fuse *f, FuseArm *arm)
 	a->post = palloc(Max(s->npost, 1) * sizeof(SiftAggPred *));
 	for (int i = 0; i < s->npost; i++)
 		a->post[i] = remap_pred(s->post[i], arm);
+}
+
+/* the arm without its conjuncts over the joined rows (the pass has them all, each set its own) */
+static void
+fuse_unpost(Fuse *f)
+{
+	for (int i = 0; i < f->n; i++)
+	{
+		f->arm[i].a.npost = 0;
+		f->arm[i].a.nprepost = 0;
+		f->arm[i].a.post = NULL;
+	}
 }
 
 /* the leaves the arms read together, and how: false when two arms read one leaf in different ways */
@@ -364,6 +500,8 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 		arm->col = palloc0(Max(m[i]->njoin, 1) * sizeof(int *));
 		arm->combo = palloc(Max(m[i]->ncombo, 1) * sizeof(int));
 		arm->slot = palloc0(Max(m[i]->ncombo, 1) * sizeof(int *));
+		arm->fslot = palloc(Max(m[i]->njoin, 1) * sizeof(int));
+		arm->fcombo = palloc(Max(m[i]->njoin, 1) * sizeof(int));
 		for (int j = 0; j < m[i]->njoin; j++)
 		{
 			if (!fuse_join(f, arm, j))
@@ -373,10 +511,9 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 			if (!fuse_combo(f, arm, ci))
 				return false;
 		for (int j = 0; j < m[i]->njoin; j++)
-			if (!fuse_fslot(f, arm, j))
-				return false;
+			fuse_fslot(arm, j);
 	}
-	if (!fuse_children(f))
+	if (!fuse_fslots(f) || !fuse_children(f))
 		return false;
 	/* the joins repeat or drop the tuples of every set: an arm without one of them (or with another kind of it) is not a set of this pass */
 	for (int i = 0; i < n; i++)
@@ -390,6 +527,9 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 	}
 	for (int i = 0; i < n; i++)
 		fuse_adapt(f, &f->arm[i]);
+	if (!fuse_posts(f))
+		return false;
+	fuse_unpost(f);
 	return true;
 }
 
@@ -467,10 +607,13 @@ fuse_candidate(const SiftAggSpec *s)
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_GEN)
 			return false;
+	for (int i = 0; i < s->npost; i++)
+		if (s->post[i]->kind == SAP_ELEM_EXISTS)
+			return false;
 	for (int i = 0; i < s->njoin; i++)
 		if (s->join[i].child >= 0 || sift_aggjoin_preserves(s->join[i].kind) || (s->join[i].params != NIL && s->join[i].sig == NULL))
 			return false;
-	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0;
+	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0 && s->nprepost == 0;
 }
 
 /* what the arms must share: everything but their keys */
@@ -538,6 +681,10 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap)
 		spec->nworkers = Max(spec->nworkers, m[i]->nworkers);
 		spec->est_groups += m[i]->est_groups;
 	}
+	spec->npost = f.npost;
+	spec->nprepost = 0;
+	spec->post = f.post;
+	spec->postsets = f.postsets;
 	spec->key[nk] = (SiftAggKey) {.kind = SAK_SET, .leaf = -1, .typid = INT4OID, .typmod = -1, .eqop = Int4EqualOperator, .desc = "grouping set"};
 	spec->nkeys = nk + 1;
 	return spec;

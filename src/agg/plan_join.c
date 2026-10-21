@@ -357,7 +357,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		return false;
 	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
 		return false;
-	if (rel->baserestrictinfo != NIL)
+	if (rel->baserestrictinfo != NIL && !(e->rtekind == RTE_SUBQUERY && (e->subquery->limitCount || e->subquery->limitOffset)))
 		return e->rtekind == RTE_SUBQUERY && planned_child(c, rel, jc);
 	if (q == NULL)
 		return false;

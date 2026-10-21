@@ -1018,6 +1018,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_TID:
 			eval_tid(ex, p, start, n, out);
 			break;
+		case SAP_MATCHED:
 		case SAP_TYPE:
 		case SAP_WIDE:
 		case SAP_ELEM_EXISTS:

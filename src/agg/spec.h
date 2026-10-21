@@ -104,7 +104,8 @@ typedef enum SiftAggPredKind
 	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
-	SAP_ELEM_EXISTS				/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
+	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
+	SAP_MATCHED					/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -436,6 +437,7 @@ typedef struct SiftAggSpec
 	int			npost;			/* conjuncts over the joined rows (boolean slots of join combos), ANDed after the joins */
 	int			nprepost;		/* prefix applied inside the nullable input, before its preserved join */
 	SiftAggPred **post;			/* SAP_COMBO nodes */
+	uint32	   *postsets;		/* per post conjunct: the sets of a fused pass that apply it (bit i: set i); 0: all of them */
 	int			nvleaf;			/* leaves after the source's: row level scalars read from a key of an object leaf */
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
 	int			narms;			/* > 0: the two level form (SiftAggArm) */
