@@ -85,6 +85,13 @@ typedef int SiftTamOptions;
 #define sift_tupdesc_finalize(desc)	((void) (desc))
 #endif
 
+/* An InitPlan as the deparser prints the generator of a Param: 19 flags it and prints "InitPlan <name>", 17 and 18 print the name as it is */
+#if PG_VERSION_NUM >= 190000
+#define sift_initplan_named(sp, name)	((sp)->isInitPlan = true, (sp)->plan_name = (name))
+#else
+#define sift_initplan_named(sp, name)	((sp)->plan_name = "InitPlan " name)
+#endif
+
 /* The planner hook and standard_planner take the EXPLAIN state too (19) */
 #if PG_VERSION_NUM >= 190000
 #define SIFT_PLANNER_PARAMS		Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams, ExplainState *es
