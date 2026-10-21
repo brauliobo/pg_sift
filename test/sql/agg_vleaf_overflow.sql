@@ -1,0 +1,134 @@
+-- A value read through a key of an object leaf with free keys (`m.* float8`: `(m ->> 'k')::float8`, `(m -> 'k')::float8`) or through the length of an array
+-- leaf (`jsonb_array_length(doc -> 'l')`) comes from a column of the index that cannot store every JSON value (a string, an object or an array in a number
+-- path, a scalar where an array is declared). The scan must read those values as SQL does (the cast of a numeric string converts, the cast of anything else
+-- raises PostgreSQL's own error) or keep the normal plan: it never reads such a value as NULL. Every query runs with and without the pushdown; the rows, or
+-- the error with its SQLSTATE and message, must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+-- 'same' when the scan and the normal plan end alike (the rows or the error), else both outcomes
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, false); b text := runq(q, true);
+BEGIN
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 120), left(b, 120)) END;
+END $$;
+
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the values a member can hold that a float8 leaf cannot store, and the numbers it can
+CREATE TABLE kinds (id int PRIMARY KEY, kind text, val jsonb);
+INSERT INTO kinds VALUES
+	(9001, 'number', '2.5'), (9002, 'numeric string', '"1.5"'), (9003, 'padded numeric string', '" 7 "'), (9004, 'text', '"abc"'), (9005, 'empty string', '""'),
+	(9006, 'object', '{"x": 1}'), (9007, 'array', '[1, 2]'), (9008, 'json null', 'null'), (9009, 'boolean', 'true'),
+	(9010, 'string NaN', '"NaN"'), (9011, 'string Infinity', '"Infinity"'), (9012, 'string -0', '"-0"'), (9013, 'number out of range', '1e999');
+
+-- object leaf with free keys
+CREATE TABLE m_t (id int PRIMARY KEY, grp int, m jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO m_t SELECT i, i % 5, jsonb_build_object('a', i % 10, 'b', i % 7) FROM generate_series(1, 3000) i;
+CREATE INDEX m_t_col ON m_t USING sift_col (id, grp, m) WITH (paths = 'm.* float8');
+VACUUM ANALYZE m_t;
+
+CREATE FUNCTION m_q(id int) RETURNS text[] LANGUAGE sql AS $f$
+	SELECT ARRAY[
+		format('SELECT count(*), sum((m ->> $$a$$)::float8), count((m ->> $$a$$)::float8) FROM m_t WHERE id = %s', id),
+		format('SELECT count(*), sum((m -> $$a$$)::float8), count((m -> $$a$$)::float8) FROM m_t WHERE id = %s', id),
+		format('SELECT grp, max((m ->> $$a$$)::float8), min((m ->> $$a$$)::float8) FROM m_t WHERE id = %s GROUP BY grp', id),
+		format('SELECT count(*) FROM m_t WHERE id = %s AND (m ->> $$a$$)::float8 > 1', id),
+		format('SELECT (m ->> $$a$$)::float8 AS a, count(*) FROM m_t WHERE id = %s GROUP BY 1', id)] $f$;
+
+-- clean documents: the scan has the members
+SELECT pushed((m_q(1))[1]) AS text_cast_pushed, pushed((m_q(1))[2]) AS jsonb_cast_pushed, pushed((m_q(1))[5]) AS key_pushed;
+SELECT same(q) AS clean FROM unnest(m_q(1)) q;
+
+INSERT INTO m_t SELECT id, 0, jsonb_build_object('a', val, 'b', 1) FROM kinds;
+
+-- every kind of value, one row each: the scan ends as the normal plan does
+SELECT k.id, k.kind, same(q[1]) AS text_cast, same(q[2]) AS jsonb_cast, same(q[3]) AS min_max, same(q[4]) AS filtered, same(q[5]) AS key
+FROM kinds k, LATERAL m_q(k.id) q ORDER BY k.id;
+-- queries that do not read a dirty value, or do not reach its row, raise nothing
+SELECT same('SELECT grp, sum((m ->> $$b$$)::float8) FROM m_t WHERE id < 9000 GROUP BY grp') AS other_member_same,
+       same('SELECT grp, sum((m ->> $$a$$)::float8) FROM m_t WHERE id IN (9001, 9002, 9008) GROUP BY grp') AS convertible_same;
+SELECT same('SELECT grp, sum((m ->> $$a$$)::float8), count(*) FROM m_t WHERE id < 9000 GROUP BY grp') AS filtered_out_same,
+       pushed('SELECT grp, sum((m ->> $$a$$)::float8), count(*) FROM m_t WHERE id < 9000 GROUP BY grp') AS dirty_pushed;
+
+-- the rows go (a VACUUM rewrites the segment whose overflow values are all in dead rows): the leaf is read by the scan again
+SELECT sift.col_promote('m_t_col') >= 0 AS promoted;
+DELETE FROM m_t WHERE id >= 9000;
+VACUUM (INDEX_CLEANUP on) m_t;
+SELECT pushed((m_q(1))[1]) AS text_cast_pushed, same((m_q(1))[1]) AS text_cast_same;
+
+-- array leaf whose length is read
+CREATE TABLE l_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO l_t SELECT i, i % 5, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('s', i % 10), jsonb_build_object('s', i % 7))) FROM generate_series(1, 3000) i;
+CREATE INDEX l_t_col ON l_t USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{s float8}');
+VACUUM ANALYZE l_t;
+CREATE TABLE list_kinds (id int PRIMARY KEY, kind text, val jsonb);
+INSERT INTO list_kinds VALUES (9101, 'array', '[]'), (9102, 'text', '"abc"'), (9103, 'object', '{"x": 1}'), (9104, 'number', '5'), (9105, 'json null', 'null'), (9106, 'boolean', 'false');
+CREATE FUNCTION l_q(id int) RETURNS text[] LANGUAGE sql AS $f$
+	SELECT ARRAY[
+		format('SELECT grp, sum(jsonb_array_length(doc -> $$l$$)) FROM l_t WHERE id = %s GROUP BY grp', id),
+		format('SELECT count(*) FROM l_t WHERE id = %s AND jsonb_array_length(doc -> $$l$$) > 1', id)] $f$;
+SELECT pushed((l_q(1))[1]) AS length_pushed;
+SELECT same(q) AS clean FROM unnest(l_q(1)) q;
+INSERT INTO l_t SELECT id, 0, jsonb_build_object('l', val) FROM list_kinds;
+SELECT k.id, k.kind, same(q[1]) AS length_sum, same(q[2]) AS length_filter FROM list_kinds k, LATERAL l_q(k.id) q ORDER BY k.id;
+SELECT pushed((l_q(1))[1]) AS dirty_length_pushed, same('SELECT grp, sum(jsonb_array_length(doc -> $$l$$)) FROM l_t GROUP BY grp') AS dirty_length_same;
+
+-- a scalar leaf: the same casts of a path declared float8
+CREATE TABLE s_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO s_t SELECT i, i % 5, jsonb_build_object('k', i % 10) FROM generate_series(1, 3000) i;
+CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.k float8');
+VACUUM ANALYZE s_t;
+INSERT INTO s_t SELECT id, 0, jsonb_build_object('k', val) FROM kinds;
+SELECT k.id, k.kind,
+       same(format('SELECT count(*), sum((doc ->> $$k$$)::float8) FROM s_t WHERE id = %s', k.id)) AS text_cast,
+       same(format('SELECT count(*), sum((doc -> $$k$$)::float8) FROM s_t WHERE id = %s', k.id)) AS jsonb_cast,
+       pushed(format('SELECT count(*), sum((doc ->> $$k$$)::float8) FROM s_t WHERE id = %s', k.id)) AS pushed
+FROM kinds k ORDER BY k.id;
+
+-- the columns of jsonb_to_recordset: the rows that hold such a value are read again from the heap as the function reads them
+CREATE TABLE r_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO r_t SELECT i, i % 5, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('v', i % 10), jsonb_build_object('v', i % 7))) FROM generate_series(1, 3000) i;
+CREATE INDEX r_t_col ON r_t USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{v float8}');
+VACUUM ANALYZE r_t;
+INSERT INTO r_t SELECT id, 0, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('v', val))) FROM kinds WHERE id <> 9012;
+CREATE FUNCTION r_q(id int) RETURNS text[] LANGUAGE sql AS $f$
+	SELECT ARRAY[
+		format('SELECT count(*), sum(o.v)::text, min(o.v)::text, max(o.v)::text, avg(o.v)::text FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id = %s', id),
+		format('SELECT count(*) FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id = %s AND o.v > 5', id),
+		format('SELECT o.v::text, count(*) FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id = %s GROUP BY o.v', id)] $f$;
+SELECT pushed((r_q(9001))[1]) AS recordset_pushed;
+SELECT k.id, k.kind, same(q[1]) AS aggregates, same(q[2]) AS filtered, same(q[3]) AS key FROM kinds k, LATERAL r_q(k.id) q WHERE k.id <> 9012 ORDER BY k.id;
+
+-- rows of several kinds in one query: NaN, Infinity, numeric strings, JSON nulls and numbers among the stored values
+SELECT same('SELECT count(*), sum(o.v)::text, min(o.v)::text, max(o.v)::text, avg(o.v)::text FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id IN (9001, 9002, 9003, 9008, 9010, 9011, 5, 6, 7)') AS mixed_aggregates,
+       same('SELECT o.v::text, count(*) FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id IN (9001, 9002, 9003, 9008, 9010, 9011, 5, 6, 7) GROUP BY o.v') AS mixed_key,
+       same('SELECT t.grp, count(*) FILTER (WHERE o.v > 5), count(DISTINCT o.v) FROM r_t t, jsonb_to_recordset(t.doc -> $$l$$) o(v float8) WHERE id IN (9001, 9002, 9003, 9008, 9010, 9011, 5, 6, 7) GROUP BY t.grp') AS mixed_filter;
+
+DROP FUNCTION r_q(int);
+DROP FUNCTION l_q(int);
+DROP FUNCTION m_q(int);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE r_t, s_t, list_kinds, l_t, m_t, kinds;
+DROP EXTENSION pg_sift;

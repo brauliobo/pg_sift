@@ -391,6 +391,22 @@ CREATE FUNCTION coldiff.fx_rc(first_id int, last_id int) RETURNS bigint LANGUAGE
 	SELECT count(*) FROM ins $$;
 SELECT coldiff.fx_rc(1, greatest(2000, :n / 2));
 
+-- documents whose typed leaves hold what they cannot store, read through a key of an object leaf (m.*), a scalar path (k), the elements of a list (l) and the
+-- length of an array (n). grp is the kind of value of a, k and v: 0 and 11 numbers, 1 a numeric string, 2 a text that is no number,
+-- 3 an object, 4 an array, 5 a JSON null, 6 a boolean, 7 the string NaN, 8 the string Infinity, 9 the string -0, 10 a padded numeric string
+DROP TABLE IF EXISTS t_vd;
+CREATE TABLE t_vd (id integer PRIMARY KEY, grp integer NOT NULL, doc jsonb);
+CREATE FUNCTION coldiff.vd_val(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 12 WHEN 1 THEN to_jsonb((i % 10)::text) WHEN 2 THEN to_jsonb('abc'::text) WHEN 3 THEN '{"x": 1}'::jsonb WHEN 4 THEN '[1, 2]'::jsonb
+		WHEN 5 THEN 'null'::jsonb WHEN 6 THEN 'true'::jsonb WHEN 7 THEN '"NaN"'::jsonb WHEN 8 THEN '"Infinity"'::jsonb WHEN 9 THEN '"-0"'::jsonb
+		WHEN 10 THEN to_jsonb(' ' || (i % 10) || ' ') ELSE to_jsonb((i % 10) * 0.5) END $$;
+CREATE FUNCTION coldiff.vd_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT jsonb_build_object('m', jsonb_build_object('a', coldiff.vd_val(i), 'b', i % 7), 'k', coldiff.vd_val(i),
+		'l', jsonb_build_array(jsonb_build_object('v', coldiff.vd_val(i)), jsonb_build_object('v', i % 10)),
+		'n', CASE i % 12 WHEN 2 THEN '"abc"'::jsonb WHEN 3 THEN '{"x": 1}'::jsonb WHEN 5 THEN 'null'::jsonb WHEN 6 THEN '7'::jsonb
+			ELSE jsonb_build_array(jsonb_build_object('x', i % 5), jsonb_build_object('x', i % 3)) END) $$;
+INSERT INTO t_vd SELECT i, i % 12, coldiff.vd_doc(i) FROM generate_series(1, 2000) i;
+
 -- partitioned by year (the partition key is part of the primary key)
 CREATE TABLE orders_part (LIKE orders INCLUDING DEFAULTS) PARTITION BY RANGE (placed_at);
 CREATE TABLE orders_part_2022 PARTITION OF orders_part FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');

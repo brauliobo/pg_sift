@@ -473,6 +473,20 @@ count_leaf(AggCtx *c, int grp)
 	return v->id;
 }
 
+/*
+ * The leaf of the index that a leaf after the source's takes its values from: the value column of a member of an object, the array whose length it
+ * is; -1 for the type of a path (the tags of its leaf say it, whatever the leaf holds). Whatever that leaf cannot store is read as NULL.
+ */
+static int
+vleaf_source(AggCtx *c, int j)
+{
+	const SiftAggVLeaf *v = &c->vleaf[j];
+
+	if (v->count)
+		return v->obj;
+	return sift_aggvleaf_member(v) ? child_leaf(c, v->obj, "value", leaf_of(c, c->lay->nleaves - c->nvleaf + j)->typid) : -1;
+}
+
 typedef struct JsonRef
 {
 	int			att;			/* attribute holding the jsonb root; 0: a column of the unnested function */
@@ -618,11 +632,10 @@ static int
 member_leaf(AggCtx *c, Oid typid)
 {
 	const SiftSrcLeaf *obj = leaf_of(c, c->func_obj);
-	int			val = child_leaf(c, c->func_obj, "value", typid);
 
-	if (val < 0)
+	if (child_leaf(c, c->func_obj, "value", typid) < 0)
 		return -1;
-	c->func_ovf = bms_add_member(bms_add_member(c->func_ovf, c->func_obj), val);
+	c->func_ovf = bms_add_member(c->func_ovf, c->func_obj);
 	return key_leaf(c, obj->attno, lappend(list_copy(obj->path), makeString(pstrdup(c->func_key))), typid);
 }
 
@@ -7181,6 +7194,9 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		if (s->pred[i]->kind == SAP_TYPE)
 			typed = bms_add_member(typed, s->pred[i]->leaf);
 	leaves = bms_union(c->used, c->func_ovf);
+	for (int j = 0; j < c->nvleaf; j++)
+		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && vleaf_source(c, j) >= 0)
+			leaves = bms_add_member(leaves, vleaf_source(c, j));
 	while ((m = bms_next_member(leaves, m)) >= 0)
 		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE)
 		{

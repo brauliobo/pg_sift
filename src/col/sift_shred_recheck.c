@@ -107,7 +107,7 @@ value_text(const JsonbValue *v)
 	}
 }
 
-/* the value of the leaf's type the text gives; false when the input function raises (kept) or the value is one the leaf cannot store (NaN, an infinity, -0) */
+/* the value of the leaf's type the text gives; false when the input function raises (kept) or the value is one the leaf does not store (-0) */
 static bool
 convert(SiftShred *sh, SiftShredRecheck *rc, int col, const char *text)
 {
@@ -145,8 +145,8 @@ convert(SiftShred *sh, SiftShredRecheck *rc, int col, const char *text)
 			{
 				double		f = type == SIFT_SHRED_FLOAT4 ? (double) DatumGetFloat4(d) : DatumGetFloat8(d);
 
-				/* the shredder stores neither NaN, an infinity nor -0: the slot stays an overflow one and the scan raises its generic error */
-				if (isnan(f) || isinf(f) || (f == 0 && signbit(f)))
+				/* -0 is not stored (a sum of it would read +0, not the -0 SQL gives): the slot stays an overflow one and the scan raises its generic error */
+				if (f == 0 && signbit(f))
 					return false;
 				sift_shred_value_f64(sh, f);
 				return true;
