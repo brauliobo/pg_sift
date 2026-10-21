@@ -56,6 +56,9 @@ sift_col_jitter(void)
 }
 #endif
 
+/* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
+#define MEM_BATCH_ID	0x40000000
+
 typedef struct ColMem
 {
 	SiftColBatch *b;
@@ -162,6 +165,7 @@ struct SiftColSource
 	uint32		heap_sbs;
 	ColUnit		cu;
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
+	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
@@ -632,6 +636,35 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	return true;
 }
 
+void
+sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
+{
+	ColUnit    *cu = &src->cu;
+	ColMem		m = {b, MEM_BATCH_ID + ++src->batch_seq, false};
+	MemoryContext old;
+
+	MemoryContextReset(src->arena);
+	old = MemoryContextSwitchTo(src->arena);
+	memset(cu, 0, sizeof(ColUnit));
+	cu->src = src;
+	load_memory(cu, &m);
+	cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
+	src->cnt.units++;
+	src->cnt.rows_scanned += cu->v.nrows;
+	unit->src = src;
+	unit->sb = b->sb;
+	unit->nrows = cu->v.nrows;
+	unit->in_wbuf = true;
+	unit->priv = cu;
+	MemoryContextSwitchTo(old);
+}
+
+const SiftColSchema *
+sift_col_schema(const SiftColSource *src)
+{
+	return src->schema;
+}
+
 /* ---------- selections ---------- */
 
 static inline void
@@ -1047,6 +1080,17 @@ sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits)
 		corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, unit->nrows);
 	memcpy(bits, c.ovf, (c.n + 63) / 64 * sizeof(uint64));
 	return true;
+}
+
+const uint64 *
+sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n)
+{
+	SiftCChunk	c;
+
+	if (!unit_chunk(unit->priv, col, &c) || c.ovf == NULL)
+		return NULL;
+	*n = c.n;
+	return c.ovf;
 }
 
 /* The elements of the group whose children satisfy every predicate, or may (overflow); *unknown gets the overflow bits of the predicates' leaves */

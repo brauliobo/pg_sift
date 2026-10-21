@@ -15,11 +15,11 @@
 /* An object with more than this many members per declared key is searched by key, else walked */
 #define LOOKUP_RATIO 3
 
-static void walk_value(SiftShred *sh, JsonbValue *v);
+static void walk_value(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc);
 
 /* A wide object with few declared keys: one binary search per key beats walking every member */
 static void
-lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys)
+lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys, SiftShredRecheck *rc)
 {
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -30,12 +30,12 @@ lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys)
 		if (getKeyJsonValueFromContainer(c, key, len, &v) == NULL)
 			continue;
 		sift_shred_key(sh, key, len);
-		walk_value(sh, &v);
+		walk_value(sh, &v, rc);
 	}
 }
 
 static void
-walk_object(SiftShred *sh, JsonbContainer *c)
+walk_object(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 {
 	int			nkeys = sift_shred_object_keys(sh);
 	JsonbIterator *it;
@@ -44,7 +44,7 @@ walk_object(SiftShred *sh, JsonbContainer *c)
 
 	if (nkeys > 0 && JsonContainerSize(c) > LOOKUP_RATIO * nkeys)
 	{
-		lookup_members(sh, c, nkeys);
+		lookup_members(sh, c, nkeys, rc);
 		return;
 	}
 	it = JsonbIteratorInit(c);
@@ -56,7 +56,7 @@ walk_object(SiftShred *sh, JsonbContainer *c)
 		JsonbIteratorNext(&it, &v, true);	/* WJB_VALUE */
 		if (act == SIFT_SHRED_SKIP)
 			continue;
-		walk_value(sh, &v);
+		walk_value(sh, &v, rc);
 		if (act == SIFT_SHRED_STOP)
 		{
 			pfree(it);
@@ -66,7 +66,7 @@ walk_object(SiftShred *sh, JsonbContainer *c)
 }
 
 static void
-walk_array(SiftShred *sh, JsonbContainer *c)
+walk_array(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 {
 	JsonbIterator *it = JsonbIteratorInit(c);
 	JsonbValue	v;
@@ -74,7 +74,7 @@ walk_array(SiftShred *sh, JsonbContainer *c)
 	JsonbIteratorNext(&it, &v, true);	/* WJB_BEGIN_ARRAY */
 	while (JsonbIteratorNext(&it, &v, true) == WJB_ELEM)
 	{
-		walk_value(sh, &v);
+		walk_value(sh, &v, rc);
 		if (sift_shred_full(sh))
 		{
 			pfree(it);
@@ -102,7 +102,7 @@ walk_number(SiftShred *sh, Numeric num)
 }
 
 static void
-walk_value(SiftShred *sh, JsonbValue *v)
+walk_plain(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc)
 {
 	switch (v->type)
 	{
@@ -127,9 +127,9 @@ walk_value(SiftShred *sh, JsonbValue *v)
 					break;
 				check_stack_depth();
 				if (is_array)
-					walk_array(sh, c);
+					walk_array(sh, c, rc);
 				else
-					walk_object(sh, c);
+					walk_object(sh, c, rc);
 				sift_shred_leave(sh);
 				break;
 			}
@@ -138,8 +138,21 @@ walk_value(SiftShred *sh, JsonbValue *v)
 	}
 }
 
+static void
+walk_value(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc)
+{
+	if (rc == NULL)
+		walk_plain(sh, v, NULL);
+	else
+	{
+		if (!sift_shred_recheck_value(sh, v, rc))
+			walk_plain(sh, v, rc);
+		sift_shred_recheck_settle(sh, rc);
+	}
+}
+
 void
-sift_shred_container(SiftShred *sh, JsonbContainer *c)
+sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 {
 	JsonbValue	v;
 
@@ -149,14 +162,20 @@ sift_shred_container(SiftShred *sh, JsonbContainer *c)
 
 		JsonbIteratorNext(&it, &v, true);	/* WJB_BEGIN_ARRAY, rawScalar */
 		JsonbIteratorNext(&it, &v, true);	/* WJB_ELEM */
-		walk_value(sh, &v);
+		walk_value(sh, &v, rc);
 		JsonbIteratorNext(&it, &v, true);	/* WJB_END_ARRAY frees the iterator */
 		return;
 	}
 	v.type = jbvBinary;
 	v.val.binary.data = c;
 	v.val.binary.len = c->header & JB_CMASK;
-	walk_value(sh, &v);
+	walk_value(sh, &v, rc);
+}
+
+void
+sift_shred_container(SiftShred *sh, JsonbContainer *c)
+{
+	sift_shred_container_rc(sh, c, NULL);
 }
 
 void

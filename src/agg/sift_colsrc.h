@@ -372,6 +372,7 @@ typedef struct SiftSrcCounters
 	int64		bytes;			/* bytes decoded */
 	int64		rows_vetted;	/* rows checked against the heap */
 	int64		heap_pages;		/* heap pages read for them */
+	int64		rechecked;		/* rows of units read again from the heap (SiftSrcProvider.set_recheck) */
 } SiftSrcCounters;
 
 /*
@@ -467,6 +468,16 @@ typedef struct SiftSrcProvider
 	 */
 	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 	void		(*tolerate_ovf) (void *impl, int leaf);
+	/*
+	 * Optional, both or neither (sift_colsrc_can_recheck; docs/COL-DIRTY-UNITS.md): the rows of a unit that hold, in a leaf the query reads, a value the
+	 * leaf cannot store are read again from the heap as the query's SQL reads them. set_recheck, called before `begin`, says how the query reads
+	 * the leaf (a SiftSrcRecheck); the rows of a unit with such a value leave it (`live` does not have them) and the source returns them as the
+	 * unit that follows it, from the heap (the snapshot's version of each), their leaf now holding the value SQL gives, or still an
+	 * overflow value where SQL raises. overflow_raise raises the error SQL raises for the first of `rows` (rows of the unit just returned, which
+	 * has such values) when the source recorded one, and returns when it did not.
+	 */
+	void		(*set_recheck) (void *impl, int leaf, int mode);
+	void		(*overflow_raise) (void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 	/*
 	 * Also with them: read_types gives the JSON type of the value of the leaf of each row of the unit in tags[0..nrow): the index of the
 	 * name jsonb_typeof gives (0 string, 1 number, 2 boolean, 3 object, 4 array, 5 null) or SIFT_SRC_TYPE_NONE (its NULL). It raises when
@@ -691,6 +702,19 @@ extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint
 #define SIFT_SRC_JT_ALL			0x7F
 #define SIFT_SRC_TYPE_NONE		0xFF	/* SiftSrcProvider.read_types: the path has no value */
 #define SIFT_SRC_JT_READ		0x80	/* not a type: the query reads the leaf's values besides, so a row of the types whose value the leaf cannot hold is an error */
+
+/* How the query reads a leaf whose value the leaf cannot store (SiftSrcProvider.set_recheck) */
+typedef enum SiftSrcRecheck
+{
+	SRK_NONE,					/* not at all: such a value is an error for a row of the snapshot */
+	SRK_TEXT,					/* the text of the scalar (a record column of jsonb_to_recordset, `->>` and a cast of it) through the input function of the leaf's type; a key of an array is NULL */
+	SRK_RECORDSET				/* an array leaf unnested by jsonb_to_recordset: the whole list of a row raises when one of its values does, and a list that is not an array of objects raises */
+} SiftSrcRecheck;
+
+/* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */
+extern bool sift_colsrc_can_recheck(Oid relam, bool index);
+extern void sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode);
+extern void sift_colsrc_overflow_raise(SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rows);
 
 /* Can the source of this access method filter by the JSON type of a leaf (SiftSrcProvider.filter_types)? */
 extern bool sift_colsrc_can_types(Oid relam, bool index);

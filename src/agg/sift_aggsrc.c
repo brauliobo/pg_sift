@@ -197,6 +197,27 @@ sift_colsrc_read_jnull(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, ui
 	src->prov->read_jnull(src->impl, unit, leaf, bits);
 }
 
+bool
+sift_colsrc_can_recheck(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->set_recheck != NULL && prov->overflow_raise != NULL;
+}
+
+void
+sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode)
+{
+	src->prov->set_recheck(src->impl, leaf, mode);
+}
+
+void
+sift_colsrc_overflow_raise(SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rows)
+{
+	if (src->prov->overflow_raise)
+		src->prov->overflow_raise(src->impl, unit, rows);
+}
+
 void
 sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf)
 {

@@ -489,6 +489,15 @@ extern void sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npr
 struct SiftColBatch;
 extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const *batches, int nbatches);
 
+/*
+ * A batch (one SB, rows in key order, all live) as the unit the source is at, in place of the one it was at (the rows of that unit, rewritten:
+ * the aggregate scan's recheck of the rows whose document holds a value a leaf cannot store, docs/COL-DIRTY-UNITS.md). Invalidates the vectors of the
+ * previous unit like sift_col_next; the batch must stay until the next unit. Its rows are checked against the snapshot like those of a stored unit.
+ */
+extern void sift_col_unit_batch(SiftColSource *src, struct SiftColBatch *b, SiftColUnit *unit);
+struct SiftColSchema;
+extern const struct SiftColSchema *sift_col_schema(const SiftColSource *src);
+
 /* The next candidate unit: ascending SB, immutable segments in directory order then the write buffer; false at the end. Invalidates the vectors of the previous unit. */
 extern bool sift_col_next(SiftColSource *src, SiftColUnit *unit);
 
@@ -572,6 +581,9 @@ extern uint32 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32
 
 /* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
 extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
+
+/* The overflow bits of the chunk of leaf col, *n slots (the rows of a top level leaf, the elements of the unit for a child leaf); NULL when the leaf holds no overflow value. Valid until the next unit */
+extern const uint64 *sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n);
 
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);

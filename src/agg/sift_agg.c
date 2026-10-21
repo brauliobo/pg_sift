@@ -736,6 +736,7 @@ typedef struct AggExec
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
+	bool		recheck;		/* the source reads again the rows that hold a value a leaf cannot store (spec->recheck, recheck_init) */
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
 	int			tid_pred;		/* the first SAP_TID conjunct, which tests the range of all of them (tid_init); -1: none */
 	uint64		tid_lo;			/* the TID keys [tid_lo, tid_hi) of the range (sift_aggspec_tid_range) */
@@ -9271,7 +9272,7 @@ topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
  * NULL when there is none. An element of a child leaf counts for its row.
  */
 static uint64 *
-overflow_rows(AggExec *ex)
+overflow_rows(AggExec *ex, bool rechecked)
 {
 	SiftAggSpec *s = ex->spec;
 	uint64	   *rows = NULL;
@@ -9283,7 +9284,7 @@ overflow_rows(AggExec *ex)
 		const SiftSrcVec *v;
 		const uint32 *par;
 
-		if (leaf >= ex->nbase || l->typid == NUMERICOID)
+		if (leaf >= ex->nbase || l->typid == NUMERICOID || (s->recheck[i] != SRK_NONE) != rechecked)
 			continue;
 		if (!sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec(ex, leaf))->ovf)
 			continue;
@@ -9306,19 +9307,25 @@ overflow_rows(AggExec *ex)
 /*
  * A unit may hold values the index cannot store (the writer's committed after the plan was made, in flight or rolled back, as the plan could
  * not know); the rows of another snapshot or none are not the scan's, a row it sees is: the normal plan reads it from the heap.
+ * rechecked: the leaves the source reads again (a row of the stored unit that has such a value is not in its live rows: the unit that follows
+ * has it, its values as SQL gives them) and what is left is the value SQL raises for. The source has the error of the row; it is raised when the
+ * row reaches the expression, after the conjuncts of the rows, as SQL raises it.
  */
 static void
-check_overflow(AggExec *ex, const uint64 *live)
+check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 {
 	int			nrw = (ex->unit.nrow + 63) / 64;
-	uint64	   *rows = overflow_rows(ex);
+	uint64	   *rows = overflow_rows(ex, rechecked);
 
 	if (!rows)
 		return;
 	sift_colk->bits_and(rows, live, nrw);
 	sift_colsrc_vet(ex->src, &ex->unit, rows);
-	if (sift_colk->bits_count(rows, nrw) > 0)
-		overflow_error();
+	if (sift_colk->bits_count(rows, nrw) == 0)
+		return;
+	if (rechecked)
+		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
+	overflow_error();
 }
 
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
@@ -9388,7 +9395,7 @@ process_unit(AggExec *ex)
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
-	check_overflow(ex, rmask);
+	check_overflow(ex, rmask, false);
 	if ((ex->ntype > 0 && !type_filters(ex, rmask)) || (ex->nwide > 0 && !wide_filters(ex, rmask)) ||
 		(ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask)))
 	{
@@ -9407,6 +9414,8 @@ process_unit(AggExec *ex)
 			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
 	}
 	ex->qlevel = elem;
+	if (ex->recheck)
+		check_overflow(ex, rmask, true);
 	if (!elem)
 	{
 		sift_colsrc_vet(ex->src, u, rmask);
@@ -9690,6 +9699,19 @@ filter_init(AggExec *ex)
  * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
  * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
  */
+static void
+recheck_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+
+	for (int i = 0; i < s->nleaves; i++)
+		if (s->recheck[i] != SRK_NONE)
+		{
+			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i]);
+			ex->recheck = true;
+		}
+}
+
 static void
 type_init(AggExec *ex)
 {
@@ -11114,6 +11136,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
+		par->cc.rechecked += d->cc.rechecked;
 		par->done[w] = true;
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
@@ -11854,6 +11877,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	prune_init(ex);
 	filter_init(ex);
 	type_init(ex);
+	recheck_init(ex);
 	wide_init(ex);
 	tid_init(ex, snapshot);
 	str_init(ex);
@@ -12060,6 +12084,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			cc.units_pruned += c->par->cc.units_pruned;
 			cc.rows_vetted += c->par->cc.rows_vetted;
 			cc.heap_pages += c->par->cc.heap_pages;
+			cc.rechecked += c->par->cc.rechecked;
 		}
 		if (s->search)
 			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
@@ -12109,6 +12134,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
 		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
 		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
+		if (ex->recheck)
+			ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc.rechecked, es);
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 		if (c->n_osa_spilled)
 			ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
