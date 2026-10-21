@@ -3,7 +3,7 @@ name: ci
 # A push or pull request runs what its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`): the base of a push is the last green run of main, so a red
 # or cancelled push is not forgotten by the next one. The nightly run and a dispatch run every job of the quick tier ("Full scope" in the first job is the
 # mark the release tool looks for, docs/RELEASE.md); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs).
-# The experimental PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, and fails nothing.
+# PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, and fails the run like them.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 on:
   push:
@@ -74,7 +74,7 @@ jobs:
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
           jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" '
             (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
-              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, experimental: true}] else [] end)
+              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}] else [] end)
             + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
@@ -93,13 +93,11 @@ jobs:
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 
   postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.tier == 'full' && ' full tier' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.experimental && ' (git, experimental)' || '' }}
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.tier == 'full' && ' full tier' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.tier == 'full' && 150 || 90 }}
-    # an experimental server shows API drift without failing the workflow
-    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +109,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install PostgreSQL ${{ matrix.pg }}
-        if: ${{ !matrix.experimental }}
+        if: ${{ !matrix.git }}
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -127,13 +125,13 @@ jobs:
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
       - name: Get PostgreSQL 19
-        if: ${{ matrix.experimental }}
+        if: ${{ matrix.git }}
         uses: ./.github/actions/pg19
         with:
           exact: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Use PostgreSQL 19
-        if: ${{ matrix.experimental }}
+        if: ${{ matrix.git }}
         run: |
           sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
