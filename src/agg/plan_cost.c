@@ -153,24 +153,92 @@ pred_num_ops(const SiftAggPred *p)
 	return n;
 }
 
-/* distinct value combinations of the leaves of a combo among `tuples`: what the statistics say of the columns, the tuples when a leaf is not one */
+/*
+ * The distinct values of a column under the table's own conditions on it: the values of the table (PostgreSQL's statistics) times the
+ * share the conditions keep (a range of dates keeps the dates of the range). 0 when there are no statistics.
+ */
+static double
+column_distinct(AggCtx *c, Var *v)
+{
+	List	   *clauses = NIL;
+	HeapTuple	tup;
+	double		nd;
+
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid), Int16GetDatum(v->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tup))
+		return 0.0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
+	ReleaseSysCache(tup);
+	nd = nd > 0 ? nd : -nd * c->rel->tuples;
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+	{
+		Bitmapset  *atts = NULL;
+
+		pull_varattnos((Node *) ri->clause, c->relid, &atts);
+		if (bms_membership(atts) == BMS_SINGLETON && bms_is_member(v->varattno - FirstLowInvalidHeapAttributeNumber, atts))
+			clauses = lappend(clauses, ri);
+	}
+	return nd * (clauses == NIL ? 1.0 : clauselist_selectivity(c->root, clauses, 0, JOIN_INNER, NULL));
+}
+
+/*
+ * distinct value combinations of the inputs of a combo among `tuples`: what the statistics say of the columns, the tuples when an input is
+ * not one; a column of an earlier lookup has at most as many values as the lookup has rows.
+ */
 static double
 combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 {
 	List	   *exprs = NIL;
+	double		entries = 1.0;
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		SiftSrcLeaf *lf;
+		Node	   *e;
+		double		nd;
 
 		if (cb->leaf[p] < 0)
-			return tuples;
+		{
+			foreach_ptr(JoinCtx, jc, c->joins)
+				if (jc->combo == cb->refcombo[p])
+					entries *= Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+			continue;
+		}
 		lf = leaf_of(c, cb->leaf[p]);
-		if (lf->parent >= 0 || lf->path != NIL || lf->attno > list_length(c->attexpr) || list_nth(c->attexpr, lf->attno - 1) == NULL)
+		if (lf->parent >= 0 || lf->path != NIL || lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
-		exprs = lappend(exprs, list_nth(c->attexpr, lf->attno - 1));
+		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e)) > 0)
+			entries *= nd;
+		else
+			exprs = lappend(exprs, e);
 	}
-	return Min(tuples, estimate_num_groups(c->root, exprs, tuples, NULL, NULL));
+	if (exprs != NIL)
+		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
+	return Max(Min(entries, tuples), 1.0);
+}
+
+/*
+ * The rows of the path of a joined plan. PostgreSQL assumes 1000 rows a call of a set-returning function in the select list (a date
+ * spine), a ceiling nobody generates up to: the rows a call makes are taken as the geometric mean of one and that estimate.
+ */
+static double
+child_rows(Path *p)
+{
+	for (;;)
+	{
+		if (IsA(p, SubqueryScanPath))
+			p = ((SubqueryScanPath *) p)->subpath;
+		else if (IsA(p, ProjectionPath))
+			p = ((ProjectionPath *) p)->subpath;
+		else if (IsA(p, ProjectSetPath))
+		{
+			Path	   *sub = ((ProjectSetPath *) p)->subpath;
+
+			return child_rows(sub) * sqrt(Max(p->rows / Max(sub->rows, 1.0), 1.0));
+		}
+		else
+			return p->rows;
+	}
 }
 
 /*
@@ -179,7 +247,7 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 static double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows)
 {
 	double		cost = 0;
 
@@ -199,9 +267,9 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
 			/* Without equality keys, every cached input tests every child row. */
 			if (j->nkey == 0 && j->params == NIL)
 			{
-				double		candidates = jc->cpath ? jc->cpath->rows : c->root->simple_rel_array[jc->rti]->tuples;
+				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples;
 
-				cost += combo_entries(c, cb, agg_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
+				cost += combo_entries(c, cb, scan_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
 			}
 			continue;
 		}
@@ -570,7 +638,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				open_cost,
 				gen_cost = 0,
 				exact,
-				agg_rows;
+				agg_rows,
+				scan_rows;
 	Cost		startup,
 				child_cost = 0;
 
@@ -602,6 +671,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the lookup joins filter before the groups: no more tuples reach them than the rows PostgreSQL expects of the join */
 	if (c->joins != NIL)
 		agg_rows = Min(agg_rows, Max(input_rel->rows, 1.0));
+	scan_rows = agg_rows;
 	/* the rows of a preserved side no tuple matches are tuples too */
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind))
@@ -643,7 +713,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		if (s->agg[i].kind == SAA_GEN)
 			gen_cost += agg_rows * s->agg[i].gen->cost + rows_out * AGG_GEN_GROUP;
 	}
-	scan_cost += combo_eval_cost(c, s, rows, agg_rows) + bucket_eval_cost(c, s, agg_rows);
+	scan_cost += combo_eval_cost(c, s, rows, agg_rows, scan_rows) + bucket_eval_cost(c, s, agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		scan_cost += agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
