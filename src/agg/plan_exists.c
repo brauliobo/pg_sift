@@ -288,15 +288,33 @@ typedef struct ExistsArg
 	Query	   *q;
 	RangeTblFunction *f;
 	FuncKind	kind;
+	Index		rti;			/* the function's range table entry: the sub-select PostgreSQL pulled up leaves its own entry before it */
+	List	   *quals;			/* the conditions of the sub-query, those of the pulled-up sub-selects included */
 	List	   *params;			/* OuterParam: the columns of the outer row the sub-query's parameters stand for */
 } ExistsArg;
 
-/* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE */
+/* the one table of a FROM tree of nested single-item FROM lists (what pulling up a sub-select leaves), the conditions of the lists added to *quals */
+static RangeTblRef *
+exists_leaf(Node *n, List **quals)
+{
+	FromExpr   *f;
+
+	if (IsA(n, RangeTblRef))
+		return (RangeTblRef *) n;
+	if (!IsA(n, FromExpr) || list_length((f = (FromExpr *) n)->fromlist) != 1)
+		return NULL;
+	if (f->quals != NULL)
+		*quals = list_concat(*quals, list_copy(IsA(f->quals, List) ? (List *) f->quals : list_make1(f->quals)));
+	return exists_leaf(linitial(f->fromlist), quals);
+}
+
+/* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE; *rti is the function's entry */
 static Query *
-exists_query(AggCtx *c, SubPlan *sp)
+exists_query(AggCtx *c, SubPlan *sp, Index *rti, List **quals)
 {
 	Query	   *q;
 	RangeTblEntry *rte;
+	RangeTblRef *ref;
 
 	if (sp->subLinkType != EXISTS_SUBLINK || sp->testexpr || sp->useHashTable || sp->setParam || sp->parParam == NIL ||
 		list_length(sp->parParam) != list_length(sp->args) || sp->plan_id < 1 ||
@@ -305,12 +323,11 @@ exists_query(AggCtx *c, SubPlan *sp)
 	q = ((PlannerInfo *) list_nth(c->root->glob->subroots, sp->plan_id - 1))->parse;
 	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->groupClause || q->havingQual ||
 		q->distinctClause || q->limitCount || q->limitOffset || q->setOperations || q->cteList || q->rowMarks ||
-		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 ||
-		!IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		(ref = exists_leaf((Node *) q->jointree, quals)) == NULL)
 		return NULL;
-	rte = linitial_node(RangeTblEntry, q->rtable);
-	if (rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 ||
-		contain_volatile_functions(q->jointree->quals))
+	*rti = ref->rtindex;
+	rte = rt_fetch(*rti, q->rtable);
+	if (rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 || contain_volatile_functions((Node *) *quals))
 		return NULL;
 	return q;
 }
@@ -351,13 +368,13 @@ build_exists(AggCtx *c, int grp, void *arg)
 {
 	ExistsArg  *x = arg;
 
-	c->func_rti = 1;
+	c->func_rti = x->rti;
 	c->func = x->f;
 	c->func_kind = x->kind;
 	c->rtable = x->q->rtable;
 	c->dpctx = NIL;
 	c->oparams = x->params;
-	return compile_conj(c, (List *) x->q->jointree->quals);
+	return compile_conj(c, x->quals);
 }
 
 /* the parameters of the sub-plan whose outer expression is a leaf, and the leaf (compile_elem_row takes the ones of the row) */
@@ -386,14 +403,14 @@ outer_params(AggCtx *c, SubPlan *sp)
 static SiftAggPred *
 compile_exists(AggCtx *c, SubPlan *sp)
 {
-	ExistsArg	x;
-	Query	   *q = exists_query(c, sp);
+	ExistsArg	x = {0};
+	Query	   *q = exists_query(c, sp, &x.rti, &x.quals);
 	int			grp;
 
 	if (q == NULL)
 		return NULL;
 	x.q = q;
-	x.f = linitial_node(RangeTblFunction, linitial_node(RangeTblEntry, q->rtable)->functions);
+	x.f = linitial_node(RangeTblFunction, rt_fetch(x.rti, q->rtable)->functions);
 	x.kind = func_kind_of(x.f);
 	if (x.kind == FK_NONE)
 		return NULL;

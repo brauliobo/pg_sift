@@ -212,6 +212,7 @@ extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
 extern int leaf_level(AggCtx *c, int id);
 extern const char *leaf_name(AggCtx *c, int id);
 extern bool null_input_param(Node *n);
+extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
 extern Node *strip_relabel(Node *n);

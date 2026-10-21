@@ -129,6 +129,21 @@ null_input_param(Node *n)
 		((Param *) n)->paramid == SIFT_AGG_NULL_INPUT && ((Param *) n)->location == SIFT_AGG_NULL_INPUT_LOC;
 }
 
+/* `CASE WHEN <input absent> THEN NULL ELSE x END`, what a placeholder computed inside the nullable input becomes: x, else NULL */
+Node *
+null_guarded_arm(Node *n)
+{
+	CaseExpr   *ce;
+	CaseWhen   *when;
+
+	if (!IsA(n, CaseExpr) || (ce = (CaseExpr *) n)->arg != NULL || list_length(ce->args) != 1 || ce->defresult == NULL)
+		return NULL;
+	when = linitial_node(CaseWhen, ce->args);
+	if (!null_input_param((Node *) when->expr) || !IsA(when->result, Const) || !((Const *) when->result)->constisnull)
+		return NULL;
+	return (Node *) ce->defresult;
+}
+
 /*
  * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context (the query's
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
