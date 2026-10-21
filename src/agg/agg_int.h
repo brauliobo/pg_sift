@@ -525,7 +525,6 @@ typedef struct AggExec
 	/* arms that share one pass (fuse_start) */
 	struct FuseSt *fuse;
 	int			fuse_set;		/* this node's set in the fused spec */
-	int			fuse_off;		/* the first of its keys */
 } AggExec;
 
 /* the parent of the expressions: a parallel worker has no plan state */
@@ -760,6 +759,7 @@ typedef struct AggPar
 typedef struct FuseSt
 {
 	AggExec    *F;				/* the executor of the fused spec */
+	int		  **keymap;			/* per set: the key of the fused spec that is each key of the node */
 	int			refs;
 } FuseSt;
 

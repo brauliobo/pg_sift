@@ -894,7 +894,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
 		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
 		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
-		if (ex->recheck)
+		if (c->recheck)
 			ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc.rechecked, es);
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 		if (c->n_osa_spilled)
