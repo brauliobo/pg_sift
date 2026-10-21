@@ -73,7 +73,10 @@ INSERT INTO pa_q VALUES
 	(22, 'filter on a measure',   'SELECT e.kind, count(*) FILTER (WHERE e.score > 5) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(23, 'every part of measures', 'SELECT e.flag, count(e.kind), count(e.score), sum(e.qty), min(e.qty), max(e.score), avg(e.qty), count(e.band), min(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(24, 'counts of a measure only', 'SELECT e.kind, count(e.score), count(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
-	(25, 'one measure, minmax only', 'SELECT e.kind, e.flag, min(e.qty), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2');
+	(25, 'one measure, minmax only', 'SELECT e.kind, e.flag, min(e.qty), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2'),
+	(26, 'sets: cube, derived key', 'SELECT left(e.seen, 7), e.flag, count(*), avg(e.score), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY CUBE (1, 2)'),
+	(27, 'sets: empty set, test', 'SELECT e.kind, e.flag, e.band, count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.band >= 4 GROUP BY GROUPING SETS ((e.kind), (e.flag, e.band), ())'),
+	(28, 'sets: grouping()', 'SELECT e.kind, GROUPING(e.kind), count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY ROLLUP (e.kind)');
 
 CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
