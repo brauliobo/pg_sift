@@ -26,7 +26,13 @@ INSERT INTO pairs SELECT 1 + i * 3, (i % 50)::int2, i FROM generate_series(0, 40
 CREATE TABLE days (d date, name text);
 INSERT INTO days SELECT date '2024-01-01' + i * 9, 'd' || i FROM generate_series(0, 70) i;
 CREATE TABLE nothing (id int, label text);
-ANALYZE ents; ANALYZE ents8; ANALYZE pairs; ANALYZE days; ANALYZE nothing;
+-- entities in blocks of 250 consecutive ids per group, and a table of the groups: a join keyed by a column of the entities, not by the events
+CREATE TABLE ents2 (id int, grp int);
+INSERT INTO ents2 SELECT i, CASE WHEN i % 1000 = 0 THEN NULL ELSE (i - 1) / 250 END FROM generate_series(1, 15000) i;
+CREATE TABLE grps (grp int, name text);
+INSERT INTO grps SELECT i, 'g' || i FROM generate_series(0, 59) i;
+INSERT INTO grps VALUES (7, 'g7'), (NULL, 'g7'), (900, 'far');
+ANALYZE ents; ANALYZE ents8; ANALYZE pairs; ANALYZE days; ANALYZE nothing; ANALYZE ents2; ANALYZE grps;
 
 -- the filters and pruned units of an EXPLAIN ANALYZE, and whether the plan is the pushed one
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -87,6 +93,17 @@ SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev LEFT JOIN ents e ON
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.dim_a_id AND e.country = 7) GROUP BY kind$$);
 -- a sub-select as the table
 SELECT * FROM same($$SELECT s.c, count(*) AS n FROM ev JOIN (SELECT id, country AS c FROM ents WHERE country < 4 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 1$$);
+-- a join keyed by a column of the entities' table drops the entities it has no match for: only their events can make a tuple, so they are the keys of the filter
+SELECT * FROM same($$SELECT e.grp, count(*) AS n, sum(amount) AS s FROM ev JOIN ents2 e ON e.id = ev.dim_a_id JOIN grps g ON g.grp = e.grp WHERE g.name = 'g7' GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN ents2 e ON e.id = ev.dim_a_id JOIN grps g ON g.grp = e.grp WHERE g.name = 'far'$$);
+SELECT * FROM same($$SELECT g.name, count(*) AS n FROM ev JOIN ents2 e ON e.id = ev.dim_a_id JOIN grps g ON g.grp = e.grp WHERE g.grp IN (3, 4) GROUP BY 1$$);
+-- a LEFT join keyed by the same column keeps the entities without a match: no reduction
+SELECT * FROM same($$SELECT g.name, count(*) AS n FROM ev JOIN ents2 e ON e.id = ev.dim_a_id LEFT JOIN grps g ON g.grp = e.grp AND g.name = 'g7' WHERE e.id < 1000 GROUP BY 1$$);
+-- a calendar LEFT JOIN rows: the inner joins of the rows filter the events ahead of the preserved join, so their keys prune units and test rows as well; a period without events stays
+SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('a', daterange('2024-02-01', '2024-04-01', '[]')), ('b', daterange('2024-06-01', '2024-07-01', '[]')), ('c', daterange('2030-01-01', '2030-02-01', '[]'))) p (period, range)),
+ all_dates AS (SELECT period FROM periods),
+ rev AS (SELECT ev.id, ev.amount, periods.period AS bucket FROM ev JOIN periods ON ev.day <@ range JOIN ents2 e ON e.id = ev.dim_a_id WHERE e.grp = 7)
+ SELECT all_dates.period, count(DISTINCT rev.id) AS n, sum(rev.amount) AS total FROM all_dates LEFT JOIN rev ON rev.bucket = all_dates.period GROUP BY 1$$);
 -- a divisor that is zero only on entities outside the table's rows is never evaluated for their events, as in the normal plan; a zero on a matching one raises the same error
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount / e.tier) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 7 AND e.tier > 0$$);
 CREATE FUNCTION error_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -115,5 +132,5 @@ RESET sift.agg_join_filter;
 
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE ev, ents, ents8, pairs, days, nothing;
+DROP TABLE ev, ents, ents8, pairs, days, nothing, ents2, grps;
 DROP EXTENSION pg_sift;

@@ -124,6 +124,27 @@ SELECT avg(value) AS item_mean, count(*) AS items FROM (
  CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(value float8)
  WHERE jsonb_exists(f.document, 'flag') AND o.value IS NOT NULL GROUP BY f.id
 ) per_item;
+-- A dictionary of thousands of distinct texts of which the scan reads a few: an entry gets its id when a tuple first reads it.
+CREATE TABLE wide_events (id int, kind text, document jsonb, payload text);
+INSERT INTO wide_events
+SELECT i, 'a', jsonb_build_object('entries', jsonb_build_array(jsonb_build_object('bucket', 'free text ' || i, 'value', i % 10))), repeat('payload', 50)
+FROM generate_series(1, 6000) i;
+CREATE INDEX wide_events_col ON wide_events USING sift_col (id, kind, document) WITH (paths = 'document.entries[]{bucket text,value float8}');
+CREATE TABLE wide_lookup AS SELECT 'a' AS kind, 'free text ' || i AS bucket, 'label ' || (i % 7) AS label FROM generate_series(1, 6000, 3) i;
+VACUUM (FREEZE, ANALYZE) wide_events;
+ANALYZE wide_lookup;
+SELECT * FROM check_query($q$
+ SELECT coalesce(m.label, 'none') AS label, count(*) AS n, sum(o.value) AS value
+ FROM wide_events f CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)
+ LEFT JOIN LATERAL (SELECT label FROM wide_lookup m WHERE m.kind = f.kind AND m.bucket = o.bucket LIMIT 1) m ON true
+ WHERE f.id % 500 = 7 GROUP BY 1
+$q$);
+SELECT * FROM check_query($q$
+ SELECT coalesce(m.label, 'none') AS label, count(*) AS n, sum(o.value) AS value
+ FROM wide_events f CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)
+ LEFT JOIN LATERAL (SELECT label FROM wide_lookup m WHERE m.kind = f.kind AND m.bucket = o.bucket LIMIT 1) m ON true
+ GROUP BY 1
+$q$);
 DROP FUNCTION check_query(text);
-DROP TABLE events, lookup_values;
+DROP TABLE events, lookup_values, wide_events, wide_lookup;
 DROP EXTENSION pg_sift;
