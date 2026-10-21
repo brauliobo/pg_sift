@@ -684,14 +684,17 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	MapTab	   *m;
 
 	t->cx = cxt;
-	if (!map_kept_conds(cb, j, own) || (t->before = lookcache_finger(rel)) == NULL)
+	if (!map_kept_conds(cb, j, own))
+		return NULL;
+	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
+	/* a table whose rows did not fit is not read page by page for nothing every time */
+	if (lookcache_refused(t->key, rel) || (t->before = lookcache_finger(rel)) == NULL)
 		return NULL;
 	for (int c = 0; c < j->ncol; c++)
 	{
 		need.att[c] = j->colatt[c];
 		need.type[c] = j->coltype[c];
 	}
-	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
 	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
