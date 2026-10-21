@@ -281,6 +281,11 @@ typedef enum SiftWriteMode
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
+#ifdef SIFT_TESTING
+/* core/store_test.c: a test segment of payload bytes of content seed (0: zeros), written in pieces and aligned as the header records */
+extern void sift_test_write_segment(SiftWriteTarget *wt, uint64 gen, uint64 payload, uint64 seed, uint32 piece, uint32 align,
+									SiftSegEntry *entry);
+#endif
 
 /*
  * SHARED targets: the bytes the streams written through wt will take about (upper bound of a merge,
