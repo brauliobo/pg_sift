@@ -9,7 +9,35 @@
 
 #include "agg/agg_fwd_int.h"
 
-/* the rows of a joined table, hashed by their key columns; the columns the expressions read are kept as Datums */
+/* the distinct values of one key column of a table, ids 1..: a row holds the id of its value (0: NULL) */
+typedef struct KeyDict
+{
+	uint32		n;
+	uint32		cap;
+	uint32		nslot;
+	uint32	   *slot;			/* the id in the hash slot, 0 free */
+	const char **ptr;			/* text keys: the bytes of an id */
+	uint32	   *len;
+	uint32	   *hv;
+	int64	   *ival;			/* integer keys: the value of an id */
+} KeyDict;
+
+/* a column the expressions read: by value the Datum of each row, by reference the distinct values (val, by id) and the id of the value of each row (0: NULL) */
+typedef struct MapCol
+{
+	bool		byval;
+	int16		len;
+	Datum	   *val;
+	uint32	   *id;
+	bool	   *isnull;			/* by value: per row, NULL until a row is NULL */
+	uint32		n;				/* by reference: the distinct values, found by a table that only the load needs */
+	uint32		cap;
+	uint32		nslot;
+	uint32	   *slot;
+	uint32	   *hv;
+} MapCol;
+
+/* the rows of a joined table, hashed by the ids of their key values; the columns the expressions read are kept once per distinct value */
 typedef struct MapTab
 {
 	int			nkey;
@@ -17,62 +45,40 @@ typedef struct MapTab
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
 	uint32		nrow;
 	uint32		cap;
-	const char **kptr;			/* [row * nkey + k] text keys */
-	uint32	   *klen;
-	int64	   *kint;			/* integer keys */
-	Datum	   *col;			/* [row * ncol + c] */
-	bool	   *cnull;
-	uint32	   *hv;
+	KeyDict		kd[SIFT_AGG_MAX_JKEYS];
+	uint32	   *kid;			/* [row * nkey + k] */
+	MapCol	   *mcol;			/* [ncol] */
 	uint32	   *next;			/* row + 1 of the next row of the bucket */
 	uint32		nslot;
 	uint32	   *head;
 	MemoryContext cxt;			/* where the rows live: the scan's, or the statement's for a table its arms share (map_load_shared) */
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
-	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves */
-	bool	   *nokey;			/* keep: the rows with a NULL key, which no tuple matches and are not in the chains */
+	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
 } MapTab;
 
-static inline uint32
-map_hash(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv)
+/* the integer key k of a row */
+static inline int64
+map_kint(const MapTab *m, uint32 row, int k)
 {
-	uint32		h = 0x9E3779B9;
+	uint32		id = m->kid[(size_t) row * m->nkey + k];
 
-	for (int k = 0; k < m->nkey; k++)
-		h = hash_combine(h, m->ktext[k] ? hash_bytes((const unsigned char *) ptr[k], len[k]) :
-						 murmurhash32((uint32) (iv[k] ^ (iv[k] >> 32))));
-	return h;
+	return id == 0 ? 0 : m->kd[k].ival[id - 1];
 }
 
-static inline bool
-map_key_eq(const MapTab *m, uint32 row, const char **ptr, const uint32 *len, const int64 *iv)
+/* the column c of a row */
+static inline Datum
+map_col(const MapTab *m, uint32 row, int c, bool *isnull)
 {
-	for (int k = 0; k < m->nkey; k++)
+	const MapCol *mc = &m->mcol[c];
+
+	if (mc->byval)
 	{
-		size_t		i = (size_t) row * m->nkey + k;
-
-		if (m->ktext[k] ? (m->klen[i] != len[k] || memcmp(m->kptr[i], ptr[k], len[k]) != 0) : m->kint[i] != iv[k])
-			return false;
+		*isnull = mc->isnull != NULL && mc->isnull[row];
+		return mc->val[row];
 	}
-	return true;
-}
-
-/* the rows whose key equals the one given; palloc'd in the current context */
-static inline int
-map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
-{
-	uint32		h = map_hash(m, ptr, len, iv);
-	int			n = 0,
-				nmax = 0;
-
-	/* the chain of the slot bounds the matches: not a row of the table for each probe */
-	for (uint32 r = m->head[h & (m->nslot - 1)]; r != 0; r = m->next[r - 1])
-		nmax++;
-	*rows = palloc(Max(nmax, 1) * sizeof(uint32));
-	for (uint32 r = m->head[h & (m->nslot - 1)]; r != 0; r = m->next[r - 1])
-		if (m->hv[r - 1] == h && map_key_eq(m, r - 1, ptr, len, iv))
-			(*rows)[n++] = r - 1;
-	return n;
+	*isnull = mc->id[row] == 0;
+	return *isnull ? (Datum) 0 : mc->val[mc->id[row] - 1];
 }
 
 typedef struct MapShared
@@ -83,17 +89,41 @@ typedef struct MapShared
 	uint32		nslot;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
-	Size		klen;			/* offsets from the start of the segment */
-	Size		kint;
-	Size		koff;			/* text keys: offset in the data of the bytes, MAP_NOOFF for a NULL */
-	Size		cval;			/* a column: the value itself, or the offset in the data of a by-reference one */
-	Size		cnull;
-	Size		hv;
+	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
 	Size		head;
+	struct
+	{
+		uint32		n;			/* the distinct values of a key and the table that finds them */
+		uint32		nslot;
+		Size		slot;
+		Size		len;
+		Size		hv;
+		Size		off;		/* text keys: offset in the data of the bytes of each value */
+		Size		ival;
+	}			key[SIFT_AGG_MAX_JKEYS];
+	struct
+	{
+		bool		byval;
+		bool		hasnull;
+		int16		len;
+		uint32		n;			/* by reference: the distinct values */
+		Size		val;		/* by value: a Datum per row */
+		Size		isnull;
+		Size		id;			/* by reference: the value of each row */
+		Size		off;		/* ... and the offset in the data of each value */
+	}			col[SIFT_AGG_MAX_JCOLS];
 	Size		data;
 	Size		size;
 } MapShared;
+
+/* the columns of a joined table that a MapTab holds, by column number and type */
+typedef struct LookCols
+{
+	int			n;
+	int			att[SIFT_AGG_MAX_JCOLS];
+	Oid			type[SIFT_AGG_MAX_JCOLS];
+} LookCols;
 
 /* what a table is, page by page, when its rows are kept for another query (lookcache.c) */
 typedef struct LookFinger
@@ -107,6 +137,10 @@ typedef struct LookFinger
 #pragma GCC visibility push(hidden)
 
 /* lookup.c */
+uint32 map_key_id(const MapTab *m, int k, const char *ptr, uint32 len, int64 iv);
+int map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows);
+int map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows);
+void map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c);
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
@@ -120,8 +154,8 @@ MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cx
 
 /* lookcache.c */
 LookFinger *lookcache_finger(Relation rel);
-MapTab *lookcache_find(const char *key, const LookFinger *f, MemoryContext mcxt);
-bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, MemoryContext cx, MemoryContext mcxt);
+MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
+bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 
 #pragma GCC visibility pop
 

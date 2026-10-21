@@ -263,10 +263,11 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 		{
 			ComboSt    *prior = &ex->cs[cb->refcombo[p]];
 			uint32		row = prior->maprow[v[p] - 1];
-			size_t		col = (size_t) row * prior->map->ncol + cb->refcol[p];
 
-			bind_param(ex, p, row == UINT32_MAX ? (Datum) 0 : prior->map->col[col],
-					   row == UINT32_MAX || prior->map->cnull[col]);
+			if (row == UINT32_MAX)
+				bind_param(ex, p, (Datum) 0, true);
+			else
+				map_bind(ex, p, prior->map, row, cb->refcol[p]);
 			continue;
 		}
 		lf = &ex->lay->leaf[cb->leaf[p]];
@@ -370,6 +371,50 @@ combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, 
 	return true;
 }
 
+/*
+ * The id of the table's value of key k: a text key read from a leaf has an interned id, and its translation is made once per value of the leaf
+ * for the scan, not once per combination the value is in.
+ */
+static uint32
+combo_key_id(AggExec *ex, int ci, int k, const uint64 *v, const char *ptr, uint32 len, int64 iv)
+{
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+	ComboSt    *cs = &ex->cs[ci];
+	uint64		in;
+
+	if (j->keyexpr[k] || !cs->map->ktext[k])
+		return map_key_id(cs->map, k, ptr, len, iv);
+	in = v[j->keypos[k]];
+	if (in > cs->nmemo[k])
+	{
+		uint32		cap = Max(Max(cs->nmemo[k] * 2, (uint32) in), 256);
+
+		cs->kmemo[k] = cs->kmemo[k] ? repalloc(cs->kmemo[k], cap * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, cap * sizeof(uint32));
+		memset(cs->kmemo[k] + cs->nmemo[k], 0xFF, (cap - cs->nmemo[k]) * sizeof(uint32));
+		cs->nmemo[k] = cap;
+	}
+	if (cs->kmemo[k][in - 1] == COMBO_UNEVAL)
+		cs->kmemo[k][in - 1] = map_key_id(cs->map, k, ptr, len, iv);
+	return cs->kmemo[k][in - 1];
+}
+
+/* the rows of the table whose key is the entry's */
+static int
+combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
+{
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+	MapTab	   *m = ex->cs[ci].map;
+	uint32		kid[SIFT_AGG_MAX_JKEYS];
+
+	*rows = NULL;
+	if (m->nrow == 0)
+		return 0;
+	for (int k = 0; k < j->nkey; k++)
+		if ((kid[k] = combo_key_id(ex, ci, k, v, ptr[k], len[k], iv[k])) == 0)
+			return 0;
+	return map_find_ids(m, kid, rows);
+}
+
 /* the rows of the table with the entry's key (none when a key is NULL) */
 static int
 combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
@@ -383,7 +428,7 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	if (j->params != NIL)
 		return combo_child_rows(ex, ci, rows);
 	*rows = NULL;
-	return combo_keys(ex, ci, v, ptr, len, iv) ? map_find(ex->cs[ci].map, ptr, len, iv, rows) : 0;
+	return combo_keys(ex, ci, v, ptr, len, iv) ? combo_find(ex, ci, v, ptr, len, iv, rows) : 0;
 }
 
 typedef struct PriorKeyed
@@ -450,7 +495,7 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 
 	for (int p = 0; p < cb->nleaves; p++)
 		if (cb->leaf[p] < 0 && cb->refcombo[p] == prior)
-			bind_param(ex, p, pm->col[(size_t) row * pm->ncol + cb->refcol[p]], pm->cnull[(size_t) row * pm->ncol + cb->refcol[p]]);
+			map_bind(ex, p, pm, row, cb->refcol[p]);
 	if (!combo_keys(ex, ci, NULL, ptr, len, iv))
 		return false;
 	nm = map_find(ex->cs[ci].map, ptr, len, iv, &rows);
@@ -472,7 +517,7 @@ combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm)
 		Datum		d;
 
 		for (int c = 0; c < j->ncol; c++)
-			bind_param(ex, cb->nleaves + c, cs->map->col[(size_t) rows[r] * cs->map->ncol + c], cs->map->cnull[(size_t) rows[r] * cs->map->ncol + c]);
+			map_bind(ex, cb->nleaves + c, cs->map, rows[r], c);
 		d = ExecEvalExprSwitchContext(cs->slot[j->fslot], ex->lutcx, &isnull);
 		if (!isnull && DatumGetBool(d))
 			rows[keep++] = rows[r];
@@ -677,7 +722,10 @@ combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint3
 	{
 		cs->maprow[cs->nout] = nm > 0 ? rows[o] : UINT32_MAX;
 		for (int c = 0; c < j->ncol; c++)
-			bind_param(ex, cb->nleaves + c, nm > 0 ? m->col[(size_t) rows[o] * m->ncol + c] : (Datum) 0, nm == 0 || m->cnull[(size_t) rows[o] * m->ncol + c]);
+			if (nm > 0)
+				map_bind(ex, cb->nleaves + c, m, rows[o], c);
+			else
+				bind_param(ex, cb->nleaves + c, (Datum) 0, true);
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
 			bool		isnull;

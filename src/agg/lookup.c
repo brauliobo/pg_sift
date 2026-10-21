@@ -76,69 +76,268 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
+/* the id of the integer key value v among the values of d, 0 when it is not there; *at: the slot it is in or would go to */
+static uint32
+kd_int_find(const KeyDict *d, int64 v, uint32 *at)
+{
+	uint32		h;
+
+	if (d->nslot == 0)
+	{
+		*at = 0;
+		return 0;
+	}
+	h = murmurhash32((uint32) (v ^ (v >> 32))) & (d->nslot - 1);
+	for (uint32 id; (id = d->slot[h]) != 0; h = (h + 1) & (d->nslot - 1))
+		if (d->ival[id - 1] == v)
+			return id;
+	*at = h;
+	return 0;
+}
+
+/* the id of the integer key value v, which is added to d (in cxt) when new */
+static uint32
+kd_int(KeyDict *d, int64 v, MemoryContext cxt)
+{
+	uint32		h,
+				id;
+
+	if (d->nslot == 0)
+	{
+		d->nslot = 64;
+		d->cap = 32;
+		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
+		d->ival = MemoryContextAlloc(cxt, d->cap * sizeof(int64));
+	}
+	if ((id = kd_int_find(d, v, &h)) != 0)
+		return id;
+	if (d->n == d->cap)
+	{
+		d->cap *= 2;
+		d->ival = repalloc(d->ival, d->cap * sizeof(int64));
+	}
+	d->ival[d->n] = v;
+	d->slot[h] = ++d->n;
+	if (d->n * 2 > d->nslot)
+	{
+		pfree(d->slot);
+		d->nslot *= 2;
+		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
+		for (uint32 i = 1; i <= d->n; i++)
+		{
+			int64		x = d->ival[i - 1];
+
+			for (h = murmurhash32((uint32) (x ^ (x >> 32))) & (d->nslot - 1); d->slot[h]; h = (h + 1) & (d->nslot - 1))
+				;
+			d->slot[h] = i;
+		}
+	}
+	return d->n;
+}
+
+/* the same for a text key value */
+static uint32
+kd_text_find(const KeyDict *d, const char *b, uint32 len, uint32 hv, uint32 *at)
+{
+	uint32		h;
+
+	if (d->nslot == 0)
+	{
+		*at = 0;
+		return 0;
+	}
+	h = hv & (d->nslot - 1);
+	for (uint32 id; (id = d->slot[h]) != 0; h = (h + 1) & (d->nslot - 1))
+		if (d->hv[id - 1] == hv && d->len[id - 1] == len && memcmp(d->ptr[id - 1], b, len) == 0)
+			return id;
+	*at = h;
+	return 0;
+}
+
+/* the id of a text key value, which is added to d (its bytes copied into cxt) when new */
+static uint32
+kd_text(KeyDict *d, const char *b, uint32 len, MemoryContext cxt)
+{
+	uint32		hv = hash_bytes((const unsigned char *) b, len),
+				h,
+				id;
+	char	   *cp;
+
+	if (d->nslot == 0)
+	{
+		d->nslot = 64;
+		d->cap = 32;
+		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
+		d->ptr = MemoryContextAlloc(cxt, d->cap * sizeof(char *));
+		d->len = MemoryContextAlloc(cxt, d->cap * sizeof(uint32));
+		d->hv = MemoryContextAlloc(cxt, d->cap * sizeof(uint32));
+	}
+	if ((id = kd_text_find(d, b, len, hv, &h)) != 0)
+		return id;
+	if (d->n == d->cap)
+	{
+		d->cap *= 2;
+		d->ptr = repalloc(d->ptr, d->cap * sizeof(char *));
+		d->len = repalloc(d->len, d->cap * sizeof(uint32));
+		d->hv = repalloc(d->hv, d->cap * sizeof(uint32));
+	}
+	cp = MemoryContextAlloc(cxt, Max(len, 1));
+	memcpy(cp, b, len);
+	d->ptr[d->n] = cp;
+	d->len[d->n] = len;
+	d->hv[d->n] = hv;
+	d->slot[h] = ++d->n;
+	if (d->n * 2 > d->nslot)
+	{
+		pfree(d->slot);
+		d->nslot *= 2;
+		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
+		for (uint32 i = 1; i <= d->n; i++)
+		{
+			for (h = d->hv[i - 1] & (d->nslot - 1); d->slot[h]; h = (h + 1) & (d->nslot - 1))
+				;
+			d->slot[h] = i;
+		}
+	}
+	return d->n;
+}
+
+/* room for one more row */
+static void
+map_grow(MapTab *m)
+{
+	uint32		cap = Max(m->cap * 2, 256);
+
+	m->kid = m->kid ? repalloc(m->kid, (size_t) cap * m->nkey * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * m->nkey * sizeof(uint32));
+	for (int c = 0; c < m->ncol; c++)
+	{
+		MapCol	   *mc = &m->mcol[c];
+
+		if (mc->byval)
+		{
+			mc->val = mc->val ? repalloc(mc->val, (size_t) cap * sizeof(Datum)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(Datum));
+			if (mc->isnull)
+			{
+				mc->isnull = repalloc(mc->isnull, cap);
+				memset(mc->isnull + m->cap, 0, cap - m->cap);
+			}
+		}
+		else
+			mc->id = mc->id ? repalloc(mc->id, (size_t) cap * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(uint32));
+	}
+	m->cap = cap;
+}
+
+/* the id of a by-reference column value among the distinct ones of the column: d is a palloc'd copy, kept when new and freed when not */
+static uint32
+col_ref_id(MapTab *m, MapCol *mc, Datum d)
+{
+	Size		sz = datumGetSize(d, false, mc->len);
+	uint32		hv = hash_bytes((const unsigned char *) DatumGetPointer(d), sz),
+				h;
+
+	if (mc->nslot == 0)
+	{
+		mc->nslot = 64;
+		mc->cap = 32;
+		mc->slot = MemoryContextAllocZero(m->cxt, mc->nslot * sizeof(uint32));
+		mc->val = MemoryContextAlloc(m->cxt, mc->cap * sizeof(Datum));
+		mc->hv = MemoryContextAlloc(m->cxt, mc->cap * sizeof(uint32));
+	}
+	h = hv & (mc->nslot - 1);
+	for (uint32 id; (id = mc->slot[h]) != 0; h = (h + 1) & (mc->nslot - 1))
+		if (mc->hv[id - 1] == hv && datumGetSize(mc->val[id - 1], false, mc->len) == sz &&
+			memcmp(DatumGetPointer(mc->val[id - 1]), DatumGetPointer(d), sz) == 0)
+		{
+			pfree(DatumGetPointer(d));
+			return id;
+		}
+	if (mc->n == mc->cap)
+	{
+		mc->cap *= 2;
+		mc->val = repalloc(mc->val, mc->cap * sizeof(Datum));
+		mc->hv = repalloc(mc->hv, mc->cap * sizeof(uint32));
+	}
+	mc->val[mc->n] = d;
+	mc->hv[mc->n] = hv;
+	mc->slot[h] = ++mc->n;
+	if (mc->n * 2 > mc->nslot)
+	{
+		pfree(mc->slot);
+		mc->nslot *= 2;
+		mc->slot = MemoryContextAllocZero(m->cxt, mc->nslot * sizeof(uint32));
+		for (uint32 id = 1; id <= mc->n; id++)
+		{
+			for (h = mc->hv[id - 1] & (mc->nslot - 1); mc->slot[h]; h = (h + 1) & (mc->nslot - 1))
+				;
+			mc->slot[h] = id;
+		}
+	}
+	return mc->n;
+}
+
 static void
 map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 {
-	size_t		kb = (size_t) m->nrow * m->nkey,
-				cb = (size_t) m->nrow * m->ncol;
-	Datum		kd[SIFT_AGG_MAX_JKEYS];
+	Datum		kv[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		anynull = false;
+	size_t		kb;
 
 	for (int k = 0; k < m->nkey; k++)
 	{
-		kd[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
+		kv[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
 		anynull |= knull[k];
 	}
 	if (anynull && !m->keep)
 		return;					/* NULL equals nothing */
 	if (m->nrow == m->cap)
-	{
-		m->cap = Max(m->cap * 2, 256);
-		m->kptr = m->kptr ? repalloc(m->kptr, (size_t) m->cap * m->nkey * sizeof(char *)) :
-			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(char *));
-		m->klen = m->klen ? repalloc(m->klen, (size_t) m->cap * m->nkey * sizeof(uint32)) :
-			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(uint32));
-		m->kint = m->kint ? repalloc(m->kint, (size_t) m->cap * m->nkey * sizeof(int64)) :
-			MemoryContextAlloc(m->cxt, (size_t) m->cap * m->nkey * sizeof(int64));
-		m->col = m->col ? repalloc(m->col, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum)) :
-			MemoryContextAlloc(m->cxt, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum));
-		m->cnull = m->cnull ? repalloc(m->cnull, (size_t) m->cap * Max(m->ncol, 1)) :
-			MemoryContextAlloc(m->cxt, (size_t) m->cap * Max(m->ncol, 1));
-		if (m->keep)
-			m->nokey = m->nokey ? repalloc(m->nokey, m->cap) : MemoryContextAlloc(m->cxt, m->cap);
-	}
-	if (m->keep)
-		m->nokey[m->nrow] = anynull;
+		map_grow(m);
+	kb = (size_t) m->nrow * m->nkey;
 	for (int k = 0; k < m->nkey; k++)
 	{
 		if (knull[k])
-		{
-			m->kptr[kb + k] = NULL;
-			m->klen[kb + k] = 0;
-			m->kint[kb + k] = 0;
-		}
+			m->kid[kb + k] = 0;
 		else if (m->ktext[k])
 		{
-			struct varlena *v = PG_DETOAST_DATUM_COPY(kd[k]);
+			struct varlena *v = PG_DETOAST_DATUM_PACKED(kv[k]);
 
-			m->kptr[kb + k] = VARDATA_ANY(v);
-			m->klen[kb + k] = VARSIZE_ANY_EXHDR(v);
+			m->kid[kb + k] = kd_text(&m->kd[k], VARDATA_ANY(v), VARSIZE_ANY_EXHDR(v), m->cxt);
+			if ((Pointer) v != DatumGetPointer(kv[k]))
+				pfree(v);
 		}
 		else
-			m->kint[kb + k] = sift_aggspec_operand_int(j->keytype[k], kd[k]);
+			m->kid[kb + k] = kd_int(&m->kd[k], sift_aggspec_operand_int(j->keytype[k], kv[k]), m->cxt);
 	}
 	for (int c = 0; c < m->ncol; c++)
 	{
-		int16		len;
-		bool		byval;
-		Datum		d = slot_getattr(slot, j->colatt[c], &m->cnull[cb + c]);
+		MapCol	   *mc = &m->mcol[c];
+		bool		cnull;
+		Datum		d = slot_getattr(slot, j->colatt[c], &cnull);
 
-		get_typlenbyval(j->coltype[c], &len, &byval);
-		m->col[cb + c] = m->cnull[cb + c] ? (Datum) 0 : byval ? d : len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) :
-			datumCopy(d, byval, len);
+		if (mc->byval)
+		{
+			mc->val[m->nrow] = cnull ? (Datum) 0 : d;
+			if (cnull && mc->isnull == NULL)
+				mc->isnull = MemoryContextAllocZero(m->cxt, m->cap);
+			if (mc->isnull)
+				mc->isnull[m->nrow] = cnull;
+		}
+		else if (cnull)
+			mc->id[m->nrow] = 0;
+		else
+			mc->id[m->nrow] = col_ref_id(m, mc, mc->len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) : datumCopy(d, false, mc->len));
 	}
 	m->nrow++;
+}
+
+void
+map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c)
+{
+	bool		isnull;
+	Datum		d = map_col(m, row, c, &isnull);
+
+	bind_param(ex, param, d, isnull);
 }
 
 /* a row the scan of the table returned: into the table when it holds the ON clause's own conditions (`own`, when they read no leaf: a row that fails them matches no tuple) */
@@ -228,44 +427,158 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 	m->ncol = j->ncol;
 	m->filtered = filtered;
 	m->keep = sift_aggjoin_preserves(j->kind);
+	m->mcol = MemoryContextAllocZero(cxt, Max(j->ncol, 1) * sizeof(MapCol));
 	for (int k = 0; k < j->nkey; k++)
 		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+	for (int c = 0; c < j->ncol; c++)
+		get_typlenbyval(j->coltype[c], &m->mcol[c].len, &m->mcol[c].byval);
 	return m;
 }
 
-/* does no key repeat among the rows of a table with one key? */
+/* does no key repeat among the rows of a table with one key? (every row of such a table has a value of its own) */
 bool
 map_unique(const MapTab *m)
 {
-	for (uint32 r = 0; r < m->nrow; r++)
-		for (uint32 x = m->head[m->hv[r] & (m->nslot - 1)]; x != 0; x = m->next[x - 1])
-			if (x - 1 != r && m->kint[x - 1] == m->kint[r])
-				return false;
-	return true;
+	return m->kd[0].n == m->nrow;
 }
 
-/* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match) */
+static inline uint32
+map_hash_ids(int nkey, const uint32 *kid)
+{
+	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
+
+	for (int k = 0; k < nkey; k++)
+	{
+		h = (h ^ kid[k]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h ^= h >> 32;
+	}
+	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	return (uint32) (h >> 32);
+}
+
+/* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match); the arrays are cut to the rows */
 static void
 map_index_rows(MapTab *m)
 {
 	m->nslot = 64;
-	while (m->nslot < 2 * m->nrow)
+	while (m->nslot < m->nrow)
 		m->nslot *= 2;
-	m->head = palloc0(m->nslot * sizeof(uint32));
-	m->next = palloc(Max(m->nrow, 1) * sizeof(uint32));
-	m->hv = palloc(Max(m->nrow, 1) * sizeof(uint32));
-	m->hit = m->keep ? palloc0(Max(m->nrow, 1)) : NULL;
+	m->head = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(uint32));
+	m->next = MemoryContextAlloc(m->cxt, Max(m->nrow, 1) * sizeof(uint32));
+	m->hit = m->keep ? MemoryContextAllocZero(m->cxt, Max(m->nrow, 1)) : NULL;
 	for (uint32 r = m->nrow; r-- > 0;)
 	{
+		const uint32 *kid = m->kid + (size_t) r * m->nkey;
 		uint32		h;
+		bool		anynull = false;
 
-		if (m->keep && m->nokey[r])
+		for (int k = 0; k < m->nkey; k++)
+			anynull |= kid[k] == 0;
+		if (anynull)
 			continue;
-		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
-		m->hv[r] = h;
-		m->next[r] = m->head[h & (m->nslot - 1)];
-		m->head[h & (m->nslot - 1)] = r + 1;
+		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
+		m->next[r] = m->head[h];
+		m->head[h] = r + 1;
 	}
+	if (m->cap > m->nrow && m->nrow > 0)
+	{
+		m->kid = repalloc(m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
+		for (int c = 0; c < m->ncol; c++)
+		{
+			MapCol	   *mc = &m->mcol[c];
+
+			if (mc->byval)
+			{
+				mc->val = repalloc(mc->val, (size_t) m->nrow * sizeof(Datum));
+				if (mc->isnull)
+					mc->isnull = repalloc(mc->isnull, m->nrow);
+			}
+			else
+				mc->id = repalloc(mc->id, (size_t) m->nrow * sizeof(uint32));
+		}
+		m->cap = m->nrow;
+	}
+	/* the tables that found the distinct column values are not needed once the rows are in */
+	for (int c = 0; c < m->ncol; c++)
+	{
+		MapCol	   *mc = &m->mcol[c];
+
+		if (mc->slot)
+		{
+			pfree(mc->slot);
+			pfree(mc->hv);
+			mc->slot = NULL;
+			mc->hv = NULL;
+			mc->nslot = 0;
+		}
+	}
+}
+
+static inline bool
+map_ids_eq(const MapTab *m, uint32 row, const uint32 *kid)
+{
+	const uint32 *rk = m->kid + (size_t) row * m->nkey;
+
+	for (int k = 0; k < m->nkey; k++)
+		if (rk[k] != kid[k])
+			return false;
+	return true;
+}
+
+/* the rows whose key ids are kid; palloc'd in the current context, NULL when there are none */
+int
+map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows)
+{
+	uint32		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
+	uint32		first[8];
+	int			n = 0;
+
+	*rows = NULL;
+	/* the first matches are collected on the stack: a key has a row or a few */
+	for (uint32 r = m->head[h]; r != 0; r = m->next[r - 1])
+		if (map_ids_eq(m, r - 1, kid))
+		{
+			if (n < 8)
+				first[n] = r - 1;
+			n++;
+		}
+	if (n == 0)
+		return 0;
+	*rows = palloc(n * sizeof(uint32));
+	if (n <= 8)
+		memcpy(*rows, first, n * sizeof(uint32));
+	else
+	{
+		n = 0;
+		for (uint32 r = m->head[h]; r != 0; r = m->next[r - 1])
+			if (map_ids_eq(m, r - 1, kid))
+				(*rows)[n++] = r - 1;
+	}
+	return n;
+}
+
+/* the id of the value of key k among the key's values in the table, 0 when the table has no row of it */
+uint32
+map_key_id(const MapTab *m, int k, const char *ptr, uint32 len, int64 iv)
+{
+	uint32		at;
+
+	return m->ktext[k] ? kd_text_find(&m->kd[k], ptr, len, hash_bytes((const unsigned char *) ptr, len), &at) : kd_int_find(&m->kd[k], iv, &at);
+}
+
+/* the rows whose key equals the one given; palloc'd in the current context */
+int
+map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
+{
+	uint32		kid[SIFT_AGG_MAX_JKEYS];
+
+	*rows = NULL;
+	if (m->nrow == 0)
+		return 0;
+	for (int k = 0; k < m->nkey; k++)
+		if ((kid[k] = map_key_id(m, k, ptr[k], len[k], iv[k])) == 0)
+			return 0;
+	return map_find_ids(m, kid, rows);
 }
 
 /* EXPLAIN ANALYZE: the rows loaded and the time since t0 */
@@ -280,7 +593,7 @@ map_loaded(AggExec *ex, int nrows, instr_time t0)
 	ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
 }
 
-static char *shared_map_key(AggExec *ex, int ci);
+static char *shared_map_key(AggExec *ex, int ci, bool cols);
 
 /*
  * A table is kept when the scan only reads it and what narrows its load is the same for every query: the table's own columns (the Params after
@@ -319,30 +632,85 @@ map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)
 	return true;
 }
 
-/* a table kept for the queries that follow (lookcache.c): where its rows are loaded, and the pages it was loaded from */
+/* a table kept for the queries that follow (lookcache.c): where its rows are loaded, the pages it was loaded from and the columns to load */
 typedef struct KeptTry
 {
 	char	   *key;
 	LookFinger *before;
 	MemoryContext cx;
+	LookCols	cols;
 } KeptTry;
 
-/* the rows of an earlier query when the table is as they were; else t->cx is where to load them, in a context the cache can take */
+/* the table as an arm reads it: its columns, in its order, of those the rows were loaded with */
+static MapTab *
+map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mcxt)
+{
+	MapTab	   *v;
+	bool		same = have->n == j->ncol;
+
+	for (int c = 0; c < j->ncol && same; c++)
+		same = have->att[c] == j->colatt[c] && have->type[c] == j->coltype[c];
+	if (same)
+		return m;
+	v = MemoryContextAlloc(mcxt, sizeof(MapTab));
+	*v = *m;
+	v->ncol = j->ncol;
+	v->mcol = MemoryContextAlloc(mcxt, Max(j->ncol, 1) * sizeof(MapCol));
+	for (int c = 0; c < j->ncol; c++)
+	{
+		int			p;
+
+		for (p = 0; p < have->n; p++)
+			if (have->att[p] == j->colatt[c] && have->type[p] == j->coltype[c])
+				break;
+		Assert(p < have->n);
+		v->mcol[c] = m->mcol[p];
+	}
+	return v;
+}
+
+/*
+ * The rows of an earlier query when the table is as they were; else t->cx is where to load them, in a context the cache can take, and t->cols
+ * the columns to load. The rows do not depend on the columns the arm reads unless its own conditions do (they read them by position): the arms
+ * of a statement that read other columns of a table share one entry, which a query that reads more columns replaces by the union.
+ */
 static MapTab *
 map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, KeptTry *t)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	LookCols	need = {.n = j->ncol},
+				have;
 	MapTab	   *m;
 
 	t->cx = cxt;
 	if (!map_kept_conds(cb, j, own) || (t->before = lookcache_finger(rel)) == NULL)
 		return NULL;
-	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci));
-	if ((m = lookcache_find(t->key, t->before, cxt)) != NULL)
+	for (int c = 0; c < j->ncol; c++)
+	{
+		need.att[c] = j->colatt[c];
+		need.type[c] = j->coltype[c];
+	}
+	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
+	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
-		return m;
+		return map_view(m, &have, j, cxt);
+	}
+	t->cols = need;
+	/* the columns of the entry that lacked some, and these: a table loaded for one arm after another does not make an entry for each */
+	for (int p = 0; !own && p < have.n && t->cols.n < SIFT_AGG_MAX_JCOLS; p++)
+	{
+		int			c;
+
+		for (c = 0; c < need.n; c++)
+			if (need.att[c] == have.att[p] && need.type[c] == have.type[p])
+				break;
+		if (c == need.n)
+		{
+			t->cols.att[t->cols.n] = have.att[p];
+			t->cols.type[t->cols.n++] = have.type[p];
+		}
 	}
 	t->cx = AllocSetContextCreate(cxt, "sift cache lookup table", ALLOCSET_DEFAULT_SIZES);
 	return NULL;
@@ -355,7 +723,7 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 	LookFinger *after;
 
 	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
-		lookcache_keep(t->key, t->before, after, m, t->cx, cxt);
+		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
 }
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
@@ -376,6 +744,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	bool		none = false;
 	Relation	idx;
 	KeptTry		kept = {.cx = cxt};
+	SiftAggJoin lj = *j;
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -398,15 +767,25 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		map_loaded(ex, 0, t0);
 		return m;
 	}
+	/* a table kept for other arms too is loaded with the columns of them all */
+	if (kept.cols.n > 0)
+	{
+		lj.ncol = kept.cols.n;
+		for (int c = 0; c < lj.ncol; c++)
+		{
+			lj.colatt[c] = kept.cols.att[c];
+			lj.coltype[c] = kept.cols.type[c];
+		}
+	}
 	MemoryContextSwitchTo(kept.cx);
-	m = map_new(j, own != NULL, kept.cx);
+	m = map_new(&lj, own != NULL, kept.cx);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
 
 		index_rescan(iscan, keys, nkeys, NULL, 0);
 		while (index_getnext_slot(iscan, ForwardScanDirection, slot))
-			map_row(ex, m, slot, j, cb, own);
+			map_row(ex, m, slot, &lj, cb, own);
 		index_endscan(iscan);
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
@@ -423,7 +802,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
 
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-			map_row(ex, m, slot, j, cb, own);
+			map_row(ex, m, slot, &lj, cb, own);
 		table_endscan(scan);
 	}
 	map_index_rows(m);
@@ -432,7 +811,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
 	map_loaded(ex, m->nrow, t0);
-	return m;
+	return kept.cols.n > 0 ? map_view(m, &kept.cols, j, cxt) : m;
 }
 
 /* the rows of a child plan (a sub-select, VALUES list or function), run once; the rows are the plan's, in the query's snapshot */
@@ -487,9 +866,9 @@ shared_map_forget(void *arg)
 	shared_maps = list_delete_ptr(shared_maps, arg);
 }
 
-/* what decides the rows of a table: the relation, its key and output columns and the conditions that narrow the load */
+/* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
 static char *
-shared_map_key(AggExec *ex, int ci)
+shared_map_key(AggExec *ex, int ci, bool cols)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -501,9 +880,12 @@ shared_map_key(AggExec *ex, int ci)
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
 		appendStringInfo(&k, "%d/%u ", j->keyatt[i], j->keytype[i]);
-	appendStringInfo(&k, "|%d|", j->ncol);
-	for (int i = 0; i < j->ncol; i++)
-		appendStringInfo(&k, "%d/%u ", j->colatt[i], j->coltype[i]);
+	if (cols || own)
+	{
+		appendStringInfo(&k, "|%d|", j->ncol);
+		for (int i = 0; i < j->ncol; i++)
+			appendStringInfo(&k, "%d/%u ", j->colatt[i], j->coltype[i]);
+	}
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
@@ -522,7 +904,7 @@ map_load_shared(AggExec *ex, int ci)
 
 	if (estate == NULL)
 		return map_load_table(ex, ci, ex->cxt);
-	key = shared_map_key(ex, ci);
+	key = shared_map_key(ex, ci, true);
 	foreach_ptr(SharedMap, e, shared_maps)
 		if (e->estate == estate && strcmp(e->key, key) == 0)
 		{

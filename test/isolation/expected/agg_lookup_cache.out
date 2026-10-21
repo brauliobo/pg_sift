@@ -169,3 +169,45 @@ iso_lc_run
 1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
 (1 row)
 
+
+starting permutation: s1runt s1runt s2begin s2updt s1runt s2commit s1runt s2vacuum s1runt s1runt
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2begin: BEGIN;
+step s2updt: UPDATE iso_lc_dim SET label = 'renamed', code = 'c4' WHERE id = 7;
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2vacuum: VACUUM iso_lc_dim;
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1runt: SELECT iso_lc_runt();
+iso_lc_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+

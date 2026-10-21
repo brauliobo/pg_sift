@@ -3,9 +3,10 @@
  *
  * The leader has the rows of every joined table before it starts the workers (read from the table, from the cache of an earlier query,
  * or run from the child plan, which a worker cannot do). It writes each table once in a flat form without pointers: the arrays of the
- * table as they are, the bytes of the text keys and of the by-reference columns after them, the references as offsets. A worker maps the
- * segment and only makes the two arrays that hold addresses (the text keys and the columns), the rest is read in place. The table is
- * never written to by a scan that shares it (a preserved side is: its join keeps its own copy, sift_aggspec_parallel_ok).
+ * table as they are, the bytes of the distinct text keys and of the by-reference column values after them, the references as offsets. A
+ * worker maps the segment and only makes the arrays that hold addresses (one per distinct text key and by-reference value), the rest is
+ * read in place. The table is never written to by a scan that shares it (a preserved side is: its join keeps its own copy,
+ * sift_aggspec_parallel_ok).
  */
 #include "postgres.h"
 
@@ -15,29 +16,23 @@
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 
-
-#define MAP_NOOFF	PG_UINT64_MAX
-
-static void
-col_kinds(const SiftAggJoin *j, bool *byval, int16 *len)
+static Size
+share_array(Size *off, size_t n, size_t width)
 {
-	for (int c = 0; c < j->ncol; c++)
-		get_typlenbyval(j->coltype[c], &len[c], &byval[c]);
+	Size		at = *off;
+
+	*off += MAXALIGN(n * width);
+	return at;
 }
 
 /* the bytes the segment of the table takes: *l is its layout, which map_share_write follows */
 Size
 map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 {
-	bool		byval[SIFT_AGG_MAX_JCOLS];
-	int16		len[SIFT_AGG_MAX_JCOLS];
 	Size		off = MAXALIGN(sizeof(MapShared)),
 				data = 0;
-	size_t		nk = (size_t) m->nrow * m->nkey,
-				nc = (size_t) m->nrow * m->ncol;
 
 	Assert(!m->keep && m->ncol <= SIFT_AGG_MAX_JCOLS);
-	col_kinds(j, byval, len);
 	memset(l, 0, sizeof(MapShared));
 	l->nkey = m->nkey;
 	l->ncol = m->ncol;
@@ -45,31 +40,47 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	l->nslot = m->nslot;
 	l->filtered = m->filtered;
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
-	for (uint32 r = 0; r < m->nrow; r++)
+	l->kid = share_array(&off, (size_t) m->nrow * m->nkey, sizeof(uint32));
+	l->next = share_array(&off, m->nrow, sizeof(uint32));
+	l->head = share_array(&off, m->nslot, sizeof(uint32));
+	for (int k = 0; k < m->nkey; k++)
 	{
-		for (int k = 0; k < m->nkey; k++)
-			if (m->ktext[k] && m->kptr[(size_t) r * m->nkey + k] != NULL)
-				data += MAXALIGN(m->klen[(size_t) r * m->nkey + k]);
-		for (int c = 0; c < m->ncol; c++)
-			if (!byval[c] && !m->cnull[(size_t) r * m->ncol + c])
-				data += MAXALIGN(datumGetSize(m->col[(size_t) r * m->ncol + c], false, len[c]));
+		const KeyDict *d = &m->kd[k];
+
+		l->key[k].n = d->n;
+		l->key[k].nslot = d->nslot;
+		l->key[k].slot = share_array(&off, d->nslot, sizeof(uint32));
+		if (m->ktext[k])
+		{
+			l->key[k].len = share_array(&off, d->n, sizeof(uint32));
+			l->key[k].hv = share_array(&off, d->n, sizeof(uint32));
+			l->key[k].off = share_array(&off, d->n, sizeof(uint64));
+			for (uint32 i = 0; i < d->n; i++)
+				data += MAXALIGN(d->len[i]);
+		}
+		else
+			l->key[k].ival = share_array(&off, d->n, sizeof(int64));
 	}
-	l->klen = off;
-	off += MAXALIGN(nk * sizeof(uint32));
-	l->kint = off;
-	off += MAXALIGN(nk * sizeof(int64));
-	l->koff = off;
-	off += MAXALIGN(nk * sizeof(uint64));
-	l->cval = off;
-	off += MAXALIGN(nc * sizeof(uint64));
-	l->cnull = off;
-	off += MAXALIGN(nc);
-	l->hv = off;
-	off += MAXALIGN((size_t) m->nrow * sizeof(uint32));
-	l->next = off;
-	off += MAXALIGN((size_t) m->nrow * sizeof(uint32));
-	l->head = off;
-	off += MAXALIGN((size_t) m->nslot * sizeof(uint32));
+	for (int c = 0; c < m->ncol; c++)
+	{
+		const MapCol *mc = &m->mcol[c];
+
+		l->col[c].byval = mc->byval;
+		l->col[c].len = mc->len;
+		if (mc->byval)
+		{
+			l->col[c].val = share_array(&off, m->nrow, sizeof(uint64));
+			l->col[c].hasnull = mc->isnull != NULL;
+			if (mc->isnull)
+				l->col[c].isnull = share_array(&off, m->nrow, sizeof(bool));
+			continue;
+		}
+		l->col[c].n = mc->n;
+		l->col[c].id = share_array(&off, m->nrow, sizeof(uint32));
+		l->col[c].off = share_array(&off, mc->n, sizeof(uint64));
+		for (uint32 i = 0; i < mc->n; i++)
+			data += MAXALIGN(datumGetSize(mc->val[i], false, mc->len));
+	}
 	l->data = off;
 	l->size = off + data;
 	return l->size;
@@ -78,49 +89,54 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 void
 map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char *dst)
 {
-	bool		byval[SIFT_AGG_MAX_JCOLS];
-	int16		len[SIFT_AGG_MAX_JCOLS];
-	size_t		nk = (size_t) m->nrow * m->nkey,
-				nc = (size_t) m->nrow * m->ncol;
-	uint64	   *koff = (uint64 *) (dst + l->koff),
-			   *cval = (uint64 *) (dst + l->cval);
 	Size		at = l->data;
 
-	col_kinds(j, byval, len);
 	memcpy(dst, l, sizeof(MapShared));
-	memcpy(dst + l->klen, m->klen, nk * sizeof(uint32));
-	memcpy(dst + l->kint, m->kint, nk * sizeof(int64));
-	memcpy(dst + l->cnull, m->cnull, nc);
-	memcpy(dst + l->hv, m->hv, (size_t) m->nrow * sizeof(uint32));
+	memcpy(dst + l->kid, m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
 	memcpy(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
 	memcpy(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
-	for (uint32 r = 0; r < m->nrow; r++)
+	for (int k = 0; k < m->nkey; k++)
 	{
-		for (int k = 0; k < m->nkey; k++)
-		{
-			size_t		i = (size_t) r * m->nkey + k;
+		const KeyDict *d = &m->kd[k];
 
-			if (!m->ktext[k] || m->kptr[i] == NULL)
+		memcpy(dst + l->key[k].slot, d->slot, (size_t) d->nslot * sizeof(uint32));
+		if (m->ktext[k])
+		{
+			uint64	   *off = (uint64 *) (dst + l->key[k].off);
+
+			memcpy(dst + l->key[k].len, d->len, (size_t) d->n * sizeof(uint32));
+			memcpy(dst + l->key[k].hv, d->hv, (size_t) d->n * sizeof(uint32));
+			for (uint32 i = 0; i < d->n; i++)
 			{
-				koff[i] = MAP_NOOFF;
-				continue;
+				off[i] = at - l->data;
+				memcpy(dst + at, d->ptr[i], d->len[i]);
+				at += MAXALIGN(d->len[i]);
 			}
-			koff[i] = at - l->data;
-			memcpy(dst + at, m->kptr[i], m->klen[i]);
-			at += MAXALIGN(m->klen[i]);
 		}
-		for (int c = 0; c < m->ncol; c++)
+		else
+			memcpy(dst + l->key[k].ival, d->ival, (size_t) d->n * sizeof(int64));
+	}
+	for (int c = 0; c < m->ncol; c++)
+	{
+		const MapCol *mc = &m->mcol[c];
+
+		if (mc->byval)
 		{
-			size_t		i = (size_t) r * m->ncol + c;
+			memcpy(dst + l->col[c].val, mc->val, (size_t) m->nrow * sizeof(uint64));
+			if (mc->isnull)
+				memcpy(dst + l->col[c].isnull, mc->isnull, m->nrow);
+		}
+		else
+		{
+			uint64	   *off = (uint64 *) (dst + l->col[c].off);
 
-			if (byval[c] || m->cnull[i])
-				cval[i] = (uint64) m->col[i];
-			else
+			memcpy(dst + l->col[c].id, mc->id, (size_t) m->nrow * sizeof(uint32));
+			for (uint32 i = 0; i < mc->n; i++)
 			{
-				Size		n = datumGetSize(m->col[i], false, len[c]);
+				Size		n = datumGetSize(mc->val[i], false, mc->len);
 
-				cval[i] = at - l->data;
-				memcpy(dst + at, DatumGetPointer(m->col[i]), n);
+				off[i] = at - l->data;
+				memcpy(dst + at, DatumGetPointer(mc->val[i]), n);
 				at += MAXALIGN(n);
 			}
 		}
@@ -134,14 +150,7 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 {
 	const MapShared *l = (const MapShared *) src;
 	MapTab	   *m = MemoryContextAllocZero(cxt, sizeof(MapTab));
-	bool		byval[SIFT_AGG_MAX_JCOLS];
-	int16		len[SIFT_AGG_MAX_JCOLS];
-	size_t		nk = (size_t) l->nrow * l->nkey,
-				nc = (size_t) l->nrow * l->ncol;
-	const uint64 *koff = (const uint64 *) (src + l->koff),
-			   *cval = (const uint64 *) (src + l->cval);
 
-	col_kinds(j, byval, len);
 	m->cxt = cxt;
 	m->nkey = l->nkey;
 	m->ncol = l->ncol;
@@ -150,22 +159,51 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	m->nslot = l->nslot;
 	m->filtered = l->filtered;
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
-	m->klen = (uint32 *) (src + l->klen);
-	m->kint = (int64 *) (src + l->kint);
-	m->cnull = (bool *) (src + l->cnull);
-	m->hv = (uint32 *) (src + l->hv);
+	m->kid = (uint32 *) (src + l->kid);
 	m->next = (uint32 *) (src + l->next);
 	m->head = (uint32 *) (src + l->head);
-	m->kptr = MemoryContextAlloc(cxt, Max(nk, 1) * sizeof(char *));
-	for (size_t i = 0; i < nk; i++)
-		m->kptr[i] = koff[i] == MAP_NOOFF ? NULL : src + l->data + koff[i];
-	m->col = MemoryContextAlloc(cxt, Max(nc, 1) * sizeof(Datum));
-	for (uint32 r = 0; r < l->nrow; r++)
-		for (int c = 0; c < l->ncol; c++)
-		{
-			size_t		i = (size_t) r * l->ncol + c;
+	for (int k = 0; k < m->nkey; k++)
+	{
+		KeyDict    *d = &m->kd[k];
 
-			m->col[i] = byval[c] || m->cnull[i] ? (Datum) cval[i] : PointerGetDatum(src + l->data + cval[i]);
+		d->n = d->cap = l->key[k].n;
+		d->nslot = l->key[k].nslot;
+		d->slot = (uint32 *) (src + l->key[k].slot);
+		if (m->ktext[k])
+		{
+			const uint64 *off = (const uint64 *) (src + l->key[k].off);
+
+			d->len = (uint32 *) (src + l->key[k].len);
+			d->hv = (uint32 *) (src + l->key[k].hv);
+			d->ptr = MemoryContextAlloc(cxt, Max(d->n, 1) * sizeof(char *));
+			for (uint32 i = 0; i < d->n; i++)
+				d->ptr[i] = src + l->data + off[i];
 		}
+		else
+			d->ival = (int64 *) (src + l->key[k].ival);
+	}
+	m->mcol = MemoryContextAllocZero(cxt, Max(m->ncol, 1) * sizeof(MapCol));
+	for (int c = 0; c < m->ncol; c++)
+	{
+		MapCol	   *mc = &m->mcol[c];
+
+		mc->byval = l->col[c].byval;
+		mc->len = l->col[c].len;
+		if (mc->byval)
+		{
+			mc->val = (Datum *) (src + l->col[c].val);
+			mc->isnull = l->col[c].hasnull ? (bool *) (src + l->col[c].isnull) : NULL;
+		}
+		else
+		{
+			const uint64 *off = (const uint64 *) (src + l->col[c].off);
+
+			mc->n = mc->cap = l->col[c].n;
+			mc->id = (uint32 *) (src + l->col[c].id);
+			mc->val = MemoryContextAlloc(cxt, Max(mc->n, 1) * sizeof(Datum));
+			for (uint32 i = 0; i < mc->n; i++)
+				mc->val[i] = PointerGetDatum(src + l->data + off[i]);
+		}
+	}
 	return m;
 }
