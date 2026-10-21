@@ -273,15 +273,6 @@ src_slot(StubSource *src, int leaf)
 	return leaf_slot(&src->dc, &src->unit, leaf);
 }
 
-static int
-cmp_prune_val(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
-
 /* True if some prune entry has no value of its leaf in the unit within its range */
 static bool
 unit_pruned(StubSource *src)
@@ -300,7 +291,7 @@ unit_pruned(StubSource *src)
 		{
 			int64		x = lf->vtype == SCV_I32 ? ((const int32 *) v->data)[i] : ((const int64 *) v->data)[i];
 
-			any = !(v->isnull && v->isnull[i]) && x >= p->lo && x <= p->hi && (p->nvals == 0 || bsearch(&x, p->vals, p->nvals, sizeof(int64), cmp_prune_val) != NULL);
+			any = !(v->isnull && v->isnull[i]) && x >= p->lo && x <= p->hi && (p->nvals == 0 || bsearch(&x, p->vals, p->nvals, sizeof(int64), sift_cmp_i64) != NULL);
 		}
 		if (!any)
 			return true;
