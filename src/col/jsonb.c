@@ -305,12 +305,10 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 	}
 }
 
-void
-sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first,
-					  MemoryContext mcxt, SiftShredRecheck *rc)
+static void
+shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftShredRecheck *rc)
 {
 	SiftShred  *sh = a->sh;
-	MemoryContext old = MemoryContextSwitchTo(mcxt);
 
 	if (rc)
 		sift_shred_recheck_begin(rc);
@@ -330,6 +328,31 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 	}
 	sift_shred_leave(sh);
 	sift_shred_finish(sh);
+}
+
+void
+sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first,
+					  MemoryContext mcxt, SiftShredRecheck *rc)
+{
+	SiftShred  *sh = a->sh;
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftShredLimits limits = sh->limits;
+
+	/* a row read again is the one SQL reads whole: the limits that keep a write from growing a unit without bound are wider */
+	if (rc)
+	{
+		sh->limits.max_elems = Max(limits.max_elems, SIFT_SHRED_RECHECK_ELEMS);
+		sh->limits.max_bytes = Max(limits.max_bytes, SIFT_SHRED_RECHECK_BYTES);
+	}
+	PG_TRY();
+	{
+		shred_row_fill(a, values, isnull, rc);
+	}
+	PG_FINALLY();
+	{
+		sh->limits = limits;
+	}
+	PG_END_TRY();
 	for (int i = 1; i <= a->natts; i++)
 	{
 		const ShredAttr *at = &a->attr[i];
