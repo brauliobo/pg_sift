@@ -72,6 +72,7 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pt_b GROUP BY g');
 
 -- the partitions a parameter or a stable function prunes when the statement runs are dropped when the scan starts: their units are not read.
 -- A prepared statement with a generic plan against the literal query: the same rows, and as many partitions read as the normal plan scans
+-- (a condition that no row can meet is planned as an empty result, which PostgreSQL 19 shows with a scan: no count for those)
 CREATE FUNCTION same_exec(stmt text, ref text) RETURNS TABLE (scan text, partitions_read int, normal_scans int, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 DECLARE l text; listed int := 0; removed int := 0;
 BEGIN
@@ -104,11 +105,11 @@ SELECT plan_of('EXECUTE pt_pruned(DATE ''2024-05-01'')') AS pruned, plan_of('EXE
        plan_of('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])') AS in_list, plan_of('EXECUTE pt_hash(7)') AS hash_key;
 SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-01-02'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-01-02'' AND d < DATE ''2024-07-01'' GROUP BY g');
-SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2025-02-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2025-02-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
-SELECT * FROM same_exec('EXECUTE pt_pruned(NULL)', 'SELECT g, count(*) AS n FROM pt WHERE d >= NULL AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE pt_pruned(DATE ''2025-02-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2025-02-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE pt_pruned(NULL)', 'SELECT g, count(*) AS n FROM pt WHERE d >= NULL AND d < DATE ''2024-07-01'' GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2023-02-01''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2023-02-01'']) GROUP BY g');
-SELECT * FROM same_exec('EXECUTE pt_in(''{}'')', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (''{}''::date[]) GROUP BY g');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE pt_in(''{}'')', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (''{}''::date[]) GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_param(3)', 'SELECT g, count(*) AS n FROM pt WHERE g = 3 GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_hash(7)', 'SELECT g, count(*) AS n FROM pt WHERE id = 7 GROUP BY g');
 RESET plan_cache_mode;
