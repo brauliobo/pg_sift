@@ -73,7 +73,7 @@ for my $kind (qw(col tbl))
 			my $rc = $primary->psql('postgres', "SET sift.test_space_crash = $phase; VACUUM s", stdout => \$out, stderr => \$err);
 			ok($rc != 0, 'the injected boundary killed VACUUM');
 			ok($primary->log_contains(qr/sift test: space crash phase $phase/, $offset), 'the requested boundary was reached');
-			$primary->poll_query_until('postgres', 'SELECT true') or die 'recovery did not finish';
+			$primary->wait_for_log(qr/database system is ready to accept connections/, $offset);
 			healthy($primary, $kind, $expected);
 			$primary->safe_psql('postgres', 'VACUUM s');
 			my $rel = $kind eq 'col' ? 's_col' : 's';
