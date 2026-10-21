@@ -446,7 +446,8 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *o
  * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when a row of its snapshot has one
  * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. Unless the source reads the rows again as SQL reads
  * them (spec_recheck). A numeric leaf is not one: its only such value is NaN, which the scan evaluates (SiftSrcVec.ovf). Nor is the leaf of a
- * jsonb_typeof conjunct (SAP_TYPE): the source keeps the rows of the types and tells the type of each value it cannot store.
+ * jsonb_typeof conjunct (SAP_TYPE): the source keeps the rows of the types and tells the type of each value it cannot store. Unless the query
+ * reads the leaf too and the conjunct keeps a type the leaf cannot store (typeof_keeps_unstorable): such a row would be an error.
  */
 static bool
 reads_overflow(AggCtx *c, const SiftAggSpec *s)
@@ -456,7 +457,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 	int			m = -1;
 
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TYPE)
+		if (s->pred[i]->kind == SAP_TYPE && !typeof_keeps_unstorable(c, s->pred[i]))
 			typed = bms_add_member(typed, s->pred[i]->leaf);
 	leaves = bms_union(c->used, c->func_ovf);
 	for (int j = 0; j < c->nvleaf; j++)

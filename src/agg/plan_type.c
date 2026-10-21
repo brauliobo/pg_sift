@@ -403,6 +403,22 @@ types_guard_reads(AggCtx *c)
 	return false;
 }
 
+/*
+ * Can a row the SAP_TYPE conjunct p keeps, whose leaf the query reads elsewhere, hold a value the leaf cannot store? The types a leaf stores are its
+ * own (a JSON null is a NULL slot); a container, a value of another type and the paths of a document that is no object (jsonb_typeof is NULL) overflow.
+ * The source cannot read such a row again for the test: it would have the type of its text. The normal plan keeps the query.
+ */
+bool
+typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p)
+{
+	const SiftSrcLeaf *l = leaf_of(c, p->leaf);
+	uint32		stored = l->typid == BOOLOID ? SIFT_SRC_JT_BOOLEAN :
+		l->typid != TEXTOID ? SIFT_SRC_JT_NUMBER :
+		l->astext ? SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN : SIFT_SRC_JT_STRING;
+
+	return (p->op & SIFT_SRC_JT_READ) && (p->op & SIFT_SRC_JT_ALL & ~(stored | SIFT_SRC_JT_NULL)) != 0;
+}
+
 /* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
 void
 typeof_reads(AggCtx *c, SiftAggSpec *s)

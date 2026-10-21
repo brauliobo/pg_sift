@@ -87,6 +87,31 @@ SELECT pushed('SELECT doc -> $$k$$ AS k, count(*) FROM t GROUP BY 1') AS jsonb_p
        same('SELECT jsonb_typeof(doc -> $$k$$) AS ty, doc ->> $$k$$ AS k, count(*) FROM t GROUP BY 1, 2') AS typeof_key_same,
        same('SELECT doc ->> $$k$$ AS k, count(*) FROM t WHERE jsonb_typeof(doc -> $$k$$) = $$string$$ GROUP BY 1') AS typeof_filter_same;
 
+-- a JSON type test of the path next to a `->>` read of it: the type is the stored value's (a container is an object or an array, not the string of its text), so the
+-- rows of a container cannot be read again as text. A test that keeps a type the path cannot store keeps the normal plan, one that keeps only types it stores is
+-- answered by the scan. The normal plan, the scan on its cost and the scan forced by the page costs end alike.
+CREATE FUNCTION same_costs(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, false); b text := runq(q, true); c text;
+BEGIN
+	PERFORM set_config('seq_page_cost', '1', true);
+	PERFORM set_config('random_page_cost', '1', true);
+	c := runq(q, true);
+	PERFORM set_config('seq_page_cost', '1000', true);
+	PERFORM set_config('random_page_cost', '1000', true);
+	RETURN CASE WHEN a = b AND a = c THEN 'same' ELSE format('DIFF off=%s forced=%s on=%s', left(a, 12), left(b, 12), left(c, 12)) END;
+END $$;
+
+SELECT w.i, w.f, count(*) FILTER (WHERE pushed(q)) AS pushed, string_agg(DISTINCT same_costs(q), ' | ') AS result
+FROM (VALUES
+	(1, $$jsonb_typeof(doc -> 'k') <> 'object'$$), (2, $$jsonb_typeof(doc -> 'k') IN ('string', 'array')$$), (3, $$jsonb_typeof(doc -> 'k') NOT IN ('string')$$),
+	(4, $$jsonb_typeof(doc -> 'k') = 'array'$$), (5, $$jsonb_typeof(doc -> 'k') IS NULL$$), (6, $$jsonb_typeof(doc -> 'k') IS NOT NULL$$),
+	(7, $$jsonb_typeof(doc -> 'k') IN ('string', 'number', 'boolean')$$), (8, $$jsonb_typeof(doc -> 'k') = 'string'$$),
+	(9, $$jsonb_typeof(doc) = 'array'$$), (10, $$jsonb_typeof(doc) <> 'object'$$), (11, $$jsonb_typeof(doc) IN ('array', 'string', 'number')$$),
+	(12, $$doc ? 'k'$$), (13, $$NOT (doc ? 'k')$$), (14, $$doc @> '{"k": "a"}'$$), (15, $$doc @> '{"k": {}}' OR doc @> '[]'$$),
+	(16, $$jsonb_typeof(doc -> 'k') <> 'object' AND doc ? 'k'$$), (17, $$jsonb_typeof(doc -> 'k') <> 'object' AND doc @> '{"o": 1}'$$)
+) w(i, f), LATERAL unnest(t_q(w.f)) q
+GROUP BY w.i, w.f ORDER BY w.i;
+
 -- the rows go (a VACUUM rewrites the segment whose overflow values are all in dead rows): the paths are read by the scan again
 SELECT sift.col_promote('t_col') >= 0 AS promoted;
 DELETE FROM t WHERE id >= 9000;
@@ -96,6 +121,7 @@ SELECT pushed((t_q('true'))[1]) AS pushed, reread((t_q('true'))[1]) AS reread, s
 DROP FUNCTION t_q(text);
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
+DROP FUNCTION same_costs(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool);
 DROP TABLE kinds, t;
