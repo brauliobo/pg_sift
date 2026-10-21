@@ -130,6 +130,7 @@ extern void sift_cbatch_value(const SiftColBatch *b, int col, uint32 slot, SiftC
 #define SIFT_COLZ_CONST		0x4		/* every non-NULL value equal */
 #define SIFT_COLZ_OVERFLOW	0x8		/* some value overflowed: the zone does not describe it */
 #define SIFT_COLZ_INLINE	0x10	/* STR leaf stored inline (SIFT_COLENC_ISTR): min and max are the prefix keys of the smallest and largest value, set is all ones */
+#define SIFT_COLZ_JNULL		0x20	/* some NULL slot is a JSON null: a cast of it raises before PostgreSQL 18. Set only where the chunk has kinds, informational: the zone's other fields do not depend on it */
 
 typedef struct SiftCZone
 {

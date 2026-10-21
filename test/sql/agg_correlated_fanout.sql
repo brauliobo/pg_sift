@@ -80,13 +80,13 @@ SELECT * FROM check_query($q$
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN f.code > '6' THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
 $q$);
--- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each).
-SELECT * FROM check_query($q$
+-- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each). The outer-joined member keeps the normal plan before PostgreSQL 18 (columns: the plan is the pushed one from 18 on).
+SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
-$q$);
+$q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;
 DROP FUNCTION check_query(text);
 DROP TABLE facts, dim_a;
 DROP EXTENSION pg_sift;

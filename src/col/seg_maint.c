@@ -226,7 +226,8 @@ zone_equal(const SiftColDef *def, const SiftCZone *a, const SiftCZone *b)
 {
 	bool		fl = def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8;
 
-	if (a->nvals != b->nvals || a->nnull != b->nnull || a->flags != b->flags)
+	/* a segment written before the flag existed lacks SIFT_COLZ_JNULL: the stored zone may say less than the chunk, never more */
+	if (a->nvals != b->nvals || a->nnull != b->nnull || ((a->flags ^ b->flags) & ~SIFT_COLZ_JNULL) || (a->flags & ~b->flags & SIFT_COLZ_JNULL))
 		return false;
 	if (a->nnull == a->nvals)
 		return true;

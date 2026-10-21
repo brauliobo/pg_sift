@@ -93,7 +93,7 @@ typedef struct SiftSegEntry
 	BlockNumber header_blk;		/* SEGHEADER or WBUFHEADER */
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
-	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h) */
+	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;

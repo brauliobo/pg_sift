@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": 8}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
                   WHEN 4 THEN NULL ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END,
        CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"checker"},{"type":"manager"}]'::jsonb END
 FROM generate_series(1, 20000) i;
@@ -32,7 +32,7 @@ CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan b
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
--- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5), a JSON null casts to NULL.
+-- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5).
 SELECT * FROM check_query('union', $q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'

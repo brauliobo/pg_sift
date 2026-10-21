@@ -24,7 +24,7 @@ key_of(const SiftColDef *d, SiftCDict *segdict, const SiftColValue *v)
 
 /* The zone of the reference values, computed independently of the encoder (128 bit sums) */
 void
-check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCZone *z)
+check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCZone *z, bool tags)
 {
 	uint32		nn = 0;
 	int64		mn = 0,
@@ -40,6 +40,7 @@ check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, c
 
 		if (ref->v[i].overflow)
 			flags |= SIFT_COLZ_OVERFLOW;
+		flags |= tags && !ref->v[i].overflow && ref->v[i].tag == SIFT_COLTAG_JNULL ? SIFT_COLZ_JNULL : 0;
 		if (ref_null(&ref->v[i]))
 			continue;
 		k = key_of(d, segdict, &ref->v[i]);
@@ -70,7 +71,7 @@ check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, c
 
 /* The zone of an inline text chunk, from the reference values: prefix keys of the smallest and largest, no set */
 void
-check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z)
+check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z, bool tags)
 {
 	uint32		nn = 0,
 				flags = SIFT_COLZ_INLINE;
@@ -83,6 +84,7 @@ check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z)
 		int64		k;
 
 		flags |= ref->v[i].overflow ? SIFT_COLZ_OVERFLOW : 0;
+		flags |= tags && !ref->v[i].overflow && ref->v[i].tag == SIFT_COLTAG_JNULL ? SIFT_COLZ_JNULL : 0;
 		if (ref_null(&ref->v[i]))
 			continue;
 		k = sift_col_str_prefix(ref->v[i].v.s, ref->v[i].len);

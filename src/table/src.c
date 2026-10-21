@@ -174,15 +174,16 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 	SiftTblRel *tr = sift_tbl_rel(rel);
 	const SiftColSchema *cur = sift_tbl_layout_schema(rel, tr);
 	SiftColLeafStats ls[SIFT_COL_MAX_COLS];
-	bool		wovf[SIFT_COL_MAX_COLS];
+	bool		wovf[SIFT_COL_MAX_COLS],
+				wjnull[SIFT_COL_MAX_COLS];
 
 	memset(st, 0, sizeof(*st));
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
 	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir.meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
 	st->exact_frac = exact_share(rel, tr, st->nunits);
-	sift_tbl_path_stats(rel, tr, ls, wovf);
-	sift_colsrc_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, st);
+	sift_tbl_path_stats(rel, tr, ls, wovf, wjnull);
+	sift_colsrc_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, wjnull, st);
 	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
 	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
 	{

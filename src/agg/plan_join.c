@@ -304,6 +304,13 @@ bare_read_walker(Node *n, BareRead *x)
 	return expression_tree_walker(n, bare_read_walker, x);
 }
 
+/* is arg the jsonb child_arg built for the value of a member (its cast of the leaf is the stored value as a number, a JSON null the NULL of it)? */
+static bool
+member_arg(AggCtx *c, Node *arg)
+{
+	return c->func_kind == FK_EACH && IsA(arg, CaseExpr) && ((CaseExpr *) arg)->casetype == JSONBOID;
+}
+
 /* The parameters of a child and what the scan gives for each. */
 static void
 child_params(AggCtx *c, JoinCtx *jc, List *items)
@@ -1217,8 +1224,11 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 		{
 			Node       *expr = normalize_expr(c, arg);
 			ComboWalk   w = {c};
+			Bitmapset  *casts = bms_copy(c->jcast);
 
 			combo_walker(expr, &w);
+			if (member_arg(c, arg))		/* the child gets the JSON null as it is: the cast it makes of it raises where SQL does */
+				c->jcast = casts;
 			if (w.bad || (w.jc && w.jc->combo >= jc->combo))
 				return false;
 			for (int p = 0; p < w.nl; p++)
