@@ -1,6 +1,6 @@
 #!/bin/bash
 # Compares mariadb/host/host_regex.c with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
-# pg_regcomp/pg_regexec (flags and calls of src/bm25/sift_query.c, through the throwaway extension tests/rx_oracle.c in a
+# pg_regcomp/pg_regexec (flags and calls of src/bm25/query_analyze.c and query_match.c, through the throwaway extension tests/rx_oracle.c in a
 # private cluster under /tmp/sift-mdb-rx) and by regex_test.c linked with host_regex.c; the answers (1, 0 or error) must
 # be identical, for REG_ADVANCED|REG_NOSUB (what the engine uses) and for REG_ADVANCED alone. The prefixes
 # pg_regprefix returns must be true prefixes of every word the pattern matches.

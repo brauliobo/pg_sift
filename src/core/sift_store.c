@@ -30,7 +30,7 @@
 #include "utils/wait_event.h"
 
 #include "sift_col.h"
-#include "sift_estimate.h"
+#include "bm25/estimate.h"
 #include "sift_lane.h"
 #include "sift_store.h"
 

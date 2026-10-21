@@ -231,7 +231,7 @@ STR `EQ`/`IN`). Units that pass are the **candidate units**. Pruning is conserva
 
 ### 2.5 Write buffers (the write buffer)
 
-`aminsert` appends one **row record** to one of `SIFT_LANES` lane chains of the open write buffer: the structure of `sift_wbuf.c`
+`aminsert` appends one **row record** to one of `SIFT_LANES` lane chains of the open write buffer: the structure of `bm25/wbuf.c`
 (lane header page with the heads and tails, `SIFT_PT_WBUFDATA` pages, tail-lock ordering, sealing under `SIFT_ACTIVE_LOCK_BLKNO`,
 back-pressure at the same thresholds, one generic WAL record per append). The lane machinery is one module, `sift_lane.c`, used by the BM25
 doc records and by the row records; the record and its page header are `sift_col_wbuf.c`'s. The data page header is `SiftLanePageHead`

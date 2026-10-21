@@ -7,115 +7,124 @@ scan|analyzer|src/agg/sift_agg.c|Right operand is negative in left shift [core.B
 scan|analyzer|src/agg/sift_agg.c|The first element of the 2nd argument is undefined [unix.cstring.UninitializedRead]
 scan|analyzer|src/agg/sift_aggkern_avx2.c|Assigned value is uninitialized [core.uninitialized.Assign]
 scan|analyzer|src/agg/sift_aggkern_avx512.c|Assigned value is uninitialized [core.uninitialized.Assign]
-scan|analyzer|src/bm25/sift_bitmap.c|1st function call argument is an uninitialized value [core.CallAndMessage]
-scan|analyzer|src/bm25/sift_bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
-scan|analyzer|src/bm25/sift_bitmap.c|Right shift by '4294967295' overflows the capacity of 'uint64_t' [core.BitwiseShift]
-scan|analyzer|src/bm25/sift_bitmap.c|The left operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
-scan|analyzer|src/bm25/sift_bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior [core.NullPointerArithm]
-scan|analyzer|src/bm25/sift_bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior [core.NullPointerArithm]
-scan|analyzer|src/col/sift_colcodec.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
-scan|analyzer|src/col/sift_colcodec_kern.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
+scan|analyzer|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
+scan|analyzer|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t' [core.BitwiseShift]
+scan|analyzer|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
+scan|analyzer|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior [core.NullPointerArithm]
+scan|analyzer|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior [core.NullPointerArithm]
+scan|analyzer|src/bm25/inv.c|Array access (via field 'pos') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru') [core.NullDereference]
+scan|analyzer|src/bm25/segment_int.h|Addition of a null pointer (via field 'xdl') and a probably nonzero integer value may result in undefined behavior [core.NullPointerArithm]
+scan|analyzer|src/bm25/step.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns' [deadcode.DeadStores]
+scan|analyzer|src/bm25/topk.c|1st function call argument is an uninitialized value [core.CallAndMessage]
 scan|analyzer|src/col/sift_col_enc.c|Array access (via field 'nulls') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/col/sift_col_enc.c|The right operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
 scan|analyzer|src/col/sift_col_maint.c|4th function call argument is an uninitialized value [core.CallAndMessage]
 scan|analyzer|src/col/sift_col_maint.c|5th function call argument is an uninitialized value [core.CallAndMessage]
 scan|analyzer|src/col/sift_col_seg.c|Assigned value is uninitialized [core.uninitialized.Assign]
-scan|analyzer|src/bm25/sift_maint.c|4th function call argument is an uninitialized value [core.CallAndMessage]
-scan|analyzer|src/bm25/sift_maint.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns' [deadcode.DeadStores]
-scan|analyzer|src/bm25/sift_prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru') [core.NullDereference]
-scan|analyzer|src/bm25/sift_runs.c|Array access (via field 'pos') results in a null pointer dereference [core.NullDereference]
-scan|analyzer|src/bm25/sift_segment.c|Array access (from variable 'row') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/col/sift_colcodec.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
+scan|analyzer|src/col/sift_colcodec_kern.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
 scan|analyzer|src/core/sift_store.h|Array access (via field 'ext') results in a null pointer dereference [core.NullDereference]
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_aggcol.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_agg.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_aggcol.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_aggkern_avx2.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_aggkern_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/sift_aggkern_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_analyze.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_analyze.c|performing an implicit widening conversion to type 'unsigned long' of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap.c|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_bitmap_kern.h|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_build.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'unsigned long' of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap.c|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/bitmap_kern.h|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/blob.c|result of multiplication in type 'uint32_t' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/build.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/docdir.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/eval_int.h|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/inv.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/inv.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/inv.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/iter.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/kernels.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/kernels_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/kernels_avx512.c|performing an implicit widening conversion to type 'long long' of a multiplication performed in type 'uint32' (aka 'unsigned int')
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/kernels_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/liveness.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/liveness.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/livestream.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/livestream.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/posting.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/posting.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/postw.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/prefix.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/prefix.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/rank.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/rank.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/runs.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/topk.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/topk.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/walk.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/walk.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/wbuf.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/writer.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/writer.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_build.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_kern.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_vec.h|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_vec.h|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_enc.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_enc.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_kern_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_kern_avx512.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_maint.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_seg.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_seg.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_docdir.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_eval.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_eval.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_eval.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_kernels_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_kernels_avx512.c|performing an implicit widening conversion to type 'long long' of a multiplication performed in type 'uint32' (aka 'unsigned int')
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_kernels_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_kernels.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_wbuf.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_posting.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_posting.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_posting.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_prefix.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_prefix.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_runs.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_runs.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_runs.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_segment.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_segment.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_segment.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_segment.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/sift_segment.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_col_wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_kern.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_vec.h|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_colcodec_vec.h|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_shred.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/sift_shred.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/table/sift_table_scan.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/table/sift_table_scan.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-integer-division|src/table/sift_table_src.c|result of integer division used in a floating point context; possible loss of precision
-tidy|bugprone-not-null-terminated-result|src/bm25/sift_analyze.c|the result from calling 'memcpy' is not null-terminated
-tidy|bugprone-signed-char-misuse|src/bm25/sift_query.c|comparison between 'signed char' and 'unsigned char'
+tidy|bugprone-not-null-terminated-result|src/bm25/analyze.c|the result from calling 'memcpy' is not null-terminated
+tidy|bugprone-signed-char-misuse|src/bm25/query.c|comparison between 'signed char' and 'unsigned char'
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/col/sift_col_seg.c|comparing object representation of type 'double' which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/sift_table_seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/sift_table_seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
 tidy|clang-analyzer-core.BitwiseShift|src/agg/sift_agg.c|Right operand is negative in left shift
-tidy|clang-analyzer-core.BitwiseShift|src/bm25/sift_bitmap.c|Right shift by '4294967295' overflows the capacity of 'uint64_t'
+tidy|clang-analyzer-core.BitwiseShift|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t'
 tidy|clang-analyzer-core.BitwiseShift|src/col/sift_colcodec.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.BitwiseShift|src/col/sift_colcodec_kern.c|Left shift by '32' overflows the capacity of 'uint32'
-tidy|clang-analyzer-core.CallAndMessage|src/bm25/sift_bitmap.c|1st function call argument is an uninitialized value
+tidy|clang-analyzer-core.CallAndMessage|src/bm25/topk.c|1st function call argument is an uninitialized value
 tidy|clang-analyzer-core.CallAndMessage|src/col/sift_col_maint.c|4th function call argument is an uninitialized value
 tidy|clang-analyzer-core.CallAndMessage|src/col/sift_col_maint.c|5th function call argument is an uninitialized value
-tidy|clang-analyzer-core.CallAndMessage|src/bm25/sift_maint.c|4th function call argument is an uninitialized value
 tidy|clang-analyzer-core.NonNullParamChecker|src/agg/sift_agg.c|Null pointer passed to 2nd parameter expecting 'nonnull'
 tidy|clang-analyzer-core.NullDereference|src/agg/sift_agg.c|Access to field 'data' results in a dereference of a null pointer (loaded from variable 'v')
 tidy|clang-analyzer-core.NullDereference|src/agg/sift_agg.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf')
-tidy|clang-analyzer-core.NullDereference|src/bm25/sift_bitmap.c|Dereference of null pointer (loaded from variable 'acc')
+tidy|clang-analyzer-core.NullDereference|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc')
+tidy|clang-analyzer-core.NullDereference|src/bm25/inv.c|Array access (via field 'pos') results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru')
 tidy|clang-analyzer-core.NullDereference|src/col/sift_col_enc.c|Array access (via field 'nulls') results in a null pointer dereference
-tidy|clang-analyzer-core.NullDereference|src/bm25/sift_prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru')
-tidy|clang-analyzer-core.NullDereference|src/bm25/sift_runs.c|Array access (via field 'pos') results in a null pointer dereference
-tidy|clang-analyzer-core.NullDereference|src/bm25/sift_segment.c|Array access (from variable 'row') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/core/sift_store.h|Array access (via field 'ext') results in a null pointer dereference
-tidy|clang-analyzer-core.NullPointerArithm|src/bm25/sift_bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior
-tidy|clang-analyzer-core.NullPointerArithm|src/bm25/sift_bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior
+tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior
+tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior
+tidy|clang-analyzer-core.NullPointerArithm|src/bm25/segment_int.h|Addition of a null pointer (via field 'xdl') and a probably nonzero integer value may result in undefined behavior
 tidy|clang-analyzer-core.StackAddressEscape|src/agg/sift_agg.c|Address of stack memory associated with local variable 'al' is still referred to by the caller variable 'ex' upon returning to the caller.  This will be a dangling reference
-tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/bm25/sift_bitmap.c|The left operand of '|' is a garbage value
+tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value
 tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/col/sift_col_enc.c|The right operand of '|' is a garbage value
 tidy|clang-analyzer-core.uninitialized.Assign|src/agg/sift_aggkern_avx2.c|Assigned value is uninitialized
 tidy|clang-analyzer-core.uninitialized.Assign|src/agg/sift_aggkern_avx512.c|Assigned value is uninitialized
 tidy|clang-analyzer-core.uninitialized.Assign|src/col/sift_col_seg.c|Assigned value is uninitialized
-tidy|clang-analyzer-deadcode.DeadStores|src/bm25/sift_maint.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns'
+tidy|clang-analyzer-deadcode.DeadStores|src/bm25/step.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns'
 tidy|clang-analyzer-security.ArrayBound|src/agg/sift_agg.c|Out of bound access to memory around 't'
 tidy|clang-analyzer-security.ArrayBound|src/agg/sift_agg.c|Out of bound access to memory around 'tmp'
 tidy|clang-analyzer-security.ArrayBound|src/agg/sift_agg.c|Out of bound access to memory preceding 'tmp'
-tidy|clang-analyzer-security.ArrayBound|src/bm25/sift_maint.c|Out of bound access to memory preceding the field 'segs'
-tidy|clang-analyzer-security.ArrayBound|src/bm25/sift_merge.c|Out of bound access to memory around 'imm'
-tidy|clang-analyzer-security.ArrayBound|src/bm25/sift_query.c|Out of bound access to memory preceding 'rows'
+tidy|clang-analyzer-security.ArrayBound|src/bm25/dict.c|Out of bound access to memory after the end of the field 'inline_tf'
+tidy|clang-analyzer-security.ArrayBound|src/bm25/maint.c|Out of bound access to memory preceding the field 'segs'
+tidy|clang-analyzer-security.ArrayBound|src/bm25/merge.c|Out of bound access to memory around 'imm'
+tidy|clang-analyzer-security.ArrayBound|src/bm25/query_match.c|Out of bound access to memory preceding 'rows'
 tidy|clang-analyzer-unix.cstring.UninitializedRead|src/agg/sift_agg.c|The first element of the 2nd argument is undefined

@@ -507,7 +507,7 @@ are off by 1 or 2 documents of tens of thousands.
 | `Makefile`, `CMakeLists.txt` | the build (it reads `src/portable.list`) |
 | `tests/`, `bench/`, `tools/`, `test.sh`, `server.sh` | tests, the benchmark, the comparison tools, the private server |
 
-Compiled from `src/` unmodified: every `.c` file of `src/portable.list`, except that `sift_bitmap.c` is compiled from a copy whose seek limit is
+Compiled from `src/` unmodified: every `.c` file of `src/portable.list`, except that `bm25/bitmap.c` is compiled from a copy whose seek limit is
 per thread (`sed`, checked by the build). No PostgreSQL header, library or code is involved: `scripts/check-portable.sh` guarantees that the
 files of the list reach their host only through `sift_host.h`.
 

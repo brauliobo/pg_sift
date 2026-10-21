@@ -467,7 +467,7 @@ extern SiftTbmIter *sift_tbm_begin(TIDBitmap *tbm);
 extern bool sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *offs, int *n);
 extern void sift_tbm_end(SiftTbmIter *it);
 
-/* ---------- atomics, spin locks and "shared memory" of sift_parallel.c: the participants are threads of one process ---------- */
+/* ---------- atomics, spin locks and "shared memory" of bm25/parallel.c: the participants are threads of one process ---------- */
 
 #include <pthread.h>
 #include <stdatomic.h>

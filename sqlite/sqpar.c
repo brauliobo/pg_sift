@@ -1,7 +1,7 @@
 /*
  * sqpar.c - parallel scans inside one query (setting parallel=N, off by default). A ranked top-k or a count runs on N
  * participants: the calling thread and N-1 threads of a process-wide pool, all over the same segments. The engine's own
- * work distribution does the rest (sift_parallel.c): participants claim morsels of superblocks or of bound-ordered
+ * work distribution does the rest (bm25/parallel.c): participants claim morsels of superblocks or of bound-ordered
  * units, share the threshold of the k-th best score, and the last one to finish returns the merged top-k, identical to
  * the serial one.
  *
@@ -13,7 +13,7 @@
 
 #include <pthread.h>
 
-#include "sift_parallel.h"
+#include "bm25/parallel.h"
 
 #define PAR_MAX		16
 #define PAR_MIN_POSTINGS	100000

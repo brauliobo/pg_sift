@@ -74,3 +74,10 @@ Rejected:
   `col_index_info.buffers`.
 - No EXPLAIN output names the buffer (checked: `sift_cscan.c`, `sift_agg.c` print nothing of the kind), so nothing changes there.
 - Ports: SQLite and MariaDB have no write buffer (their `stubs` say so); their in-memory insert buffer keeps "in-memory buffer".
+
+## Source files
+
+A file of `src/<area>/` has no `sift_` prefix and no prefix of its folder: `bm25/query.c`, `col/enc.c`, `table/seg.c`. Headers follow the same rule. The
+C identifiers keep their `sift_` names; only files are renamed. A source includes another by its path from `src/` (`#include "bm25/query.h"`, `-I src`),
+so the same short name in two folders is fine. A file past about a thousand lines is split by responsibility into files of its folder, and what the
+pieces share goes into one `NAME_int.h` next to them. `scripts/restructure-src.sh --check` enforces the layout.

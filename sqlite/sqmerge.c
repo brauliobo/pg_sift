@@ -1,15 +1,15 @@
 /*
- * sqmerge.c - the merge of segments for the SQLite table: the engine's own (src/bm25/sift_runs.c, the merge of the PostgreSQL host
+ * sqmerge.c - the merge of segments for the SQLite table: the engine's own (src/bm25/runs.c, the merge of the PostgreSQL host
  * too) turns the live part of every input into a sorted run and merges the runs into one segment, in bounded memory. The output
  * is published and the inputs retired in the same SQLite transaction by two manifest updates, so a rollback or a crash at any
  * point leaves the old segments in place: there is nothing to resume, a repeated merge starts over from the manifest. Which
- * segments to merge is the shared policy (src/bm25/sift_merge.c); the live documents and terms of a segment, for the integrity
+ * segments to merge is the shared policy (src/bm25/merge.c); the live documents and terms of a segment, for the integrity
  * check and the facets, are read here.
  */
 #include "sqapi.h"
 
-#include "sift_dict.h"
-#include "sift_runs.h"
+#include "bm25/dict.h"
+#include "bm25/runs.h"
 
 #define TIER_BASE	(1024 * 1024)		/* segments below this size are one tier */
 
@@ -144,7 +144,7 @@ sq_merge(SqStore *st, const uint64 *gens, int n)
 	MemoryContextDelete(cx);
 }
 
-/* ---------- policy: sift_merge.c, with the tiers starting at 1 MiB ---------- */
+/* ---------- policy: bm25/merge.c, with the tiers starting at 1 MiB ---------- */
 
 int
 sq_merge_pick(SqStore *st, bool force, int fanin, uint64 *sel)

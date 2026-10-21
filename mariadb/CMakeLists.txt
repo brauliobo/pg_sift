@@ -49,23 +49,23 @@ endforeach()
 set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN})
 
-# the portable core: the .c files of the list every host shares (sift_bitmap.c is compiled from a copy, see below)
+# the portable core: the .c files of the list every host shares (bm25/bitmap.c is compiled from a copy, see below)
 file(STRINGS ${SRC}/portable.list portable REGEX "^[^#].*\\.c$")
-list(REMOVE_ITEM portable bm25/sift_bitmap.c)
+list(REMOVE_ITEM portable bm25/bitmap.c)
 list(TRANSFORM portable PREPEND ${SRC}/)
 
-# src/bm25/sift_bitmap.c with its seek limit per thread (a global that a query sets while it seeks)
-add_custom_command(OUTPUT ${GEN}/sift_bitmap.c
-  COMMAND sed "s/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /" ${SRC}/bm25/sift_bitmap.c > ${GEN}/sift_bitmap.c
-  COMMAND grep -q "_Thread_local uint32_t seek_limit" ${GEN}/sift_bitmap.c
-  DEPENDS ${SRC}/bm25/sift_bitmap.c VERBATIM)
+# src/bm25/bitmap.c with its seek limit per thread (a global that a query sets while it seeks)
+add_custom_command(OUTPUT ${GEN}/bitmap.c
+  COMMAND sed "s/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /" ${SRC}/bm25/bitmap.c > ${GEN}/bitmap.c
+  COMMAND grep -q "_Thread_local uint32_t seek_limit" ${GEN}/bitmap.c
+  DEPENDS ${SRC}/bm25/bitmap.c VERBATIM)
 
 # the host: the C library vocabulary of sqlite/host (its host.c as it is), the matcher, the mapped store and the glue
 set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/host_stubs.c host/host_regex.c host/store.c host/stubs.c)
 set(GLUE engine.c query.c feed.c merge.c)
 
-add_library(sift_engine OBJECT ${portable} ${GEN}/sift_bitmap.c ${HOST} ${GLUE})
-target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_DIRS})
+add_library(sift_engine OBJECT ${portable} ${GEN}/bitmap.c ${HOST} ${GLUE})
+target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${SIFT_DIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
   # the codec's names are those of two UDFs

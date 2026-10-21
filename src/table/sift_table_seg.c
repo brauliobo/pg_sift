@@ -43,8 +43,8 @@
 #include "sift_col_pg.h"
 #include "sift_col_seg.h"
 #include "sift_lane.h"
-#include "sift_maint.h"
-#include "sift_merge.h"
+#include "bm25/maint.h"
+#include "bm25/merge.h"
 #include "sift_ops.h"
 #include "sift_table.h"
 

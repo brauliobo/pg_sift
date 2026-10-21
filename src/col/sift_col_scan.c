@@ -22,7 +22,7 @@
 #include "sift_popcount.h"
 #include "sift_col_gpu.h"
 #include "sift_col_pagg.h"
-#include "sift_estimate.h"
+#include "bm25/estimate.h"
 #include "sift_col_seg.h"
 #include "sift_visibility.h"
 

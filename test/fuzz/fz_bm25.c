@@ -20,9 +20,9 @@
 #include <unistd.h>
 
 #include "fz_shim.h"
-#include "sift_bitmap.h"
-#include "sift_dict.h"
-#include "sift_posting.h"
+#include "bm25/bitmap.h"
+#include "bm25/dict.h"
+#include "bm25/posting.h"
 #include "sift_varint.h"
 
 #define NMODES 3

@@ -40,7 +40,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_col_am.h"
-#include "sift_merge.h"
+#include "bm25/merge.h"
 #include "sift_table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);

@@ -12,8 +12,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "sift_analyze.h"
-#include "sift_runs.h"
+#include "bm25/analyze.h"
+#include "bm25/runs.h"
 
 #define BUILD_BUDGET	((Size) 512 << 20)
 

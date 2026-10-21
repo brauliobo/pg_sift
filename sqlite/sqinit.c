@@ -7,10 +7,10 @@
 
 #include <pthread.h>
 
-#include "sift_bitmap.h"
+#include "bm25/bitmap.h"
 #include "sift_cpu.h"
-#include "sift_kernels.h"
-#include "sift_prefix.h"
+#include "bm25/kernels.h"
+#include "bm25/prefix.h"
 
 SQLITE_EXTENSION_INIT1
 
@@ -18,7 +18,7 @@ int			sift_max_expansions = 512;
 
 /* ---------- engine: once per process ---------- */
 
-/* sift_prefix.c keeps one process-wide cache of wide-prefix unions: its entry point (renamed by the Makefile) runs under a lock */
+/* bm25/prefix.c keeps one process-wide cache of wide-prefix unions: its entry point (renamed by the Makefile) runs under a lock */
 extern const uint8 *sq_real_sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen,
 											  const SiftScoreRef *ref, bool scoring, MemoryContext mcxt, SiftTermInfo *info);
 static pthread_mutex_t prefix_lock = PTHREAD_MUTEX_INITIALIZER;

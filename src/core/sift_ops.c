@@ -17,7 +17,7 @@
 #include "utils/timestamp.h"
 
 #include "sift.h"
-#include "sift_analyze.h"
+#include "bm25/analyze.h"
 #include "sift_ops.h"
 #include "sift_store.h"
 

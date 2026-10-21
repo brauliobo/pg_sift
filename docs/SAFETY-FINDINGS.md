@@ -17,11 +17,11 @@ raw mode (`bm25-raw`, opt-in): the query path `sift_post_open` with `verify=fals
 | Id | Severity | Where | Effect | Status at 3.0.2 |
 |---|---|---|---|---|
 | F-COL-1 | high | src/col/sift_col_kern.c:54 `lut_u32_scalar`, fed by src/col/sift_col_enc.c `chunk_lut` / `cc_lut` | heap over-read: stored FOR32/PACK codes index the LUT without a range check against its size | fixed: 44c17cc (regress inputs 0c032a8) |
-| F-BM25-2 | high | src/bm25/sift_bitmap.c:440,452 `gr_seek` (via `sift_cur_blob`) | heap over-read and stack write: the 4-byte group entries give `pg` up to 65535 into `b.pages[4]` and `o` into `c->buf` | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
-| F-BM25-3 | high | src/bm25/sift_bitmap.c:463,480 `ld_upto8` / `ef_decode`, from `sift_cur_gids` (src/bm25/sift_posting.c:899 `sift_post_bounds`) | `memcpy` with a negative size (`end` before `p`) | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
-| F-BM25-4 | medium | src/bm25/sift_bitmap_kern.h:38,123,230 `sift_ld8` / `popcount_scalar` / `count_mask_scalar` | over-read: a count taken from the blob is not tied to the bytes present | fixed: 463951f (2.0.2, in 3.0.0) |
-| F-BM25-5 | medium | src/bm25/sift_kernels_avx512.c:183 `nibbles64`, from src/bm25/sift_posting.c:969 `sift_post_group_tf` | SEGV: the tf nibble stream length (from the dictionary sidecar) is not checked against the blob; only `sift_post_check` does | fixed: 7f59d1a (3.0.0; adad91a in 2.0.3) |
-| F-BM25-6 | low | src/bm25/sift_bitmap.c:610 | undefined shift: `blob[1]` (the Rice parameter) is used as a shift count unchecked | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
+| F-BM25-2 | high | src/bm25/bitmap.c:440,452 `gr_seek` (via `sift_cur_blob`) | heap over-read and stack write: the 4-byte group entries give `pg` up to 65535 into `b.pages[4]` and `o` into `c->buf` | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
+| F-BM25-3 | high | src/bm25/bitmap.c:463,480 `ld_upto8` / `ef_decode`, from `sift_cur_gids` (src/bm25/posting.c:899 `sift_post_bounds`) | `memcpy` with a negative size (`end` before `p`) | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
+| F-BM25-4 | medium | src/bm25/bitmap_kern.h:38,123,230 `sift_ld8` / `popcount_scalar` / `count_mask_scalar` | over-read: a count taken from the blob is not tied to the bytes present | fixed: 463951f (2.0.2, in 3.0.0) |
+| F-BM25-5 | medium | src/bm25/kernels_avx512.c:183 `nibbles64`, from src/bm25/posting.c:969 `sift_post_group_tf` | SEGV: the tf nibble stream length (from the dictionary sidecar) is not checked against the blob; only `sift_post_check` does | fixed: 7f59d1a (3.0.0; adad91a in 2.0.3) |
+| F-BM25-6 | low | src/bm25/bitmap.c:610 | undefined shift: `blob[1]` (the Rice parameter) is used as a shift count unchecked | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
 | F-BM25-1 | low | src/core/sift_varint.h:27 `sift_get_varint` | shift by 70 on a run of continuation bytes; ends only because 64 zero pad bytes follow a blob | fixed: 463951f, 0ddff29 (2.0.2, in 3.0.0); repro clean, no caller of the unbounded `sift_get_varint` is left |
 | F-COL-2 | low | src/col/sift_col_enc.c:920, 2025, 2071 | `elog(ERROR)` (XX000, internal error) where ERRCODE_DATA_CORRUPTED belongs: `sift_cchunk_strs`, `unit_emit`, `sift_cunit_decode` | open: the three sites still `elog(ERROR)` |
 
@@ -55,9 +55,9 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 |---|---|---|---|
 | src/col/sift_col_scan.c `unit_group`, src/col/sift_col_enc.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
 | (fixed, P1-6) src/col/sift_col_scan.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/sift_agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
-| src/bm25/sift_posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
-| src/bm25/sift_segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
-| src/bm25/sift_bitmap.c `sift_chunk_pagemask` | DOCMAP chunk byte0 0xB0, entry 00 00 FF FF | writes `pm[1023]` | open (source read: the page index is not bounded) |
+| src/bm25/posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
+| src/bm25/segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
+| src/bm25/bitmap.c `sift_chunk_pagemask` | DOCMAP chunk byte0 0xB0, entry 00 00 FF FF | writes `pm[1023]` | open (source read: the page index is not bounded) |
 | src/table/sift_table_store.c `sift_tbl_delta_page` | delta header npages=60000 | `seg->page[1024]` overflow on the first fetch | not re-checked; the function is now `sift_tbl_wbuf_page`, which copies the header's `npages` without a bound |
 | src/table/sift_table_store.c `sift_tbl_page_rec` | slot[0]=0xFFF0 in a delta page | read of `rec->len` outside the page; `sift_tbl_rec_flag` and VACUUM write there | not re-checked |
 | src/table/sift_table_store.c `sift_tbl_tomb_sync` | tombstone page nent=0xFFFF | reads 2 MB past the page; a `next` cycle loops forever | not re-checked |
@@ -70,11 +70,11 @@ Both came from `scripts/fuzz.sh` run in the `postgres:17-bookworm` container (gc
 brought up. The gate's `pg17` job no longer runs the standalone harnesses (they do not touch the server); the `fuzz` job runs them with the
 host compiler (clang 23, gcc 16), where neither finding appears.
 
-- **Pointer rebased below its array, src/bm25/sift_bitmap.c:570** (`c->ls.blk - c->ls.bi`, the window of a decoded block indexed with
+- **Pointer rebased below its array, src/bm25/bitmap.c:570** (`c->ls.blk - c->ls.bi`, the window of a decoded block indexed with
   absolute positions). clang 14's UBSan reports `index 18446744073709551360 out of bounds for type 'sift_tid[256]'` in the `bm25` target.
   It is undefined behavior in C (a pointer outside its array), benign with today's compilers because `t[i]` is only read for
   `i >= bi`. Replay: in the container with `clang libclang-rt-14-dev` installed, `scripts/fuzz.sh bm25` (seed 1) fails. Still open in 3.0.2
-  (`c->ls.blk - c->ls.bi` is still in `sift_bitmap.c`); planned for 3.0.1, test first: index the window with `i - bi` instead of rebasing the pointer.
+  (`c->ls.blk - c->ls.bi` is still in `bm25/bitmap.c`); planned for 3.0.1, test first: index the window with `i - bi` instead of rebasing the pointer.
 - **AVX-512 `range_u32` returns set bits for values outside the range under gcc 12 -O1 with UBSan `pointer-overflow`**
   (theory: a toolchain problem, not proven). The `colchunk` target reports `FINDING: mode 0: SIMD level 2 decodes differently from
   scalar`; the input is `docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin` (26909 bytes, sha1 26292c50...). Replay, in the
@@ -103,7 +103,7 @@ host compiler (clang 23, gcc 16), where neither finding appears.
 - MSan (clang 23, `make -C test/fuzz CC=clang SAN='-fsanitize=memory ...' DEFS= COLZ=`): `shred` reports inside libpgcommon's `snprintf`
   (uninstrumented, false positive); `colchunk` reports a `memcmp` at src/col/sift_col_enc.c:254 `cdict_probe` during harness setup, from
   `sift_cdict_intern`: not triaged, may be a harness artifact. `bm25` is clean in checked mode.
-- gcc `-Wclobbered` (SIFT_HARDEN=pkg warnings): src/bm25/sift_maint.c:253 and src/bm25/sift_pushdown.c:444, locals changed after `PG_TRY`; check
+- gcc `-Wclobbered` (SIFT_HARDEN=pkg warnings): src/bm25/step.c:107 and src/bm25/pushdown.c:444, locals changed after `PG_TRY`; check
   that they are `volatile` where read in the handler.
 - scripts/static.sh: 120 findings (93 clang-tidy, 27 scan-build, 0 from gcc -fanalyzer), accepted as the baseline in scripts/static.baseline.
   54 are `bugprone-implicit-widening-of-multiplication-result` (int product widened to size_t: overflow candidates when the factors are

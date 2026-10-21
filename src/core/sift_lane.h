@@ -1,5 +1,5 @@
 /*
- * sift_lane.h - the lane chains of a write buffer (DESIGN.md (c)), shared by the doc records of sift_wbuf.c and the row records
+ * sift_lane.h - the lane chains of a write buffer (DESIGN.md (c)), shared by the doc records of bm25/wbuf.c and the row records
  * of sift_col_wbuf.c: segment creation and sealing, the tail lock, page growth, page walks. What a record looks like is the caller's.
  *
  * The data pages of both start with SiftLanePageHead, at the offsets of SiftWbufPageHeaderData, so the store's walkers

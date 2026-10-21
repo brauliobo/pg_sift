@@ -1,6 +1,6 @@
 # pg_sift codec
 
-The `codec` module (`src/bm25/sift_bitmap.h`, `src/bm25/sift_bitmap*.c`, `src/bm25/sift_bitmap_kern.h`) encodes posting sets keyed by heap ctid and runs the set kernels. It is plain C11 plus intrinsics with no PostgreSQL dependency. It does no allocation, and its only global state is the dispatch table. The standalone harness lives in `tools/codec/`: tests, corpus tools and benchmarks.
+The `codec` module (`src/bm25/bitmap.h`, `src/bm25/bitmap*.c`, `src/bm25/bitmap_kern.h`) encodes posting sets keyed by heap ctid and runs the set kernels. It is plain C11 plus intrinsics with no PostgreSQL dependency. It does no allocation, and its only global state is the dispatch table. The standalone harness lives in `tools/codec/`: tests, corpus tools and benchmarks.
 
 All numbers below were measured on a 3.04 M-row English text corpus (title plus body) on a Ryzen 7 9700X (Zen 5, 8 cores, 16 threads). That machine was shared and heavily loaded (load average about 38 on 16 threads), so:
 - every timing is the best of 5 to 9 trials, pinned to one core;
@@ -383,7 +383,7 @@ ms per query: 48 queries per row, value bitmaps forced BITMAP. The query column 
 | country (245) | df ≥ 64K | 6.59 | 1.45 | 2.83 |
 | country (245) | 1K–64K | 3.70 | 0.13 | 1.08 |
 
-## 6. API summary (`src/bm25/sift_bitmap.h`)
+## 6. API summary (`src/bm25/bitmap.h`)
 
 - **Dispatch:**
   - `sift_init()` picks the best of scalar (baseline x86-64), AVX2 (avx2, bmi, bmi2, popcnt) and AVX-512 (F/BW/VL/VBMI2/VPOPCNTDQ). It uses `__builtin_cpu_supports` and function-level target pragmas only.

@@ -1,5 +1,5 @@
 /*
- * sift_lane.c - the lane chains of a write buffer (DESIGN.md (c)); see sift_lane.h. The code of sift_wbuf.c that does not depend on
+ * sift_lane.c - the lane chains of a write buffer (DESIGN.md (c)); see sift_lane.h. The code of bm25/wbuf.c that does not depend on
  * what the records are: the active segment is created and sealed under SIFT_ACTIVE_LOCK_BLKNO, appends take the tail of a lane, then the
  * newly allocated page, then the header page; sealing takes lane tails one at a time and never the header.
  */
