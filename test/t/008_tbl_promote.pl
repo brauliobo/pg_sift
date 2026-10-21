@@ -94,10 +94,21 @@ subtest 'VACUUM cuts the free end of the file under a writer that cached a page 
 	my $w = $primary->background_psql('postgres');
 	$w->query_safe('INSERT INTO t SELECT g, repeat($$w$$, 60) FROM generate_series(20001, 21500) g');
 	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 7'), 't' x 60, 'the writer fetches a promoted row');
+	# what the log of a failed run shows: the file and the sessions that hold the xmin horizon (an autovacuum worker busy with an earlier table can,
+	# and then the pages the first VACUUM released are not reusable) before the DELETE, between the two VACUUMs and after them
+	my $holders = 'SELECT coalesce(string_agg(format($$%s pid %s xmin %s %s$$, backend_type, pid, backend_xmin, state), $$; $$ ORDER BY pid), $$none$$) '
+		. 'FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()';
+	my $space = 'SELECT relation_blocks, high_water, free_blocks, reusable_blocks, free_extents FROM sift.table_space($$t$$)';
+	my $seen = sub { $primary->safe_psql('postgres', "$space; $holders") };
 	my $full = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
-	$primary->safe_psql('postgres', "DELETE FROM t WHERE id <= 20000; VACUUM t; $xid; VACUUM t");
+	my $before = $seen->();
+	my $between = $primary->safe_psql('postgres', "DELETE FROM t WHERE id <= 20000; VACUUM t; $xid; $space; $holders; VACUUM t");
 	my $cut = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
-	cmp_ok($cut, '<', $full / 2, "the file went from $full to $cut blocks");
+	my $after = $seen->();
+	my $stats = $primary->safe_psql('postgres', 'SELECT vacuum_count, autovacuum_count, n_dead_tup FROM pg_stat_user_tables WHERE relname = $$t$$');
+	cmp_ok($cut, '<', $full / 2, "the file went from $full to $cut blocks")
+		or diag("blocks | high water | free | reusable | free extents, then the sessions with an xmin:\nbefore the DELETE: $before\n"
+			. "between the VACUUMs (xid, then the same): $between\nafter: $after\nvacuum count, autovacuum count, dead tuples: $stats");
 	$w->query_safe('INSERT INTO t VALUES (30000, $$after$$)');
 	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 21000'), 'w' x 60, 'the writer fetches after the cut');
 	$w->quit;
