@@ -24,7 +24,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/am.h"
-#include "sift_colsrc.h"
+#include "agg/colsrc.h"
 #include "col/pagg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
@@ -537,7 +537,7 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
-/* One row per leaf of an index or sift_table: the planner statistics its column source reports (sift_colsrc.h SiftSrcStats), 0 where unknown */
+/* One row per leaf of an index or sift_table: the planner statistics its column source reports (agg/colsrc.h SiftSrcStats), 0 where unknown */
 Datum
 sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 {

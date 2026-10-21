@@ -11,7 +11,7 @@
 #include <sched.h>
 #include <time.h>
 
-#include "sift_aggkern_cases.h"
+#include "agg/kern_cases.h"
 
 extern double alt_sum_f64_a(const double *v, const uint64 *mask, int n);
 extern double alt_sum_f64_b(const double *v, const uint64 *mask, int n);

@@ -10,7 +10,7 @@
  * readable bytes past their last used byte (contents irrelevant); bit vectors are allocated in multiples of SIFT_COL_SELWORDS words.
  *
  * This is the one table of the generic operations on bit vectors, selections and integer columns: the aggregation executor
- * (sift_aggkern.h) and the JSON shredder (col/shred.h) call these slots instead of keeping their own.
+ * (agg/kern.h) and the JSON shredder (col/shred.h) call these slots instead of keeping their own.
  */
 #ifndef SIFT_COL_KERN_H
 #define SIFT_COL_KERN_H

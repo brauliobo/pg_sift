@@ -34,7 +34,7 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
-#include "sift_agg.h"
+#include "agg/agg.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"

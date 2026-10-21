@@ -23,20 +23,20 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-#include "sift_aggkern.h"
-#include "sift_aggpre.h"
-#include "sift_aggsel.h"
-#include "sift_aggwide.h"
+#include "agg/kern.h"
+#include "agg/pre.h"
+#include "agg/sel.h"
+#include "agg/wide.h"
 #include "col/col.h"
 #include "col/am.h"
 #include "col/pagg.h"
 #include "col/seg.h"
-#include "sift_colsrc.h"
+#include "agg/colsrc.h"
 #include "table/table.h"
 #include "core/visibility.h"
 #include "table/src_int.h"
 
-/* ---- a wide leaf: the dictionary of the exact datum images of the rows read, an entry the datum itself (sift_aggwide.h) ---- */
+/* ---- a wide leaf: the dictionary of the exact datum images of the rows read, an entry the datum itself (agg/wide.h) ---- */
 
 typedef struct WideBuild
 {

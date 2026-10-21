@@ -1,4 +1,4 @@
--- Aggregation operators (src/agg/sift_aggkern*.c): every SIMD level is bit-identical to the scalar
+-- Aggregation operators (src/agg/kern*.c): every SIMD level is bit-identical to the scalar
 -- specification, whatever sift.simd says. Levels above what the CPU supports fall back to the
 -- best supported one, so the output does not depend on the host.
 CREATE EXTENSION pg_sift;

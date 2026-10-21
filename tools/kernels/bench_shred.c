@@ -10,7 +10,7 @@
  */
 #include "harness.h"
 
-#include "sift_aggkern.h"
+#include "agg/kern.h"
 #include "col/kern.h"
 #include "col/codec_int.h"
 #include "col/shred.h"

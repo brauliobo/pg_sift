@@ -44,7 +44,7 @@ typedef struct SiftFilter
 extern SiftFilter *sift_filter_build(TIDBitmap *tbm, Size maxbytes, MemoryContext mcxt);
 
 /*
- * A filter built page by page, in ascending block order, from exact masks (a BM25 match set: sift_search.c): create once, then reset
+ * A filter built page by page, in ascending block order, from exact masks (a BM25 match set: agg/search.c): create once, then reset
  * and add the pages of the next range. Lossy pages and the byte budget of sift_filter_build do not apply.
  */
 extern SiftFilter *sift_filter_create(MemoryContext mcxt);

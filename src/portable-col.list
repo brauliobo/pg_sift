@@ -35,9 +35,9 @@ col/shred_spec.c
 col/shred_kern.c
 col/shred_kern_avx2.c
 col/shred_kern_avx512.c
-agg/sift_aggkern.c
-agg/sift_aggkern_avx2.c
-agg/sift_aggkern_avx512.c
+agg/kern.c
+agg/kern_avx2.c
+agg/kern_avx512.c
 # headers
 col/shred.h
 col/shred_int.h
@@ -56,7 +56,7 @@ col/codec.h
 col/codec_int.h
 col/codec_vec.h
 col/compress.h
-agg/sift_aggkern.h
-agg/sift_aggkern_int.h
-agg/sift_aggkern_cases.h
+agg/kern.h
+agg/kern_int.h
+agg/kern_cases.h
 core/testrng.h

@@ -4,7 +4,7 @@
  * gives (the text of a scalar through the input function of the leaf's type), into NULL (a key of an array or scalar is NULL), or into
  * the error SQL raises for it, which is kept to be raised when the row reaches the expression.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

@@ -5,9 +5,9 @@
 #define SIFT_TBL_SRC_INT_H
 
 #include "nodes/bitmapset.h"
-#include "sift_aggpre.h"
-#include "sift_aggsel.h"
-#include "sift_colsrc.h"
+#include "agg/pre.h"
+#include "agg/sel.h"
+#include "agg/colsrc.h"
 #include "table/table.h"
 
 typedef struct TblLeafBuf

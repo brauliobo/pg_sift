@@ -78,7 +78,7 @@ CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
 CREATE FUNCTION sift._test_col_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_level' LANGUAGE C STRICT;
 
--- Aggregation operators module (src/agg/sift_aggkern_test.c): bit-exact SIMD checks through sift.simd.
+-- Aggregation operators module (src/agg/kern_test.c): bit-exact SIMD checks through sift.simd.
 CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern_digest' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
@@ -247,8 +247,8 @@ CREATE FUNCTION sift._test_cc_equiv(seed int8, iters int4) RETURNS int8
 CREATE FUNCTION sift._test_cc_corrupt(seed int8, iters int4, OUT raised int8, OUT decoded int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_cc_corrupt' LANGUAGE C STRICT;
 
--- sift_colstub (src/agg/sift_aggstub*.c): an index access method without storage that carries the definition of a column index
--- (key columns, expressions, the `paths` option for jsonb columns) and a column source (src/agg/sift_colsrc.h) that reads the heap
+-- sift_colstub (src/agg/stub*.c): an index access method without storage that carries the definition of a column index
+-- (key columns, expressions, the `paths` option for jsonb columns) and a column source (src/agg/colsrc.h) that reads the heap
 -- pages raw, so that the aggregate planner and executor can be tried before sift_col exists. Every row of a page is present
 -- (no visibility check), the executor vets them. The index is never used by an ordinary plan.
 CREATE FUNCTION sift._test_aggstub_handler(internal) RETURNS index_am_handler

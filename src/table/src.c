@@ -1,5 +1,5 @@
 /*
- * table/src.c - the column source of SiftAgg over a sift_table (sift_colsrc.h, docs/COL-PLAN.md, docs/COL-TAM.md section 12).
+ * table/src.c - the column source of SiftAgg over a sift_table (agg/colsrc.h, docs/COL-PLAN.md, docs/COL-TAM.md section 12).
  *
  * The leaves are the columns of the table (the layout of the column groups, table/seg.c). The groups are read by the engine, one
  * source per column layout the segments were written for (a segment keeps its own after ALTER TABLE; its leaves are matched by attribute
@@ -29,15 +29,15 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-#include "sift_aggkern.h"
-#include "sift_aggpre.h"
-#include "sift_aggsel.h"
-#include "sift_aggwide.h"
+#include "agg/kern.h"
+#include "agg/pre.h"
+#include "agg/sel.h"
+#include "agg/wide.h"
 #include "col/col.h"
 #include "col/am.h"
 #include "col/pagg.h"
 #include "col/seg.h"
-#include "sift_colsrc.h"
+#include "agg/colsrc.h"
 #include "table/table.h"
 #include "table/src_int.h"
 #include "core/visibility.h"
@@ -81,7 +81,7 @@ leaf_tested(const SiftColDef *def, Oid typid)
 	return typid == CASHOID || typid == INTERVALOID || (typid == NUMERICOID && def->store == SIFT_COLS_VAR);
 }
 
-/* a leaf the executor reads through a dictionary of the datum images (sift_aggwide.h): the exact image of a column the table keeps by value as a size */
+/* a leaf the executor reads through a dictionary of the datum images (agg/wide.h): the exact image of a column the table keeps by value as a size */
 static bool
 leaf_dict(const SiftColDef *def, Oid typid)
 {

@@ -16,7 +16,7 @@ the includes). Checked by building them, not only by reading includes (`make -C 
 | segment writer/reader of units over the page store | `col/seg*.c` | 0.9k | builds, linked (not yet exercised) |
 | column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
 | shredder core (JSON paths into leaves, no JSON parser) | `col/shred*.c` | 1.6k | builds |
-| aggregation kernels (sum/min/max/count, group-by) | `sift_aggkern*.c` | 1.2k | builds |
+| aggregation kernels (sum/min/max/count, group-by) | `agg/kern*.c` | 1.2k | builds |
 | runtime SIMD (AVX2/AVX-512 tables, `core/cpu.c`) | `*_avx2.c`, `*_avx512.c` |  | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
 
 The MariaDB host (same C-library shim) syntax-checks all of them with its flags. aarch64: `clang --target=aarch64` accepts them with
@@ -26,7 +26,7 @@ PostgreSQL-bound, and staying so: the page/buffer store behind `core/store.h` (P
 already implements the same interface in `sqlite/store.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
 `col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
 (`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
-(`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
+(`agg/*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
 interface: the segment's liveness bits and an atomically published manifest give a single-writer host a snapshot by
 construction (how the BM25 SQLite host already works).
 
@@ -79,7 +79,7 @@ Each is a work item of the phases below: no host owns a `sift_colz` build option
 linked but its writer/reader path is only tested on PostgreSQL; the unit key space is heap TIDs (`MaxHeapTuplesPerPage` = 291 in the
 host shim, 256-page superblocks) and each host must choose its rowid mapping (6.5); `col/shred_pg.c` has no counterpart (SQLite needs a
 driver over `json_each`/JSONB text, MariaDB over its JSON text); `SiftColVisibility` has no non-PG implementation (a manifest-only one
-is trivial); the aggregate planner/executor (`sift_agg*.c`) and partial-state types
+is trivial); the aggregate planner/executor (`agg/*.c`) and partial-state types
 are PG; `make isa-check` and the sanitizer targets do not cover the column objects yet.
 
 ## 5. Recommendation
