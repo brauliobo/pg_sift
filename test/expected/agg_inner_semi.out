@@ -1,0 +1,186 @@
+-- An inner lookup join of Custom Scan (SiftAgg) that returns no column of the table (a dimension that only filters: `JOIN dims d ON d.id = ev.entity_id WHERE d.country = 7`)
+-- is a membership test when no key of the loaded rows repeats: the byte table of the semi join answers it (`Semi Lookup Tables`). A repeated key, a column of
+-- the table that the query reads, a LEFT join and a text key keep the generic join, which repeats a tuple per matching row. Every statement is run with the
+-- byte table, with sift.agg_semi_lut = off and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE ev (id int PRIMARY KEY, entity_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 30000 END, date '2024-01-01' + i % 700,
+       (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 300000) i;
+CREATE INDEX ev_col ON ev USING sift_col (entity_id, day, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+-- a dimension with a unique key, the same with a repeated key and a NULL key, and the same keys as text
+CREATE TABLE dims (id int PRIMARY KEY, country int, tier int2, active boolean);
+INSERT INTO dims SELECT i, i % 60, (i % 5)::int2, i % 7 <> 0 FROM generate_series(1, 30000) i;
+CREATE TABLE dims_dup (id int, country int, tier int2);
+INSERT INTO dims_dup SELECT id, country, tier FROM dims;
+INSERT INTO dims_dup VALUES (11, 11, 3), (NULL, 11, 1), (900000, 11, 1), (-5, 11, 1), (14, 14, 0);
+CREATE TABLE dims_text (id text, country int);
+INSERT INTO dims_text SELECT id::text, country FROM dims;
+CREATE TABLE dims8 (id int8, country int);
+INSERT INTO dims8 SELECT id, country FROM dims;
+INSERT INTO dims8 VALUES (5000000000, 7), (-5000000000, 7);
+ANALYZE dims; ANALYZE dims_dup; ANALYZE dims_text; ANALYZE dims8;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Semi Lookup Tables:%' OR l LIKE '%Join Key Filters:%' THEN r := r || ',' || trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_table bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_semi_lut = off;
+	EXECUTE format('CREATE TEMP TABLE r_no ON COMMIT DROP AS %s', q);
+	RESET sift.agg_semi_lut;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_no_table := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_no) UNION ALL (TABLE r_no EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_no, r_off;
+	RETURN NEXT;
+END $$;
+-- the dimension only filters: one country, half of the table, its own conditions on several columns, a second condition on the events
+SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = 7 GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country < 30 GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           4 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country < 30 AND d.tier >= 2 AND d.active AND day >= ''2025-01-01'' GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           4 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) AS n, min(day) AS d0 FROM ev JOIN dims d ON d.id = ev.entity_id AND d.country = 7');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = 999');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+-- two dimensions, one of them only filters
+SELECT * FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id JOIN dims d2 ON d2.id = ev.entity_id WHERE d.country < 5 GROUP BY d2.country');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 2 |           5 |           0 |              0
+(1 row)
+
+-- a repeated key repeats the tuple: the generic join
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.entity_id WHERE d.country = 11 GROUP BY kind');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.entity_id WHERE d.country = 14 GROUP BY kind');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.entity_id WHERE d.country = 13 GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+-- the rows that hold the condition have no repeated key although the table has (the table is unique among the kept rows)
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.entity_id WHERE d.country = 12 AND d.tier = 2 GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+-- a column the query reads, as a key, an aggregate argument or an aggregate filter
+SELECT * FROM same('SELECT d.tier, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = 7 GROUP BY d.tier');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(d.tier) AS n, sum(d.country) AS s FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country < 5');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) FILTER (WHERE d.tier = 2) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country < 5');
+            plan             | result_rows | vs_no_table | vs_normal_plan 
+-----------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1 |           1 |           0 |              0
+(1 row)
+
+-- a LEFT join keeps the events without a row, a text key and an int8 key (keys past int4 match no event) keep the generic join
+SELECT * FROM same('SELECT count(d.id) AS n, count(*) AS t FROM ev LEFT JOIN dims d ON d.id = ev.entity_id AND d.country = 7');
+  plan   | result_rows | vs_no_table | vs_normal_plan 
+---------+-------------+-------------+----------------
+ SiftAgg |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_text d ON d.id = ev.entity_id::text WHERE d.country = 7 GROUP BY kind');
+  plan   | result_rows | vs_no_table | vs_normal_plan 
+---------+-------------+-------------+----------------
+ SiftAgg |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims8 d ON d.id = ev.entity_id WHERE d.country = 7 GROUP BY kind');
+                       plan                        | result_rows | vs_no_table | vs_normal_plan 
+---------------------------------------------------+-------------+-------------+----------------
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           1 |           0 |              0
+(1 row)
+
+-- a prepared statement with a generic plan
+SET plan_cache_mode = force_generic_plan;
+PREPARE by_country(int) AS SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.entity_id WHERE d.country = $1 GROUP BY kind ORDER BY kind;
+EXECUTE by_country(7);
+ kind |  n   
+------+------
+ c    | 4995
+(1 row)
+
+EXECUTE by_country(999);
+ kind | n 
+------+---
+(0 rows)
+
+EXECUTE by_country(NULL);
+ kind | n 
+------+---
+(0 rows)
+
+SET sift.enable_agg = off;
+EXECUTE by_country(7);
+ kind |  n   
+------+------
+ c    | 4995
+(1 row)
+
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev, dims, dims_dup, dims_text, dims8;
+DROP EXTENSION pg_sift;

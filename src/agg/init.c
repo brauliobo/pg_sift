@@ -169,6 +169,17 @@ extend_layout(AggExec *ex)
 	ex->lay = lay;
 }
 
+/* does a combo take a column of the rows combo ci matched (a lookup key or expression over an earlier lookup's output)? */
+static bool
+combo_read(AggExec *ex, int ci)
+{
+	for (int o = 0; o < ex->spec->ncombo; o++)
+		for (int p = 0; p < ex->spec->combo[o].nleaves; p++)
+			if (o != ci && ex->spec->combo[o].leaf[p] < 0 && ex->spec->combo[o].refcombo[p] == ci)
+				return true;
+	return false;
+}
+
 static void
 semi_lut_build(AggExec *ex, int ci)
 {
@@ -180,8 +191,8 @@ semi_lut_build(AggExec *ex, int ci)
 				hi = PG_INT32_MIN;
 	bool	   *keep;
 
-	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
-		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut ||
+	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
+		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut || combo_read(ex, ci) ||
 		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;
 	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
@@ -218,7 +229,18 @@ semi_lut_build(AggExec *ex, int ci)
 	cs->slut = MemoryContextAllocZero(ex->cxt, cs->snlut + SIFT_AGG_PAD);
 	for (uint32 r = 0; r < m->nrow; r++)
 		if (keep[r])
+		{
+			/* an inner join repeats a tuple per row of its key: only a key that holds once is a membership test */
+			if (cs->slut[m->kint[r] - cs->slo] && j->kind == SJ_INNER)
+			{
+				pfree(cs->slut);
+				cs->slut = NULL;
+				cs->snlut = 0;
+				pfree(keep);
+				return;
+			}
 			cs->slut[m->kint[r] - cs->slo] = 1;
+		}
 	pfree(keep);
 	ex->nsemi++;
 	ex->semi_bytes += cs->snlut;
