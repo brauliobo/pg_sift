@@ -53,74 +53,50 @@ sift_col_leaf_store(Oid typid, SiftColStore *store)
 	return false;
 }
 
+typedef struct TypeTag
+{
+	Oid			oid;
+	uint8		tag;
+} TypeTag;
+
+/* The type each tag stands for */
+static const TypeTag tag_types[] = {
+	{BOOLOID, SIFT_COLT_BOOL}, {INT2OID, SIFT_COLT_INT2}, {INT4OID, SIFT_COLT_INT4}, {INT8OID, SIFT_COLT_INT8},
+	{FLOAT4OID, SIFT_COLT_FLOAT4}, {FLOAT8OID, SIFT_COLT_FLOAT8}, {NUMERICOID, SIFT_COLT_NUMERIC}, {TEXTOID, SIFT_COLT_TEXT},
+	{BYTEAOID, SIFT_COLT_BYTEA}, {DATEOID, SIFT_COLT_DATE}, {TIMESTAMPOID, SIFT_COLT_TIMESTAMP}, {TIMESTAMPTZOID, SIFT_COLT_TIMESTAMPTZ},
+	{UUIDOID, SIFT_COLT_UUID}, {JSONBOID, SIFT_COLT_JSONB}, {CASHOID, SIFT_COLT_MONEY}, {INTERVALOID, SIFT_COLT_INTERVAL},
+	{TIMEOID, SIFT_COLT_TIME}, {TIMETZOID, SIFT_COLT_TIMETZ}, {MACADDROID, SIFT_COLT_MACADDR}, {MACADDR8OID, SIFT_COLT_MACADDR8}
+};
+
+/* The other types stored as a tag's type */
+static const TypeTag tag_aliases[] = {
+	{VARCHAROID, SIFT_COLT_TEXT}, {BPCHAROID, SIFT_COLT_TEXT}, {NAMEOID, SIFT_COLT_TEXT},
+	{INETOID, SIFT_COLT_VARLENA}, {CIDROID, SIFT_COLT_VARLENA}, {BITOID, SIFT_COLT_VARLENA}, {VARBITOID, SIFT_COLT_VARLENA}
+};
+
 /* The format's tag of a PostgreSQL type, and the type a tag stands for: the one place the engine's logical types meet type OIDs */
 uint8
 sift_col_type_of_oid(Oid typid)
 {
-	switch (typid)
-	{
-		case BOOLOID:
-			return SIFT_COLT_BOOL;
-		case INT2OID:
-			return SIFT_COLT_INT2;
-		case INT4OID:
-			return SIFT_COLT_INT4;
-		case INT8OID:
-			return SIFT_COLT_INT8;
-		case FLOAT4OID:
-			return SIFT_COLT_FLOAT4;
-		case FLOAT8OID:
-			return SIFT_COLT_FLOAT8;
-		case NUMERICOID:
-			return SIFT_COLT_NUMERIC;
-		case TEXTOID:
-		case VARCHAROID:
-		case BPCHAROID:
-		case NAMEOID:
-			return SIFT_COLT_TEXT;
-		case BYTEAOID:
-			return SIFT_COLT_BYTEA;
-		case DATEOID:
-			return SIFT_COLT_DATE;
-		case TIMESTAMPOID:
-			return SIFT_COLT_TIMESTAMP;
-		case TIMESTAMPTZOID:
-			return SIFT_COLT_TIMESTAMPTZ;
-		case UUIDOID:
-			return SIFT_COLT_UUID;
-		case JSONBOID:
-			return SIFT_COLT_JSONB;
-		case CASHOID:
-			return SIFT_COLT_MONEY;
-		case INTERVALOID:
-			return SIFT_COLT_INTERVAL;
-		case TIMEOID:
-			return SIFT_COLT_TIME;
-		case TIMETZOID:
-			return SIFT_COLT_TIMETZ;
-		case MACADDROID:
-			return SIFT_COLT_MACADDR;
-		case MACADDR8OID:
-			return SIFT_COLT_MACADDR8;
-		case INETOID:
-		case CIDROID:
-		case BITOID:
-		case VARBITOID:
-			return SIFT_COLT_VARLENA;
-		default:
-			if (type_is_enum(typid))
-				return SIFT_COLT_ENUM;
-			return OidIsValid(get_element_type(typid)) || type_is_range(typid) || type_is_multirange(typid) ? SIFT_COLT_VARLENA : SIFT_COLT_OTHER;
-	}
+	for (int i = 0; i < lengthof(tag_types); i++)
+		if (tag_types[i].oid == typid)
+			return tag_types[i].tag;
+	for (int i = 0; i < lengthof(tag_aliases); i++)
+		if (tag_aliases[i].oid == typid)
+			return tag_aliases[i].tag;
+	if (type_is_enum(typid))
+		return SIFT_COLT_ENUM;
+	return OidIsValid(get_element_type(typid)) || type_is_range(typid) || type_is_multirange(typid) ? SIFT_COLT_VARLENA : SIFT_COLT_OTHER;
 }
 
-static const Oid type_oids[SIFT_COLT_END] = {
-	[SIFT_COLT_BOOL] = BOOLOID, [SIFT_COLT_INT2] = INT2OID, [SIFT_COLT_INT4] = INT4OID, [SIFT_COLT_INT8] = INT8OID,
-	[SIFT_COLT_FLOAT4] = FLOAT4OID, [SIFT_COLT_FLOAT8] = FLOAT8OID, [SIFT_COLT_NUMERIC] = NUMERICOID, [SIFT_COLT_TEXT] = TEXTOID,
-	[SIFT_COLT_BYTEA] = BYTEAOID, [SIFT_COLT_DATE] = DATEOID, [SIFT_COLT_TIMESTAMP] = TIMESTAMPOID, [SIFT_COLT_TIMESTAMPTZ] = TIMESTAMPTZOID,
-	[SIFT_COLT_UUID] = UUIDOID, [SIFT_COLT_JSONB] = JSONBOID, [SIFT_COLT_MONEY] = CASHOID, [SIFT_COLT_INTERVAL] = INTERVALOID,
-	[SIFT_COLT_TIME] = TIMEOID, [SIFT_COLT_TIMETZ] = TIMETZOID, [SIFT_COLT_MACADDR] = MACADDROID, [SIFT_COLT_MACADDR8] = MACADDR8OID
-};
+static Oid
+type_of_tag(uint8 tag)
+{
+	for (int i = 0; i < lengthof(tag_types); i++)
+		if (tag_types[i].tag == tag)
+			return tag_types[i].oid;
+	return InvalidOid;
+}
 
 /* A leaf of a plain attribute yields exactly the type of the attribute in desc (varchar stays varchar); any other one the tag's type */
 Oid
@@ -128,7 +104,7 @@ sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 {
 	if (def->attno > 0 && def->path[0] == '\0')
 		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
-	return type_oids[def->type];
+	return type_of_tag(def->type);
 }
 
 /* ---------- the leaves of an attribute ---------- */
