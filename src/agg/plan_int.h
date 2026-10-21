@@ -256,6 +256,7 @@ extern SiftAggPred *new_pred(AggCtx *c, SiftAggPredKind kind);
 extern char *expr_text(AggCtx *c, Node *n);
 extern const char *cmp_text(int op);
 extern void use_leaf(AggCtx *c, int leaf);
+extern void use_matched_leaf(AggCtx *c, int leaf);
 extern SiftAggPred *make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf);
 extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);
 extern void junction_done(SiftAggPred *p);

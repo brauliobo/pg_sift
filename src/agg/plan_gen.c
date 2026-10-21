@@ -226,7 +226,7 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *ma
 	for (int p = 0; p < w.nl; p++)
 	{
 		out->leaf[p] = w.leaf[p];
-		use_leaf(c, w.leaf[p]);
+		use_matched_leaf(c, w.leaf[p]);
 	}
 	out->expr = gen_sub_mutator(arg, &w);
 	cost_qual_eval_node(&qc, arg, c->root);

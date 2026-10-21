@@ -782,7 +782,7 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 			{
 				if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
 					return false;
-				use_leaf(c, w.leaf[p]);
+				use_matched_leaf(c, w.leaf[p]);
 			}
 			foreach_ptr(Var, v, w.vars)
 				if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
