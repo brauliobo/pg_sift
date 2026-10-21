@@ -266,9 +266,7 @@ prune_args(FunctionCallInfo fcinfo, SiftSrcPrune *p, int *nprune)
 	*nprune = !PG_ARGISNULL(3);
 	if (*nprune)
 	{
-		p->leaf = PG_GETARG_INT32(3);
-		p->lo = PG_GETARG_INT64(4);
-		p->hi = PG_GETARG_INT64(5);
+		*p = (SiftSrcPrune) {PG_GETARG_INT32(3), PG_GETARG_INT64(4), PG_GETARG_INT64(5)};
 	}
 }
 
