@@ -244,12 +244,11 @@ write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPoin
 
 		if (n == rem)
 		{
-			Page		page = BufferGetPage(cur);
 			SiftPageEdit ed;
 
-			sift_page_edit_begin(&ed, page, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
-			put_piece(page, tid, !first, payload + done, n);
-			sift_page_edit_end(index, cur, &ed, 0, 0);
+			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
+			put_piece(ed.page, tid, !first, payload + done, n);
+			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
 		/* a row that fits an empty page moves there whole rather than splitting */

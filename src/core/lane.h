@@ -78,27 +78,34 @@ extern Buffer sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, in
 							 SiftLaneFill fill, void *arg, bool *crossed);
 
 /*
- * An append to a locked page, logged as the generic WAL record (RM_GENERIC_ID) the page's own change would be, without the copy of the
+ * An append to locked pages, logged as the generic WAL record (RM_GENERIC_ID) the change of the pages would be, without the copy of a
  * page, the comparison of its bytes and the copy back that GenericXLogFinish makes for every record: begin saves the first headlen bytes
- * (at most SIFT_EDIT_HEAD: the page header and what the caller keeps in front of the records) and opens a critical section; the caller
- * changes the page (no error may be raised: the bytes it touches are those head bytes, the optional region of the end call, and
- * [pd_lower, new pd_lower) for the appended record); end logs the changed head bytes, the region and the appended bytes, marks the
- * buffer dirty and closes the critical section. The record is replayed by generic_redo like any other.
+ * of a page (at most SIFT_EDIT_HEAD: the page header and what the caller keeps in front of the records) and opens a critical section;
+ * the caller changes the pages (no error may be raised: the bytes it touches are those head bytes, the region of
+ * sift_page_edit_extra, and [pd_lower, new pd_lower) for the appended record); end logs the changed head bytes, the regions and the
+ * appended bytes of n edits in one record, marks the buffers dirty and closes the critical sections. The record is replayed by
+ * generic_redo like any other.
  */
 #define SIFT_EDIT_HEAD	96
+#define SIFT_EDIT_PAGES	2
 typedef struct SiftPageEdit
 {
+	Buffer		buf;
 	Page		page;
 	Size		headlen;
 	uint16		lower;
+	Size		extra_off;
+	Size		extra_len;
 	char		head[SIFT_EDIT_HEAD];
 #ifdef USE_ASSERTION_CHECKING
 	char		image[BLCKSZ];		/* the page before: the logged regions must rebuild the page from it */
 #endif
 } SiftPageEdit;
 
-extern void sift_page_edit_begin(SiftPageEdit *e, Page page, Size headlen);
-extern void sift_page_edit_end(Relation index, Buffer buf, SiftPageEdit *e, Size extra_off, Size extra_len);
+extern void sift_page_edit_begin(SiftPageEdit *e, Buffer buf, Size headlen);
+/* A region of the page that the change writes besides the head and the appended bytes (a slot of the page), logged as it is */
+extern void sift_page_edit_extra(SiftPageEdit *e, Size off, Size len);
+extern void sift_page_edit_end(Relation index, SiftPageEdit *e, int n);
 
 /* ---------- walking ---------- */
 
