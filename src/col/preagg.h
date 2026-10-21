@@ -191,8 +191,26 @@ typedef struct SiftCRollup
 	double	   *maxf[SIFT_PAGG_MAX_MEAS];
 } SiftCRollup;
 
-/* false when the bytes are not a rollup of this schema; the arrays are palloc'd in mcxt */
+/*
+ * The columns of a rollup a reader uses; the others are skipped without being stored (their arrays are NULL in the result). A dim or measure not listed is skipped,
+ * a measure listed without sums or minmax has no sums or no minima and maxima. The counts of the tuples and the non-NULL counts of a listed measure are always read.
+ */
+typedef struct SiftCRollupNeed
+{
+	int			ndims;
+	int16		dim[SIFT_PAGG_MAX_RDIMS + SIFT_PAGG_MAX_MEAS];
+	int			nmeas;
+	struct
+	{
+		int16		leaf;
+		bool		sums;
+		bool		minmax;
+	}			meas[SIFT_PAGG_MAX_MEAS];
+} SiftCRollupNeed;
+
+/* false when the bytes are not a rollup of this schema; the arrays are palloc'd in mcxt; need NULL: every column */
 extern bool sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r);
+extern bool sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r);
 /* The rollup added up by one of its dims: the histogram of that leaf over the elements (false: the rollup lacks the dim) */
 extern bool sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, int leaf, MemoryContext mcxt, SiftCHistDim *out);
 

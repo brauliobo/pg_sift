@@ -277,8 +277,52 @@ sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 
 /* ---------- the rollup, read ---------- */
 
+/* the varints of n values are passed over */
+static void
+skip_u(Rd *r, uint32 n)
+{
+	while (n-- > 0)
+	{
+		const uint8 *p = r->p;
+
+		while (p < r->end && (*p & 0x80))
+			p++;
+		if (p >= r->end)
+		{
+			r->bad = true;
+			return;
+		}
+		r->p = p + 1;
+	}
+}
+
+static bool
+need_dim(const SiftCRollupNeed *need, int leaf)
+{
+	for (int i = 0; need && i < need->ndims; i++)
+		if (need->dim[i] == leaf)
+			return true;
+	return need == NULL;
+}
+
+/* the position of the measure leaf in need, -1 if it is skipped (need NULL: every measure, whole) */
+static int
+need_meas(const SiftCRollupNeed *need, int leaf)
+{
+	for (int i = 0; need && i < need->nmeas; i++)
+		if (need->meas[i].leaf == leaf)
+			return i;
+	return -1;
+}
+
 bool
 sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r)
+{
+	return sift_cpagg_rollup_decode_need(s, blob, len, mcxt, NULL, r);
+}
+
+bool
+sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	Rd			rd = {blob, blob + len, false};
@@ -315,8 +359,10 @@ sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, 
 	for (int j = 0; j < r->ndims; j++)
 	{
 		int64		prev = 0;
+		bool		want = need_dim(need, r->dim[j]);
+		uint8	   *nulls = NULL;
+		uint32		nnull = 0;
 
-		r->key[j] = palloc0(nt * sizeof(int64));
 		if (rd.p >= rd.end || *rd.p > 1)
 			goto done;
 		if (*rd.p++)
@@ -325,14 +371,21 @@ sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, 
 
 			if ((uint32) (rd.end - rd.p) < nb)
 				goto done;
-			r->isnull[j] = palloc0(nt);
+			nulls = palloc0(nt);
 			for (uint32 t = 0; t < nt; t++)
-				r->isnull[j][t] = rd.p[t / 8] >> (t % 8) & 1;
+				nnull += nulls[t] = rd.p[t / 8] >> (t % 8) & 1;
 			rd.p += nb;
 		}
+		if (!want)
+		{
+			skip_u(&rd, nt - nnull);
+			continue;
+		}
+		r->key[j] = palloc0(nt * sizeof(int64));
+		r->isnull[j] = nulls;
 		for (uint32 t = 0; t < nt; t++)
 		{
-			if (r->isnull[j] && r->isnull[j][t])
+			if (nulls && nulls[t])
 				continue;
 			prev = (int64) ((uint64) prev + (uint64) get_zz(&rd));
 			r->key[j][t] = prev;
@@ -344,25 +397,66 @@ sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, 
 	for (int m = 0; m < r->nmeas; m++)
 	{
 		bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
+		int			k = need_meas(need, r->meas[m]);
+		bool		want = need == NULL || k >= 0,
+					sums = need == NULL || (k >= 0 && need->meas[k].sums),
+					mm = need == NULL || (k >= 0 && need->meas[k].minmax);
+		uint32		nnz = 0;
 
-		r->nn[m] = palloc(nt * sizeof(uint32));
+		if (want)
+			r->nn[m] = palloc(nt * sizeof(uint32));
 		for (uint32 t = 0; t < nt; t++)
-			r->nn[m][t] = (uint32) get_u(&rd);
-		if (fl)
+		{
+			uint32		n = (uint32) get_u(&rd);
+
+			if (want)
+				r->nn[m][t] = n;
+			nnz += n != 0;
+		}
+		if (!sums)
+		{
+			if (fl)
+			{
+				if ((Size) (rd.end - rd.p) < (Size) nt * sizeof(double))
+					goto done;
+				rd.p += nt * sizeof(double);
+			}
+			else
+				skip_u(&rd, nt);
+		}
+		else if (fl)
 		{
 			if ((Size) (rd.end - rd.p) < (Size) nt * sizeof(double))
 				goto done;
 			r->sumf[m] = palloc(nt * sizeof(double));
 			memcpy(r->sumf[m], rd.p, nt * sizeof(double));
 			rd.p += nt * sizeof(double);
-			r->minf[m] = palloc0(nt * sizeof(double));
-			r->maxf[m] = palloc0(nt * sizeof(double));
 		}
 		else
 		{
 			r->sum[m] = palloc(nt * sizeof(SiftCI128));
 			for (uint32 t = 0; t < nt; t++)
 				r->sum[m][t] = get_zz128(&rd);
+		}
+		if (!mm)
+		{
+			if (fl)
+			{
+				if ((Size) (rd.end - rd.p) < (Size) nnz * 2 * sizeof(double))
+					goto done;
+				rd.p += (Size) nnz * 2 * sizeof(double);
+			}
+			else
+				skip_u(&rd, nnz * 2);
+			continue;
+		}
+		if (fl)
+		{
+			r->minf[m] = palloc0(nt * sizeof(double));
+			r->maxf[m] = palloc0(nt * sizeof(double));
+		}
+		else
+		{
 			r->min[m] = palloc0(nt * sizeof(int64));
 			r->max[m] = palloc0(nt * sizeof(int64));
 		}

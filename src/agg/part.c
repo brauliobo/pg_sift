@@ -449,9 +449,9 @@ part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 }
 
 static bool
-part_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, SiftSrcRollup *r)
+part_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
 {
-	if (!sift_colsrc_unit_rollup(cur_of(impl), unit_of(impl), list, r))
+	if (!sift_colsrc_unit_rollup(cur_of(impl), unit_of(impl), list, need, r))
 		return false;
 	for (int j = 0; j < r->ndims; j++)
 		r->dict[j] = presented(impl, SLOT_ROLLUP(ps_of(impl), j), r->dict[j]);

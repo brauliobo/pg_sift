@@ -73,6 +73,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: a unit answered from its rollup decodes only the dims and measures the query reads (and of a measure only the counts, the sums or the minima and maxima it adds up); the other columns are passed over without being stored. 100,000 documents, 29 units of 1,440 tuples: 17.3 against 24.6 million user instructions for `GROUP BY kind` with `count`, `avg`, and 22.6 against 28.7 for three keys.
+
 - Added: the rollups of the elements of a list answer aggregates with `FILTER (WHERE ...)` on dims (`count(*) FILTER (WHERE band >= 8)`, the shares of a score band): each filter runs on the tuples. A filter on a measure still scans.
 
 - Added: `SiftAgg` answers the integer cast of a jsonb member the index holds as float8 (`(metrics -> 'k')::int`, `CAST(jsonb_extract_path(metrics, 'k') AS bigint)`) in a filter, a group key or an aggregate: the cast runs over the jsonb the stored float stands for, so it rounds as numeric does and raises `integer out of range` for the rows that reach it (PostgreSQL 18). Test `agg_jsonb_int_cast`, fixture `j_jsonb_int_cast`.

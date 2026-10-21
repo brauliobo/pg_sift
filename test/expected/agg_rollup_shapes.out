@@ -64,7 +64,10 @@ INSERT INTO pa_q VALUES
 	(19, 'key: month, filter on it', 'SELECT left(e.seen, 7), e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE left(e.seen, 7) = ''2026-02'' GROUP BY 1, 2'),
 	(20, 'filter on dims',       'SELECT e.kind, avg(e.score) FILTER (WHERE e.flag = ''fa''), sum(e.qty) FILTER (WHERE e.flag <> ''fb'' OR e.band > 5), count(e.band) FILTER (WHERE e.kind IS NULL), min(e.score) FILTER (WHERE e.flag = ''zz'') FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(21, 'filter and key, where', 'SELECT left(e.seen, 7), count(*) FILTER (WHERE e.band >= 8), count(*) FILTER (WHERE e.band IS NULL), max(e.qty) FILTER (WHERE e.kind = ''k1'') FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.flag <> ''fc'' GROUP BY 1'),
-	(22, 'filter on a measure',   'SELECT e.kind, count(*) FILTER (WHERE e.score > 5) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1');
+	(22, 'filter on a measure',   'SELECT e.kind, count(*) FILTER (WHERE e.score > 5) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
+	(23, 'every part of measures', 'SELECT e.flag, count(e.kind), count(e.score), sum(e.qty), min(e.qty), max(e.score), avg(e.qty), count(e.band), min(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
+	(24, 'counts of a measure only', 'SELECT e.kind, count(e.score), count(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
+	(25, 'one measure, minmax only', 'SELECT e.kind, e.flag, min(e.qty), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1, 2');
 CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
@@ -101,7 +104,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | all  |                                        | t
  21 | filter and key, where     | all  |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | all  |                                        | t
+ 24 | counts of a measure only  | all  |                                        | t
+ 25 | one measure, minmax only  | all  |                                        | t
+(25 rows)
 
 -- rows change: the units they are on are scanned, the others answer; the derived keys follow
 UPDATE ev SET items = '[{"kind": "k1", "flag": "fa", "band": 9, "seen": "2026-02-10", "score": 1.5, "qty": 2}]' WHERE id BETWEEN 100 AND 150;
@@ -131,7 +137,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | some |                                        | t
  21 | filter and key, where     | some |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | some |                                        | t
+ 24 | counts of a measure only  | some |                                        | t
+ 25 | one measure, minmax only  | some |                                        | t
+(25 rows)
 
 VACUUM (index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
@@ -159,7 +168,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | some |                                        | t
  21 | filter and key, where     | some |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | some |                                        | t
+ 24 | counts of a measure only  | some |                                        | t
+ 25 | one measure, minmax only  | some |                                        | t
+(25 rows)
 
 -- rows in the write buffer, then sealed
 INSERT INTO ev SELECT g, g % 7, '[{"kind": null, "flag": "fc", "band": null, "seen": "2026-03-01", "score": 2.5, "qty": 3}, {"kind": "k2", "flag": "fa", "band": 4, "seen": "2026-01-02"}]', repeat('p', 200)
@@ -189,7 +201,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | some |                                        | t
  21 | filter and key, where     | some |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | some |                                        | t
+ 24 | counts of a measure only  | some |                                        | t
+ 25 | one measure, minmax only  | some |                                        | t
+(25 rows)
 
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;
  promoted 
@@ -223,7 +238,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | some |                                        | t
  21 | filter and key, where     | some |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | some |                                        | t
+ 24 | counts of a measure only  | some |                                        | t
+ 25 | one measure, minmax only  | some |                                        | t
+(25 rows)
 
 SELECT sift.col_verify('ev_col', true);
  col_verify 
@@ -270,7 +288,10 @@ SELECT * FROM pa_check('ev');
  20 | filter on dims            | all  |                                        | t
  21 | filter and key, where     | all  |                                        | t
  22 | filter on a measure       | -    | aggregate with FILTER                  | t
-(22 rows)
+ 23 | every part of measures    | all  |                                        | t
+ 24 | counts of a measure only  | all  |                                        | t
+ 25 | one measure, minmax only  | all  |                                        | t
+(25 rows)
 
 DROP TABLE ev, ev_dim, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int);
