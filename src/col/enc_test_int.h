@@ -110,8 +110,8 @@ extern void check_vers(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 extern void check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n);
 
 /* chunk_test.c */
-extern void check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCZone *z);
-extern void check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z);
+extern void check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCZone *z, bool tags);
+extern void check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z, bool tags);
 extern void check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCChunk *ch, const SiftCZone *z, bool direct);
 extern void check_strs(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch);
 extern void check_lengths(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch);

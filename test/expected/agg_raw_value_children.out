@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb, comments jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"overall": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"overall": 8}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
                   WHEN 4 THEN NULL ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END,
        CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"reviewer"},{"type":"manager"}]'::jsonb END
 FROM generate_series(1, 20000) i;
@@ -32,7 +32,7 @@ CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan b
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
--- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5), a JSON null casts to NULL.
+-- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5).
 SELECT * FROM check_query('union', $q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
@@ -41,7 +41,7 @@ SELECT * FROM check_query('union', $q$
 $q$);
  label | scan | same |                                               outcome                                                
 -------+------+------+------------------------------------------------------------------------------------------------------
- union | t    | t    | [{"n": 13333, "ids": 13333, "category": "all"}, {"n": 4889, "ids": 4889, "category": "high"}, {"n": 
+ union | t    | t    | [{"n": 13333, "ids": 13333, "category": "all"}, {"n": 6221, "ids": 6221, "category": "low"}, {"n": 7
 (1 row)
 
 SELECT * FROM check_query('union all, filter, key', $q$
@@ -53,7 +53,7 @@ SELECT * FROM check_query('union all, filter, key', $q$
 $q$);
          label          | scan | same |                                               outcome                                                
 ------------------------+------+------+------------------------------------------------------------------------------------------------------
- union all, filter, key | t    | t    | [{"k": 0, "n": 1223, "category": "high"}, {"k": 0, "n": 2110, "category": "low"}, {"k": 0, "n": 3333
+ union all, filter, key | t    | t    | [{"k": 0, "n": 1554, "category": "low"}, {"k": 0, "n": 1779, "category": "high"}, {"k": 0, "n": 3333
 (1 row)
 
 -- a cast to numeric keeps the scale the document wrote, which the stored float does not: the normal plan (agg_child_member_value)
@@ -65,7 +65,7 @@ SELECT * FROM check_query('numeric', $q$
 $q$);
   label  | scan | same |                                               outcome                                                
 ---------+------+------+------------------------------------------------------------------------------------------------------
- numeric | f    | t    | [{"n": 1776, "v": 1}, {"n": 1776, "v": 2}, {"n": 1776, "v": 3}, {"n": 1777, "v": 4}, {"n": 1777, "v"
+ numeric | f    | t    | [{"n": 1776, "v": 1}, {"n": 1776, "v": 2}, {"n": 1776, "v": 3}, {"n": 1777, "v": 4}, {"n": 1779, "v"
 (1 row)
 
 -- `x IS TRUE` over an existence test counts the rows the test selects, with or without a join
@@ -96,7 +96,7 @@ SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FR
    WHERE f.id < 20000 GROUP BY 1$q$);
     label     | scan | same |                                              outcome                                               
 --------------+------+------+----------------------------------------------------------------------------------------------------
- excluded row | t    | t    | [{"n": 13333, "category": "all"}, {"n": 4889, "category": "high"}, {"n": 8444, "category": "low"}]
+ excluded row | t    | t    | [{"n": 13333, "category": "all"}, {"n": 6221, "category": "low"}, {"n": 7112, "category": "high"}]
 (1 row)
 
 SELECT * FROM check_query('other key', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other'

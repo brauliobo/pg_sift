@@ -276,6 +276,7 @@ typedef struct SiftColIndexStats
 	uint32		nsegments;		/* immutable */
 	uint32		nwbuf;		/* write buffers */
 	uint32		wbuf_ovf;		/* the leaves a write buffer holds an overflow value of (SIFT_COL_OVF_BIT) */
+	uint32		wbuf_jnull;		/* ... and a JSON null of */
 	uint64		bytes;			/* of the immutable segments */
 	uint32		nunits;			/* (segment, sb) units */
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */
@@ -300,6 +301,7 @@ typedef struct SiftColLeafStats
 	bool		has_sum;
 	bool		has_ovf;		/* some unit's zone is flagged with an overflow value (a dead row's too, until the segment is rewritten) */
 	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
+	bool		has_jnull;		/* some unit's zone is flagged SIFT_COLZ_JNULL: a NULL slot of the leaf is a JSON null (a segment written before the flag does not say) */
 	bool		nokinds;		/* some segment of column format below SIFT_COL_FORMAT_KINDS holds NULL slots (or astext values) of the leaf: a JSON null and a missing key, or the type of a value, cannot be told in it (docs/COL.md 2.2) */
 } SiftColLeafStats;
 

@@ -19,6 +19,7 @@ typedef struct SiftCWbufHint
 	BlockNumber tail[SIFT_LANES];
 	uint64		ovf_gen;		/* the write buffer whose overflow leaves ovf_known describes */
 	uint32		ovf_known;
+	uint32		jnull_known;	/* the same for the leaves with a JSON null */
 } SiftCWbufHint;
 
 /*
@@ -28,6 +29,9 @@ typedef struct SiftCWbufHint
  * the scan, and the planner of a later one sees the mask (docs/COL-PLAN.md). The mask stays until the buffer is promoted, whose zones then say it.
  */
 extern uint32 sift_cwbuf_overflow(const SiftDirSnapshot *dir);
+
+/* The leaves a write buffer holds a JSON null of (SIFT_COL_OVF_BIT), in the sum_dl word of its directory entry, kept as the overflow mask is; only a cast of it before PostgreSQL 18 needs it */
+extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
 
 /*
  * Appends the row to the open write buffer (creating it when none; lane MyProcNumber % SIFT_LANES, other lanes when the tail is

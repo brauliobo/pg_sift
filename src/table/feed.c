@@ -133,12 +133,14 @@ typedef struct PathWbuf
 	uint64		gen;
 	uint16	   *seen;			/* [npages] the rows each page held when it was last read, 0xFFFF before: a page fills while it is the target of a backend */
 	bool		ovf[SIFT_COL_MAX_COLS];
+	bool		jnull[SIFT_COL_MAX_COLS];
 } PathWbuf;
 
 typedef struct PathOvf
 {
 	const SiftColSchema *schema;
 	bool	   *ovf;
+	bool	   *jnull;
 } PathOvf;
 
 static void
@@ -153,10 +155,16 @@ row_path_ovf(const SiftColRow *row, void *arg)
 		if (def->attno == 0 || !def->path[0])
 			continue;
 		if (def->parent < 0)
+		{
 			po->ovf[c] |= row->val[c].overflow;
+			po->jnull[c] |= row->val[c].isnull && !row->val[c].overflow && row->val[c].tag == SIFT_COLTAG_JNULL;
+		}
 		else
 			for (uint64 j = 0, n = row->val[def->parent].isnull ? 0 : row->val[def->parent].v.i; j < n; j++)
+			{
 				po->ovf[c] |= row->elem[c][j].overflow;
+				po->jnull[c] |= row->elem[c][j].isnull && !row->elem[c][j].overflow && row->elem[c][j].tag == SIFT_COLTAG_JNULL;
+			}
 	}
 }
 
@@ -228,9 +236,9 @@ path_zones(Relation rel, SiftTblRel *st, const SiftTblLayout *l)
 	return c->pls;
 }
 
-/* The leaves of the write buffers that hold a value the leaf cannot: only the pages that grew since the last call are decoded */
+/* The leaves of the write buffers that hold a value the leaf cannot, or a JSON null: only the pages that grew since the last call are decoded */
 static void
-path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf)
+path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf, bool *jnull)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
 	MemoryContext rowcx = AllocSetContextCreate(CurrentMemoryContext, "sift_table path ovf", ALLOCSET_SMALL_SIZES);
@@ -241,7 +249,7 @@ path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf)
 	{
 		SiftTblSeg	seg = st->wbuf[i];
 		PathWbuf   *w = path_wbuf(st, &seg);
-		PathOvf		po = {l->schema, w->ovf};
+		PathOvf		po = {l->schema, w->ovf, w->jnull};
 
 		sift_tbl_seg_load(rel, &seg);
 		for (uint32 p = 0; p < seg.npages; p++)
@@ -252,7 +260,10 @@ path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf)
 			w->seen[p] = TBL_PAGE(copy.data)->nrows;
 		}
 		for (int k = 0; k < l->schema->ncols; k++)
+		{
 			ovf[k] |= w->ovf[k];
+			jnull[k] |= w->jnull[k];
+		}
 	}
 	MemoryContextDelete(rowcx);
 	for (int i = 0; i < c->npwb; i++)
@@ -270,11 +281,12 @@ path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf)
 }
 
 void
-sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf)
+sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf, bool *wjnull)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
 
 	memset(wovf, 0, l->schema->ncols * sizeof(bool));
+	memset(wjnull, 0, l->schema->ncols * sizeof(bool));
 	if (!l->shred)
 	{
 		for (int i = 0; i < l->schema->ncols; i++)
@@ -283,7 +295,7 @@ sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wo
 	}
 	sift_tbl_refresh(rel, st);
 	memcpy(ls, path_zones(rel, st, l), l->schema->ncols * sizeof(SiftColLeafStats));
-	path_wbuf_ovf(rel, st, l, wovf);
+	path_wbuf_ovf(rel, st, l, wovf, wjnull);
 }
 
 /* Does the segment schema hold the leaf of every declared path of the table's layout (a segment written before the declaration does not)? */

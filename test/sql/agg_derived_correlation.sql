@@ -42,7 +42,7 @@ VACUUM (FREEZE, ANALYZE) odd_facts;
 VACUUM (FREEZE, ANALYZE) plain_facts;
 ANALYZE entities;
 ANALYZE mappings;
--- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run (before PostgreSQL 18 its child plans pay the cost of a disabled scan for each distinct input: agg_derived_correlation_1.out)
+-- pushed: the plan PostgreSQL costs cheapest; eligible: the plan with its own table scans off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
 CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, eligible bool, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
@@ -59,6 +59,8 @@ BEGIN
   SET LOCAL enable_indexonlyscan = off;
   eligible := false;
   FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  -- before PostgreSQL 18 each disabled scan adds its cost to the child plans of every distinct input, so the plan with the scans off does not tell: the cheapest plan has to be the scan
+  eligible := eligible OR (pushed AND current_setting('server_version_num')::int < 180000);
   DROP TABLE r_off, r_on;
   RETURN NEXT;
 END $$;

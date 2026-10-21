@@ -489,7 +489,7 @@ extern bool sift_tbl_paths_complete(Relation rel, SiftTblRel *st);
  * The leaves of the declared paths, for the planner (SiftSrcStats): ls[i] what the zones of the column segments say about layout leaf i, wovf[i]
  * whether a write buffer row holds a value the leaf cannot (decoded once per page, not at every call). Both [ncols of the layout].
  */
-extern void sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf);
+extern void sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf, bool *wjnull);
 extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
 /* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */

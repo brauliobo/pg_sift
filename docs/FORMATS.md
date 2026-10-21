@@ -67,8 +67,13 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
 
+`SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of the leaves that hold a JSON null (docs/COL.md 2.2, as `reserved` is the mask of the overflow ones); 3.2 only.
 `SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment (docs/COL.md 2.8) and the smallest xid when `SIFT_SEG_VERS` is set.
 A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
+
+Zone flags (`u32 flags[nsb]` of a leaf in the ZONES section, docs/COL.md 2.2, `src/col/enc.h`): `SIFT_COLZ_NOSUM` 0x1, `SIFT_COLZ_NAN` 0x2,
+`SIFT_COLZ_CONST` 0x4, `SIFT_COLZ_OVERFLOW` 0x8, `SIFT_COLZ_INLINE` 0x10, `SIFT_COLZ_JNULL` 0x20 (3.2, segment format 6: a NULL slot of the leaf is
+a JSON null; informational, a segment written before the flag does not have it and is read as one that may).
 
 ## 6. Upgrade tests
 
