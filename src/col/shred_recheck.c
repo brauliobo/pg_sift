@@ -1,5 +1,5 @@
 /*
- * sift_shred_recheck.c - the walk of a row that holds a value a typed leaf cannot store, read as the SQL of the query reads it
+ * col/shred_recheck.c - the walk of a row that holds a value a typed leaf cannot store, read as the SQL of the query reads it
  * (docs/COL-DIRTY-UNITS.md). The shredder keeps such a value as an overflow slot; here it is turned into the value the expression
  * gives (the text of a scalar through the input function of the leaf's type), into NULL (a key of an array or scalar is NULL), or into
  * the error SQL raises for it, which is kept to be raised when the row reaches the expression.
@@ -18,7 +18,7 @@
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 
-#include "sift_shred_pg.h"
+#include "col/shred_pg.h"
 
 static Oid
 input_function(SiftShredType t)

@@ -48,7 +48,7 @@ extern SiftShredRecheck *sift_shred_recheck_create(MemoryContext mcxt, const Sif
 extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc);
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
 
-/* The walk's hooks (sift_shred_recheck.c): the value is consumed (true) or left to the plain walk (false); settle runs after either */
+/* The walk's hooks (col/shred_recheck.c): the value is consumed (true) or left to the plain walk (false); settle runs after either */
 extern bool sift_shred_recheck_value(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc);
 extern void sift_shred_recheck_settle(SiftShred *sh, SiftShredRecheck *rc);
 
