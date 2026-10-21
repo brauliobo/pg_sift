@@ -79,7 +79,10 @@ EXECUTE by_countries(ARRAY[3, 17, 41]);
 EXECUTE by_countries(ARRAY[3, NULL]);
 EXECUTE by_countries('{}');
 EXECUTE by_countries(NULL);
+-- a cached generic plan does not follow the setting: prepare it again with the pushdown off
 SET sift.enable_agg = off;
+DEALLOCATE by_countries;
+PREPARE by_countries(int[]) AS SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = ANY ($1) GROUP BY d.country ORDER BY 1;
 EXECUTE by_countries(ARRAY[3, 17, 41]);
 RESET sift.enable_agg;
 RESET plan_cache_mode;
