@@ -103,11 +103,11 @@ SELECT * FROM same($$SELECT s.id, count(*) AS n FROM ev e JOIN (SELECT id FROM t
  SiftAgg s (subquery) |           7 |              0
 (1 row)
 
--- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there, the normal plan stays
+-- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there and enforces the condition, which the scan does not test again
 SELECT * FROM same($$SELECT e.kind, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           3 |              0
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, max(s.n) AS busiest, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
@@ -233,8 +233,8 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
                      Limit Hint: 100
 (11 rows)
 
--- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, a side above sift.agg_lookup_max_rows, a non-equality
--- condition; the fact table on the nullable side of a LEFT JOIN keeps the rows of the sub-select (the preserved side: docs/AGG.md)
+-- what keeps the normal plan: a volatile side, ON true, or a side above sift.agg_lookup_max_rows.
+-- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
  volatile_values 
 -----------------
@@ -247,10 +247,11 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM te
  normal
 (1 row)
 
+-- A correlated (LATERAL) sub-select keeps its native plan as a child that the scan runs for each distinct input.
 SELECT plan_of($$SELECT k.kind, count(*) FROM ev e JOIN LATERAL (SELECT s.kind FROM tenants s WHERE s.id = e.tenant_id ORDER BY s.id LIMIT 1) k ON k.kind IS NOT NULL GROUP BY k.kind$$) AS lateral_subselect;
- lateral_subselect 
--------------------
- normal
+  lateral_subselect   
+----------------------
+ SiftAgg k (subquery)
 (1 row)
 
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM tenants ORDER BY id LIMIT 1) s ON true GROUP BY s.kind$$) AS on_true;
@@ -259,10 +260,11 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM tenant
  normal
 (1 row)
 
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id < s.id GROUP BY s.kind$$) AS inequality;
- inequality 
-------------
- normal
+-- A predicate-only child join is exact for every match, as for an equality join.
+SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id < s.id GROUP BY s.kind$$);
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.tenant_id = s.id GROUP BY s.id$$) AS fact_nullable;

@@ -228,9 +228,9 @@ SELECT * FROM same($$SELECT kind, count(*) FILTER (WHERE dim_a_id NOT IN (SELECT
 (1 row)
 
 SELECT * FROM same($$SELECT kind, sum(CASE WHEN tenant_id IN (SELECT id FROM tenants WHERE kind = 'popup') THEN amount END) AS popup, count(*) AS n FROM ev GROUP BY kind$$);
-           plan            | result_rows | vs_normal_plan 
----------------------------+-------------+----------------
- normal with SubPlan any_1 |           3 |              0
+            plan            | result_rows | vs_normal_plan 
+----------------------------+-------------+----------------
+ SiftAgg with SubPlan any_1 |           3 |              0
 (1 row)
 
 -- a sub-select that reads a CTE (the CTE is the plan's, the sub-select its reader)
@@ -296,19 +296,19 @@ SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim
 (1 row)
 
 RESET sift.enable_agg;
--- what keeps the normal plan: two columns (a row-valued NOT IN), a sub-select that reads a column of the row, a volatile one, one that may raise (a
--- division, a cast), one that holds a sub-select of its own (it may raise), FOR UPDATE, a leaf the lookup table does not hold (an int8 column), a
--- sub-select too large for the hash table (a SubPlan that is not hashed)
+-- what keeps the normal plan: a sub-select that reads a column of the row, a volatile one, one that may raise (a division, a cast), one that holds
+-- a sub-select of its own (it may raise), FOR UPDATE, a sub-select too large for the hash table (a SubPlan that is not hashed). A test of two columns
+-- (a row-valued NOT IN) or of a leaf the lookup table does not hold (an int8 column) is not a lookup table: the scan asks the SubPlan for each tuple.
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (dim_a_id, tenant_id) NOT IN (SELECT dim_a_id, 7 FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS row_valued;
-        row_valued         
----------------------------
- normal with SubPlan any_1
+         row_valued         
+----------------------------
+ SiftAgg with SubPlan any_1
 (1 row)
 
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, 7 FROM blocked) OR kind = 'c' GROUP BY kind$$) AS row_valued_in;
-       row_valued_in       
----------------------------
- normal with SubPlan any_1
+       row_valued_in        
+----------------------------
+ SiftAgg with SubPlan any_1
 (1 row)
 
 SELECT plan_of($$SELECT kind, count(*) FROM ev e WHERE dim_a_id NOT IN (SELECT b.dim_a_id FROM blocked b WHERE b.dim_a_id IS NOT NULL AND b.dim_a_id % 5 = e.tenant_id % 5) GROUP BY kind$$) AS correlated;
@@ -348,9 +348,9 @@ SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT id 
 (1 row)
 
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE big_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS int8_leaf;
-         int8_leaf         
----------------------------
- normal with SubPlan any_1
+         int8_leaf          
+----------------------------
+ SiftAgg with SubPlan any_1
 (1 row)
 
 SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
@@ -369,9 +369,9 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev e WHERE dim_a_id NOT IN 
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE (dim_a_id, tenant_id) NOT IN (SELECT dim_a_id, 7 FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
-           plan            | result_rows | vs_normal_plan 
----------------------------+-------------+----------------
- normal with SubPlan any_1 |           3 |              0
+            plan            | result_rows | vs_normal_plan 
+----------------------------+-------------+----------------
+ SiftAgg with SubPlan any_1 |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT id FROM tenants WHERE id > (SELECT min(dim_a_id) FROM blocked)) GROUP BY kind$$);
@@ -387,9 +387,9 @@ SELECT * FROM same($$WITH s AS MATERIALIZED (SELECT id FROM tenants WHERE id < 2
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE big_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
-           plan            | result_rows | vs_normal_plan 
----------------------------+-------------+----------------
- normal with SubPlan any_1 |           3 |              0
+            plan            | result_rows | vs_normal_plan 
+----------------------------+-------------+----------------
+ SiftAgg with SubPlan any_1 |           3 |              0
 (1 row)
 
 -- parallel workers: the sub-plan is the leader's, the node asks for none (and without the sub-select the same query has workers)
