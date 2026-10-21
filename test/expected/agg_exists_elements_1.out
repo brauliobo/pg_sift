@@ -5,8 +5,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
 INSERT INTO dim_a SELECT i, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 48) i;
 CREATE TABLE mappings (kind text, category text, val text, derived_category text, derived_val text);
-INSERT INTO mappings VALUES ('a', 'svc', '', 'service', NULL), ('a', 'svc', '', 'duplicate', NULL), ('b', 'svc', '', 'staff', NULL),
- ('b', 'clean', 'x', 'm_tidy', 'room'), ('a', 'nul', NULL, 'never', NULL), ('a', 'clean', 'x', NULL, NULL), (NULL, 'svc', '', 'service', NULL);
+INSERT INTO mappings VALUES ('a', 'catg_l', '', 'catg_j', NULL), ('a', 'catg_l', '', 'duplicate', NULL), ('b', 'catg_l', '', 'catg_k', NULL),
+ ('b', 'catg_a', 'x', 'catg_b', 'catg_i'), ('a', 'nul', NULL, 'never', NULL), ('a', 'catg_a', 'x', NULL, NULL), (NULL, 'catg_l', '', 'catg_j', NULL);
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-12', '1 day') d;
 CREATE TABLE facts (id int, dim_a_id int, day date, document jsonb, metrics jsonb, payload text);
@@ -15,10 +15,10 @@ SELECT i, i % 52, '2026-01-01'::date + (i % 9),
  CASE WHEN i % 29 = 0 THEN NULL
       WHEN i % 31 = 0 THEN '{}'::jsonb
       ELSE jsonb_build_object('parts', CASE WHEN i % 7 = 0 THEN '[]'::jsonb
-   WHEN i % 3 = 0 THEN '[{"category":"svc","val":"","dir_a":"up","score":8}]'::jsonb
-   ELSE '[{"category":"svc","val":"","dir_a":"up","score":9},{"category":"clean","val":"x","dir_a":"down","score":3},{"category":"zzz","val":"","dir_a":"flat","score":null},{"category":"nul","val":null,"dir_a":"flat","score":1}]'::jsonb END)
+   WHEN i % 3 = 0 THEN '[{"category":"catg_l","val":"","dir_a":"up","score":8}]'::jsonb
+   ELSE '[{"category":"catg_l","val":"","dir_a":"up","score":9},{"category":"catg_a","val":"x","dir_a":"down","score":3},{"category":"zzz","val":"","dir_a":"flat","score":null},{"category":"nul","val":null,"dir_a":"flat","score":1}]'::jsonb END)
    || CASE WHEN i % 5 = 0 THEN '{"flag_a":false}'::jsonb WHEN i % 11 = 0 THEN '{"flag_a":null}'::jsonb WHEN i % 13 = 0 THEN '{"flag_a":true}'::jsonb ELSE '{}'::jsonb END END,
- CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('mhead', i % 11, 'service_room', (i * 3) % 11) END,
+ CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('mhead', i % 11, 'catg_j_catg_i', (i * 3) % 11) END,
  repeat('payload', 30)
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, document, metrics, jsonb_exists(document, 'flag_a'))
@@ -55,7 +55,7 @@ SELECT * FROM check_query($q$
    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
    LEFT JOIN LATERAL (SELECT lm.derived_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
      AND lm.derived_category IS NOT NULL AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
-   WHERE o.score IS NOT NULL) x WHERE x.category IN ('service', 'm_tidy'))
+   WHERE o.score IS NOT NULL) x WHERE x.category IN ('catg_j', 'catg_b'))
  GROUP BY e.kind
 $q$);
  pushed | eligible | differences 
@@ -71,7 +71,7 @@ SELECT * FROM check_query($q$
    FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
    LEFT JOIN LATERAL (SELECT lm.derived_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
      AND lm.derived_category IS NOT NULL AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
-   WHERE o.score IS NOT NULL) x WHERE x.category IN ('service') AND x.dir_a IN ('up', 'flat'))
+   WHERE o.score IS NOT NULL) x WHERE x.category IN ('catg_j') AND x.dir_a IN ('up', 'flat'))
  GROUP BY e.kind
 $q$);
  pushed | eligible | differences 
@@ -83,7 +83,7 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-   WHERE o.score IS NOT NULL AND o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
+   WHERE o.score IS NOT NULL AND o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)
  GROUP BY e.kind
 $q$);
  pushed | eligible | differences 
@@ -95,7 +95,7 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT r.key, count(*) AS n, avg(r.value::float8) AS mean FROM facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
  WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-   WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
+   WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)
    AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
    WHERE o.dir_a = CASE e.kind WHEN 'a' THEN 'up' ELSE 'down' END)
  GROUP BY r.key
@@ -109,7 +109,7 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT e.id IS NULL AS no_entity, e.kind, count(*) AS n FROM facts f LEFT JOIN dim_a e ON e.id = f.dim_a_id
  WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-   WHERE o.category = 'svc' AND (e.kind IS NULL OR o.dir_a <> 'down'))
+   WHERE o.category = 'catg_l' AND (e.kind IS NULL OR o.dir_a <> 'down'))
  GROUP BY 1, 2
 $q$);
  pushed | eligible | differences 
@@ -122,7 +122,7 @@ SELECT * FROM check_query($q$
  SELECT d.day, count(DISTINCT f.id) AS n, avg(f.id) AS mean FROM dates d
  LEFT JOIN (SELECT f.id, f.day FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
    WHERE f.id % 4 <> 3 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-     WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)) f ON f.day = d.day
+     WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)) f ON f.day = d.day
  GROUP BY d.day
 $q$);
  pushed | eligible | differences 
@@ -134,7 +134,7 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-   WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)
+   WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)
  GROUP BY e.kind
 $q$);
  pushed | eligible | differences 
@@ -144,7 +144,7 @@ $q$);
 
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
-   WHERE o.category = CASE e.kind WHEN 'a' THEN 'svc' ELSE 'clean' END)) FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+   WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)) FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  GROUP BY e.kind
 $q$);
  pushed | eligible | differences 
@@ -160,13 +160,13 @@ WHERE EXISTS (SELECT 1 FROM LATERAL (
   FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
   LEFT JOIN LATERAL (SELECT lm.derived_category FROM mappings lm WHERE lm.kind = e.kind AND lm.category = o.category AND lm.val = o.val
     AND lm.derived_category IS NOT NULL AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
-  WHERE o.score IS NOT NULL) x WHERE x.category IN ('service', 'm_tidy'))
+  WHERE o.score IS NOT NULL) x WHERE x.category IN ('catg_j', 'catg_b'))
 GROUP BY e.kind;
-                                                                                                                                     QUERY PLAN                                                                                                                                     
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                                                    QUERY PLAN                                                                                                                                     
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (SiftAgg)
    Index: facts_col
-   Filters: EXISTS document.parts[] (lookup output, document.parts[].category, document.parts[].val, jsonb_exists(f.document, 'flag_a'::text): (CASE WHEN jsonb_exists(f.document, 'flag_a'::text) THEN o.category ELSE m.derived_category END = ANY ('{service,m_tidy}'::text[])))
+   Filters: EXISTS document.parts[] (lookup output, document.parts[].category, document.parts[].val, jsonb_exists(f.document, 'flag_a'::text): (CASE WHEN jsonb_exists(f.document, 'flag_a'::text) THEN o.category ELSE m.derived_category END = ANY ('{catg_j,catg_b}'::text[])))
    Group Keys: dim_a_id: e.kind
    Pushed Aggregates: count(*)
    Lookup Joins: dim_a, m (left, per element)
@@ -182,8 +182,8 @@ GROUP BY e.kind;
 -- row that raises is the same in both. The element that raises is after the one that passes in the rows below, which EXISTS never evaluates.
 CREATE TABLE raising (id int, dim_a_id int, document jsonb);
 INSERT INTO raising
-SELECT i, i % 52, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('category', 'svc', 'val', '1'),
-  jsonb_build_object('category', 'clean', 'val', CASE WHEN i % 1000 = 0 THEN 'x' ELSE '2' END)))
+SELECT i, i % 52, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('category', 'catg_l', 'val', '1'),
+  jsonb_build_object('category', 'catg_a', 'val', CASE WHEN i % 1000 = 0 THEN 'x' ELSE '2' END)))
 FROM generate_series(1, 20000) i;
 CREATE INDEX raising_col ON raising USING sift_col (id, dim_a_id, document) WITH (paths = 'document.parts[]{category text,val text}');
 VACUUM (FREEZE, ANALYZE) raising;
@@ -215,7 +215,7 @@ $q$);
 SELECT * FROM check_error($q$
  SELECT e.kind, count(*) FROM raising r JOIN dim_a e ON e.id = r.dim_a_id
  WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(r.document -> 'parts') AS o(category text, val text)
-   WHERE (o.category = 'svc' OR o.val::int > 0) AND e.kind IS DISTINCT FROM 'zz') GROUP BY e.kind
+   WHERE (o.category = 'catg_l' OR o.val::int > 0) AND e.kind IS DISTINCT FROM 'zz') GROUP BY e.kind
 $q$);
  pushed | same | message  
 --------+------+----------

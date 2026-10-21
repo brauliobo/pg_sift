@@ -7,7 +7,7 @@ INSERT INTO facts
 SELECT i, i % 40,
        CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": 8}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
                   WHEN 4 THEN NULL ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END,
-       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"manager"}]'::jsonb ELSE '[{"type":"checker"},{"type":"manager"}]'::jsonb END
+       CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"type_a"}]'::jsonb ELSE '[{"type":"type_c"},{"type":"type_a"}]'::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, tags_a) WITH (paths = 'metrics.* float8, tags_a[]{type text}');
 VACUUM (FREEZE, ANALYZE) facts;
@@ -55,12 +55,12 @@ SELECT * FROM check_query('numeric', $q$
 $q$);
 -- `x IS TRUE` over an existence test counts the rows the test selects, with or without a join
 SELECT * FROM check_query('is true', $q$
- SELECT count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type != "manager")') IS TRUE) AS with_comments,
-        count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "manager")') IS TRUE) AS with_responses
+ SELECT count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type != "type_a")') IS TRUE) AS with_comments,
+        count(DISTINCT f.id) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "type_a")') IS TRUE) AS with_responses
  FROM facts f
 $q$);
 SELECT * FROM check_query('is true, unnest', $q$
- SELECT f.dim_a_id % 5 AS k, count(*) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "manager")') IS TRUE) AS n
+ SELECT f.dim_a_id % 5 AS k, count(*) FILTER (WHERE jsonb_path_exists(f.tags_a, '$[*] ? (@.type == "type_a")') IS TRUE) AS n
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other' GROUP BY 1
 $q$);
 -- Error timing: a member that cannot be cast raises only for the rows that reach the cast, with PostgreSQL's SQLSTATE and message.

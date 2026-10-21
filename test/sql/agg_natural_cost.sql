@@ -10,7 +10,7 @@ INSERT INTO nc_entities SELECT i, (ARRAY['site', 'museum', 'diner'])[1 + i % 3] 
 -- written entity by entity, as a crawler appends them; the day is not ordered
 CREATE TABLE nc_rows (id int PRIMARY KEY, dim_a_id int NOT NULL, day date NOT NULL, deleted_at timestamptz, metrics_a jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO nc_rows SELECT i, 1 + (i - 1) / 500, date '2025-01-01' + (hashint4(i) & 1023) % 700, CASE WHEN i % 29 = 0 THEN now() END,
-	jsonb_build_object('service', 1 + i % 10, 'value', 1 + (i * 7) % 10, 'location', 1 + (i * 3) % 10) FROM generate_series(1, 200000) i;
+	jsonb_build_object('catg_j', 1 + i % 10, 'value', 1 + (i * 7) % 10, 'catg_e', 1 + (i * 3) % 10) FROM generate_series(1, 200000) i;
 CREATE INDEX nc_rows_entity ON nc_rows (dim_a_id, day);
 CREATE INDEX nc_rows_col ON nc_rows USING sift_col (id, dim_a_id, day, deleted_at, metrics_a) WITH (paths = 'metrics_a.* float8');
 VACUUM (FREEZE, ANALYZE) nc_rows;

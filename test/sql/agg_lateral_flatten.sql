@@ -5,13 +5,13 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources VALUES (1, true), (2, true), (3, false);
 CREATE TABLE labels (foreign_id int, source_key text, label text, sublabel text);
-INSERT INTO labels VALUES (1, 'clean_score', 'm_tidy', NULL), (1, 'view_score', 'outlook', 'sea'), (2, 'clean_score', 'tidy', NULL), (2, 'clean_score', 'tidy2', NULL);
+INSERT INTO labels VALUES (1, 'catga_score', 'catg_b', NULL), (1, 'catgm_score', 'catg_f', 'sea'), (2, 'catga_score', 'tidy', NULL), (2, 'catga_score', 'tidy2', NULL);
 CREATE TABLE entries (id int, foreign_id int, day date, metrics_a jsonb);
 INSERT INTO entries
 SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
-       CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN NULL WHEN 2 THEN '{"clean_score": 9, "view_score": 4}'::jsonb
-                  WHEN 3 THEN '{"clean_score": 6.5, "other_score": 2, "service": 5}'::jsonb
-                  ELSE jsonb_build_object('clean_score', i % 10, 'staff_score', i % 7) END
+       CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN NULL WHEN 2 THEN '{"catga_score": 9, "catgm_score": 4}'::jsonb
+                  WHEN 3 THEN '{"catga_score": 6.5, "other_score": 2, "catgj": 5}'::jsonb
+                  ELSE jsonb_build_object('catga_score', i % 10, 'catgk_score', i % 7) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX entries_col ON entries USING sift_col (id, foreign_id, day, metrics_a) WITH (paths = 'metrics_a.* float8');
 VACUUM (FREEZE, ANALYZE) entries;
@@ -63,7 +63,7 @@ $q$);
 SELECT * FROM check_query('plain lateral', $q$
  WITH parsed AS (
    SELECT e.id, e.day, s.category, CAST(s.value AS float) AS score
-   FROM entries e INNER JOIN LATERAL (SELECT split_part(key, '_', 1) AS category, value FROM jsonb_each(e.metrics_a) WHERE key <> 'service') s ON true)
+   FROM entries e INNER JOIN LATERAL (SELECT split_part(key, '_', 1) AS category, value FROM jsonb_each(e.metrics_a) WHERE key <> 'catgj') s ON true)
  SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total
  FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
  GROUP BY d.day, p.category
@@ -102,7 +102,7 @@ SELECT * FROM check_query('limit', $q$
  SELECT d.day, p.label, count(*) FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
 -- Error timing: the cast of a member runs for the members of the rows that reach it, with PostgreSQL's SQLSTATE and message.
-INSERT INTO entries VALUES (20001, 1, '2026-02-01', '{"clean_score": 3000000000}'), (20002, 2, '2026-02-02', '{"clean_score": 1}');
+INSERT INTO entries VALUES (20001, 1, '2026-02-01', '{"catga_score": 3000000000}'), (20002, 2, '2026-02-02', '{"catga_score": 1}');
 VACUUM (FREEZE, ANALYZE) entries;
 SELECT * FROM check_query('cast of an excluded row', $q$
  WITH parsed AS (

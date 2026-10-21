@@ -23,20 +23,20 @@ CREATE OR REPLACE FUNCTION coldiff.wl_value(id bigint, draw int, seed int) RETUR
 				WHEN x < 0.10 THEN to_jsonb(d < 5) WHEN x < 0.20 THEN to_jsonb(d::int) ELSE to_jsonb(d::float8) END
 	FROM (SELECT coldiff.u(id, draw, seed) AS x, round((coldiff.u(id, draw + 500, seed) * 10)::numeric, 1) AS d) v $$;
 
--- the metrics object: the keys overall (95%), service, m_tidy, location, value and a key no mapping knows (10%)
+-- the metrics object: the keys overall (95%), catg_j, catg_b, catg_e, value and a key no mapping knows (10%)
 CREATE OR REPLACE FUNCTION coldiff.wl_metrics(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_object_agg(k, coldiff.wl_value(id, 100 + n::int, seed)) FILTER (WHERE coldiff.u(id, 90 + n::int, seed) < p), '{}')
-	FROM unnest(ARRAY['mhead', 'service', 'm_tidy', 'location', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
+	FROM unnest(ARRAY['mhead', 'catg_j', 'catg_b', 'catg_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
 
 CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'manager', 'owner'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')
+	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'type_a', 'type_b'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')
 	FROM generate_series(1, floor(coldiff.u(id, 109, seed) * 3)::int) j $$;
 
 -- one part: a category, a val (empty, NULL or a name), a sign (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
 CREATE OR REPLACE FUNCTION coldiff.wl_part(id bigint, j int, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT jsonb_build_object(
-		'category', (ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc'])[1 + floor(coldiff.u(id, 120 + j, seed) ^ 1.5 * 8)::int],
-		'val', CASE floor(coldiff.u(id, 130 + j, seed) * 6)::int WHEN 0 THEN 'wire' WHEN 1 THEN 'pool' WHEN 2 THEN NULL ELSE '' END,
+		'category', (ARRAY['catg_b', 'catg_j', 'catg_e', 'value', 'catg_c', 'catg_d', 'catg_k', 'misc'])[1 + floor(coldiff.u(id, 120 + j, seed) ^ 1.5 * 8)::int],
+		'val', CASE floor(coldiff.u(id, 130 + j, seed) * 6)::int WHEN 0 THEN 'catg_n' WHEN 1 THEN 'catg_g' WHEN 2 THEN NULL ELSE '' END,
 		'dir_a', CASE WHEN coldiff.u(id, 141 + j, seed) < 0.004 THEN 'null'::jsonb WHEN coldiff.u(id, 141 + j, seed) < 0.007 THEN '1'::jsonb
 							 WHEN coldiff.u(id, 141 + j, seed) < 0.009 THEN 'true'::jsonb
 							 ELSE to_jsonb((ARRAY['up', 'down', 'flat'])[1 + floor(coldiff.u(id, 140 + j, seed) * 3)::int]) END,
@@ -85,10 +85,10 @@ FROM generate_series(1, greatest(40, least(1000, :n / 300))) i;
 INSERT INTO t_work_src SELECT i, 'source ' || i, (ARRAY['web', 'app', 'partner'])[1 + i % 3] FROM generate_series(1, 12) i;
 INSERT INTO t_work_map SELECT row_number() OVER (), t, c, s,
 	CASE WHEN c = 'misc' AND t = 'cat_d' THEN NULL ELSE 'group_' || (ascii(c) % 5) END, CASE WHEN s = '' THEN '' ELSE 'sub_' || s END
-FROM unnest(ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d']) t, unnest(ARRAY['m_tidy', 'service', 'location', 'value', 'comfort', 'food', 'staff', 'misc']) c,
-	 unnest(ARRAY['', 'wire', 'pool']) s
-WHERE NOT (t = 'cat_b' AND c = 'food' AND s = 'pool');
-INSERT INTO t_work_map SELECT 1000 + row_number() OVER (), NULL, c, '', 'any_' || c, '' FROM unnest(ARRAY['m_tidy', 'service']) c;
+FROM unnest(ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d']) t, unnest(ARRAY['catg_b', 'catg_j', 'catg_e', 'value', 'catg_c', 'catg_d', 'catg_k', 'misc']) c,
+	 unnest(ARRAY['', 'catg_n', 'catg_g']) s
+WHERE NOT (t = 'cat_b' AND c = 'catg_d' AND s = 'catg_g');
+INSERT INTO t_work_map SELECT 1000 + row_number() OVER (), NULL, c, '', 'any_' || c, '' FROM unnest(ARRAY['catg_b', 'catg_j']) c;
 
 CREATE TABLE t_work (
 	id integer PRIMARY KEY, dim_a_id integer NOT NULL, foreign_id integer, foreign_id_b integer, item_date date, updated_at timestamp, deleted_at timestamp,
