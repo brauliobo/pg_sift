@@ -600,6 +600,66 @@ rollup_cheaper(AggExec *ex)
 	return nt * ex->pa_tuple_cost * sift_agg_rollup_cost <= ua.nvals * ex->pa_elem_cost;
 }
 
+/* the ids of key k for the kept tuples of the rollup */
+static void
+rollup_key_ids(AggExec *ex, const SiftSrcRollup *r, int k, const uint32 *kept, int nkept, uint32 *ids)
+{
+	int			j = rollup_dim(r, ex->spec->key[k].leaf);
+
+	preagg_key_ids(ex, k, r->key[j], r->isnull[j], UINT32_MAX, r->dict[j], kept, nkept, ids);
+}
+
+/* what tuple t of the rollup adds to each aggregate: slot[ai] is the measure (or the dim, -2 - dim) the aggregate reads, fkeep its FILTER */
+static void
+rollup_vals(AggExec *ex, const SiftSrcRollup *r, uint32 t, const int *slot, uint64 **fkeep, PaVal *v)
+{
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		int			m = slot[ai];
+
+		v[ai] = (PaVal) {.rows = r->count[t], .nn = r->count[t]};
+		if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], t))
+		{
+			v[ai].rows = v[ai].nn = 0;				/* the elements of the tuple fail the FILTER: they add nothing to this aggregate */
+			continue;
+		}
+		if (m <= -2)
+			v[ai].nn = r->isnull[-2 - m] && r->isnull[-2 - m][t] ? 0 : r->count[t];
+		else if (m >= 0)
+		{
+			v[ai].nn = r->nn[m][t];
+			v[ai].has_mm = r->nn[m][t] > 0;
+			if (r->sum[m])
+				v[ai].sum = r->sum[m][t];
+			if (r->sumf[m])
+				v[ai].sumf = r->sumf[m][t];
+			if (r->min[m])
+			{
+				v[ai].min = r->min[m][t];
+				v[ai].max = r->max[m][t];
+			}
+			if (r->minf[m])
+			{
+				v[ai].minf = r->minf[m][t];
+				v[ai].maxf = r->maxf[m][t];
+			}
+		}
+	}
+}
+
+/* the key ids of grouping set `set`: the keys outside the set are NULL (id 0, as key_prepare gives them), the last key is the number of the set */
+static const uint32 *
+set_ids(AggExec *ex, int set, int n, const uint32 *ids)
+{
+	int			nk = ex->spec->nkeys;
+	uint32	   *out = MemoryContextAlloc(ex->ucxt, Max((Size) n * nk, 1) * sizeof(uint32));
+
+	for (int k = 0; k < nk; k++)
+		for (int i = 0; i < n; i++)
+			out[(Size) k * n + i] = ex->spec->key[k].kind == SAK_SET ? set + 1 : (ex->spec->setmask[set] >> k & 1) ? ids[(Size) k * n + i] : 0;
+	return out;
+}
+
 /* The unit's rollup of the list: its tuples that pass the conjuncts, folded into the groups of the keys. false: the unit lacks a dim or a measure the query reads */
 static bool
 preagg_rollup(AggExec *ex)
@@ -607,7 +667,7 @@ preagg_rollup(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	SiftSrcRollup r;
 	int		   *slot = MemoryContextAlloc(ex->ucxt, Max(s->naggs, 1) * sizeof(int));
-	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(PaVal));
+	PaVal	   *vs;
 	uint32	   *kept,
 			   *ids,
 			   *gid;
@@ -671,50 +731,18 @@ preagg_rollup(AggExec *ex)
 			kept[nkept++] = t;
 	ids = MemoryContextAllocZero(ex->ucxt, Max((Size) nkept * s->nkeys, 1) * sizeof(uint32));
 	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
+	vs = MemoryContextAllocZero(ex->ucxt, Max((Size) nkept * s->naggs, 1) * sizeof(PaVal));
 	for (int k = 0; k < s->nkeys; k++)
-	{
-		int			j = rollup_dim(&r, s->key[k].leaf);
-
-		preagg_key_ids(ex, k, r.key[j], r.isnull[j], UINT32_MAX, r.dict[j], kept, nkept, ids + (Size) k * nkept);
-	}
-	ids_to_gids(ex, nkept, ids, gid);
+		if (s->key[k].kind != SAK_SET)
+			rollup_key_ids(ex, &r, k, kept, nkept, ids + (Size) k * nkept);
 	for (int i = 0; i < nkept; i++)
+		rollup_vals(ex, &r, kept[i], slot, fkeep, vs + (Size) i * s->naggs);
+	/* a grouping set folds the tuples again, under the ids of its own columns; a plain query is the one set */
+	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
-		uint32		t = kept[i];
-
-		for (int ai = 0; ai < s->naggs; ai++)
-		{
-			int			m = slot[ai];
-
-			v[ai] = (PaVal) {.rows = r.count[t], .nn = r.count[t]};
-			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], t))
-			{
-				v[ai].rows = v[ai].nn = 0;				/* the elements of the tuple fail the FILTER: they add nothing to this aggregate */
-				continue;
-			}
-			if (m <= -2)
-				v[ai].nn = r.isnull[-2 - m] && r.isnull[-2 - m][t] ? 0 : r.count[t];
-			else if (m >= 0)
-			{
-				v[ai].nn = r.nn[m][t];
-				v[ai].has_mm = r.nn[m][t] > 0;
-				if (r.sum[m])
-					v[ai].sum = r.sum[m][t];
-				if (r.sumf[m])
-					v[ai].sumf = r.sumf[m][t];
-				if (r.min[m])
-				{
-					v[ai].min = r.min[m][t];
-					v[ai].max = r.max[m][t];
-				}
-				if (r.minf[m])
-				{
-					v[ai].minf = r.minf[m][t];
-					v[ai].maxf = r.maxf[m][t];
-				}
-			}
-		}
-		preagg_fold(ex, gid[i], r.count[t], v);
+		ids_to_gids(ex, nkept, s->nsets ? set_ids(ex, set, nkept, ids) : ids, gid);
+		for (int i = 0; i < nkept; i++)
+			preagg_fold(ex, gid[i], r.count[kept[i]], vs + (Size) i * s->naggs);
 	}
 	return true;
 }
