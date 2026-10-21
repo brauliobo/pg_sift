@@ -29,6 +29,11 @@ from catalog import CASES, select
 INITIAL_PAIRS = 6
 READ_CONFIRMATION_PAIRS = 16
 MUTATION_CONFIRMATION_PAIRS = 6
+# An inconclusive confirmation (neither inside the margin nor clearly outside it) is a noise-limited case: one more fresh block of the
+# widest supported size decides it when the budget still covers it and the cases after it. Measured: a mutation case with its blocks
+# runs 25-50 s on the hosted runner, a settled 6-pair INSERT block has a pair log-ratio SD of 0.09 (95% half-width 0.09 ~ the margin).
+EXTENSION_PAIRS = 16
+CASE_RESERVE_SECONDS = 30
 TARGET = 0.150
 MATERIAL = 1.10
 T95 = {6:  2.570581835636305,
@@ -77,6 +82,11 @@ def verdict(block, confirmation=False):
     if confirmation and block['lower'] > MATERIAL:
         return 'regression'
     return 'inconclusive' if confirmation else 'suspect'
+
+
+def extension_fits(confirmation, deadline, reserve):
+    cost = EXTENSION_PAIRS * confirmation['runtime_seconds'] / confirmation['n']
+    return dict(fits=deadline - time.monotonic() > cost + reserve, predicted_seconds=cost, reserve_seconds=reserve)
 
 
 def require_equal(left, right, label):
@@ -1195,14 +1205,14 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     return saved
 
 
-def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False):
+def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0):
     if report is None:
         report={}
     with run_phase(report,case.name+('_controlled' if control else '_clean')):
-        return _measure(revisions,case,deadline,control,sink,frozen=frozen,report=report,output=output,force_confirmation=force_confirmation)
+        return _measure(revisions,case,deadline,control,sink,frozen=frozen,report=report,output=output,force_confirmation=force_confirmation,reserve=reserve)
 
 
-def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False):
+def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0):
     start = time.monotonic()
     result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
@@ -1295,12 +1305,20 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             result['status'] = verdict(result['confirmation'],True)
             if force_confirmation:
                 write_report(output,report)
+            if result['status'] == 'inconclusive' and not (control or force_confirmation):
+                result['extension_budget'] = extension_fits(result['confirmation'],deadline,reserve)
+                if result['extension_budget']['fits']:
+                    result['phase'] = 'extension'
+                    result['extension'] = {}
+                    result['extension'].update(block(revisions,case,operations,deadline,False,sink=result['extension'],
+                                                     pair_count=EXTENSION_PAIRS,**options))
+                    result['status'] = verdict(result['extension'],True)
         result['timing_status'] = result['status']
         if inserted:
             result['achieved_windows']={name:dict(sql_seconds=[result[name][key] for key in ('baseline_median','candidate_median')],
                 target_seconds=TARGET,target_fractions=[result[name][key]/TARGET for key in ('baseline_median','candidate_median')],
                 target_attained=min(result[name][key] for key in ('baseline_median','candidate_median'))>=TARGET)
-                for name in ('initial','confirmation') if name in result and 'n' in result[name]}
+                for name in ('initial','confirmation','extension') if name in result and 'n' in result[name]}
         if result['validation']['size_checks'] is not None:
             result['space_status'] = result['validation']['size_checks']['status']
             if result['space_status']=='regression':
@@ -1398,7 +1416,7 @@ def _write_report(output, report):
              f"PostgreSQL: {report.get('postgresql','unknown')}. CPU: {report['cpu']}; CPUs: {report['cpus']}.",
              f"Runner: {report['runner']}. Load: {report['load']}.",
              'Metric: monotonic elapsed persistent SQL end-to-end, including planning and result receipt.',
-             'Six initial alternating warmed pairs; one fresh confirmation: 16 read pairs or 6 mutation pairs. Ordinary cases confirm suspects; controlled INSERT and INSERT feasibility always confirm. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
+             'Six initial alternating warmed pairs; one fresh confirmation: 16 read pairs or 6 mutation pairs; a confirmation still inconclusive takes one fresh 16-pair extension when the budget covers it and the cases after it. Ordinary cases confirm suspects; controlled INSERT and INSERT feasibility always confirm and never extend. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
              '']
     if report['config'].get('insert_feasibility'):
         lines.extend(['', 'Scope: INSERT PR geometry only. Normal gate and acceptance NOT evaluated.',
@@ -1408,7 +1426,7 @@ def _write_report(output, report):
     lines.extend(['', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
                   '|---|---|---:|---:|---|---|---|---|'])
     for case in report['cases']:
-        for phase in ('initial','confirmation'):
+        for phase in ('initial','confirmation','extension'):
             if phase in case and 'n' in case[phase]:
                 b = case[phase]
                 lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']} |")
@@ -1621,8 +1639,9 @@ def main(argv=None):
                                              and all(s['status']=='pass' for s in normal_size_checks(report))
                                              and report['size_control']['status']=='regression')
             else:
-                for case in selected:
-                    measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output)
+                for index, case in enumerate(selected):
+                    later = sum(c.lifecycle != 'read' for c in selected[index+1:])
+                    measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
                     write_report(args.output,report)
                 report['size_checks'].append(churn_sizes(revisions))
             if time.monotonic()>=deadline:
