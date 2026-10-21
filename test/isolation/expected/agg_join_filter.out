@@ -1,0 +1,62 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1pushed s1decl s2add s2del s1same s1end
+step s1pushed: SELECT iso_jf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT d.label, f.kind, count(*) FROM iso_jf f JOIN iso_jf_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind;
+step s2add: INSERT INTO iso_jf_dim VALUES (2, 1, 'late'); UPDATE iso_jf_dim SET country = 1 WHERE id = 3;
+step s2del: DELETE FROM iso_jf_dim WHERE id = 5;
+step s1same: SELECT iso_jf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2add s2del s1same s2commit s1end
+step s1pushed: SELECT iso_jf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT d.label, f.kind, count(*) FROM iso_jf f JOIN iso_jf_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind;
+step s2begin: BEGIN;
+step s2add: INSERT INTO iso_jf_dim VALUES (2, 1, 'late'); UPDATE iso_jf_dim SET country = 1 WHERE id = 3;
+step s2del: DELETE FROM iso_jf_dim WHERE id = 5;
+step s1same: SELECT iso_jf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2add s2del s2abort s1same s1end
+step s1pushed: SELECT iso_jf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT d.label, f.kind, count(*) FROM iso_jf f JOIN iso_jf_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind;
+step s2begin: BEGIN;
+step s2add: INSERT INTO iso_jf_dim VALUES (2, 1, 'late'); UPDATE iso_jf_dim SET country = 1 WHERE id = 3;
+step s2del: DELETE FROM iso_jf_dim WHERE id = 5;
+step s2abort: ROLLBACK;
+step s1same: SELECT iso_jf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
