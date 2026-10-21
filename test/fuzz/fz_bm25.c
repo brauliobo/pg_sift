@@ -23,6 +23,7 @@
 #include "bm25/bitmap.h"
 #include "bm25/dict.h"
 #include "bm25/posting.h"
+#include "core/cmp.h"
 #include "core/varint.h"
 
 #define NMODES 3
@@ -280,15 +281,6 @@ rnd(uint64 *s)
 	return *s;
 }
 
-static int
-cmp64(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return (x > y) - (x < y);
-}
-
 /* a position record of nocc occurrences starting near base */
 static size_t
 pos_record(uint8 *out, uint32 nocc, uint32 base, uint64 *s)
@@ -340,7 +332,7 @@ gen_terms(const char *dir)
 
 		for (uint32 i = 0; i < df; i++)
 			raw[i] = (rnd(&s) % shapes[k].span) << 16 | (1 + rnd(&s) % (k % 3 ? 200 : 400));
-		qsort(raw, df, 8, cmp64);
+		qsort(raw, df, 8, sift_cmp_u64);
 		for (uint32 i = 0; i < df; i++)
 			if (!nk || raw[i] != keys[nk - 1])
 				keys[nk++] = raw[i];
@@ -398,7 +390,7 @@ gen_terms(const char *dir)
 
 		for (uint32 i = 0; i < n; i++)
 			t[i] = SIFT_TID(rnd(&s) % (k < 6 ? 40 : 3000), 1 + rnd(&s) % (k & 1 ? 300 : 60));
-		qsort(t, n, 8, cmp64);
+		qsort(t, n, 8, sift_cmp_u64);
 		for (uint32 i = 0; i < n; i++)
 			if (!m || t[i] != t[m - 1])
 				t[m++] = t[i];

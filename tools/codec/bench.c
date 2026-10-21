@@ -8,6 +8,7 @@
 #include <time.h>
 #include "data.h"
 #include "../../src/bm25/bitmap.h"
+#include "../../src/core/cmp.h"
 #include "baselines.h"
 #ifdef HAVE_ROARING
 #include "roaring.h"
@@ -499,8 +500,6 @@ static uint32_t brute(const rquery *q, float *sc, uint8_t *cnt, uint32_t *cand, 
 	return m;
 }
 
-static int cmp_u32(const void *a, const void *b) { uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return (x > y) - (x < y); }
-
 static float *ubm;
 static int cmp_ubm(const void *a, const void *b)
 {
@@ -615,7 +614,7 @@ static void rank_bench(double secs)
 			for (uint32_t i = 0; i < kk; i++)
 				for (uint32_t j = 0; j < kk; j++) hit += h1[i].tid == h2[j].tid;
 			recall += kk ? (double)hit / kk : 1;
-			qsort(cand, n, 4, cmp_u32);
+			qsort(cand, n, 4, sift_cmp_u32);
 			for (int g = 0; g < 4; g++) simulate(q, cand, n, sc, SG[g], sim_v[g], sim_s[g]);
 			memset(sc, 0, C.nd * 4), memset(dsc, 0, C.nd * 8), memset(cnt, 0, C.nd);
 		}

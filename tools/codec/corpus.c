@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/core/cmp.h"
 
 #define MAXTOK 48
 
@@ -64,12 +65,6 @@ static uint32_t intern(const char *s, uint32_t n)
 	return (uint32_t)nterms - 1;
 }
 
-static int cmpu32(const void *a, const void *b)
-{
-	uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
-	return (x > y) - (x < y);
-}
-
 static int wordc(unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 0x80; }
 
 int main(int argc, char **argv)
@@ -112,7 +107,7 @@ int main(int argc, char **argv)
 			if (nt == (1 << 20)) break;
 		}
 		ntok += nt;
-		qsort(dtoks, nt, 4, cmpu32);
+		qsort(dtoks, nt, 4, sift_cmp_u32);
 		if (np + nt > capp) {
 			capp = (np + nt) * 2;
 			pterm = xrealloc(pterm, capp * 4);
