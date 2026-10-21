@@ -410,156 +410,252 @@ num_first(AggExec *ex, int ai, uint32 g, sift_i128 v)
 	return dset_add(ex, &ex->dset[ai], g, idmap_id(&ex->amap[ai], v));
 }
 
+/* What the update of one aggregate over a chunk works on: its selected rows (ok: those its FILTER passes, NULL for all) and column */
+typedef struct AggUpd
+{
+	AggExec    *ex;
+	int			ai;
+	SiftAggAgg *a;
+	AggAcc	   *acc;
+	const uint64 *ok;
+	int			nsel;
+	const uint32 *idx;			/* the column's rows of the selection */
+	const SiftSrcVec *v;
+	const SiftSrcLeaf *lf;
+} AggUpd;
+
+static void
+upd_count(const AggUpd *u)
+{
+	sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
+}
+
+static void
+upd_sum_int(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+
+	sift_colk->gather_u32((const uint32 *) u->v->data, u->idx, u->nsel, ex->cu32);
+	sift_aggk->sum_gid_i32(u->acc->i, ex->gid, (const int32 *) ex->cu32, u->ok, u->nsel);
+	upd_count(u);
+}
+
+static void
+upd_sum_f64(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	const double *x;
+	int			nsel = u->nsel;
+
+	if (u->a->nvx)
+		x = eval_vx(ex, u->a, nsel);
+	else
+	{
+		sift_colk->for_i64_sel[SIFT_COLW_64](u->v->data, u->idx, nsel, 0, (int64 *) ex->c64);
+		x = (const double *) ex->c64;
+	}
+	float_guard(ex, u->ai, x, nsel);
+	sift_aggk->sum_gid_f64(u->acc->d, ex->gid, x, u->ok, nsel);
+	upd_count(u);
+}
+
+/* min and max of a decimal expression */
+static void
+upd_minmax_num(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	const uint64 *ok = u->ok;
+	int			nsel = u->nsel;
+	AggAcc	   *acc = u->acc;
+	bool		ismin = u->a->kind == SAA_MIN;
+	const sift_i128 *nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		g = ex->gid[j];
+
+		if ((ok && !sift_colsrc_bit(ok, j)))
+			continue;
+		if (acc->n[g] == 0 || (ismin ? nx[j] < acc->w[g] : nx[j] > acc->w[g]))
+			acc->w[g] = nx[j];
+		acc->n[g]++;
+	}
+}
+
+/* min and max of a column of integers, dates, timestamps or floats */
+static void
+upd_minmax(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	AggAcc	   *acc = u->acc;
+	const SiftSrcLeaf *lf = u->lf;
+	bool		ismin = u->a->kind == SAA_MIN;
+	const uint64 *ok = u->ok;
+	int			nsel = u->nsel;
+
+	if (u->a->num.n)
+	{
+		upd_minmax_num(u);
+		return;
+	}
+	if (lf->vtype == SCV_I32)
+		sift_colk->gather_u32((const uint32 *) u->v->data, u->idx, nsel, ex->cu32);
+	else
+		sift_colk->for_i64_sel[SIFT_COLW_64](u->v->data, u->idx, nsel, 0, (int64 *) ex->c64);
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		g = ex->gid[j];
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if (lf->vtype == SCV_F64)
+		{
+			double		x = ((const double *) ex->c64)[j];
+
+			if (acc->n[g] == 0 || (ismin ? float8_cmp_internal(x, acc->d[g]) < 0 : float8_cmp_internal(x, acc->d[g]) > 0))
+				acc->d[g] = x;
+		}
+		else
+		{
+			int64		x = lf->vtype == SCV_I32 ? ((const int32 *) ex->cu32)[j] : ((const int64 *) ex->c64)[j];
+
+			if (acc->n[g] == 0 || (ismin ? x < acc->i[g] : x > acc->i[g]))
+				acc->i[g] = x;
+		}
+		acc->n[g]++;
+	}
+}
+
+static void
+upd_count_rows(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	AggAcc	   *acc = u->acc;
+	const uint64 *ok = u->ok;
+
+	/* the row of the preserved side that no row matched holds no key: the key is NULL, and DISTINCT does not count it */
+	if (ex->null_input)
+		return;
+	for (int j = 0; j < u->nsel; j++)
+	{
+		uint32		g = ex->gid[j];
+		uint64		row = ex->row_base + ex->ridx[j];
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if (acc->last[g] != row)
+		{
+			acc->last[g] = row;
+			acc->n[g]++;
+		}
+	}
+}
+
+static void
+upd_sum_num(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	const uint64 *ok = u->ok;
+	int			nsel = u->nsel;
+	AggAcc	   *acc = u->acc;
+	const sift_i128 *nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+
+	for (int j = 0; j < nsel; j++)
+		if ((!ok || sift_colsrc_bit(ok, j)) && (!u->a->distinct || num_first(ex, u->ai, ex->gid[j], nx[j])))
+		{
+			if (nx[j] == SIFT_NX_NAN)
+				acc->nf[ex->gid[j]] = 1;
+			else
+				acc->w[ex->gid[j]] += nx[j];
+			acc->n[ex->gid[j]]++;
+		}
+}
+
+static void
+upd_percentile(const AggUpd *u)
+{
+	if (u->a->share == u->ai)
+		osa_update(u->ex, u->ai, u->ok, u->nsel);
+	upd_count(u);
+}
+
+static void
+upd_count_distinct(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	const SiftSrcVec *v = u->v;
+	const uint64 *ok = u->ok;
+	int			nsel = u->nsel;
+	const uint32 *idx = u->idx;
+
+	if (u->a->num.n)
+	{
+		const sift_i128 *nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+
+		for (int j = 0; j < nsel; j++)
+			if (!ok || sift_colsrc_bit(ok, j))
+				ex->cu32[j] = idmap_id(&ex->amap[u->ai], nx[j]);
+		dist_update(ex, u->ai, ok, nsel, ex->cu32);
+		return;
+	}
+	sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
+	if (u->lf->vtype == SCV_CODE)
+	{
+		const uint32 *map = dict_amap(ex, dict_slot(ex, v->dict), v->dict, u->ai);
+
+		for (int j = 0; j < nsel; j++)
+			ex->cu32[j] = map[v->isnull && v->isnull[idx[j]] ? v->dict->n : ex->cu32[j]];
+	}
+	dist_update(ex, u->ai, ok, nsel, ex->cu32);
+}
+
+/* The aggregate ai over the nsel rows of the chunk at start: one function per kind of aggregate */
 static void
 agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 {
 	SiftAggAgg *a = &ex->spec->agg[ai];
-	AggAcc	   *acc = &ex->acc[ai];
-	const uint64 *ok;
+	AggUpd		u = {.ex = ex, .ai = ai, .a = a, .acc = &ex->acc[ai], .nsel = nsel};
 	bool		all;
-	const uint32 *idx = NULL;
-	const SiftSrcVec *v = NULL;
-	const SiftSrcLeaf *lf = NULL;
-	const double *x;
-	const sift_i128 *nx;
 
 	agg_selection(ex, a, start, n, nsel, &all);
-	ok = all ? NULL : ex->okm;
+	u.ok = all ? NULL : ex->okm;
 	if (a->leaf >= 0)
 	{
-		v = get_vec(ex, a->leaf);
-		lf = &ex->lay->leaf[a->leaf];
-		gather_idx(ex, a->leaf, nsel, &idx);
+		u.v = get_vec(ex, a->leaf);
+		u.lf = &ex->lay->leaf[a->leaf];
+		gather_idx(ex, a->leaf, nsel, &u.idx);
 	}
 	switch (a->kind)
 	{
 		case SAA_COUNT_STAR:
 		case SAA_COUNT:
-			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
+			upd_count(&u);
 			break;
 		case SAA_SUM_INT:
 		case SAA_AVG_INT:
-			sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
-			sift_aggk->sum_gid_i32(acc->i, ex->gid, (const int32 *) ex->cu32, ok, nsel);
-			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
+			upd_sum_int(&u);
 			break;
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
-			if (a->nvx)
-				x = eval_vx(ex, a, nsel);
-			else
-			{
-				sift_colk->for_i64_sel[SIFT_COLW_64](v->data, idx, nsel, 0, (int64 *) ex->c64);
-				x = (const double *) ex->c64;
-			}
-			float_guard(ex, ai, x, nsel);
-			sift_aggk->sum_gid_f64(acc->d, ex->gid, x, ok, nsel);
-			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
+			upd_sum_f64(&u);
 			break;
 		case SAA_MIN:
 		case SAA_MAX:
-			{
-				bool		ismin = a->kind == SAA_MIN;
-
-				if (a->num.n)
-				{
-					nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
-					for (int j = 0; j < nsel; j++)
-					{
-						uint32		g = ex->gid[j];
-
-						if ((ok && !sift_colsrc_bit(ok, j)))
-							continue;
-						if (acc->n[g] == 0 || (ismin ? nx[j] < acc->w[g] : nx[j] > acc->w[g]))
-							acc->w[g] = nx[j];
-						acc->n[g]++;
-					}
-					break;
-				}
-				if (lf->vtype == SCV_I32)
-					sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
-				else
-					sift_colk->for_i64_sel[SIFT_COLW_64](v->data, idx, nsel, 0, (int64 *) ex->c64);
-				for (int j = 0; j < nsel; j++)
-				{
-					uint32		g = ex->gid[j];
-
-					if (ok && !sift_colsrc_bit(ok, j))
-						continue;
-					if (lf->vtype == SCV_F64)
-					{
-						double		x = ((const double *) ex->c64)[j];
-
-						if (acc->n[g] == 0 || (ismin ? float8_cmp_internal(x, acc->d[g]) < 0 : float8_cmp_internal(x, acc->d[g]) > 0))
-							acc->d[g] = x;
-					}
-					else
-					{
-						int64		x = lf->vtype == SCV_I32 ? ((const int32 *) ex->cu32)[j] : ((const int64 *) ex->c64)[j];
-
-						if (acc->n[g] == 0 || (ismin ? x < acc->i[g] : x > acc->i[g]))
-							acc->i[g] = x;
-					}
-					acc->n[g]++;
-				}
-			}
+			upd_minmax(&u);
 			break;
 		case SAA_COUNT_ROWS:
-			/* the row of the preserved side that no row matched holds no key: the key is NULL, and DISTINCT does not count it */
-			if (ex->null_input)
-				break;
-			for (int j = 0; j < nsel; j++)
-			{
-				uint32		g = ex->gid[j];
-				uint64		row = ex->row_base + ex->ridx[j];
-
-				if (ok && !sift_colsrc_bit(ok, j))
-					continue;
-				if (acc->last[g] != row)
-				{
-					acc->last[g] = row;
-					acc->n[g]++;
-				}
-			}
+			upd_count_rows(&u);
 			break;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
-			nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
-			for (int j = 0; j < nsel; j++)
-				if ((!ok || sift_colsrc_bit(ok, j)) && (!a->distinct || num_first(ex, ai, ex->gid[j], nx[j])))
-				{
-					if (nx[j] == SIFT_NX_NAN)
-						acc->nf[ex->gid[j]] = 1;
-					else
-						acc->w[ex->gid[j]] += nx[j];
-					acc->n[ex->gid[j]]++;
-				}
+			upd_sum_num(&u);
 			break;
 		case SAA_PCT_CONT:
 		case SAA_PCT_DISC:
-			if (a->share == ai)
-				osa_update(ex, ai, ok, nsel);
-			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
+			upd_percentile(&u);
 			break;
 		case SAA_COUNT_DISTINCT:
-			if (a->num.n)
-			{
-				nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
-				for (int j = 0; j < nsel; j++)
-					if (!ok || sift_colsrc_bit(ok, j))
-						ex->cu32[j] = idmap_id(&ex->amap[ai], nx[j]);
-				dist_update(ex, ai, ok, nsel, ex->cu32);
-				break;
-			}
-			sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
-			if (lf->vtype == SCV_CODE)
-			{
-				const uint32 *map = dict_amap(ex, dict_slot(ex, v->dict), v->dict, ai);
-
-				for (int j = 0; j < nsel; j++)
-					ex->cu32[j] = map[v->isnull && v->isnull[idx[j]] ? v->dict->n : ex->cu32[j]];
-			}
-			dist_update(ex, ai, ok, nsel, ex->cu32);
+			upd_count_distinct(&u);
 			break;
 		case SAA_GROUPING:
 			break;
@@ -570,17 +666,17 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_M_SUM:
 		case SAA_M_AVG:
 		case SAA_M_PG:
-			mapped_update(ex, ai, ok, nsel);
+			mapped_update(ex, ai, u.ok, nsel);
 			break;
 		case SAA_GEN:
-			gen_update(ex, ai, ok, nsel);
+			gen_update(ex, ai, u.ok, nsel);
 			break;
 		case SAA_X_COUNT:
 		case SAA_X_MIN:
 		case SAA_X_MAX:
 		case SAA_X_SUM:
 		case SAA_X_AVG:
-			direct_update(ex, ai, ok, nsel);
+			direct_update(ex, ai, u.ok, nsel);
 			break;
 		default:
 			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
