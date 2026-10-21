@@ -512,6 +512,44 @@ typedef struct SiftAggPaShape
  */
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
+/* Why a spec is not answered from the pre-aggregates, in the order the checks run */
+typedef enum SiftPaWhy
+{
+	SPW_OK,
+	SPW_OFF,					/* sift.agg_preagg is off */
+	SPW_NONE,					/* the index stores no pre-aggregates */
+	SPW_ARMS,					/* the scan feeds union arms */
+	SPW_SETS,					/* grouping sets */
+	SPW_JOIN,					/* a joined table */
+	SPW_COMBO,					/* a combination of keys or a lookup */
+	SPW_POST,					/* a post-aggregation step */
+	SPW_VLEAF,					/* a virtual leaf */
+	SPW_NO_AGG,					/* no aggregate (a DISTINCT) */
+	SPW_SEARCH,					/* a text search narrows the rows */
+	SPW_TOPN,					/* a top-N */
+	SPW_NOT_LIST,				/* the unnested leaf is not an array or a map */
+	SPW_NO_ROLLUP,				/* the index writes no rollup of the list */
+	SPW_KEY_EXPR,				/* a group key is an expression, not a leaf */
+	SPW_KEY_LEAF,				/* a group key is a leaf that no rollup holds as a dim (not an integer or text scalar of the list) */
+	SPW_PRED,					/* a conjunct tests more than the dims, or a leaf of the rows besides the zones */
+	SPW_AGG_FILTER,				/* an aggregate with FILTER */
+	SPW_AGG_DISTINCT,			/* an aggregate with DISTINCT */
+	SPW_AGG_KIND,				/* an aggregate the tuples cannot add up */
+	SPW_AGG_ARG,				/* its argument is not a plain leaf of the list */
+	SPW_AGG_TYPE,				/* ... or has a type the rollup does not sum */
+	SPW_DIM_NOT_STORED,			/* a dim or count(leaf) the rollup of the list does not hold */
+	SPW_MEAS_NOT_STORED,		/* a measure it does not hold */
+	SPW_ROW_KEYS,				/* rows: more than one group key */
+	SPW_ROW_KEY,				/* rows: the key is not a plain column */
+	SPW_ROW_PRED,				/* rows: a conjunct the histogram cannot test */
+	SPW_ROW_NO_HIST,			/* rows: the index writes no histogram of the key */
+	SPW_ROW_NO_SUMS,			/* rows: no sums at all */
+	SPW_ZONE					/* a comparison of the rows with NULL, or an IN list with gaps, decides no unit */
+} SiftPaWhy;
+
+extern SiftPaWhy sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
+extern const char *sift_pawhy_name(SiftPaWhy why);
+
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);
 

@@ -72,6 +72,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: `EXPLAIN (ANALYZE, VERBOSE)` of a `SiftAgg` node that does not answer units from the pre-aggregates prints `Pre-aggregates: <reason>` (the aggregate is `count(DISTINCT)`, has `FILTER`, a group key is an expression, a conjunct tests a measure, a joined table, grouping sets, and so on). Test `agg_rollup_shapes` lists the shapes of an element-level analytics query with their reason and the units answered.
+
 - Added: SiftAgg lookup keys and expressions may read earlier lookup outputs, retaining duplicate matches and NULL extensions. Materialized CTEs can supply lookup rows through their PostgreSQL plans.
 
 - Added: SiftAgg predicate-only joins to child plans, including overlapping date ranges, and preserved date buckets over a nullable JSON expansion. Duplicate matches and empty-bucket NULL inputs keep PostgreSQL semantics.

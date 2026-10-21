@@ -875,6 +875,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
+		if (!c->pa_on && es->verbose)
+			ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
 		if (c->pa_on)
 		{
 			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
