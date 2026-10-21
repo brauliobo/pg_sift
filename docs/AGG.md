@@ -31,8 +31,10 @@ A path declared `float8` holds floats, so a child reads the float: a number that
 A lateral sub-select that PostgreSQL does not pull up because its query is read on the nullable side of an outer join (`dates LEFT JOIN cte`) is pulled up
 inside its own query level by the planner hook (`sift_aggflat.c`), which plans the query both ways and keeps the flat plan when it runs in the scan and costs
 less; a sub-select with a join of its own is attached through its leftmost table, as `(a JOIN jsonb_each(a.doc) r) LEFT JOIN m ON ..`.
-An outer join of an unnested JSON function (`LEFT JOIN LATERAL jsonb_each(doc) r ON ..`) keeps the normal plan: a row without a member stays with NULL columns.
-Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation`, `agg_append_children`, `agg_raw_value_children`, `agg_lateral_flatten` and `agg_left_unnest`.
+`LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` with a constant key is the member `k` of each row (an object has one member per key; a row without it stays, with NULL columns): the scan reads it at the
+row level, as `(doc ->> 'k')::float8`, and no element is unnested. A correlated child reads `r.value` only through casts of jsonb to a number or boolean (a missing member and a JSON null are the same NULL, and a
+JSON null casts to NULL in PostgreSQL 18); before PostgreSQL 18, with another condition, or with `r.key` read, the normal plan stays. Other outer joins of an unnested JSON function keep the normal plan too.
+Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation`, `agg_append_children`, `agg_raw_value_children`, `agg_lateral_flatten`, `agg_left_each` and `agg_left_unnest`.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
 Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
 Aggregate `FILTER` predicates can read lookup columns and source values together. They run for each surviving joined tuple, after all joins;
