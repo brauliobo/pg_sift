@@ -213,9 +213,8 @@ sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid
 	SiftWbufHeaderData hdr;
 	Buffer		cur,
 				hbuf;
-	GenericXLogState *state;
-	Page		tp,
-				hp;
+	SiftPageEdit ed[2];
+	Page		tp;
 	int			lane;
 	bool		crossed;
 
@@ -230,13 +229,14 @@ sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid
 	if (TBL_TOMB_PAGE(BufferGetPage(cur))->nent >= TBL_TOMB_CAP)
 		cur = sift_lane_grow(rel, e->gen, e->header_blk, lane, cur, TBL_TOMB_PAGE_INIT, PG_UINT32_MAX, NULL, NULL, &crossed);
 	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-	state = GenericXLogStart(rel);
-	hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-	tp = GenericXLogRegisterBuffer(state, cur, 0);
+	sift_page_edit_begin(&ed[0], hbuf, SIFT_PAGE_DATA_OFFSET);
+	sift_page_edit_extra(&ed[0], (char *) &TBL_TOMB_HDR(ed[0].page)->nentries - (char *) ed[0].page, sizeof(uint64));
+	sift_page_edit_begin(&ed[1], cur, SIFT_PAGE_DATA_OFFSET + TBL_TOMB_PAGE_INIT);
+	tp = ed[1].page;
 	TBL_TOMB_ENTS(tp)[TBL_TOMB_PAGE(tp)->nent++] = ent;
 	SiftPageSetUsed(tp, TBL_TOMB_PAGE_INIT + TBL_TOMB_PAGE(tp)->nent * sizeof(SiftTblTomb));
-	TBL_TOMB_HDR(hp)->nentries++;
-	GenericXLogFinish(state);
+	TBL_TOMB_HDR(ed[0].page)->nentries++;
+	sift_page_edit_end(rel, ed, 2);
 	UnlockReleaseBuffer(hbuf);
 	UnlockReleaseBuffer(cur);
 	UnlockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ShareLock);
