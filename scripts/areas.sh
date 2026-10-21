@@ -60,8 +60,8 @@ areas_owners() {
 			areas_match "$f" "${row%%$'\t'*}" || continue
 			AREA_CAPTURES=("${BASH_REMATCH[@]}")
 			hit=1 value=${row#*$'\t'}
-			# `-` and {perf} (the perf harness and CI machinery) never change the extension a paired run builds.
-			[[ $value == - || $value == *'{perf}'* ]] && continue
+			# `-`, {perf} (the perf harness and CI machinery) and {ci} (what only CI jobs can break) never change what a paired run times.
+			[[ $value == - || $value == *'{perf}'* || $value == *'{ci}'* ]] && continue
 			live=1
 			if [[ $value == . ]]; then echo '*'; continue; fi
 			for g in "${AREA_OWNERS[@]}"; do [[ $value == *"{$g}"* ]] && echo "$g"; done
