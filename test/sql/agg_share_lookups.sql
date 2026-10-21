@@ -65,6 +65,9 @@ SELECT * FROM same($$SELECT 'a' AS arm, kind AS k, count(*) AS n FROM ev WHERE d
 -- the condition of a table reads its columns as parameters after the leaves of the join: the same text over another number of leaves is another condition
 SELECT * FROM same($$SELECT 'a' AS arm, g.tier::text AS k, g.grade AS g, count(*) AS n FROM ev JOIN grades g ON g.id = ev.dim_a_id AND g.grade > 5 GROUP BY 2, 3
 	UNION ALL SELECT 'b', (g.tier + ev.lookup_id)::text, g.grade, count(*) FROM ev JOIN grades g ON g.id = ev.dim_a_id AND g.tier > 5 GROUP BY 2, 3$$);
+-- no condition reads the leaves: the arms load the same rows whatever number of leaves their join keys read
+SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id GROUP BY 2
+	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id + (ev.lookup_id - ev.lookup_id) GROUP BY 2$$);
 -- a table that is a plan (a sub-select) is not shared
 SELECT * FROM same($$SELECT 'a' AS arm, s.country::text AS k, count(*) AS n FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2
 	UNION ALL SELECT 'b', s.country::text, count(*) FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2$$);

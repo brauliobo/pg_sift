@@ -86,6 +86,14 @@ SELECT * FROM same($$SELECT 'a' AS arm, g.tier::text AS k, g.grade AS g, count(*
  2 SiftAgg nodes, 0 shared tables |         135 |           0 |              0
 (1 row)
 
+-- no condition reads the leaves: the arms load the same rows whatever number of leaves their join keys read
+SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id GROUP BY 2
+	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id + (ev.lookup_id - ev.lookup_id) GROUP BY 2$$);
+               plan               | result_rows | vs_unshared | vs_normal_plan 
+----------------------------------+-------------+-------------+----------------
+ 2 SiftAgg nodes, 1 shared tables |          10 |           0 |              0
+(1 row)
+
 -- a table that is a plan (a sub-select) is not shared
 SELECT * FROM same($$SELECT 'a' AS arm, s.country::text AS k, count(*) AS n FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2
 	UNION ALL SELECT 'b', s.country::text, count(*) FROM ev JOIN (SELECT id, country FROM ents WHERE country < 3 ORDER BY id LIMIT 500) s ON s.id = ev.dim_a_id GROUP BY 2$$);
