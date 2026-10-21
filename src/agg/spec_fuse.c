@@ -34,6 +34,7 @@ typedef struct Fuse
 	int			npost;			/* the conjuncts over the joined rows of the arms, each once, and the arms (bit i) that apply it; 0: all of them */
 	SiftAggPred **post;
 	uint32	   *postsets;
+	int			npreds;			/* predicates of the pass: those of the arms (ids below npreds_total of the arm with most) and its own conjuncts */
 } Fuse;
 
 /* the arm's join with what an arm may differ in left out: an inner join is a left join whose arm drops the tuples without a row (SAP_MATCHED), its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
@@ -44,6 +45,7 @@ join_shell(const SiftAggJoin *j)
 	SiftAggSpec t = {.njoin = 1, .join = &x};
 
 	x.kind = x.kind == SJ_INNER ? SJ_LEFT : x.kind;
+	x.child = x.child >= 0 ? 0 : -1;
 	x.ncol = 0;
 	x.subplan = 0;
 	x.params = NIL;
@@ -263,10 +265,26 @@ pred_noid(const SiftAggPred *p)
 
 	*o = *p;
 	o->id = 0;
+	o->desc = NULL;
 	if (p->nchild > 0)
 		o->child = palloc(p->nchild * sizeof(SiftAggPred *));
 	for (int i = 0; i < p->nchild; i++)
 		o->child[i] = pred_noid(p->child[i]);
+	return o;
+}
+
+/* the conjunct with its own ids in the pass (an executor state each) */
+static SiftAggPred *
+pred_number(const SiftAggPred *p, int *next)
+{
+	SiftAggPred *o = palloc(sizeof(SiftAggPred));
+
+	*o = *p;
+	o->id = (*next)++;
+	if (p->nchild > 0)
+		o->child = palloc(p->nchild * sizeof(SiftAggPred *));
+	for (int i = 0; i < p->nchild; i++)
+		o->child[i] = pred_number(p->child[i], next);
 	return o;
 }
 
@@ -291,7 +309,7 @@ fuse_post(Fuse *f, const SiftAggPred *p, int arm)
 		at++;
 	if (at == f->npost)
 	{
-		f->post[f->npost] = (SiftAggPred *) p;
+		f->post[f->npost] = pred_number(p, &f->npreds);
 		f->postsets[f->npost++] = 0;
 	}
 	f->postsets[at] |= (uint32) 1 << arm;
@@ -320,6 +338,9 @@ fuse_posts(Fuse *f)
 	for (int i = 0; i < f->n; i++)
 		total += f->arm[i].s->npost + 2 * f->arm[i].s->njoin;
 	f->npost = 0;
+	f->npreds = 0;
+	for (int i = 0; i < f->n; i++)
+		f->npreds = Max(f->npreds, f->arm[i].s->npreds_total);
 	f->post = palloc(Max(total, 1) * sizeof(SiftAggPred *));
 	f->postsets = palloc0(Max(total, 1) * sizeof(uint32));
 	for (int i = 0; i < f->n; i++)
@@ -611,7 +632,7 @@ fuse_candidate(const SiftAggSpec *s)
 		if (s->post[i]->kind == SAP_ELEM_EXISTS)
 			return false;
 	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].child >= 0 || sift_aggjoin_preserves(s->join[i].kind) || (s->join[i].params != NIL && s->join[i].sig == NULL))
+		if ((s->join[i].child >= 0 && s->join[i].sig == NULL) || sift_aggjoin_preserves(s->join[i].kind) || (s->join[i].params != NIL && s->join[i].sig == NULL))
 			return false;
 	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0 && s->nprepost == 0;
 }
@@ -626,6 +647,18 @@ fuse_shape(const SiftAggSpec *a)
 	t.key = NULL;
 	t.nworkers = 0;
 	t.est_groups = 0;
+	/* the conjuncts and FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text */
+	t.npreds_total = 0;
+	t.desc_quals = NULL;
+	t.pred = palloc(Max(a->npred, 1) * sizeof(SiftAggPred *));
+	for (int i = 0; i < a->npred; i++)
+		t.pred[i] = pred_noid(a->pred[i]);
+	t.agg = palloc(Max(a->naggs, 1) * sizeof(SiftAggAgg));
+	for (int i = 0; i < a->naggs; i++)
+	{
+		t.agg[i] = a->agg[i];
+		t.agg[i].filter = a->agg[i].filter ? pred_noid(a->agg[i].filter) : NULL;
+	}
 	return sift_aggspec_pack(&t);
 }
 
@@ -682,6 +715,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap)
 		spec->est_groups += m[i]->est_groups;
 	}
 	spec->npost = f.npost;
+	spec->npreds_total = f.npreds;
 	spec->nprepost = 0;
 	spec->post = f.post;
 	spec->postsets = f.postsets;
