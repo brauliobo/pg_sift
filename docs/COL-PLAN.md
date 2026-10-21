@@ -2,7 +2,7 @@
 
 Plain SQL over a table with a `sift_col` index (or a `sift_table` table) runs on the column data when the planner can prove the result is the one of the normal plan; everything else keeps the normal plan. `sift.enable_agg` (default on) switches the matcher. The result of a pushed query is the one of the plain plan, row for row: `scripts/coldiff.sh` runs every query both ways and compares (docs/AGG.md).
 
-Files: `src/agg/plan.c` and `src/agg/plan_*.c` (shape matcher, cost), `src/agg/spec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/agg.c` (executor, EXPLAIN), `src/agg/kern*.c`, `src/agg/colsrc.h` and `src/agg/colsrc.c` (the seam to the column data and its provider registry), `src/agg/col.c` (provider over the `sift_col` index), `src/agg/pre.[ch]` (the pre-aggregates of a unit as the seam's records, shared by both providers), `src/table/src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/stub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
+Files: `src/agg/plan.c` and `src/agg/plan_*.c` (shape matcher, cost), `src/agg/spec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/agg.c` and the executor files beside it (`agg_int.h`, `unit.c`, `update.c`, `init.c`, `par.c`, ...; executor, EXPLAIN), `src/agg/kern*.c`, `src/agg/colsrc.h` and `src/agg/colsrc.c` (the seam to the column data and its provider registry), `src/agg/col.c` (provider over the `sift_col` index), `src/agg/pre.[ch]` (the pre-aggregates of a unit as the seam's records, shared by both providers), `src/table/src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/stub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
 
 ## What matches
 
