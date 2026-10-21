@@ -33,6 +33,7 @@ typedef struct LookEnt
 	LookFinger *finger;
 	MemoryContext cx;
 	MapTab	   *map;
+	LookCols	cols;			/* the columns of the rows: a query that reads others loads the union and the entry is replaced */
 	Size		size;
 	int			pins;
 	uint64		used;
@@ -146,14 +147,55 @@ look_room(Size need)
 	return true;
 }
 
-/* the rows kept under key for a table that still has the pages of f, pinned by mcxt; NULL when there are none */
-MapTab *
-lookcache_find(const char *key, const LookFinger *f, MemoryContext mcxt)
+static bool
+cols_cover(const LookCols *have, const LookCols *need)
 {
+	for (int i = 0; i < need->n; i++)
+	{
+		int			k;
+
+		for (k = 0; k < have->n; k++)
+			if (have->att[k] == need->att[i] && have->type[k] == need->type[i])
+				break;
+		if (k == have->n)
+			return false;
+	}
+	return true;
+}
+
+static LookEnt *
+look_unpinned_other(const char *key, const LookEnt *keep)
+{
+	foreach_ptr(LookEnt, e, entries)
+		if (e != keep && e->pins == 0 && strcmp(e->key, key) == 0)
+			return e;
+	return NULL;
+}
+
+/*
+ * The rows kept under key for a table that still has the pages of f and hold the columns need, pinned by mcxt; NULL when there are none. *have
+ * is then the columns the rows were loaded with, or of the entry of the table that lacks some of need (the columns to load are those and need).
+ */
+MapTab *
+lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt)
+{
+	have->n = 0;
 	foreach_ptr(LookEnt, e, entries)
 		if (strcmp(e->key, key) == 0 && finger_same(e->finger, f))
 		{
+			LookEnt    *other;
+
+			if (!cols_cover(&e->cols, need))
+			{
+				if (e->cols.n > have->n)
+					*have = e->cols;
+				continue;
+			}
 			look_pin(e, mcxt);
+			*have = e->cols;
+			/* the entries of the same rows with fewer columns are not needed any more */
+			while ((other = look_unpinned_other(key, e)) != NULL)
+				look_drop(other);
 			return e->map;
 		}
 	return NULL;
@@ -164,7 +206,7 @@ lookcache_find(const char *key, const LookFinger *f, MemoryContext mcxt)
  * are not kept (the table was written to during the load, or the rows do not fit): cx stays with the caller.
  */
 bool
-lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, MemoryContext cx, MemoryContext mcxt)
+lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt)
 {
 	LookEnt    *e;
 	MemoryContext old;
@@ -188,6 +230,7 @@ lookcache_keep(const char *key, const LookFinger *before, const LookFinger *afte
 	memcpy(e->finger->lsn, before->lsn, before->nblocks * sizeof(XLogRecPtr));
 	e->cx = cx;
 	e->map = m;
+	e->cols = *cols;
 	e->size = size;
 	old = MemoryContextSwitchTo(TopMemoryContext);
 	entries = lappend(entries, e);
