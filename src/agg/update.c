@@ -505,6 +505,9 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			}
 			break;
 		case SAA_COUNT_ROWS:
+			/* the row of the preserved side that no row matched holds no key: the key is NULL, and DISTINCT does not count it */
+			if (ex->null_input)
+				break;
 			for (int j = 0; j < nsel; j++)
 			{
 				uint32		g = ex->gid[j];
