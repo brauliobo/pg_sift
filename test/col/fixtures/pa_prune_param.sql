@@ -1,6 +1,6 @@
--- trap: a generic plan prunes partitions when it runs (the values are not known when it is planned): the normal plan stays
+-- a generic plan prunes partitions when it runs (the values are not known when it is planned): the scan drops the partitions the values refute
 -- shape: prepared
--- expect: plain
+-- expect: agg
 -- key: -
 -- guc: plan_cache_mode = force_generic_plan
 -- prepare: (date, date)

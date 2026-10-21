@@ -1,0 +1,194 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1run s2attach s1run s1win
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' + (current_date - current_date) GROUP BY g',
+                           'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1rr s2attach s1run s1end s1run
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3000
+(1 row)
+
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2attach s1rr s2detach s1run s1end s1run
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3500
+(1 row)
+
+step s2detach: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n; <waiting ...>
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s2detach: <... completed>
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2attach s1rr s2detachc s1run s1end s1run s1win
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3500
+(1 row)
+
+step s2detachc: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n CONCURRENTLY; <waiting ...>
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s2detachc: <... completed>
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' + (current_date - current_date) GROUP BY g',
+                           'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2begin s2move s1run s1win s2commit s1run s1win
+step s2begin: BEGIN;
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' + (current_date - current_date) GROUP BY g',
+                           'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' + (current_date - current_date) GROUP BY g',
+                           'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2begin s2move s1run s2abort s1run
+step s2begin: BEGIN;
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1rr s2move s1run s1end s1run
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3000
+(1 row)
+
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s1run: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1prep s1gen s2attach s1gen s2detach s1gen
+step s1prep: SET plan_cache_mode = force_generic_plan;
+		  PREPARE iso_pp_p (date) AS SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= $1 GROUP BY g;
+step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2detach: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n;
+step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
