@@ -353,6 +353,7 @@ typedef struct SiftAggJoin
 	int			subplan;		/* native correlated plan ID, 0 for a once-loaded lookup */
 	List	   *params;		/* native PARAM_EXEC IDs supplied for each cached input */
 	List	   *args;			/* their expressions over the combo inputs */
+	Node	   *sig;			/* native correlated plan: its query with the parameters numbered by position, so that two arms with the same child are known as such */
 	int			nkey;
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];
@@ -560,7 +561,7 @@ extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 
-/* Arms that read the same rows for the same aggregates and differ in their keys (and the leaves those read): can one scan serve them (m[0] starts it) (sets of one spec, keymap[i][j] the key of the fused spec that is key j of arm i) */
+/* Arms that read the same rows for the same aggregates and differ in their keys, the leaves and slots those read: can one scan serve them (sets of one spec; keymap[i][j] the key of the fused spec that is key j of arm i) */
 extern bool sift_aggspec_fusable(SiftAggSpec *const *m, int n);
 extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);

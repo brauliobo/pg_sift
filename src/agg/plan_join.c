@@ -27,6 +27,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
+#include "optimizer/restrictinfo.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
@@ -312,6 +313,8 @@ planned_child(AggCtx *c, RelOptInfo *rel, JoinCtx *jc)
 		return false;
 	jc->subroot = rel->subroot;
 	child_params(c, jc, rel->subplan_params);
+	/* the query as written, not as planned (PostgreSQL plans only the columns the query reads, the others are NULL): the arms that read other columns of it have the same child */
+	jc->j.sig = sift_agg_child_sig((Node *) list_make2(planner_rt_fetch(rel->relid, c->root)->subquery, extract_actual_clauses(rel->baserestrictinfo, false)), jc->j.params);
 	return true;
 }
 
@@ -362,6 +365,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
 		return false;
+	jc->j.sig = sift_agg_child_sig((Node *) q, jc->j.params);
 	final = fetch_upper_rel(jc->subroot, UPPERREL_FINAL, NULL);
 	set_cheapest(final);
 	p->path.pathtype = T_SubqueryScan;
@@ -382,6 +386,37 @@ child_rows_fit(AggCtx *c, JoinCtx *jc)
 	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, c->rel->tuples, NULL, NULL), c->rel->tuples) <= sift_agg_lookup_max_rows;
 }
 
+static Node *
+param_position_mutator(Node *n, List *params)
+{
+	Param	   *p;
+	int			at = 0;
+
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Query))
+		return (Node *) query_tree_mutator((Query *) n, param_position_mutator, params, 0);
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		foreach_int(id, params)
+		{
+			if (id == ((Param *) n)->paramid)
+			{
+				p = copyObject((Param *) n);
+				p->paramid = at;
+				return (Node *) p;
+			}
+			at++;
+		}
+	return expression_tree_mutator(n, param_position_mutator, params);
+}
+
+/* a correlated child (its query) with the parameters it reads numbered by their position: the children of two arms are the same plan when these are equal */
+Node *
+sift_agg_child_sig(Node *n, List *params)
+{
+	return param_position_mutator(copyObject(n), params);
+}
+
 /* the plan of a correlated child, made once for the query: the other table of a flipped join reads the same child */
 static bool
 planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
@@ -394,6 +429,7 @@ planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *
 			jc->cpath = done->cpath;
 			jc->subroot = done->subroot;
 			jc->j.params = done->j.params;
+			jc->j.sig = done->j.sig;
 			jc->args = done->args;
 			return done->cpath != NULL;
 		}
