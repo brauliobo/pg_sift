@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/bm25/bitmap.h"
+#include "../../src/core/cmp.h"
 
 #define MAXN 200000
 
@@ -20,8 +21,6 @@ static long fails, checks;
 
 typedef struct { sift_tid *t; uint8_t *tf; uint32_t n; } set;
 
-static int cmp64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return (x > y) - (x < y); }
-
 /* random set with a shape: base block, page span, offsets 1..maxoff, density */
 static void gen(set *s, uint32_t n, uint64_t base, uint32_t span, uint32_t maxoff)
 {
@@ -31,7 +30,7 @@ static void gen(set *s, uint32_t n, uint64_t base, uint32_t span, uint32_t maxof
 		uint32_t off = rnd() % 4 == 0 ? maxoff : 1 + rndn(maxoff);
 		s->t[i] = SIFT_TID(blk, off);
 	}
-	qsort(s->t, n, 8, cmp64);
+	qsort(s->t, n, 8, sift_cmp_u64);
 	uint32_t k = 0;
 	for (uint32_t i = 0; i < n; i++)
 		if (!k || s->t[i] != s->t[k - 1]) s->t[k++] = s->t[i];
@@ -50,7 +49,7 @@ static void gen_shape(set *s)
 		uint32_t k = 0, pages = 1 + rndn(300);
 		for (uint32_t p = 0; p < pages && k < MAXN; p++)
 			for (uint32_t o = 1; o <= maxoff && k < MAXN; o++) s->t[k] = SIFT_TID(b0 + p > 0xffffffffull ? 0xffffffffull : b0 + p, o), k++;
-		qsort(s->t, k, 8, cmp64);
+		qsort(s->t, k, 8, sift_cmp_u64);
 		uint32_t u = 0;
 		for (uint32_t i = 0; i < k; i++)
 			if (!u || s->t[i] != s->t[u - 1]) s->t[u++] = s->t[i];
@@ -328,7 +327,7 @@ static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
 			float sc = 0;
 			float kn = knorm[rowstart[SIFT_BLK(ref[x]) - base] + SIFT_OFF(ref[x]) - 1];
 			for (int i = 0; i < nt; i++) {
-				sift_tid *f = bsearch(&ref[x], s[i].t, s[i].n, 8, cmp64);
+				sift_tid *f = bsearch(&ref[x], s[i].t, s[i].n, 8, sift_cmp_u64);
 				if (f) {
 					float tf = (float)sift_tf_quant(s[i].tf[f - s[i].t]);
 					sc += w[i] * (tf / (tf + kn));
