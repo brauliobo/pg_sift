@@ -72,9 +72,9 @@ host compiler (clang 23, gcc 16), where neither finding appears.
 
 - **Pointer rebased below its array, src/bm25/bitmap.c:570** (`c->ls.blk - c->ls.bi`, the window of a decoded block indexed with
   absolute positions). clang 14's UBSan reports `index 18446744073709551360 out of bounds for type 'sift_tid[256]'` in the `bm25` target.
-  It is undefined behavior in C (a pointer outside its array), benign with today's compilers because `t[i]` is only read for
-  `i >= bi`. Replay: in the container with `clang libclang-rt-14-dev` installed, `scripts/fuzz.sh bm25` (seed 1) fails. Still open in 3.0.2
-  (`c->ls.blk - c->ls.bi` is still in `bm25/bitmap.c`); planned for 3.0.1, test first: index the window with `i - bi` instead of rebasing the pointer.
+  It is undefined behavior in C (a pointer outside its array), benign with the compilers of the host. Reproduced with clang 14.0.6 (bookworm
+  container, `bm25` target, the seed corpus alone); fixed: `ls_seek` indexes the window with `i - bi` and keeps the pointer inside the
+  array. The input is `test/fuzz/regress/bm25-list-window` (it trips clang 14 only; 90 s of `bm25` under clang 14 are clean since).
 - **AVX-512 `range_u32` returns set bits for values outside the range under gcc 12 -O1 with UBSan `pointer-overflow`**
   (theory: a toolchain problem, not proven). The `colchunk` target reports `FINDING: mode 0: SIMD level 2 decodes differently from
   scalar`; the input is `docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin` (26909 bytes, sha1 26292c50...). Replay, in the
