@@ -530,7 +530,6 @@ extern int	sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st);
 extern double sift_tbl_group_live_rows(Relation rel, SiftTblRel *st);
 /* One merge step over the column segments (the maintenance lock held); true when it merged. Rows that committed before oldest become frozen. Segments of another column layout are left alone. */
 extern bool sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest);
-extern bool sift_tbl_rewrite(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
 /* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
 extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 

@@ -592,7 +592,6 @@ extern const uint64 *sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);
 
 /* The elements of the unit's group that satisfy every predicate, for the rows of rowsel (NULL: all rows): elemsel has n = elements of the unit */
-extern uint32 sift_col_filter_elems(const SiftColUnit *unit, const SiftColGroupPred *gp, const SiftColSel *rowsel, SiftColSel *elemsel);
 
 /* AND with the TID masks of a TIDBitmap (core/filter.c): a BM25 match, a btree or BRIN bitmap */
 extern bool sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColSel *sel);
@@ -613,7 +612,6 @@ extern bool sift_col_vet(const SiftColUnit *unit, SiftColSel *sel);
 extern void sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec);
 /* The same for the rows idx[0..m) (ascending ordinals) a caller keeps: it saves the positions of the selection, which every leaf read would compute again */
 extern void sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec);
-extern void sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel, SiftColVec *vec);
 
 /*
  * The whole leaf straight into the consumer's lane, with no intermediate int64 vector: I32 the int4/date/bool keys (and a group's element
@@ -644,7 +642,6 @@ extern uint32 sift_col_lane_n(const SiftColUnit *unit, int col);
 extern void sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info);
 
 /* Per element of the unit's group: the ordinal of its row (nelems entries) and the element count of every row (nrows entries, NULL array = 0) */
-extern uint32 sift_col_group_elems(const SiftColUnit *unit, int group);
 extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent, const uint32 **counts);
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */

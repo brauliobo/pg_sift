@@ -57,7 +57,6 @@ extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
-extern uint64 sift_colw_bytes(const SiftColSegWriter *w);		/* stream bytes so far */
 /* Memory the writer holds until the segment ends (zones, unit directory, dictionaries): the caller cuts a segment when it passes its budget */
 extern Size sift_colw_memory(const SiftColSegWriter *w);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */

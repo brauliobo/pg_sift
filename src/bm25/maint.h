@@ -115,7 +115,6 @@ extern void sift_maint_after_seal(Relation index);
 
 /* Promote every sealed write buffer; returns the number promoted */
 extern int	sift_mops_promote(const SiftMaintOps *ops, Relation index, bool wait);
-extern int	sift_maint_promote(Relation index, bool wait);
 
 /*
  * Waits for the maintenance lock and merges until the directory has room for
@@ -126,7 +125,6 @@ extern bool sift_maint_make_room(Relation index);
 
 /* One tiered merge step if the policy asks; returns true if merged */
 extern bool sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait);
-extern bool sift_maint_merge_step(Relation index, bool wait);
 
 /* The VACUUM callbacks, and the SQL functions promote and merge (the lock and the index are the caller's: sift_mops_open_maintain) */
 extern IndexBulkDeleteResult *sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
