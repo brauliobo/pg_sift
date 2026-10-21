@@ -62,7 +62,7 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 | src/table/wbuf.c `sift_tbl_page_rec` | slot[0]=0xFFF0 in a delta page | read of `rec->len` outside the page; `sift_tbl_rec_flag` and VACUUM write there | confirmed by source; fixed: `sift_tbl_page_rec` raises a corruption error for a row count, slot or record length that reaches past the page (regress test `tbl_page_corrupt`, in-memory page) |
 | src/table/tomb.c `sift_tbl_tomb_sync` | tombstone page nent=0xFFFF | reads 2 MB past the page; a `next` cycle loops forever | confirmed by source; fixed: `nent` above the page capacity and a chain longer than the file are corruption errors (no test, as above) |
 | src/col/codec_parse.c `parse_node` / `sift_cc_open` | 40-byte tree of CONST children, n=16M | 64-128 MB allocations before the row count is compared | not re-checked |
-| src/col/seg.c `sift_cseg_unit` | last chunk PACK | `unpack` reads up to 31 bytes past `unitbuf` (no `SIFT_COL_PAD`) | not re-checked |
+| src/col/seg.c `sift_cseg_unit` | last chunk PACK | `unpack` reads up to 31 bytes past `unitbuf` (no `SIFT_COL_PAD`) | reproduced on the kernel (ASan, `unpack` at every level on an exact-size payload, bits 1-32: the scalar one already reads 8 bytes past it; the fuzz targets hide it by giving a unit SIFT_COL_PAD zero bytes); fixed: the unit buffer of `sift_cseg_unit`, `_head` and `_fill` keeps SIFT_COL_PAD zero bytes behind the record |
 
 ## Found by the PostgreSQL 17 container of the 3.0 release gate (open at 3.0.2)
 
