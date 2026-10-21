@@ -280,7 +280,7 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 		Relation	rel;
 		List	   *exprs = NIL;
 
-		if (!sift_colsrc_can_part(ii->relam) || ii->hypothetical || ii->indpred != NIL)
+		if (!sift_colsrc_can_part(ii->relam) || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 			continue;
 		pc = palloc0(sizeof(PartCand));
 		pc->indexoid = ii->indexoid;
@@ -428,7 +428,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	}
 	foreach_node(IndexOptInfo, ii, c->rel->indexlist)
 	{
-		if (!sift_colsrc_is_index(ii->relam) || ii->hypothetical || ii->indpred != NIL)
+		if (!sift_colsrc_is_index(ii->relam) || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 			continue;
 		rel = index_open(ii->indexoid, AccessShareLock);
 		c->lay = sift_colsrc_layout(rel);

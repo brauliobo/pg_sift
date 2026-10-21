@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Changed: pg_sift: SiftAgg reads a partial `sift_col` index (`CREATE INDEX .. WHERE pred`) when the conditions of the query imply its predicate, instead of ignoring it; the index is smaller and a query that does not imply the predicate keeps the normal plan.
 - Changed: pg_sift: a backend keeps the parsed dictionaries of the segments of a `sift_col` index (up to 64 MB, least recently used first) for its next query: a scan that reads a string leaf again no longer inflates and indexes the leaf's dictionary (a free text path of 60,000 entries took about 1.3 ms per segment on every query; the second query of a session takes none, with identical answers). A rewritten segment has its own. No format change.
 - Fixed: pg_sift: `sift.col_verify(index, true)` no longer crashes the backend when another session's `VACUUM` or `ANALYZE` updates the index's statistics while it checks the heap: the check kept the index's cached state, which that update frees, across the tuples. Test `verify_relcache` (`sift.test_col_verify_inval`, testing builds).
 - Changed: pg_sift: SiftAgg prices a scan filtered by a lookup join by the units the zones of its keys leave (the mean zone width of the leaf, a key a point of the range), and a key filter of widely spread keys skips the units whose zone holds none of them
