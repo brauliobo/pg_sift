@@ -58,8 +58,14 @@ A combo of one input (a join key, a grouping expression of one leaf) finds the e
 
 `UNION ALL` arms (or a CTE read several times) of one statement that join the same table with the same key and output columns and the same conditions on it read the same rows in the
 same snapshot: the first node loads them into a context of the statement and the others use that table (`sift.agg_share_lookups`, `Shared Lookup Tables`). Arms that read other columns
-or conditions of the table, a table that is a plan, a preserved side and a parallel worker load their own; nothing is kept between statements. Test `agg_share_lookups`, isolation spec
+or conditions of the table, a table that is a plan, a preserved side and a parallel worker load their own. Test `agg_share_lookups`, isolation spec
 `agg_share_lookups`, fixture `j_share_arms`, row J29.
+
+A backend also keeps the rows of such a table for its next statement (`sift.agg_lookup_cache_kb`, `Cached Lookup Tables`), the load of a mapping table of half a million rows being the fixed
+cost of every query that joins it. The rows are kept under the table's conditions while every page of the heap is visible to all transactions (vacuumed) and has the same LSN as when the
+rows were loaded, so a write that is in flight, committed or rolled back, a vacuum that rewrites a page and a rewrite of the table all load the rows again; a table with a page that is not
+yet visible to all (rows not vacuumed since a write), a condition that is not constant, a preserved side, a table of a plan or another access method and a parallel worker are never kept.
+Test `agg_lookup_cache`, isolation spec `agg_lookup_cache`.
 
 ## Outer joins that keep the other table
 

@@ -139,6 +139,10 @@ sift_agg_init(void)
 							 "Lets the Custom Scan (SiftAgg) nodes of one statement that join the same table share the rows they load (UNION ALL arms).",
 							 NULL, &sift_agg_share_lookups, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_lookup_cache_kb",
+							"Memory per backend that keeps the rows of the joined tables a scan loaded for the next query, while the table does not change (0: off).",
+							NULL, &sift_agg_lookup_cache_kb, 256 * 1024, 0, MAX_KILOBYTES,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
@@ -872,6 +876,8 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		ExplainPropertyInteger("Join Key Passes", NULL, c->njpass, es);
 	if (c->nshared > 0)
 		ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
+	if (c->ncached > 0)
+		ExplainPropertyInteger("Cached Lookup Tables", NULL, c->ncached, es);
 	if (c->nsemi > 0)
 	{
 		ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);

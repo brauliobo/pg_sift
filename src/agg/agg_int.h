@@ -164,6 +164,7 @@ typedef struct AggExec
 	int			njfilter;		/* the join key conjuncts join_filters added to the spec */
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
+	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
@@ -262,6 +263,7 @@ extern bool		sift_agg_semi_lut;
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_share_lookups;
+extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
