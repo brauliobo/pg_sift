@@ -92,6 +92,19 @@ SELECT q, ow_units(q, true) <= 4 AS walk_reads_few, ow_units(q, true) < ow_units
 FROM (VALUES ('SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10'), ('SELECT id, k_band FROM ow ORDER BY k_band DESC, id LIMIT 10'),
 			 ('SELECT id, k_band FROM ow WHERE g = 2 ORDER BY k_band, id LIMIT 100')) v (q);
 
+-- the planner prices the walk: a key in blocks of values costs less than a random one, and less than the same scan without the walk
+CREATE FUNCTION ow_cost(q text, walk bool) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j json;
+BEGIN
+	PERFORM ow_mode(true);
+	PERFORM set_config('sift.topn_walk', walk::text, true);
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+SELECT ow_cost(band, true) < ow_cost(rnd, true) AS blocks_cheaper_than_random, ow_cost(band, true) < ow_cost(band, false) AS walk_prices_less,
+	   ow_cost(rnd, true) > 0.9 * ow_cost(rnd, false) AS random_priced_as_before
+FROM (SELECT 'SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10' AS band, 'SELECT id, k_rand FROM ow ORDER BY k_rand, id LIMIT 10' AS rnd) v;
+
 SELECT * FROM ow_fuzz('build', 11, 120);
 
 -- ids 8000 to 8300 are deleted; the new versions of the updated rows are stored in other pages (the end of the table), far from the neighbours of their values
@@ -122,5 +135,5 @@ SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
 RESET sift.topn_walk;
 
 DROP TABLE ow;
-DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool);
+DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool);
 DROP EXTENSION pg_sift;
