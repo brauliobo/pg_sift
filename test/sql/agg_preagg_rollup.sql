@@ -26,14 +26,17 @@ END $$;
 
 -- units of the SiftAgg node, those it answered from the pre-aggregates and the dims it read (NULL: the plan has no SiftAgg, or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT dims text) LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE l text; c text := '';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
 		dims := coalesce(substring(l from 'Pre-aggregate Dims: (.*)$'), dims);
+		IF l ~ '^\s*(Units|Pre-aggregates|Rollup Refresh)' THEN c := c || ', ' || btrim(l); END IF;
 	END LOOP;
+	-- the counters of the node (units, those answered from the pre-aggregates, those scanned by cost or lacking their rollup, the reason the pre-aggregates were not used) go to the server log with the query, not to the output
+	RAISE LOG 'pa_units %: %', left(q, 120), substr(c, 3);
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; dims := NULL;
 END $$;
