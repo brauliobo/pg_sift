@@ -49,7 +49,7 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
--- three arms of one inlined CTE: the lookups are loaded once
+-- three arms of one inlined CTE: the two that read the same aggregate share one pass (their tables are loaded once for it), the third has a pass of its own
 SELECT * FROM same($$WITH b AS NOT MATERIALIZED (SELECT ev.*, e.country, e.tier, s.name FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN srcs s ON s.id = ev.lookup_id AND s.enabled WHERE e.country < 10)
 	SELECT 'a' AS arm, country::text AS k, count(*) AS n FROM b GROUP BY 2 UNION ALL SELECT 'b', name, count(*) FROM b GROUP BY 2 UNION ALL SELECT 'c', tier::text || kind, sum(amount)::bigint FROM b GROUP BY 2$$);
 -- other conditions of the table: not the same rows, not shared

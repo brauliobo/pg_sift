@@ -6,7 +6,6 @@ scan|analyzer|src/agg/gen_run.c|Branch condition evaluates to a garbage value [c
 scan|analyzer|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/agg/osa.c|Dereference of null pointer [core.NullDereference]
 scan|analyzer|src/agg/pred.c|Assigned value is uninitialized [core.uninitialized.Assign]
-scan|analyzer|src/agg/spec.c|Right operand is negative in left shift [core.BitwiseShift]
 scan|analyzer|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
 scan|analyzer|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t' [core.BitwiseShift]
 scan|analyzer|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
@@ -101,7 +100,6 @@ tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/agg/plan_from.c|comp
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/col/seg_maint.c|comparing object representation of type 'double' which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
-tidy|clang-analyzer-core.BitwiseShift|src/agg/spec.c|Right operand is negative in left shift
 tidy|clang-analyzer-core.BitwiseShift|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t'
 tidy|clang-analyzer-core.BitwiseShift|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.BitwiseShift|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32'

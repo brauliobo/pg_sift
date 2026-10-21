@@ -328,6 +328,7 @@ extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals,
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
 						 List *scan_tlist, int nworkers);
 extern bool child_paths(AggCtx *c, SiftAggSpec *s);
+extern Node *sift_agg_child_sig(Node *n, List *params);
 
 extern bool first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts);
 extern void first_mode(SiftAggAgg *out, int nsort, bool leader);

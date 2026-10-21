@@ -88,6 +88,31 @@ SELECT reread(:'line_arm') > 0 AS arm_rereads, reread(:'line_arms') = reread(:'l
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev WHERE qty > 2 GROUP BY kind UNION ALL SELECT zone_id::text, count(*) FROM ev GROUP BY zone_id$$) AS other_filter_shared;
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION ALL SELECT zone_id::text, sum(qty) FROM ev GROUP BY zone_id$$) AS other_aggregate_shared;
 
+-- arms that look the mapped names of each line up with a correlated LIMIT 1 sub-select: the arms read other columns of it (one the mapped kind, one
+-- also the mapped part), the lines without a mapping are no row of the first two arms and a row of the third (a LEFT JOIN, another set of rows: it stays apart)
+-- (the scan of the table is made dearer than the index's: the plan with the sub-select as a child of the scan is the one PostgreSQL costs cheapest)
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+CREATE TABLE kmap (k text, p text, mk text, mp text);
+INSERT INTO kmap SELECT k, 'p' || p, 'm' || (p % 2) || k, CASE WHEN k = 'y' THEN NULL ELSE 'q' || p END FROM unnest(ARRAY['x', 'y']) k, generate_series(0, 2) p;
+CREATE INDEX kmap_i ON kmap (k, p);
+ANALYZE kmap;
+\set flag_a 'WITH m AS NOT MATERIALIZED (SELECT e.id, l.v, mp.mk, mp.mp FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> ''lines'') AS l(k text, p text, v float8) LEFT JOIN LATERAL (SELECT mk, mp FROM kmap x WHERE x.k = l.k AND x.p = l.p LIMIT 1) mp ON true WHERE e.day >= ''2026-03-05'' AND l.v IS NOT NULL)'
+\set arm_names 'SELECT id, mk, mp, avg(v) AS m, count(*) AS n FROM m WHERE mk IS NOT NULL GROUP BY id, mk, mp'
+\set arm_kind 'SELECT id, mk, NULL::text, avg(v), count(*) FROM m WHERE mk IS NOT NULL GROUP BY id, mk'
+\set arm_all 'SELECT id, NULL::text, NULL::text, avg(v), count(*) FROM m GROUP BY id'
+SELECT arms_shared(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind') AS mapped_arms_shared, same(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind') AS mapped_arms_same;
+SELECT arms_shared(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_shared,
+       same(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_same;
+SELECT reread(:'flag_a' || :'arm_names') > 0 AS mapped_arm_rereads,
+       reread(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind') = reread(:'flag_a' || :'arm_names') AS mapped_rereads_once;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
+
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
