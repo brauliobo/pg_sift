@@ -768,6 +768,7 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
+void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
@@ -828,6 +829,19 @@ void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *
 void dist_finish_all(AggExec *ex);
 void dist_end_all(AggExec *ex);
 void dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
+
+/* group.c */
+AggAcc *acc_alloc(AggExec *ex, uint32 cap);
+void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
+void direct_layout(AggExec *ex);
+void hash_init(AggExec *ex);
+void direct_grow(AggExec *ex);
+uint32 ident_add(AggExec *ex, KeyState *k, int64 v);
+uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
+void ident_go_wide(AggExec *ex, KeyState *k);
+void key_range_fill(void *arg, int32 v, void *entry);
+bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx);
+void compute_gids(AggExec *ex, int nsel);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
