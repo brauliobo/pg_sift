@@ -122,12 +122,6 @@ array_parent(AggExec *ex, int leaf)
 
 /* ---------- predicates ---------- */
 
-static int
-int32_cmp_asc(const void *a, const void *b)
-{
-	return pg_cmp_s32(*(const int32 *) a, *(const int32 *) b);
-}
-
 /*
  * c (a numeric) floored (up: ceilinged) to a multiple of 10^-scale, as that integer: PostgreSQL's own numeric_mul, numeric_floor and
  * numeric_ceil do the arithmetic. -1 / 1 when it is below / above every integer within lim, which is where NaN (numeric order puts it
@@ -256,38 +250,28 @@ in_hash_has(const PredState *st, int64 x)
 	return false;
 }
 
-/* the test of an IN list of nv values within [lo, hi]: a byte table over the range, else the sorted values (an int4 leaf) or a hash table (an int8 leaf); false (nothing built) when only a table is wanted and the range is too wide */
-bool
-in_build(PredState *st, bool wide, bool table_only, const int64 *vals, int nv, int64 lo, int64 hi)
+/* the test of an IN list of nv values within [lo, hi]: a byte table over the range, else a hash table of the values */
+void
+in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 {
-	uint64		span = nv > 0 ? (uint64) hi - (uint64) lo + 1 : 0;	/* 0: all the 2^64 values */
+	uint64		span = (uint64) hi - (uint64) lo + 1;	/* 0: all the 2^64 values */
 
-	if (nv > 0 && (span == 0 || span > MAX_RANGE) && table_only)
-		return false;
 	st->in_lut = palloc0(SIFT_AGG_PAD);
+	st->in_nv = nv;
 	if (nv == 0)
-		return true;
+		return;
+	st->in_lo = lo;
+	st->in_hi = hi;
 	if (span == 0 || span > MAX_RANGE)
 	{
-		if (wide)
-			in_hash_build(st, vals, nv);
-		else
-		{
-			st->in_sorted = palloc(nv * sizeof(int32));
-			for (int i = 0; i < nv; i++)
-				st->in_sorted[i] = (int32) vals[i];
-			qsort(st->in_sorted, nv, sizeof(int32), int32_cmp_asc);
-			st->in_nsorted = nv;
-		}
-		return true;
+		in_hash_build(st, vals, nv);
+		return;
 	}
-	st->in_lo = lo;
 	st->in_nlut = (uint32) span;
 	st->in_lut = palloc0(span + SIFT_AGG_PAD);
 	for (int i = 0; i < nv; i++)
 		st->in_lut[vals[i] - lo] = 1;
 	st->in_dense = memchr(st->in_lut, 0, span) == NULL;
-	return true;
 }
 
 void
@@ -355,7 +339,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 			lo = Min(lo, v);
 			hi = Max(hi, v);
 		}
-		in_build(st, wide, false, vals, nv, lo, hi);
+		in_build(st, vals, nv, lo, hi);
 	}
 	MemoryContextSwitchTo(old);
 	st->ready = true;
@@ -606,14 +590,13 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 				out[i >> 6] |= (uint64) (u < st->in_nlut && st->in_lut[u]) << (i & 63);
 			}
 	}
-	else if (st->in_sorted)
+	else if (st->in_htab)
 	{
 		const int32 *x = (const int32 *) v->data + start;
 
 		clear_words(out, n);
 		for (int i = 0; i < n; i++)
-			if (bsearch(&x[i], st->in_sorted, st->in_nsorted, sizeof(int32), int32_cmp_asc))
-				out[i >> 6] |= UINT64CONST(1) << (i & 63);
+			out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
 	}
 	else
 		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, (int32) st->in_lo, st->in_nlut, st->in_lut);

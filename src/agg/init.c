@@ -180,6 +180,19 @@ combo_read(AggExec *ex, int ci)
 	return false;
 }
 
+/* a join whose keys the scan's key filter has tested passes every tuple that reaches it (an anti join does not, and neither a repeated key of an inner join) */
+static void
+semi_pass(AggExec *ex, int ci)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+
+	if (!cs->kfilt || j->kind == SJ_ANTI || (j->kind == SJ_INNER && !map_unique(cs->map)))
+		return;
+	cs->spass = true;
+	ex->njpass++;
+}
+
 static void
 semi_lut_build(AggExec *ex, int ci)
 {
@@ -192,9 +205,14 @@ semi_lut_build(AggExec *ex, int ci)
 	bool	   *keep;
 
 	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
-		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut || combo_read(ex, ci) ||
+		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || !sift_agg_semi_lut || combo_read(ex, ci) ||
 		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;
+	if (ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
+	{
+		semi_pass(ex, ci);
+		return;
+	}
 	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
 	keep = palloc(Max(m->nrow, 1) * sizeof(bool));
 	for (uint32 r = 0; r < m->nrow; r++)
@@ -222,6 +240,7 @@ semi_lut_build(AggExec *ex, int ci)
 	if (lo <= hi && hi - lo + 1 > (int64) sift_agg_semi_lut_size * 1024)
 	{
 		pfree(keep);
+		semi_pass(ex, ci);
 		return;
 	}
 	cs->slo = lo <= hi ? (int32) lo : 0;
@@ -317,10 +336,10 @@ prune_init(AggExec *ex)
 			continue;
 		if (p->kind == SAP_IN)
 		{
-			if (st->in_sorted || st->in_nlut == 0)
+			if (st->in_nv == 0)
 				continue;
 			lo = st->in_lo;
-			hi = (int64) st->in_lo + st->in_nlut - 1;
+			hi = st->in_hi;
 		}
 		else
 		{
@@ -414,7 +433,7 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		int64	   *set = palloc(FILTER_MAX_SET * sizeof(int64));
 		int			n = 0;
 
-		if ((p->op && st->in_hasnull) || st->in_sorted)
+		if ((p->op && st->in_hasnull) || st->in_htab)
 			return false;
 		for (uint32 i = 0; i < st->in_nlut; i++)
 			if (st->in_lut[i] && n++ < FILTER_MAX_SET)
@@ -701,7 +720,7 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	if (*leaf < 0 || *leaf >= ex->nbase)
 		return false;
 	lf = &ex->lay->leaf[*leaf];
-	return lf->kind == SCL_SCALAR && lf->parent < 0 && lf->vtype == SCV_I32;
+	return lf->kind == SCL_SCALAR && lf->parent < 0 && (lf->vtype == SCV_I32 || lf->typid == INT8OID);
 }
 
 static SiftAggPred *
@@ -721,17 +740,13 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id)
 	{
 		int64		v = m->kint[(size_t) r * m->nkey + k];
 
-		if (v < PG_INT32_MIN || v > PG_INT32_MAX)
+		if (ex->lay->leaf[leaf].vtype == SCV_I32 && (v < PG_INT32_MIN || v > PG_INT32_MAX))
 			continue;				/* no int4 value equals it */
 		vals[nv++] = v;
 		lo = Min(lo, v);
 		hi = Max(hi, v);
 	}
-	if (!in_build(st, false, true, vals, nv, lo, hi))
-	{
-		pfree(vals);
-		return NULL;
-	}
+	in_build(st, vals, nv, lo, hi);
 	pfree(vals);
 	st->ready = true;
 	p = palloc0(sizeof(SiftAggPred));
@@ -787,6 +802,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 			{
 				add = lappend(add, p);
 				total++;
+				ex->cs[ci].kfilt = j->nkey == 1 && (ex->cs[ci].map->filtered || j->fslot < 0);
 			}
 		}
 	}

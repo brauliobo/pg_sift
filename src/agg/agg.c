@@ -866,6 +866,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		if (c->njfilter > 0)
 			ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
+		if (c->njpass > 0)
+			ExplainPropertyInteger("Join Key Passes", NULL, c->njpass, es);
 		if (c->nshared > 0)
 			ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
 		if (c->nsemi > 0)
