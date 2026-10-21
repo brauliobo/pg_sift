@@ -108,7 +108,8 @@ left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 		return NULL;
 	op = linitial_node(OpExpr, lj->quals);
 	set_opfuncid(op);
-	if (op->opfuncid != F_TEXTEQ)
+	/* a non-deterministic collation equates keys that differ in bytes (k and K): the join then matches several members */
+	if (op->opfuncid != F_TEXTEQ || !get_collation_isdeterministic(op->inputcollid))
 		return NULL;
 	a = strip_relabel(linitial(op->args));
 	b = strip_relabel(lsecond(op->args));

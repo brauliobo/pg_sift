@@ -72,6 +72,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Fixed: a correlated `EXISTS` over the recordset of an index expression failed at plan time with `invalid attnum N for relation "o"` while `sift.enable_agg` was on: the planner deparsed the expression with the range table of the sub-select. Found by an analytics workload (`test/col/workload.sql`).
 - Added: pg_sift: SiftAgg pushes down `x = ANY (ARRAY (SELECT ...))` of an uncorrelated, stable sub-select that cannot raise: the InitPlan runs once and its rows are the lookup table of the leaf (no parallel workers, as for a hashed sub-plan).
 - Added: pg_sift: per-item arms under an outer aggregate fuse into one scan when the inner `sum` or `avg` is a float8 expression PostgreSQL evaluates, such as the cast of a text-valued leaf (`avg(n::float8)`); they ran one by one (33 times slower at 300,000 items). The arms must share one WHERE and have no inner `FILTER`.
+- Fixed: pg_sift: SiftAgg no longer runs `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k' COLLATE <non-deterministic>` as the member `k` of each row: such a collation equates `k` and `K`, so the join matches both members and the counts and sums differed from PostgreSQL's.
 
 ## Unreleased
 
