@@ -763,12 +763,16 @@ typedef struct FuseSt
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
+extern bool		sift_agg_dense;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
+void osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
+void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
+void arm_chunk(AggExec *ex, Tup *t);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
@@ -842,6 +846,14 @@ void ident_go_wide(AggExec *ex, KeyState *k);
 void key_range_fill(void *arg, int32 v, void *entry);
 bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx);
 void compute_gids(AggExec *ex, int nsel);
+
+/* update.c */
+void agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all);
+const double *eval_vx(AggExec *ex, SiftAggAgg *a, int nsel);
+void agg_tuples(AggExec *ex, Tup *t);
+void join_stage(AggExec *ex, int s, Tup *in);
+void dense_init(AggExec *ex);
+void agg_chunk(AggExec *ex, int start, int n, const uint64 *mask);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
