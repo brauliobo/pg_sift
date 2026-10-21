@@ -79,6 +79,7 @@
 #include "agg/back.h"
 #include "agg/kern.h"
 #include "agg/part.h"
+#include "agg/rows.h"
 #include "agg/spec.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
@@ -107,6 +108,7 @@ sift_agg_init(void)
 	sift_aggcol_register();
 	sift_aggcte_init();
 	sift_search_init();
+	sift_agg_rows_init();
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,

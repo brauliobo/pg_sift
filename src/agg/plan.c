@@ -68,6 +68,7 @@
 #include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/topn.h"
+#include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -816,6 +817,7 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 		return;
 	}
 	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
+	sift_agg_rows_paths(root, input_rel, output_rel, extra);
 }
 
 static bool
