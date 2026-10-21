@@ -475,10 +475,11 @@ gen_units(const char *dir)
 {
 	CcgRng		r = 7;
 
-	for (int k = 0; k < 9; k++)
+	for (int k = 0; k < 10; k++)
 	{
+		/* unit 9: 4 rows of 4 elements whose group counts are then replaced by {0xFFFFFFF0, 0x20, 0, 0}: they add up to 16 modulo 2^32 */
 		/* unit 8: 45 distinct strings, written against a dictionary of 40 (the stored codes 40..44 are past it) */
-		uint32		nrows = k == 0 ? 3 : k == 8 ? 45 : 100 + 400 * (uint32) k;
+		uint32		nrows = k == 0 ? 3 : k == 8 ? 45 : k == 9 ? 4 : 100 + 400 * (uint32) k;
 		SiftColBatch *b = sift_cbatch_create(CurrentMemoryContext, schema);
 		SiftCcPolicy pol[lengthof(defs)];
 		StringInfoData out;
@@ -496,7 +497,7 @@ gen_units(const char *dir)
 			char		str[24];
 			SiftColValue items[5];
 			SiftColValue keys[5];
-			uint32		ne = (uint32) (ccg_next(&r) % 5);
+			uint32		ne = k == 9 ? 4 : (uint32) (ccg_next(&r) % 5);
 
 			ItemPointerSet(&row.tid, 7 * SIFT_SB_PAGES + i / 100, (OffsetNumber) (1 + i % 100));
 			row.ncols = lengthof(defs);
@@ -521,6 +522,12 @@ gen_units(const char *dir)
 			val[6].v.s = "opaque bytes";
 			val[6].len = 12;
 			sift_cbatch_add(b, &row);
+		}
+		if (k == 9)
+		{
+			b->col[3].key[0] = (int64) 0xFFFFFFF0;
+			b->col[3].key[1] = 0x20;
+			b->col[3].key[2] = b->col[3].key[3] = 0;
 		}
 		for (int c = 0; c < (int) lengthof(defs); c++)
 			sift_cc_policy_parse(seed_policies[(k + c) % 6], &pol[c]);
