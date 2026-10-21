@@ -168,8 +168,8 @@ class Stable(unittest.TestCase):
 class StoreHelpers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import store   # reads the query files and asks quiet.sh for the pressure; starts nothing
-        cls.store = store
+        import store_plan   # reads the query files and asks quiet.sh for the pressure; starts nothing
+        cls.store = store_plan
 
     def test_noisy_cells_of_each_kind(self):
         meta = {'noisy': ['05: 6.9 MiB/s of other disk traffic', 'cold es 03: 1.2 cores', 'cold sift_table 06: x', 'updates ch: y', 'not a cell']}

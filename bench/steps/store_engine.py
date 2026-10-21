@@ -207,6 +207,9 @@ def wait_idle(engines, skip=()):
         time.sleep(2)
 
 
+# The pressure stall information cannot tell the benchmark's own loads, restarts and neighbouring cells from the host's other users, so it is not used to
+# decide anything (it is logged). A window is measured instead: the CPU the host spent, less the CPU of the containers of this run and of this process
+# tree, is the work of somebody else (`external_cpu`, cores); the same for the disk of the volume the containers live on (`external_io`, MiB/s).
 CLK = os.sysconf('SC_CLK_TCK')
 
 
