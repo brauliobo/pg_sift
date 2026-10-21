@@ -301,3 +301,7 @@ CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrow
 -- Table module (src/table/funcs.c): the column groups of a sift_table that still carry their writer (rows that are not final)
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_tagged' LANGUAGE C STRICT;
+
+-- the record of a write buffer page of one row whose slot and record length are given: true when it is handed out, an error when it reaches past the page
+CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec' LANGUAGE C STRICT;

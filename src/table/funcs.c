@@ -135,6 +135,29 @@ sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 	table_close(rel, AccessShareLock);
 	PG_RETURN_INT32(n);
 }
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec);
+
+/* Does a write buffer page of one row, whose slot holds `slot` and whose record claims `inline_len` bytes, give out a record (a record outside the page is an error) */
+Datum
+sift_test_tbl_page_rec(PG_FUNCTION_ARGS)
+{
+	uint32		slot = (uint32) PG_GETARG_INT32(0),
+				inline_len = (uint32) PG_GETARG_INT32(1);
+	Page		page = palloc0(BLCKSZ);
+	SiftTblPageHdr *ph;
+	bool		found;
+
+	sift_page_init(page, SIFT_PT_WBUFDATA, 7);
+	ph = TBL_PAGE(page);
+	ph->nrows = 1;
+	ph->slot[0] = (uint16) slot;
+	if (slot > 0 && slot < BLCKSZ / 2)
+		((SiftTblRec *) (SiftPageGetData(page) + slot))->inline_len = (uint16) inline_len;
+	found = sift_tbl_page_rec(page, 7, 1) != NULL;
+	pfree(page);
+	PG_RETURN_BOOL(found);
+}
 #endif
 
 /* The space of a table as one row: the file, the blocks ever used, and the free list (reusable: no snapshot can read them) */
