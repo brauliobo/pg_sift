@@ -817,6 +817,18 @@ void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, c
 void combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o);
 const uint32 *combo_outs(AggExec *ex, int ci);
 
+/* dist.c */
+void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
+bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
+Dist *dist_new(AggExec *ex, bool sgn);
+bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
+uint64 dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits);
+void dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 newcap);
+void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v);
+void dist_finish_all(AggExec *ex);
+void dist_end_all(AggExec *ex);
+void dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
+
 /* back_host.c */
 bool backend_begin(AggExec *ex);
 void backend_finish(AggExec *ex);
