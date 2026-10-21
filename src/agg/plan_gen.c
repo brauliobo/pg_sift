@@ -268,26 +268,20 @@ gen_parallel_ok(Oid agg, Oid transfn, Oid combfn, Oid serfn, Oid deserfn, Oid tr
 	return true;
 }
 
-bool
-compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
+/* the functions of the aggregate that decide how its state is carried and combined */
+typedef struct GenFns
 {
-	HeapTuple	tup;
-	Form_pg_aggregate ag;
-	bool		hyp = a->aggkind == AGGKIND_HYPOTHETICAL,
-				ordered = a->aggkind == AGGKIND_ORDERED_SET || hyp,
-				hash = false,
-				volatile_fn;
 	Oid			transfn,
 				combfn,
 				serfn,
 				deserfn,
 				transtype;
-	SiftAggGen *g;
-	double		cost = 0;
-	bool		mapped = false,
-				wide = false;
-	StringInfoData txt;
+} GenFns;
 
+/* the shapes of aggregate call the generic path runs: plain, with ORDER BY or DISTINCT, ordered-set and hypothetical-set */
+static bool
+gen_eligible(Aggref *a, bool ordered, bool hyp)
+{
 	if ((a->aggkind != AGGKIND_NORMAL && !ordered) || a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > SIFT_AGG_MAX_GARGS ||
 		(ordered && !hyp && (list_length(a->aggorder) != 1 || list_length(a->args) != 1)) ||
 		(hyp && list_length(a->aggorder) != list_length(a->args)) ||
@@ -296,21 +290,66 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	foreach_ptr(Node, d, a->aggdirectargs)
 		if (!pseudo_const(d))
 			return false;
-	if (a->aggdistinct != NIL && list_length(a->aggdistinct) != list_length(a->args))
-		return false;
-	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(a->aggfnoid));
+	return a->aggdistinct == NIL || list_length(a->aggdistinct) == list_length(a->args);
+}
+
+/* the functions of aggregate agg; false when its transition or final function is volatile */
+static bool
+gen_fns(Oid agg, GenFns *f)
+{
+	HeapTuple	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(agg));
+	Form_pg_aggregate ag;
+	bool		volatile_fn;
+
 	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for aggregate %u", a->aggfnoid);
+		elog(ERROR, "cache lookup failed for aggregate %u", agg);
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
 	volatile_fn = func_volatile(ag->aggtransfn) == PROVOLATILE_VOLATILE ||
 		(OidIsValid(ag->aggfinalfn) && func_volatile(ag->aggfinalfn) == PROVOLATILE_VOLATILE);
-	transfn = ag->aggtransfn;
-	combfn = ag->aggcombinefn;
-	serfn = ag->aggserialfn;
-	deserfn = ag->aggdeserialfn;
-	transtype = ag->aggtranstype;
+	*f = (GenFns) {ag->aggtransfn, ag->aggcombinefn, ag->aggserialfn, ag->aggdeserialfn, ag->aggtranstype};
 	ReleaseSysCache(tup);
-	if (volatile_fn)
+	return !volatile_fn;
+}
+
+/* the text of the aggregate in EXPLAIN: txt is its arguments */
+static char *
+gen_desc(AggCtx *c, Aggref *a, SiftAggGen *g, const char *txt)
+{
+	StringInfoData s;
+
+	initStringInfo(&s);
+	if (g->ordered)
+	{
+		foreach_ptr(Node, e, a->aggdirectargs)
+			appendStringInfo(&s, "%s%s", foreach_current_index(e) ? ", " : "", expr_text(c, e));
+		return psprintf("%s(%s) WITHIN GROUP (ORDER BY %s)", get_func_name(a->aggfnoid), s.data, txt);
+	}
+	foreach_node(SortGroupClause, sc, a->aggorder)
+	{
+		bool		rev;
+		TargetEntry *te = get_sortgroupref_tle(sc->tleSortGroupRef, a->args);
+
+		get_equality_op_for_ordering_op(sc->sortop, &rev);
+		appendStringInfo(&s, "%s%s%s%s", s.len ? ", " : " ORDER BY ", expr_text(c, (Node *) te->expr), rev ? " DESC" : "",
+						 sc->nulls_first == rev ? "" : sc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
+	}
+	return psprintf("%s(%s%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt, s.data);
+}
+
+bool
+compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
+{
+	bool		hyp = a->aggkind == AGGKIND_HYPOTHETICAL,
+				ordered = a->aggkind == AGGKIND_ORDERED_SET || hyp,
+				hash = false;
+	GenFns		fns;
+	SiftAggGen *g;
+	double		cost = 0;
+	bool		mapped = false,
+				wide = false;
+	StringInfoData txt;
+
+	if (!gen_eligible(a, ordered, hyp) || !gen_fns(a->aggfnoid, &fns))
 		return false;
 	g = palloc0(sizeof(SiftAggGen));
 	initStringInfo(&txt);
@@ -364,39 +403,15 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	for (int k = 0; k < g->nargs; k++)
 		for (int j = 0; j < g->arg[k].nleaves; j++)
 			wide |= leaf_of(c, g->arg[k].leaf[j])->wide;
-	g->parallel = !wide && !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, transfn, combfn, serfn, deserfn, transtype);
+	g->parallel = !wide && !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, fns.transfn, fns.combfn, fns.serfn, fns.deserfn, fns.transtype);
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
-	g->cost = AGG_GEN_ROW + fn_cost(c, transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
+	g->cost = AGG_GEN_ROW + fn_cost(c, fns.transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
 	out->kind = SAA_GEN;
 	out->gen = g;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;
-	if (ordered)
-	{
-		StringInfoData d;
-
-		initStringInfo(&d);
-		foreach_ptr(Node, e, a->aggdirectargs)
-			appendStringInfo(&d, "%s%s", foreach_current_index(e) ? ", " : "", expr_text(c, e));
-		out->desc = psprintf("%s(%s) WITHIN GROUP (ORDER BY %s)", get_func_name(a->aggfnoid), d.data, txt.data);
-	}
-	else
-	{
-		StringInfoData ord;
-
-		initStringInfo(&ord);
-		foreach_node(SortGroupClause, sc, a->aggorder)
-		{
-			bool		rev;
-			TargetEntry *te = get_sortgroupref_tle(sc->tleSortGroupRef, a->args);
-
-			get_equality_op_for_ordering_op(sc->sortop, &rev);
-			appendStringInfo(&ord, "%s%s%s%s", ord.len ? ", " : " ORDER BY ", expr_text(c, (Node *) te->expr), rev ? " DESC" : "",
-							 sc->nulls_first == rev ? "" : sc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
-		}
-		out->desc = psprintf("%s(%s%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt.data, ord.data);
-	}
+	out->desc = gen_desc(c, a, g, txt.data);
 	record_plan_function_dependency(c->root, a->aggfnoid);
 	foreach_node(TargetEntry, te, a->args)
 		record_deps(c->root, (Node *) te->expr);
