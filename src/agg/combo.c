@@ -131,7 +131,9 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 	return t->n;
 }
 
-/* the ids over all dictionaries of the entries of d, for dictionary leaf p of combo ci */
+#define CMAP_UNSET	UINT32_MAX
+
+/* the ids over all dictionaries of the entries of d, for dictionary leaf p of combo ci; an entry gets its id when a tuple first reads it (cmap_id) */
 static uint32 *
 dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
 {
@@ -141,11 +143,19 @@ dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
 	if (map)
 		return map;
 	map = MemoryContextAlloc(ex->cxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
-	for (uint32 c = 0; c < d->n; c++)
-		map[c] = intern_id(ex, &ex->cs[ci].in[p], d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	memset(map, 0xFF, d->n * sizeof(uint32));
 	map[d->n] = 0;
 	s->kmap[slot] = map;
 	return map;
+}
+
+/* the id of entry c of the dictionary: a dictionary has far more entries than a scan reads (every distinct free text of a column) */
+static inline uint32
+cmap_id(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ci, int p, uint32 c)
+{
+	if (map[c] == CMAP_UNSET)
+		map[c] = intern_id(ex, &ex->cs[ci].in[p], d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	return map[c];
 }
 
 static void
@@ -317,20 +327,14 @@ combo_child_rows(AggExec *ex, int ci, uint32 **rows)
 	return n;
 }
 
-/* the rows of the table with the entry's key (none when a key is NULL) */
-static int
-combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
+/* the key of the entry (v: the ids of its leaves, NULL when every key is an expression); false when a key is NULL: no row matches */
+static bool
+combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, int64 *iv)
 {
-	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
-	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
-	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
-	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
 
-	if (j->params != NIL)
-		return combo_child_rows(ex, ci, rows);
-	*rows = NULL;
 	for (int k = 0; k < j->nkey; k++)
 	{
 		if (j->keyexpr[k])
@@ -339,7 +343,7 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
 
 			if (isnull)
-				return 0;
+				return false;
 			if (cs->map->ktext[k])
 			{
 				struct varlena *t = PG_DETOAST_DATUM_PACKED(d);
@@ -352,7 +356,7 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 			continue;
 		}
 		if (v[j->keypos[k]] == 0)
-			return 0;
+			return false;
 		if (cs->map->ktext[k])
 		{
 			ptr[k] = cs->in[j->keypos[k]].ptr[v[j->keypos[k]] - 1];
@@ -363,7 +367,94 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 		else
 			iv[k] = (int32) (v[j->keypos[k]] - 1);
 	}
-	return map_find(cs->map, ptr, len, iv, rows);
+	return true;
+}
+
+/* the rows of the table with the entry's key (none when a key is NULL) */
+static int
+combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
+	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
+	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+
+	if (j->params != NIL)
+		return combo_child_rows(ex, ci, rows);
+	*rows = NULL;
+	return combo_keys(ex, ci, v, ptr, len, iv) ? map_find(ex->cs[ci].map, ptr, len, iv, rows) : 0;
+}
+
+typedef struct PriorKeyed
+{
+	const SiftAggCombo *cb;
+	int			prior;
+	bool		ok;
+} PriorKeyed;
+
+/* does every parameter the expression reads stand for a column of the table of the prior combo? */
+static bool
+reads_prior_only(Node *n, PriorKeyed *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param))
+	{
+		int			id = ((Param *) n)->paramid;
+
+		w->ok &= ((Param *) n)->paramkind == PARAM_EXEC && id < w->cb->nleaves && w->cb->leaf[id] < 0 && w->cb->refcombo[id] == w->prior;
+		return false;
+	}
+	return expression_tree_walker(n, reads_prior_only, w);
+}
+
+/*
+ * Is the join of combo ci an inner or semi join whose keys are expressions of the columns of the table of combo `prior` alone? A row
+ * of that table with no match in this one makes no tuple (combo_prior_matches).
+ */
+bool
+combo_prior_keyed(AggExec *ex, int ci, int prior)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j;
+	PriorKeyed	w = {cb, prior, true};
+
+	if (cb->join < 0 || ci == prior || cb->level != 0)
+		return false;
+	j = &ex->spec->join[cb->join];
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nkey == 0 || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
+		return false;
+	for (int k = 0; k < j->nkey && w.ok; k++)
+		if (j->keyexpr[k])
+			reads_prior_only(j->keyexpr[k], &w);
+		else
+			w.ok = false;
+	return w.ok;
+}
+
+static int combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm);
+
+/* does the row of the table of combo `prior` have a match in the table of ci (combo_prior_keyed)? */
+bool
+combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const MapTab *pm = ex->cs[prior].map;
+	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
+	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
+	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	uint32	   *rows;
+	int			nm;
+
+	for (int p = 0; p < cb->nleaves; p++)
+		if (cb->leaf[p] < 0 && cb->refcombo[p] == prior)
+			bind_param(ex, p, pm->col[(size_t) row * pm->ncol + cb->refcol[p]], pm->cnull[(size_t) row * pm->ncol + cb->refcol[p]]);
+	if (!combo_keys(ex, ci, NULL, ptr, len, iv))
+		return false;
+	nm = map_find(ex->cs[ci].map, ptr, len, iv, &rows);
+	return j->fslot >= 0 && !ex->cs[ci].map->filtered && nm > 0 ? combo_filter_rows(ex, ci, rows, nm) > 0 : nm > 0;
 }
 
 /* the rows that hold the rest of the ON clause, moved to the front: how many */
@@ -864,7 +955,7 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 			const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
 			const SiftSrcVec *v = get_vec(ex, cb->leaf[p]);
 			const uint32 *idx = leaf_lvl(ex, cb->leaf[p]) == qlevel ? tidx : ridx;
-			const uint32 *map = NULL;
+			uint32	   *map = NULL;
 
 			if (lf->vtype == SCV_CODE)
 				map = dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, p);
@@ -880,7 +971,7 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 				else if (v->isnull && v->isnull[idx[i]])
 					vid[i] = 0;
 				else if (map)
-					vid[i] = map[((const uint32 *) v->data)[idx[i]]];
+					vid[i] = cmap_id(ex, map, v->dict, ci, p, ((const uint32 *) v->data)[idx[i]]);
 				else
 					vid[i] = (uint64) (uint32) ((const int32 *) v->data)[idx[i]] + 1;
 			}
