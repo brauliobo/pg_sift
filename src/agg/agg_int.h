@@ -529,6 +529,7 @@ typedef struct AggExec
 	int64		n_rollup_cost;	/* exact units with a rollup scanned because their tuples cost more than their elements */
 	double		pa_elem_cost;	/* sift_aggspec_unit_costs of the spec: an element scanned, a tuple of the rollup */
 	double		pa_tuple_cost;
+	int			pa_scan_run;	/* the units in a row whose rollup cost clearly more than their elements: a long run skips reading the rollups of the next ones */
 	int64		n_rows;			/* of the others */
 	int64		n_tuples;
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */

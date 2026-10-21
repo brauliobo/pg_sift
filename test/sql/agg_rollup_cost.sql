@@ -18,7 +18,13 @@ CREATE TABLE ro_hi (LIKE ro_lo) WITH (autovacuum_enabled = off);
 INSERT INTO ro_hi SELECT * FROM ro_lo;
 CREATE INDEX ro_lo_col ON ro_lo USING sift_col (id, items) WITH (paths = 'items[]{kind text, band int4, seen text, score float8, qty int4}', rollup = 'items[].kind');
 CREATE INDEX ro_hi_col ON ro_hi USING sift_col (id, items) WITH (paths = 'items[]{kind text, band int4, seen text, score float8, qty int4}', rollup = 'items[].kind, items[].band, items[].seen');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ro_lo, ro_hi;
+-- wide rows make many units (a unit is 256 pages): after a few units scanned by cost the next ones are scanned without reading their rollups, and the answers and counts stay
+CREATE TABLE ro_big (LIKE ro_lo) WITH (autovacuum_enabled = off);
+ALTER TABLE ro_big ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ro_big SELECT id + 12000 * k, items, repeat('p', 1500) FROM ro_lo, generate_series(0, 2) k;
+CREATE INDEX ro_big_col ON ro_big USING sift_col (id, items) WITH (paths = 'items[]{kind text, band int4, seen text, score float8, qty int4}', rollup = 'items[].kind, items[].band, items[].seen');
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ro_lo, ro_hi, ro_big;
+SELECT units > 20 AS many_units FROM sift.col_index_info('ro_big_col');
 
 CREATE FUNCTION rc_rows(q text, cost text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -48,7 +54,7 @@ INSERT INTO rc_q VALUES
 
 -- the default cost, no cost (always the rollup) and a cost that scans every unit: the same rows
 SELECT t.tbl, q.n, q.shape, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '0') AS same_always, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '1000') AS same_never
-FROM (VALUES ('ro_lo'), ('ro_hi')) t(tbl), rc_q q ORDER BY 1, 2;
+FROM (VALUES ('ro_lo'), ('ro_hi'), ('ro_big')) t(tbl), rc_q q ORDER BY 1, 2;
 
 -- how the units were answered at the default cost: from the rollups, by cost, or both
 CREATE FUNCTION rc_how(tbl text, cost text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, how text) LANGUAGE sql AS $$
@@ -57,10 +63,11 @@ CREATE FUNCTION rc_how(tbl text, cost text, lo int DEFAULT 1, hi int DEFAULT 99)
 $$;
 SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '1');
 SELECT 'ro_hi' AS tbl, * FROM rc_how('ro_hi', '1');
+SELECT 'ro_big' AS tbl, * FROM rc_how('ro_big', '1');
 -- no cost: the rollups answer every unit; a cost that is never worth it: every unit scans
 SELECT 'ro_hi' AS tbl, * FROM rc_how('ro_hi', '0');
 SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '1000');
 
-DROP TABLE ro_lo, ro_hi, rc_q;
+DROP TABLE ro_lo, ro_hi, ro_big, rc_q;
 DROP FUNCTION rc_rows(text, text), rc_units(text, text), rc_how(text, text, int, int);
 DROP EXTENSION pg_sift;
