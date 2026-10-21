@@ -110,3 +110,4 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   the member or the key of the member, and for the member of one key (`LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`), whose error
   would be the row's, not the key's. Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
   as before.
+- **A text path.** A path read only as `doc ->> 'k'` (an `astext` or `text` leaf) is read again like a recordset column: a container is the JSON text `->>` gives it, a key of a document that is an array or a scalar is NULL. The text of a value cannot raise, so there is no order of errors to keep and a conjunct or a key may read the path. The plan stays normal when anything else reads the leaf, such as a `jsonb_typeof` test of the same path (a row read again has the type of its text).

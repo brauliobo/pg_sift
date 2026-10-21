@@ -322,6 +322,8 @@ types_leaf(AggCtx *c, Node *call)
 
 	if (base < 0 || !source_can_types(c) || c->stats.nokinds[base])
 		return -1;
+	/* the types are those the chunks keep of the stored values: a row read again from the heap as text has the type of its text */
+	c->txt_bad = bms_add_member(c->txt_bad, base);
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].types && c->vleaf[j].obj == base)
 			return c->lay->nleaves - c->nvleaf + j;
@@ -548,6 +550,7 @@ match_leaf_node(AggCtx *c, Node *e)
 
 	c->rec_pending = 0;
 	c->cast_pending = 0;
+	c->txt_pending = 0;
 	e = strip_relabel(e);
 	if (IsA(e, Var) && ((Var *) e)->varno == c->func_rti && c->func_rti != 0)
 		return func_var_leaf(c, (Var *) e);
@@ -611,6 +614,8 @@ match_leaf_node(AggCtx *c, Node *e)
 		{
 			int			l = scalar_leaf(c, r.att, r.path, want);
 
+			if (l >= 0)
+				c->txt_pending = cast_to == InvalidOid && r.as_text ? l + 1 : 0;
 			return l >= 0 ? l : key_leaf(c, r.att, r.path, want);
 		}
 		if (c->group < 0)
