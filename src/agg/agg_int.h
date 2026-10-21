@@ -769,8 +769,6 @@ extern bool		sift_agg_share_lookups;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
-void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
-void arm_chunk(AggExec *ex, Tup *t);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
@@ -884,6 +882,12 @@ void gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at);
 void gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void gen_flush(AggExec *ex);
 void gen_finish(AggExec *ex);
+
+/* two.c */
+void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
+void arms_init(AggExec *ex);
+void arms_flush(AggExec *ex);
+void arm_chunk(AggExec *ex, Tup *t);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
