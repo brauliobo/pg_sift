@@ -225,7 +225,7 @@ cmp_run(const void *a, const void *b)
 	SiftKey		x = ((const SiftKey *) a)[0],
 				y = ((const SiftKey *) b)[0];
 
-	return x < y ? -1 : x > y;
+	return SIFT_CMP3(x, y);
 }
 
 /* Is the row dead for the indexes: a dead TID, or a row of an aborted writer in a group (a key in one of the runs) */

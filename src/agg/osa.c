@@ -75,6 +75,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "core/cmp.h"
 
 /* ---------- ordered-set aggregates ---------- */
 
@@ -316,8 +317,8 @@ osa_cmp(const void *pa, const void *pb)
 			   *b = pb;
 
 	if (a->sid1 != b->sid1)
-		return a->sid1 < b->sid1 ? -1 : 1;
-	return a->key < b->key ? -1 : a->key > b->key;
+		return SIFT_CMP3(a->sid1, b->sid1);
+	return SIFT_CMP3(a->key, b->key);
 }
 
 /* the runs of equal values, by group id then value */

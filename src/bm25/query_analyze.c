@@ -7,6 +7,7 @@
 
 #include "bm25/query.h"
 #include "bm25/query_int.h"
+#include "core/cmp.h"
 
 /* ---------------------------------------------------------------- analysis */
 
@@ -27,20 +28,20 @@ node_cmp_shape(const SiftQNode *a, const SiftQNode *b)
 	int			c;
 
 	if (a->kind != b->kind)
-		return a->kind < b->kind ? -1 : 1;
+		return SIFT_CMP3(a->kind, b->kind);
 	if ((c = cmp_bytes(a->text, a->textlen, b->text, b->textlen)) != 0)
 		return c;
 	if (a->fuzzy != b->fuzzy)
-		return a->fuzzy < b->fuzzy ? -1 : 1;
+		return SIFT_CMP3(a->fuzzy, b->fuzzy);
 	if (a->field != b->field)
-		return a->field < b->field ? -1 : 1;
+		return SIFT_CMP3(a->field, b->field);
 	if (a->nterms != b->nterms)
-		return a->nterms < b->nterms ? -1 : 1;
+		return SIFT_CMP3(a->nterms, b->nterms);
 	for (int i = 0; i < a->nterms; i++)
 		if ((c = cmp_bytes(a->terms[i], a->termlens[i], b->terms[i], b->termlens[i])) != 0)
 			return c;
 	if (a->nchild != b->nchild)
-		return a->nchild < b->nchild ? -1 : 1;
+		return SIFT_CMP3(a->nchild, b->nchild);
 	for (int i = 0; i < a->nchild; i++)
 		if ((c = node_cmp(a->child[i], b->child[i])) != 0)
 			return c;

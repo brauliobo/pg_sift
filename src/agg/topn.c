@@ -19,6 +19,7 @@
 #include "utils/tuplesort.h"
 
 #include "agg/topn.h"
+#include "core/cmp.h"
 
 /* Superblocks per window of the visit order at most: the zones are looked at again, and the match set is asked for, once per window */
 #define TOPN_WINDOW		8
@@ -299,7 +300,7 @@ ent_cmp(const SiftTopN *t, const TopEnt *a, const TopEnt *b)
 {
 	int			c = key_cmp(t, a, b);
 
-	return c != 0 ? c : (a->tie < b->tie ? -1 : a->tie > b->tie);
+	return c != 0 ? c : SIFT_CMP3(a->tie, b->tie);
 }
 
 static int
@@ -390,7 +391,7 @@ row_cmp(const void *a, const void *b)
 	uint32		x = *(const uint32 *) a,
 				y = *(const uint32 *) b;
 
-	return x < y ? -1 : x > y;
+	return SIFT_CMP3(x, y);
 }
 
 static uint64
