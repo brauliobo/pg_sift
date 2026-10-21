@@ -12,8 +12,8 @@ by the child plan as in any plan.
 A `UNION ALL` or `UNION` of sub-selects, a sub-select of a statement-level CTE and a nested `WITH` inside the sub-select are plans in the same way.
 
 The normal plan stays when the right side reads a volatile function, the join has no condition (`ON true`) and is not lateral, the right side is
-estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there).
-A scan with such a join runs without workers.
+estimated above `sift.agg_lookup_max_rows` rows (a lateral one: its rows for each distinct input of the scanned table, together), or a condition on a column nothing else reads was
+pushed into the sub-select (its plan outputs NULL there). A scan with such a join runs without workers.
 
 A lateral right side that reads the joined row (`LEFT JOIN LATERAL (SELECT .. LIMIT 1)`, a `UNION` or `UNION ALL` of arms, `generate_series`, `unnest` of
 an array column, a set-returning function) keeps PostgreSQL's parameterized plan of it as the child: the scan runs the child for each distinct value of the

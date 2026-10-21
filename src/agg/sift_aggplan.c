@@ -167,6 +167,8 @@ typedef struct AggCtx
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
+	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
+	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -5789,6 +5791,36 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	return true;
 }
 
+/* the rows the scan keeps of a correlated child, those of its plan for each distinct input, are bounded as the rows of a plan read once are */
+static bool
+child_rows_fit(AggCtx *c, JoinCtx *jc)
+{
+	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, c->rel->tuples, NULL, NULL), c->rel->tuples) <= sift_agg_lookup_max_rows;
+}
+
+/* the plan of a correlated child, made once for the query: the other table of a flipped join reads the same child */
+static bool
+planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
+{
+	JoinCtx    *hit;
+
+	foreach_ptr(JoinCtx, done, c->planned)
+		if (done->rti == jc->rti)
+		{
+			jc->cpath = done->cpath;
+			jc->subroot = done->subroot;
+			jc->j.params = done->j.params;
+			jc->args = done->args;
+			return done->cpath != NULL;
+		}
+	hit = palloc0(sizeof(JoinCtx));
+	hit->rti = jc->rti;
+	if (correlated_child(c, e, rel, jc) && child_rows_fit(c, jc))
+		*hit = *jc;
+	c->planned = lappend(c->planned, hit);
+	return hit->cpath != NULL;
+}
+
 /* a parameter that a query above carries into the tree (PostgreSQL has replaced a column of it in the expressions of the query itself) */
 static bool
 ancestor_param_walker(Node *n, PlannerInfo *root)
@@ -5865,7 +5897,7 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
 		return false;
 	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
-		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && correlated_child(c, e, rel, jc);
+		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
 	if ((jc->cpath = child_path(rel, false)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
 		return false;
 	jc->j.child = 0;
@@ -6433,7 +6465,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
 	Bitmapset  *allrtis = NULL;
-	List	   *live_rtis = NIL;
+	List	   *live_rtis = NIL,
+			   *joined = NIL;
 	int			nin = 0;
 
 	scan_from((Node *) parse->jointree, fs);
@@ -6461,8 +6494,10 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 				return false;
 			if (c->relid == 0)
 				c->relid = rti;
-			else if (part || !add_join(c, fs, rti))
+			else if (part || c->joinless)
 				return false;
+			else
+				joined = lappend_int(joined, rti);
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
@@ -6475,15 +6510,25 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			c->func = linitial_node(RangeTblFunction, e->functions);
 			c->func_kind = func_kind_of(c->func);
 		}
-		else if (input_rel == NULL || (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE) ||
-				 !add_join(c, fs, rti))
+		else if (input_rel == NULL || c->joinless ||
+				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
 			return false;
+		else
+			joined = lappend_int(joined, rti);
 	}
 	if (c->relid == 0)
 		return false;
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)
+			return false;
+	c->rel = root->simple_rel_array[c->relid];
+	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
+	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
+	if (c->rel == NULL || !find_source(c, &ii))
+		return false;
+	foreach_int(rti, joined)
+		if (!add_join(c, fs, rti))
 			return false;
 	if (input_rel != NULL)
 	{
@@ -6499,10 +6544,6 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		if (nin + list_length(c->joins) < list_length(fs->rtis))
 			return false;
 	}
-	c->rel = root->simple_rel_array[c->relid];
-	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
-	if (c->rel == NULL || !find_source(c, &ii))
-		return false;
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
 	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
 		return false;
@@ -6524,11 +6565,15 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 static bool
 agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
+	List	   *planned;
+
 	if (agg_base(c, root, input_rel, fs))
 		return true;
 	if (!fs->flippable)
 		return false;
+	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
+	c->planned = planned;
 	*fs = (FromScan) {.ok = true, .flip = true};
 	return agg_base(c, root, input_rel, fs);
 }
@@ -7478,6 +7523,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
+	c->joinless = true;
 	if (!agg_base(c, root, input_rel, &fs) || c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;
