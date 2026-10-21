@@ -21,6 +21,13 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
 
+-- the refresh worker of a query that found a unit without its rollup holds a snapshot while it rewrites the segment: a VACUUM that runs meanwhile
+-- cannot make the pages of rows written since all-visible, so the units stay scanned. Wait for the queue to drain before the statements that need them.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue()) LOOP PERFORM pg_sleep(0.01); END LOOP;
+END $$;
+
 -- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -168,6 +175,7 @@ SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26
 SELECT count(DISTINCT sb) FILTER (WHERE nn IS NULL) AS units_without_n, count(DISTINCT sb) FILTER (WHERE nn IS NOT NULL) AS units_with_n
 FROM sift.col_unit_hist('ab_col', 'items[].kind', 'items[].n');
 
+CALL pa_settle();
 -- Small automatic cubes: both dimensions fit; 65 distinct n values exceed the 64-key preselection cap.
 -- The only element leaves are kind and n; short text/small integers leave ample encoding room.
 SET sift.col_rollup_on_demand = off;
@@ -209,6 +217,7 @@ SELECT * FROM pa_sum('ae');
 SELECT * FROM pa_sum('a3');
 
 -- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
+CALL pa_settle();
 VACUUM (index_cleanup on, disable_page_skipping) ac, ae, a3;
 SELECT * FROM pa_check('ac');
 
@@ -217,11 +226,13 @@ INSERT INTO ac SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k'
        '["t1", null]', repeat('p', 200) FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ac');
 SELECT sift.col_promote('ac_col') >= 0 AS promoted;
+CALL pa_settle();
 VACUUM (index_cleanup on, disable_page_skipping) ac;
 SELECT * FROM pa_check('ac');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ac_col', true) >= 0 AS merged;
+CALL pa_settle();
 VACUUM (index_cleanup on, disable_page_skipping) ac;
 SELECT sift.col_verify('ac_col', true);
 SELECT * FROM pa_check('ac');
@@ -244,6 +255,7 @@ SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 RESET sift.col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(410001, 415000) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
+CALL pa_settle();
 VACUUM (index_cleanup on, disable_page_skipping) a3;
 SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
 SELECT sift.col_verify('a3_col', true);
@@ -257,5 +269,6 @@ SELECT * FROM pa_sum('ao');
 
 DROP TABLE ae, ac, ao, a3, ab, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int), pa_contract(regclass, text, bool);
+DROP PROCEDURE pa_settle();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
