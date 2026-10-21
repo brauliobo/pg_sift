@@ -199,6 +199,16 @@ leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows)
 		}
 }
 
+/* does the source read leaf again, so that the member of one key of it (a leaf after the source's) is read from the rows it gives? */
+static bool
+leaf_rechecked(const SiftAggSpec *s, int leaf)
+{
+	for (int i = 0; i < s->nleaves; i++)
+		if (s->leaves[i] == leaf)
+			return s->recheck[i] != SRK_NONE;
+	return false;
+}
+
 /*
  * The rows of the unit that hold a value the index cannot store in a leaf the scan reads, NULL when there is none. The leaves after the source's
  * read their values from one of its leaves (the value column of a member of an object, the array of a length): theirs count too.
@@ -213,7 +223,7 @@ overflow_rows(AggExec *ex, bool rechecked)
 		if (s->leaves[i] < ex->nbase && (s->recheck[i] != SRK_NONE) == rechecked)
 			leaf_overflow_rows(ex, s->leaves[i], &rows);
 	for (int j = 0; j < s->nvleaf && !rechecked; j++)
-		if (!s->vleaf[j].types)
+		if (!s->vleaf[j].types && (s->vleaf[j].count || !leaf_rechecked(s, ex->vl[j].val)))
 			leaf_overflow_rows(ex, s->vleaf[j].count ? s->vleaf[j].obj : ex->vl[j].val, &rows);
 	return rows;
 }
