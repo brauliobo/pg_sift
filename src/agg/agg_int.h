@@ -16,6 +16,8 @@
 #define VECW		SIFT_AGG_VECW
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
+#define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
+#define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
 #define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
 #define LANE_DIRECT_MAX	(1 << 15)	/* a lane is built and folded or dumped sixteen times: sparse group spaces go to the hash table */
@@ -846,7 +848,7 @@ uint32 ident_add(AggExec *ex, KeyState *k, int64 v);
 uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
 void ident_go_wide(AggExec *ex, KeyState *k);
 void key_range_fill(void *arg, int32 v, void *entry);
-bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx);
+bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel);
 void compute_gids(AggExec *ex, int nsel);
 
 /* update.c */

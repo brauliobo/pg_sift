@@ -644,15 +644,21 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 	*base_out = k->rt.lo;
 }
 
-/* The ids of the integer values in [mn, mx] of key ki are made; false: the key keeps its ids in a hash table instead of the range table (ident_wide_id) */
+/*
+ * The ids of the integer values in [mn, mx] of key ki, of nsel rows, are made; false: the key keeps its ids in a hash table instead of the
+ * range table (ident_wide_id), which is too wide or would be filled with many more values than the rows have (the ids of a column
+ * clustered by another, whose units hold few values far apart).
+ */
 bool
-key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx)
+key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel)
 {
 	KeyState   *k = &ex->ks[ki];
 	KeyFill		f = {ex, ki};
 	MemoryContext old;
+	int64		span = rt_span(&k->rt, mn, mx),
+				added = span - (k->rt.lo <= k->rt.hi ? (int64) k->rt.hi - k->rt.lo + 1 : 0);
 
-	if (k->ident && (k->wcap || (any && rt_span(&k->rt, mn, mx) > MAX_RANGE)))
+	if (k->ident && (k->wcap || (any && (span > MAX_RANGE || (span > SPARSE_RANGE && added > (int64) SPARSE_FACTOR * nsel)))))
 	{
 		if (!k->wcap)
 			ident_go_wide(ex, k);
@@ -757,7 +763,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		}
 		bool		any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) vals_out, ex->tmpm, nsel);
 
-		if (!key_cover(ex, ki, any, mn, mx))
+		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
 			for (int i = 0; i < nsel; i++)
 				vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, (int32) vals_out[i]);
