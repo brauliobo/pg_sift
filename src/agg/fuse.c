@@ -183,6 +183,7 @@ fuse_start(AggExec *ex)
 	F->params = ex->params;
 	F->snap = ex->snap;
 	F->css.ss.ps.state = estate;
+	F->css.custom_ps = ex->css.custom_ps;
 	fs = palloc0(sizeof(FuseSt));
 	fs->F = F;
 	fs->keymap = keymap;

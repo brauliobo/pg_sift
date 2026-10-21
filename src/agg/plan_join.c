@@ -555,6 +555,62 @@ sift_agg_child_sig(Node *n, List *params)
 	return param_position_mutator(copyObject(n), params);
 }
 
+/* the plan id of the common table expression a CTE scan of `root` reads; 0 if it is not one with a plan of its own */
+static int
+cte_plan_id(PlannerInfo *root, RangeTblEntry *e)
+{
+	PlannerInfo *owner = root;
+	int			ndx = 0;
+
+	for (Index up = e->ctelevelsup; up > 0 && owner != NULL; up--)
+		owner = owner->parent_root;
+	if (owner == NULL)
+		return 0;
+	foreach_node(CommonTableExpr, x, owner->parse->cteList)
+	{
+		if (strcmp(x->ctename, e->ctename) == 0)
+			return ndx < list_length(owner->cte_plan_ids) ? list_nth_int(owner->cte_plan_ids, ndx) : 0;
+		ndx++;
+	}
+	return 0;
+}
+
+/* the columns of the child as the first table of any query */
+static Node *
+own_rel_mutator(Node *n, Index *rti)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varno == *rti && ((Var *) n)->varlevelsup == 0)
+	{
+		Var		   *v = copyObject((Var *) n);
+
+		v->varno = v->varnosyn = 1;
+		return (Node *) v;
+	}
+	return expression_tree_mutator(n, own_rel_mutator, rti);
+}
+
+/*
+ * What an uncorrelated child plan is, for the arms of a statement to know theirs are the same: the common table expression (the plan the
+ * statement made of it) or the VALUES list, and the conditions the scan keeps on its rows. A sub-select or function keeps no identity: the
+ * columns of its plan the arms do not read are NULL.
+ */
+static Node *
+plain_child_sig(AggCtx *c, RangeTblEntry *e, Index rti, RelOptInfo *rel)
+{
+	Node	   *what;
+	int			id;
+
+	if (e->rtekind == RTE_VALUES)
+		what = (Node *) e->values_lists;
+	else if (e->rtekind == RTE_CTE && (id = cte_plan_id(c->root, e)) > 0)
+		what = (Node *) list_make1(makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(id), false, true));
+	else
+		return NULL;
+	return sift_agg_child_sig(own_rel_mutator((Node *) list_make2(what, extract_actual_clauses(rel->baserestrictinfo, false)), &rti), NIL);
+}
+
 /* the plan of a correlated child, made once for the query: the other table of a flipped join reads the same child */
 static bool
 planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
@@ -661,6 +717,7 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	jc->j.child = 0;
 	foreach_ptr(JoinCtx, o, c->joins)
 		jc->j.child += o->cpath != NULL && o->j.params == NIL;
+	jc->j.sig = plain_child_sig(c, e, rti, rel);
 	return true;
 }
 
@@ -1208,6 +1265,19 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
  * The plans the joins read, as paths that output the columns the spec reads (the columns of the joined rows are positions of that output): the
  * path PostgreSQL chose for the rows of the sub-select, VALUES list or function, projected on them. The scan nodes project any column.
  */
+/* every column of a CTE or VALUES list, in order */
+static List *
+child_all_vars(AggCtx *c, JoinCtx *jc)
+{
+	RangeTblEntry *e = rt_fetch(jc->rti, c->root->parse->rtable);
+	List	   *vars = NIL;
+
+	for (int i = 0; i < list_length(e->coltypes); i++)
+		vars = lappend(vars, makeVar(jc->rti, i + 1, list_nth_oid(e->coltypes, i), list_nth_int(e->coltypmods, i),
+									 list_nth_oid(e->colcollations, i), 0));
+	return vars;
+}
+
 bool
 child_paths(AggCtx *c, SiftAggSpec *s)
 {
@@ -1224,6 +1294,9 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 			return false;
 		if (jc->j.params != NIL)
 			continue;
+		/* the plan of a child with an identity outputs all its columns: the arms that share it number them alike */
+		if (jc->j.sig != NULL)
+			jc->cvars = child_all_vars(c, jc);
 		/* the child's own columns, before any outer join nulls them: the plan below the projection outputs them so */
 		foreach_ptr(Var, v, jc->cvars)
 		{
