@@ -178,7 +178,7 @@ of element counts. Group children store `n` = total elements of the unit.
 
 The values at NULL slots of a decoded chunk are unspecified (any in-range key: the codec leaves the previous non-NULL value there, `FOR` the base); every consumer masks with the null bitmap, and the `sift_ctest_run` results are ANDed with the non-NULL bits.
 
-**Filters on chunks.** A predicate on a leaf is translated (`sift_col_pred_range`) into an unsigned range test `lo <= key <= hi` in the key
+**Filters on chunks.** A predicate on a leaf is translated (`sift_ctest_make`) into an unsigned range test `lo <= key <= hi` in the key
 domain, an `IN` set, or a LUT over the dictionary codes; then `lo - base`, `hi - base` select the kernel (`range_u8/16/32/64`) and the
 bitmap of matching rows comes out, NULL rows removed (`ISNULL`/`NOTNULL` use the null bitmap alone). `NE` / `NOTIN` are the complement
 within the non-NULL rows. Floats: constants are mapped to their order key (a float4 column holds the keys of the promoted float8 values, so comparing in
@@ -655,7 +655,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
 integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, time, enums, uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit (section 2.12), float4/8, text-like. A group's elements: any number, one level. Not supported:
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
-only used where the scan is entirely visible and clean, see `sift_col_unit_zone_exact`).
+only used where the scan is entirely visible and clean, see `sift_col_unit_exact`).
 
 ### Measured (index on a table of 1.2 million orders: 6 plain columns, 4 jsonb attributes with 14 shredded paths, two nested arrays; busy host)
 
