@@ -209,6 +209,7 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 	List	   *exprs = NIL;
 	double		entries = 1.0,
 				elem_nd = 1.0;
+	Bitmapset  *lookups = NULL;
 	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
 
 	for (int p = 0; p < cb->nleaves; p++)
@@ -221,7 +222,14 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 		{
 			foreach_ptr(JoinCtx, jc, c->joins)
 				if (jc->combo == cb->refcombo[p])
-					entries *= scoped ? joined_distinct(c, jc, cb->refcol[p]) : Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+				{
+					/* the columns of one row of a lookup are one value combination of it, however many the combo reads */
+					if (scoped)
+						entries *= joined_distinct(c, jc, cb->refcol[p]);
+					else if (!bms_is_member(jc->combo, lookups))
+						entries *= Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+					lookups = bms_add_member(lookups, jc->combo);
+				}
 			continue;
 		}
 		lf = leaf_of(c, cb->leaf[p]);
