@@ -54,3 +54,9 @@ VACUUM r_t;
 SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) GROUP BY grp') AS error_row;
 SELECT r_rows('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) GROUP BY grp', true) AS the_error;
 SELECT r_check('SELECT grp, count(*), max(l.v) FROM r_t, jsonb_to_recordset(doc -> $$l$$) AS l(k text, v float8) WHERE id < 15000 GROUP BY grp') AS error_row_filtered_out;
+
+DROP FUNCTION r_check(text);
+DROP FUNCTION r_mode(text);
+DROP FUNCTION r_rows(text, bool);
+DROP TABLE r_t;
+DROP EXTENSION pg_sift;
