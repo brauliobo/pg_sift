@@ -10,15 +10,15 @@ VACUUM d;
 SELECT * FROM dseg;
 SELECT * FROM dstat;
 
--- 30 percent dead: under the default threshold (50) the segment stays, its dead rows are counted out
-DELETE FROM d WHERE id % 10 < 3;
+-- 20 percent dead: under the default threshold (30) the segment stays, its dead rows are counted out
+DELETE FROM d WHERE id % 10 < 2;
 SELECT pg_stat_force_next_flush();
 VACUUM d;
 SELECT * FROM dseg;
 SELECT * FROM dstat;
 
 -- a lower threshold rewrites it alone, without its dead rows
-SET sift.table_dead_rewrite_pct = 20;
+SET sift.table_dead_rewrite_pct = 15;
 VACUUM d;
 SELECT * FROM dseg;
 RESET sift.table_dead_rewrite_pct;

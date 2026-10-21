@@ -58,4 +58,20 @@ SELECT relation_blocks = (SELECT blocks FROM hw WHERE round = 3) AS kept FROM si
 VACUUM (TRUNCATE) sp;
 SELECT relation_blocks < (SELECT blocks FROM hw WHERE round = 3) AS truncated FROM sift.table_space('sp');
 DROP TABLE sp;
+
+-- scattered deletes that leave every segment a third to a half dead: VACUUM rewrites them too, so the file follows the live rows
+-- (it stays above them by the segments of the rewrite and the free end it keeps) and a refill takes the freed blocks
+CREATE TABLE sc (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO sc SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g;
+VACUUM sc;
+CREATE TEMP TABLE hs AS SELECT relation_blocks AS fresh FROM sift.table_space('sc');
+DELETE FROM sc WHERE id % 10 < 4;
+VACUUM sc;
+SELECT relation_blocks * 10 < fresh * 8 AS shrunk, relation_blocks * 10 > fresh * 5 AS holds_live, free_blocks * 5 < relation_blocks AS little_free
+	FROM sift.table_space('sc'), hs;
+INSERT INTO sc SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, 60000) g WHERE g % 10 < 4;
+VACUUM sc;
+SELECT relation_blocks * 10 <= fresh * 12 AS refilled FROM sift.table_space('sc'), hs;
+SELECT count(*), sum(v) FROM sc;
+DROP TABLE sc;
 DROP EXTENSION pg_sift;

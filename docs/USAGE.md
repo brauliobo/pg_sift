@@ -263,7 +263,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.table_write_buffer_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write buffer of a `sift_table` before it is closed and promoted into columns; a row must fit one |
 | `sift.table_inline_promote` | on | a `sift_table` promotes its closed write buffers into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
 | `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings ([Limits](#limits)) |
-| `sift.table_dead_rewrite_pct` | 50 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
+| `sift.table_dead_rewrite_pct` | 30 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
 
 Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 

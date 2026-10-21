@@ -430,7 +430,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 
 /* ---------- dead rows of the column segments ---------- */
 
-int			sift_tbl_dead_rewrite_pct = SIFT_MERGE_DEAD_PCT;
+int			sift_tbl_dead_rewrite_pct = SIFT_TBL_DEAD_PCT;
 
 bool
 sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e)

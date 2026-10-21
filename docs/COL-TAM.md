@@ -350,7 +350,7 @@ exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
 
 **Merge** (`sift_tbl_merge`, VACUUM: up to 16 steps): the tiered policy of `sift_merge_pick` over the segments of the current layout (fan-in 8)
-plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 50 (a `sift_col` index has 10: a unit with dead rows is scanned instead of answered from its pre-aggregates, and a table keeps its segments until half is dead),
+plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 30 (a `sift_col` index has 10: a unit with dead rows is scanned instead of answered from its pre-aggregates, and a table keeps its segments until a third is dead, so its file stays near 1.4 times its live rows),
 is rewritten alone; 100 never); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
 input so that free space left by earlier merges is reused instead of extending the file. A segment of an older layout is not rewritten.
 Unfrozen groups merge with everything: the output keeps the version vectors of the rows it holds (`sift_cbatch_merge` carries them) and is frozen outright when every row it keeps is committed and older than the horizon (the freeze callback of `sift_col_merge_segments`); the rows of an aborted writer are not dropped by the merge but by the VACUUM that cleared their liveness. Under directory pressure `merge_smallest` merges the smallest immutable segments of the current layout, unfrozen ones included, so that the directory keeps shrinking while the load goes on.
@@ -409,7 +409,7 @@ and the free list.
 - Settings (GUCs; a table access method cannot have reloptions): `sift.table_write_buffer_limit` (kB, 2048-8192, default 4096: size of a write
   segment, whole superblocks of 2 MB, so 2 MB is the effective minimum; a row has to fit one segment), `sift.table_inline_promote` (default on),
   `sift.table_compression` (the `compression` grammar of `sift_col`: `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings; `'auto; col=zstd:9'` per column;
-  taken from the session that promotes, autovacuum uses the server setting), `sift.table_dead_rewrite_pct` (1-100, default 50: section 7,
+  taken from the session that promotes, autovacuum uses the server setting), `sift.table_dead_rewrite_pct` (1-100, default 30: section 7,
   merge). Segments are self-describing, so changing a setting affects only
   the segments written afterwards. `sift_group_rows` (rows per unit: one superblock) is not provided; the jsonb paths of a column are declared with `sift.table_set_paths` (section 11).
 - `ALTER TABLE ... SET ACCESS METHOD sift_table` rewrites the table through `relation_copy_for_cluster`-style bulk writes.
