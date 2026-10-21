@@ -39,6 +39,10 @@ typedef struct AggAcc
 #pragma GCC visibility push(hidden)
 
 /* accum.c */
+void pgagg_lookup(PgAgg *pa, Oid aggfn, Oid restype);
+AggState *pgagg_state(void);
+void pgagg_step(const PgAgg *pa, AggState *st, Oid collid, MemoryContext callcxt, Datum *state, bool *has, Datum val);
+void pgagg_result(const PgAgg *pa, AggState *st, Oid collid, MemoryContext callcxt, MemoryContext resultcxt, Datum *state, bool *has);
 void pgagg_init(AggExec *ex);
 void mapped_finish(AggExec *ex);
 Datum mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull);
