@@ -1,5 +1,5 @@
 /*
- * sqpar.c - parallel scans inside one query (setting parallel=N, off by default). A ranked top-k or a count runs on N
+ * pscan.c - parallel scans inside one query (setting parallel=N, off by default). A ranked top-k or a count runs on N
  * participants: the calling thread and N-1 threads of a process-wide pool, all over the same segments. The engine's own
  * work distribution does the rest (bm25/parallel.c): participants claim morsels of superblocks or of bound-ordered
  * units, share the threshold of the k-th best score, and the last one to finish returns the merged top-k, identical to
@@ -9,7 +9,7 @@
  * (sq_store_preload; else the scan stays serial) and no document text: phrases that the stored positions do not decide
  * are not parallel. While it runs the store is in shared mode: lookups and atomic pins only.
  */
-#include "sqvtab.h"
+#include "vtab.h"
 
 #include <pthread.h>
 

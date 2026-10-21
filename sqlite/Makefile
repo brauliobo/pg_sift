@@ -11,7 +11,7 @@
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
 # only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: bm25/bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
-# $(B)/gen, src/ is untouched) and bm25/prefix.c's one entry point is renamed so that sqinit.c can serialize it.
+# $(B)/gen, src/ is untouched) and bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
 SRC := ../src
 include $(SRC)/areas.mk
 B ?= build
@@ -42,7 +42,7 @@ LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
 PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable.list))))
-OWN := host host_regex host_stubs sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
+OWN := host container mb spool host_regex host_stubs store dir stream stubs build merge vtab content cursor write auxfn pscan init
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
 all: $(B)/sift.so
@@ -59,7 +59,7 @@ $(B)/bm25/bitmap.o: $(B)/gen/bitmap.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
-# bm25/prefix.c keeps a process-wide cache of wide-prefix unions; sqinit.c wraps the entry point in a mutex
+# bm25/prefix.c keeps a process-wide cache of wide-prefix unions; init.c wraps the entry point in a mutex
 $(B)/bm25/prefix.o: $(SRC)/bm25/prefix.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Dsift_prefix_union=sq_real_sift_prefix_union -c -o $@ $<
@@ -69,10 +69,10 @@ $(B)/bm25/kernels.o: $(SRC)/bm25/kernels.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
-# sift_version() reports it: rebuild sqinit.o when it changes
+# sift_version() reports it: rebuild init.o when it changes
 $(B)/gen/version: FORCE | $(B)/gen
 	@echo '$(SIFT_VERSION)' | cmp -s - $@ || echo '$(SIFT_VERSION)' > $@
-$(B)/sqinit.o: $(B)/gen/version
+$(B)/init.o: $(B)/gen/version
 FORCE:
 
 $(B)/%.o: $(SRC)/%.c | $(B)

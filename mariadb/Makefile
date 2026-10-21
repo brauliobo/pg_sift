@@ -28,9 +28,10 @@ LIBS    = -lm -lpthread -ldl
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host host_stubs
-OWN      := host_regex store stubs
-GLUE     := engine query feed merge
+HOSTC    := host container mb spool host_stubs
+OWN      := regex regex_parse regex_exec store stubs
+GLUE     := engine docs persist query feed merge
+UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
@@ -43,11 +44,9 @@ $(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/host_regex.c is)
-$(OUT)/host.o: $(SQHOST)/host.c | $(OUT)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(OUT)/host_stubs.o: $(SQHOST)/host_stubs.c | $(OUT)
+# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/regex.c is)
+SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool host_stubs)
+$(addsuffix .o,$(SQHOSTOBJS)): $(OUT)/%.o: $(SQHOST)/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)
@@ -68,10 +67,10 @@ $(OUT)/sift_cli: $(OUT)/cli.o $(OBJS)
 	$(CC) -o $@ $^ $(LIBS)
 
 # the UDFs include MariaDB headers and nothing of the engine; the engine is linked in with its symbols hidden
-$(OUT)/udf.o: $(HERE)/udf.c $(HERE)/engine.h | $(OUT)
+$(UDFOBJS): $(OUT)/%.o: $(HERE)/%.c $(HERE)/engine.h | $(OUT)
 	$(CC) -O2 -g -fPIC -fvisibility=hidden -Wall -MMD -MP -I$(MDB_INC) -I$(MDB_INC)/private -c -o $@ $<
 
-$(OUT)/libsift_udf.so: $(OUT)/udf.o $(OBJS)
+$(OUT)/libsift_udf.so: $(UDFOBJS) $(OBJS)
 	$(CC) -shared -o $@ $^ $(LIBS) -Wl,--exclude-libs,ALL -Wl,-Bsymbolic
 
 # the statement runner of the tests and the benchmark (libmariadb client)

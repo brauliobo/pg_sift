@@ -23,7 +23,7 @@ The MariaDB host (same C-library shim) syntax-checks all of them with its flags.
 no vector files (the dispatchers are `__x86_64__`-guarded); nothing was linked or run there.
 
 PostgreSQL-bound, and staying so: the page/buffer store behind `core/store.h` (PG: `core/store.c`, buffer manager, generic WAL; SQLite
-already implements the same interface in `sqlite/sqstore.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
+already implements the same interface in `sqlite/store.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
 `col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
 (`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
 (`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
@@ -69,7 +69,7 @@ and S3) is the standard shape and the only one that matches "highest industry st
   (chunks then use the lightweight cascades only; a chunk written elsewhere with a wrapper fails to open with a clear error). A
   single-file SQLite extension must not depend on system `.so`s and no static libs are installed on the build host: vendored (6.2).
 - SQLite loadable extension limits: only `sqlite3ext.h` API (no pager, no mmap of the DB file, so one memcpy per cache miss through
-  `sqlite3_blob_read`, as `sqstore.c`); no intra-query parallelism but an own thread pool works (done for BM25); many distributions
+  `sqlite3_blob_read`, as `store.c`); no intra-query parallelism but an own thread pool works (done for BM25); many distributions
   and mobile builds set `SQLITE_OMIT_LOAD_EXTENSION`, so the extension must also link statically (`sqlite3_auto_extension`, done for the
   stress test); WASM has no AVX (`SIMD=none`). Object size: the column list adds about 170 KiB of x86 code including the vector kernels.
 
@@ -95,7 +95,7 @@ are PG; `make isa-check` and the sanitizer targets do not cover the column objec
 **Verdict: no column feature on SQLite or MariaDB yet.** The PostgreSQL column track still moves (table AM, aggregates). Phase 0 keeps the
 portable subset buildable and tested, so the engine cannot drift into PostgreSQL-only code: the column engine is portable and checked on the
 SQLite and MariaDB shims, with no SQL feature on those hosts. Next is phase 1, then phase 2 as an opt-in preview (the only host where the
-shadow-table pattern is established and the infrastructure, `sqstore.c`, merge, thread pool, exists); decide on 3b only after phase 2 shows
+shadow-table pattern is established and the infrastructure, `store.c`, merge, thread pool, exists); decide on 3b only after phase 2 shows
 demand and legal has answered; 3a is optional and only worth it if MariaDB users ask before that.
 
 ## 6. Decisions
