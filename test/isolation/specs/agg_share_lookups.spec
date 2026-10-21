@@ -1,6 +1,6 @@
 # Two UNION ALL arms of a cursor share the rows of the table they join (sift.agg_share_lookups): the arm that starts after the first one and the writer reads
 # the cursor's snapshot, as in the normal plan, with the writer in flight, committed or rolled back.
-# requires: build
+# requires: build col
 
 setup
 {

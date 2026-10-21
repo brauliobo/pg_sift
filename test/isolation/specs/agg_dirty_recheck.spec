@@ -1,7 +1,7 @@
 # A SiftAgg scan that reads rows again from the heap (a value the index cannot store) when another session writes a row
 # whose value SQL rejects: the error is raised only for a row the scan's snapshot sees, as the normal plan does, with the
 # writer in flight, committed after the snapshot, rolled back, or committed before it.
-# requires: build
+# requires: build col
 
 setup
 {
