@@ -201,7 +201,7 @@ values (`SiftColDict`), and the filter translates constants to codes per segment
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
 at most 256 codes, else a bloom of `code & 255`.
 
-**Reading text from SiftAgg (applied for the `sift_col` provider: `col_prune_str` and `col_filter_str` in `agg/col.c`, the calls in `agg/agg.c`, docs/COL-PLAN.md "Filters in the source"; the `sift_table` provider has neither callback).** Nothing needs to change for
+**Reading text from SiftAgg (applied for the `sift_col` provider: `col_prune_str` and `col_filter_str` in `agg/col_filter.c`, the calls in `agg/agg.c`, docs/COL-PLAN.md "Filters in the source"; the `sift_table` provider has neither callback).** Nothing needs to change for
 correctness: an inline unit reaches the executor as a `SiftSrcDict` of its own with its own `id`. What it costs is that the executor
 evaluates a text predicate by building a LUT over the unit's dictionary, which for an inline unit means decoding and interning every
 string of the unit (measured: 300 000 distinct strings of 290 bytes, `s = const` through SiftAgg 80 ms, a heap scan 26 ms, `sift_col_filter`
