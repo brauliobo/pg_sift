@@ -214,6 +214,15 @@ CREATE FUNCTION sift.table_space(tbl regclass,
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_table_space' LANGUAGE C STRICT VOLATILE;
 
+-- VACUUM's work on the column segments and the file of a sift_table, without its indexes (so without the tombstone rewrite, which needs them): the
+-- dead rows are cleared, write buffers promoted, mostly dead segments rewritten, free space gathered and the free end of the file returned.
+-- busy: the table, or the lock of its end, is in use and the call did nothing there. Background maintenance does the same (sift.table_auto_defrag).
+CREATE FUNCTION sift.table_maintain(tbl regclass,
+									OUT busy bool, OUT dead_rows int8, OUT promoted int4, OUT merged int4,
+									OUT blocks_before int8, OUT blocks_after int8)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_table_maintain' LANGUAGE C STRICT VOLATILE;
+
 -- sift_col: on-demand refresh of the rollups of the units (docs/COL-PREAGG.md section 7). A scan that reads exact units for lack of their rollup
 -- (missing, built with other dims, a measure it lacks) queues the segment of each; a background worker rewrites the queued segments with the
 -- rollups the index writes now. Counters are of the server since it started: requested, refreshed and skipped are in units, dropped is the

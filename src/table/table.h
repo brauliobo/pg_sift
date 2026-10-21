@@ -565,4 +565,21 @@ extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 extern bool sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
 
+/*
+ * Space maintenance without VACUUM (table/vacuum.c, docs/COL-TAM.md section 7): sift_tbl_maintain is VACUUM's work on the column segments
+ * and the file minus what needs the indexes (their cleanup, and so the tombstone rewrite).
+ */
+typedef struct SiftTblMaintain
+{
+	bool		busy;			/* another VACUUM or pass has the table: nothing was done */
+	int64		dead_rows;		/* liveness bits cleared */
+	int			promoted;
+	int			merged;
+	BlockNumber blocks_before;
+	BlockNumber blocks_after;
+} SiftTblMaintain;
+
+/* The caller holds ShareUpdateExclusiveLock on rel */
+extern void sift_tbl_maintain(Relation rel, SiftTblMaintain *r);
+
 #endif							/* SIFT_TABLE_H */

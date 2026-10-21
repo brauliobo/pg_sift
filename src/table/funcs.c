@@ -21,7 +21,9 @@
 #include "access/skey.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
+#include "storage/lmgr.h"
 #include "storage/procarray.h"
+#include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -200,5 +202,49 @@ sift_table_space(PG_FUNCTION_ARGS)
 	v[3] = Int64GetDatum(fs.reusable);
 	v[4] = Int64GetDatum(fs.records);
 	table_close(rel, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+PG_FUNCTION_INFO_V1(sift_table_maintain);
+
+/*
+ * The work of VACUUM on the column segments and the file, without the indexes: the dead rows are cleared, the write buffers promoted, the
+ * segments merged or rewritten, the free space gathered and returned. The table is taken as VACUUM takes it (ShareUpdateExclusiveLock) but
+ * only if that is free now, as is the lock of the file's tail (docs/COL-TAM.md section 7); busy says that it was not.
+ */
+Datum
+sift_table_maintain(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	TupleDesc	tupdesc;
+	SiftTblMaintain r = {0};
+	Datum		v[6];
+	bool		nulls[6] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	PreventCommandIfReadOnly("sift.table_maintain()");
+	PreventCommandDuringRecovery("sift.table_maintain()");
+	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock))
+	{
+		Relation	rel = try_table_open(relid, NoLock);
+
+		if (rel == NULL)
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+		if (!sift_tbl_is_table(rel))
+			ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+		if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
+			aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
+		sift_tbl_maintain(rel, &r);
+		table_close(rel, NoLock);
+	}
+	else
+		r.busy = true;
+	v[0] = BoolGetDatum(r.busy);
+	v[1] = Int64GetDatum(r.dead_rows);
+	v[2] = Int32GetDatum(r.promoted);
+	v[3] = Int32GetDatum(r.merged);
+	v[4] = Int64GetDatum(r.blocks_before);
+	v[5] = Int64GetDatum(r.blocks_after);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
