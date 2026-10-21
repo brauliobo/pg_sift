@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: pg_sift: SiftAgg no longer fills a table of the whole range of an integer group key (an entity id of a table ordered by another column, whose units hold few values far apart) before it uses the hash table: such a key now costs the groups it has, not its range, which made a per-key aggregate several times slower than PostgreSQL.
 - Fixed: pg_sift: SiftAgg aggregates `GROUPING SETS` / `ROLLUP` over group keys computed inside the nullable input of an outer join (a date spine `LEFT JOIN` a CTE or sub-select that derives the keys) on PostgreSQL 18: the keys are the expressions of the input, NULL for the rows no input row matched, instead of the query being left to PostgreSQL.
 - Fixed: pg_sift: SiftAgg counted the preserved row of an outer join that no row matched as one value of `count(DISTINCT key)` when the key is the unique column of the scanned table (a date spine `LEFT JOIN` an empty selection answered 1 where PostgreSQL answers 0).
 - Changed: pg_sift: SiftAgg prices a lookup join without keys (a date spine joined on an expression) by the distinct values the scan's own conditions leave and by the rows a set-returning spine makes, not by every distinct value of the table and PostgreSQL's 1000 rows a call. Aggregates over a date spine and correlated arrays of a joined row pick the scan on their own costs where it is faster.
