@@ -299,10 +299,12 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
 
 /*
  * A first sort column that follows the physical order of the table (pg_statistic correlation) lets the scan stop at the end its best values
- * are at: it reads a window of superblocks, and more only while the rows it needs are not in it. Otherwise it reads them all.
+ * are at: it reads a window of superblocks, and more only while the rows it needs are not in it. One that does not follow it, on a source
+ * with zones and a scan without a search, is walked by its zones (agg/topn.h): the units read are those whose zone meets the share of the
+ * range the n best are in, which is n / matches of it plus the mean width of a zone. Otherwise it reads them all.
  */
 static double
-topn_fraction(AggCtx *c, Node *key, double matches, int64 limit)
+topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 {
 	Node	   *x = strip_relabel(key);
 	HeapTuple	tp;
@@ -322,7 +324,14 @@ topn_fraction(AggCtx *c, Node *key, double matches, int64 limit)
 	}
 	ReleaseSysCache(tp);
 	if (fabs(corr) < 0.9)
-		return 1.0;
+	{
+		SiftSrcVecType vt = leaf_of(c, leaf)->vtype;
+		double		span = c->stats.zone_span[leaf];
+
+		if (!sift_topn_walk || c->search != NULL || span <= 0 || (vt != SCV_I32 && vt != SCV_I64))
+			return 1.0;
+		return Min(1.0, span + (double) limit / Max(matches, 1.0));
+	}
 	return Min(1.0, (8.0 + 2.0 * nsb * (double) limit / Max(matches, 1.0)) / nsb);
 }
 
@@ -398,7 +407,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	if (!topn_columns(c, target, &scan_tlist, attno) || !spec_finish(c, s, root, input_rel, NIL))
 		return;
 	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
-								 input_rel->rows, rows);
+								 leaf[0], input_rel->rows, rows);
 	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	record_deps(root, parse->limitCount);
 	record_deps(root, parse->limitOffset);
