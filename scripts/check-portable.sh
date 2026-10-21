@@ -9,9 +9,9 @@ set -euo pipefail
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
 std='assert|ctype|errno|float|inttypes|limits|locale|math|setjmp|stdarg|stdatomic|stdbool|stddef|stdint|stdio|stdlib|string|time'
 intrinsics='immintrin|emmintrin|x86intrin|cpuid'
-compress='lz4|lz4hc|zstd'	# the optional libraries of src/col/sift_colz.c, behind SIFT_HAVE_LZ4 / SIFT_HAVE_ZSTD
+compress='lz4|lz4hc|zstd'	# the optional libraries of src/col/compress.c, behind SIFT_HAVE_LZ4 / SIFT_HAVE_ZSTD
 mapfile -t files < <(cat "$SRC/portable.list" "$SRC/portable-col.list" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
-names=("${files[@]}" "${files[@]##*/}")	# a file is included by its path from src/ (the bare name is the layout before the rename of its folder)
+names=("${files[@]}" "${files[@]##*/}")	# a file is included by its path from src/; src/agg and the areas not renamed yet include by bare name (src/compat forwards the renamed headers)
 bad=0
 for f in "${files[@]}"; do
 	[[ -f $SRC/$f ]] || { echo "portable.list: $f does not exist"; bad=1; continue; }
@@ -22,7 +22,7 @@ for f in "${files[@]}"; do
 			[[ $inc =~ ^($std|$intrinsics|$compress)\.h$ ]] && continue ;;
 		*)
 			[[ $inc == sift_host.h ]] && continue
-			[[ " ${names[*]} " == *" $inc "* ]] && continue ;;
+			[[ " ${names[*]} " == *" $inc "* || -f $SRC/compat/$inc ]] && continue ;;
 		esac
 		echo "$f:$n: $line  (a portable file includes only the C library, intrinsics, sift_host.h and files of portable.list)"
 		bad=1

@@ -1,5 +1,5 @@
 # The portable core: the files of src/ that every host compiles (PostgreSQL, SQLite, ...). They include the C library,
-# compiler intrinsics, sift_*.h headers of this list and sift_host.h, and nothing else: scripts/check-portable.sh enforces it
+# compiler intrinsics, col/*.h headers of this list and sift_host.h, and nothing else: scripts/check-portable.sh enforces it
 # (CI, both jobs), sqlite/Makefile builds the .c files of this list into the SQLite extension. Add a file here when it
 # needs no host API beyond src/core/sift_host.h; a file that needs more belongs to a host (src/ for PostgreSQL, sqlite/).
 #

@@ -315,7 +315,7 @@ A column option (a reloption of the access method, one value for the table or `d
 | encoding names, `+`-joined, optionally followed by an algorithm: `for`, `delta`, `rle`, `dict`, `alp`, `scale`, `for+zstd:9` | restrict the cascade to these encodings (children still free); falls back to FORBYTE when none applies |
 
 No GUC: the policy belongs to the column; `sift.simd` does not affect it. The default is on (`auto`), as the task requires; the thresholds are compile-time
-constants in `sift_colcodec.h` next to the measured costs they come from.
+constants in `col/codec.h` next to the measured costs they come from.
 
 ### 5.4 Cost rule of the general-purpose layer
 

@@ -11,9 +11,9 @@
 #include "storage/buffile.h"
 
 #include "sift.h"
-#include "sift_colcodec.h"
-#include "sift_col.h"
-#include "sift_shred.h"
+#include "col/codec.h"
+#include "col/col.h"
+#include "col/shred.h"
 #include "sift_store.h"
 #include "fz_shim.h"
 

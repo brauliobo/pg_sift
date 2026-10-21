@@ -29,7 +29,7 @@
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
-#include "sift_col.h"
+#include "col/col.h"
 #include "bm25/estimate.h"
 #include "sift_lane.h"
 #include "sift_store.h"
@@ -970,7 +970,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
-		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (sift_col.h), its unfrozen rows raise the minor */
+		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
 		finish_dir(state, &before, META(mp), dp);

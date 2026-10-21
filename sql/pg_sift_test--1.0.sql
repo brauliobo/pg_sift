@@ -70,7 +70,7 @@ CREATE FUNCTION sift._test_kern_bm25(tf int4, dl int4, k1 float4, b float4, avgd
 CREATE FUNCTION sift._test_kern_bound(tf int4, dl int4, k1 float4, b float4, avgdl float4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_kern_bound' LANGUAGE C STRICT;
 
--- Column kernels (src/col/sift_col_kern_test.c): a digest of all kernel outputs on random inputs, per SIMD level and through sift.simd.
+-- Column kernels (src/col/kern_test.c): a digest of all kernel outputs on random inputs, per SIMD level and through sift.simd.
 CREATE FUNCTION sift._test_col_kernels(level int4, seed int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_kernels' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
@@ -127,7 +127,7 @@ CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETU
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_read_stats' LANGUAGE C STRICT;
 
--- Column engine L1 (src/col/sift_col_enc_test.c): random batches, chunks, zones and predicates against a naive evaluation of the same rows.
+-- Column engine L1 (src/col/enc_test.c): random batches, chunks, zones and predicates against a naive evaluation of the same rows.
 -- checks: how many comparisons ran; failures: how many differed (the first few are reported as warnings); encodings: bit mask of the
 -- chunk encodings written (CONST, PACK of up to 7 / 9..15 / 17..31 bits, FOR 8, 16, 32, 64; bit 8: a text leaf of 16-bit codes; bit 9: a blob of the chunk codec), 767 when all were seen.
 CREATE FUNCTION sift._test_col_enc_roundtrip(seed int4, nrows int4, rounds int4 DEFAULT 4, OUT checks int8, OUT failures int8, OUT encodings int8) RETURNS record
@@ -137,7 +137,7 @@ CREATE FUNCTION sift._test_col_enc_roundtrip(seed int4, nrows int4, rounds int4 
 CREATE FUNCTION sift._test_col_enc_sizes(OUT shape text, OUT rows int8, OUT bytes int8, OUT bytes_per_row float8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_enc_sizes' LANGUAGE C STRICT;
 
--- Write buffer lanes of the column engine (src/col/sift_col_wbuf_test.c), on an index of the BM25 access method created on an empty table.
+-- Write buffer lanes of the column engine (src/col/wbuf_test.c), on an index of the BM25 access method created on an empty table.
 -- Rows are generated from (seed, id) over a schema of orders with line items; prepare gives the index that schema's hash
 -- (xor hash_xor: a stale definition), limit sets the write buffer limit in kB.
 CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0) RETURNS int8
@@ -170,7 +170,7 @@ CREATE FUNCTION sift._test_col_wbuf_segments(index regclass, OUT gen int8, OUT k
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_segments' LANGUAGE C STRICT;
 
--- Column source (src/col/sift_col_test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
+-- Column source (src/col/test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
 -- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the write buffers, 2 skip the visibility check.
 CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0, OUT tid tid, OUT sb int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_tids' LANGUAGE C STRICT;
@@ -197,7 +197,7 @@ CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEF
 										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
 
--- Shredder (src/col/sift_shred_test.c, docs/COL-SHRED.md)
+-- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_shred_spec' LANGUAGE C STRICT;
 -- kind: col (a slot), list (a list under a parent element: ord = first element, val = count), ovf (the overflow reasons of a column)
@@ -219,7 +219,7 @@ CREATE FUNCTION sift._test_shred_kern_equiv(seed int8, iters int4) RETURNS int8
 CREATE FUNCTION sift._test_shred_kern_rate(kernel text, n int4, iters int4) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_rate' LANGUAGE C STRICT;
 
--- Column codec (src/col/sift_colcodec_test.c): chunks through the backend, sift.simd and the build's LZ4/zstd.
+-- Column codec (src/col/codec_test.c): chunks through the backend, sift.simd and the build's LZ4/zstd.
 -- kind 0 integers, 1 float4 keys, 2 float8 keys; NULL elements are NULL slots (decode returns the filler there)
 CREATE FUNCTION sift._test_cc_encode(keys int8[], kind int4, policy text) RETURNS bytea
 	AS 'MODULE_PATHNAME', 'sift_test_cc_encode' LANGUAGE C STRICT;

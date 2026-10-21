@@ -30,7 +30,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "sift_col_kern.h"
+#include "col/kern.h"
 #include "sift_table.h"
 #include "sift_visibility.h"
 

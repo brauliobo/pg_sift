@@ -28,9 +28,9 @@
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
 #include "bm25/build.h"
-#include "sift_col_am.h"
-#include "sift_col_kern.h"
-#include "sift_colcodec.h"
+#include "col/am.h"
+#include "col/kern.h"
+#include "col/codec.h"
 #include "sift_cpu.h"
 #include "bm25/kernels.h"
 #include "bm25/merge.h"
@@ -41,7 +41,7 @@
 #include "bm25/segment.h"
 #include "sift_visibility.h"
 #include "bm25/pushdown.h"
-#include "sift_shred.h"
+#include "col/shred.h"
 #include "sift_sql.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_MODULE_VERSION);

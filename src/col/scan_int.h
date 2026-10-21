@@ -1,0 +1,216 @@
+/*
+ * col/scan_int.h - shared between the files of the column source (col/scan.c, col/scan_unit.c, col/scan_filter.c, col/scan_read.c).
+ */
+#ifndef SIFT_COL_SCAN_INT_H
+#define SIFT_COL_SCAN_INT_H
+
+#include "col/am.h"
+#include "col/seg.h"
+#include "sift_visibility.h"
+
+#define corrupt(...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_INDEX_CORRUPTED), \
+			 errmsg("sift_col unit is corrupted"), \
+			 errdetail(__VA_ARGS__)))
+
+#define COLO_TABLE		0x8000		/* internal flag: a source over a sift_table (sift_col_open_table) */
+#define MEM_ID_FLAG		(UINT64CONST(1) << 63)
+#define INL_ID_FLAG		(UINT64CONST(1) << 62)	/* the dictionary of an inline STR chunk: one per chunk read */
+
+typedef struct ColCursor
+{
+	SiftColSegment *seg;
+	uint64	   *keep;			/* units that passed the zone maps, nsb bits */
+	uint32		cur;
+	uint32		end;
+} ColCursor;
+
+/* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
+#define MEM_BATCH_ID	0x40000000
+
+typedef struct ColMem
+{
+	SiftColBatch *b;
+	uint32		id;
+	bool		lane;			/* read from the write buffer when the source began */
+} ColMem;
+
+/* The element structure of one group leaf in the current unit */
+typedef struct ColGroup
+{
+	bool		ready;
+	uint32		nelems;
+	uint32	   *counts;			/* nrows */
+	uint32	   *eoff;			/* nrows + 1 */
+	uint32	   *parent;			/* nelems, on demand */
+	const uint64 *nulls;		/* rows without an array */
+	const uint64 *ovf;			/* rows whose whole array overflowed */
+	uint32		selgen;			/* the ColSelCache generation selpos / seloff belong to (0: none) */
+	uint32		selne;
+	uint32	   *selpos;			/* the elements of the cached selection's rows */
+	uint32	   *seloff;			/* per selected row, its first element in selpos (+ the end) */
+} ColGroup;
+
+/*
+ * The positions of the last selection a unit was read through: the leaves read through one selection (the usual scan step) share its
+ * row positions and, per group, the element positions and offsets of those rows. Keyed by the selection's bits, so a different
+ * selection (even at the same address) replaces it; owned by the unit and gone with it.
+ */
+typedef struct ColSelCache
+{
+	uint32		gen;			/* bumped for each new selection */
+	uint32		n;
+	uint32		count;
+	uint64	   *bits;			/* copy of the selection */
+	uint32	   *idx;			/* its row positions */
+} ColSelCache;
+
+/* An inline STR chunk of the unit as the codes of a dictionary of its own (the form every reader and test works on), built on first use */
+typedef struct ColInline
+{
+	SiftCDict  *dict;
+	SiftCChunk	chunk;
+	uint64		id;
+} ColInline;
+
+typedef struct ColUnit
+{
+	SiftColSource *src;
+	SiftColSegment *seg;		/* NULL for an in-memory unit */
+	uint32		u;
+	uint32		sb;
+	uint32		memid;
+	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
+	ColInline  *istr;			/* [ncols] stored units */
+	SiftColBatch *batch;
+	SiftCUnitView v;
+	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
+	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
+	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
+	bool		clean_ready;
+	SiftKey    *keys;
+	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
+	bool		av_ready;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+	ColGroup   *grp;
+	ColSelCache selc;
+} ColUnit;
+
+/* The test of a predicate on a dictionary leaf of a stored segment, made once for every unit that shares the dictionary (seg_test) */
+typedef struct ColTest
+{
+	const SiftColSegment *seg;
+	SiftColPred pred;			/* a copy, constants included */
+	SiftColValue *vals;
+	SiftCTest	t;
+} ColTest;
+
+#define COL_TEST_CACHE	16
+
+struct SiftColSource
+{
+	Relation	heap;
+	Relation	index;
+	MemoryContext mcxt;
+	MemoryContext arena;		/* reset by sift_col_next */
+	MemoryContext scan;			/* reset by sift_col_begin */
+	Snapshot	snap;
+	uint32		flags;
+	const SiftColSchema *schema;
+	SiftDirSnapshot dir;
+	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
+	bool		dir_current;
+	SiftVis		vis;
+	SiftColVisibility visibility;
+	int			nseg;
+	ColCursor  *seg;
+	ColMem	   *mem;
+	int			nmem;
+	int			capmem;
+	bool		mem_loaded;
+	ColMem	  **order;
+	int			norder;
+	int			ocur;
+	uint32		heap_sbs;
+	ColUnit		cu;
+	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
+	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
+	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
+	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
+	SiftColCounters cnt;
+};
+
+static inline void
+set_ones(uint64 *bits, uint32 n)
+{
+	memset(bits, 0xFF, (n / 64) * sizeof(uint64));
+	if (n % 64)
+		bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
+}
+
+#define FOREACH_BIT(bits, nwords, r, ...) \
+	do { \
+		for (uint32 w_ = 0; w_ < (nwords); w_++) \
+			for (uint64 x_ = (bits)[w_]; x_; x_ &= x_ - 1) \
+			{ \
+				uint32 r = w_ * 64 + pg_rightmost_one_pos64(x_); \
+				__VA_ARGS__ \
+			} \
+	} while (0)
+
+extern void seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const SiftColPred *p, SiftCTest *t);
+extern bool unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c);
+extern bool unit_chunk(ColUnit *cu, int col, SiftCChunk *c);
+extern bool unit_inline(ColUnit *cu, int col);
+extern SiftCDict *unit_dict(ColUnit *cu, int col);
+extern const uint64 *unit_allvisible(ColUnit *cu);
+extern ColGroup *unit_group(ColUnit *cu, int group);
+extern bool types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel);
+
+static inline void
+make_test(SiftColSource *src, const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
+{
+	src->cnt.tests_made++;
+	sift_ctest_make(def, dict, p, t);
+}
+
+static inline uint64
+dict_id(const ColUnit *cu, int col)
+{
+	if (cu->istr && cu->istr[col].dict)
+		return cu->istr[col].id;
+	return cu->seg ? (cu->seg->entry.gen << 8 | col) : (MEM_ID_FLAG | (uint64) cu->memid << 8 | col);
+}
+
+static inline SiftKey *
+unit_keys(ColUnit *cu)
+{
+	if (cu->keys == NULL)
+	{
+		cu->keys = MemoryContextAlloc(cu->src->arena, (cu->v.nrows + 1) * sizeof(SiftKey));
+		sift_cunit_keys(&cu->v, cu->sb, cu->keys);
+	}
+	return cu->keys;
+}
+
+/*
+ * Whether the stored unit has no dead row, read from the liveness pages now and after the all-visible mask: a page turns all-visible only
+ * after the VACUUM that made it so has removed the index entries of its dead tuples, so a mask that says "all-visible" is followed by liveness
+ * that already shows those removals. The other order lets a unit read as clean before the VACUUM, and the page as all-visible after it, count
+ * rows that no snapshot sees (docs/COL.md 2.7, "Order of reads").
+ */
+static inline bool
+unit_clean(ColUnit *cu)
+{
+	if (!cu->clean_ready)
+	{
+		unit_allvisible(cu);
+		SIFT_COL_JITTER();
+		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
+		cu->clean_ready = true;
+	}
+	return cu->clean;
+}
+
+#endif

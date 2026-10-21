@@ -143,7 +143,7 @@ Reading the table (the host is shared and a single run has a few tenths of a mil
 
 `SiftAgg` talks to its backends through one small interface, `src/agg/sift_aggback.h` (`init`, `begin`, `run_unit`, `stopped`, `finish`, `explain`): the CPU kernels of
 `sift_agg.c` are the default, and the Vulkan backend is `src/agg/sift_agggpu.c` (settings, device context, plan cache, job queue, EXPLAIN) over the device layer
-`sift_aggvk.c` and the chunk plans of `src/col/sift_col_gpu.c`. A backend sees a narrow view of the scan, is offered every unit after the pre-aggregates and
+`sift_aggvk.c` and the chunk plans of `src/col/gpu.c`. A backend sees a narrow view of the scan, is offered every unit after the pre-aggregates and
 hands back exact sums (`sift_agg_fold_sums`). Without `VULKAN=1` `sift_agggpu.c` is only the settings and the NOTICE; `sift_aggvk.c` is empty.
 
 ## Limits

@@ -39,7 +39,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "sift_col_am.h"
+#include "col/am.h"
 #include "bm25/merge.h"
 #include "sift_table.h"
 

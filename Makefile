@@ -28,7 +28,7 @@ else
 PG_CFLAGS += -fno-lto
 SHLIB_LINK += -fno-lto
 endif
-# The general-purpose layers of the column codec (src/col/sift_colz.c): LZ4 and zstd, each linked when its header and library are found.
+# The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked when its header and library are found.
 # SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 build without one: chunks never use it, and one written elsewhere that does fails to open with a clear error.
 define colz_probe
 $(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) -include $(2).h -x c - -l$(2) -o /dev/null 2>/dev/null && echo ok),$(eval PG_CPPFLAGS += -DSIFT_HAVE_$(1))$(eval SHLIB_LINK += -l$(2))))

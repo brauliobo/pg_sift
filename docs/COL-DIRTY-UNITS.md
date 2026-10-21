@@ -79,7 +79,7 @@ unit without those rows (they leave the live mask, their TIDs are kept) followed
 selection, group ids, accumulators, the cell path, parallel workers and partitions need no change.
 
 - **Fetch.** `table_index_fetch_tuple` with the scan's snapshot (a HOT chain followed, a version the snapshot does not see gives no
-  row), the index expressions evaluated with `FormIndexDatum`, the document shredded again by the walk of `sift_shred_recheck.c`.
+  row), the index expressions evaluated with `FormIndexDatum`, the document shredded again by the walk of `col/shred_recheck.c`.
 - **Semantics.** The scalar under a declared column goes through the input function of the column's type as its text (`"8.5"` into
   `float8`, `12` into `text`, `true` into `text`), a container into a `text` column as its JSON text, a key of an array or of a scalar is
   NULL. Errors are those of `jsonb_to_recordset` (a string that is no number `22P02`, `cannot call jsonb_to_recordset on a non-array`

@@ -34,7 +34,7 @@
 #include "utils/timestamp.h"
 #include "utils/tuplesort.h"
 
-#include "sift_col_seg.h"
+#include "col/seg.h"
 #include "sift_lane.h"
 #include "bm25/maint.h"
 #include "sift_table.h"
