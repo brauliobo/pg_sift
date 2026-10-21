@@ -244,10 +244,12 @@ write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPoin
 
 		if (n == rem)
 		{
-			GenericXLogState *state = GenericXLogStart(index);
+			Page		page = BufferGetPage(cur);
+			SiftPageEdit ed;
 
-			put_piece(GenericXLogRegisterBuffer(state, cur, 0), tid, !first, payload + done, n);
-			GenericXLogFinish(state);
+			sift_page_edit_begin(&ed, page, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
+			put_piece(page, tid, !first, payload + done, n);
+			sift_page_edit_end(index, cur, &ed, 0, 0);
 			break;
 		}
 		/* a row that fits an empty page moves there whole rather than splitting */

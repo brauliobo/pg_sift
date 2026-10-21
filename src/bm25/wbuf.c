@@ -198,10 +198,12 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 
 		if (n == rem)
 		{
-			GenericXLogState *state = GenericXLogStart(index);
+			Page		page = BufferGetPage(cur);
+			SiftPageEdit ed;
 
-			put_piece(GenericXLogRegisterBuffer(state, cur, 0), tid, dl, !first, t + i, n, tb);
-			GenericXLogFinish(state);
+			sift_page_edit_begin(&ed, page, SIFT_PAGE_DATA_OFFSET + sizeof(SiftWbufPageHeaderData));
+			put_piece(page, tid, dl, !first, t + i, n, tb);
+			sift_page_edit_end(index, cur, &ed, 0, 0);
 			break;
 		}
 		/* a doc that fits an empty page moves there whole rather than splitting */
