@@ -4,6 +4,9 @@
 #ifndef SIFT_AGG_LOOKUP_INT_H
 #define SIFT_AGG_LOOKUP_INT_H
 
+#include "access/xlogdefs.h"
+#include "storage/relfilelocator.h"
+
 #include "agg/agg_fwd_int.h"
 
 /* the rows of a joined table, hashed by their key columns; the columns the expressions read are kept as Datums */
@@ -68,6 +71,14 @@ map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, 
 	return n;
 }
 
+/* what a table is, page by page, when its rows are kept for another query (lookcache.c) */
+typedef struct LookFinger
+{
+	RelFileLocator rel;
+	BlockNumber nblocks;
+	XLogRecPtr *lsn;
+} LookFinger;
+
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
@@ -77,6 +88,11 @@ void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
 bool map_unique(const MapTab *m);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
+
+/* lookcache.c */
+LookFinger *lookcache_finger(Relation rel);
+MapTab *lookcache_find(const char *key, const LookFinger *f, MemoryContext mcxt);
+bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, MemoryContext cx, MemoryContext mcxt);
 
 #pragma GCC visibility pop
 
