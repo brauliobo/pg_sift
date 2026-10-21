@@ -166,7 +166,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | all  | t
   3 | by kind              | all  | t
   4 | by text key          | all  | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | all  | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | all  | t
@@ -186,7 +186,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       7 |        1 |      4
+      19 |      0 |       8 |        1 |      3
 (1 row)
 
 SELECT * FROM pa_sum('eo');
@@ -207,7 +207,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | some | t
   3 | by kind              | some | t
   4 | by text key          | some | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | some | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | some | t
@@ -227,7 +227,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |        8 |      4
+      19 |      0 |       0 |        9 |      3
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -239,7 +239,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | some | t
   3 | by kind              | some | t
   4 | by text key          | some | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | some | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | some | t
@@ -266,7 +266,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | some | t
   3 | by kind              | some | t
   4 | by text key          | some | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | some | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | some | t
@@ -297,7 +297,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | some | t
   3 | by kind              | some | t
   4 | by text key          | some | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | some | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | some | t
@@ -335,7 +335,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | all  | t
   3 | by kind              | all  | t
   4 | by text key          | all  | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | all  | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | all  | t
@@ -380,7 +380,7 @@ SELECT * FROM pa_check('ec');
   2 | whole, small values  | all  | t
   3 | by kind              | all  | t
   4 | by text key          | all  | t
-  5 | only NULLs           | none | t
+  5 | only NULLs           | all  | t
   6 | no rows              | none | t
   7 | no rows, grouped     | none | t
   8 | zone covers all      | all  | t
@@ -405,7 +405,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('ec');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |        7 |      5
+      19 |      0 |       0 |        8 |      4
 (1 row)
 
 SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre
