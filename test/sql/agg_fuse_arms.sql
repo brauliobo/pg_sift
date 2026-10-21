@@ -124,6 +124,31 @@ RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
 RESET enable_memoize;
 
+-- arms that join a common table expression of periods (a VALUES list, read by every arm): the arms are the same pass when they join the same CTE with the
+-- same conditions, whatever columns of it each reads; another list or another condition keeps its own pass. The list is loaded once for the pass.
+\set periods 'WITH periods AS (SELECT * FROM (VALUES (''cur'', daterange(''2026-03-05'', ''2026-03-20'', ''[]'')), (''prev'', daterange(''2026-03-25'', ''2026-04-05'', ''[]''))) AS v(label, span))'
+\set per_both 'SELECT p.label, e.kind, count(*) AS n, sum(e.price) AS s FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label, e.kind'
+\set per_label 'SELECT p.label, NULL, count(*), sum(e.price) FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label'
+\set per_kind 'SELECT NULL, e.kind, count(*), sum(e.price) FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY e.kind'
+SELECT arms_shared(:'periods' || :'per_both' || ' UNION ALL ' || :'per_label') AS periods_arms_shared, same(:'periods' || :'per_both' || ' UNION ALL ' || :'per_label') AS periods_arms_same;
+SELECT arms_shared(:'periods' || :'per_both' || ' UNION ALL ' || :'per_label' || ' UNION ALL ' || :'per_kind') AS periods_three_shared,
+       same(:'periods' || :'per_both' || ' UNION ALL ' || :'per_label' || ' UNION ALL ' || :'per_kind') AS periods_three_same;
+-- a condition on the CTE in one arm
+SELECT arms_shared(:'periods' || 'SELECT p.label, e.kind, count(*) FROM ev e JOIN periods p ON e.day <@ p.span WHERE p.label = ''cur'' GROUP BY p.label, e.kind UNION ALL SELECT p.label, NULL, count(*) FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label') AS periods_condition_shared,
+       same(:'periods' || 'SELECT p.label, e.kind, count(*) FROM ev e JOIN periods p ON e.day <@ p.span WHERE p.label = ''cur'' GROUP BY p.label, e.kind UNION ALL SELECT p.label, NULL, count(*) FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label') AS periods_condition_same;
+-- two lists that differ
+\set two_lists 'WITH a AS (SELECT * FROM (VALUES (''cur'', daterange(''2026-03-05'', ''2026-03-20'', ''[]''))) AS v(label, span)), b AS (SELECT * FROM (VALUES (''cur'', daterange(''2026-03-05'', ''2026-03-21'', ''[]''))) AS v(label, span)) SELECT p.label, e.kind, count(*) FROM ev e JOIN a p ON e.day <@ p.span GROUP BY p.label, e.kind UNION ALL SELECT p.label, NULL, count(*) FROM ev e JOIN b p ON e.day <@ p.span GROUP BY p.label'
+SELECT arms_shared(:'two_lists') AS two_lists_shared, same(:'two_lists') AS two_lists_same;
+-- the lines of each event (a list the index cannot always store): the rows read again from the heap are read once for the three arms
+\set per_lines 'FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> ''lines'') AS l(k text, p text, v float8) JOIN periods p ON e.day <@ p.span WHERE l.v IS NOT NULL'
+\set lines_both 'SELECT p.label, l.k, avg(l.v), count(*) ' :per_lines ' GROUP BY p.label, l.k'
+\set lines_label 'SELECT p.label, NULL, avg(l.v), count(*) ' :per_lines ' GROUP BY p.label'
+\set lines_kind 'SELECT NULL, l.k, avg(l.v), count(*) ' :per_lines ' GROUP BY l.k'
+SELECT arms_shared(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') AS periods_lines_shared,
+       same(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') AS periods_lines_same,
+       reread(:'periods' || :'lines_both') > 0 AS periods_lines_reread,
+       reread(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') = reread(:'periods' || :'lines_both') AS periods_lines_once;
+
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
