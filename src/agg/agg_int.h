@@ -765,6 +765,7 @@ typedef struct FuseSt
 
 /* agg.c */
 uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
+void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
@@ -790,6 +791,13 @@ uint32 idmap_id(IdMap *m, sift_i128 v);
 const sift_i128 *eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull, const uint64 *alive);
 const uint32 *unit_parent(AggExec *ex);
 Datum scaled_numeric(__int128 v, int scale);
+
+/* pred.c */
+bool in_build(PredState *st, bool wide, bool table_only, const int64 *vals, int nv, int64 lo, int64 hi);
+void eval_operand(AggExec *ex, SiftAggPred *p, PredState *st);
+void rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out);
+uint64 *row_bitmap(AggExec *ex, SiftAggPred *p);
+void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
 
 /* back_host.c */
 bool backend_begin(AggExec *ex);
