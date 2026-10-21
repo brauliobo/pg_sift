@@ -1,0 +1,60 @@
+-- A column of jsonb_to_recordset read by an expression (a CASE key, a bucket of the value) is read as the column of the record: the rows whose
+-- document holds a value the index cannot store (a number written as a string, a list that is no array) are read again from the heap, as
+-- they are for a column read alone, instead of the query keeping PostgreSQL's plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE rc_docs (id int PRIMARY KEY, set_id int, doc jsonb);
+INSERT INTO rc_docs SELECT i, i % 5,
+  CASE WHEN i % 11 = 0 THEN jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'a', 'score', (i % 10)::text), jsonb_build_object('category', 'b', 'score', 3.5)))
+       WHEN i % 7 = 0 THEN jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'b', 'score', NULL)))
+       ELSE jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'a', 'score', i % 10), jsonb_build_object('category', 'c', 'score', 7)))
+  END
+FROM generate_series(1, 4000) i;
+CREATE INDEX rc_docs_col ON rc_docs USING sift_col (id, set_id, doc) WITH (paths = 'doc.items[]{category text, score float8}');
+VACUUM (FREEZE, ANALYZE) rc_docs;
+CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+-- the column alone: read again
+SELECT * FROM check_query($q$
+ SELECT o.category, count(*) AS n, avg(o.score) AS score
+ FROM rc_docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc['items']) AS o(category text, score float8) GROUP BY 1
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+-- the columns inside expressions
+SELECT * FROM check_query($q$
+ SELECT d.set_id, CASE WHEN d.set_id > 2 THEN o.category ELSE 'other' END AS category, CASE WHEN o.score >= 5 THEN 'high' ELSE 'low' END AS band, count(*) AS n
+ FROM rc_docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc['items']) AS o(category text, score float8) GROUP BY 1, 2, 3
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+SELECT * FROM check_query($q$
+ SELECT o.category, count(*) FILTER (WHERE o.score >= 5) AS high, count(*) FILTER (WHERE o.score < 5 OR o.category = 'b') AS low
+ FROM rc_docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc['items']) AS o(category text, score float8) GROUP BY 1
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+DROP FUNCTION check_query(text);
+DROP TABLE rc_docs;
+DROP EXTENSION pg_sift;

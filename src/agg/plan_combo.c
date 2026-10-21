@@ -481,7 +481,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 		if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
 			return false;
 	for (int p = 0; p < w.nl; p++)
-		use_leaf(c, w.leaf[p]);
+		use_matched_leaf(c, w.leaf[p]);
 	foreach_ptr(Var, v, w.vars)
 		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
 			return false;
@@ -548,7 +548,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 			return false;
 	}
 	for (int p = 0; p < w.nl; p++)
-		use_leaf(c, w.leaf[p]);
+		use_matched_leaf(c, w.leaf[p]);
 	rq = palloc0(sizeof(SlotReq));
 	rq->expr = expr;
 	rq->is_key = is_key;
