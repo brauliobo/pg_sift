@@ -3246,7 +3246,7 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 	return id;
 }
 
-#define COMBO_DIR_MAX	((uint64) 1 << 22)	/* the ids a combo of one input finds its entry by index */
+#define COMBO_DIR_MAX	((uint64) 1 << 16)	/* the ids a combo of one input finds its entry by index (256 kB at most) */
 
 /* entry e (1..) is the one of id k: the table grows to hold k */
 static void
@@ -10283,10 +10283,14 @@ table_reset(AggExec *ex)
 	/* the output rows of a combo hold ids of the key tables just forgotten */
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
-		ex->cs[ci].nent = ex->cs[ci].nout = 0;
-		memset(ex->cs[ci].ht, 0, ex->cs[ci].nht * sizeof(uint32));
-		if (ex->cs[ci].dir)
-			memset(ex->cs[ci].dir, 0, ex->cs[ci].dircap * sizeof(uint32));
+		ComboSt    *cs = &ex->cs[ci];
+
+		/* the direct table forgets the ids of the entries only: it can be megabytes */
+		for (uint32 x = 0; cs->dir && x < cs->nent; x++)
+			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)
+				cs->dir[cs->vid[x]] = 0;
+		cs->nent = cs->nout = 0;
+		memset(cs->ht, 0, cs->nht * sizeof(uint32));
 	}
 	table_init(ex);
 }
