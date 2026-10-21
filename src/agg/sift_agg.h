@@ -20,6 +20,8 @@ extern PGDLLIMPORT int sift_agg_lookup_max_rows;
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);
+extern bool sift_agg_has_flattenable_laterals(Query *q);
+extern void sift_agg_flatten_laterals(Query *q);
 
 /* sift_aggplan.c: called by the upper path hook of sift_planner.c */
 extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
