@@ -238,7 +238,7 @@ remap_pred(const SiftAggPred *p, const FuseArm *arm)
 		return NULL;
 	o = palloc(sizeof(SiftAggPred));
 	*o = *p;
-	if (p->kind == SAP_COMBO)
+	if (p->kind == SAP_COMBO || p->kind == SAP_ELEM_EXISTS)
 	{
 		o->leaf = arm->combo[p->leaf];
 		o->op = arm->slot[p->leaf][p->op];
@@ -627,9 +627,6 @@ fuse_candidate(const SiftAggSpec *s)
 {
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_GEN)
-			return false;
-	for (int i = 0; i < s->npost; i++)
-		if (s->post[i]->kind == SAP_ELEM_EXISTS)
 			return false;
 	for (int i = 0; i < s->njoin; i++)
 		if ((s->join[i].child >= 0 && s->join[i].sig == NULL) || sift_aggjoin_preserves(s->join[i].kind) || (s->join[i].params != NIL && s->join[i].sig == NULL))
