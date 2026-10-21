@@ -80,4 +80,4 @@ Rejected:
 A file of `src/<area>/` has no `sift_` prefix and no prefix of its folder: `bm25/query.c`, `col/enc.c`, `table/seg.c`. Headers follow the same rule. The
 C identifiers keep their `sift_` names; only files are renamed. A source includes another by its path from `src/` (`#include "bm25/query.h"`, `-I src`),
 so the same short name in two folders is fine. A file past about a thousand lines is split by responsibility into files of its folder, and what the
-pieces share goes into one `NAME_int.h` next to them. `scripts/restructure-src.sh --check` enforces the layout.
+pieces share goes into one `NAME_int.h` next to them; the executor of `agg/` has one per file (`leaf_int.h`, `dist_int.h`, ...: its types and the functions it offers the others) and `agg_int.h`, which holds `AggExec` and includes them. `scripts/restructure-src.sh --check` enforces the layout.
