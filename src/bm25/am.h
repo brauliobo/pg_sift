@@ -1,7 +1,6 @@
 /*
  * bm25/am.h - index AM callbacks referenced by the handler. Each is defined
- * by its owning module (see DESIGN.md MODULE MAP) and has a weak
- * "not implemented" stub in sift_stubs.c until that module lands.
+ * by its owning module (see DESIGN.md "Source layout").
  */
 #ifndef SIFT_AM_H
 #define SIFT_AM_H

@@ -110,8 +110,10 @@ reloading mutable state would dominate. The calibration records that limitation
 and the resulting operation count rather than hiding reset work or pretending
 that every mutable timing window achieved 150 ms. Six independent paired
 batches alternate baseline/head then head/baseline. The per-pair candidate/base
-elapsed ratios are logged; their mean and sample standard deviation give a
-geometric ratio and two-sided 95% Student-t interval. Supported complete blocks
+elapsed ratios are recorded and transformed with the natural logarithm; their
+mean and sample standard deviation in log space give the Student-t interval, and
+the ratio and its two-sided 95% bounds are the exponentials of the mean and of
+the interval ends (a geometric ratio). Supported complete blocks
 are six pairs (df 5, critical value 2.570581835636305) and sixteen pairs
 (df 15, critical value 2.131449545559323); partial blocks have no interval.
 Repeated operations within a batch are not treated as independent samples.

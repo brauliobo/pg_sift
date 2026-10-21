@@ -377,7 +377,7 @@ extern int pg_mb2wchar_with_len(const char *from, pg_wchar *to, int len);
 extern int pg_wchar2mb_with_len(const pg_wchar *from, char *to, int len);
 extern void pg_verify_mbstr(int encoding, const char *s, int len, bool noError);
 
-/* ---------- regex (regex/regex.h) over the C library, see shim_regex.c ---------- */
+/* ---------- regex (regex/regex.h) over the C library, see host_regex.c ---------- */
 
 typedef struct regex_t
 {

@@ -12,7 +12,7 @@ this file in the same commit.
 
 User-facing names: index access method `sift_col` (`pg_am.amname` is unique across index and table AMs; the table AM is `sift_table`), operator
 class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`, `col_leaves`, `col_sections`,
-`col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. `col_segments` and `sift.table_segments` list the column format minor of each segment (`format`, 3.1) and `col_segments` the bytes of its pre-aggregates (`preagg_bytes`). Code: the engine is `col/*.c` (and `sift_col_kern*`), the index AM glue `col/am*.c`.
+`col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. `col_segments` and `sift.table_segments` list the column format minor of each segment (`format`, 3.1) and `col_segments` the bytes of its pre-aggregates (`preagg_bytes`). Code: the engine is `col/*.c`, the index AM glue `col/am*.c`.
 
 ---
 
