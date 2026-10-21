@@ -171,3 +171,7 @@ $q$);
  f      | t    | (10000)
 (1 row)
 
+DROP FUNCTION check_query(text);
+DROP FUNCTION run_query(text, bool);
+DROP TABLE facts, plain_facts, lookup_values, region_kinds, regions;
+DROP EXTENSION pg_sift;
