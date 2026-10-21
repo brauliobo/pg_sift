@@ -193,6 +193,46 @@ combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
 	return p;
 }
 
+/* The table column m and the other side e of the equality q when m belongs to the join jc and a key is free; lt and rt are the operator's input types */
+static OpExpr *
+join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid *rt)
+{
+	OpExpr	   *op = (OpExpr *) q;
+	Node	   *l,
+			   *r;
+
+	if (!IsA(q, OpExpr) || jc->j.nkey == SIFT_AGG_MAX_JKEYS)
+		return NULL;
+	if (list_length(op->args) != 2 || builtin_cmp(op->opno, lt, rt) != SCMP_EQ)
+		return NULL;
+	l = strip_relabel(linitial(op->args));
+	r = strip_relabel(lsecond(op->args));
+	if (join_of_var(c, l) == jc)
+	{
+		*m = l;
+		*e = r;
+	}
+	else if (join_of_var(c, r) == jc)
+	{
+		*m = r;
+		*e = l;
+	}
+	else
+		return NULL;
+	return op;
+}
+
+/* the column m of the joined table is the next key of the join */
+static void
+join_key(JoinCtx *jc, Var *m)
+{
+	SiftAggJoin *j = &jc->j;
+
+	join_var(jc, m);
+	j->keyatt[j->nkey] = m->varattno;
+	j->keytype[j->nkey] = m->vartype;
+}
+
 /* `column = leaf` of the joined table: the equality of a dictionary leaf with a text column, of an integer leaf with an integer column */
 bool
 join_clause(AggCtx *c, JoinCtx *jc, Node *q)
@@ -200,9 +240,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	OpExpr	   *op;
 	Oid			lt,
 				rt;
-	Node	   *l,
-			   *r,
-			   *m,
+	Node	   *m,
 			   *e;
 	SiftAggJoin *j = &jc->j;
 	ComboCtx   *cb = list_nth(c->combos, jc->combo);
@@ -211,24 +249,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	Oid			mt;
 	TypeClass	tc;
 
-	if (!IsA(q, OpExpr) || j->nkey == SIFT_AGG_MAX_JKEYS)
-		return false;
-	op = (OpExpr *) q;
-	if (list_length(op->args) != 2 || builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ)
-		return false;
-	l = strip_relabel(linitial(op->args));
-	r = strip_relabel(lsecond(op->args));
-	if (join_of_var(c, l) == jc)
-	{
-		m = l;
-		e = r;
-	}
-	else if (join_of_var(c, r) == jc)
-	{
-		m = r;
-		e = l;
-	}
-	else
+	if ((op = join_equality(c, jc, q, &m, &e, &lt, &rt)) == NULL)
 		return false;
 	if (bms_is_member(jc->rti, pull_varnos(c->root, e)) || (leaf = match_leaf(c, e)) < 0)
 		return false;
@@ -246,9 +267,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	else if ((lf->vtype != SCV_I32 && lf->typid != INT8OID) || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
-	join_var(jc, (Var *) m);
-	j->keyatt[j->nkey] = ((Var *) m)->varattno;
-	j->keytype[j->nkey] = mt;
+	join_key(jc, (Var *) m);
 	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->typid, -1, lf->vtype == SCV_CODE ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
 		return false;
 	use_leaf(c, leaf);
@@ -431,9 +450,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	OpExpr	   *op;
 	Oid			lt,
 				rt;
-	Node	   *l,
-			   *r,
-			   *m,
+	Node	   *m,
 			   *e;
 	SiftAggJoin *j = &jc->j;
 	ComboCtx   *cb = list_nth(c->combos, jc->combo);
@@ -442,24 +459,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	Oid			mt,
 				et;
 
-	if (!IsA(q, OpExpr) || j->nkey == SIFT_AGG_MAX_JKEYS)
-		return false;
-	op = (OpExpr *) q;
-	if (list_length(op->args) != 2 || builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ)
-		return false;
-	l = strip_relabel(linitial(op->args));
-	r = strip_relabel(lsecond(op->args));
-	if (join_of_var(c, l) == jc)
-	{
-		m = l;
-		e = r;
-	}
-	else if (join_of_var(c, r) == jc)
-	{
-		m = r;
-		e = l;
-	}
-	else
+	if ((op = join_equality(c, jc, q, &m, &e, &lt, &rt)) == NULL)
 		return false;
 	mt = ((Var *) m)->vartype;
 	et = exprType(e);
@@ -485,9 +485,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	foreach_ptr(Var, v, w.vars)
 		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
 			return false;
-	join_var(jc, (Var *) m);
-	j->keyatt[j->nkey] = ((Var *) m)->varattno;
-	j->keytype[j->nkey] = mt;
+	join_key(jc, (Var *) m);
 	j->keypos[j->nkey] = -1;
 	jc->kexpr[j->nkey] = e;
 	j->nkey++;
