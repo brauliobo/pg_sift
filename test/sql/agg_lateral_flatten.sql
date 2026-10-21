@@ -74,6 +74,25 @@ SELECT * FROM check_query('no outer join', $q$
                                      FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
  GROUP BY 1
 $q$);
+-- on the nullable side of a right join the columns of a sub-select are NULL for the rows the join does not match: not pulled up
+SELECT * FROM check_query('right join', $q$
+ SELECT s.category, z.id, count(e.id) AS n
+ FROM (entries e INNER JOIN LATERAL (SELECT 'c'::text AS category FROM jsonb_each(e.scores) r) s ON true)
+ RIGHT JOIN sources z ON z.id = e.source_id + 10
+ GROUP BY 1, 2
+$q$);
+-- a sub-select that reads the columns of an earlier one
+SELECT * FROM check_query('chained', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, s2.k2
+   FROM entries e
+   JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                 FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
+   JOIN LATERAL (SELECT s.category || 'x' AS k2 FROM sources z WHERE z.id = e.source_id) s2 ON true)
+ SELECT d.day, p.category, p.k2, count(DISTINCT p.id) AS n
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY 1, 2, 3
+$q$);
 -- A sub-select with a LIMIT is not pulled up: it stays a correlated child, with the same results.
 SELECT * FROM check_query('limit', $q$
  WITH parsed AS (

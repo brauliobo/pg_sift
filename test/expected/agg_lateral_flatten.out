@@ -94,6 +94,35 @@ $q$);
  no outer join | t    | t    | [{"n": 2143, "total": 8572, "category": "view"}, {"n": 2857, "total": 5714, "category": "other"}, {"
 (1 row)
 
+-- on the nullable side of a right join the columns of a sub-select are NULL for the rows the join does not match: not pulled up
+SELECT * FROM check_query('right join', $q$
+ SELECT s.category, z.id, count(e.id) AS n
+ FROM (entries e INNER JOIN LATERAL (SELECT 'c'::text AS category FROM jsonb_each(e.scores) r) s ON true)
+ RIGHT JOIN sources z ON z.id = e.source_id + 10
+ GROUP BY 1, 2
+$q$);
+   label    | scan | same |                                               outcome                                                
+------------+------+------+------------------------------------------------------------------------------------------------------
+ right join | t    | t    | [{"n": 0, "id": 1, "category": null}, {"n": 0, "id": 2, "category": null}, {"n": 0, "id": 3, "catego
+(1 row)
+
+-- a sub-select that reads the columns of an earlier one
+SELECT * FROM check_query('chained', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, s2.k2
+   FROM entries e
+   JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                 FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.source_id = e.source_id AND l.source_key = r.key) s ON true
+   JOIN LATERAL (SELECT s.category || 'x' AS k2 FROM sources z WHERE z.id = e.source_id) s2 ON true)
+ SELECT d.day, p.category, p.k2, count(DISTINCT p.id) AS n
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY 1, 2, 3
+$q$);
+  label  | scan | same |                                               outcome                                                
+---------+------+------+------------------------------------------------------------------------------------------------------
+ chained | t    | t    | [{"n": 0, "k2": null, "day": "2026-01-04", "category": null}, {"n": 0, "k2": null, "day": "2026-01-0
+(1 row)
+
 -- A sub-select with a LIMIT is not pulled up: it stays a correlated child, with the same results.
 SELECT * FROM check_query('limit', $q$
  WITH parsed AS (

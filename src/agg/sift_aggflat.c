@@ -180,7 +180,8 @@ flatten_jointree(Query *q, Node *n, bool apply, List **pulled, bool *changed)
 		JoinExpr   *j = (JoinExpr *) n;
 		RangeTblEntry *rte;
 
-		j->larg = flatten_jointree(q, j->larg, apply, pulled, changed);
+		if (j->jointype == JOIN_INNER || j->jointype == JOIN_LEFT)
+			j->larg = flatten_jointree(q, j->larg, apply, pulled, changed);
 		if (j->jointype == JOIN_INNER)
 			j->rarg = flatten_jointree(q, j->rarg, apply, pulled, changed);
 		if ((rte = lateral_inner_child(q, j)) != NULL)
@@ -207,9 +208,13 @@ flatten_query(Query *q, bool apply)
 		if (rte->rtekind == RTE_SUBQUERY)
 			changed |= flatten_query(rte->subquery, apply);
 	q->jointree = (FromExpr *) flatten_jointree(q, (Node *) q->jointree, apply, &pulled, &changed);
-	/* the copy ReplaceVarsFromTargetList makes takes the place of the query */
+	/* the copy ReplaceVarsFromTargetList makes takes the place of the query; a sub-select may read the columns of an earlier one */
 	foreach_ptr(Pulled, p, pulled)
+	{
 		*q = *(Query *) ReplaceVarsFromTargetList((Node *) q, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
+		foreach_ptr(Pulled, later, pulled)
+			later->targetlist = (List *) ReplaceVarsFromTargetList((Node *) later->targetlist, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
+	}
 	return changed;
 }
 
