@@ -154,6 +154,7 @@ MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cx
 
 /* lookcache.c */
 LookFinger *lookcache_finger(Relation rel);
+bool lookcache_refused(const char *key, Relation rel);
 MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
 bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 
