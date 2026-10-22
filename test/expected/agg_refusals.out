@@ -119,13 +119,22 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  two level aggregate | two_level  | f    | two_aggs
  spine               | two_level  | t    | 
  spine join          | two_level  | f    | spine_shape
- spine rows          | two_level  | f    | spine_rows
+ spine rows          | two_level  | t    | 
  spine grouping sets | two_level  | f    | grouping_sets
  rows                | rows       | f    | rows_shape
  rows grouping sets  | rows       | f    | grouping_sets
  shared cte          | cte_inline | f    | cte_cost
 (34 rows)
 
+-- a spine of 12,001 rows is used; one above the memory of the lookups is refused
+SET sift.agg_lookup_max_kb = 512;
+SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';
+    arm    | used |    slug    
+-----------+------+------------
+ two_level | f    | spine_rows
+(1 row)
+
+RESET sift.agg_lookup_max_kb;
 -- The cost of the scan against the normal plan: with the table scans on, a probe of one key keeps its index scan.
 RESET enable_seqscan;
 RESET enable_indexscan;

@@ -793,6 +793,13 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
 	}
+	/* sessions that run the same query at once: one loads the rows, the others wait for them */
+	if (lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	{
+		ex->ncached++;
+		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
+		return map_view(m, &have, j, cxt);
+	}
 	sift_stat_add(SIFT_STAT_LOOKUP_MISSES, 1);
 	t->cols = need;
 	/* the columns of the entry that lacked some, and these: a table loaded for one arm after another does not make an entry for each */
@@ -821,6 +828,8 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 
 	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
 		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
+	if (t->before != NULL)
+		lookshm_unclaim(t->key);
 }
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */

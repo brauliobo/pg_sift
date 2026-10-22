@@ -61,9 +61,13 @@ typedef struct SpineSt
 	bool	   *hit;			/* the row joined a cell */
 	OutTable	jot[SIFT_AGG_MAX_JKEYS];
 	SpineMemo	memo[SIFT_AGG_MAX_ARMS];
-	uint32	   *match;
-	uint32		nmatch;
-	uint32		cmatch;
+	/* the rows grouped by their join values (jid), in row order: group g is grow[gfirst[g] .. gfirst[g + 1]), found through gslot */
+	uint32		ngrp;
+	uint32		nslot;
+	uint32	   *gslot;			/* group + 1, 0 free */
+	uint32	   *grep;			/* per group: its first row */
+	uint32	   *gfirst;
+	uint32	   *grow;
 } SpineSt;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */

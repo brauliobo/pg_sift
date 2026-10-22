@@ -101,6 +101,18 @@ FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
 SELECT j AS jointype, same(format($q$SELECT t.a, t.b, round(avg(score)::numeric, 6) AS value, count(*) AS cells, count(DISTINCT id) AS ids
                                       FROM ticks t %s %s ON m.parent_id = t.a GROUP BY t.a, t.b ORDER BY 1, 2$q$, j, arms())) AS ok
 FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
+-- a spine of 12,001 rows, above the 10,000 it was limited to when each key of the cells scanned it, whose join values repeat (b 600 to 699 match no cell)
+CREATE TABLE ticks_big (a int, b int) WITH (autovacuum_enabled = false);
+INSERT INTO ticks_big SELECT i, i % 700 FROM generate_series(0, 12000) i;
+VACUUM (FREEZE, ANALYZE) ticks_big;
+SELECT j AS jointype, same(format($q$SELECT t.a, round(avg(score)::numeric, 6) AS value, count(*) AS cells, count(DISTINCT id) AS ids
+                                      FROM ticks_big t %s %s ON m.parent_id = t.b GROUP BY t.a ORDER BY 1$q$, j, arms())) AS ok
+FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
+-- a spine whose rows are above the memory the lookups take keeps the normal plan, with the same answer
+SET sift.agg_lookup_max_kb = 512;
+SELECT same(q, scan => false) AND NOT pushed(q) AS over_budget
+FROM (SELECT format($q$SELECT t.a, round(avg(score)::numeric, 6) AS value FROM ticks_big t JOIN %s ON m.parent_id = t.b GROUP BY t.a ORDER BY 1$q$, arms()) AS q) f;
+RESET sift.agg_lookup_max_kb;
 -- a spine without rows: no group
 SELECT same(report($s$SELECT * FROM buckets WHERE label > 'zzz'$s$, 'm.kind = sp.kind', 'category, sp.label', j), true) AS empty_spine FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
 -- a spine that no cell matches: no group, or one per spine row, of NULL arm columns
