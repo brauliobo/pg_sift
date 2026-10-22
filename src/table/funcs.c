@@ -136,27 +136,44 @@ sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
-PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec);
-
 /* Does a write buffer page of one row, whose slot holds `slot` and whose record claims `inline_len` bytes, give out a record (a record outside the page is an error) */
-Datum
-sift_test_tbl_page_rec(PG_FUNCTION_ARGS)
+static bool
+page_rec_found(uint32 slot, uint32 inline_len)
 {
-	uint32		slot = (uint32) PG_GETARG_INT32(0),
-				inline_len = (uint32) PG_GETARG_INT32(1);
 	Page		page = palloc0(BLCKSZ);
 	SiftTblPageHdr *ph;
+	uint16		len16 = (uint16) inline_len;
 	bool		found;
 
 	sift_page_init(page, SIFT_PT_WBUFDATA, 7);
 	ph = TBL_PAGE(page);
 	ph->nrows = 1;
 	ph->slot[0] = (uint16) slot;
-	if (slot > 0 && slot < BLCKSZ / 2)
-		((SiftTblRec *) (SiftPageGetData(page) + slot))->inline_len = (uint16) inline_len;
+	/* only the length field is written: a header that reaches past the page must not overwrite the opaque area behind it */
+	if (slot > 0 && slot + offsetof(SiftTblRec, inline_len) + sizeof(len16) <= SIFT_PAGE_PAYLOAD)
+		memcpy(SiftPageGetData(page) + slot + offsetof(SiftTblRec, inline_len), &len16, sizeof(len16));
 	found = sift_tbl_page_rec(page, 7, 1) != NULL;
 	pfree(page);
-	PG_RETURN_BOOL(found);
+	return found;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec);
+
+Datum
+sift_test_tbl_page_rec(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(page_rec_found((uint32) PG_GETARG_INT32(0), (uint32) PG_GETARG_INT32(1)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec_end);
+
+/* The same for a record of inline_len bytes whose last byte lies `over` bytes past the end of the page's data (0: the largest record a page can hold) */
+Datum
+sift_test_tbl_page_rec_end(PG_FUNCTION_ARGS)
+{
+	uint32		inline_len = (uint32) PG_GETARG_INT32(0);
+
+	PG_RETURN_BOOL(page_rec_found(SIFT_PAGE_PAYLOAD - sizeof(SiftTblRec) - inline_len + PG_GETARG_INT32(1), inline_len));
 }
 #endif
 
