@@ -366,23 +366,10 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 	for (int j = 0; j < s->nkeys; j++)
 		if (s->key[j].kind == SAK_SET)
 			return false;
+	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
 	for (int i = 0; i < s->naggs; i++)
-		switch (s->agg[i].kind)
-		{
-			case SAA_COUNT_STAR:
-			case SAA_COUNT:
-			case SAA_SUM_INT:
-			case SAA_AVG_INT:
-			case SAA_SUM_F64:
-			case SAA_AVG_F64:
-			case SAA_MIN:
-			case SAA_MAX:
-			case SAA_SUM_NUM:
-			case SAA_AVG_NUM:
-				break;
-			default:
-				return false;
-		}
+		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN)
+			return false;
 	return true;
 }
 
