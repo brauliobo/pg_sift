@@ -115,14 +115,17 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 			pfree(bad);
 		}
 	}
-	/* the form that is searched in place: the same dictionary back, with its order, and no damage that parses is out of range */
+	/* the form that is searched in place, raw and with compressed blocks: the same dictionary back, with its order, and no damage that parses is out of range */
+	for (int z = 0; z < 2; z++)
 	{
+		SiftCcPolicy zpol;
 		StringInfoData buf;
 		SiftCDict  *p;
 		Size		used = 0;
 
 		initStringInfo(&buf);
-		sift_cdict_serialize(d, NULL, true, &buf);
+		CHECK(t, sift_cc_policy_parse("zstd", &zpol) == NULL, "policy zstd");
+		sift_cdict_serialize(d, z ? &zpol : NULL, true, &buf);
 		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes && p->sorted != NULL, "lookup dictionary parse");
 		for (uint32 i = 0; p != NULL && i < n; i += 1 + (uint32) pg_prng_uint64_range(&rng, 0, 4))
