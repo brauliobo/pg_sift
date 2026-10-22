@@ -198,12 +198,14 @@ typedef struct DictLook
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
 
-/* The table of a leaf's point directory (col/point.h): stream offset, slots, rows listed */
+/* The block of a leaf's point directory (col/point.h): stream offset of its table, slots, distinct keys, rows listed, words of the lists after the table */
 typedef struct PointLeaf
 {
 	uint64		at;
 	uint32		nslots;
+	uint32		nkeys;
 	uint32		count;
+	uint32		words;
 } PointLeaf;
 
 typedef struct SegPriv

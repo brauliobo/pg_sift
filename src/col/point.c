@@ -48,30 +48,74 @@ sift_cpoint_slots(uint32 n)
 	return (uint32) s;
 }
 
-bool
-sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 nslots, StringInfo out)
+typedef struct PointEnt
 {
-	uint64	   *t = palloc(nslots * sizeof(uint64));
+	int64		key;
+	uint32		row;
+} PointEnt;
 
-	memset(t, 0xFF, nslots * sizeof(uint64));
+static int
+ent_cmp(const void *a, const void *b)
+{
+	const PointEnt *x = a,
+			   *y = b;
+
+	if (x->key != y->key)
+		return x->key < y->key ? -1 : 1;
+	return (x->row > y->row) - (x->row < y->row);
+}
+
+void
+sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+{
+	PointEnt   *e = palloc(n * sizeof(PointEnt));
+	uint32		nk = 0,
+				nw = 0,
+				at = 0;
+	uint64	   *t;
+	uint32	   *w;
+
 	for (uint32 i = 0; i < n; i++)
+		e[i] = (PointEnt) {key[i], row[i]};
+	qsort(e, n, sizeof(PointEnt), ent_cmp);
+	for (uint32 i = 0, j; i < n; i = j)
 	{
-		uint64		h = sift_cpoint_hash(key[i]);
-		uint32		p = sift_cpoint_pos(h, nslots);
-		uint32		run = 0;
-
-		while (t[p] != SIFT_CPOINT_EMPTY)
-		{
-			if (++run > SIFT_CPOINT_MAX_RUN)
-			{
-				pfree(t);
-				return false;
-			}
-			p = (p + 1) & (nslots - 1);
-		}
-		t[p] = (h & 0xFFFFFFFF) << 32 | row[i];
+		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
+			;
+		nk++;
+		if (j - i > 1)
+			nw += 1 + (j - i);
 	}
-	appendBinaryStringInfo(out, (const char *) t, (int) (nslots * sizeof(uint64)));
+	*nslots = sift_cpoint_slots(nk);
+	*nkeys = nk;
+	*words = nw;
+	t = palloc(*nslots * sizeof(uint64));
+	memset(t, 0xFF, *nslots * sizeof(uint64));
+	w = palloc(Max(nw, 1) * sizeof(uint32));
+	for (uint32 i = 0, j; i < n; i = j)
+	{
+		uint64		h = sift_cpoint_hash(e[i].key);
+		uint32		p = sift_cpoint_pos(h, *nslots);
+		uint32		payload = e[i].row;
+
+		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
+			;
+		if (j - i > 1)
+		{
+			payload = SIFT_CPOINT_LIST | at;
+			w[at++] = j - i;
+			for (uint32 k = i; k < j; k++)
+				w[at++] = e[k].row;
+		}
+		while (t[p] != SIFT_CPOINT_EMPTY)
+			p = (p + 1) & (*nslots - 1);
+		t[p] = (h & 0xFFFFFFFF) << 32 | payload;
+	}
+	appendBinaryStringInfo(out, (const char *) t, (int) (*nslots * sizeof(uint64)));
+	appendBinaryStringInfo(out, (const char *) w, (int) (nw * sizeof(uint32)));
+	if (nw % 2)
+		appendBinaryStringInfo(out, "\0\0\0\0", 4);
 	pfree(t);
-	return true;
+	pfree(w);
+	pfree(e);
 }
