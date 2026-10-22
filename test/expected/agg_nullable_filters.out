@@ -14,7 +14,7 @@ SELECT i, '2026-01-01'::date + (i % 15), 1 + i % 60, CASE WHEN i % 17 = 0 THEN n
                    jsonb_build_object('name', 'x', 'tag', (ARRAY['hot', 'cold', 'dry'])[1 + i % 3], 'score', CASE WHEN i % 7 = 0 THEN NULL ELSE i % 10 END),
                    jsonb_build_object('name', 'y', 'tag', (ARRAY['hot', 'cold', 'dry'])[1 + (i / 3) % 3], 'score', i % 5))) END,
        CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN '[]'::jsonb
-            WHEN i % 5 = 2 THEN '[{"type": "staff"}]'::jsonb ELSE '[{"type": "actor"}, {"type": "staff"}]'::jsonb END
+            WHEN i % 5 = 2 THEN '[{"type": "role_a"}]'::jsonb ELSE '[{"type": "actor"}, {"type": "role_a"}]'::jsonb END
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, entity_id, deleted_at, doc, notes)
   WITH (paths = 'doc.items[]{name text, tag text, score float8}, notes[]{type text}');
@@ -55,9 +55,9 @@ $q$);
 
 -- The same test as the condition of the derived table of a calendar join, with a jsonpath test of its rows computed inside it and read by aggregate filters.
 SELECT * FROM check_query($q$
- SELECT d.day, count(DISTINCT f.id) AS n, count(DISTINCT f.id) FILTER (WHERE f.staff IS TRUE) AS staff
+ SELECT d.day, count(DISTINCT f.id) AS n, count(DISTINCT f.id) FILTER (WHERE f.role_a IS TRUE) AS role_a
  FROM dates d LEFT JOIN (
-   SELECT f.id, f.day, jsonb_path_exists(f.notes, '$[*] ? (@.type == "staff")') AS staff
+   SELECT f.id, f.day, jsonb_path_exists(f.notes, '$[*] ? (@.type == "role_a")') AS role_a
    FROM facts f JOIN entities e ON e.id = f.entity_id
    WHERE f.deleted_at IS NULL
      AND EXISTS (SELECT * FROM LATERAL (SELECT tag AS t, score FROM jsonb_to_recordset(f.doc -> 'items') AS o(name text, tag text, score float8) WHERE o.score IS NOT NULL) o WHERE o.t IN ('hot'))
@@ -75,7 +75,7 @@ SELECT * FROM check_query($q$
  FROM dates d LEFT JOIN (
    SELECT f.id, f.day, jsonb_path_exists(f.notes, '$[*] ? (@.type == "actor")') AS actor
    FROM facts f
-   WHERE f.deleted_at IS NULL AND jsonb_path_exists(f.notes, '$[*] ? (@.type == "staff")')
+   WHERE f.deleted_at IS NULL AND jsonb_path_exists(f.notes, '$[*] ? (@.type == "role_a")')
  ) f ON f.day = d.day
  GROUP BY 1
 $q$);

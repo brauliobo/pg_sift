@@ -1,12 +1,12 @@
--- S1: metrics summary per metric, aspect and period (an object with dynamic keys: jsonb_each), the thresholds counted by distinct orders
+-- S1: metrics summary per metric, part and span (an object with dynamic keys: jsonb_each), the thresholds counted by distinct orders
 -- shape: S1
 -- expect: agg
 -- sets: K10 K400 K4000
 -- key: -
 -- scenario: yes
 SELECT split_part(kv.key, '_', 1) AS metric,
-       nullif(split_part(kv.key, '_', 2), '') AS aspect,
-       {period(o.placed_at)} AS period,
+       nullif(split_part(kv.key, '_', 2), '') AS part,
+       {span(o.placed_at)} AS span,
        avg((kv.value #>> '{}')::float8) AS avg_value,
        count(DISTINCT o.id) AS orders,
        count(DISTINCT o.id) FILTER (WHERE (kv.value #>> '{}')::float8 >= 4) AS high,

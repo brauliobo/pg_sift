@@ -1,10 +1,10 @@
--- S3: a blend of S1 and S2: per mapped item category and period, the revenue of the items and the "p_total" metric of their orders
+-- S3: a blend of S1 and S2: per mapped item category and span, the revenue of the items and the "p_total" metric of their orders
 -- (an array of objects and a path of the metrics object in the same scan)
 -- sets: K10 K400 K4000
 -- key: 1 2
 --@ pg
 SELECT CASE WHEN o.attributes->>'normalized' IS NOT NULL THEN i.category ELSE nullif(cm.mapped_category, '') END AS category,
-       {period(o.placed_at)} AS period,
+       {span(o.placed_at)} AS span,
        count(DISTINCT o.id) AS orders,
        sum(i.qty * (i.price - i.discount)) AS revenue,
        avg((o.metrics->>'p_total')::float8) AS p_total
@@ -15,7 +15,7 @@ WHERE o.store_id IN ({stores}) AND o.source IN ({sources}) AND o.deleted_at IS N
 GROUP BY 1, 2
 --@ flat
 SELECT CASE WHEN i.normalized THEN i.category ELSE nullif(cm.mapped_category, '') END AS category,
-       {period(i.placed_at)} AS period,
+       {span(i.placed_at)} AS span,
        count(DISTINCT i.order_id) AS orders,
        sum(i.qty * (i.price - i.discount)) AS revenue,
        avg(i.p_total) AS p_total
@@ -25,12 +25,12 @@ WHERE i.store_id IN ({stores}) AND i.source IN ({sources}) AND i.deleted_at IS N
 GROUP BY 1, 2
 --@ ch
 SELECT if(i.normalized != 0, i.category, nullIf(cm.mapped_category, '')) AS category,
-       {period(i.placed_at)} AS period,
+       {span(i.placed_at)} AS span,
        count(DISTINCT i.order_id) AS orders,
        sum(i.qty * (i.price - i.discount)) AS revenue,
        avg(i.p_total) AS p_total
 FROM items_tuned i
 LEFT JOIN categories_map cm ON cm.category = i.category
 WHERE i.store_id IN ({stores}) AND i.source IN ({sources}) AND i.deleted = 0 AND {range(i.placed_at)}
-GROUP BY category, period
+GROUP BY category, span
 SETTINGS join_use_nulls = 1

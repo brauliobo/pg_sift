@@ -1,10 +1,10 @@
--- S1: metrics summary per mapped metric, aspect and period (object with dynamic keys, keys mapped through metrics_map)
+-- S1: metrics summary per mapped metric, part and span (object with dynamic keys, keys mapped through metrics_map)
 -- sets: K10 K400 K4000
 -- key: 1 2 3
 --@ pg
 SELECT coalesce(mm.mapped_metric, split_part(kv.key, '_', 1)) AS metric,
-       coalesce(mm.mapped_aspect, nullif(split_part(kv.key, '_', 2), '')) AS aspect,
-       {period(o.placed_at)} AS period,
+       coalesce(mm.mapped_part, nullif(split_part(kv.key, '_', 2), '')) AS part,
+       {span(o.placed_at)} AS span,
        avg((kv.value #>> '{}')::float8) AS avg_value,
        count(DISTINCT o.id) AS orders,
        count(DISTINCT o.id) FILTER (WHERE (kv.value #>> '{}')::float8 >= 4) AS high,
@@ -17,8 +17,8 @@ WHERE o.store_id IN ({stores}) AND o.source IN ({sources}) AND o.deleted_at IS N
 GROUP BY 1, 2, 3
 --@ flat
 SELECT coalesce(mm.mapped_metric, split_part(v.metric_key, '_', 1)) AS metric,
-       coalesce(mm.mapped_aspect, nullif(split_part(v.metric_key, '_', 2), '')) AS aspect,
-       {period(v.placed_at)} AS period,
+       coalesce(mm.mapped_part, nullif(split_part(v.metric_key, '_', 2), '')) AS part,
+       {span(v.placed_at)} AS span,
        avg(v.value) AS avg_value,
        count(DISTINCT v.order_id) AS orders,
        count(DISTINCT v.order_id) FILTER (WHERE v.value >= 4) AS high,
@@ -30,8 +30,8 @@ WHERE v.store_id IN ({stores}) AND v.source IN ({sources}) AND v.deleted_at IS N
 GROUP BY 1, 2, 3
 --@ ch
 SELECT coalesce(mm.mapped_metric, splitByChar('_', v.metric_key)[1]) AS metric,
-       coalesce(nullIf(mm.mapped_aspect, ''), nullIf(splitByChar('_', v.metric_key)[2], '')) AS aspect,
-       {period(v.placed_at)} AS period,
+       coalesce(nullIf(mm.mapped_part, ''), nullIf(splitByChar('_', v.metric_key)[2], '')) AS part,
+       {span(v.placed_at)} AS span,
        avg(v.value) AS avg_value,
        count(DISTINCT v.order_id) AS orders,
        countDistinctIf(v.order_id, v.value >= 4) AS high,
@@ -40,5 +40,5 @@ SELECT coalesce(mm.mapped_metric, splitByChar('_', v.metric_key)[1]) AS metric,
 FROM metrics_tuned v
 LEFT JOIN metrics_map mm ON mm.source = v.source AND mm.metric_key = v.metric_key
 WHERE v.store_id IN ({stores}) AND v.source IN ({sources}) AND v.deleted = 0 AND {range(v.placed_at)}
-GROUP BY metric, aspect, period
+GROUP BY metric, part, span
 SETTINGS join_use_nulls = 1

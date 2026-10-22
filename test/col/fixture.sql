@@ -75,8 +75,8 @@ CREATE FUNCTION coldiff.fx_orders(first_id int, last_id int, seed int DEFAULT 0)
 											round((1 + 4 * sqrt(coldiff.u(g.id, 100 + i, seed)))::numeric, 1))
 					FROM generate_series(0, p.nr - 1) i) END,
 			   CASE WHEN coldiff.u(g.id, 23, seed) < 0.1 THEN jsonb_strip_nulls(it.items) ELSE it.items END,
-			   (SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['reply','comment','internal'])[1 + floor(coldiff.u(g.id, 500 + j, seed) * 3)::int],
-															 'author_role', (ARRAY['staff','customer'])[1 + floor(coldiff.u(g.id, 600 + j, seed) * 2)::int],
+			   (SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['kind_a','kind_b','internal'])[1 + floor(coldiff.u(g.id, 500 + j, seed) * 3)::int],
+															 'author_role', (ARRAY['role_a','role_b'])[1 + floor(coldiff.u(g.id, 600 + j, seed) * 2)::int],
 															 'text', 'note ' || j) ORDER BY j), '[]'::jsonb)
 				FROM generate_series(0, floor(coldiff.u(g.id, 24, seed) * 4)::int - 1) j),
 			   (SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
@@ -147,8 +147,8 @@ CREATE TABLE pf_dim (a integer, b integer, label text, w float8);
 INSERT INTO pf_dim SELECT a, b, 'l' || (a + b) % 4, a * 10 + b FROM generate_series(0, 9) a, generate_series(0, 4) b WHERE (a + b) % 6 <> 5;
 INSERT INTO pf_dim VALUES (1, 1, 'dup', 0.5), (NULL, 1, 'null a', 1), (2, NULL, 'null b', 2), (NULL, NULL, 'null both', NULL);
 
--- the keys of the metrics of a source -> metric and aspect (about one in seven has no row: the split of the key is the fallback)
-CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_aspect text);
+-- the keys of the metrics of a source -> metric and part (about one in seven has no row: the split of the key is the fallback)
+CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_part text);
 INSERT INTO metrics_map
 SELECT s, key, initcap(split_part(key, '_', 1)), nullif(initcap(split_part(key, '_', 2)), '')
 FROM unnest(ARRAY['web','ios','android','pos','phone'] || ARRAY(SELECT 'marketplace_' || lpad(i::text, 2, '0') FROM generate_series(1, 25) i)) s,
@@ -184,8 +184,8 @@ INSERT INTO map_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Appa
 	('Home', 'H', 3.10, 2.0, NULL, '2021-01-01'), ('Toys', 'T', 0.05, 0.25, 5, '2024-02-02'), ('Toys', NULL, 0.10, NULL, 4, '2020-03-03');
 
 -- ranges to place a date in (a date in several of them, in none; an empty, an open and a NULL range, a NULL label)
-CREATE TABLE periods (label text, range daterange);
-INSERT INTO periods VALUES ('cur', '[2024-06-01,2025-06-01)'), ('prev', '[2023-06-01,2024-06-01)'), ('wide', '[2023-01-01,2025-12-31]'),
+CREATE TABLE spans (label text, range daterange);
+INSERT INTO spans VALUES ('span_a', '[2024-06-01,2025-06-01)'), ('span_b', '[2023-06-01,2024-06-01)'), ('wide', '[2023-01-01,2025-12-31]'),
 	('empty', 'empty'), (NULL, '[2022-01-01,2022-04-01)'), ('open', '[2025-01-01,)'), ('none', NULL);
 
 -- a joined column of every type PostgreSQL's own sum and average run on: a key with two rows, NULL values, a key without a row, big and negative values

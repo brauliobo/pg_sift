@@ -166,7 +166,7 @@ not spilled. A volatile function of the select list that PostgreSQL evaluates af
 ## Counting distinct values over the rows of a scan
 
 A report that aggregates per-row aggregates (`GROUP BY id, key`, a `UNION ALL` of such arms) and counts `count(DISTINCT id)` per group above them reads their rows through
-a join (a spine of periods) and a sort of every row on the group columns and the id. When the plan reads `Custom Scan (SiftAgg)` nodes and an aggregate counts distinct
+a join (a spine of ranges) and a sort of every row on the group columns and the id. When the plan reads `Custom Scan (SiftAgg)` nodes and an aggregate counts distinct
 `int2`, `int4` or `int8` values, `Custom Scan (SiftAggRows)` takes the rows instead: a hash table of the groups (the first spelling of a key is the one shown), `count`, `sum`
 and `avg` per group (PostgreSQL's own transition and final functions, so the types and errors are the same), and for each argument of `count(DISTINCT x)` one set of
 (group, value) pairs with a bit for every aggregate of that argument that took the row, so `FILTER`s share it. The set is bounded by `hash_mem`; past it the pairs go to a
@@ -302,7 +302,7 @@ One query per file, as in `bench/sql/analytics/queries`: header lines, then the 
 |---|---|
 | `-- shape: S1` | the shape of the query (the name of an analytics file of the form `S1` or `G3` is its shape) |
 | `-- expect: agg\|plain\|any` | the shape expectation (default `any`) |
-| `-- sets: K10 K400 K4000` | the query runs once per set of `analytics_sets` (`{stores}`, `{sources}`, `{period(col)}`, `{range(col)}` are expanded as `bench/steps/analytics.py` does); `-` or absent: once |
+| `-- sets: K10 K400 K4000` | the query runs once per set of `analytics_sets` (`{stores}`, `{sources}`, `{span(col)}`, `{range(col)}` are expanded as `bench/steps/analytics.py` does); `-` or absent: once |
 | `-- key: 1 2` | sort both results by these columns first; `-` compares by position (the query has a total `ORDER BY`); absent: sort by every column |
 | `-- scenario: yes` | part of the subset that the scenarios re-run |
 | `-- guc: name = value` | a setting for every run of the file (repeatable) |

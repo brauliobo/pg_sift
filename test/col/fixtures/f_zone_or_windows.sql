@@ -1,4 +1,4 @@
--- a period and the same one a year earlier as an OR of ranges of the date leaf, and an IN list of dates: the zones are tested for each disjunct
+-- a range and the same one a year earlier as an OR of ranges of the date leaf, and an IN list of dates: the zones are tested for each disjunct
 -- shape: quals
 -- expect: agg
 -- key: -

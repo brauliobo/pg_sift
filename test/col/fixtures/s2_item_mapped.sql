@@ -4,7 +4,7 @@
 -- sets: K400 K4000
 -- key: -
 SELECT CASE WHEN o.attributes->>'normalized' IS NOT NULL THEN i.category ELSE nullif(cm.mapped_category, '') END AS category,
-       {period(o.placed_at)} AS period, count(DISTINCT o.id) AS orders, sum(i.qty * (i.price - i.discount)) AS revenue,
+       {span(o.placed_at)} AS span, count(DISTINCT o.id) AS orders, sum(i.qty * (i.price - i.discount)) AS revenue,
        avg((o.metrics->>'p_total')::float8) AS p_total
 FROM orders o
 CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8, discount float8)
