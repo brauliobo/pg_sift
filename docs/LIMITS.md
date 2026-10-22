@@ -59,7 +59,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `unit_rows` | rows of one column unit (256 heap pages) | 74,496 | rows | a new unit starts |  | `col/col.h` `SIFT_COL_UNIT_MAX_ROWS` |  |
 | `dict_entry` | longest string that is a dictionary entry | 255 | bytes | the unit stores its strings inline |  | `col/col.h` `SIFT_COL_DICT_MAX_ENTRY` |  |
 | `dict_bytes` | one segment dictionary | 67,108,864 (64 MiB) | bytes | the unit stores its strings inline |  | `col/col.h` `SIFT_COL_DICT_MAX_BYTES` |  |
-| `dict_cache_kb` | parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them | 65,536 (64 MiB) | kB | the least recently used unpinned dictionary is dropped; one over a quarter of it is kept for its scan only and searched entry by entry |  | `col/dictcache.c` `CDICT_CACHE_MAX_KB` | yes |
+| `dict_cache_kb` | parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them | 65,536 (64 MiB) | kB | the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry |  | `col/dictcache.c` `CDICT_CACHE_MAX_KB` | yes |
 | `int_digits` | precision of a numeric the integer leaf class holds exactly | 18 | digits | the wide leaf class holds it |  | `col/col.h` `SIFT_COL_MAX_SCALE` |  |
 | `wide_digits` | precision of a numeric in a wide leaf | 38 | digits | ERROR 54000 at build or merge |  | `col/wide.h` `SIFT_COL_MAX_WIDE_SCALE` |  |
 | `cube_dims` | dimensions of the cube of an index | 16 | dimensions | option rejected at CREATE or ALTER INDEX | `cube option` | `col/preagg.h` `SIFT_PAGG_MAX_DIMS` |  |
