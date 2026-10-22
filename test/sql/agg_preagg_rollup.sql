@@ -10,6 +10,9 @@ SET client_min_messages = warning;
 SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE rl (id int, grp int, lines jsonb, tags jsonb, attrs jsonb, pad text) WITH (autovacuum_enabled = off);
 
@@ -198,8 +201,11 @@ REINDEX INDEX rl_col;
 RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('rl_col');
 SELECT sift.col_verify('rl_col', true);
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT queries, differ FROM pa_sum('rl');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX rl_col;
 SELECT * FROM pa_sum('rl');
-RESET max_parallel_maintenance_workers;
 
 -- 7. the index without rollups: every unit is scanned
 SELECT * FROM pa_sum('ro');
