@@ -393,3 +393,9 @@ sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, i
 	else if (l->kind != LEAF_MAP_KEY)
 		rc->col[l->col] = mode;
 }
+
+void
+sift_col_shred_recheck_member(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key, Oid cast)
+{
+	sift_shred_recheck_member(rc, a->attr[attno].leaf[i].col, key, cast);
+}

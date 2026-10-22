@@ -750,12 +750,12 @@ part_tolerate_ovf(void *impl, int leaf)
 }
 
 static void
-part_set_recheck(void *impl, int leaf, int mode)
+part_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	PartSource *ps = impl;
 
 	for (int i = 0; i < ps->n; i++)
-		sift_colsrc_set_recheck(ps->src[i], leaf, mode);
+		sift_colsrc_set_recheck(ps->src[i], leaf, mode, key, cast);
 }
 
 static void
