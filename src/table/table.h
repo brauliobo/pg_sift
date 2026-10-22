@@ -208,6 +208,7 @@ typedef struct SiftTblRel
 	uint64		defrag_tombs;
 	int64		defrag_free;
 	int64		defrag_at;
+	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
