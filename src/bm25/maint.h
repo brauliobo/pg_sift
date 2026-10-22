@@ -108,6 +108,8 @@ typedef struct SiftMaintOps
 	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
+	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
+	void		(*vacuum_done) (Relation index);	/* NULL: nothing; called at the end of VACUUM's cleanup, the maintenance lock released */
 } SiftMaintOps;
 
 /* Called by aminsert after an append crossed write_buffer_limit */
@@ -135,6 +137,16 @@ extern Relation sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE l
 extern Relation sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid);
 extern int	sift_mops_sql_promote(const SiftMaintOps *ops, Relation index);
 extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force);
+
+/*
+ * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges every segment into
+ * one. The maintenance lock is not waited for: when a VACUUM, a merge or the worker holds it, nothing is done. automatic: the call is the
+ * server's own (the limit on the bytes rewritten applies). Returns the merges made, -1 when nothing was due or the lock was busy.
+ */
+extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic);
+
+/* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
+extern bool sift_maint_register_worker(Relation index, const char *function);
 
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);

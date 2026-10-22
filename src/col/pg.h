@@ -95,5 +95,7 @@ extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_verify(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_maintain(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_maintenance_due(PG_FUNCTION_ARGS);
 
 #endif							/* SIFT_COL_PG_H */

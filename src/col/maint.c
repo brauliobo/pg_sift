@@ -43,6 +43,20 @@
 int			sift_test_col_rollup_panic_armed = 0;
 #endif
 
+/* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
+bool		sift_col_auto_merge = false;
+int			sift_col_auto_merge_dirty_pct = 30;
+double		sift_col_auto_merge_fragmentation = 2.0;
+double		sift_col_auto_merge_buffer_pct = 1.0;
+
+/* The merges of the maintenance worker sleep like vacuum_cost_delay does (sift.maintenance_cost_delay); its promotions, which the writers wait for, and the rollup refresh do not */
+static void
+throttle(SiftWriteTarget *wt)
+{
+	if (MyBackendType == B_BG_WORKER && strcmp(MyBgworkerEntry->bgw_type, "sift maintenance") == 0)
+		sift_wt_throttle(wt, sift_maintenance_cost_delay);
+}
+
 /* ---------- promotion ---------- */
 
 static void
@@ -182,6 +196,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		{
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 			sift_wt_expect(wt, mi.bytes);
+			throttle(wt);
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, format, cx);
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
@@ -306,6 +321,73 @@ vacuum_truncates(Relation index)
 	return sift_col_options(index)->vacuum_truncate;
 }
 
+/*
+ * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
+ * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
+ * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
+ * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
+ * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite leaves alone an index over sift.vacuum_rewrite_limit.
+ */
+static const char *
+rewrite_due(Relation index, bool automatic)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		listed = 0,
+				dirty = 0,
+				rows = 0,
+				bytes = 0,
+				buffered = 0,
+				covered;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+
+			rows += e->ndocs;
+			bytes += e->bytes;
+			listed += seg->nsb;
+			for (uint32 u = 0; (e->flags & SIFT_SEG_DIRTY) && u < seg->nsb; u++)
+				dirty += sift_cseg_dirty(seg, u);
+			sift_cseg_close(seg);
+		}
+		else
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, e, &nrows, &npages);
+			buffered += nrows;
+		}
+	}
+	covered = sift_cseg_dir_units(snap);
+	pfree(snap);
+	if (automatic && bytes > ((uint64) sift_vacuum_rewrite_limit << 20))
+		return NULL;
+	if (listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
+		return "dirty units";
+	if (covered > 0 && (double) listed >= sift_col_auto_merge_fragmentation * covered)
+		return "fragmented units";
+	if (buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
+		return "write buffer rows";
+	return NULL;
+}
+
+/* VACUUM leaves the rewrite to a worker of its own: it is not VACUUM's to hold the table for, and the worker sleeps as sift.maintenance_cost_delay says */
+static void
+rewrite_request(Relation index)
+{
+	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	if (rewrite_due(index, true) != NULL)
+		sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
+}
+
 static const SiftMaintOps col_ops = {
 	.name = "sift_col",
 	.worker = "sift_col_maint_worker_main",
@@ -322,6 +404,8 @@ static const SiftMaintOps col_ops = {
 	.bulkdelete_immutable = bulkdelete_immutable,
 	.bulkdelete_wbuf = bulkdelete_wbuf,
 	.vacuum_skipped = reap_overflow,
+	.rewrite_due = rewrite_due,
+	.vacuum_done = rewrite_request,
 };
 
 void
@@ -386,7 +470,61 @@ sift_col_maint_worker_main(Datum main_arg)
 	CommitTransactionCommand();
 }
 
+/* The rewrite VACUUM asked for: the rule is judged again (the index may have changed since), and a held maintenance lock leaves it for the next VACUUM */
+void
+sift_col_rewrite_worker_main(Datum main_arg)
+{
+	ErrorContextCallback errctx;
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	Relation	index;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	index = try_index_open(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
+		{
+			TimestampTz start = GetCurrentTimestamp();
+
+			if (sift_mops_rewrite(&col_ops, index, true) >= 0)
+				sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
 /* ---------- SQL ---------- */
+
+/* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
+Datum
+sift_col_maintenance_due(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
+	const char *why = rewrite_due(index, PG_GETARG_BOOL(1));
+
+	index_close(index, AccessShareLock);
+	if (why == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(why));
+}
+
+/* sift.col_maintain(index): the rewrite of sift.col_auto_merge, now and in this session, whatever that setting says; false when nothing is due or the maintenance lock is held */
+Datum
+sift_col_maintain(PG_FUNCTION_ARGS)
+{
+	Relation	index;
+	int			n;
+
+	PreventCommandIfReadOnly("sift.col_maintain()");
+	PreventCommandDuringRecovery("sift.col_maintain()");
+	index = sift_mops_open_maintain(&col_ops, PG_GETARG_OID(0));
+	n = sift_mops_rewrite(&col_ops, index, false);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_BOOL(n >= 0);
+}
 
 Datum
 sift_col_promote(PG_FUNCTION_ARGS)
