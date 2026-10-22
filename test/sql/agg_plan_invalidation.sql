@@ -111,3 +111,7 @@ DROP INDEX events_col;
 SELECT * FROM chk('drop in transaction');
 ROLLBACK;
 SELECT * FROM chk('rollback');
+
+DROP FUNCTION chk(text), diff_of(text), plan_of(text);
+DROP TABLE events, dims;
+DROP EXTENSION pg_sift;
