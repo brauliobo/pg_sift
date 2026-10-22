@@ -4,16 +4,16 @@ starting permutation: ab bb cb a1 b1 c1 a2 b2 c2 v a3 b3 c3 atag v rscan ridx rb
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step v: VACUUM iso_wp;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -56,112 +56,112 @@ step ba: ROLLBACK;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 step rpar: SET sift.enable_agg = off; SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step v: VACUUM iso_wp;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 step rpar: SET sift.enable_agg = off; SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step cc: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-60010
+36010
 (1 row)
 
 step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-60010
+36010
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
-3|30000|9450015000
+1|18000|2034009000
+3|18000|5634009000
 (3 rows)
 
 step rpar: SET sift.enable_agg = off; SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step v: VACUUM iso_wp;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
-3|30000|9450015000
+1|18000|2034009000
+3|18000|5634009000
 (3 rows)
 
 step frozen: SELECT sift._test_tbl_tagged('iso_wp') = 0 AS frozen;
@@ -175,69 +175,69 @@ starting permutation: ab bb cb a1 b1 c1 a2 b2 c2 a3 b3 c3 ac ba v rscan ragg ca 
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step ba: ROLLBACK;
 step v: VACUUM iso_wp;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 step ca: ROLLBACK;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 step v: VACUUM iso_wp;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_wp WHERE id > 0;
 count
 -----
-30010
+18010
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 step frozen: SELECT sift._test_tbl_tagged('iso_wp') = 0 AS frozen;
@@ -257,15 +257,15 @@ count
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step ba: ROLLBACK;
 step cc: COMMIT;
@@ -278,17 +278,17 @@ g|count
 
 step rre: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
-3|30000|9450015000
+1|18000|2034009000
+3|18000|5634009000
 (3 rows)
 
 
@@ -296,21 +296,21 @@ starting permutation: ab bb cb a1 b1 c1 a2 b2 c2 a3 b3 c3 ac ba rrb cc v rrscan 
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step ba: ROLLBACK;
 step rrb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wp;
 count
 -----
-30010
+18010
 (1 row)
 
 step cc: COMMIT;
@@ -319,23 +319,23 @@ step rrscan: SELECT id / 100000 AS g, count(*) FROM iso_wp GROUP BY 1 ORDER BY 1
 g|count
 -+-----
 0|   10
-1|30000
+1|18000
 (2 rows)
 
 step v: VACUUM iso_wp;
 step rre: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
-3|30000|9450015000
+1|18000|2034009000
+3|18000|5634009000
 (3 rows)
 
 
@@ -343,21 +343,21 @@ starting permutation: ab bb cb a1 b1 c1 a2 b2 c2 a3 b3 c3 ac ba rsb cc v rsscan 
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step ba: ROLLBACK;
 step rsb: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_wp;
 count
 -----
-30010
+18010
 (1 row)
 
 step cc: COMMIT;
@@ -366,22 +366,22 @@ step rsscan: SELECT id / 100000 AS g, count(*) FROM iso_wp GROUP BY 1 ORDER BY 1
 g|count
 -+-----
 0|   10
-1|30000
+1|18000
 (2 rows)
 
 step rse: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
-count|        sum
------+-----------
-60010|12900030055
+count|       sum
+-----+----------
+36010|7668018055
 (1 row)
 
 step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id / 100000 AS g, count(*), sum(id) FROM iso_wp GROUP BY 1 ORDER BY 1;
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
-3|30000|9450015000
+1|18000|2034009000
+3|18000|5634009000
 (3 rows)
 
 
@@ -395,15 +395,15 @@ count
 step ab: BEGIN;
 step bb: BEGIN;
 step cb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step c3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step c3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step ba: ROLLBACK;
 step ca: ROLLBACK;
@@ -419,15 +419,15 @@ step ragg: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitma
 g|count|       sum
 -+-----+----------
 0|   10|        55
-1|30000|3450015000
+1|18000|2034009000
 (2 rows)
 
 
 starting permutation: ab a1 a2 a3 v atag ub u1 ac ur rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step v: VACUUM iso_wp;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
@@ -444,15 +444,15 @@ step ur: ROLLBACK;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 
 starting permutation: ab a1 a2 a3 v atag ub u1 aa uc rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step v: VACUUM iso_wp;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
@@ -474,9 +474,9 @@ count|   sum
 
 starting permutation: ab a1 a2 a3 v atag ub u2 ac uc rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step v: VACUUM iso_wp;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
@@ -492,15 +492,15 @@ step uc: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-30010|3450015055
+18010|2034009055
 (1 row)
 
 
 starting permutation: ab a1 a2 a3 v atag ub u2 aa uc rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step v: VACUUM iso_wp;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
@@ -523,12 +523,12 @@ count|   sum
 starting permutation: ab bb a1 b1 a2 b2 a3 b3 atag ci ac ba rw rwseq
 step ab: BEGIN;
 step bb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -542,25 +542,25 @@ step ci: <... completed>
 step rw: SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp WHERE w = 7;
 count|     sum
 -----+--------
-  301|34487107
+  181|20332267
 (1 row)
 
 step rwseq: SET enable_seqscan = on; SELECT count(*), sum(id) FROM iso_wp WHERE w = 7;
 count|     sum
 -----+--------
-  301|34487107
+  181|20332267
 (1 row)
 
 
 starting permutation: ab bb a1 b1 a2 b2 a3 b3 atag cic ac ba rw rwseq
 step ab: BEGIN;
 step bb: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step b3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step b3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -574,21 +574,21 @@ step cic: <... completed>
 step rw: SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp WHERE w = 7;
 count|     sum
 -----+--------
-  301|34487107
+  181|20332267
 (1 row)
 
 step rwseq: SET enable_seqscan = on; SELECT count(*), sum(id) FROM iso_wp WHERE w = 7;
 count|     sum
 -----+--------
-  301|34487107
+  181|20332267
 (1 row)
 
 
 starting permutation: ab a1 a2 a3 atag lupd lfu ac rrow lupd rrow lfu
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -624,9 +624,9 @@ step lfu: SELECT id FROM iso_wp WHERE id = 100002 FOR UPDATE;
 
 starting permutation: ab a1 a2 a3 atag ac v lupd rrow lfu
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -651,9 +651,9 @@ step lfu: SELECT id FROM iso_wp WHERE id = 100002 FOR UPDATE;
 
 starting permutation: ab a1 a2 a3 atag aupd adel ac rupd rscan v rupd rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -672,7 +672,7 @@ updated|deleted_ones
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-29510|3399639805
+17510|1983633805
 (1 row)
 
 step v: VACUUM iso_wp;
@@ -685,15 +685,15 @@ updated|deleted_ones
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp;
 count|       sum
 -----+----------
-29510|3399639805
+17510|1983633805
 (1 row)
 
 
 starting permutation: ab a1 a2 a3 atag aupd adel aa v rscan
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step atag: SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows;
 promoted_rows
 -------------
@@ -713,9 +713,9 @@ count|sum
 
 starting permutation: ab a1 a2 a3 ac l1b l1u l2nw l2sk l2u l1c rrow
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step l1b: BEGIN;
 step l1u: UPDATE iso_wp SET v = 'l1' WHERE id = 100002;
@@ -738,9 +738,9 @@ step rrow: SELECT id, left(v, 4) AS v FROM iso_wp WHERE id = 100002;
 
 starting permutation: ab a1 a2 a3 ac v l1b l1u l2nw l2sk l2u l1c rrow
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step v: VACUUM iso_wp;
 step l1b: BEGIN;
@@ -764,14 +764,14 @@ step rrow: SELECT id, left(v, 4) AS v FROM iso_wp WHERE id = 100002;
 
 starting permutation: ab a1 a2 a3 ac rrb l1b l1u l1c rrupd rre rrow
 step ab: BEGIN;
-step a1: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a2: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
-step a3: DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a1: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a2: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
+step a3: DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$;
 step ac: COMMIT;
 step rrb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wp;
 count
 -----
-30010
+18010
 (1 row)
 
 step l1b: BEGIN;
