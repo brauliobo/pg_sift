@@ -683,97 +683,102 @@ census_odd_units(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8
 }
 
 /*
- * sift._test_col_cube_damage(index, units): the cube blob of the first units of the index, decoded as stored, cut at every length, and with every
- * byte set to some other values (one at a time). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse what it
- * cannot trust: a cut blob is always refused, and a damaged one that is accepted still obeys min <= max. The census that sift.col_refresh takes of
- * the same bytes reads headers only: it must stay inside them, and call every cut blob odd (census_cut_odd; the empty cut is no blob).
+ * One cube blob decoded as stored, cut at every length, and with every byte set to some other values (one at a time). A decode must never read
+ * outside the blob (meaningful under SANITIZE=1) and must refuse what it cannot trust: a cut blob is always refused, and a damaged one that is
+ * accepted still obeys min <= max. The census that sift.col_refresh takes of the same bytes (spec given: a sift_col index) reads headers only: it
+ * must stay inside them, and call every cut blob odd (census_cut_odd; the empty cut is no blob).
+ */
+void
+sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+					  MemoryContext cx, SiftTestDamage *r)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	uint8	   *copy = palloc(len);
+	SiftCHist	h;
+
+	r->blobs++;
+	MemoryContextReset(cx);
+	if (sift_cpagg_decode(sc, blob, len, cx, &h))
+	{
+		r->intact++;
+		r->minmax += h.dim[0].minmax;
+		for (int d = 0; d < h.ndims; d++)
+			if (h.dim[d].leaf >= SIFT_PAGG_MONTH)
+			{
+				r->month++;
+				break;
+			}
+	}
+	for (uint32 l = 0; l < len; l++)
+	{
+		MemoryContextReset(cx);
+		memcpy(copy, blob, l);
+		r->cut++;
+		r->cut_accepted += sift_cpagg_decode(sc, copy, l, cx, &h);
+		if (spec)
+			r->census_cut_odd += census_odd_units(sc, spec, copy, l, eblob, eblob ? elen : 0);
+	}
+	for (uint32 i = 0; i < len; i++)
+		for (int k = 0; k < lengthof(vals); k++)
+		{
+			memcpy(copy, blob, len);
+			if (copy[i] == vals[k])
+				continue;
+			copy[i] = vals[k];
+			MemoryContextReset(cx);
+			r->damaged++;
+			if (spec)
+				r->census_odd += census_odd_units(sc, spec, copy, len, eblob, eblob ? elen : 0);
+			if (sift_cpagg_decode(sc, copy, len, cx, &h))
+			{
+				r->accepted++;
+				r->unsound += !cube_sound(&h);
+			}
+		}
+	pfree(copy);
+}
+
+/*
+ * sift._test_col_cube_damage(index, units): sift_test_cube_damage of the cube blob of the first units of the index
  */
 Datum
 sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 {
-	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
 	int			maxunits = PG_GETARG_INT32(1);
 	TestScan	ts;
 	SiftColUnit unit;
 	TupleDesc	tupdesc;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
-	int64		blobs = 0,
-				minmax = 0,
-				intact = 0,
-				cut = 0,
-				cut_accepted = 0,
-				damaged = 0,
-				accepted = 0,
-				unsound = 0,
-				census_cut_odd = 0,
-				census_odd = 0;
+	SiftTestDamage r = {0};
 	Datum		v[10];
 	bool		nulls[10] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
-	while (blobs < maxunits && test_next(&ts, &unit))
+	while (r.blobs < maxunits && test_next(&ts, &unit))
 	{
 		SiftColSegment *seg;
 		uint32		u,
 					len,
 					elen;
-		const uint8 *blob,
-				   *eblob;
-		uint8	   *copy;
-		SiftCHist	h;
-		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
-		const SiftCPaggSpec *spec = &sift_col_rel(ts.index)->pagg;
+		const uint8 *blob;
 
 		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_cube(seg, u, &len)) == NULL)
 			continue;
-		eblob = sift_cseg_ecube(seg, u, &elen);
-		blobs++;
-		copy = palloc(len);
-		MemoryContextReset(cx);
-		if (sift_cpagg_decode(sc, blob, len, cx, &h))
-		{
-			intact++;
-			minmax += h.dim[0].minmax;
-		}
-		for (uint32 l = 0; l < len; l++)
-		{
-			MemoryContextReset(cx);
-			memcpy(copy, blob, l);
-			cut++;
-			cut_accepted += sift_cpagg_decode(sc, copy, l, cx, &h);
-			census_cut_odd += census_odd_units(sc, spec, copy, l, eblob, eblob ? elen : 0);
-		}
-		for (uint32 i = 0; i < len; i++)
-			for (int k = 0; k < lengthof(vals); k++)
-			{
-				memcpy(copy, blob, len);
-				if (copy[i] == vals[k])
-					continue;
-				copy[i] = vals[k];
-				MemoryContextReset(cx);
-				damaged++;
-				census_odd += census_odd_units(sc, spec, copy, len, eblob, eblob ? elen : 0);
-				if (sift_cpagg_decode(sc, copy, len, cx, &h))
-				{
-					accepted++;
-					unsound += !cube_sound(&h);
-				}
-			}
-		pfree(copy);
+		sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, sift_cseg_ecube(seg, u, &elen), elen, cx, &r);
 	}
 	scan_close(&ts);
-	v[0] = Int64GetDatum(blobs);
-	v[1] = Int64GetDatum(intact);
-	v[2] = Int64GetDatum(minmax);
-	v[3] = Int64GetDatum(cut);
-	v[4] = Int64GetDatum(cut_accepted);
-	v[5] = Int64GetDatum(damaged);
-	v[6] = Int64GetDatum(accepted);
-	v[7] = Int64GetDatum(unsound);
-		v[8] = Int64GetDatum(census_cut_odd);
-		v[9] = Int64GetDatum(census_odd);
+	v[0] = Int64GetDatum(r.blobs);
+	v[1] = Int64GetDatum(r.intact);
+	v[2] = Int64GetDatum(r.minmax);
+	v[3] = Int64GetDatum(r.cut);
+	v[4] = Int64GetDatum(r.cut_accepted);
+	v[5] = Int64GetDatum(r.damaged);
+	v[6] = Int64GetDatum(r.accepted);
+	v[7] = Int64GetDatum(r.unsound);
+	v[8] = Int64GetDatum(r.census_cut_odd);
+	v[9] = Int64GetDatum(r.census_odd);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 

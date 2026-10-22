@@ -1,0 +1,45 @@
+# Time-bucket aggregates of the store orders on a sift_table: the month of a timestamp as a dim of the cube (column format minor 8), median of 5 runs in ms (bench/sql/store, queries 03 and 06; /tmp scratch cluster, one backend, sift.agg_preagg off = scanned, sift.enable_agg off = normal).
+# date: 2026-10-22
+# cpu: AMD Ryzen 9 5900XT 16-Core Processor (32 threads), shared host, load average 16
+# postgresql: PostgreSQL 18.6
+# query 03 = sum(amount) GROUP BY date_trunc('month', created_at)::date, 06 = count(DISTINCT customer_id) GROUP BY the same key (not answered from the cube: a count of distinct values is not additive)
+rows	query	table	normal_ms	scanned_ms	rollup_ms
+25000	03	heap + sift_col (month as an index expression)	8.46	0.65	0.17
+25000	03	sift_table, minor 7 (no month dim)	9.36	0.92	0.55
+25000	03	sift_table, minor 8 (month dim)	8.75	0.57	0.15
+25000	03	sift_table + stored generated month column	8.98	0.66	0.19
+25000	06	heap + sift_col (month as an index expression)	12.61	0.56	0.69
+25000	06	sift_table, minor 7 (no month dim)	16.75	0.92	1.00
+25000	06	sift_table, minor 8 (month dim)	16.14	0.84	0.71
+25000	06	sift_table + stored generated month column	16.38	0.56	0.52
+50000	03	heap + sift_col (month as an index expression)	11.83	0.91	0.29
+50000	03	sift_table, minor 7 (no month dim)	27.74	1.36	1.10
+50000	03	sift_table, minor 8 (month dim)	28.13	1.06	0.18
+50000	03	sift_table + stored generated month column	28.44	1.02	0.31
+50000	06	heap + sift_col (month as an index expression)	27.68	0.84	0.77
+50000	06	sift_table, minor 7 (no month dim)	39.03	1.33	1.09
+50000	06	sift_table, minor 8 (month dim)	31.83	0.96	1.09
+50000	06	sift_table + stored generated month column	40.11	1.01	0.90
+100000	03	heap + sift_col (month as an index expression)	21.57	1.20	0.24
+100000	03	sift_table, minor 7 (no month dim)	57.57	1.74	1.80
+100000	03	sift_table, minor 8 (month dim)	55.44	1.42	0.32
+100000	03	sift_table + stored generated month column	56.26	1.47	0.18
+100000	06	heap + sift_col (month as an index expression)	60.48	1.39	1.33
+100000	06	sift_table, minor 7 (no month dim)	76.81	1.68	1.84
+100000	06	sift_table, minor 8 (month dim)	79.55	1.82	2.53
+100000	06	sift_table + stored generated month column	82.71	2.05	1.39
+200000	03	heap + sift_col (month as an index expression)	42.14	2.20	0.35
+200000	03	sift_table, minor 7 (no month dim)	102.75	2.47	3.96
+200000	03	sift_table, minor 8 (month dim)	103.10	2.73	0.36
+200000	03	sift_table + stored generated month column	126.71	3.19	0.33
+200000	06	heap + sift_col (month as an index expression)	144.48	3.81	2.88
+200000	06	sift_table, minor 7 (no month dim)	182.91	4.06	3.49
+200000	06	sift_table, minor 8 (month dim)	175.95	2.92	3.41
+200000	06	sift_table + stored generated month column	153.42	2.49	2.46
+
+# size of the pre-aggregates of the sift_table segments (sift._test_tbl_preagg_bytes) and of its column segments (sift.table_segments bytes)
+rows	preagg_bytes_minor7	preagg_bytes_minor8	delta_bytes	segment_bytes	delta_pct
+25000	4560	6384	1824	442368	0.41
+50000	8592	11976	3384	876544	0.39
+100000	15672	21864	6192	1744896	0.35
+200000	29592	41352	11760	3457024	0.34

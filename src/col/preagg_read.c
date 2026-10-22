@@ -124,6 +124,10 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	nk = ng - (hd->has_null ? 1 : 0);
 	for (uint32 i = 0; i < nk; i++)
 		hd->key[i] = i == 0 ? get_zz(r) : (int64) ((uint64) hd->key[i - 1] + get_u(r));
+	/* the keys of a month dim are first days of months, in ascending order: nothing else is a group of a month */
+	for (uint32 i = 0; leaf >= SIFT_PAGG_MONTH && i < nk; i++)
+		if (!sift_cpagg_month_start(hd->key[i]) || (i > 0 && hd->key[i] <= hd->key[i - 1]))
+			return false;
 	for (uint32 i = 0; i < ng; i++)
 		hd->count[i] = (uint32) get_u(r);
 	for (int m = 0; m < hd->nmeas; m++)
@@ -163,12 +167,20 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	return !r->bad;
 }
 
+/* is l the directory leaf of the month of a timestamp leaf of the schema? */
+static bool
+is_month_dim(const SiftColSchema *s, uint64 l)
+{
+	return l >= SIFT_PAGG_MONTH && l - SIFT_PAGG_MONTH < (uint64) s->ncols && s->cols[l - SIFT_PAGG_MONTH].type == SIFT_COLT_TIMESTAMP &&
+		s->cols[l - SIFT_PAGG_MONTH].store == SIFT_COLS_INT && s->cols[l - SIFT_PAGG_MONTH].parent < 0;
+}
+
 /*
  * The directory of a blob: leaf and body bytes of each entry (at most max of them; the dims of a cube, or the lists of an element blob); body
  * points at the first body. false when inconsistent
  */
 static bool
-read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, int *nd, int *leaf, uint32 *blen, const uint8 **body)
+read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool months, int *nd, int *leaf, uint32 *blen, const uint8 **body)
 {
 	Rd			r = {blob, blob + len, false};
 	uint64		total = 0;
@@ -183,7 +195,8 @@ read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, int *nd
 		uint64		l = get_u(&r),
 					n = get_u(&r);
 
-		if (r.bad || l >= (uint64) s->ncols || n == 0 || n > len)
+		/* a cube's directory may name the month of a timestamp leaf (column format minor 8) */
+		if (r.bad || n == 0 || n > len || (l >= (uint64) s->ncols && !(months && is_month_dim(s, l))))
 			return false;
 		leaf[d] = (int) l;
 		blen[d] = (uint32) n;
@@ -204,7 +217,7 @@ sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryC
 	bool		ok = false;
 
 	memset(h, 0, sizeof(*h));
-	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, leaf, blen, &p))
+	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, true, &nd, leaf, blen, &p))
 		goto done;
 	for (int d = 0; d < nd; d++)
 	{
@@ -231,7 +244,7 @@ sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, Mem
 	uint32		blen[SIFT_PAGG_MAX_DIMS];
 	const uint8 *p;
 
-	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, lf, blen, &p))
+	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, true, &nd, lf, blen, &p))
 		goto done;
 	res = 0;
 	for (int d = 0; d < nd; d++)
@@ -259,7 +272,7 @@ sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, in
 	const uint8 *p;
 
 	*len = 0;
-	if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nl, list, blen, &p))
+	if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, false, &nl, list, blen, &p))
 	{
 		*len = UINT32_MAX;
 		return NULL;
@@ -352,7 +365,7 @@ sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax
 	const uint8 *p;
 
 	c->units++;
-	if (len > 0 && !read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, leaf, blen, &p))
+	if (len > 0 && !read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, true, &nd, leaf, blen, &p))
 		odd = true;
 	else if (len > 0)
 		for (int d = 0; d < nd; p += blen[d++])
@@ -373,7 +386,7 @@ sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax
 			c->mm[k] += (fl & PAGG_MINMAX) != 0;
 			odd |= ((fl & PAGG_MINMAX) != 0) != minmax || !leaves_within(meas, nm, spec->dim[k].meas, spec->dim[k].nmeas, spec->fixed);
 		}
-	if (elen > 0 && !read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nd, leaf, blen, &p))
+	if (elen > 0 && !read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, false, &nd, leaf, blen, &p))
 		odd = true;
 	else if (elen > 0)
 		for (int i = 0; i < nd; p += blen[i++])
@@ -756,7 +769,7 @@ sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const u
 	{
 		for (int d = 0; d < h.ndims; d++)
 		{
-			need[h.dim[d].leaf] = true;
+			need[h.dim[d].leaf % SIFT_PAGG_MONTH] = true;
 			for (int m = 0; m < h.dim[d].nmeas; m++)
 				need[h.dim[d].meas[m]] = true;
 		}
@@ -770,7 +783,7 @@ sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const u
 		uint32		blen[SIFT_PAGG_MAX_ROLLUPS];
 		const uint8 *p;
 
-		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, &nl, list, blen, &p))
+		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, false, &nl, list, blen, &p))
 			ok = false;
 		for (int i = 0; ok && i < nl; p += blen[i++])
 		{
@@ -800,7 +813,7 @@ same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)
 
 /* The spec that recomputes a stored cube and element blob: the dims, rollups and measures they hold, exactly */
 static bool
-spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool minmax_ok, MemoryContext cx, SiftCPaggSpec *spec)
+spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, int format, MemoryContext cx, SiftCPaggSpec *spec)
 {
 	memset(spec, 0, sizeof(*spec));
 	spec->fixed = spec->rfixed = true;
@@ -809,12 +822,15 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 	{
 		SiftCHist	h;
 
-		if (!sift_cpagg_decode(s, blob, len, cx, &h) || (h.dim[0].minmax && !minmax_ok))
+		if (!sift_cpagg_decode(s, blob, len, cx, &h) || (h.dim[0].minmax && format < SIFT_COL_FORMAT_MINMAX))
 			return false;
 		spec->minmax = h.dim[0].minmax;
 		for (int d = 0; d < h.ndims; d++, spec->ndims++)
 		{
-			spec->dim[spec->ndims].leaf = h.dim[d].leaf;
+			spec->dim[spec->ndims].leaf = h.dim[d].leaf % SIFT_PAGG_MONTH;
+			spec->dim[spec->ndims].month = h.dim[d].leaf >= SIFT_PAGG_MONTH;
+			if (spec->dim[spec->ndims].month && format < SIFT_COL_FORMAT_MONTH)
+				return false;
 			spec->dim[spec->ndims].nmeas = h.dim[d].nmeas;
 			memcpy(spec->dim[spec->ndims].meas, h.dim[d].meas, sizeof(spec->dim[0].meas));
 		}
@@ -826,7 +842,7 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 		uint32		blen[SIFT_PAGG_MAX_ROLLUPS];
 		const uint8 *p;
 
-		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, &nl, list, blen, &p))
+		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, false, &nl, list, blen, &p))
 			return false;
 		for (int i = 0; i < nl; p += blen[i++])
 		{
@@ -845,13 +861,13 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 
 bool
 sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
-				 bool minmax_ok)
+				 int format)
 {
 	SiftCPaggSpec spec;
 	StringInfoData again,
 				eagain;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
-	bool		ok = spec_of(s, blob, len, eblob, elen, minmax_ok, cx, &spec);
+	bool		ok = spec_of(s, blob, len, eblob, elen, format, cx, &spec);
 
 	MemoryContextDelete(cx);
 	if (!ok)

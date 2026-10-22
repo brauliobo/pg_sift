@@ -116,7 +116,17 @@ static int
 pa_dim(const SiftSrcPreagg *pa, int dim)
 {
 	for (int d = 0; d < pa->ndims; d++)
-		if (pa->dim[d].leaf == dim)
+		if (pa->dim[d].leaf == dim && !pa->dim[d].month)
+			return d;
+	return -1;
+}
+
+/* the histogram of the month of the timestamp leaf in pa, -1 if the index writes none */
+static int
+pa_month(const SiftSrcPreagg *pa, int leaf)
+{
+	for (int d = 0; d < pa->ndims; d++)
+		if (pa->dim[d].leaf == leaf && pa->dim[d].month)
 			return d;
 	return -1;
 }
@@ -440,6 +450,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	int			dim = -1,
 				d = -1,
 				hdim = -1,
+				mleaf = -1,
 				fdim,
 				zdim;
 	SiftPaWhy	why = SPW_OK;
@@ -470,26 +481,37 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	{
 		/* a group key of the column itself: a 32-bit or text leaf, or the int8 or numeric one that the keys of a program of one leaf stand for */
 		dim = s->key[0].kind == SAK_LEAF ? s->key[0].leaf : s->key[0].kind == SAK_NUM ? num_leaf(&s->key[0].num) : -1;
-		if (dim < 0)
+		/* a calendar key that is the same all month: the groups of the month of its timestamp leaf, which no other test may narrow */
+		if (dim < 0 && sift_aggkey_month(&s->key[0]))
+			mleaf = s->key[0].leaf;
+		else if (dim < 0)
 			return SPW_ROW_KEY;
 	}
 	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
-	if (dim == -2)
+	if (dim == -2 || (mleaf >= 0 && dim >= 0))
 		return SPW_ROW_PRED;
 	/* the FILTERs and the other tests of a dim run on the groups of one histogram: the key's, the conjunct's or theirs */
 	fdim = preagg_filter_dim(s, lay, nbase);
-	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim))
+	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim) || (fdim >= 0 && mleaf >= 0))
 		return SPW_AGG_FILTER;
 	dim = fdim >= 0 ? fdim : dim;
-	/* count(DISTINCT leaf) reads the groups of the histogram of the leaf itself */
+	/* count(DISTINCT leaf) reads the groups of the histogram of the leaf itself, not of a month */
 	for (int i = 0; i < s->naggs; i++)
 		if (distinct_leaf(&s->agg[i], lay))
 		{
-			if (dim >= 0 && dim != s->agg[i].leaf)
+			if (mleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))
 				return SPW_AGG_DISTINCT;
 			dim = s->agg[i].leaf;
 		}
-	if (dim >= 0)
+	if (mleaf >= 0)
+	{
+		d = pa_month(pa, mleaf);
+		if (d < 0)
+			return SPW_ROW_NO_HIST;
+		dim = mleaf;
+		zdim = -1;
+	}
+	else if (dim >= 0)
 	{
 		d = pa_dim(pa, dim);
 		if (d < 0 || !hist_leaf_ok(lay, nbase, dim))
@@ -517,7 +539,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	}
 	if (why != SPW_OK)
 		return why;
-	*out = (SiftAggPaShape) {.dim = dim, .hdim = hdim, .list = -1};
+	*out = (SiftAggPaShape) {.dim = dim, .month = mleaf >= 0, .hdim = hdim, .list = -1};
 	return SPW_OK;
 }
 

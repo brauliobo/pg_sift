@@ -17,11 +17,11 @@ END $$;
 SHOW sift.col_format_minor;
  sift.col_format_minor 
 -----------------------
- 7
+ 8
 (1 row)
 
 SET sift.col_format_minor = 2;
-ERROR:  2 is outside the valid range for parameter "sift.col_format_minor" (3 .. 7)
+ERROR:  2 is outside the valid range for parameter "sift.col_format_minor" (3 .. 8)
 SET sift.col_format_minor = 5;
 ERROR:  invalid value for parameter "sift.col_format_minor": 5
 DETAIL:  Column format minor 5 is written for wide leaves only, whatever the setting.

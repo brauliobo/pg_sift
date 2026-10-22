@@ -150,6 +150,110 @@ sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(sift_test_tbl_cube_damage);
+
+/* sift_test_cube_damage (col/test.c) of the cube blob of the first units of the column segments of the table; with_month: blobs that hold a month dim */
+Datum
+sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	int			maxunits = PG_GETARG_INT32(1);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
+	SiftTestDamage r = {0};
+	TupleDesc	tupdesc;
+	Datum		v[8];
+	bool		nulls[8] = {false};
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		const SiftSegEntry *e = &st->dir.segs[i];
+		SiftColSegment *seg;
+
+		if (e->kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb && r.blobs < maxunits; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_cube(seg, u, &len);
+
+			if (blob != NULL)
+				sift_test_cube_damage(seg->schema, NULL, blob, len, NULL, 0, cx, &r);
+		}
+		sift_cseg_close(seg);
+	}
+	table_close(rel, AccessShareLock);
+	v[0] = Int64GetDatum(r.blobs);
+	v[1] = Int64GetDatum(r.intact);
+	v[2] = Int64GetDatum(r.month);
+	v[3] = Int64GetDatum(r.cut);
+	v[4] = Int64GetDatum(r.cut_accepted);
+	v[5] = Int64GetDatum(r.damaged);
+	v[6] = Int64GetDatum(r.accepted);
+	v[7] = Int64GetDatum(r.unsound);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_preagg_bytes);
+
+/* The bytes of the pre-aggregates (sums, cubes and rollups) of the column segments of the table */
+Datum
+sift_test_tbl_preagg_bytes(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	int64		bytes = 0;
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+		bytes += sift_cseg_preagg_bytes(seg);
+		sift_cseg_close(seg);
+	}
+	table_close(rel, AccessShareLock);
+	PG_RETURN_INT64(bytes);
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_verify);
+
+/* The checks of sift.col_verify on every column segment of the table (chunks, zones, the cube and rollups against the chunks); the live rows, an error on damage */
+Datum
+sift_test_tbl_verify(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	int64		live = 0;
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+		live += sift_cseg_verify(seg);
+		sift_cseg_close(seg);
+	}
+	table_close(rel, AccessShareLock);
+	PG_RETURN_INT64(live);
+}
+
 PG_FUNCTION_INFO_V1(sift_test_tbl_tagged);
 
 /* The column groups of the table with unfrozen rows (rows that are not final) */

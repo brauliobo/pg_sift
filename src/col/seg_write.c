@@ -93,6 +93,14 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
+	/* a sift_table has no index option for its pre-aggregates and writes this default (every sift_col index sets its own spec, which has no month dim) */
+	if (format >= SIFT_COL_FORMAT_MONTH && !schema->kinds)
+	{
+		sift_cpagg_spec_months(schema, &w->pagg);
+		for (int d = 0; d < w->pagg.ndims; d++)
+			if (w->pagg.dim[d].month)
+				w->format = SIFT_COL_FORMAT_MONTH;
+	}
 	initStringInfo(&w->cube);
 	initStringInfo(&w->ecube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
@@ -126,6 +134,8 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
 	if (w->pagg.minmax)
 		w->format = SIFT_COL_FORMAT_MINMAX;
+	else if (w->format == SIFT_COL_FORMAT_MONTH)
+		w->format = sift_col_write_minor(w->schema, w->setting, true);	/* the month dims came with the default spec this one replaces */
 }
 
 /*
@@ -227,7 +237,9 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7 promises complete kinds */
 		if (w->pagg.minmax)
 			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", SIFT_COL_FORMAT_MINMAX);
-		w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
+		/* a schema with a month dim has no leaf with kinds to lose: the minor stays */
+		if (w->format != SIFT_COL_FORMAT_MONTH)
+			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
 	if (w->nsb > 0 && b->sb <= w->sbdir[w->nsb - 1].sb)
