@@ -447,6 +447,13 @@ topn_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
+/* the types of a leaf the evaluator reads: a number, a string, a uuid, a bytea or an inet */
+static bool
+topn_val_type(Oid t)
+{
+	return topn_num_type(t) || topn_str_type(t) || t == UUIDOID || t == BYTEAOID || t == INETOID;
+}
+
 /* A leaf the evaluator can build a datum of: the plain types of a column, as the index keeps them */
 static bool
 topn_in_leaf_ok(const SiftSrcLeaf *lf)
@@ -494,7 +501,20 @@ topn_expr_walker(Node *n, TopXprWalk *w)
 				}
 				return true;
 			}
+		/* the control flow and the tests of PostgreSQL's evaluator: it keeps the lazy order of CASE and coalesce, and the NULL rules */
+		case T_List:
 		case T_RelabelType:
+		case T_CaseExpr:
+		case T_CaseWhen:
+		case T_CaseTestExpr:
+		case T_CoalesceExpr:
+		case T_NullIfExpr:
+		case T_MinMaxExpr:
+		case T_BoolExpr:
+		case T_NullTest:
+		case T_BooleanTest:
+		case T_DistinctExpr:
+		case T_ScalarArrayOpExpr:
 			break;
 		case T_CoerceViaIO:
 			{
@@ -521,9 +541,9 @@ topn_expr_walker(Node *n, TopXprWalk *w)
 					return true;
 				}
 				foreach_ptr(Node, a, args)
-					if (!IsA(a, Const) && !topn_num_type(exprType(a)) && !(cast && topn_str_type(exprType(a))))
+					if (!IsA(a, Const) && !topn_val_type(exprType(a)))
 					{
-						w->why = "calls a function or operator on strings";
+						w->why = "calls a function or operator on a type the scan does not hold";
 						return true;
 					}
 				break;
@@ -625,25 +645,26 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
 	*leaf = match_leaf(c, normalize_expr(c, topn_xform(e, xf, &konst)));
 	lf = *leaf >= 0 ? leaf_of(c, *leaf) : NULL;
+	/* coalesce of a column of another type (the zone of a float or a numeric is not widened to a constant), lower and upper of a column the scan does not keep as strings */
+	if (lf != NULL && ((xf->kind == TXK_COALESCE && lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID && lf->typid != DATEOID &&
+						lf->typid != TIMESTAMPOID && lf->typid != TIMESTAMPTZOID) ||
+					   ((xf->kind == TXK_LOWER || xf->kind == TXK_UPPER) && (lf->vtype != SCV_CODE || lf->wide || (lf->typid != TEXTOID && lf->typid != VARCHAROID)))))
+		lf = NULL;
 	if (lf == NULL)
 	{
-		/* not a leaf, nor coalesce or lower or upper of one: an expression PostgreSQL evaluates */
+		/* not a leaf, nor a coalesce or lower or upper the scan handles with zones: an expression PostgreSQL evaluates */
+		*leaf = -1;
 		xf->kind = TXK_NONE;
 		if (!topn_expr(c, e, exprs, xf))
 			return false;
 		rtype = exprType(e);
 	}
 	else
-		rtype = lf ? lf->typid : InvalidOid;
+		rtype = lf->typid;
 	/* a varchar column sorts by the operators of text */
-	if ((lf != NULL && !sift_topn_key_ok(lf)) || (lf == NULL && xf->kind != TXK_EXPR) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID)) ||
+	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID)) ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
-		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order (an expression of one only if it cannot raise: coalesce(leaf, constant), lower(leaf), upper(leaf)), or its operator is not the default btree one of its type");
-	if (xf->kind == TXK_COALESCE && lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID && lf->typid != DATEOID &&
-		lf->typid != TIMESTAMPOID && lf->typid != TIMESTAMPTZOID)
-		return agg_refuse_on(TOPN_SHAPE, "coalesce in a sort key is of an integer, date or timestamp column and a constant of its type");
-	if ((xf->kind == TXK_LOWER || xf->kind == TXK_UPPER) && (lf->vtype != SCV_CODE || lf->wide || (lf->typid != TEXTOID && lf->typid != VARCHAROID)))
-		return agg_refuse_on(TOPN_SHAPE, "lower and upper in a sort key are of a text or varchar column");
+		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, nor an expression of the leaves, or its operator is not the default btree operator of its type");
 	*cmp = *collid = InvalidOid;
 	if (lf ? lf->vtype == SCV_CODE : !topn_num_type(rtype) || rtype == NUMERICOID)
 	{

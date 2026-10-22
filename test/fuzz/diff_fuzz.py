@@ -343,14 +343,17 @@ def gen_topn(r, ctx):
     # PostgreSQL's own evaluation (the data keeps them clear of overflow, division by a column and NaN into an integer)
     k1, k2, d = r.choice([1, 7, 100, 5000]), r.choice([2, 3, 11]), r.choice([3, 7, 1000])
     ints = lambda c: r.choice([f'coalesce({c}, {r.choice([0, 300, 5000])})', f'{c} + {k1}', f'{k1} - {c}', f'-{c}', f'{c} * {k2}', f'{c} % {d}', f'{c}::bigint', f'{c}::text',
-                               f'({c}::numeric / {d})', f'{c}::float8 / {d}', f'{c} > {k1}'])
+                               f'({c}::numeric / {d})', f'{c}::float8 / {d}', f'{c} > {k1}', f'CASE WHEN {c} IS NULL THEN {k1} WHEN {c} > {d} THEN {c} ELSE -{c} END', f'nullif({c}, {k2})',
+                               f'greatest({c}, {k1})', f'least({c}, {k1}) + 1', f'{c} IS NULL', f'{c} IN ({k1}, {k2}, 7)', f'CASE {c} WHEN {k2} THEN 1 WHEN {d} THEN 2 END'])
     xform = {'parent_id': ints, 'grp': ints, 'a': ints, 'amount': ints,
              'big': lambda c: r.choice([f'coalesce({c}, {r.choice([0, 9223372036854775807, -9223372036854775807 - 1])})', f'{c} / {d}', f'{c} * {k2}', f'{c}::numeric', f'{c} % {d}']),
              'val': lambda c: r.choice([f'{c} * {k2}', f'-{c}', f'{c} + {k1}', f'{c} / {k2}']),
              'num': lambda c: r.choice([f'{c} * {k2}', f'{c} + 1.5', f'{c} / {k2}', f'{c}::float8', f'{c}::text', f'-{c}']),
              'ts': lambda c: r.choice([f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", f'{c} + {k1}', f'{c} - {k2}', f"{c} - DATE '2025-06-01'"]),
-             'kind': lambda c: f"{r.choice(['lower', 'upper'])}({c})"}
-    two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a'}
+             'kind': lambda c: r.choice([f"{r.choice(['lower', 'upper'])}({c})", f"CASE WHEN {c} = 'k1' THEN 0 WHEN {c} < 'k3' THEN 1 ELSE 2 END", f'length({c})', f"{c} IN ('k1', 'k4')", f"coalesce({c}, 'zz')", f"nullif({c}, 'k2')"])}
+    two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a', ('c', 'd'): 'coalesce(e.parent_id, e.grp, e.a)',
+           ('e', 'f'): 'CASE WHEN e.a > e.b THEN e.a ELSE e.b END', ('g', 'h'): 'greatest(e.a, e.b, e.grp)', ('i', 'j'): 'coalesce(e.kind, e.id::text)',
+           ('k', 'l'): 'e.a IS NULL OR e.b IS NULL', ('m', 'n'): 'least(e.ts, DATE \'2025-06-01\')'}
     order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     if r.random() < 0.15:
         order[0] = f"{two[r.choice(list(two))]} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip()

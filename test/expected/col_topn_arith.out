@@ -293,7 +293,7 @@ ORDER BY tag COLLATE "C";
  smallint_plus    | t          | 22003    | topn
 (19 rows)
 
--- what stays with the normal plan, each by a named refusal: the expression is not immutable, or not of the kinds above (CASE and the like come with later steps)
+-- what stays with the normal plan, each by a named refusal: the expression is not immutable, or not of the kinds above
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
 SELECT k, w.used, w.slug, w.reason
