@@ -196,3 +196,38 @@ CREATE VIEW sift.workers AS
 	JOIN pg_index i ON i.indexrelid = c.oid
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
+
+-- Logical replication of a sift_table needs pg_sift in shared_preload_libraries (docs/COL-TAM.md section 5): a custom resource manager can only
+-- be registered at preload time. Without it the first DML on a published table fails; this trigger refuses CREATE/ALTER PUBLICATION instead, when
+-- the publication would carry a sift_table (wal_level = logical, a permanent table, a publication that publishes inserts, updates or deletes).
+CREATE FUNCTION sift.publication_check() RETURNS event_trigger
+	LANGUAGE plpgsql AS $fn$
+DECLARE
+	tbl regclass;
+BEGIN
+	IF current_setting('wal_level') <> 'logical' OR current_setting('shared_preload_libraries') ~ '(^|[\s,"/])pg_sift([\s,".]|$)' THEN
+		RETURN;
+	END IF;
+	SELECT g.relid::regclass INTO tbl
+		FROM pg_event_trigger_ddl_commands() d
+			JOIN pg_publication p ON p.oid = CASE d.classid
+					WHEN 'pg_publication'::regclass THEN d.objid
+					WHEN 'pg_publication_rel'::regclass THEN (SELECT r.prpubid FROM pg_publication_rel r WHERE r.oid = d.objid)
+					WHEN 'pg_publication_namespace'::regclass THEN (SELECT n.pnpubid FROM pg_publication_namespace n WHERE n.oid = d.objid)
+				END
+			CROSS JOIN LATERAL pg_get_publication_tables(p.pubname) g
+			JOIN pg_class c ON c.oid = g.relid
+			JOIN pg_am a ON a.oid = c.relam
+		WHERE a.amname = 'sift_table' AND c.relpersistence = 'p' AND (p.pubinsert OR p.pubupdate OR p.pubdelete)
+		LIMIT 1;
+	IF tbl IS NOT NULL THEN
+		RAISE EXCEPTION 'sift_table table "%" is published and wal_level is "logical", but pg_sift is not in shared_preload_libraries', tbl
+			USING ERRCODE = 'feature_not_supported',
+				DETAIL = 'Logical replication of a sift_table table needs the pg_sift resource manager, which is registered only when the library is preloaded.',
+				HINT = format('Add pg_sift to shared_preload_libraries (primary and every standby) and restart, or publish a heap staging table instead of "%s".', tbl);
+	END IF;
+END
+$fn$;
+
+CREATE EVENT TRIGGER sift_publication_check ON ddl_command_end WHEN TAG IN ('CREATE PUBLICATION', 'ALTER PUBLICATION')
+	EXECUTE FUNCTION sift.publication_check();
