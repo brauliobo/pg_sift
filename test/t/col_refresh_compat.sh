@@ -34,7 +34,7 @@ want=$(sql legacy "$Q")
 node_stop legacy
 use_root "$newroot"
 node_start legacy || bail "cannot start the new library"
-sql legacy "ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null || bail "SQL update"
+sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
 check "the 3.0.1 library wrote segments of minor 3 or below" test "$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == t
 verify() { test -z "$(sql legacy "SELECT sift.col_verify('items_idx', true)" 2>&1)"; }
 check "the new library reads the 3.0.1 index: verify and the answer are the heap's" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$Q")" == "ok|$want"

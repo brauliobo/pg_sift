@@ -145,6 +145,8 @@ if [[ $MODE == --selftest ]]; then
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done
+	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
+	(cd "$REPO" && sha256sum --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
 	exit $bad
