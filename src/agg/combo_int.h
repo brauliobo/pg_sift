@@ -113,6 +113,7 @@ ComboEnt combo_unmatched(AggExec *ex, int ci, const uint32 *prior);
 bool combo_prior_keyed(AggExec *ex, int ci, int prior);
 bool combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row);
 void combo_reset(AggExec *ex, int ci);
+void combo_trim(AggExec *ex);
 void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
 void combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o);
 const uint32 *combo_outs(AggExec *ex, int ci);

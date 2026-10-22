@@ -37,8 +37,8 @@
 	  "lookup-joined tables per scan", "normal plan", "-", 0) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \
 	  "value combinations per scan", "normal plan", "-", 0) \
-	X(combo_entries, "-", "agg/combo.c", 16777216, "entries", \
-	  "distinct input tuples of one value-combination cache", "ERROR 54000 mid-query", "-", 0) \
+	X(combo_entries, "COMBO_MAX_ENTRIES", "agg/combo.c", 16777216, "entries", \
+	  "distinct input tuples of one value-combination cache", "the caches start again (re-evaluates the values they held)", "-", 1) \
 	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec.h", SIFT_AGG_MAX_JKEYS, "columns", \
 	  "equality columns of a lookup join", "normal plan", "-", 0) \
 	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec.h", SIFT_AGG_MAX_JCOLS, "columns", \
