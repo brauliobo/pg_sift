@@ -22,6 +22,7 @@ typedef struct ColCursor
 {
 	SiftColSegment *seg;
 	uint64	   *keep;			/* units that passed the zone maps, nsb bits */
+	uint64	   *setcut;			/* units a small-set summary cleared, nsb bits */
 	uint32		cur;
 	uint32		end;
 } ColCursor;

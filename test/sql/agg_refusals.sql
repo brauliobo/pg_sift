@@ -2,7 +2,6 @@
 -- sift.explain_refusals on it names the first reason each candidate path (arm) gave up for, as a notice, and sift.explain_why plans a SELECT
 -- without running it and returns the same as rows. One table asserts the slug of every refusal shape; the setting changes no plan.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
 
@@ -91,30 +90,30 @@ INSERT INTO shapes VALUES
  ('rows', 'rows', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
  ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
  ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
-SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift._test_explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
+SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
 
 -- The cost of the scan against the normal plan: with the table scans on, a probe of one key keeps its index scan.
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
-SELECT arm, used, slug, scan_cost > normal_cost AS dearer FROM sift._test_explain_why('SELECT count(*) FROM events WHERE id = 5');
+SELECT arm, used, slug, scan_cost > normal_cost AS dearer FROM sift.explain_why('SELECT count(*) FROM events WHERE id = 5');
 -- the settings that give up before any shape is looked at
 SET sift.enable_agg = off;
-SELECT arm, used, slug FROM sift._test_explain_why('SELECT kind, count(*) FROM events GROUP BY 1');
+SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1');
 RESET sift.enable_agg;
 -- the first rows of the groups of a DISTINCT ON have to fit in a hash aggregate's memory
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SELECT arm, used, slug FROM sift._test_explain_why('SELECT DISTINCT ON (id) id, kind FROM events ORDER BY id, ts');
+SELECT arm, used, slug FROM sift.explain_why('SELECT DISTINCT ON (id) id, kind FROM events ORDER BY id, ts');
 RESET work_mem;
 RESET hash_mem_multiplier;
 -- only a SELECT is planned
-SELECT * FROM sift._test_explain_why('DELETE FROM plain');
-SELECT * FROM sift._test_explain_why('SELECT 1; SELECT 2');
+SELECT * FROM sift.explain_why('DELETE FROM plain');
+SELECT * FROM sift.explain_why('SELECT 1; SELECT 2');
 -- an error while planning leaves no arm behind: the next query is reported as if it were the first
-SELECT * FROM sift._test_explain_why('SELECT kind, count(*) FROM events WHERE 1 / 0 = 1 GROUP BY 1');
-SELECT arm, used, slug FROM sift._test_explain_why('SELECT kind, count(*) FROM plain GROUP BY 1');
+SELECT * FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE 1 / 0 = 1 GROUP BY 1');
+SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain GROUP BY 1');
 
 -- The notice of a query that is not explained: the first reason, once for each arm, and nothing for the arms that were used.
 SHOW sift.explain_refusals;
@@ -143,5 +142,4 @@ SHOW sift.explain_refusals;
 RESET client_min_messages;
 DROP TABLE shapes, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

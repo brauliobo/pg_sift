@@ -120,6 +120,17 @@ BEGIN
 				advice := format('segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan. REINDEX INDEX %s writes them', r.rel);
 				RETURN NEXT;
 			END IF;
+			-- a segment is minor 9 or 10 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13)
+			IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'rollup_dims=_%') AND lo < 9 THEN
+				kind := 'option'; detected := format('rollup_dims with column format %s', lo); status := 'warn';
+				advice := format('the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); REINDEX INDEX %s writes it where it fits', r.rel);
+				RETURN NEXT;
+			END IF;
+			IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'set_columns=_%') AND lo < 10 THEN
+				kind := 'option'; detected := format('set_columns with column format %s', lo); status := 'warn';
+				advice := format('the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); REINDEX INDEX %s writes it where it helps', r.rel);
+				RETURN NEXT;
+			END IF;
 		END IF;
 		IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'mutable_limit=%') THEN
 			kind := 'option'; detected := 'mutable_limit'; status := 'warn';

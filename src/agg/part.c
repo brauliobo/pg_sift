@@ -793,6 +793,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->units += pc.units;
 		c->units_pruned += pc.units_pruned;
 		c->units_set_pruned += pc.units_set_pruned;
+		c->units_search_pruned += pc.units_search_pruned;
 		c->rows += pc.rows;
 		c->bytes += pc.bytes;
 		c->rows_vetted += pc.rows_vetted;

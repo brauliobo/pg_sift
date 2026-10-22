@@ -18,14 +18,15 @@ DECLARE l text; e jsonb := '{}';
 BEGIN
 	PERFORM sift.stats_reset();
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s*(Units|Units Pruned|Units From Pre-aggregates|Rows Scanned|Workers Launched|Rows Vetted By Heap): ' THEN
+		IF l ~ '^\s*(Units|Units Pruned|Units Pruned By Set Summary|Units From Pre-aggregates|Rows Scanned|Workers Launched|Rows Vetted By Heap): ' THEN
 			e := e || jsonb_build_object(trim(split_part(l, ':', 1)), trim(split_part(l, ':', 2))::int);
 		END IF;
 	END LOOP;
 	RETURN QUERY VALUES
 		('scans', stat('scans') = 1),
 		('units', stat('units') = (e->>'Units')::int),
-		('units_pruned', stat('units_pruned') = (e->>'Units Pruned')::int),
+		('units_pruned', stat('units_pruned_zone') + stat('units_pruned_set') + stat('units_pruned_search') = (e->>'Units Pruned')::int),
+		('units_pruned_set', stat('units_pruned_set') = coalesce((e->>'Units Pruned By Set Summary')::int, 0)),
 		('units_preagg', stat('units_preagg') = coalesce((e->>'Units From Pre-aggregates')::int, 0)),
 		('rows_decoded', stat('rows_decoded') = (e->>'Rows Scanned')::int),
 		('workers_launched', stat('workers_launched') = coalesce((e->>'Workers Launched')::int, 0));
@@ -35,7 +36,7 @@ END $$;
 SELECT * FROM compare('SELECT grp, count(*), sum(amount) FROM ev GROUP BY grp');
 SELECT stat('units_preagg') > 0 AS from_preagg;
 SELECT * FROM compare('SELECT grp, count(*) FROM ev WHERE id BETWEEN 20000 AND 30000 GROUP BY grp');
-SELECT stat('units_pruned') > 0 AS pruned;
+SELECT stat('units_pruned_zone') > 0 AS pruned_by_zone, stat('units_pruned_set') = 0 AS none_by_set, stat('units_pruned_search') = 0 AS none_by_search;
 SELECT * FROM compare('SELECT grp, sum(amount) FROM ev WHERE amount % 3 = 0 GROUP BY grp');
 SELECT stat('units_preagg') = 0 AS not_from_preagg, stat('rows_decoded') > 0 AS decoded;
 

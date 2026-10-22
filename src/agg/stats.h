@@ -14,7 +14,9 @@
 	X(SCANS, "scans", "Custom Scan (SiftAgg) scans that ended (the arms of one fused pass are one)") \
 	X(WORKERS, "workers_launched", "parallel workers those scans launched") \
 	X(UNITS, "units", "units the scans read or answered (not the pruned ones)") \
-	X(UNITS_PRUNED, "units_pruned", "units skipped before they were read: their zone maps, or a set or search selection, hold no match") \
+	X(UNITS_PRUNED_ZONE, "units_pruned_zone", "units skipped before they were read: their zone maps hold no match") \
+	X(UNITS_PRUNED_SET, "units_pruned_set", "units skipped before they were read: only their small-set summary (set_columns) holds no match") \
+	X(UNITS_PRUNED_SEARCH, "units_pruned_search", "units skipped before they were read: none of their rows is in the search selection") \
 	X(UNITS_PREAGG, "units_preagg", "of the units, those answered from their pre-aggregates") \
 	X(ROWS_DECODED, "rows_decoded", "rows of the units that were scanned") \
 	X(ROWS_VETTED, "rows_vetted", "rows checked against the heap for visibility") \

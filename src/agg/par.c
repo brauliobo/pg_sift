@@ -538,6 +538,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.units_set_pruned += d->cc.units_set_pruned;
+		par->cc.units_search_pruned += d->cc.units_search_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
 		par->cc.rechecked += d->cc.rechecked;

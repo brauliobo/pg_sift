@@ -418,8 +418,9 @@ typedef struct SiftSrcGpuChunk
 typedef struct SiftSrcCounters
 {
 	int64		units;			/* units returned */
-	int64		units_pruned;	/* skipped by the zone tests */
+	int64		units_pruned;	/* skipped before they were read: by their zones, a small-set summary or the search selection */
 	int64		units_set_pruned;	/* of those, the ones only a small-set summary skipped */
+	int64		units_search_pruned;	/* of those, the ones without a row of the search selection */
 	int64		rows;			/* rows of the units returned */
 	int64		bytes;			/* bytes decoded */
 	int64		rows_vetted;	/* rows checked against the heap */

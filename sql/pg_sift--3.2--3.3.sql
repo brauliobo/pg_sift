@@ -31,6 +31,14 @@ CREATE FUNCTION sift.stats(OUT name text, OUT value int8)
 CREATE FUNCTION sift.stats_reset() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_stats_reset' LANGUAGE C STRICT VOLATILE;
 
+-- Why each candidate path (arm) of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run (docs/USAGE.md "Why a
+-- query kept the normal plan"): one row per arm, used = the arm is in the plan, slug and reason = the first reason it gave up for (NULL when used),
+-- scan_cost and normal_cost = the costs of the path that was built and of the normal plan it was compared with (NULL when there was no such path).
+-- Needs the privilege to select from the tables of the query; it changes no setting of the session.
+CREATE FUNCTION sift.explain_why(query text, OUT arm text, OUT used bool, OUT slug text, OUT reason text, OUT scan_cost float8, OUT normal_cost float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_agg_explain_why' LANGUAGE C STRICT VOLATILE;
+
 -- The scans of this session that could not answer from the pre-aggregates of their index, by index and reason (a slug), the units scanned for
 -- lack of a rollup, and whether other options of the index (rollup, preagg) would answer them (fixable). Most scans first.
 CREATE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fixable bool, OUT scans int8, OUT units int8)
