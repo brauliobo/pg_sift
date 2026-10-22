@@ -1,0 +1,28 @@
+-- The caps of the options, told at CREATE INDEX: a cube(...) dim has no histogram in a unit with more groups than its cap, and a set_columns leaf keeps a
+-- bloom filter, not its keys, in a unit with more than set_limit distinct ones; a query on them scans those units, so the build says how many, and what to set.
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '60s';
+CREATE EXTENSION pg_sift;
+
+-- 100,000 rows in 3 units. few: 7 values; many: 50,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
+-- (a bloom filter beyond set_limit, and no gap-free range that a zone would tell); wide: 3,000 values
+CREATE TABLE caps (id int, few int, many int, mid int, wide int) WITH (autovacuum_enabled = off);
+INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3 FROM generate_series(1, 100000) g;
+
+-- a dim over its cap, and a set summary over set_limit that a higher one makes exact
+CREATE INDEX caps_a ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id; many: id)', set_columns = 'few, mid', set_limit = 32);
+-- a set summary no set_limit can make exact
+CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (set_columns = 'wide');
+-- the caps hold: nothing to tell
+CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', set_columns = 'few, mid', set_limit = 512);
+-- the default spec asks for no dim by name, and no set: silent
+CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid);
+-- what the hint says to do
+ALTER INDEX caps_a SET (set_limit = 512);
+REINDEX INDEX caps_a;
+-- a refresh tells the same, whether or not it rewrote a segment
+ALTER INDEX caps_c SET (preagg = 'cube(few: id; many: id)');
+SELECT * FROM sift.col_refresh('caps_c');
+DROP TABLE caps;
+DROP EXTENSION pg_sift;

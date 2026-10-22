@@ -38,6 +38,8 @@ typedef struct SiftColRel
 extern bool sift_col_rollup_on_demand;
 extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
+/* A NOTICE for each cap of the options (cube(...) groups per unit, set_limit) that leaves 10% of the units or more without a histogram or the keys of a set; after a build and a refresh */
+extern void sift_col_report_caps(Relation index);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;

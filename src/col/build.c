@@ -17,6 +17,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/build.h"
 #include "core/limits.h"
 #include "core/ops.h"
@@ -427,6 +428,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (res == NULL)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
+	sift_col_report_caps(index);
 	return res;
 }
 
