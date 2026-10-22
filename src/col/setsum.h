@@ -30,6 +30,8 @@ typedef struct SiftCSet
 } SiftCSet;
 
 /* The option set_columns, resolved against a schema and the names of its leaves (the attribute name or the shredder path): NULL, or why it is not valid */
+/* Whether a leaf can have a set: a pre-aggregate dimension leaf, or a top-level uuid */
+extern bool sift_cset_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
 extern const char *sift_cset_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf);
 extern const char *sift_cset_syntax(const char *opt);
 
