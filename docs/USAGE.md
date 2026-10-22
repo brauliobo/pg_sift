@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 and macOS arm64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
+Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (the whole suite); on macOS arm64 the Homebrew formula was built and tried by hand (CI runs on Linux only). The chunk codec of the column engine links `liblz4` and `libzstd` when their
 development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
 
 ```sh

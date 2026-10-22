@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: `make check` on macOS. The stock bash 3.2 failed on the syntax of bash 4 and `make check` exited 0 with no test run; it now stops with `needs bash 4+ (brew install bash)`, a run that selects no job fails, and `scripts/cpu_time.py` and the job claim no longer need Linux (`prctl`, `flock`). `scripts/ci.sh --selftest` checks that a script with bash 4 constructs carries that first-line check.
+
 ## 3.2.2 - 2026-10-22
 
 - The store size rows show the index or columnar data with the heap beside it; README.md drops the places table, the Vulkan table and the rows that are sums of others.
