@@ -15,7 +15,7 @@ res=$R/docs/results bad=0 warn=0
 
 cp "$R/README.md" "$R/docs/BENCHMARKS.md" "$T/"
 python3 -B -I "$R/bench/steps/readme.py" --results "$res" --readme "$T/README.md" --benchmarks "$T/BENCHMARKS.md" --tier slim >/dev/null
-python3 -B -I "$R/bench/steps/store.py" render --results "$res/store.json" --readme "$T/README.md" --benchmarks "$T/BENCHMARKS.md" --compression "$res/store-compression.json" >/dev/null
+python3 -B -I "$R/bench/steps/store.py" render --results "$res/store.json" --readme "$T/README.md" --benchmarks "$T/BENCHMARKS.md" --compression "$res/store-compression.json" --img "$T/img" >/dev/null
 python3 -B -I "$R/bench/steps/charts.py" --results "$res" --out "$T/img" --tier slim >/dev/null
 for f in README.md:README.md BENCHMARKS.md:docs/BENCHMARKS.md; do
 	diff -q "$T/${f%%:*}" "$R/${f#*:}" >/dev/null || { echo "${f#*:}: a generated block differs from what docs/results generates:"; diff -u "$R/${f#*:}" "$T/${f%%:*}" | sed -n '3,14p' | cut -c1-200; bad=1; }
