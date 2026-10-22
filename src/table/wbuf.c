@@ -139,7 +139,10 @@ again:
 	}
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	if (old.gen)
+	{
+		sift_tbl_gate(sift_tbl_seal_gate);
 		sift_lane_flag_sealed_pages(rel, &old);
+	}
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote && !sift_tbl_settle_async(rel, st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
