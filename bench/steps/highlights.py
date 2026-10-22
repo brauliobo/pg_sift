@@ -17,6 +17,9 @@ import textwrap
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import aggregates_page  # noqa: E402  (steps/aggregates_page.py: the shapes)
+import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
+import cases_render  # noqa: E402  (steps/cases_render.py: the headline cases)
+import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
 import store_charts  # noqa: E402  (steps/store_charts.py: Store, read_tsv, question_slugs)
 
@@ -163,6 +166,18 @@ def shapes(results):
     return bullet(out + (f', slower on {len(slower)} ({rng([r for r, v in slower])}; {sum(1 for r, v in slower if v == "K10")} of them with the smallest filter set)' if slower else '') + '.')
 
 
+def faster33(results):
+    """the headline cases of bench/cases.tsv (docs/results/cases.tsv) against PostgreSQL on the same rows, and the cases that lose, said plainly"""
+    path = os.path.join(results, 'cases.tsv')
+    found = cases_render.headline(extras.read(path)[1], cases_mod.read_registry()) if os.path.exists(path) else None
+    if not found:
+        return [], []
+    meta = extras.read(path)[0]
+    parts, slower = found
+    first = bullet(f'3.3 optimizations on {int(meta["orders"]):,} orders, one backend, against PostgreSQL on the same rows (sift.enable_agg = off): {parts}.')
+    return first, bullet('3.3 cases that are slower than PostgreSQL: ' + ', '.join(f'{c} ({r})' for c, r in slower) + '.', 2) if slower else []
+
+
 def behind(S, tier, variant):
     """the questions where neither layout of pg_sift is within 5% of the fastest other system: 'name (system, factor)'"""
     out = []
@@ -210,8 +225,9 @@ def block(results):
     rows = readme.load(results)
     tt = readme.Tier(rows, 'slim')
     out = textwrap.wrap(f'BM25 search and column-store aggregates for PostgreSQL 17 and 18 in one extension. Measured {t["parts"]["warm"]["date"][:10]} on {cpu} ({h["threads"]} threads), PostgreSQL {versions(S, tier)["pg"]}, {t["cpus"]} CPUs per server, one client, warm medians; every result is checked against PostgreSQL\'s.', 76) + ['']
-    out += aggregates(S, tier, results) + search(tt) + sizes_and_load(S, tier) + updates(S, tier) + scale(results, S, tier) + shapes(results)
-    out += bullet('Where it does not win:') + losses(S, tier) + updates_loss(S, tier)
+    fast, slow = faster33(results)
+    out += aggregates(S, tier, results) + search(tt) + sizes_and_load(S, tier) + updates(S, tier) + scale(results, S, tier) + shapes(results) + fast
+    out += bullet('Where it does not win:') + losses(S, tier) + updates_loss(S, tier) + slow
     out += ['', 'Results, charts and method:', URL + 'docs/perf/AGGREGATES.md']
     return out
 

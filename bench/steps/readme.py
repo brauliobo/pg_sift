@@ -279,6 +279,8 @@ def main():
     print('\n'.join(block))
     replace_block(a.readme, 'readme', block)
     replace_block(a.benchmarks, 'slim', slim_section(t, rows))
+    import cases_render   # the "What got faster in 3.3" block, from docs/results/cases.tsv (it imports extras, which imports this module)
+    cases_render.render(a.results, a.readme, a.benchmarks)
 
 
 if __name__ == '__main__':

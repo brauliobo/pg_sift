@@ -491,7 +491,7 @@ bench/bench cases --list                   # the registry;   bench/bench cases -
 Lanes: `sift` is the planner's own choice and its EXPLAIN must match the `plan` of the row (a case that falls back to the normal plan fails, and so does a wrong answer: every lane is compared with `native`,
 the same table and statement with `sift.enable_agg = off`); variants are further sift lanes with settings (`scan`: `sift.agg_preagg = off`, the units scanned; `bulk_off`: the write buffers); `pg_duckdb` is
 a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
-store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block.
+store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block: `--docs` writes `docs/results/cases.tsv`, and `bench/bench readme` (`steps/cases_render.py`) renders the table "What got faster in 3.3" in README.md and docs/BENCHMARKS.md, and the headline cases (the `headline` column of the registry) in Performance highlights.
 
 ## Remote host
 
