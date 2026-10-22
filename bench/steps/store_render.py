@@ -418,7 +418,7 @@ UPD_LABELS = {'pg': 'PostgreSQL', 'sift': 'pg_sift `sift_col`', 'sift_maint': LA
 
 
 UPD_PATH = {'pg': '`UPDATE` / `DELETE` ... `WHERE id IN (...)`, 1,000 ids per statement', 'sift': 'the same statements; the heap is updated, the `sift_col` index follows',
-            'sift_maint': 'the same, in a database with `sift.col_auto_merge = on`', 'sift_table_maint': 'the same, in a database with `sift.table_auto_defrag = on`',
+            'sift_maint': 'the same, in a database with the automatic vacuum and merge of the column index on', 'sift_table_maint': 'the same, in a database with `sift.table_auto_defrag = on`',
             'sift_table': 'the same statements on the column-format table', 'es': '`_bulk` `update` (script) and `delete` actions, 1,000 per request, default refresh',
             'ch': '`UPDATE` / `DELETE FROM` ... `WHERE id IN (...)` (patch parts), 1,000 ids per statement',
             'ch_mut': 'one `ALTER TABLE ... UPDATE` / `DELETE` with the predicate of the rows, `mutations_sync = 1`',

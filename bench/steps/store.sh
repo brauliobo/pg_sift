@@ -272,7 +272,7 @@ updates() { # SIZE: last, it changes the data; at the budget of the load
 }
 section() { # SIZES: the update, delete and VACUUM section (store.py section): S_REPS repetitions (3) of the sizes up to 200,000 orders, with the churn and insert windows, one of the larger ones
   local s r extra=() secs
-  mapfile -t extra < <(engine_args "${S_ENGINES:-pg,sift,sift_maint,sift_table,sift_table_maint}"; flags)
+  mapfile -t extra < <(engine_args "${S_ENGINES:-pg,sift,sift_maint,sift_table}"; flags)
   for s in ${SIZES//,/ }; do
     for (( r = 1; r <= (s > 200000 ? 1 : ${S_REPS:-3}); r++ )); do
       secs=$(( s > 200000 ? 0 : ${S_CHURN_SECONDS:-20} ))

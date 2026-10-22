@@ -281,7 +281,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 | `refresh.sh` | `bench/bench refresh`: `final --docs` for the stages of the README (search, store) behind the host lock and the quiet gate; `--pr` opens the pull request |
 | `final.sh`, `gap.sh`, `gap.py` |  |
-| `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README: PostgreSQL, `sift_col`, `sift_table` and the same two layouts with the automatic maintenance on (lanes `sift_maint`, `sift_table_maint`: `ALTER DATABASE ... |
+| `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README: PostgreSQL, `sift_col` and `sift_table` with the defaults of the build (`sift.table_auto_defrag` is on) and `sift_col` with the opt-in automatic vacuum and merge (lane `sift_maint`: `ALTER DATABASE ... |
 | `store.sh`, `store.py` |  |
 | `duckdb.sh`, `duckdb.py` |  |
 | `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared |

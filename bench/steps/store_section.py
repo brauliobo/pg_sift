@@ -12,7 +12,7 @@ from store_engine import Window, gate, psql_value
 from store_lib import LANES, NOISY, container, load_queries, log, port
 from store_updates import update_engine
 
-SECTION_LANES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint']
+SECTION_LANES = ['pg', 'sift', 'sift_maint', 'sift_table']   # sift_table runs with its defaults: sift.table_auto_defrag is on in 3.3
 CLIENTS = 4
 
 CHURN = r"""\set pick random(1, 100)
