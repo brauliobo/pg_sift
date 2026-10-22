@@ -203,8 +203,9 @@ arm_base(PlannerInfo *arm, ArmIn *in)
 }
 
 /*
- * Two arms that read their own copy of one scan (a common table expression that PostgreSQL inlined into each): the same tables and the same
- * WHERE. The entries of pulled up subqueries and of the grouping belong to their arm, and the column names a plan prunes differ: none counts.
+ * Two arms that read their own copy of one scan (a common table expression that PostgreSQL inlined into each): the same tables and joins.
+ * Their WHERE may differ (see TwoLevel.drop). The entries of pulled up subqueries and of the grouping belong to their arm, and the column
+ * names a plan prunes differ: none counts.
  */
 static bool
 arm_private_rte(RTEKind kind)
@@ -224,7 +225,7 @@ same_scan(PlannerInfo *a, PlannerInfo *b)
 	Relids		live;
 	Index		rti = 0;
 
-	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree, b->parse->jointree))
+	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree->fromlist, b->parse->jointree->fromlist))
 		return false;
 	live = get_relids_in_jointree((Node *) a->parse->jointree, false, false);
 	forboth(la, a->parse->rtable, lb, b->parse->rtable)
@@ -575,7 +576,8 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 			int			pos;
 			SiftAggKey *key;
 
-			if (equal(g, arms[k].id) || list_member(arms[k].used, g))
+			/* a constant splits no group */
+			if (equal(g, arms[k].id) || list_member(arms[k].used, g) || IsA(g, Const))
 				continue;
 			pos = -1;
 			foreach_ptr(Node, d, defs)
@@ -587,7 +589,7 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 					return agg_refuse_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS), "%d keys with the hidden ones of the arms", s->nkeys + sets + 1);
 				key = &s->key[s->nkeys];
 				if (!compile_key(c, sgc, g, key))
-					return false;
+					return agg_refuse_f(TWO_KEYS, "the group expression %d of arm %d is not a key the scan reads: %s", i + 1, k + 1, expr_text(c, g));
 				combo_set_key(c, key, s->nkeys);
 				*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) makeNullConst(key->typid, key->typmod, key->collid),
 																   list_length(*scan_tlist) + 1, NULL, false));
@@ -606,6 +608,9 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 typedef struct TwoLevel
 {
 	PlannerInfo *root;
+	PlannerInfo *base;			/* the root of the scan the arms share */
+	List	   *common;			/* the conditions of the base's WHERE that every arm has: the scan's */
+	List	   *drop;			/* the others (of the base's: its pointers in the FromScan): arm filters, with those of the other arms */
 	Index		srti;			/* the outer query's FROM item: the arms */
 	JoinExpr   *join;			/* the arms are joined to a spine; NULL: they are the FROM item */
 	Index		spine_rti;
@@ -623,25 +628,58 @@ typedef struct TwoLevel
 	List	   *scan_tlist;
 } TwoLevel;
 
-/* The arms of the FROM item and the scan they share; NULL when they are not arms of one scan */
+/*
+ * The arms of the FROM item and the scan they share; NULL when they are not arms of one scan. Arms that read their own copy of it share
+ * the scan of the first: the conditions of its WHERE that not every arm has (a NOT NULL test of a lookup in two arms and none in a third)
+ * are not the scan's but the filter of the arms that have them (ArmIn.quals).
+ */
 static PlannerInfo *
 two_arms(TwoLevel *t)
 {
 	PlannerInfo *base = NULL;
+	bool		own = true;
 
 	t->roots = outer_arms(t->root, t->srti, &t->gates);
-	if (t->roots == NIL || agg_width_hit(list_length(t->roots) - 1, arms, sift_limit(arms, SIFT_AGG_MAX_ARMS), "arms"))
+	if (t->roots == NIL)
+	{
+		agg_refused_on(TWO_ARMS, "the FROM item is not a subquery or a UNION ALL of subqueries that PostgreSQL planned as one");
+		return NULL;
+	}
+	if (agg_width_hit(list_length(t->roots) - 1, arms, sift_limit(arms, SIFT_AGG_MAX_ARMS), "arms"))
 		return NULL;
 	foreach_ptr(PlannerInfo, ar, t->roots)
 	{
 		PlannerInfo *b = arm_base(ar, &t->arms[t->narms]);
 
-		if (b == NULL || (base != NULL && b != base && !(b == ar && same_scan(base, b))))
+		if (b == NULL)
+		{
+			agg_refused_f(TWO_ARMS, "arm %d is not a plain aggregate (it has DISTINCT, ORDER BY, LIMIT, windows, grouping sets, a CTE list or no GROUP BY)", t->narms + 1);
 			return NULL;
+		}
 		if (base == NULL)
+		{
 			base = b;
+			own = b == ar;
+		}
+		if ((b == ar) != own || (!own && b != base) || (own && b != base && !same_scan(base, b)))
+		{
+			agg_refused_f(TWO_ARMS, "arm %d does not read the scan of arm 1: its tables or joins differ", t->narms + 1);
+			return NULL;
+		}
 		t->arms[t->narms].sub.tlist = b->parse->targetList;
 		t->narms++;
+	}
+	t->base = base;
+	if (!own)
+		return base;
+	foreach_ptr(Node, q, (List *) base->parse->jointree->quals)
+	{
+		bool		all = true;
+
+		foreach_ptr(PlannerInfo, ar, t->roots)
+			all &= list_member((List *) ar->parse->jointree->quals, q);
+		t->common = all ? lappend(t->common, q) : t->common;
+		t->drop = all ? t->drop : lappend(t->drop, q);
 	}
 	return base;
 }
@@ -663,7 +701,7 @@ two_arm_terms(TwoLevel *t, int k)
 	if (k == 0)
 		t->ncols = list_length(in->cols);
 	else if (t->ncols != list_length(in->cols))
-		return false;
+		return agg_refuse_f(TWO_ARMS, "arm %d returns %d columns, arm 1 returns %d", k + 1, list_length(in->cols), t->ncols);
 	foreach_node(SortGroupClause, sgc, aq->groupClause)
 	{
 		Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
@@ -677,9 +715,10 @@ two_arm_terms(TwoLevel *t, int k)
 		}
 	}
 	if (nid != 1)
-		return false;
-	if (in->sub.rti != 0 && aq->jointree->quals != NULL)
-		foreach_ptr(Node, q, (List *) aq->jointree->quals)
+		return agg_refuse_f(TWO_ARMS, "arm %d groups by %d unique row ids, not one", k + 1, nid);
+	/* the WHERE of an arm that reads a common table expression, or the conditions of its own that other arms lack */
+	foreach_ptr(Node, q, (List *) aq->jointree->quals)
+		if (in->sub.rti != 0 || !list_member(t->common, q))
 			in->quals = lappend(in->quals, normalize_expr(c, cte_sub_mutator(q, &in->sub)));
 	in->out = palloc0(sizeof(SiftAggArm));
 	in->out->colsrc = palloc(Max(t->ncols, 1) * sizeof(int));
@@ -699,14 +738,14 @@ two_arm_terms(TwoLevel *t, int k)
 			rest = lappend(rest, hq);
 	}
 	if (rest != NIL && !arm_having_expr(c, in, rest))
-		return false;
+		return agg_refuse_f(TWO_ARMS, "the HAVING of arm %d is not a condition on its aggregates", k + 1);
 	in->out->filter = palloc(Max(list_length(in->quals), 1) * sizeof(SiftAggPred *));
 	foreach_ptr(Node, q, in->quals)
 	{
 		SiftAggPred *p = compile_combo_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return agg_refuse_f(TWO_ARMS, "the WHERE of arm %d has a condition the scan cannot test", k + 1);
 		in->out->filter[in->out->nfilter++] = p;
 	}
 	return true;
@@ -781,7 +820,7 @@ arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
 		return true;
 	}
 	if (!IsA(e, Var) || ((Var *) e)->varno != t->srti || ((Var *) e)->varlevelsup != 0 || ((Var *) e)->varattno > t->ncols)
-		return false;
+		return agg_refuse_on(TWO_KEYS, "a group key is not a column of the arms");
 	col = ((Var *) e)->varattno - 1;
 	for (int k = 0; k < t->narms; k++)
 	{
@@ -790,7 +829,7 @@ arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
 		if (null_const(x))
 			continue;
 		if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
-			return false;
+			return agg_refuse_f(TWO_KEYS, "output column %d of arm %d is not an expression every arm groups by (or NULL)", col + 1, k + 1);
 		def = x;
 		t->arms[k].used = lappend(t->arms[k].used, x);
 		t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
@@ -802,7 +841,7 @@ arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
 		null_key(sgc, e, key);
 		return true;
 	}
-	return compile_key(&t->ctx, sgc, def, key);
+	return compile_key(&t->ctx, sgc, def, key) || agg_refuse_f(TWO_KEYS, "the key of output column %d is not one the scan reads", col + 1);
 }
 
 /* the outer keys: columns that every arm groups by or has as NULL, and the spine's */
@@ -1133,6 +1172,8 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	if (!agg_base(c, base, arm_input(base), &fs) || c->nparts > 0)
 		return;
 	t.s = agg_spec_new(c);
+	foreach_ptr(Node, q, t.drop)
+		fs.quals = list_delete_ptr(fs.quals, q);
 	if (!agg_quals(c, t.s, &fs))
 		return;
 	if (!arm_gates(c, t.s, t.gates))
