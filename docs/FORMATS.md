@@ -83,6 +83,7 @@ a JSON null; informational, a segment written before the flag does not have it a
 | every 3.1 object after `CREATE EXTENSION` and after `ALTER EXTENSION .. UPDATE` from 3.0; a `sift_col` index and a `sift_table` written by 3.0 (column minor 3) read across the update | `test/t/extension_lifecycle.sh` |
 | an older library refuses what it cannot read, with the REINDEX or VACUUM FULL hint | `test/t/old_lib_refusal.sh` |
 | real 3.0/3.1 write buffers, promotion, minor-6 REINDEX and 3.1 refusal | `test/t/compat_31_column.sh` |
+| the releases 3.0.2, 3.1.0 and 3.2.0 write, this tree takes over (update, verify, REINDEX, writes), and the release reads what this tree writes at minor 3 and at its newest minor and refuses minor 7 | `test/t/compat_matrix.sh` |
 | mixed minors 3/4/5/6, partition parents, table rewrite and JSON kinds | `test/sql/agg_jsonpath_kinds.sql` |
 | a 3.2 index with wide leaves (minor 5) beside the older minors, merges and `REINDEX` | `test/sql/col_format5.sql` |
 | standby and crash recovery of the new structures | `test/t/col_index_replica.sh`, `col_index_crash.sh`, `store_replica.sh`, `store_crash.sh`, `014_tbl_writepath.pl` |
