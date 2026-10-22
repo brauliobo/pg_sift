@@ -585,6 +585,8 @@ start_next(PartSource *ps)
 			continue;
 		if (ps->cur >= 0)
 			sift_colsrc_unpin(ps->src[ps->cur]);	/* a scan of many partitions would pin the pages of all of them */
+		/* a worker has the offsets from the leader and opened the first partition only: the others when its items reach them */
+		open_part(ps, i);
 		ps->cur = i;
 		ps->next = i + 1;
 		sift_colsrc_begin(ps->src[i], from - ps->off[i], to - ps->off[i], ps->prune, ps->nprune);
