@@ -12,6 +12,11 @@ ANALYZE ordered;
 CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
 	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
 $$;
+-- what the empty map adds to the scan is bounded by the pages of the units the zones keep: a tenth of the table (k < 20 keeps 10% of the units)
+-- charges about a tenth of its pages, the whole table (k < 300) about all of them
+CREATE TABLE costs AS
+SELECT k_below, (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))) AS empty_cost
+FROM unnest(ARRAY[20, 300]) k_below;
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
 SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 40 GROUP BY v');
  used | slug |                                                                                          reason                                                                                          
@@ -35,6 +40,15 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
 (1 row)
 
 VACUUM ordered;
+SELECT k_below, (c.empty_cost - (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))))
+	/ (SELECT relpages FROM pg_class WHERE relname = 'ordered') < 0.5 AS under_half_the_pages
+FROM costs c ORDER BY k_below;
+ k_below | under_half_the_pages 
+---------+----------------------
+      20 | t
+     300 | f
+(2 rows)
+
 SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 40 GROUP BY v');
  used | slug | reason 
 ------+------+--------
@@ -48,5 +62,5 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
 (1 row)
 
 DROP FUNCTION why(text);
-DROP TABLE ordered;
+DROP TABLE ordered, costs;
 DROP EXTENSION pg_sift;
