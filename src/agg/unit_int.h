@@ -40,6 +40,7 @@ uint32 key_null_id(AggExec *ex, int ki);
 
 /* unit.c */
 void process_unit(AggExec *ex);
+void leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows);
 
 #pragma GCC visibility pop
 

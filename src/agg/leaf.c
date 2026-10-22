@@ -415,29 +415,40 @@ vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, c
 	}
 }
 
+/* the elements of the unit whose key is the one of vleaf j; a row owns at most one (the member names of an object are distinct). *offs: the elements of each row */
+uint64 *
+member_elems(AggExec *ex, int j, const uint32 **offs)
+{
+	const SiftSrcVec *key = get_vec(ex, ex->vl[j].key);
+	uint32		m;
+	uint64	   *eq;
+
+	*offs = elem_offs(ex, ex->spec->vleaf[j].obj);
+	m = (*offs)[ex->unit.nrow];
+	eq = MemoryContextAlloc(ex->ucxt, (SIFT_COL_NWORDS(m) + 1) * sizeof(uint64));
+	if (ex->vl[j].dict != key->dict->id)
+	{
+		ex->vl[j].dict = key->dict->id;
+		ex->vl[j].code = dict_code(key->dict, ex->spec->vleaf[j].key);
+	}
+	sift_colk->range[SIFT_COLW_32](key->data, m, ex->vl[j].code, 0, eq);
+	return eq;
+}
+
 /* the leaf of a SiftAggVLeaf with a key: per row the value of its element with the key, NULL where it has none */
 static void
 read_member_leaf(AggExec *ex, int leaf, SiftSrcVec *out)
 {
 	int			j = leaf - ex->nbase,
 				nrow = ex->unit.nrow;
-	const SiftSrcVec *key = get_vec(ex, ex->vl[j].key),
-			   *val = get_vec(ex, ex->vl[j].val);
+	const SiftSrcVec *val = get_vec(ex, ex->vl[j].val);
 	size_t		esz = ex->lay->leaf[leaf].vtype == SCV_I64 || ex->lay->leaf[leaf].vtype == SCV_F64 ? 8 : 4;
-	const uint32 *offs = elem_offs(ex, ex->spec->vleaf[j].obj);
-	uint32		m = offs[nrow];
+	const uint32 *offs;
+	uint64	   *eq = member_elems(ex, j, &offs);
 	char	   *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, nrow * esz + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 	uint8	   *isnull = MemoryContextAlloc(ex->ucxt, nrow + SIFT_AGG_PAD);
-	uint64	   *eq = MemoryContextAlloc(ex->ucxt, (SIFT_COL_NWORDS(m) + 1) * sizeof(uint64));
 
-	if (ex->vl[j].dict != key->dict->id)
-	{
-		ex->vl[j].dict = key->dict->id;
-		ex->vl[j].code = dict_code(key->dict, ex->spec->vleaf[j].key);
-	}
 	memset(isnull, 1, nrow);
-	/* the elements whose key is the member's; a row owns at most one (the member names of an object are distinct) */
-	sift_colk->range[SIFT_COLW_32](key->data, m, ex->vl[j].code, 0, eq);
 	if (esz == 8)
 		vleaf_fill(data, isnull, val, eq, offs, nrow, 8);
 	else

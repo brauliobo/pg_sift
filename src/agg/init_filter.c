@@ -337,9 +337,17 @@ recheck_init(AggExec *ex)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 		{
-			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i]);
+			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i], NULL, InvalidOid);
 			ex->recheck = true;
 			ex->recheck_late |= s->recheck[i] == SRK_CAST;
+		}
+	/* the members of one key read through a cast: the value column of their object is read again for the member of the key only */
+	for (int j = 0; j < s->nvleaf; j++)
+		if (s->vleaf[j].recheck != SRK_NONE)
+		{
+			sift_colsrc_set_recheck(ex->src, ex->vl[j].val, SRK_CAST, s->vleaf[j].key, s->vleaf[j].cast);
+			ex->recheck = true;
+			ex->recheck_late = true;
 		}
 }
 
