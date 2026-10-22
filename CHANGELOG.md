@@ -160,6 +160,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: `sift.col_auto_merge` promotes the write buffer of a `sift_col` index and leaves its segments when the buffer is the only reason (an insert-only table no longer has its whole index rewritten at every 1% of new rows: 12 cycles of 2% inserts on 200,000 rows wrote 4.6 MB of segments, from 33.4 MB, with the same query times); new settings `sift.col_auto_merge_min_churn_pct` (the rewrite of all segments waits until that percent of the rows changed since the last one) and `sift.col_auto_merge_max_active` (it waits, with a backoff, while that many client backends run a statement); the churn simulator `bench/churn/churn.sh` measures them.
+
 - Changed: the default `preagg` cube keeps up to eight measures of each dim (decimals and floats first, then integers), where it kept three, so `sum`, `avg` and `count` of more integer columns are answered from the histogram of the group key. The dims a unit keeps are still chosen by their size with the first three measures under the 2% budget, and a dim that is kept carries all its measures. No format change: units written before hold three measures and are scanned for the others until a merge rewrites them. Index size on a ten-column table: +0.0% to +1.6%.
 
 - Changed: when a unit keeps a few of its rows after the filters of the source (under an eighth), `SiftAgg` makes the dictionary of a wide leaf (a `numeric` of more than 18 digits or of any other shape, an `interval`, `money`) for those rows only, where it converted every distinct value of the unit; a one-key scope that read a `numeric` measure took 1.0-3.6 ms for 25k-200k rows and now takes 0.26-1.3 ms. No on-disk change.

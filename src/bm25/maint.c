@@ -474,15 +474,16 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 	{
 		TimestampTz start = GetCurrentTimestamp();
 		uint64		busy = 0;
+		bool		all = ops->rewrite_all == NULL || ops->rewrite_all(why);
 
 		n = 0;
 		promote_locked(ops, index, true, true);
-		while (ops->merge_next(index, n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
+		while (ops->merge_next(index, all && n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
 		{
 			n++;
 			CHECK_FOR_INTERRUPTS();
 		}
-		sift_log_maint(index, psprintf("rewrote (%s) the segments of", why), start, -1, -1);
+		sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	}
 	maint_unlock_mode(index, ops->step_lock);
 	return n;
