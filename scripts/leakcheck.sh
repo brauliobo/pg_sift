@@ -52,7 +52,7 @@ LEAK_RULES=(
 	$'sift leak: memory context\tLOG:  sift leak: memory context "sift scan" (8192 bytes) still allocated in "TopMemoryContext" at backend exit'
 )
 
-leak_regex() { printf '%s\n' "${LEAK_RULES[@]}" | cut -f1 | paste -sd'|'; }
+leak_regex() { printf '%s\n' "${LEAK_RULES[@]}" | cut -f1 | paste -sd'|' -; }
 
 # postgresql.conf lines every test server gets (through pgtest.sh conf): the leak warnings are WARNING level and carry the pid
 leak_conf() {
