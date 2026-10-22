@@ -72,12 +72,15 @@ if [[ $MODE == affected ]]; then
 	OUT=pick
 	[[ ${1:-} == --list || ${1:-} == --github ]] && { OUT=${1#--}; shift; }
 	BASE=${1:-origin/main}
-	if [[ $BASE == all ]]; then RE=.
-	elif [[ $BASE == --files ]]; then RE=$(areas_regex "${@:2}") || exit $?   # for tests of the map: the jobs of named files
+	if [[ $BASE == all ]]; then RE=. FASTRE=.
+	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files
+		RE=$(areas_regex "${@:2}") || exit $?
+		FASTRE=$(areas_fast_regex "${@:2}") || exit $?
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
 		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
 		RE=$(areas_regex "${FILES[@]}") || exit $?
+		FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
 	fi
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
@@ -96,6 +99,7 @@ if [[ $MODE == affected ]]; then
 		github)
 			echo "jobs=$RE"
 			echo "fast=$FAST"
+			echo "fastjobs=$FASTRE"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
 			for f in sqlite mariadb replication; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
@@ -139,6 +143,14 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
+	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
+	fast_agg=$(areas_fast_regex src/agg/x.c) fast_core=$(areas_fast_regex src/core/ops.c)
+	while read -r id _; do
+		[[ $id == installcheck-* ]] || continue
+		[[ $id =~ $fast_core ]] || { echo "FAIL: areas: src/core/ops.c does not select the fast job $id"; bad=1; }
+		[[ $id =~ ${GROUP[tbl]} && ! $id =~ ${GROUP[agg]} && ! $id =~ ${GROUP[col]} && $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file selects the table-only fast job $id"; bad=1; }
+		[[ $id =~ ${GROUP[agg]} && ! $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file does not select the agg fast job $id"; bad=1; }
+	done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick)
 	for f in src/core/ops.c "$REPO"/sql/*.sql; do
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
