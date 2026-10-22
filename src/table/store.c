@@ -17,6 +17,7 @@
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "storage/procarray.h"
+#include "utils/fmgrprotos.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -29,6 +30,7 @@
 int			sift_tbl_write_buffer_limit = 4096;	/* kB */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
+int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
 
 typedef struct CacheEnt
 {
@@ -175,7 +177,8 @@ sift_tbl_ensure_init(Relation rel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
-	if (st->initialized)
+	/* a read between the first writer's metapage and its tombstone segment caches a table that is not laid out yet */
+	if (st->initialized && find_seg(&st->dir, is_tomb, 0) != NULL)
 		return;
 	if (RelationGetNumberOfBlocks(rel) == 0)
 	{
@@ -196,6 +199,15 @@ sift_tbl_ensure_init(Relation rel)
 	{
 		InitArg		arg;
 
+#ifdef SIFT_TESTING
+		if (sift_tbl_init_gate > 0)
+		{
+			Datum		key = Int64GetDatum(sift_tbl_init_gate);
+
+			DirectFunctionCall1(pg_advisory_lock_int8, key);
+			DirectFunctionCall1(pg_advisory_unlock_int8, key);
+		}
+#endif
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_dir_read(rel, &st->dir);
 		if (find_seg(&st->dir, is_tomb, 0) == NULL)
