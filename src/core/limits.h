@@ -94,7 +94,7 @@
 	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
-	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 0) \
+	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
 	X(unit_bytes, "-", "col/batch.c", 2147483647, "bytes", \
 	  "variable-length bytes of the rows of one column unit", "ERROR 54000 at build or merge", "-", 0) \
 	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/col.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
