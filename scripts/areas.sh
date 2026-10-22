@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Shared dependency-map owner: Bash ERE, exact known groups and captures 1..3.
 declare -A GROUP
-ROWS=()
+ROWS=() FAST_ROWS=()
 areas_load() {
 	local k v
-	GROUP=() ROWS=()
+	GROUP=() ROWS=() FAST_ROWS=()
 	while IFS=$'\t' read -r k v; do
 		[[ -z $k || $k == '#'* ]] && continue
-		if [[ $k == =* ]]; then GROUP[${k#=}]=$v; else ROWS+=("$k"$'\t'"$v"); fi
+		if [[ $k == =* ]]; then GROUP[${k#=}]=$v
+		elif [[ $v == fast:* ]]; then FAST_ROWS+=("$k"$'\t'"${v#fast:}")   # only the fast tier of a pull request reads these rows
+		else ROWS+=("$k"$'\t'"$v"); fi
 	done <"$1"
 }
 areas_match() {
@@ -44,6 +46,26 @@ areas_regex() {
 			[[ $AREA_JOBS == - || -n ${seen[$AREA_JOBS]:-} ]] || { seen[$AREA_JOBS]=1; out+=("$AREA_JOBS"); }
 		done
 		[[ -n $hit ]] || { echo "areas: $f is in no row of scripts/areas.tsv" >&2; out+=(.); }
+	done
+	local IFS='|'
+	echo "^\$${out[*]:+|${out[*]}}"
+}
+# areas_fast_regex FILE...: areas_regex, except that a file a `fast:` row matches runs only the jobs of that row (the tests of its own area, not of the
+# stack above it); the other files run what areas_regex gives them
+areas_fast_regex() {
+	local f row hit out=() AREA_JOBS AREA_OWNER_MODE=0
+	local -a AREA_CAPTURES
+	for f in "$@"; do
+		hit=
+		for row in "${FAST_ROWS[@]}"; do
+			areas_match "$f" "${row%%$'\t'*}" || continue
+			AREA_CAPTURES=("${BASH_REMATCH[@]}")
+			hit=1
+			areas_expand "${row#*$'\t'}"
+			out+=("$AREA_JOBS")
+			break
+		done
+		[[ -n $hit ]] || out+=("$(areas_regex "$f")")
 	done
 	local IFS='|'
 	echo "^\$${out[*]:+|${out[*]}}"
