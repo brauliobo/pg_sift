@@ -107,6 +107,18 @@ SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u$$) AS null
 CREATE UNIQUE INDEX tn_u ON tn (u) NULLS NOT DISTINCT;
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u NULLS FIRST$$);
 DROP INDEX tn_u;
+-- a unique index lets NULLs repeat: rows that tie on a NULL u are PostgreSQL's choice, unless a strict condition of the WHERE clause leaves no such row
+INSERT INTO tn VALUES (4001, 1, 5, 0, NULL), (4002, 1, 50, 0, NULL), (4003, 2, 7, 0, NULL);
+CREATE UNIQUE INDEX tn_gu ON tn (g, u);
+ANALYZE tn;
+SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u NULLS FIRST$$) AS ties_on_null;
+SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u IS NULL OR u > 5 ORDER BY g, u NULLS FIRST$$) AS or_is_not_strict;
+SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE coalesce(u, 0) >= 0 ORDER BY g, u NULLS FIRST$$) AS coalesce_is_not_strict;
+SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE g IS NOT NULL AND v >= 0 ORDER BY g, u NULLS FIRST$$) AS strict_on_other_columns;
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u IS NOT NULL ORDER BY g, u NULLS FIRST$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v, w FROM tn WHERE u >= 0 AND w < 12 ORDER BY g, u DESC$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u = ANY (ARRAY[3, 4, 5, 21, 22]) ORDER BY g, u$$);
+DROP INDEX tn_gu;
 DEALLOCATE p;
 
 -- groups beyond the memory a hash aggregate gets (the best row of each is kept): the normal plan stays
