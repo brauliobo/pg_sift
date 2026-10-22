@@ -162,6 +162,7 @@ if [[ $MODE == --selftest ]]; then
 	(cd "$REPO" && sha256sum --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	"$REPO/scripts/gen-options.sh" --selftest || bad=1
+	"$REPO/scripts/check-bench-cases.sh" --selftest || bad=1
 	# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message
 	b4='declare -A|local -A|local -n|declare -n|mapfile|readarray|\[\[ -v |\$\{[A-Za-z_]+(,,|\^\^)\}|wait -n|EPOCHSECONDS|EPOCHREALTIME|printf .%\(|&>>|\|&|coproc|;;&|read -[a-zA-Z]*N'
 	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
@@ -476,7 +477,7 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors reference bench-fresh options)
+HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors reference bench-fresh bench-cases options)
 if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
 	selftest=$!
@@ -492,6 +493,8 @@ if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	reference=$!
 	step bench-fresh bench-fresh "$S/check-bench-fresh.sh" &
 	benchfresh=$!
+	step bench-cases bench-cases "$S/check-bench-cases.sh" &
+	benchcases=$!
 	step options options "$S/gen-options.sh" --check &
 	options=$!
 	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
@@ -500,14 +503,14 @@ else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${options:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${options:-}
+wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
