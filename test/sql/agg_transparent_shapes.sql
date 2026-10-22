@@ -49,14 +49,14 @@ SELECT * FROM check_shape($q$
  CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text,value float8)
  LEFT JOIN LATERAL unnest(e.labels) label ON true GROUP BY label
 $q$);
--- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics. The outer-joined member keeps the normal plan before PostgreSQL 18 (columns: the plan is the pushed one from 18 on).
-SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_shape($q$
+-- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics.
+SELECT * FROM check_shape($q$
  SELECT category, count(DISTINCT f.id) AS ids,
  count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "kind_a")')) AS kind_a_n
  FROM events f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key='p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int>6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY category
-$q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;
+$q$);
 -- Preserve the mean of per-item means across UNION ALL arms and a preserved date relation.
 SELECT * FROM check_shape($q$
  WITH item_values AS (
