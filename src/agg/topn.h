@@ -77,8 +77,10 @@ extern void sift_topn_skip(SiftTopN *t);
  * cannot beat the n-th best so far; the units of the rest count as skipped.
  */
 extern bool sift_topn_follows(const SiftTopN *t);
+extern PGDLLIMPORT bool sift_topn_zone_keys;	/* sift.topn_zone_keys */
 extern void sift_topn_walk_begin(SiftTopN *t, uint32 nsb);
-extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);
+extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
+extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);	/* z: one zone for each of those keys */
 extern void sift_topn_walk_sort(SiftTopN *t);
 extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 

@@ -179,6 +179,10 @@ sift_agg_init(void)
 							 "Lets a top-N scan visit the units of a sort column that does not follow the table by the best value of their zones, and stop at the first that cannot beat the n-th.",
 							 NULL, &sift_topn_walk, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.topn_zone_keys",
+							 "Lets the walk of a top-N bound the units by the zones of the sort keys after the first too: a first key that ties between units is decided by the next.",
+							 NULL, &sift_topn_zone_keys, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
@@ -643,9 +647,12 @@ topn_run(AggExec *ex)
 		sift_topn_walk_begin(t, nsb);
 		for (uint32 sb = 0; sb < nsb; sb++)
 		{
-			uint32		units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(t, 0), &z);
+			SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
+			uint32		units = 0;
 
-			sift_topn_walk_add(t, sb, units, &z);
+			for (int j = 0; j < sift_topn_walk_keys(t); j++)
+				units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(t, j), &zs[j]);
+			sift_topn_walk_add(t, sb, units, zs);
 		}
 		sift_topn_walk_sort(t);
 		if (parallel)
