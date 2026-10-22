@@ -68,12 +68,15 @@
 
 /*
  * Do the sort columns hold the columns of a unique index of the table (plain columns, NOT NULL or with NULLs not distinct), so that no two
- * rows tie? The first row of a group by the ORDER BY is then the same in every plan: a tie would be PostgreSQL's sort's choice.
+ * rows tie? The first row of a group by the ORDER BY is then the same in every plan: a tie would be PostgreSQL's sort's choice. A column that
+ * can be NULL counts as NOT NULL when a strict condition of the table's WHERE clause (`col > 0`, `col IS NOT NULL`) leaves no row with a NULL
+ * there; a row of the nullable side of an outer join is NULL extended, so there the table's conditions say nothing.
  */
 static bool
 sort_is_total(AggCtx *c, List *sortexprs)
 {
-	Bitmapset  *atts = NULL;
+	Bitmapset  *atts = NULL,
+			   *strict = NULL;
 	Relation	rel;
 	bool		total = false;
 
@@ -82,7 +85,21 @@ sort_is_total(AggCtx *c, List *sortexprs)
 		Var		   *v = (Var *) strip_relabel(e);
 
 		if (IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0)
+		{
 			atts = bms_add_member(atts, v->varattno);
+			if (!preserved_join(c))
+			{
+				NullTest   *nt = makeNode(NullTest);
+				List	   *quals = NIL;
+
+				nt->arg = (Expr *) v;
+				nt->nulltesttype = IS_NOT_NULL;
+				foreach_node(RestrictInfo, ri, c->root->simple_rel_array[c->relid]->baserestrictinfo)
+					quals = lappend(quals, ri->clause);
+				if (quals != NIL && predicate_implied_by(list_make1(nt), quals, false))
+					strict = bms_add_member(strict, v->varattno);
+			}
+		}
 	}
 	rel = table_open(c->heapoid, NoLock);
 	foreach_oid(ioid, RelationGetIndexList(rel))
@@ -97,7 +114,8 @@ sort_is_total(AggCtx *c, List *sortexprs)
 			int			att = ix->indkey.values[i];
 			HeapTuple	at = SearchSysCache2(ATTNUM, ObjectIdGetDatum(c->heapoid), Int16GetDatum(att));
 
-			all = bms_is_member(att, atts) && (ix->indnullsnotdistinct || (HeapTupleIsValid(at) && ((Form_pg_attribute) GETSTRUCT(at))->attnotnull));
+			all = bms_is_member(att, atts) &&
+				(ix->indnullsnotdistinct || bms_is_member(att, strict) || (HeapTupleIsValid(at) && ((Form_pg_attribute) GETSTRUCT(at))->attnotnull));
 			if (HeapTupleIsValid(at))
 				ReleaseSysCache(at);
 		}

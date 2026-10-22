@@ -163,7 +163,7 @@ the `ORDER BY`. The ORDER BY, LIMIT and OFFSET of the query run above it. With w
 Several columns of the select list share one comparison per row.
 
 The rows of a group tie unless the `ORDER BY` is a total order, and then the row is the choice of PostgreSQL's sort. So the scan is planned only when the sort
-holds every column of a unique index of the table (all `NOT NULL`, or `NULLS NOT DISTINCT`; not partial; of a partitioned table the index holds the partition key),
+holds every column of a unique index of the table (all `NOT NULL` or made so by a strict condition of the `WHERE` clause such as `col > 0`, or `NULLS NOT DISTINCT`; not partial; of a partitioned table the index holds the partition key),
 and has at most 4 columns after the ON columns. The test reads the catalog at plan time, so a prepared plan is replanned when the index is dropped.
 
 The normal plan stays when the sort is not a total order, a sort or select list expression is volatile, a value is an array or a column of a joined table,
