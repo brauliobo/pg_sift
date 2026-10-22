@@ -95,12 +95,12 @@ vleaf_source(AggCtx *c, int j)
 /*
  * The key of `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`, NULL for any other outer join of the function. An object has one member
  * per key, so the join is the member k of each row (a row without it keeps NULL columns): a row level value, not an unnest. A JSON null and
- * a missing key are the same NULL there; before PostgreSQL 18 a JSON null raises where the missing key does not, so the normal plan stays.
+ * a missing key are the same NULL there; before PostgreSQL 18 the cast of a JSON null raises where the missing key does not, so the plan stays
+ * normal while some unit may hold one (reads_json_null_cast).
  */
 static const char *
 left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 {
-#if PG_VERSION_NUM >= 180000
 	OpExpr	   *op;
 	Node	   *a,
 			   *b;
@@ -125,9 +125,6 @@ left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 		((Const *) b)->constisnull)
 		return NULL;
 	return TextDatumGetCString(((Const *) b)->constvalue);
-#else
-	return NULL;
-#endif
 }
 
 bool

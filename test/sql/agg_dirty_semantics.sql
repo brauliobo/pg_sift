@@ -25,11 +25,11 @@ BEGIN
 	RETURN false;
 END $$;
 
--- the rows or the error must be the same; expect_pushed says whether the query is meant to be scanned (a member of one key is scanned from PostgreSQL 18 only)
+-- the rows or the error must be the same; expect_pushed says whether the query is meant to be scanned
 CREATE FUNCTION same(q text, expect_pushed bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);
 BEGIN
-	RETURN (CASE WHEN pushed(q) <> expect_pushed AND (q !~ 'LEFT JOIN LATERAL jsonb_each' OR current_setting('server_version_num')::int >= 180000)
+	RETURN (CASE WHEN pushed(q) <> expect_pushed
 	             THEN CASE WHEN expect_pushed THEN 'NOT PUSHED: ' ELSE 'PUSHED: ' END ELSE '' END) ||
 		CASE WHEN a = b THEN CASE WHEN a LIKE 'ERR%' THEN 'same ' || left(a, 90) ELSE 'same' END ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
 END $$;
@@ -162,9 +162,9 @@ CREATE FUNCTION kq(rng text, sel text, key text DEFAULT 'm_a', grp text DEFAULT 
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t LEFT JOIN LATERAL jsonb_each(t.doc) r ON r.key = ' || quote_literal(key) || ' WHERE ' || rng || ' GROUP BY ' || grp
 $f$;
 
-SELECT pushed(kq('t.id < 90', 'sum(CAST(r.value AS float8))')) OR current_setting('server_version_num')::int < 180000 AS member_pushed;
-SELECT pushed(kq('t.id < 3000', 'sum(CAST(r.value AS float8))')) OR current_setting('server_version_num')::int < 180000 AS member_over_dirty_pushed;
-SELECT pushed(kq('t.id < 3000', 'sum(CAST(r.value AS integer))')) OR current_setting('server_version_num')::int < 180000 AS member_integer_pushed;
+SELECT pushed(kq('t.id < 90', 'sum(CAST(r.value AS float8))')) AS member_pushed;
+SELECT pushed(kq('t.id < 3000', 'sum(CAST(r.value AS float8))')) AS member_over_dirty_pushed;
+SELECT pushed(kq('t.id < 3000', 'sum(CAST(r.value AS integer))')) AS member_integer_pushed;
 SELECT r.name, same(kq(r.rng, 'sum(CAST(r.value AS float8)), count(*)')) AS cast_float8, same(kq(r.rng, 'sum(CAST(r.value AS integer)), count(*)')) AS cast_integer
 FROM (VALUES ('clean', 't.id < 90'), ('other member', 't.id BETWEEN 90 AND 110'), ('string 4', 't.id = 1100'), ('string -0', 't.id = 1101'),
              ('string 1e3', 't.id = 1102'), ('empty', 't.id = 1103'), ('string x', 't.id = 1000'), ('nested array', 't.id = 1104'), ('bool', 't.id = 1105'),

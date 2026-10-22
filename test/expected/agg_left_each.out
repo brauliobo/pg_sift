@@ -1,5 +1,5 @@
 -- `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` is the member k of each row: a row without it stays, with NULL columns. Its value is read at the
--- row level (or by a correlated child through casts), with PostgreSQL's results and errors; before PostgreSQL 18 the normal plan runs.
+-- row level (or by a correlated child through casts), with PostgreSQL's results and errors; before PostgreSQL 18 the cast of a JSON null raises, so a unit that may hold one keeps the normal plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb);
@@ -101,6 +101,14 @@ SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CA
    label   | same 
 -----------+------
  json null | t
+(1 row)
+
+-- the unit that holds the JSON null keeps the scan from the queries of the member before PostgreSQL 18 (its cast raises there where the scan reads NULL)
+SELECT runs_in_scan($q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'$q$)
+       = (current_setting('server_version_num')::int >= 180000) AS json_null_scanned_from_18;
+ json_null_scanned_from_18 
+---------------------------
+ t
 (1 row)
 
 -- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
