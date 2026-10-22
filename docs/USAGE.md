@@ -291,6 +291,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.table_init_gate` | 0 | at least 0 | any user | Test only: the first write of a sift_table waits for the advisory lock of this number before it creates the tombstone segment (0 = no gate). |
 | `sift.table_inline_promote` | on |  | any user | Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does). |
 | `sift.table_max_segments` | 128 | 16 to 128 | any user | Test only: the directory entries a sift_table may use. |
+| `sift.table_seal_gate` | 0 | at least 0 | any user | Test only: the writer that closed a write buffer of a sift_table waits for the advisory lock of this number before it flags the pages sealed (0 = no gate). |
 | `sift.table_vblock_floor` | 0 | 0 to 1,073,741,824 | any user | Test only: the first virtual block a new write buffer of a sift_table may take. |
 | `sift.table_write_buffer_limit` | 4 MB | 2 MB to 8 MB | any user | Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns. Rounded down to whole superblocks of 2 MB; a row has to fit one segment. |
 | `sift.topn_walk` | on |  | any user | Lets a top-N scan visit the units of a sort column that does not follow the table by the best value of their zones, and stop at the first that cannot beat the n-th. |

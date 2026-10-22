@@ -532,6 +532,7 @@ extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT int sift_tbl_init_gate;
 extern PGDLLIMPORT bool sift_tbl_inline_promote;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
+extern PGDLLIMPORT int sift_tbl_seal_gate;
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
