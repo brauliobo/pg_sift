@@ -1085,11 +1085,11 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			double		native = combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 
 			/* the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input */
-			f->use = f->ok && jc->frows * AGG_JOIN_ROW < native;
+			f->use = f->ok && jc->frows * AGG_FIRST_ROW < native;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
-				k->load_cost += jc->frows * AGG_JOIN_ROW;
+				k->load_cost += jc->frows * AGG_FIRST_ROW;
 			}
 			else
 				k->child_cost += native;
