@@ -18,5 +18,22 @@ SELECT sift._test_tbl_page_rec(65535, 0) AS slot_past_page;
 ERROR:  sift_table write buffer page holds a record that reaches past the page
 SELECT sift._test_tbl_page_rec(100, 60000) AS length_past_page;
 ERROR:  sift_table write buffer page holds a record that reaches past the page
+-- the edge: the largest record a page holds (also a bare header at the very end) is valid, one byte more is not
+SELECT sift._test_tbl_page_rec_end(100, 0) AS largest_record;
+ largest_record 
+----------------
+ t
+(1 row)
+
+SELECT sift._test_tbl_page_rec_end(0, 0) AS header_at_the_end;
+ header_at_the_end 
+-------------------
+ t
+(1 row)
+
+SELECT sift._test_tbl_page_rec_end(100, 1) AS record_one_byte_past;
+ERROR:  sift_table write buffer page holds a record that reaches past the page
+SELECT sift._test_tbl_page_rec_end(0, 1) AS header_one_byte_past;
+ERROR:  sift_table write buffer page holds a record that reaches past the page
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
