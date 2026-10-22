@@ -65,12 +65,12 @@ INSERT INTO shapes (name, q, show_mode) VALUES
 	('breakdown', 'SELECT p.kind, f.parent_id, count(*) AS n, sum(p.score) AS s, min(p.score) AS lo, max(p.score) AS hi
 	               FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> $$parts$$) AS p(kind text, dir_a text, score float8)
 	               WHERE p.dir_a IS NOT NULL GROUP BY p.kind, f.parent_id', true),
-	('distinct', 'WITH periods AS (SELECT * FROM (VALUES ($$a$$, 0), ($$b$$, 1), ($$c$$, 2)) v(label, bucket)),
+	('distinct', 'WITH spans AS (SELECT * FROM (VALUES ($$a$$, 0), ($$b$$, 1), ($$c$$, 2)) v(label, bucket)),
 	                   cells AS (SELECT f.id, f.parent_id, f.bucket, p.kind, avg(p.score) AS val
 	                             FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> $$parts$$) AS p(kind text, dir_a text, score float8)
 	                             GROUP BY f.id, f.parent_id, f.bucket, p.kind)
 	              SELECT c.kind, v.label, count(DISTINCT c.id) AS ids, count(DISTINCT c.parent_id) AS parents, avg(c.val) AS val
-	              FROM periods v LEFT JOIN cells c ON c.bucket = v.bucket GROUP BY c.kind, v.label', false),
+	              FROM spans v LEFT JOIN cells c ON c.bucket = v.bucket GROUP BY c.kind, v.label', false),
 	('total', 'SELECT count(*) AS n, count(DISTINCT f.id) AS ids, avg(p.score) AS val
 	           FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> $$parts$$) AS p(kind text, dir_a text, score float8)', true);
 
