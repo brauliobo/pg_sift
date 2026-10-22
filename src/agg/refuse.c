@@ -74,11 +74,19 @@ typedef struct ArmNote
 	double		vet_pct;
 } ArmNote;
 
+typedef struct PathVet
+{
+	double		cost;
+	double		vet;
+	double		pct;
+} PathVet;
+
 static ArmNote *arm;
 static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm_path */
 static const char *path_spill_detail;
 static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
 static double path_vet_pct;
+static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of */
 static List *done;
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
@@ -168,6 +176,25 @@ agg_arm_vet(double cost, double pct)
 	path_vet_pct = pct;
 }
 
+/* the heap check inside the cost of a SiftAgg plan node, and the share of the pages it is for (the node's total cost is its path's) */
+double
+agg_vet_of(double total_cost, double *pct)
+{
+	foreach_ptr(PathVet, v, path_vets)
+		if (v->cost == total_cost)
+		{
+			*pct = v->pct;
+			return v->vet;
+		}
+	return 0;
+}
+
+void
+agg_vet_forget(void)
+{
+	path_vets = NIL;
+}
+
 /* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */
 void
 agg_arm_path(Path *p)
@@ -184,6 +211,13 @@ agg_arm_path(Path *p)
 			}
 		if (arm->has_best)
 			arm->normal = arm->best.total_cost;
+	}
+	if (path_vet > 0)
+	{
+		PathVet    *v = palloc(sizeof(PathVet));
+
+		*v = (PathVet) {p->total_cost, path_vet, path_vet_pct};
+		path_vets = lappend(path_vets, v);
 	}
 	arm->paths = lappend(arm->paths, p);
 	arm->rel = p->parent;
@@ -304,6 +338,7 @@ forget_arms(void)
 {
 	arm = NULL;
 	done = NIL;
+	path_vets = NIL;
 	agg_variant = NULL;
 	quiet_reports = false;
 	stage_level = 0;
