@@ -336,10 +336,10 @@ def render_union(p):
 def gen_topn(r, ctx):
     cols = EVENTS
     sortable = ['amount', 'ts', 'kind', 'grp', 'val', 'big', 'num', 'flag', 'parent_id', 'a']
-    ks = r.sample(sortable, r.choice([1, 2, 2, 3]))
+    ks = r.sample(sortable, r.choice([1, 2, 2, 3, 5, 6]))  # more than 4 sort keys sort every row that passes
     order = [f"e.{k} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     grouped_ = r.random() < 0.25
-    return dict(order=order, limit=r.choice([1, 5, 10, 50, 300]), offset=r.choice([0, 0, 3, 40]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
+    return dict(order=order, limit=r.choice([1, 5, 10, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500, 2500]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
                 grouped=grouped_, keys=[], aggs=[], having=[], ordered=True, gkeys=keys(r, 'e', cols, 2), gagg=[r.choice(['count(*)', 'sum(e.amount)', 'max(e.amount)', 'count(DISTINCT e.grp)', 'min(e.big)', 'sum(e.big)'])])  # not a float: ties within the tolerance would order differently
 
 
@@ -491,6 +491,8 @@ PAR = 'max_parallel_workers_per_gather=%d;parallel_setup_cost=0;parallel_tuple_c
 def variants(r, fam):
     v = [('pre', 'sift.enable_agg=on;max_parallel_workers_per_gather=0'),
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
+    if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
+        v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam in ('twolevel', 'union', 'lookup'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
