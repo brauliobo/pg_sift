@@ -74,6 +74,9 @@ install() {
 # The lines that make the staged sift loadable (the server's own install on PostgreSQL 17)
 conf() {
 	leak_conf
+	# the background pass of a sift_table is on by default; a test counts the segments, blocks and dead rows its own statements leave, so the
+	# clusters run without it as without autovacuum, and the tests of the pass switch it on
+	echo "sift.table_auto_defrag = off"
 	# 19 can aggregate below a join (eager aggregation) and prices that plan under some of those of the pushdown tests, which then keep the normal plan
 	(( PG_MAJOR < 19 )) || echo "enable_eager_aggregate = off"
 	(( PG_MAJOR >= 18 )) || return 0
