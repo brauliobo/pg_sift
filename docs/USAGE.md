@@ -505,6 +505,48 @@ ps = DB[:events].where(Sequel.lit('entity_id = ANY(?::int4[])', :$ids)).select_g
 DB.transaction { DB.run 'SET LOCAL plan_cache_mode = force_generic_plan'; ps.call(ids: Sequel.pg_array(ids, :int4)) }
 ```
 
+### Is the index clustered, and what did the scans do
+
+`sift.col_clustering(index, width_pct => 1)` tells, per integer, date and timestamp leaf of a `sift_col` index, whether sorting the table by it would let scans skip more units. It reads the
+zone maps (min and max of each unit) of the immutable segments, no chunk, and answers with the units a filter on a value of the data touches, as `Units` of `EXPLAIN ANALYZE` counts them:
+
+| column | meaning |
+|---|---|
+| `units`, `zoned_units` | units of the index; those whose zone is a bounded range of the leaf (a unit with an overflow value is always read) |
+| `useful_pct` | share of them whose range is narrower than the span of the leaf: the zone can exclude a value |
+| `point_units` | units an equality on a value of the data touches, on average |
+| `range_units`, `range_ideal` | the same for a range of `width_pct` percent of the span, and what a column sorted by itself would touch |
+| `correlation` | order of the units against the order of their values: 1 ascending, -1 descending, near 0 scattered |
+| `verdict` | `clustered` (an equality touches 2 units or 2% of them), `partial` (up to 25%) or `scattered` |
+
+A `scattered` leaf that queries filter on is the one to sort by: `CLUSTER`, load the rows in its order, or `INSERT .. SELECT .. ORDER BY` into a fresh table, then `REINDEX`. Rows still in the write buffer are not counted.
+
+`sift.stats()` returns what the `Custom Scan (SiftAgg)` scans of the session did, one `(name, value)` row per counter, and `sift.stats_reset()` zeroes them. The counters are plain memory of the
+backend: no shared memory and no `shared_preload_libraries`, nothing is shared between sessions and a restart or a reconnection starts them again (read them before a pooled connection is returned, or log
+them with `auto_explain`). A scan adds its numbers once, when it ends, from the counters `EXPLAIN ANALYZE` shows; a statement that fails adds none. A query that kept the normal plan adds
+`refused.<slug>` only while `sift.explain_refusals` is on.
+
+| name | counts |
+|---|---|
+| `scans` | `Custom Scan (SiftAgg)` scans that ended (the arms of one fused pass are one) |
+| `workers_launched` | parallel workers those scans launched |
+| `units` | units the scans read or answered (not the pruned ones) |
+| `units_pruned` | units skipped before they were read: their zone maps, or a set or search selection, hold no match |
+| `units_preagg` | of the units, those answered from their pre-aggregates |
+| `rows_decoded` | rows of the units that were scanned |
+| `rows_vetted` | rows checked against the heap for visibility |
+| `rows_rechecked` | rows of dirty units read again from the heap |
+| `units_rechecked` | units that had such rows |
+| `units_no_rollup` | exact units scanned for lack of their rollup |
+| `units_rollup_cost` | exact units scanned because their rollup cost more than their elements |
+| `lookup_cache_hits` | lookup tables taken from the cache of an earlier query |
+| `lookup_cache_misses` | lookup tables the cache could have held and that were loaded |
+
+`sift.col_rollup_misses()` lists the scans of the session that the pre-aggregates of their index did not answer, by index (`rel`) and reason, most scans first, fixable reasons first. `reason` is a slug
+(`no_preagg`, `no_rollup`, `key_not_a_dim`, `dim_not_stored`, `measure_not_stored`, `key_expression`, `joined_table`, `union_arms`, `grouping_sets`, `aggregate_filter`, `aggregate_distinct`, ...,
+`unit_without_rollup` for scans that had them and read units without their rollup); `fixable` is true when another `rollup` or `preagg` option of the index would answer it (the dims and measures the queries
+asked for are the ones to name); `units` counts the units scanned for lack of their rollup. The list holds up to 256 pairs of index and reason.
+
 ## Replication
 
 **Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,

@@ -23,6 +23,7 @@
 #include "utils/tuplestore.h"
 
 #include "agg/refuse.h"
+#include "agg/stats.h"
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
 
@@ -160,6 +161,8 @@ report(const ArmNote *a)
 	const char *reason = a->why == AGG_REFUSE_NONE ? NULL :
 		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
 
+	if (!a->used && a->why != AGG_REFUSE_NONE)
+		sift_stats_refusal(slug);
 	if (why_store != NULL)
 	{
 		Datum		v[6];
