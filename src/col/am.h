@@ -115,6 +115,16 @@ extern bool sift_colw_is_wide_int(const SiftColDef *d);
 extern bool sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
 extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, uint64 *keep);
 
+/* col/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
+extern bool sift_enable_col_scan;
+extern void sift_col_scan_init(void);
+extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
+extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
+extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern void sift_col_amendscan(IndexScanDesc scan);
+extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
+									Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages);
+
 /* col/am.c */
 extern void sift_col_init(void);
 extern IndexBuildResult *sift_col_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);

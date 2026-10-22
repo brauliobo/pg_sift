@@ -9,9 +9,11 @@
 #include "access/heapam.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_type_d.h"
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -367,6 +369,11 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table")));
+	/* the bitmap scan compares bytes, which is equality only under a deterministic collation (a query matches the index collation exactly) */
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (index->rd_opcintype[i] == TEXTOID && OidIsValid(index->rd_indcollation[i]) && !get_collation_isdeterministic(index->rd_indcollation[i]))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_text_ops needs a deterministic collation"),
+							errhint("Use the default operator class for a column under a nondeterministic collation.")));
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 #endif
