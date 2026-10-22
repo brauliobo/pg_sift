@@ -120,7 +120,7 @@ typedef struct SiftAggPred
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */
-	bool		pass_poison;	/* SAP_ANY_ELEM over a list unnested by jsonb_to_recordset: a row whose list raises when it is read again from the heap passes, and raises where the rows reach the aggregates */
+	bool		pass_poison;	/* over a list unnested by jsonb_to_recordset: SAP_ANY_ELEM passes a row whose list raises when it is read again from the heap, and the error is raised where the rows reach the aggregates; SAP_ELEM_EXISTS raises it itself, for the tuples that reach it */
 	int			nchild;
 	struct SiftAggPred **child;
 	char	   *desc;			/* EXPLAIN */
