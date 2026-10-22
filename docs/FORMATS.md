@@ -90,4 +90,5 @@ a JSON null; informational, a segment written before the flag does not have it a
 | a kill before and after each directory update of a build, promotion, merge, VACUUM, table sealing and the promotion worker, with minor 7 and generic WAL page checks | `test/t/col_crash_matrix.sh` |
 | mixed minors 3/4/5/6, partition parents, table rewrite and JSON kinds | `test/sql/agg_jsonpath_kinds.sql` |
 | a 3.2 index with wide leaves (minor 5) beside the older minors, merges and `REINDEX` | `test/sql/col_format5.sql` |
+| `scripts/upgrade-check.sh` reports the formats of every index and table, and what a given release could not read (`--to`) | `test/t/upgrade_check.sh` |
 | standby and crash recovery of the new structures | `test/t/col_index_replica.sh`, `col_index_crash.sh`, `store_replica.sh`, `store_crash.sh`, `014_tbl_writepath.pl` |
