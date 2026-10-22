@@ -21,15 +21,7 @@ VACUUM (FREEZE, ANALYZE) o_t;
 SELECT count(*) AS string_values, count(DISTINCT t.id) AS string_rows
 FROM o_t t, jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n') = 'string';
 
--- the plan has the scan
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 -- the rows with and without the pushdown are the same (and not empty)
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
