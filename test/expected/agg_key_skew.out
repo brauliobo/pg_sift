@@ -1,0 +1,108 @@
+-- The plan the planner picks on its own costs when the keys of the scan come from a lookup table PostgreSQL can count: it prices each probe of
+-- the normal plan (a nested loop of index probes) for the mean rows of a key, while the parents a query passes own most of the rows when the
+-- column is skewed, and SiftAgg reads the units of the keys whatever their share. The probes are priced for the rows the column's most
+-- common values own (sift.agg_key_skew = off gives the mean back); a flat column keeps the normal plan. The planner cannot tell a list of the
+-- heaviest parents from one of the rarest, so both take the same plan; every statement is also run with sift.enable_agg = off: the rows must
+-- be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+-- log-uniform parents: parent 1 owns about one row in six, the last ones a few hundred rows in 30,000 (a low-discrepancy sequence, so the data is the same on every run)
+CREATE TABLE ks_events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO ks_events SELECT i, floor(power(301.0, (i * 0.6180339887498949) % 1.0))::int, date '2024-01-01' + (i - 1) / 30, 'cat_' || chr(97 + i % 4), 1 + i % 17, CASE WHEN i % 29 = 0 THEN now() END
+	FROM generate_series(1, 30000) i;
+CREATE TABLE ks_flat (LIKE ks_events) WITH (autovacuum_enabled = false);
+INSERT INTO ks_flat SELECT id, 1 + id % 300, ts, kind, amount, deleted_at FROM ks_events;
+ALTER TABLE ks_flat ADD PRIMARY KEY (id);
+CREATE INDEX ks_events_parent ON ks_events (parent_id, ts, deleted_at);
+CREATE INDEX ks_flat_parent ON ks_flat (parent_id, ts, deleted_at);
+CREATE INDEX ks_events_col ON ks_events USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
+CREATE INDEX ks_flat_col ON ks_flat USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
+-- the lists: group 1 the five heaviest parents, group 2 the five rarest
+CREATE TABLE ks_pick (grp int NOT NULL, parent_id int NOT NULL);
+INSERT INTO ks_pick SELECT 1, p FROM generate_series(1, 5) p;
+INSERT INTO ks_pick SELECT 2, p FROM generate_series(296, 300) p;
+CREATE INDEX ON ks_pick (grp);
+VACUUM (FREEZE, ANALYZE) ks_events, ks_flat, ks_pick;
+SELECT round(100 * count(*) FILTER (WHERE parent_id <= 5) / count(*)::numeric) AS pct_rows_heaviest_5,
+       round(100 * count(*) FILTER (WHERE parent_id >= 296) / count(*)::numeric, 1) AS pct_rows_rarest_5 FROM ks_events;
+ pct_rows_heaviest_5 | pct_rows_rarest_5 
+---------------------+-------------------
+                  31 |               0.3
+(1 row)
+
+CREATE FUNCTION plan_of(q text, skew text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	PERFORM set_config('sift.agg_key_skew', skew, true);
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE FUNCTION in_list(tbl text, grp int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM %s f
+WHERE f.parent_id IN (SELECT p.parent_id FROM ks_pick p WHERE p.grp = %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
+CREATE FUNCTION join_list(tbl text, grp int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM %s f JOIN ks_pick p ON p.parent_id = f.parent_id
+WHERE p.grp = %s AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
+-- skewed column: the heaviest and the rarest five parents take the same plan, and the rows are the same from either plan
+SELECT * FROM same(in_list('ks_events', 1));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT * FROM same(in_list('ks_events', 2));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT result_rows, vs_normal_plan FROM same(join_list('ks_events', 1));
+ result_rows | vs_normal_plan 
+-------------+----------------
+           4 |              0
+(1 row)
+
+SELECT result_rows, vs_normal_plan FROM same(join_list('ks_events', 2));
+ result_rows | vs_normal_plan 
+-------------+----------------
+           4 |              0
+(1 row)
+
+SELECT * FROM same(in_list('ks_flat', 1));
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
+(1 row)
+
+SELECT result_rows, vs_normal_plan FROM same(join_list('ks_flat', 2));
+ result_rows | vs_normal_plan 
+-------------+----------------
+           4 |              0
+(1 row)
+
+-- the switch: with sift.agg_key_skew = off the probes are priced for the mean rows of a key; a flat column takes the same plan either way
+SELECT t AS tbl, g AS grp, plan_of(in_list(t, g), 'on') AS skew_on, plan_of(in_list(t, g), 'off') AS skew_off
+FROM (VALUES ('ks_events', 1), ('ks_events', 2), ('ks_flat', 1), ('ks_flat', 2)) v (t, g);
+    tbl    | grp | skew_on | skew_off 
+-----------+-----+---------+----------
+ ks_events |   1 | SiftAgg | normal
+ ks_events |   2 | SiftAgg | normal
+ ks_flat   |   1 | normal  | normal
+ ks_flat   |   2 | normal  | normal
+(4 rows)
+
+DROP FUNCTION in_list(text, int), join_list(text, int), plan_of(text, text), same(text);
+DROP TABLE ks_events, ks_flat, ks_pick;
+DROP EXTENSION pg_sift;
