@@ -37,7 +37,7 @@ at the published size) and rewrites their blocks. It is resumable (a stage that 
 other benchmarks of the host) for the run, and says in the header of each block the version, date, host and load it was measured at. `--calm` is for a timer: it measures only when the pressure of the host stays below the quiet gate
 `bench/refresh.service` and `bench/refresh.timer` are a
 user unit and a weekly timer (Sunday 03:00, a random delay of up to an hour) that run `refresh --calm --pr`; the header of the service says what to install (a clone of its own, the environment file); nothing installs them. The cheap gate
-another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them.
+another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them. `bench/bench refresh --prepare` builds the image and generates the data of the update, delete and VACUUM section first (nice, no host lock), so the measuring run starts at once.
 
 **One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
 only those two files from the committed rows, without measuring). Nothing in them is typed by hand: `steps/readme.py` takes every figure from the rows, the engine list from the registry, and the
