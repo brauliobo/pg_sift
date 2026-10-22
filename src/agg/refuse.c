@@ -16,6 +16,7 @@
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/parsenodes.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
@@ -36,13 +37,14 @@ static bool notice_refusals = false;
 static bool count_refusals = false;
 const char *agg_variant = NULL;
 
-#define AGG_REFUSAL_ROW(id, slug, text, limit) {slug, text, limit},
+#define AGG_REFUSAL_ROW(id, slug, text, limit, by_design) {slug, text, limit, by_design},
 static const struct
 {
 	const char *slug;
 	const char *text;
 	bool		limit;
-}			refusals[] = {{NULL, NULL, false}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
+	bool		by_design;
+}			refusals[] = {{NULL, NULL, false, false}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
 
 /* the ids of core/limits.h: the name sift.stats counts a refusal by a limit under */
 static const char *const limit_names[] = {
@@ -74,6 +76,7 @@ static ArmNote *arm;
 static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm_path */
 static const char *path_spill_detail;
 static List *done;
+static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
 static Tuplestorestate *why_store;
 static TupleDesc why_desc;
@@ -102,6 +105,14 @@ agg_refuse_limit_note(AggRefusal why, int lim, const char *detail)
 	if (arm != NULL && arm->why == AGG_REFUSE_NONE)
 		arm->limit = limit_names[lim];
 	return agg_refuse_note(why, detail);
+}
+
+/* the arm tries another table as the scanned one: a first table that had no column index is not the reason of the arm */
+void
+agg_refuse_retry(void)
+{
+	if (arm != NULL && arm->why == AGG_REFUSE_NO_SOURCE)
+		arm->why = AGG_REFUSE_NONE;
 }
 
 /* [variant:][L<level>:]name: the arms of a sub-select and of a variant of the statement are told from the top level's */
@@ -198,6 +209,9 @@ agg_arm_end(void)
 		return;
 	else if (a->why == AGG_REFUSE_NONE)
 		a->why = AGG_REFUSE_OTHER;
+	/* a volatile function is the reason of whatever shape site it was met at, unless the refusal is by design anyway */
+	if (stage_volatile && a->why != AGG_REFUSE_NONE && !refusals[a->why].by_design)
+		a->why = AGG_REFUSE_VOLATILE;
 	done = lappend(done, a);
 }
 
@@ -258,6 +272,7 @@ forget_arms(void)
 	done = NIL;
 	agg_variant = NULL;
 	stage_level = 0;
+	stage_volatile = false;
 }
 
 static void
@@ -275,9 +290,10 @@ forget_arms_subxact(SubXactEvent event, SubTransactionId my_subid, SubTransactio
 }
 
 void
-agg_stage_begin(AggStage *st, int level)
+agg_stage_begin(AggStage *st, PlannerInfo *root)
 {
 	static bool registered;
+	int			level = root->query_level;
 
 	st->on = sift_explain_refusals;
 	if (!st->on)
@@ -291,9 +307,11 @@ agg_stage_begin(AggStage *st, int level)
 	st->outer_arm = arm;
 	st->outer_done = done;
 	st->outer_level = stage_level;
+	st->outer_volatile = stage_volatile;
 	arm = NULL;
 	done = NIL;
 	stage_level = level;
+	stage_volatile = contain_volatile_functions((Node *) root->parse);
 }
 
 /* the pick of a column index that reports for the arm: the one that used it, else the first */
@@ -324,6 +342,7 @@ agg_stage_end(AggStage *st)
 	arm = st->outer_arm;
 	done = st->outer_done;
 	stage_level = st->outer_level;
+	stage_volatile = st->outer_volatile;
 }
 
 Datum

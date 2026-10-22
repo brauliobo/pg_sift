@@ -65,20 +65,28 @@ INSERT INTO shapes VALUES
  ('from shape', 'single', 'WITH c AS MATERIALIZED (SELECT kind FROM events) SELECT kind, count(*) FROM c GROUP BY 1'),
  ('outer join', 'single', 'SELECT count(*) FROM events e LEFT JOIN LATERAL jsonb_each(e.doc->''metrics'') r ON r.value::text = ''1'''),
  ('unnest leaf', 'single', 'SELECT x->>''k'', count(*) FROM events e, jsonb_array_elements(e.doc->''nope'') x GROUP BY 1'),
- ('where', 'single', 'SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1'),
+ ('where', 'single', 'SELECT kind, count(*) FROM events WHERE length(doc::text) > 3 GROUP BY 1'),
+ ('volatile', 'single', 'SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1'),
  ('join condition', 'single', 'SELECT count(*) FROM events e, plain p'),
- ('join child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id ORDER BY random() LIMIT 1) s ON true'),
- ('group key', 'single', 'SELECT random(), count(*) FROM events GROUP BY 1'),
+ ('join child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id LIMIT 1 FOR UPDATE) s ON true'),
+ ('volatile child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id ORDER BY random() LIMIT 1) s ON true'),
+ ('group key', 'single', 'SELECT length(doc::text), count(*) FROM events GROUP BY 1'),
+ ('volatile key', 'single', 'SELECT random(), count(*) FROM events GROUP BY 1'),
  ('too many keys', 'single', repeated(40)),
  ('output', 'single', 'SELECT id, kind, count(*) FROM events GROUP BY id'),
  ('error parity', 'single', 'SELECT sum((doc->>''m'')::float8) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') FROM guarded'),
- ('aggregate', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
+ ('aggregate', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE length(doc::text) > 3) FROM events GROUP BY 1'),
+ ('volatile filter', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
  ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''m_total'''),
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
  ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id FROM events ORDER BY kind, parent_id'),
  ('top n', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3'),
  ('top n order', 'topn', 'SELECT id FROM events ORDER BY parent_id + id LIMIT 3'),
- ('top n where', 'topn', 'SELECT id FROM events WHERE random() < 0.5 ORDER BY parent_id LIMIT 3'),
+ ('top n where', 'topn', 'SELECT id FROM events WHERE length(doc::text) > 3 ORDER BY parent_id LIMIT 3'),
+ ('top n volatile', 'topn', 'SELECT id FROM events WHERE random() < 0.5 ORDER BY parent_id LIMIT 3'),
+ ('top n locked', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 FOR UPDATE'),
+ ('top n window', 'topn', 'SELECT id, row_number() OVER () FROM events ORDER BY parent_id, id LIMIT 3'),
+ ('top n limit', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 OFFSET -1'),
  ('top n no index', 'topn', 'SELECT id FROM plain ORDER BY val, id LIMIT 3'),
  ('limit 1 lookup', 'lookup', 'SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id LIMIT 1) d ON true GROUP BY 1'),
  ('two level', 'two_level', 'SELECT category, avg(score), sum(n)::int FROM ' || arms() || ' GROUP BY 1'),
@@ -104,19 +112,27 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  outer join          | single     | f    | outer_join
  unnest leaf         | single     | f    | unnest_leaf
  where               | single     | f    | where
+ volatile            | single     | f    | volatile
  join condition      | single     | f    | join_condition
  join child          | single     | f    | join_child
+ volatile child      | single     | f    | volatile
  group key           | single     | f    | group_key
+ volatile key        | single     | f    | volatile
  too many keys       | single     | f    | too_many_keys
  output              | single     | f    | output_expr
  error parity        | single     | f    | error_parity
  aggregate           | single     | f    | aggregate
+ volatile filter     | single     | f    | volatile
  dirty cast          | single     | f    | dirty_units
  distinct            | distinct   | t    | 
  distinct on         | distinct   | f    | distinct_on
  top n               | topn       | t    | 
  top n order         | topn       | f    | topn_shape
  top n where         | topn       | f    | where
+ top n volatile      | topn       | f    | volatile
+ top n locked        | topn       | f    | query_kind
+ top n window        | topn       | f    | topn_shape
+ top n limit         | topn       | f    | topn_shape
  top n no index      | topn       | f    | no_source
  limit 1 lookup      | lookup     | f    | lateral_limit
  two level           | two_level  | t    | 
@@ -130,7 +146,7 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  rows                | rows       | f    | rows_shape
  rows grouping sets  | rows       | f    | grouping_sets
  shared cte          | cte_inline | f    | cte_cost
-(35 rows)
+(43 rows)
 
 -- a spine of 12,001 rows is used; one above the memory of the lookups is refused
 SET sift.agg_lookup_max_kb = 512;
@@ -240,7 +256,7 @@ SET client_min_messages = error;
 SELECT count(*) AS shapes, count(*) FILTER (WHERE plan_of(q, false) <> plan_of(q, true)) AS plans_that_differ FROM shapes;
  shapes | plans_that_differ 
 --------+-------------------
-     35 |                 0
+     43 |                 0
 (1 row)
 
 SHOW sift.explain_refusals;

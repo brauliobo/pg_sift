@@ -250,6 +250,8 @@ if [[ $MODE == full ]]; then
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-12 --queries 150 --rows 6000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
+	# the share of the variant matrices the pushdown answers: the full tier recomputes the committed counts, the quick tier is a smoke of a third of the variants
+	job coverage-pct coverage-pct 1 "$S/coverage.sh" --pct --verify
 	job fuzz fuzz 1 "$S/fuzz.sh"
 	flavor_job hardened hardened "$S/hardened.sh"
 	job static static 0 "$S/static.sh"
@@ -291,6 +293,7 @@ else
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
+	job coverage-pct coverage-pct 1 "$S/coverage.sh" --pct --tier quick
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
