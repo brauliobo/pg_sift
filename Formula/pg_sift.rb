@@ -64,7 +64,7 @@ class PgSift < Formula
           CREATE INDEX metrics_col ON metrics USING sift_col (category, amount);
           VACUUM (ANALYZE) metrics;
           SET sift.enable_agg = on;
-          SET cpu_tuple_cost = 0.5;
+          SET enable_seqscan = off;
           EXPLAIN (COSTS OFF) SELECT sum(amount) FROM metrics WHERE category = 1;
           SELECT sum(amount) FROM metrics WHERE category = 1;
           DO $$

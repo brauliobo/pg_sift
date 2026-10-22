@@ -52,6 +52,7 @@ A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared 
 | `src/col`, `src/agg` | the column, aggregate and table jobs and the common ones (production build, coverage, isolation) |
 | `src/table` | the table jobs and the common ones |
 | a test file | that test |
+| `Formula/`, the build or the harness (and the nightly run) | also the `macos` job: the formula (`brew install --HEAD`, `brew test`) on PostgreSQL 17 and 18, two regression tests under brew bash 5, and `make check` under the stock bash 3.2, which must fail with a message |
 
 PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
 PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).

@@ -44,6 +44,7 @@ jobs:
       sqlite: ${{ steps.scope.outputs.sqlite }}
       mariadb: ${{ steps.scope.outputs.mariadb }}
       replication: ${{ steps.scope.outputs.replication }}
+      macos: ${{ steps.scope.outputs.macos }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v6
@@ -265,10 +266,72 @@ jobs:
       - name: Build and smoke-test the library of the series
         run: SERIES=${{ matrix.series }} scripts/package-mariadb.sh all HEAD dist-mariadb
 
+  # Homebrew on macOS arm64, the one place that is not Linux: the formula of this checkout builds and passes its own test on PostgreSQL 17 and 18, and the
+  # test harness runs on brew's bash 5 (a few regression tests; the stages that need GNU tools or /proc stay on Linux) while `make check` under the stock
+  # /bin/bash 3.2 must stop with a message instead of exiting 0. It runs where scripts/areas.tsv says (gh:macos: the build, the harness and Formula/ are
+  # `.`, so a core or harness change, the nightly run and a dispatch), never on a pull request that touches only sources or docs. Hosted macOS minutes are
+  # free for a public repository (10x the Linux rate for a private one), hence the time limit.
+  macos:
+    name: macOS arm64 (Homebrew)
+    needs: changes
+    if: ${{ needs.changes.outputs.macos == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install bash 5 and PostgreSQL 17 and 18
+        run: brew install bash postgresql@17 postgresql@18 lz4 zstd
+
+      # the README install (a tap, brew install --HEAD, brew test) on this checkout: the formula is copied into a tap of its own with its head pointing here
+      - name: Formula (brew install --HEAD, brew test)
+        run: |
+          git branch -f macos-ci HEAD
+          brew tap-new --no-git local/ci
+          mkdir -p "$(brew --repository local/ci)/Formula"
+          sed "s|^  head .*|  head \"file://$PWD\", using: :git, branch: \"macos-ci\"|" Formula/pg_sift.rb >"$(brew --repository local/ci)/Formula/pg_sift.rb"
+          brew install --HEAD local/ci/pg_sift
+          brew test local/ci/pg_sift
+
+      # the report this job answers: no brew bash on PATH, so `env bash` is /bin/bash 3.2
+      - name: make check under the stock bash 3.2 fails with a message
+        run: |
+          /bin/bash --version | head -1
+          if out=$(env PATH=/usr/bin:/bin:/usr/sbin:/sbin PG_CONFIG="$(brew --prefix postgresql@18)/bin/pg_config" make check 2>&1); then
+            echo "$out"; echo "make check exited 0 under bash 3.2"; exit 1
+          fi
+          echo "$out"
+          grep -q 'needs bash 4+' <<<"$out"
+
+      - name: make check (regression tests) under brew bash 5
+        env:
+          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+          SIFT_CI_JOBS: '^installcheck-(facets|filter_pushdown)$'
+          SIFT_CI_NO_HARNESS: 1
+        run: |
+          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
+          bash --version | head -1
+          make check
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-test-logs-macos
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/regress/*/regression.diffs
+          if-no-files-found: ignore
+
   # the one name for a branch ruleset to require: the shard names of the jobs above change with the diff and the event, this one does not.
   # A job that did not run (skipped) passes; a failed or cancelled one fails the gate
   gate:
-    needs: [changes, lint, postgresql, replication, sqlite, mariadb]
+    needs: [changes, lint, postgresql, replication, sqlite, mariadb, macos]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
