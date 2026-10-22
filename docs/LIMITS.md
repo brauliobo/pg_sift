@@ -63,7 +63,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `rollups` | rollups of one index | 8 | rollups | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/preagg.h` `SIFT_PAGG_MAX_ROLLUPS` |  |
 | `cube_measures` | measures of a cube or rollup | 8 | measures | option rejected at CREATE or ALTER INDEX | `cube option` | `col/preagg.h` `SIFT_PAGG_MAX_MEAS` |  |
 | `cube_groups` | groups of a default cube dimension in one unit | 256 | groups | the unit has no histogram for the dimension (it is scanned) |  | `col/preagg.h` `SIFT_PAGG_DEF_GROUPS` |  |
-| `month_groups` | groups of a month dimension in one unit | 1,024 | groups | the unit has no histogram for the dimension (it is scanned) |  | `col/preagg.h` `SIFT_PAGG_MONTH_GROUPS` |  |
+| `calendar_groups` | groups of a calendar dimension (days, else months, else years) in one unit | 1,024 | groups | the unit tries the next grain, then has no histogram for the dimension (it is scanned) |  | `col/preagg.h` `SIFT_PAGG_CAL_GROUPS` |  |
 | `explicit_groups` | groups of a dimension of an explicit cube(...) in one unit | 4,096 | groups | the unit has no histogram for the dimension (it is scanned) | `cube option` | `col/preagg.h` `SIFT_PAGG_CUBE_GROUPS` |  |
 | `rollup_tuples` | tuples of an explicit rollup in one unit | 4,096 | tuples | the unit has no rollup (it is scanned) | `rollup option` | `col/preagg.h` `SIFT_PAGG_ROLLUP_TUPLES` |  |
 | `set_keys` | distinct keys of a set column a unit keeps exactly (default) | 32 | keys | no pruning by the set | `set_limit option` | `col/setsum.h` `SIFT_CSET_LIMIT` |  |

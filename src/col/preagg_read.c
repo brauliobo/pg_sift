@@ -124,9 +124,9 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	nk = ng - (hd->has_null ? 1 : 0);
 	for (uint32 i = 0; i < nk; i++)
 		hd->key[i] = i == 0 ? get_zz(r) : (int64) ((uint64) hd->key[i - 1] + get_u(r));
-	/* the keys of a month dim are first days of months, in ascending order: nothing else is a group of a month */
-	for (uint32 i = 0; leaf >= SIFT_PAGG_MONTH && i < nk; i++)
-		if (!sift_cpagg_month_start(hd->key[i]) || (i > 0 && hd->key[i] <= hd->key[i - 1]))
+	/* the keys of a calendar dim are the first days of cells of its grain, in ascending order: nothing else is a group of a cell */
+	for (uint32 i = 0; leaf >= SIFT_PAGG_CAL && i < nk; i++)
+		if (!sift_cpagg_cal_key_ok(s->cols[leaf % SIFT_PAGG_CAL].type, leaf / SIFT_PAGG_CAL, hd->key[i]) || (i > 0 && hd->key[i] <= hd->key[i - 1]))
 			return false;
 	for (uint32 i = 0; i < ng; i++)
 		hd->count[i] = (uint32) get_u(r);
@@ -167,17 +167,16 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	return !r->bad;
 }
 
-/* is l the directory leaf of the month of a timestamp leaf of the schema? */
+/* is l the directory leaf of the cells of a date or timestamp leaf of the schema? */
 static bool
-is_month_dim(const SiftColSchema *s, uint64 l)
+is_cal_dim(const SiftColSchema *s, uint64 l)
 {
-	return l >= SIFT_PAGG_MONTH && l - SIFT_PAGG_MONTH < (uint64) s->ncols && s->cols[l - SIFT_PAGG_MONTH].type == SIFT_COLT_TIMESTAMP &&
-		s->cols[l - SIFT_PAGG_MONTH].store == SIFT_COLS_INT && s->cols[l - SIFT_PAGG_MONTH].parent < 0;
+	return l >= SIFT_PAGG_CAL && l / SIFT_PAGG_CAL <= SIFT_CAL_YEAR && l % SIFT_PAGG_CAL < (uint64) s->ncols && sift_cpagg_cal_type(s, (int) (l % SIFT_PAGG_CAL));
 }
 
 /*
  * The directory of a blob: leaf and body bytes of each entry (at most max of them; the dims of a cube, or the lists of an element blob, where the
- * leaf ncols is the rows of the unit; cube: the dims of a cube, which may name months, else a list); body points at the first body. false when inconsistent
+ * leaf ncols is the rows of the unit; cube: the dims of a cube, which may name calendar cells, else a list); body points at the first body. false when inconsistent
  */
 static bool
 read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool cube, int *nd, int *leaf, uint32 *blen, const uint8 **body)
@@ -195,8 +194,8 @@ read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool cu
 		uint64		l = get_u(&r),
 					n = get_u(&r);
 
-		/* a cube's directory may name the month of a timestamp leaf (column format minor 8), an element blob's the rows of the unit (leaf ncols, minor 9) */
-		if (r.bad || n == 0 || n > len || (l >= (uint64) s->ncols + !cube && !(cube && is_month_dim(s, l))))
+		/* a cube's directory may name the cells of a date or timestamp leaf (column format minor 8), an element blob's the rows of the unit (leaf ncols, minor 9) */
+		if (r.bad || n == 0 || n > len || (l >= (uint64) s->ncols + !cube && !(cube && is_cal_dim(s, l))))
 			return false;
 		leaf[d] = l == (uint64) s->ncols ? -1 : (int) l;
 		blen[d] = (uint32) n;
@@ -249,11 +248,12 @@ sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, Mem
 	res = 0;
 	for (int d = 0; d < nd; d++)
 	{
-		if (lf[d] == leaf)
+		/* SIFT_PAGG_CAL + a leaf: its calendar dim, whatever the grain of the unit */
+		if (lf[d] == leaf || (leaf >= SIFT_PAGG_CAL && lf[d] >= SIFT_PAGG_CAL && lf[d] % SIFT_PAGG_CAL == leaf % SIFT_PAGG_CAL))
 		{
 			Rd			r = {p, p + blen[d], false};
 
-			res = decode_dim(s, &r, leaf, out) && r.p == r.end ? 1 : -1;
+			res = decode_dim(s, &r, lf[d], out) && r.p == r.end ? 1 : -1;
 			break;
 		}
 		p += blen[d];
@@ -375,7 +375,7 @@ sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax
 						k = 0;
 			uint8		fl;
 
-			while (k < spec->ndims && spec->dim[k].leaf != leaf[d])
+			while (k < spec->ndims && (spec->dim[k].cal ? leaf[d] < SIFT_PAGG_CAL || leaf[d] % SIFT_PAGG_CAL != spec->dim[k].leaf : spec->dim[k].leaf != leaf[d]))
 				k++;
 			if (k == spec->ndims || !peek_dim(s, p, blen[d], &fl, meas, &nm))
 			{
@@ -787,7 +787,7 @@ sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const u
 	{
 		for (int d = 0; d < h.ndims; d++)
 		{
-			need[h.dim[d].leaf % SIFT_PAGG_MONTH] = true;
+			need[h.dim[d].leaf % SIFT_PAGG_CAL] = true;
 			for (int m = 0; m < h.dim[d].nmeas; m++)
 				need[h.dim[d].meas[m]] = true;
 		}
@@ -846,9 +846,10 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 		spec->minmax = h.dim[0].minmax;
 		for (int d = 0; d < h.ndims; d++, spec->ndims++)
 		{
-			spec->dim[spec->ndims].leaf = h.dim[d].leaf % SIFT_PAGG_MONTH;
-			spec->dim[spec->ndims].month = h.dim[d].leaf >= SIFT_PAGG_MONTH;
-			if (spec->dim[spec->ndims].month && format < SIFT_COL_FORMAT_MONTH)
+			spec->dim[spec->ndims].leaf = h.dim[d].leaf % SIFT_PAGG_CAL;
+			spec->dim[spec->ndims].cal = h.dim[d].leaf >= SIFT_PAGG_CAL;
+			spec->dim[spec->ndims].grain = h.dim[d].leaf / SIFT_PAGG_CAL;
+			if (spec->dim[spec->ndims].cal && format < SIFT_COL_FORMAT_CALENDAR)
 				return false;
 			spec->dim[spec->ndims].nmeas = h.dim[d].nmeas;
 			memcpy(spec->dim[spec->ndims].meas, h.dim[d].meas, sizeof(spec->dim[0].meas));

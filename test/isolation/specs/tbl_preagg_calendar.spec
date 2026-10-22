@@ -1,4 +1,4 @@
-# SiftAgg answering the stored units of a sift_table from the groups of the months of a timestamp column (column format minor 8) while writers and VACUUM move rows around it: snapshots older
+# SiftAgg answering the stored units of a sift_table from the calendar cells of a timestamp column (column format minor 8) while writers and VACUUM move rows around it: snapshots older
 # than a committed insert or delete, uncommitted and rolled back inserts and deletes, promotion by VACUUM. The step prints the rows the
 # snapshot must see (plain plan), whether the pushed-down result with and without pre-aggregates equals it, and how many units answered.
 # requires: tam
@@ -6,8 +6,8 @@
 setup
 {
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
-	CREATE TABLE iso_pa (id int, g int, v numeric(10,2), ts timestamp) USING sift_table;
-	INSERT INTO iso_pa SELECT i, i % 7, i % 100, timestamp '2020-01-01' + i * interval '2 hours' FROM generate_series(1, 120000) i;
+	CREATE TABLE iso_pa (id int, g int, v numeric(10,2), ts timestamp, d date) USING sift_table;
+	INSERT INTO iso_pa SELECT i, i % 7, i % 100, timestamp '2020-01-01' + i * interval '2 hours', date '2020-01-01' + i / 12 FROM generate_series(1, 120000) i;
 	CREATE FUNCTION iso_pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $f$
 	DECLARE r text;
 	BEGIN
@@ -31,12 +31,15 @@ setup
 		END LOOP;
 		RETURN CASE WHEN units IS NULL THEN 'no SiftAgg' WHEN pre IS NULL THEN 'scan' WHEN pre = 0 THEN 'none' WHEN pre = units THEN 'all' ELSE 'some' END;
 	END $f$;
-	CREATE FUNCTION iso_pa_check(OUT n bigint, OUT same bool, OUT pre text) LANGUAGE plpgsql AS $f$
+	CREATE FUNCTION iso_pa_check(OUT n bigint, OUT same bool, OUT pre text, OUT same_range bool, OUT pre_range text) LANGUAGE plpgsql AS $f$
 	DECLARE q text := 'SELECT date_trunc(''month'', ts)::date, count(*), sum(v) FROM iso_pa GROUP BY 1';
+	        qr text := 'SELECT extract(year FROM d), count(*), sum(v) FROM iso_pa WHERE d >= ''2021-03-01'' AND d < ''2024-03-01'' GROUP BY 1';
 	BEGIN
 		n := trim(both '()' from iso_pa_rows('SELECT count(*) FROM iso_pa', false, false))::bigint;
 		same := iso_pa_rows(q, true, true) = iso_pa_rows(q, false, false) AND iso_pa_rows(q, false, true) = iso_pa_rows(q, false, false);
 		pre := iso_pa_units(q);
+		same_range := iso_pa_rows(qr, true, true) = iso_pa_rows(qr, false, false) AND iso_pa_rows(qr, false, true) = iso_pa_rows(qr, false, false);
+		pre_range := iso_pa_units(qr);
 	END $f$;
 }
 
@@ -59,8 +62,8 @@ step s1c	{ COMMIT; }
 session s2
 step s2b	{ BEGIN; }
 step s2del	{ DELETE FROM iso_pa WHERE id % 50 = 0; }
-step s2ins	{ INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour' FROM generate_series(1, 3000) i; }
-step s2upd	{ UPDATE iso_pa SET v = v + 1, ts = ts + interval '90 days' WHERE id % 1000 = 0; }
+step s2ins	{ INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour', date '2024-06-01' + i / 24 FROM generate_series(1, 3000) i; }
+step s2upd	{ UPDATE iso_pa SET v = v + 1, ts = ts + interval '90 days', d = d + 90 WHERE id % 1000 = 0; }
 step s2c	{ COMMIT; }
 step s2a	{ ROLLBACK; }
 

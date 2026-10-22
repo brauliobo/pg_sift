@@ -69,6 +69,7 @@
 #include "agg/part.h"
 #include "agg/spec.h"
 #include "col/kern.h"
+#include "col/preagg.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/topn.h"
@@ -171,8 +172,8 @@ preagg_zones(AggExec *ex)
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
-		/* the groups of a month dim do not test the timestamp's own comparisons: the zone does */
-		if ((z->leaf != ex->pa.dim || ex->pa.month) &&
+		/* the groups of the dim test the comparisons on its leaf, the cells of a calendar dim by their span (cal_keep) */
+		if (z->leaf != ex->pa.dim &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
 	}
@@ -237,14 +238,13 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 	bool		wide = ex->lay->leaf[ex->pa.dim].vtype == SCV_I64,
 				bound = false;
 
-	if (ex->pa.month)
-		return NULL;			/* the planner gave a month dim no test on its leaf but zone comparisons */
 	for (int i = 0; i < s->npred + s->naggs; i++)
 	{
 		int			ai = i - s->npred;
 		const SiftAggPred *p = ai < 0 ? s->pred[i] : s->agg[ai].filter;
 
-		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim)
+		/* the comparisons on the leaf of a calendar dim are decided by the span of each cell, not by its first day (cal_keep) */
+		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim || (ex->pa.cal && sift_aggspec_zone_cmp(p, ex->lay, ex->nbase)))
 			continue;
 		if (!bound)
 		{
@@ -253,8 +253,9 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 
 			for (int k = 0; k < ng - h->has_null; k++)
 			{
+				/* a cell of a timestamp is tested at its first microsecond */
 				if (wide)
-					((int64 *) data)[k] = h->key[k];
+					((int64 *) data)[k] = ex->pa.cal ? h->key[k] * USECS_PER_DAY : h->key[k];
 				else
 					((uint32 *) data)[k] = (uint32) h->key[k];
 			}
@@ -275,6 +276,56 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 	}
 	ex->uvec_ok[ex->pa.dim] = false;
 	return keep;
+}
+
+/*
+ * The cells of the histogram of a calendar dim that the comparisons on its leaf keep, ANDed into *keep (NULL: all pass so far). A cell is decided by its
+ * whole span, first to last instant: inside the interval it passes, outside it does not, and the NULL group never does. False: an interval cuts a cell, the
+ * cell's rows differ, and the unit is scanned.
+ */
+static bool
+cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
+{
+	bool		date = ex->lay->leaf[ex->pa.dim].vtype == SCV_I32;
+	int			ng = h->ngroups,
+				nk = ng - h->has_null;
+
+	for (int z = 0; z < ex->nprune; z++)
+	{
+		const SiftSrcPrune *pz = &ex->prune[z];
+
+		if (pz->leaf != ex->pa.dim)
+			continue;
+		if (*keep == NULL)
+		{
+			*keep = MemoryContextAlloc(ex->ucxt, ((ng + 63) / 64 + PADW) * sizeof(uint64));
+			fill_ones(*keep, ng);
+		}
+		for (int g = 0; g < ng; g++)
+		{
+			int64		first = h->key[g],
+						next = sift_cpagg_cal_next(h->grain, first),
+						last;
+
+			if (g >= nk)
+			{
+				(*keep)[g / 64] &= ~(UINT64CONST(1) << (g % 64));
+				continue;
+			}
+			if (date)
+				last = next - 1;
+			else
+			{
+				first *= USECS_PER_DAY;
+				last = next > PG_INT64_MAX / USECS_PER_DAY ? PG_INT64_MAX : next * USECS_PER_DAY - 1;
+			}
+			if (last < pz->lo || first > pz->hi)
+				(*keep)[g / 64] &= ~(UINT64CONST(1) << (g % 64));
+			else if (first < pz->lo || last > pz->hi)
+				return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -299,11 +350,11 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 			ids[j] = PA_NULL(kept[j]) ? 0 : idmap_id(&k->im, key[kept[j]]);
 		return;
 	}
-	if (k->bucket)
+	if (k->bucket || k->cal)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 
-		/* a month dim: its keys are the bucket numbers (days since 2000-01-01) of a calendar key, whose expression is evaluated once for each month */
+		/* a calendar dim: its keys are the first days of cells (days since 2000-01-01), whose expression is evaluated once for each cell */
 		if (!k->wcap)
 			ident_go_wide(ex, k);
 		for (int j = 0; j < nkept; j++)
@@ -403,7 +454,10 @@ preagg_hist(AggExec *ex)
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
-	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim + (ex->pa.month ? SIFT_SRC_MONTH : 0), &h))
+	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim + (ex->pa.cal ? SIFT_SRC_CAL : 0), &h))
+		return false;
+	/* the cells of a grain the key or the tests are not constant over, or no cells (the unit had too many, or an infinity): the unit is scanned */
+	if (ex->pa.cal && (h.grain <= 0 || !(ex->pa.calmask >> h.grain & 1)))
 		return false;
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
@@ -422,6 +476,8 @@ preagg_hist(AggExec *ex)
 		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? -3 : leaf == ex->pa.dim ? -2 : m;
 	}
 	keep = preagg_keep(ex, &h, fkeep);
+	if (ex->pa.cal && !cal_keep(ex, &h, &keep))
+		return false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
 	for (uint32 k = 0; k < h.ngroups; k++)
 		if (keep == NULL || sift_colsrc_bit(keep, k))
@@ -825,8 +881,10 @@ preagg_unit(AggExec *ex)
 
 		/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
 		ex->pa.dim = ex->pa.hdim;
+		ex->pa.cal = ex->pa.hcal;
 		ok = preagg_zones(ex) && preagg_hist(ex);
 		ex->pa.dim = -1;
+		ex->pa.cal = false;
 		return ok;
 	}
 	if (!preagg_zones(ex))
@@ -873,7 +931,7 @@ preagg_init(AggExec *ex)
 		if (ex->pa_on && !ex->pa.rows && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
 		{
 			/* the groups of the dim's histogram test an IN list with gaps, which gives the zones no interval: the sums cannot answer */
-			if (!st->cnull && p->leaf == ex->pa.hdim)
+			if (!st->cnull && p->leaf == ex->pa.hdim && !ex->pa.hcal)
 			{
 				ex->pa.dim = ex->pa.hdim;
 				ex->pa.hdim = -1;

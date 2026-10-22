@@ -53,7 +53,7 @@ A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.
 | 5 | 3.2: a schema with wide leaves (`SiftColDef.lanes`: numeric of any precision as lanes or an image, `money`, `interval`, `time`, enums, `uuid`, `bytea`, arrays and ranges; docs/COL-LEAFTYPES-32.md); written only for such an index | 3.2 |
 | 6 | 3.2: complete JSON kinds for path leaves, including element leaves; only when every input preserves them | 3.2 default for declared JSON paths |
 | 7 | 3.3: min and max per group of the cube's integer measures; only an index with `cube_minmax` | 3.3 with the option |
-| 8 | 3.3: the cube holds the month of every timestamp column (without time zone) as a dim (`SIFT_PAGG_MONTH`); only a `sift_table` segment of a schema without JSON path leaves | 3.3 default of `sift_table` |
+| 8 | 3.3: the cube holds, for every date, timestamp and timestamptz column, the groups of its calendar cells as a dim, at the finest grain that fits (days, months or years; the directory leaf is `grain * SIFT_PAGG_CAL` plus the column); only a segment of a schema without JSON path leaves | 3.3 default of `sift_table`; `sift_col` with `calendar_columns` |
 | 9 | 3.3: a unit also holds the rollup of its rows by the scalar columns of `rollup_dims` (the element-rollup blob, leaf `ncols`); only an index with the option | 3.3 default, for an index with the option |
 | 10 | 3.3: the small-set summary of the leaves of `set_columns` in a unit (`COLP` directory v3, [COL.md](COL.md) section 2.13); only for an index with the option under `sift.col_format_minor = 10` | 3.3, opt-in |
 

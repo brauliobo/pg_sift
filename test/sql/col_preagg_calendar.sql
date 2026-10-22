@@ -1,8 +1,8 @@
--- The month dim of the cube of a sift_table (column format minor 8, docs/COL-PREAGG.md section 2): written under the default sift.col_format_minor and
--- not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back by the decoder that refuses a damaged cube; checked
--- against the chunks by the verify of the segments; kept by a rewrite.
-CREATE EXTENSION pg_sift_test CASCADE;
+-- The calendar dim of the cube of a sift_table (column format minor 8, docs/COL-PREAGG.md section 2): the cells of its date, timestamp and timestamptz
+-- columns, written under the default sift.col_format_minor and not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back
+-- by the decoder that refuses a damaged cube; checked against the chunks by the verify of the segments; kept by a rewrite.
 SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE cmo (id int, ts timestamp, tz timestamptz, d date, kind int, amt numeric(10, 2), flt float8, pad text) USING sift_table;
@@ -22,22 +22,24 @@ SELECT cmo_fill('cmo_seven', 1, 60000);
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo_seven;
 RESET sift.col_format_minor;
 
--- the minor of the segments: 8 with a timestamp column, 4 under the setting 7 and without a timestamp column (a month dim over many months does not fit the
--- byte budget of the cube of a unit, and the unit goes without it: the data here spans 14 years)
+-- the minor of the segments: 8 with a date or timestamp column, 4 under the setting 7 and without one (the data here spans 14 years: a unit stores months)
 SELECT 'cmo' AS tbl, array_agg(DISTINCT format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns'
 UNION ALL SELECT 'cmo_seven', array_agg(DISTINCT format) FROM sift.table_segments('cmo_seven') WHERE kind = 'columns'
 UNION ALL SELECT 'cmo_nots', array_agg(DISTINCT format) FROM sift.table_segments('cmo_nots') WHERE kind = 'columns' ORDER BY 1;
 SELECT sift._test_tbl_verify('cmo') > 0 AS cmo_ok, sift._test_tbl_verify('cmo_seven') > 0 AS seven_ok, sift._test_tbl_verify('cmo_nots') > 0 AS nots_ok;
 
--- only the table's timestamp column has the month dim (not the timestamptz, whose month depends on the zone, nor the date); a damaged cube is refused, and one that is accepted is still sound
-SELECT 'cmo' AS tbl, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, with_month = blobs AS all_with_month, cut > 0 AS cuts_made,
+-- every cube of the table has calendar dims (the timestamptz is cut in UTC days, whatever the zone of the session); a damaged cube is refused, and one that is accepted is still sound
+SELECT days = 0 AS no_days, months > 0 AS months, years = 0 AS no_years, no_cal = 0 AS all_have FROM sift._test_tbl_cal_grains('cmo')
+UNION ALL SELECT days = 0, months = 0, years = 0, no_cal > 0 FROM sift._test_tbl_cal_grains('cmo_seven')
+UNION ALL SELECT days = 0, months = 0, years = 0, no_cal > 0 FROM sift._test_tbl_cal_grains('cmo_nots');
+SELECT 'cmo' AS tbl, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, with_calendar = blobs AS all_with_calendar, cut > 0 AS cuts_made,
        cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made, accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
 FROM sift._test_tbl_cube_damage('cmo', 3)
 UNION ALL
-SELECT 'cmo_seven', blobs > 0, intact = blobs, with_month = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+SELECT 'cmo_seven', blobs > 0, intact = blobs, with_calendar = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
 FROM sift._test_tbl_cube_damage('cmo_seven', 3)
 UNION ALL
-SELECT 'cmo_nots', blobs > 0, intact = blobs, with_month = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+SELECT 'cmo_nots', blobs > 0, intact = blobs, with_calendar = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
 FROM sift._test_tbl_cube_damage('cmo_nots', 3)
 ORDER BY 1;
 
@@ -54,7 +56,7 @@ SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segm
 SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 VACUUM (FULL) cmo;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
-SELECT blobs > 0 AS has_cubes, with_month = blobs AS all_with_month FROM sift._test_tbl_cube_damage('cmo', 3);
+SELECT blobs > 0 AS has_cubes, with_calendar = blobs AS all_with_calendar FROM sift._test_tbl_cube_damage('cmo', 3);
 SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 
 -- deletes, updates and VACUUM, then a rewrite
@@ -65,7 +67,7 @@ SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 VACUUM (FULL) cmo;
 SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 
--- a column added later has no month dim in the segments written before; the month of the old column is still there
+-- a column added later has no calendar dim in the segments written before; the cells of the old columns are still there
 ALTER TABLE cmo ADD COLUMN ts2 timestamp DEFAULT '2020-01-01';
 SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 SELECT blobs > 0 AS has_cubes, intact = blobs AS intact_decodes FROM sift._test_tbl_cube_damage('cmo', 3);

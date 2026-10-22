@@ -906,7 +906,7 @@ sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting,
 	 * A unit that is over a cap or a budget has none, and rewriting it would not change that.
 	 */
 	for (int i = 0; i < spec->ndims; i++)
-		if (c->dim[i] == 0 && leaf_fits(seg, spec->dim[i].leaf, spec->fixed ? spec->max_groups : Min(spec->max_groups, 32)))
+		if (!spec->dim[i].cal && c->dim[i] == 0 && leaf_fits(seg, spec->dim[i].leaf, spec->fixed ? spec->max_groups : Min(spec->max_groups, 32)))
 			return true;
 	for (int r = 0; setting >= PAGG_ECUBE_MINOR && r < spec->nrollups; r++)
 	{

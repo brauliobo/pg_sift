@@ -661,15 +661,22 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
-/* does a decoded cube keep what the decoder promises: min <= max in every group that has a value */
+/* does a decoded cube keep what the decoder promises: min <= max in every group that has a value, and the groups of a calendar dim are the first days of cells of its grain, in ascending order */
 static bool
-cube_sound(const SiftCHist *h)
+cube_sound(const SiftColSchema *sc, const SiftCHist *h)
 {
 	for (int d = 0; d < h->ndims; d++)
+	{
+		const SiftCHistDim *hd = &h->dim[d];
+
+		for (uint32 g = 0; hd->leaf >= SIFT_PAGG_CAL && g < hd->ngroups - (hd->has_null ? 1 : 0); g++)
+			if (!sift_cpagg_cal_key_ok(sc->cols[hd->leaf % SIFT_PAGG_CAL].type, hd->leaf / SIFT_PAGG_CAL, hd->key[g]) || (g > 0 && hd->key[g] <= hd->key[g - 1]))
+				return false;
 		for (int m = 0; m < h->dim[d].nmeas; m++)
 			for (uint32 g = 0; h->dim[d].min[m] != NULL && g < h->dim[d].ngroups; g++)
 				if (h->dim[d].nn[m][g] > 0 && h->dim[d].min[m][g] > h->dim[d].max[m][g])
 					return false;
+	}
 	return true;
 }
 
@@ -687,7 +694,7 @@ census_odd_units(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8
 /*
  * One cube blob decoded as stored, cut at every length, and with every byte set to some other values (one at a time). A decode must never read
  * outside the blob (meaningful under SANITIZE=1) and must refuse what it cannot trust: a cut blob is always refused, and a damaged one that is
- * accepted still obeys min <= max. The census that sift.col_refresh takes of the same bytes (spec given: a sift_col index) reads headers only: it
+ * accepted still obeys min <= max and the cells of a calendar dim. The census that sift.col_refresh takes of the same bytes (spec given: a sift_col index) reads headers only: it
  * must stay inside them, and call every cut blob odd (census_cut_odd; the empty cut is no blob).
  */
 void
@@ -705,9 +712,9 @@ sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const 
 		r->intact++;
 		r->minmax += h.dim[0].minmax;
 		for (int d = 0; d < h.ndims; d++)
-			if (h.dim[d].leaf >= SIFT_PAGG_MONTH)
+			if (h.dim[d].leaf >= SIFT_PAGG_CAL)
 			{
-				r->month++;
+				r->calendar++;
 				break;
 			}
 	}
@@ -734,7 +741,7 @@ sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const 
 			if (sift_cpagg_decode(sc, copy, len, cx, &h))
 			{
 				r->accepted++;
-				r->unsound += !cube_sound(&h);
+				r->unsound += !cube_sound(sc, &h);
 			}
 		}
 	pfree(copy);

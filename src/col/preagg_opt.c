@@ -122,18 +122,17 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 }
 
 void
-sift_cpagg_spec_months(const SiftColSchema *s, SiftCPaggSpec *spec)
+sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec)
 {
 	for (int c = 0; c < s->ncols; c++)
 	{
 		SiftCPaggDim *sd;
 
-		if (s->cols[c].type != SIFT_COLT_TIMESTAMP || s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !depth1(s, &s->cols[c]) ||
-			!plain_type(&s->cols[c]) || spec->ndims == SIFT_PAGG_MAX_DIMS)
+		if (!sift_cpagg_cal_type(s, c) || !depth1(s, &s->cols[c]) || !plain_type(&s->cols[c]) || spec->ndims == SIFT_PAGG_MAX_DIMS)
 			continue;
 		sd = &spec->dim[spec->ndims++];
 		sd->leaf = c;
-		sd->month = true;
+		sd->cal = true;
 		sd->nmeas = default_meas(s, c, sd->meas);
 		sd->lean = SIFT_PAGG_DEF_MEAS;
 	}
@@ -565,6 +564,61 @@ const char *
 sift_cpagg_rows_syntax(const char *opt)
 {
 	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, NULL, NULL, NULL);
+}
+
+/* "all", "off", or the date and timestamp columns "a, b" of the calendar cells of every unit (column format minor 8) */
+static const char *
+parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+	bool		all = is_word(opt, "all");
+
+	if (is_word(opt, "off"))
+		return NULL;
+	if (s && s->kinds)
+		return "needs a schema without paths or kinds";
+	if (all)
+	{
+		if (s)
+			sift_cpagg_spec_calendar(s, spec);
+		return NULL;
+	}
+	do
+	{
+		char	   *dn = take_name(c);
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a column name is missing";
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a column of the index", dn);
+		if (!sift_cpagg_cal_type(s, leaf) || !depth1(s, &s->cols[leaf]) || !plain_type(&s->cols[leaf]))
+			return psprintf("\"%s\" must be a date, timestamp or timestamptz column", dn);
+		for (int j = 0; j < spec->ndims; j++)
+			if (spec->dim[j].leaf == leaf && spec->dim[j].cal)
+				return psprintf("\"%s\" is named twice", dn);
+		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
+			return "too many dimensions";
+		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true, .lean = SIFT_PAGG_DEF_MEAS};
+		spec->dim[spec->ndims].nmeas = default_meas(s, leaf, spec->dim[spec->ndims].meas);
+		spec->ndims++;
+	} while (eat(c, ','));
+	return *c->p ? psprintf("unexpected \"%s\"", c->p) : NULL;
+}
+
+const char *
+sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+}
+
+const char *
+sift_cpagg_calendar_syntax(const char *opt)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, NULL, NULL, NULL);
 }
 
 const char *
