@@ -128,12 +128,13 @@ SELECT sift._test_tbl_tagged('ud_t') > 0 AS carries_its_writer;
 COMMIT;
 SELECT rewrite('ud_h');
 SELECT same('ud_t', 'ud_h') AS the_twin_agrees;
--- a statement that reads the table it writes: an index scan finds the rows it just wrote, which the command that wrote them does not see
+-- a statement that reads the table it writes: an index scan finds the rows it just wrote, which the command that wrote them does not see.
+-- The scan starts at the copies (id > 100000, 16000 rows: as many sealed write buffers as all 48000 rows leave) and its range reaches the new keys
 BEGIN;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
-INSERT INTO ud_t SELECT id + 1000000, v FROM ud_t WHERE id > 0;
-INSERT INTO ud_h SELECT id + 1000000, v FROM ud_h WHERE id > 0;
+INSERT INTO ud_t SELECT id + 1000000, v FROM ud_t WHERE id > 100000;
+INSERT INTO ud_h SELECT id + 1000000, v FROM ud_h WHERE id > 100000;
 COMMIT;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
