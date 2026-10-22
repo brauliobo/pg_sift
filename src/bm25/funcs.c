@@ -453,6 +453,7 @@ scan_only(const char *name)
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift.%s() must be computed by a sift scan of the same relation", name),
+			 errdetail("The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off."),
 			 errhint("Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.")));
 	return (Datum) 0;
 }
