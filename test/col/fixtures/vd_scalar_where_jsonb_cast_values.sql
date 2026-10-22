@@ -1,6 +1,7 @@
--- trap: a condition that casts the jsonb value of a path declared float8 (the index flags the values its float8 leaves cannot store: the scan reads those rows again from the heap)
+-- trap: a condition that casts the jsonb value of a path declared float8 (the index flags the values its float8 leaves cannot store: the scan reads those rows again from the heap) [PostgreSQL 18 on: before it the scan is refused, slug error_parity]
 -- shape: trap
 -- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: 1
