@@ -10,19 +10,7 @@ INSERT INTO sk_facts SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 100000 + (i 
 CREATE INDEX sk_facts_col ON sk_facts USING sift_col (id, set_id, kind, score);
 VACUUM (FREEZE, ANALYZE) sk_facts;
 
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
 
 SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total, count(DISTINCT kind) AS kinds FROM sk_facts GROUP BY set_id');
 SELECT * FROM check_query('SELECT set_id, kind, count(*) AS n, avg(score) AS mean FROM sk_facts WHERE id > 25000 GROUP BY set_id, kind');

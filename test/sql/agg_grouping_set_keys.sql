@@ -9,19 +9,7 @@ INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b'
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, dim_a_id, day, kind, metrics_a) WITH (paths = 'metrics_a.* float8');
 VACUUM (FREEZE, ANALYZE) gs_facts;
 
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
 
 -- two grouping sets; the key computed in the input is in both, the attribute in one; days nothing matches keep a row
 SELECT * FROM check_query($q$

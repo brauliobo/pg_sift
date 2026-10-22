@@ -20,19 +20,8 @@ INSERT INTO oe_docs SELECT i, i % 5,
 FROM generate_series(1, 4500) i;
 CREATE INDEX oe_docs_col ON oe_docs USING sift_col (id, set_id, doc) WITH (paths = 'doc.flag_a astext, doc.items[]{category text, score float8}');
 VACUUM (FREEZE, ANALYZE) oe_docs;
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
+\set ECHO none
 -- a key and an aggregate argument that depend on the key of the document, for the rows of its list
 SELECT * FROM check_query($q$
  SELECT d.set_id, CASE WHEN jsonb_exists(d.doc, 'flag_a') THEN o.category ELSE 'raw' END AS category, count(*) AS n, avg(o.score) AS score
