@@ -1,5 +1,9 @@
 \echo Use "CREATE EXTENSION pg_sift" to load this file. \quit
 
+-- Every role may use the schema: the operator and the access methods need nothing of it, sift.score, the diagnostics and the maintenance functions do, and
+-- each of them checks what it touches (owner or MAINTAIN for maintenance, SELECT for the values of a table). REVOKE USAGE ON SCHEMA sift FROM PUBLIC takes it back.
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
+
 CREATE FUNCTION sift.sift_handler(internal) RETURNS index_am_handler
 	AS 'MODULE_PATHNAME', 'sift_handler' LANGUAGE C STRICT;
 

@@ -1,6 +1,6 @@
 -- Queries and DML of ordinary roles on tables with the three kinds of sift objects: what each privilege level may read and write, the same
 -- answers through the index and the plain plan, row-level security, column privileges, views and SECURITY DEFINER functions, prepared
--- statements, cursors, COPY and EXPLAIN. Every role has USAGE on the schema sift except rq_nos.
+-- statements, cursors, COPY and EXPLAIN. Every role has USAGE on the schema sift (PUBLIC has it) except in the one section that takes it back.
 -- docs (sift and sift_col indexes) and facts (sift_table) have no row-level security; rdocs and rfacts are the same with a policy that
 -- restricts rq_rls to the rows of g = 1.
 CREATE EXTENSION pg_sift;
@@ -22,7 +22,6 @@ CREATE ROLE rq_vw;
 CREATE SCHEMA rq;
 GRANT USAGE ON SCHEMA rq TO rq_wr, rq_rd, rq_col, rq_non, rq_nos, rq_rls, rq_byp, rq_vw;
 GRANT USAGE, CREATE ON SCHEMA rq TO rq_own, rq_mem;
-GRANT USAGE ON SCHEMA sift TO rq_own, rq_mem, rq_wr, rq_rd, rq_col, rq_non, rq_rls, rq_byp, rq_vw;
 SET enable_seqscan = off;
 
 SELECT * FROM rr_run($$
@@ -57,8 +56,7 @@ rq_own | CREATE POLICY rfacts_rls ON rq.rfacts AS RESTRICTIVE FOR SELECT TO rq_r
 $$);
 ANALYZE rq.docs, rq.facts, rq.rdocs, rq.rfacts;
 
--- the BM25 index: the operator needs no privilege on the sift schema, the ranking function needs USAGE on it; the column privileges must cover
--- the indexed column; row-level security cuts the rows of the policy and refuses the score
+-- the BM25 index: the column privileges must cover the indexed column; row-level security cuts the rows of the policy and refuses the score
 SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_mem', 'rq_wr', 'rq_rd', 'rq_nos', 'rq_col', 'rq_non', 'rq_vw'], $$
 SELECT count(*) FROM rq.docs WHERE body @@> 'alpha'
 SELECT count(*) FROM rq.docs WHERE body @@> 'five' AND g = 1
@@ -73,6 +71,16 @@ SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'
 SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3
 EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'
 $$);
+
+-- with USAGE on the schema sift taken back from PUBLIC: the operator needs none, the ranking function does
+REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
+GRANT USAGE ON SCHEMA sift TO rq_rd;
+SELECT * FROM rr_matrix(ARRAY['rq_rd', 'rq_nos'], $$
+SELECT count(*) FROM rq.docs WHERE body @@> 'alpha'
+SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.docs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3
+$$);
+REVOKE USAGE ON SCHEMA sift FROM rq_rd;
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
 
 -- the aggregate pushdown on the sift_col index and on the sift_table: PostgreSQL checks the privileges of the role on the columns the query reads
 -- (as the owner of a view the table is read through), and the scan adds none: the plain plan's answer or refusal for every role

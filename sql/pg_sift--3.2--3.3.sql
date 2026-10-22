@@ -1,5 +1,8 @@
 \echo Use "ALTER EXTENSION pg_sift UPDATE TO '3.3'" to load this file. \quit
 
+-- Every role may use the schema (3.2 granted it to nobody): see pg_sift--3.3.sql. The update grants it again to a database that had revoked it.
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
+
 -- Rewrites the segments of a sift_col index whose pre-aggregates are not what its options ask now (preagg, rollup, cube_minmax take effect for the
 -- units written afterwards only), one segment at a time, each an atomic replacement under the maintenance lock that readers and writers do not wait
 -- for. max_segments bounds the segments rewritten by this call (NULL: all, 0: only count); the call is made again to go on after a cancel or a crash.

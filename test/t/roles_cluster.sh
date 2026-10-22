@@ -20,7 +20,7 @@ refused() { local out; out=$(qe "$@"); [[ $out == *"$REFUSAL"* ]] || { diag "got
 q postgres postgres "CREATE ROLE rl_owner LOGIN" "CREATE ROLE rl_other LOGIN" "CREATE DATABASE rl_src OWNER postgres" "CREATE DATABASE rl_dst OWNER postgres" \
 	"CREATE TABLESPACE rl_ts LOCATION '$TS'" "GRANT CREATE ON TABLESPACE rl_ts TO rl_owner" >/dev/null || bail "roles"
 for db in rl_src rl_dst; do
-	q $db postgres "CREATE EXTENSION pg_sift" "GRANT USAGE ON SCHEMA sift TO rl_owner, rl_other" "GRANT CREATE ON DATABASE $db TO rl_owner" >/dev/null || bail "extension in $db"
+	q $db postgres "CREATE EXTENSION pg_sift" "GRANT CREATE ON DATABASE $db TO rl_owner" >/dev/null || bail "extension in $db"
 done
 q rl_src postgres "CREATE SCHEMA app AUTHORIZATION rl_owner" "GRANT USAGE, CREATE ON SCHEMA app TO rl_other" >/dev/null || bail "schema"
 q rl_src rl_owner "

@@ -20,6 +20,8 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`): `CREATE EXTENSION pg_sift;`. No `shared_preload_libraries` entry is needed for the `sift` index, the `sift_col` index or the `sift_table` table access method; only publishing a `sift_table` under `wal_level = logical` does ([Replication](#replication)).
 
+Since 3.3 the install gives `USAGE` on the schema `sift` to `PUBLIC`, so any role can call `sift.score(ctid)` and the read-only diagnostics without a `GRANT`; each function still checks the table or index it reads, and the tables of the extension stay unreadable. `REVOKE USAGE ON SCHEMA sift FROM PUBLIC` takes it back (then `GRANT USAGE ON SCHEMA sift TO` the roles that need it; the `@@>` operator and the access methods need none). `ALTER EXTENSION pg_sift UPDATE` grants it again.
+
 ### Install with Homebrew
 
 ```sh

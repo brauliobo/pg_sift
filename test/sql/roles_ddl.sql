@@ -13,6 +13,8 @@ CREATE ROLE rrd_other;
 CREATE ROLE rrd_writer;
 CREATE ROLE rrd_reader;
 CREATE ROLE rrd_none;
+-- no role has USAGE on the schema sift: the triggers must work for roles that cannot use it
+REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
 CREATE SCHEMA rrd;
 CREATE SCHEMA rrd2;
 GRANT USAGE ON SCHEMA rrd, rrd2 TO rrd_writer, rrd_reader, rrd_none;
