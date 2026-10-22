@@ -42,7 +42,6 @@
 #define ROLLUP_QUEUE		64		/* segments waiting */
 #define ROLLUP_DONE			256		/* refreshed segments remembered */
 #define ROLLUP_WORKERS		8		/* databases with a worker running */
-#define ROLLUP_LAUNCH_US	(2 * USECS_PER_SEC)		/* the least time between two launches for a database */
 
 bool		sift_col_rollup_on_demand = true;
 bool		sift_col_rollup_worker = true;
