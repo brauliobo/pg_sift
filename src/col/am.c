@@ -32,6 +32,7 @@
 #include "col/am.h"
 #include "col/build.h"
 #include "col/seg.h"
+#include "col/setsum.h"
 #include "core/cpu.h"
 #include "core/ops.h"
 
@@ -41,14 +42,14 @@ int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 bool		sift_test_col_rel_inval = false;
 #endif
 
-/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4, 6, 7, 8 or 9 */
+/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4, 6, 7, 8, 9 or 10 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
 {
 	if (*newval == SIFT_COL_FORMAT_WIDE)
 	{
 		GUC_check_errdetail("Column format minor 5 is written for wide leaves only, whatever the setting.");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8 or 9.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9 or 10.");
 		return false;
 	}
 	return true;
@@ -103,6 +104,15 @@ sift_col_validate_rollup_dims(const char *value)
 }
 
 void
+sift_col_validate_set_columns(const char *value)
+{
+	const char *err = sift_cset_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -144,9 +154,9 @@ sift_col_init(void)
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
 							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
+							"Column format minor of the segments written: 10, 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a timestamp column, the minor 9 only for an index with the option rollup_dims.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -212,6 +222,12 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "rollup_dims",
 						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...' (default off; the segments are column format minor 8)",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "set_columns",
+						 "the plain integer and text columns whose distinct values every unit written from now on keeps (a small-set summary that lets an equality or IN test skip units); the segments are column format minor 10 (default none)",
+						 "", sift_col_validate_set_columns, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "set_limit",
+					  "Up to this many distinct values a unit keeps a column's small-set summary exactly, beyond it as a bloom filter",
+					  SIFT_CSET_LIMIT, 2, SIFT_CSET_LIMIT_MAX, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
@@ -231,6 +247,8 @@ col_amoptions(Datum reloptions, bool validate)
 		{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
+		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
+		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
@@ -273,6 +291,14 @@ sift_col_alter_check(Relation index)
 {
 	if (sift_col_is_index(index))
 		(void) sift_col_rel(index);
+}
+
+const char *
+sift_col_options_set_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->set_columns ? (const char *) o + o->set_columns : "";
 }
 
 const char *
@@ -367,6 +393,9 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
+		if ((err = sift_cset_spec_parse(sift_col_options_set_columns(index), r->schema, (const char *const *) names, r->pagg.set)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
+		r->pagg.set_limit = sift_col_options(index)->set_limit;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

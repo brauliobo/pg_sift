@@ -103,6 +103,8 @@ typedef struct SiftColOptions
 	int			rollup;			/* offset of the "rollup" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
 	int			rollup_dims;	/* offset of the "rollup_dims" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
+	int			set_columns;	/* offset of the "set_columns" string (the leaves that get a small-set summary in every unit, docs/COL.md 2.13), 0 = none */
+	int			set_limit;		/* up to this many distinct keys a unit keeps exactly, else a bloom filter (0 = the default) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
 	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
@@ -117,6 +119,7 @@ extern const char *sift_col_options_compression(Relation index);	/* "" when none
 extern const char *sift_col_options_preagg(Relation index);	/* "" when none (default) */
 extern const char *sift_col_options_rollup(Relation index);	/* "" when none (automatic) */
 extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
+extern const char *sift_col_options_set_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */

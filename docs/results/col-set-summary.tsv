@@ -1,0 +1,131 @@
+# columns: rows, pad bytes of the text column, shape, variant (off = zones only, on = set_columns 'kind, parent_id, uq'), then the median of 3 warm runs in ms, units read, units pruned, of those by the set summary; index lines: bytes of the index and of the sets section
+# shapes: point_hi parent_id = k (random, 20 rows a key); in5_hi/in50_hi parent_id IN (5 / 50 keys); point_lo kind = 7 (60 values, clustered in runs of 700 rows); in5_lo kind IN (5 values); point_uq uq = k (near-unique); range_hi parent_id BETWEEN 100 AND 103
+# pg_sift small-set summary, 2026-10-22, PG PostgreSQL 18.6, 32 CPUs, uptime: load average: 13,89, 12,37, 13,48
+25000	1500	index	off	bytes=253952	sets_bytes=0	units=20
+25000	1500	point_hi	off	ms=0.243	units=20	pruned=0	byset=
+25000	1500	in5_hi	off	ms=0.314	units=20	pruned=0	byset=
+25000	1500	in50_hi	off	ms=0.242	units=20	pruned=0	byset=
+25000	1500	point_lo	off	ms=0.137	units=2	pruned=18	byset=
+25000	1500	in5_lo	off	ms=0.227	units=19	pruned=1	byset=
+25000	1500	point_uq	off	ms=0.348	units=20	pruned=0	byset=
+25000	1500	range_hi	off	ms=0.298	units=20	pruned=0	byset=
+25000	1500	index	on	bytes=303104	sets_bytes=52552	units=20
+25000	1500	point_hi	on	ms=0.199	units=11	pruned=9	byset=9
+25000	1500	in5_hi	on	ms=0.333	units=19	pruned=1	byset=1
+25000	1500	in50_hi	on	ms=0.351	units=20	pruned=0	byset=
+25000	1500	point_lo	on	ms=0.113	units=0	pruned=20	byset=2
+25000	1500	in5_lo	on	ms=0.160	units=7	pruned=13	byset=12
+25000	1500	point_uq	on	ms=0.181	units=2	pruned=18	byset=18
+25000	1500	range_hi	on	ms=0.244	units=19	pruned=1	byset=1
+50000	1500	index	off	bytes=475136	sets_bytes=0	units=40
+50000	1500	point_hi	off	ms=0.306	units=40	pruned=0	byset=
+50000	1500	in5_hi	off	ms=0.318	units=40	pruned=0	byset=
+50000	1500	in50_hi	off	ms=0.455	units=40	pruned=0	byset=
+50000	1500	point_lo	off	ms=0.175	units=9	pruned=31	byset=
+50000	1500	in5_lo	off	ms=0.352	units=36	pruned=4	byset=
+50000	1500	point_uq	off	ms=0.322	units=40	pruned=0	byset=
+50000	1500	range_hi	off	ms=0.375	units=40	pruned=0	byset=
+50000	1500	index	on	bytes=589824	sets_bytes=114448	units=40
+50000	1500	point_hi	on	ms=0.256	units=13	pruned=27	byset=27
+50000	1500	in5_hi	on	ms=0.468	units=35	pruned=5	byset=5
+50000	1500	in50_hi	on	ms=0.349	units=40	pruned=0	byset=
+50000	1500	point_lo	on	ms=0.125	units=0	pruned=40	byset=9
+50000	1500	in5_lo	on	ms=0.177	units=10	pruned=30	byset=26
+50000	1500	point_uq	on	ms=0.160	units=1	pruned=39	byset=39
+50000	1500	range_hi	on	ms=0.291	units=32	pruned=8	byset=8
+100000	1500	index	off	bytes=942080	sets_bytes=0	units=79
+100000	1500	point_hi	off	ms=0.480	units=79	pruned=0	byset=
+100000	1500	in5_hi	off	ms=0.764	units=79	pruned=0	byset=
+100000	1500	in50_hi	off	ms=0.613	units=79	pruned=0	byset=
+100000	1500	point_lo	off	ms=0.299	units=30	pruned=49	byset=
+100000	1500	in5_lo	off	ms=0.448	units=73	pruned=6	byset=
+100000	1500	point_uq	off	ms=0.606	units=79	pruned=0	byset=
+100000	1500	range_hi	off	ms=0.673	units=79	pruned=0	byset=
+100000	1500	index	on	bytes=1179648	sets_bytes=241344	units=79
+100000	1500	point_hi	on	ms=0.440	units=19	pruned=60	byset=60
+100000	1500	in5_hi	on	ms=0.725	units=55	pruned=24	byset=24
+100000	1500	in50_hi	on	ms=0.649	units=79	pruned=0	byset=
+100000	1500	point_lo	on	ms=0.193	units=2	pruned=77	byset=28
+100000	1500	in5_lo	on	ms=0.290	units=23	pruned=56	byset=50
+100000	1500	point_uq	on	ms=0.169	units=2	pruned=77	byset=77
+100000	1500	range_hi	on	ms=0.534	units=51	pruned=28	byset=28
+200000	1500	index	off	bytes=1859584	sets_bytes=0	units=157
+200000	1500	point_hi	off	ms=0.848	units=157	pruned=0	byset=
+200000	1500	in5_hi	off	ms=1.090	units=157	pruned=0	byset=
+200000	1500	in50_hi	off	ms=1.163	units=157	pruned=0	byset=
+200000	1500	point_lo	off	ms=0.417	units=57	pruned=100	byset=
+200000	1500	in5_lo	off	ms=0.976	units=148	pruned=9	byset=
+200000	1500	point_uq	off	ms=1.065	units=157	pruned=0	byset=
+200000	1500	range_hi	off	ms=1.180	units=157	pruned=0	byset=
+200000	1500	index	on	bytes=2359296	sets_bytes=496496	units=157
+200000	1500	point_hi	on	ms=0.383	units=19	pruned=138	byset=138
+200000	1500	in5_hi	on	ms=0.949	units=79	pruned=78	byset=78
+200000	1500	in50_hi	on	ms=0.998	units=157	pruned=0	byset=
+200000	1500	point_lo	on	ms=0.246	units=7	pruned=150	byset=50
+200000	1500	in5_lo	on	ms=0.478	units=33	pruned=124	byset=115
+200000	1500	point_uq	on	ms=0.227	units=1	pruned=156	byset=156
+200000	1500	range_hi	on	ms=0.588	units=67	pruned=90	byset=90
+25000	100	index	off	bytes=204800	sets_bytes=0	units=2
+25000	100	point_hi	off	ms=0.192	units=2	pruned=0	byset=
+25000	100	in5_hi	off	ms=0.205	units=2	pruned=0	byset=
+25000	100	in50_hi	off	ms=0.226	units=2	pruned=0	byset=
+25000	100	point_lo	off	ms=0.163	units=1	pruned=1	byset=
+25000	100	in5_lo	off	ms=0.165	units=2	pruned=0	byset=
+25000	100	point_uq	off	ms=0.209	units=2	pruned=0	byset=
+25000	100	range_hi	off	ms=0.190	units=2	pruned=0	byset=
+25000	100	index	on	bytes=237568	sets_bytes=31464	units=2
+25000	100	point_hi	on	ms=0.185	units=2	pruned=0	byset=
+25000	100	in5_hi	on	ms=0.230	units=2	pruned=0	byset=
+25000	100	in50_hi	on	ms=0.223	units=2	pruned=0	byset=
+25000	100	point_lo	on	ms=0.104	units=0	pruned=2	byset=1
+25000	100	in5_lo	on	ms=0.182	units=2	pruned=0	byset=
+25000	100	point_uq	on	ms=0.208	units=2	pruned=0	byset=
+25000	100	range_hi	on	ms=0.180	units=2	pruned=0	byset=
+50000	100	index	off	bytes=385024	sets_bytes=0	units=4
+50000	100	point_hi	off	ms=0.211	units=4	pruned=0	byset=
+50000	100	in5_hi	off	ms=0.314	units=4	pruned=0	byset=
+50000	100	in50_hi	off	ms=0.253	units=4	pruned=0	byset=
+50000	100	point_lo	off	ms=0.160	units=3	pruned=1	byset=
+50000	100	in5_lo	off	ms=0.174	units=4	pruned=0	byset=
+50000	100	point_uq	off	ms=0.242	units=4	pruned=0	byset=
+50000	100	range_hi	off	ms=0.246	units=4	pruned=0	byset=
+50000	100	index	on	bytes=458752	sets_bytes=75360	units=4
+50000	100	point_hi	on	ms=0.238	units=3	pruned=1	byset=1
+50000	100	in5_hi	on	ms=0.321	units=4	pruned=0	byset=
+50000	100	in50_hi	on	ms=0.297	units=4	pruned=0	byset=
+50000	100	point_lo	on	ms=0.133	units=0	pruned=4	byset=3
+50000	100	in5_lo	on	ms=0.175	units=3	pruned=1	byset=1
+50000	100	point_uq	on	ms=0.226	units=1	pruned=3	byset=3
+50000	100	range_hi	on	ms=0.254	units=4	pruned=0	byset=
+100000	100	index	off	bytes=745472	sets_bytes=0	units=8
+100000	100	point_hi	off	ms=0.340	units=8	pruned=0	byset=
+100000	100	in5_hi	off	ms=0.430	units=8	pruned=0	byset=
+100000	100	in50_hi	off	ms=0.368	units=8	pruned=0	byset=
+100000	100	point_lo	off	ms=0.237	units=7	pruned=1	byset=
+100000	100	in5_lo	off	ms=0.252	units=8	pruned=0	byset=
+100000	100	point_uq	off	ms=0.307	units=8	pruned=0	byset=
+100000	100	range_hi	off	ms=0.418	units=8	pruned=0	byset=
+100000	100	index	on	bytes=917504	sets_bytes=171192	units=8
+100000	100	point_hi	on	ms=0.270	units=8	pruned=0	byset=
+100000	100	in5_hi	on	ms=0.398	units=8	pruned=0	byset=
+100000	100	in50_hi	on	ms=0.365	units=8	pruned=0	byset=
+100000	100	point_lo	on	ms=0.159	units=1	pruned=7	byset=6
+100000	100	in5_lo	on	ms=0.201	units=6	pruned=2	byset=2
+100000	100	point_uq	on	ms=0.257	units=1	pruned=7	byset=7
+100000	100	range_hi	on	ms=0.398	units=8	pruned=0	byset=
+200000	100	index	off	bytes=1490944	sets_bytes=0	units=16
+200000	100	point_hi	off	ms=0.467	units=16	pruned=0	byset=
+200000	100	in5_hi	off	ms=0.829	units=16	pruned=0	byset=
+200000	100	in50_hi	off	ms=0.627	units=16	pruned=0	byset=
+200000	100	point_lo	off	ms=0.247	units=14	pruned=2	byset=
+200000	100	in5_lo	off	ms=0.360	units=15	pruned=1	byset=
+200000	100	point_uq	off	ms=0.574	units=16	pruned=0	byset=
+200000	100	range_hi	off	ms=0.607	units=16	pruned=0	byset=
+200000	100	index	on	bytes=1884160	sets_bytes=389952	units=16
+200000	100	point_hi	on	ms=0.430	units=9	pruned=7	byset=7
+200000	100	in5_hi	on	ms=0.774	units=15	pruned=1	byset=1
+200000	100	in50_hi	on	ms=0.793	units=16	pruned=0	byset=
+200000	100	point_lo	on	ms=0.210	units=4	pruned=12	byset=10
+200000	100	in5_lo	on	ms=0.265	units=10	pruned=6	byset=5
+200000	100	point_uq	on	ms=0.344	units=1	pruned=15	byset=15
+200000	100	range_hi	on	ms=0.611	units=15	pruned=1	byset=1
