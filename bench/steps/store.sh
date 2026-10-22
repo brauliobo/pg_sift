@@ -45,11 +45,6 @@ CACHE_DIR=${S_CACHE_DIR:-$STORE/store-cache}   # the measured cells of the serve
 OUT=${OUT:-$BENCH/out/store}
 PG_IMAGE=$NAME-pg:latest
 CITUS_PORT=$((PORT + 4))
-# The same flags for all the PostgreSQL containers (PostgreSQL, pg_sift, Citus). The parallel pool (max_worker_processes, max_parallel_workers) is far above the budget and the cost
-# knobs are low, so that nothing but max_parallel_workers_per_gather (N - 1, set by `budget`) decides how many processes a scan uses.
-PG_FLAGS=(-c shared_buffers=2GB -c effective_cache_size=6GB -c work_mem=64MB -c maintenance_work_mem=512MB -c max_wal_size=8GB -c jit=off
-          -c max_worker_processes=16 -c max_parallel_workers=16 -c parallel_setup_cost=100 -c parallel_tuple_cost=0.01
-          -c min_parallel_table_scan_size=1MB -c min_parallel_index_scan_size=64kB)
 export STORE_BASELINE=$OUT/baseline.json STORE_BASELINE_SEC=${S_BASELINE_SEC:-$P_BASELINE_SEC} STORE_NAME=$NAME STORE_PORT=$PORT STORE_CPUS=$CPUS STORE_CPUS_LIST=${POINTS// /,} STORE_MEMORY=$MEMORY STORE_DATA=$DATA STORE_CACHE=$CACHE_DIR STORE_PG_FLAGS="${PG_FLAGS[*]}" \
        STORE_PG_IMAGE STORE_ES_IMAGE STORE_CH_IMAGE STORE_CITUS_IMAGE
 RUN_ENGINES=${S_ENGINES:-} UPD_ENGINES='' UNTIMED='' PLANNED=''   # the lanes of the load, warm and cold steps, of the updates, and the reference only (load_plan)
@@ -72,37 +67,12 @@ engine_args() { # [LANES]: the lanes of the step (the plan's, or --engines), the
 containers() { docker ps -a --filter "label=sift-store=$NAME" --format '{{.Names}}'; }
 heap_gb() { echo $(( $(numfmt --from=iec "${MEMORY^^}") / 2 / 1073741824 )); }   # Elasticsearch: a heap of half the container memory
 
-# the image of the PostgreSQL containers: the official image plus pg_sift built from the tracked files of this checkout (as scripts/replication.sh)
-build_image() {
-  local ctx key
-  ctx=$(scratch store-image)
-  (cd "$REPO" && git ls-files -z Makefile pg_sift.control 'sql/pg_sift--*.sql' src scripts/harden.mk | tar --null -T - -cf -) | tar -xf - -C "$ctx"
-  key=$(tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C "$ctx" . | sha256sum | cut -c1-12)
-  if [[ $(docker image inspect -f '{{index .Config.Labels "sift-store-key"}}' "$PG_IMAGE" 2>/dev/null) == "$key" ]]; then log "image $PG_IMAGE is up to date"; rm -rf "$ctx"; return; fi
-  cat >"$ctx/Dockerfile" <<EOF
-FROM $STORE_PG_IMAGE
-LABEL sift-store-key=$key
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev postgresql-server-dev-\$PG_MAJOR
-COPY . /src
-RUN nice make -C /src -j4 USE_PGXS=1 install && rm -rf /src
-EOF
-  log "building $PG_IMAGE from $STORE_PG_IMAGE"
-  nice docker build -q -t "$PG_IMAGE" "$ctx" >/dev/null
-  rm -rf "$ctx"
-}
-
 want() { # SERVER: it starts only when an engine of it is selected (the plan's lanes, else --engines; none: all)
   local w=${WANT:-${S_ENGINES:+,$S_ENGINES,}}
   [[ -z $w || $w == *,$1* ]]
 }
 cfg() { echo "$DATA/threads-$NAME"; }   # the ClickHouse thread settings of the current budget, mounted into its container
 run_args() { printf '%s\n' run -d --label "sift-store=$NAME" ${BENCH_RUN_ID:+--label "sift-run=$BENCH_RUN_ID"}; docker_caps "$1" "$MEMORY"; }   # N: the quota, never a pinning
-pull_missing() { docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1" >/dev/null; }
-pg_mount() { # IMAGE: the directory the image declares for its data (the official image: /var/lib/postgresql, PGDATA below it)
-  local d; d=$(docker image inspect -f '{{range $k, $_ := .Config.Volumes}}{{println $k}}{{end}}' "$1" | head -1)
-  [[ -n $d ]] || die "the image $1 declares no volume for its data"
-  echo "$d"
-}
 
 # --- what is loaded is kept: a data volume per container, named by the key of its content (the seeded rows, the image, the table definitions, the load code and settings); a pass that finds
 # a volume of the key it needs whose load finished (DATA/loaded/CONTAINER-KEY.json) loads nothing. The updates change the rows, so they delete the record and `down` the volume.
@@ -197,7 +167,7 @@ up() { # SIZE
   [[ -z $stale ]] || { log "removing the containers an earlier attempt of this run left"; xargs -r docker rm -fv <<<"$stale" >/dev/null; }
   [[ -z $(containers) ]] || { echo "store: containers of '$NAME' that belong to another run exist (bench/bench clean --run ID, or store clean)" >&2; return 1; }
   ports_free "$PORT" 4 && { ! want citus || port_free "$CITUS_PORT"; } || return 1
-  build_image
+  sift_image "$PG_IMAGE" "$STORE_PG_IMAGE"
   pull_missing "$STORE_PG_IMAGE"
   ! want es || pull_missing "$STORE_ES_IMAGE"
   ! want ch || pull_missing "$STORE_CH_IMAGE"

@@ -276,6 +276,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 | `final.sh`, `gap.sh`, `gap.py` |  |
 | `store.sh`, `store.py` |  |
+| `duckdb.sh`, `duckdb.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
