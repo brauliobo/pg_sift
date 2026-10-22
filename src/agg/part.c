@@ -20,6 +20,9 @@
 #include "partitioning/partbounds.h"
 #include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/hsearch.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/fmgroids.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
@@ -446,6 +449,86 @@ hash_refuted(List *bound, List *sets)
 	return false;
 }
 
+typedef struct BoundKey
+{
+	Oid			part;
+	Oid			parent;
+} BoundKey;
+
+typedef struct BoundEntry
+{
+	BoundKey	key;
+	bool		ok;
+	List	   *bound;
+} BoundEntry;
+
+static MemoryContext bound_cx;
+static HTAB *bound_cache;
+static bool bound_stale;
+
+/* a relation changed (a partition, an ancestor, the table): the bounds are read again, as PostgreSQL does for its own copy; dropped by the next part_bound, not under a caller that still reads one */
+static void
+bound_inval(Datum arg, Oid relid)
+{
+	bound_stale = true;
+}
+
+/*
+ * The bound of a partition in the terms of the columns of the table, kept for the backend: every execution of a generic plan prunes the
+ * partitions again, and translating the bounds of thousands of them was most of its start. A relation cache invalidation drops them all.
+ * The entry is valid until the next call.
+ */
+static List *
+bound_copy(List *l)
+{
+	MemoryContext old = MemoryContextSwitchTo(bound_cx);
+	List	   *c = copyObject(l);
+
+	MemoryContextSwitchTo(old);
+	return c;
+}
+
+static const BoundEntry *
+part_bound(Relation part, Oid parent)
+{
+	BoundKey	key = {RelationGetRelid(part), parent};
+	BoundEntry *e;
+	BoundEntry	fresh;
+	QualVars	qv = {key.part, parent, true};
+	bool		found;
+
+	if (bound_stale && bound_cache != NULL)
+		MemoryContextReset(bound_cx);
+	if (bound_stale)
+	{
+		bound_cache = NULL;
+		bound_stale = false;
+	}
+	if (bound_cache != NULL && (e = hash_search(bound_cache, &key, HASH_FIND, NULL)) != NULL)
+		return e;
+	fresh.key = key;
+	fresh.bound = (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(part), &qv);
+	fresh.ok = qv.ok;
+	if (bound_stale)			/* the lookups above invalidated: the bound is as of before it, the next call reads it again */
+		return (const BoundEntry *) memcpy(palloc(sizeof(fresh)), &fresh, sizeof(fresh));
+	if (bound_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(BoundKey), .entrysize = sizeof(BoundEntry)};
+
+		if (bound_cx == NULL)
+		{
+			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift partition bounds", ALLOCSET_DEFAULT_SIZES);
+			CacheRegisterRelcacheCallback(bound_inval, (Datum) 0);
+		}
+		ctl.hcxt = bound_cx;
+		bound_cache = hash_create("sift partition bounds", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(bound_cache, &key, HASH_ENTER, &found);
+	e->ok = fresh.ok;
+	e->bound = bound_copy(fresh.bound);
+	return e;
+}
+
 /* drops the partitions the conditions refute, or all of them (none); returns how many it dropped now */
 static int
 prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
@@ -458,13 +541,12 @@ prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 		ps->skip = palloc0(ps->n * sizeof(bool));
 	for (int i = 0; i < ps->n; i++)
 	{
-		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
-		List	   *bound;
+		const BoundEntry *b;
 
 		if (ps->skip[i])
 			continue;
-		bound = none ? NIL : (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
-		if (none || (qv.ok && bound != NIL && (predicate_refuted_by(bound, conds, false) || hash_refuted(bound, sets))))
+		b = none ? NULL : part_bound(ps->heap[i], parent);
+		if (none || (b->ok && b->bound != NIL && (predicate_refuted_by(b->bound, conds, false) || hash_refuted(b->bound, sets))))
 		{
 			ps->skip[i] = true;
 			dropped++;
