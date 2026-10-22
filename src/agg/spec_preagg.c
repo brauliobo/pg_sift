@@ -170,8 +170,6 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 				mm = false;
 	SiftSrcVecType vt;
 
-	if (a->filter && group < 0)
-		return SPW_AGG_FILTER;
 	if (a->distinct)
 		return SPW_AGG_DISTINCT;
 	switch (a->kind)
@@ -284,6 +282,23 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 		if (dim >= 0 && dim != l)
 			return -2;
 		dim = l;
+	}
+	return dim;
+}
+
+/* The leaf the FILTERs of the aggregates test (-1: none), or -2 when one tests more than one leaf or something a histogram cannot answer */
+static int
+preagg_filter_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase)
+{
+	int			dim = -1;
+
+	for (int i = 0; i < s->naggs; i++)
+	{
+		int			l = s->agg[i].filter ? sift_aggspec_pred_leaf(s->agg[i].filter, lay, nbase, -1) : -1;
+
+		if (l == -2 || (l >= 0 && dim >= 0 && l != dim))
+			return -2;
+		dim = l >= 0 ? l : dim;
 	}
 	return dim;
 }
@@ -416,6 +431,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	int			dim = -1,
 				d = -1,
 				hdim = -1,
+				fdim,
 				zdim;
 	SiftPaWhy	why = SPW_OK;
 
@@ -450,6 +466,11 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
 	if (dim == -2)
 		return SPW_ROW_PRED;
+	/* the FILTERs and the other tests of a dim run on the groups of one histogram: the key's, the conjunct's or theirs */
+	fdim = preagg_filter_dim(s, lay, nbase);
+	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim))
+		return SPW_AGG_FILTER;
+	dim = fdim >= 0 ? fdim : dim;
 	if (dim >= 0)
 	{
 		d = pa_dim(pa, dim);

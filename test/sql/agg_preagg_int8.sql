@@ -53,7 +53,7 @@ INSERT INTO pa_q VALUES
 	(13, 'with min and max',   'SELECT kind, sum(val), avg(val), min(val), max(val) FROM %s GROUP BY kind'),
 	(14, 'grouping sets',      'SELECT kind, grp, sum(val), avg(val) FROM %s GROUP BY GROUPING SETS ((kind), (grp), ())'),
 	(15, 'rollup',             'SELECT kind, sum(val), avg(val) FROM %s GROUP BY ROLLUP (kind)'),
-	(16, 'FILTER: scan',       'SELECT sum(val) FILTER (WHERE kind = 1), avg(val) FILTER (WHERE kind = 1) FROM %s'),
+	(16, 'FILTER on the dim',       'SELECT sum(val) FILTER (WHERE kind = 1), avg(val) FILTER (WHERE kind = 1) FROM %s'),
 	(17, 'DISTINCT, expr: scan', 'SELECT sum(DISTINCT val), avg(DISTINCT val), sum(val + 1), avg(val * 2) FROM %s'),
 	(18, 'having, limit',      'SELECT kind, sum(val) FROM %s GROUP BY kind HAVING sum(val) > 0 ORDER BY 2 DESC, 1 LIMIT 3'),
 	(19, 'int4 beside int8',   'SELECT kind, sum(kind), avg(kind), sum(val) FROM %s GROUP BY kind');
