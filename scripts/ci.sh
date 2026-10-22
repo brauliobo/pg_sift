@@ -29,7 +29,8 @@
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
 # SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one).
-# SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue. Logs:
+# SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.
+# SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the pull request tier: lint runs three of them). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
@@ -83,10 +84,18 @@ if [[ $MODE == affected ]]; then
 	for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
 	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
+	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
+	FAST='^(installcheck-|isolation-emulated$|coverage$)'
+	for f in ${FILES[@]+"${FILES[@]}"}; do
+		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
+		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
+		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col'; fi
+	done
 	case $OUT in
 		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication; do echo "gh:$f $(flag $f)"; done ;;
 		github)
 			echo "jobs=$RE"
+			echo "fast=$FAST"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
 			for f in sqlite mariadb replication; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
@@ -415,7 +424,7 @@ LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
 HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral)
-if (( SHARD == 1 )); then
+if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
 	selftest=$!
 	step plan-selftest plan-selftest "$S/ci.sh" --selftest &
