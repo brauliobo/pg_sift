@@ -40,7 +40,7 @@ subtest 'without preload CREATE and ALTER PUBLICATION of a sift_table raise 0A00
 	{
 		my ($ret, $out, $err) = $plain->psql('postgres', $ddl, extra_params => [ '-v', 'VERBOSITY=verbose' ]);
 		isnt($ret, 0, "$refused{$ddl} fails");
-		like($err, qr/ERROR:  0A000: sift_table table "orders" is published/, 'SQLSTATE 0A000, names the table');
+		like($err, qr/ERROR:  0A000: sift_table table "public\.orders" is published/, 'SQLSTATE 0A000, names the table');
 		like($err, qr/shared_preload_libraries/, 'names the setting');
 		like($err, qr/heap staging table/, 'offers the staging table');
 	}
@@ -48,7 +48,7 @@ subtest 'without preload CREATE and ALTER PUBLICATION of a sift_table raise 0A00
 	$plain->safe_psql('postgres', 'CREATE TABLE staging (id int PRIMARY KEY); CREATE PUBLICATION pub_heap FOR TABLE staging');
 	my ($ret, $out, $err) = $plain->psql('postgres', 'ALTER PUBLICATION pub_heap ADD TABLE orders', extra_params => [ '-v', 'VERBOSITY=verbose' ]);
 	isnt($ret, 0, 'adding the sift_table to a heap publication fails');
-	like($err, qr/ERROR:  0A000: sift_table table "orders" is published/, 'with the same error');
+	like($err, qr/ERROR:  0A000: sift_table table "public\.orders" is published/, 'with the same error');
 	is($plain->safe_psql('postgres', "SELECT count(*) FROM pg_publication_rel WHERE prrelid = 'orders'::regclass"), 0, 'the table was not added');
 	$plain->safe_psql('postgres', 'DROP PUBLICATION pub_heap; DROP TABLE staging');
 };
