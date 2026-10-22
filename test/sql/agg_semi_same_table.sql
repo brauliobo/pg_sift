@@ -1,0 +1,64 @@
+-- Two EXISTS (or IN) over one table, on the same unique key and with different conditions. PostgreSQL 18 merges them into one scan of the table
+-- (self-join elimination) that has both conditions, and moves them off the FROM tree the scan reads, so the scan used to apply one of them
+-- (`kind = 'k1'` and `kind = 'k4'` on a table that holds one kind per id counted the rows of the first). Such a query keeps the normal plan on
+-- PostgreSQL 18; one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
+-- the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE items (id int PRIMARY KEY, kind text, grp int) WITH (autovacuum_enabled = false);
+INSERT INTO items SELECT i, 'k' || i % 5, i % 7 FROM generate_series(0, 599) i;
+CREATE TABLE others (id int PRIMARY KEY, kind text) WITH (autovacuum_enabled = false);
+INSERT INTO others SELECT i, 'k' || i % 3 FROM generate_series(0, 599) i;
+CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 700 END, 'k' || i % 5, i % 1000 FROM generate_series(1, 6000) i;
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, amount);
+VACUUM (FREEZE, ANALYZE) items, others, events;
+
+-- whether the scan answers the query, and the rows it differs by from the plan without it
+CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+  END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+
+-- the shapes PostgreSQL 18 merges: a second condition of the same table, a condition on another column, IN lists, in a group, with the table's columns read
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+  SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
+    AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k4')$q$);
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+  SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
+    AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.id < 300)$q$);
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+  SELECT count(amount) FROM events e WHERE e.parent_id IN (SELECT id FROM items WHERE kind = 'k1') AND e.parent_id IN (SELECT id FROM items WHERE grp = 2)$q$);
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+  SELECT e.kind, count(*), sum(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.grp < 3)
+    AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.grp > 1) GROUP BY e.kind$q$);
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+  SELECT count(*) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
+    AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind <> 'k1')$q$);
+
+-- not merged, and pushed down: one EXISTS, an EXISTS and a NOT EXISTS, two different tables, the same condition twice
+SELECT * FROM check_same($q$SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')$q$);
+SELECT * FROM check_same($q$
+  SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
+    AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.grp = 3)$q$);
+SELECT * FROM check_same($q$
+  SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
+    AND EXISTS (SELECT 1 FROM others o WHERE o.id = e.parent_id AND o.kind = 'k2')$q$);
+
+DROP TABLE events, items, others;
+DROP FUNCTION check_same(text);
+DROP EXTENSION pg_sift;
