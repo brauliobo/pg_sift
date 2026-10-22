@@ -21,6 +21,7 @@
 	X(TABLE_KIND, "table_kind", "the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table") \
 	X(NO_SOURCE, "no_source", "no sift_col index or sift_table covers the table") \
 	X(PARTITION_SOURCE, "partition_source", "a partition has no column index the plan can use, or the partitions do not share a layout") \
+	X(PARTITION_COUNT, "partition_count", "the table has more partitions left by PostgreSQL's pruning than a scan reads") \
 	X(JOIN_CHILD, "join_child", "a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child") \
 	X(OUTER_JOIN, "outer_join", "an outer join of the scanned table keeps rows the scan cannot reproduce") \
 	X(UNNEST_LEAF, "unnest_leaf", "the array or object a lateral function unnests is not a leaf of the column index") \
