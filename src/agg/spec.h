@@ -353,7 +353,7 @@ typedef struct SiftAggJoin
 	Oid			relid;			/* the table; InvalidOid when the rows are those of a plan (child) */
 	int			child;			/* index in the node's child plans (CustomScan.custom_plans): a sub-select, VALUES list or function; -1: the table */
 	SiftJoinKind kind;
-	int			subplan;		/* native correlated plan ID, 0 for a once-loaded lookup */
+	int			subplan;		/* native plan ID: a correlated child, or the plan of a child in another query level; 0 for a once-loaded lookup */
 	List	   *params;		/* native PARAM_EXEC IDs supplied for each cached input */
 	List	   *args;			/* their expressions over the combo inputs */
 	Node	   *sig;			/* native correlated plan: its query with the parameters numbered by position, so that two arms with the same child are known as such */

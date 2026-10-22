@@ -829,7 +829,7 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
 		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
 	{
-		if (!parse->hasWindowFuncs)
+		if (!parse->hasWindowFuncs && sift_agg_two_level_on)
 			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
 		return;
 	}
@@ -873,18 +873,27 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 	bool		planned = false;
 
 	for (int i = 0; i < spec->njoin; i++)
-		if (spec->join[i].params != NIL)
-		{
-			Path	   *subpath = list_nth(((SiftAggPath *) best)->correlated, i);
-			PlannerInfo *subroot = list_nth(((SiftAggPath *) best)->subroots, i);
-			Plan       *plan = create_plan(subroot, subpath);
+	{
+		Path	   *subpath = list_nth(((SiftAggPath *) best)->correlated, i);
 
+		if (subpath != NULL)
+		{
+			PlannerInfo *subroot = list_nth(((SiftAggPath *) best)->subroots, i);
+			List	   *tlist = subroot->processed_tlist;
+			Plan       *plan;
+
+			/* the plan of the rows of a plain child is labelled with its columns, not with those of the level's query */
+			if (spec->join[i].params == NIL)
+				subroot->processed_tlist = make_tlist_from_pathtarget(subpath->pathtarget);
+			plan = create_plan(subroot, subpath);
+			subroot->processed_tlist = tlist;
 			root->glob->subplans = lappend(root->glob->subplans, plan);
 			root->glob->subpaths = lappend(root->glob->subpaths, subpath);
 			root->glob->subroots = lappend(root->glob->subroots, subroot);
 			spec->join[i].subplan = list_length(root->glob->subplans);
 			planned = true;
 		}
+	}
 	return planned;
 }
 
