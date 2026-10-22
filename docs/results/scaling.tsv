@@ -1,0 +1,101 @@
+# Aggregates by number of partitions and parallel workers on the orders of the store benchmark (bench/steps/scaling.sh).
+# date: 2026-10-22
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (77% threads), scope 400% 12G
+# postgresql: PostgreSQL 18.6
+# build: v3.2.0
+# shared_buffers: 2GB
+# host_load_before: load 6.16 6.59 8.38 cpu_psi 1.76%
+# bench: scaling
+# sift: 3.2
+# orders: 1000000
+# host_load_after: load 5.71 6.17 8.00 cpu_psi 0.03%
+# method: psql \timing of one statement, planning included, one client, 7 timed runs after one untimed, cells interleaved in random order; jit off; partitions: 2 workers
+version	case	arm	metric	value	min	max	n	load	note
+3.2	partitions 1	q01_pg	median_ms	1.04	0.64	1.11	7	5.89	Index Scan
+3.2	partitions 1	q01_sift	median_ms	1.07	1.01	1.17	7	5.89	Index Scan
+3.2	partitions 1	q03_pg	median_ms	49.36	47.36	51.62	7	5.89	Seq Scan
+3.2	partitions 1	q03_sift	median_ms	25.10	23.75	27.71	7	5.89	SiftAgg
+3.2	partitions 1	q04_pg	median_ms	38.54	37.94	40.80	7	5.89	Seq Scan
+3.2	partitions 1	q04_sift	median_ms	24.60	23.10	26.54	7	5.89	SiftAgg
+3.2	partitions 1	q06_pg	median_ms	343.38	340.84	347.32	7	5.89	Seq Scan
+3.2	partitions 1	q06_sift	median_ms	25.58	24.45	28.60	7	5.89	SiftAgg
+3.2	partitions 4	q01_pg	median_ms	1.12	0.76	1.32	7	5.64	Index Scan
+3.2	partitions 4	q01_sift	median_ms	1.17	1.09	1.20	7	5.67	Index Scan
+3.2	partitions 4	q03_pg	median_ms	124.91	124.31	126.67	7	5.64	Seq Scan
+3.2	partitions 4	q03_sift	median_ms	30.88	29.56	33.26	7	5.64	SiftAgg
+3.2	partitions 4	q04_pg	median_ms	42.31	40.98	45.14	7	5.64	Seq Scan
+3.2	partitions 4	q04_sift	median_ms	23.07	21.37	26.52	7	5.64	SiftAgg
+3.2	partitions 4	q06_pg	median_ms	343.38	340.70	346.08	7	5.64	Seq Scan
+3.2	partitions 4	q06_sift	median_ms	28.43	27.54	28.87	7	5.64	SiftAgg
+3.2	partitions 16	q01_pg	median_ms	1.13	0.73	1.18	7	5.36	Index Scan
+3.2	partitions 16	q01_sift	median_ms	1.16	1.06	1.21	7	5.36	Index Scan
+3.2	partitions 16	q03_pg	median_ms	122.09	120.84	125.20	7	5.36	Seq Scan
+3.2	partitions 16	q03_sift	median_ms	18.33	16.74	18.74	7	5.36	SiftAgg
+3.2	partitions 16	q04_pg	median_ms	42.16	41.33	45.12	7	5.36	Seq Scan
+3.2	partitions 16	q04_sift	median_ms	10.78	8.28	12.58	7	5.36	SiftAgg
+3.2	partitions 16	q06_pg	median_ms	342.11	337.80	350.08	7	5.33	Seq Scan
+3.2	partitions 16	q06_sift	median_ms	18.26	17.02	18.89	7	5.36	SiftAgg
+3.2	partitions 64	q01_pg	median_ms	1.20	0.88	1.30	7	5.40	Index Scan
+3.2	partitions 64	q01_sift	median_ms	1.26	1.16	1.82	7	5.40	Index Scan
+3.2	partitions 64	q03_pg	median_ms	126.04	125.53	127.35	7	5.40	Seq Scan
+3.2	partitions 64	q03_sift	median_ms	23.10	22.37	26.86	7	5.41	SiftAgg
+3.2	partitions 64	q04_pg	median_ms	44.12	41.75	47.14	7	5.40	Seq Scan
+3.2	partitions 64	q04_sift	median_ms	16.41	14.18	22.21	7	5.40	SiftAgg
+3.2	partitions 64	q06_pg	median_ms	348.33	344.12	394.96	7	5.40	Seq Scan
+3.2	partitions 64	q06_sift	median_ms	24.42	23.01	27.00	7	5.40	SiftAgg
+3.2	partitions 256	q01_pg	median_ms	1.57	1.20	1.76	7	5.20	Index Scan
+3.2	partitions 256	q01_sift	median_ms	1.65	1.55	1.98	7	5.20	Index Scan
+3.2	partitions 256	q03_pg	median_ms	136.96	134.58	139.16	7	5.20	Seq Scan
+3.2	partitions 256	q03_sift	median_ms	33.53	32.07	37.30	7	5.20	SiftAgg
+3.2	partitions 256	q04_pg	median_ms	56.79	53.54	60.79	7	5.20	Seq Scan
+3.2	partitions 256	q04_sift	median_ms	28.11	26.38	33.14	7	5.20	SiftAgg
+3.2	partitions 256	q06_pg	median_ms	357.39	355.55	364.27	7	5.20	Seq Scan
+3.2	partitions 256	q06_sift	median_ms	37.15	34.41	40.11	7	5.20	SiftAgg
+3.2	partitions 1024	q01_pg	median_ms	2.77	2.35	2.99	7	4.78	Index Scan
+3.2	partitions 1024	q01_sift	median_ms	2.87	2.74	3.04	7	4.78	Index Scan
+3.2	partitions 1024	q03_pg	median_ms	180.04	177.25	185.03	7	4.78	Seq Scan
+3.2	partitions 1024	q03_sift	median_ms	103.16	99.21	109.58	7	4.78	SiftAgg
+3.2	partitions 1024	q04_pg	median_ms	113.42	106.71	119.97	7	4.78	Seq Scan
+3.2	partitions 1024	q04_sift	median_ms	94.78	93.16	96.77	7	4.81	SiftAgg
+3.2	partitions 1024	q06_pg	median_ms	400.13	395.48	402.46	7	4.78	Seq Scan
+3.2	partitions 1024	q06_sift	median_ms	103.81	102.84	106.88	7	4.78	SiftAgg
+3.2	partitions 4096	q01_pg	median_ms	8.06	7.33	8.54	7	5.61	Seq Scan
+3.2	partitions 4096	q01_sift	median_ms	8.38	7.79	11.03	7	5.59	Seq Scan
+3.2	partitions 4096	q03_pg	median_ms	385.83	369.81	402.79	7	5.59	Seq Scan
+3.2	partitions 4096	q03_sift	median_ms	435.72	424.89	473.38	7	5.41	SiftAgg
+3.2	partitions 4096	q04_pg	median_ms	361.09	346.36	377.39	7	5.57	Seq Scan
+3.2	partitions 4096	q04_sift	median_ms	433.73	424.53	469.57	7	5.57	SiftAgg
+3.2	partitions 4096	q06_pg	median_ms	621.38	601.52	633.65	7	5.57	Seq Scan
+3.2	partitions 4096	q06_sift	median_ms	441.27	435.75	467.25	7	5.57	SiftAgg
+3.2	workers 0	q01_pg	median_ms	1.17	0.86	1.23	7	6.02	Index Scan
+3.2	workers 0	q01_sift	median_ms	1.24	1.17	1.35	7	6.02	Index Scan
+3.2	workers 0	q03_pg	median_ms	129.77	128.46	133.92	7	6.02	Seq Scan
+3.2	workers 0	q03_sift	median_ms	24.49	23.87	26.98	7	6.02	SiftAgg
+3.2	workers 0	q04_pg	median_ms	96.20	94.35	100.48	7	6.02	Seq Scan
+3.2	workers 0	q04_sift	median_ms	24.48	23.66	27.01	7	6.02	SiftAgg
+3.2	workers 0	q06_pg	median_ms	344.17	339.31	356.02	7	6.02	Seq Scan
+3.2	workers 0	q06_sift	median_ms	25.78	24.69	26.59	7	6.02	SiftAgg
+3.2	workers 1	q01_pg	median_ms	1.07	0.92	1.36	7	6.02	Index Scan
+3.2	workers 1	q01_sift	median_ms	1.18	1.11	1.32	7	6.02	Index Scan
+3.2	workers 1	q03_pg	median_ms	71.49	70.03	75.92	7	6.02	Seq Scan
+3.2	workers 1	q03_sift	median_ms	24.54	23.35	27.12	7	6.02	SiftAgg
+3.2	workers 1	q04_pg	median_ms	55.61	53.25	57.86	7	6.02	Seq Scan
+3.2	workers 1	q04_sift	median_ms	24.69	23.66	26.84	7	6.02	SiftAgg
+3.2	workers 1	q06_pg	median_ms	345.30	338.68	368.04	7	6.02	Seq Scan
+3.2	workers 1	q06_sift	median_ms	27.59	25.48	28.93	7	6.02	SiftAgg
+3.2	workers 2	q01_pg	median_ms	1.10	0.71	1.18	7	5.88	Index Scan
+3.2	workers 2	q01_sift	median_ms	1.17	1.08	1.32	7	5.88	Index Scan
+3.2	workers 2	q03_pg	median_ms	50.28	48.52	53.73	7	5.88	Seq Scan
+3.2	workers 2	q03_sift	median_ms	23.97	23.56	25.13	7	5.90	SiftAgg
+3.2	workers 2	q04_pg	median_ms	38.71	38.11	41.53	7	5.88	Seq Scan
+3.2	workers 2	q04_sift	median_ms	24.09	23.62	25.56	7	5.88	SiftAgg
+3.2	workers 2	q06_pg	median_ms	343.99	342.16	369.98	7	5.88	Seq Scan
+3.2	workers 2	q06_sift	median_ms	25.15	24.38	25.75	7	5.88	SiftAgg
+3.2	workers 3	q01_pg	median_ms	0.99	0.70	1.13	7	5.73	Index Scan
+3.2	workers 3	q01_sift	median_ms	1.11	1.01	1.19	7	5.73	Index Scan
+3.2	workers 3	q03_pg	median_ms	38.01	37.29	38.05	7	5.73	Seq Scan
+3.2	workers 3	q03_sift	median_ms	23.83	22.86	24.91	7	5.75	SiftAgg
+3.2	workers 3	q04_pg	median_ms	30.27	29.45	30.79	7	5.73	Seq Scan
+3.2	workers 3	q04_sift	median_ms	23.30	21.42	24.04	7	5.73	SiftAgg
+3.2	workers 3	q06_pg	median_ms	339.61	336.34	347.84	7	5.73	Seq Scan
+3.2	workers 3	q06_sift	median_ms	24.57	24.18	25.85	7	5.73	SiftAgg
