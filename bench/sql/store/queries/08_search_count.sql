@@ -2,6 +2,8 @@
 -- label: `count(*) WHERE title @@> 'a b'`
 --@ pg
 SELECT count(*) FROM orders WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', 'wireless headphones')
+--@ duck
+SELECT count(*) FROM orders WHERE lower(title) LIKE '%wireless%' AND lower(title) LIKE '%headphones%'
 --@ sift
 SELECT count(*) FROM orders WHERE title @@> 'wireless headphones'
 --@ ch

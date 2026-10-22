@@ -15,16 +15,19 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 ## Build and test
 
 - `make`, `make check` (quick tier), `make check-full` (ASan, soak, fuzz); `nice make -j4` on a shared host. Before a push run `scripts/ci.sh affected`, not `make check`: GitHub CI picks jobs by the same map (`scripts/areas.tsv`; a new test or file goes into it, `scripts/ci.sh --selftest` fails otherwise). Release: `scripts/release.sh X.Y.Z --dry-run`, no local gate (docs/RELEASE.md). Details: CONTRIBUTING.md.
+- GitHub CI runs for pushes to `main`, dispatches, the nightly and pull requests from `integration/*` branches only; label any other pull request `ci` to opt it in (every other job skips, `gate` passes). The push run of `main` is the safety net for what a pull request did not run.
 - `scripts/pgtest.sh install|start|psql|regress [test]|tap [test]|destroy` is the throwaway cluster; `scripts/ci.sh` runs every suite.
-- `scripts/coverage.sh --gen` writes `docs/COVERAGE.md` and the README coverage block from `docs/coverage.tsv`; `--check` proves them.
-- Benchmark tables are generated: `bench/bench all --docs` (`bench/steps/readme.py`, `tables.py`, `store.py`).
+- Docs numbers are generated, never typed: `scripts/gen-docs.py` rewrites every generated block of README.md and docs/ (benchmark tables from the committed `docs/results/`,
+  coverage from `docs/coverage.tsv`, the settings table and the test counts from `src/` and `test/`); `--check` (the lint job; seconds, no server) fails when one is stale.
+  A benchmark pass is `bench/bench ... --docs` (it writes `docs/results/` and runs the renderers of `bench/steps`), then `scripts/gen-docs.py`; a block whose results file is missing says so.
+  `scripts/coverage.sh --check` still proves the coverage claims on a cluster.
 - `scripts/check-portable.sh` guards the portable core; `sqlite/test.sh` and `mariadb/test.sh` test the ports.
 
 ## Conventions
 
 - Commit subject `context: subcontext: change` (the module or feature, never the project name); stage files individually.
 - LF line endings only. Public docs use neutral wording: no private paths, hosts or internal names.
-- Generated blocks (the `bench:` blocks of `docs/BENCHMARKS.md` and README.md, the coverage block, `docs/COVERAGE.md`, `docs/LIMITS.md`, `docs/REFERENCE.md` and the `sift-reference` block of README.md) are never edited by hand: change the data or the generator.
+- Generated blocks (the `bench:`, `coverage:` and `gen:` blocks of `docs/BENCHMARKS.md` and README.md, `docs/COVERAGE.md`, `docs/LIMITS.md`, `docs/REFERENCE.md` and the `sift-reference` block of README.md) are never edited by hand: change the data, the source or the generator (`scripts/gen-docs.py` for the first three kinds).
 - A new or changed `sift.*` function or view needs a `COMMENT ON` in the 3.3+ install and upgrade scripts (never the released ones: `docs/reference-notes.tsv`), then `make reference` (`scripts/gen-reference.sh`, no server needed) and
   commit `docs/REFERENCE.md` and the README block. A new limit goes in the registry, then `make limits`. `--check` of both runs in lint and `scripts/ci.sh`, and fails otherwise.
 - Fix root causes; a bug gets a failing test first. Comments only for non-obvious code.

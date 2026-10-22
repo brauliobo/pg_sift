@@ -47,6 +47,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_super_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_run_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_run_file_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
 PG_FUNCTION_INFO_V1(sift_test_col_set_file_damage);
 
 #define TEST_NOWBUF	1
@@ -1641,6 +1642,45 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* sift._test_col_zone_flags(index): the stored units, and how many of them have a zone of some leaf flagged SIFT_COLZ_JNULL (a flag of column format minor 6 and later) */
+Datum
+sift_test_col_zone_flags(PG_FUNCTION_ARGS)
+{
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	int64		units = 0,
+				jnull = 0;
+	Datum		v[2];
+	bool		nulls[2] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u;
+		bool		flagged = false;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u))
+			continue;
+		units++;
+		for (int col = 0; col < sift_col_rel(ts.index)->schema->ncols; col++)
+		{
+			SiftCZone	z;
+
+			sift_cseg_zone(seg, col, u, &z);
+			flagged |= (z.flags & SIFT_COLZ_JNULL) != 0;
+		}
+		jnull += flagged;
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(units);
+	v[1] = Int64GetDatum(jnull);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 #endif							/* SIFT_TESTING */

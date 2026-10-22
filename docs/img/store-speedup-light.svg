@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="518" viewBox="0 0 880 518" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Speed-up over PostgreSQL per question</title>
+<desc id="d">Factor over PostgreSQL for each system and question, warm and cold.</desc>
+<rect x="0.5" y="0.5" width="879" height="517" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="30" font-size="16" text-anchor="start" fill="#1f2328" font-weight="bold">Ten questions: how many times faster than PostgreSQL</text>
+<text x="20" y="48" font-size="12" text-anchor="start" fill="#59636e">median time of PostgreSQL divided by the system's, warm runs and first run after the memory was emptied; blue: faster, orange: slower</text>
+<text x="335" y="72" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">warm</text>
+<circle cx="227" cy="90" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="227" y="106" font-size="10" text-anchor="middle" fill="#59636e">sift_col</text>
+<polygon points="281,84.2 286.9,90 281,95.8 275.1,90" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="281" y="106" font-size="10" text-anchor="middle" fill="#59636e">sift_table</text>
+<polygon points="335,84.6 340.4,94.5 329.6,94.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="335" y="106" font-size="10" text-anchor="middle" fill="#59636e">Elastic</text>
+<polygon points="389,95.4 394.4,85.5 383.6,85.5" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="389" y="106" font-size="10" text-anchor="middle" fill="#59636e">ClickHouse</text>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><line x1="438.9" y1="86" x2="447.1" y2="94"/><line x1="438.9" y1="94" x2="447.1" y2="86"/></g>
+<text x="443" y="106" font-size="10" text-anchor="middle" fill="#59636e">Citus</text>
+<rect x="201" y="113" width="52" height="26" fill="#c3d6ec" rx="3"><title>Q01 point lookup (warm): pg_sift sift_col is 1.2× PostgreSQL (0.215 ms against 0.269 ms)</title></rect>
+<text x="227" y="130" font-size="12" text-anchor="middle" fill="#1f2328">1.2×</text>
+<rect x="255" y="113" width="52" height="26" fill="#b8cfea" rx="3"><title>Q01 point lookup (warm): pg_sift sift_table is 1.7× PostgreSQL (0.158 ms against 0.269 ms)</title></rect>
+<text x="281" y="130" font-size="12" text-anchor="middle" fill="#1f2328">1.7×</text>
+<rect x="309" y="113" width="52" height="26" fill="#ecaa90" rx="3"><title>Q01 point lookup (warm): Elasticsearch is 0.15× PostgreSQL (1.75 ms against 0.269 ms)</title></rect>
+<text x="335" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.15×</text>
+<rect x="363" y="113" width="52" height="26" fill="#ec9b7b" rx="3"><title>Q01 point lookup (warm): ClickHouse is 0.08× PostgreSQL (3.3 ms against 0.269 ms)</title></rect>
+<text x="389" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.08×</text>
+<rect x="417" y="113" width="52" height="26" fill="#eca98e" rx="3"><title>Q01 point lookup (warm): Citus columnar is 0.14× PostgreSQL (1.85 ms against 0.269 ms)</title></rect>
+<text x="443" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.14×</text>
+<rect x="201" y="141" width="52" height="26" fill="#498bda" rx="3"><title>Q02 orders per country (warm): pg_sift sift_col is 41× PostgreSQL (0.534 ms against 21.7 ms)</title></rect>
+<text x="227" y="158" font-size="12" text-anchor="middle" fill="#ffffff">41×</text>
+<rect x="255" y="141" width="52" height="26" fill="#4d8ddb" rx="3"><title>Q02 orders per country (warm): pg_sift sift_table is 37× PostgreSQL (0.59 ms against 21.7 ms)</title></rect>
+<text x="281" y="158" font-size="12" text-anchor="middle" fill="#ffffff">37×</text>
+<rect x="309" y="141" width="52" height="26" fill="#98bce6" rx="3"><title>Q02 orders per country (warm): Elasticsearch is 4.2× PostgreSQL (5.15 ms against 21.7 ms)</title></rect>
+<text x="335" y="158" font-size="12" text-anchor="middle" fill="#1f2328">4.2×</text>
+<rect x="363" y="141" width="52" height="26" fill="#96bae5" rx="3"><title>Q02 orders per country (warm): ClickHouse is 4.5× PostgreSQL (4.86 ms against 21.7 ms)</title></rect>
+<text x="389" y="158" font-size="12" text-anchor="middle" fill="#1f2328">4.5×</text>
+<rect x="417" y="141" width="52" height="26" fill="#edbba8" rx="3"><title>Q02 orders per country (warm): Citus columnar is 0.30× PostgreSQL (71.4 ms against 21.7 ms)</title></rect>
+<text x="443" y="158" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.30×</text>
+<rect x="201" y="169" width="52" height="26" fill="#2a78d6" rx="3"><title>Q03 revenue per month (warm): pg_sift sift_col is 321× PostgreSQL (0.537 ms against 172 ms)</title></rect>
+<text x="227" y="186" font-size="12" text-anchor="middle" fill="#ffffff">321×</text>
+<rect x="255" y="169" width="52" height="26" fill="#2a78d6" rx="3"><title>Q03 revenue per month (warm): pg_sift sift_table is 238× PostgreSQL (0.724 ms against 172 ms)</title></rect>
+<text x="281" y="186" font-size="12" text-anchor="middle" fill="#ffffff">238×</text>
+<rect x="309" y="169" width="52" height="26" fill="#649cde" rx="3"><title>Q03 revenue per month (warm): Elasticsearch is 19× PostgreSQL (9.1 ms against 172 ms)</title></rect>
+<text x="335" y="186" font-size="12" text-anchor="middle" fill="#1f2328">19×</text>
+<rect x="363" y="169" width="52" height="26" fill="#5793dc" rx="3"><title>Q03 revenue per month (warm): ClickHouse is 28× PostgreSQL (6.22 ms against 172 ms)</title></rect>
+<text x="389" y="186" font-size="12" text-anchor="middle" fill="#1f2328">28×</text>
+<rect x="417" y="169" width="52" height="26" fill="#bed3eb" rx="3"><title>Q03 revenue per month (warm): Citus columnar is 1.4× PostgreSQL (119 ms against 172 ms)</title></rect>
+<text x="443" y="186" font-size="12" text-anchor="middle" fill="#1f2328">1.4×</text>
+<rect x="201" y="197" width="52" height="26" fill="#357fd8" rx="3"><title>Q04 top categories (warm): pg_sift sift_col is 72× PostgreSQL (0.553 ms against 39.9 ms)</title></rect>
+<text x="227" y="214" font-size="12" text-anchor="middle" fill="#ffffff">72×</text>
+<rect x="255" y="197" width="52" height="26" fill="#3c83d9" rx="3"><title>Q04 top categories (warm): pg_sift sift_table is 60× PostgreSQL (0.665 ms against 39.9 ms)</title></rect>
+<text x="281" y="214" font-size="12" text-anchor="middle" fill="#ffffff">60×</text>
+<rect x="309" y="197" width="52" height="26" fill="#99bce6" rx="3"><title>Q04 top categories (warm): Elasticsearch is 4.2× PostgreSQL (9.47 ms against 39.9 ms)</title></rect>
+<text x="335" y="214" font-size="12" text-anchor="middle" fill="#1f2328">4.2×</text>
+<rect x="363" y="197" width="52" height="26" fill="#84afe3" rx="3"><title>Q04 top categories (warm): ClickHouse is 7.5× PostgreSQL (5.31 ms against 39.9 ms)</title></rect>
+<text x="389" y="214" font-size="12" text-anchor="middle" fill="#1f2328">7.5×</text>
+<rect x="417" y="197" width="52" height="26" fill="#edc1b1" rx="3"><title>Q04 top categories (warm): Citus columnar is 0.40× PostgreSQL (99.8 ms against 39.9 ms)</title></rect>
+<text x="443" y="214" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.40×</text>
+<rect x="201" y="225" width="52" height="26" fill="#8fb6e4" rx="3"><title>Q05 average shipped order (warm): pg_sift sift_col is 5.6× PostgreSQL (1.75 ms against 9.81 ms)</title></rect>
+<text x="227" y="242" font-size="12" text-anchor="middle" fill="#1f2328">5.6×</text>
+<rect x="255" y="225" width="52" height="26" fill="#a4c3e7" rx="3"><title>Q05 average shipped order (warm): pg_sift sift_table is 3.0× PostgreSQL (3.26 ms against 9.81 ms)</title></rect>
+<text x="281" y="242" font-size="12" text-anchor="middle" fill="#1f2328">3.0×</text>
+<rect x="309" y="225" width="52" height="26" fill="#adc8e9" rx="3"><title>Q05 average shipped order (warm): Elasticsearch is 2.3× PostgreSQL (4.21 ms against 9.81 ms)</title></rect>
+<text x="335" y="242" font-size="12" text-anchor="middle" fill="#1f2328">2.3×</text>
+<rect x="363" y="225" width="52" height="26" fill="#b6ceea" rx="3"><title>Q05 average shipped order (warm): ClickHouse is 1.8× PostgreSQL (5.49 ms against 9.81 ms)</title></rect>
+<text x="389" y="242" font-size="12" text-anchor="middle" fill="#1f2328">1.8×</text>
+<rect x="417" y="225" width="52" height="26" fill="#ecab91" rx="3"><title>Q05 average shipped order (warm): Citus columnar is 0.16× PostgreSQL (61.9 ms against 9.81 ms)</title></rect>
+<text x="443" y="242" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.16×</text>
+<rect x="201" y="253" width="52" height="26" fill="#4b8cdb" rx="3"><title>Q06 customers per month (warm): pg_sift sift_col is 38× PostgreSQL (5.23 ms against 201 ms)</title></rect>
+<text x="227" y="270" font-size="12" text-anchor="middle" fill="#ffffff">38×</text>
+<rect x="255" y="253" width="52" height="26" fill="#5291dc" rx="3"><title>Q06 customers per month (warm): pg_sift sift_table is 32× PostgreSQL (6.38 ms against 201 ms)</title></rect>
+<text x="281" y="270" font-size="12" text-anchor="middle" fill="#ffffff">32×</text>
+<rect x="309" y="253" width="52" height="26" fill="#8eb5e4" rx="3"><title>Q06 customers per month (warm): Elasticsearch is 5.7× PostgreSQL (35.6 ms against 201 ms)</title></rect>
+<text x="335" y="270" font-size="12" text-anchor="middle" fill="#1f2328">5.7×</text>
+<rect x="363" y="253" width="52" height="26" fill="#6099de" rx="3"><title>Q06 customers per month (warm): ClickHouse is 21× PostgreSQL (9.54 ms against 201 ms)</title></rect>
+<text x="389" y="270" font-size="12" text-anchor="middle" fill="#1f2328">21×</text>
+<rect x="417" y="253" width="52" height="26" fill="#edc5b6" rx="3"><title>Q06 customers per month (warm): Citus columnar is 0.46× PostgreSQL (433 ms against 201 ms)</title></rect>
+<text x="443" y="270" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.46×</text>
+<rect x="201" y="281" width="52" height="26" fill="#82aee3" rx="3"><title>Q07 big recent orders (warm): pg_sift sift_col is 8.1× PostgreSQL (1.42 ms against 11.6 ms)</title></rect>
+<text x="227" y="298" font-size="12" text-anchor="middle" fill="#1f2328">8.1×</text>
+<rect x="255" y="281" width="52" height="26" fill="#86b0e3" rx="3"><title>Q07 big recent orders (warm): pg_sift sift_table is 7.1× PostgreSQL (1.63 ms against 11.6 ms)</title></rect>
+<text x="281" y="298" font-size="12" text-anchor="middle" fill="#1f2328">7.1×</text>
+<rect x="309" y="281" width="52" height="26" fill="#a0c0e7" rx="3"><title>Q07 big recent orders (warm): Elasticsearch is 3.4× PostgreSQL (3.43 ms against 11.6 ms)</title></rect>
+<text x="335" y="298" font-size="12" text-anchor="middle" fill="#1f2328">3.4×</text>
+<rect x="363" y="281" width="52" height="26" fill="#a1c1e7" rx="3"><title>Q07 big recent orders (warm): ClickHouse is 3.3× PostgreSQL (3.48 ms against 11.6 ms)</title></rect>
+<text x="389" y="298" font-size="12" text-anchor="middle" fill="#1f2328">3.3×</text>
+<rect x="417" y="281" width="52" height="26" fill="#edb9a6" rx="3"><title>Q07 big recent orders (warm): Citus columnar is 0.29× PostgreSQL (40.1 ms against 11.6 ms)</title></rect>
+<text x="443" y="298" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.29×</text>
+<rect x="201" y="309" width="52" height="26" fill="#75a6e1" rx="3"><title>Q08 search count (warm): pg_sift sift_col is 12× PostgreSQL (0.617 ms against 7.15 ms)</title></rect>
+<text x="227" y="326" font-size="12" text-anchor="middle" fill="#1f2328">12×</text>
+<rect x="255" y="309" width="52" height="26" fill="#88b2e3" rx="3"><title>Q08 search count (warm): pg_sift sift_table is 6.8× PostgreSQL (1.06 ms against 7.15 ms)</title></rect>
+<text x="281" y="326" font-size="12" text-anchor="middle" fill="#1f2328">6.8×</text>
+<rect x="309" y="309" width="52" height="26" fill="#b0cae9" rx="3"><title>Q08 search count (warm): Elasticsearch is 2.1× PostgreSQL (3.33 ms against 7.15 ms)</title></rect>
+<text x="335" y="326" font-size="12" text-anchor="middle" fill="#1f2328">2.1×</text>
+<rect x="363" y="309" width="52" height="26" fill="#aec9e9" rx="3"><title>Q08 search count (warm): ClickHouse is 2.3× PostgreSQL (3.18 ms against 7.15 ms)</title></rect>
+<text x="389" y="326" font-size="12" text-anchor="middle" fill="#1f2328">2.3×</text>
+<rect x="417" y="309" width="52" height="26" fill="#eb6834" rx="3"><title>Q08 search count (warm): Citus columnar is 0.01× PostgreSQL (859 ms against 7.15 ms)</title></rect>
+<text x="443" y="326" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.01×</text>
+<rect x="201" y="337" width="52" height="26" fill="#9bbde6" rx="3"><title>Q09 search facets (warm): pg_sift sift_col is 3.9× PostgreSQL (1.95 ms against 7.56 ms)</title></rect>
+<text x="227" y="354" font-size="12" text-anchor="middle" fill="#1f2328">3.9×</text>
+<rect x="255" y="337" width="52" height="26" fill="#96bae5" rx="3"><title>Q09 search facets (warm): pg_sift sift_table is 4.5× PostgreSQL (1.67 ms against 7.56 ms)</title></rect>
+<text x="281" y="354" font-size="12" text-anchor="middle" fill="#1f2328">4.5×</text>
+<rect x="309" y="337" width="52" height="26" fill="#b9d0ea" rx="3"><title>Q09 search facets (warm): Elasticsearch is 1.7× PostgreSQL (4.54 ms against 7.56 ms)</title></rect>
+<text x="335" y="354" font-size="12" text-anchor="middle" fill="#1f2328">1.7×</text>
+<rect x="363" y="337" width="52" height="26" fill="#edcec3" rx="3"><title>Q09 search facets (warm): ClickHouse is 0.68× PostgreSQL (11.1 ms against 7.56 ms)</title></rect>
+<text x="389" y="354" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.68×</text>
+<rect x="417" y="337" width="52" height="26" fill="#eb7749" rx="3"><title>Q09 search facets (warm): Citus columnar is 0.02× PostgreSQL (403 ms against 7.56 ms)</title></rect>
+<text x="443" y="354" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.02×</text>
+<rect x="201" y="365" width="52" height="26" fill="#6fa2e0" rx="3"><title>Q10 search newest (warm): pg_sift sift_col is 14× PostgreSQL (4.61 ms against 64 ms)</title></rect>
+<text x="227" y="382" font-size="12" text-anchor="middle" fill="#1f2328">14×</text>
+<rect x="255" y="365" width="52" height="26" fill="#6099de" rx="3"><title>Q10 search newest (warm): pg_sift sift_table is 21× PostgreSQL (2.98 ms against 64 ms)</title></rect>
+<text x="281" y="382" font-size="12" text-anchor="middle" fill="#1f2328">21×</text>
+<rect x="309" y="365" width="52" height="26" fill="#73a5e0" rx="3"><title>Q10 search newest (warm): Elasticsearch is 12× PostgreSQL (5.25 ms against 64 ms)</title></rect>
+<text x="335" y="382" font-size="12" text-anchor="middle" fill="#1f2328">12×</text>
+<rect x="363" y="365" width="52" height="26" fill="#82aee3" rx="3"><title>Q10 search newest (warm): ClickHouse is 8.0× PostgreSQL (7.96 ms against 64 ms)</title></rect>
+<text x="389" y="382" font-size="12" text-anchor="middle" fill="#1f2328">8.0×</text>
+<rect x="417" y="365" width="52" height="26" fill="#eca488" rx="3"><title>Q10 search newest (warm): Citus columnar is 0.12× PostgreSQL (536 ms against 64 ms)</title></rect>
+<text x="443" y="382" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.12×</text>
+<text x="629" y="72" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">cold (first run)</text>
+<circle cx="521" cy="90" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="521" y="106" font-size="10" text-anchor="middle" fill="#59636e">sift_col</text>
+<polygon points="575,84.2 580.9,90 575,95.8 569.1,90" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="575" y="106" font-size="10" text-anchor="middle" fill="#59636e">sift_table</text>
+<polygon points="629,84.6 634.4,94.5 623.6,94.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="629" y="106" font-size="10" text-anchor="middle" fill="#59636e">Elastic</text>
+<polygon points="683,95.4 688.4,85.5 677.6,85.5" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="683" y="106" font-size="10" text-anchor="middle" fill="#59636e">ClickHouse</text>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><line x1="733" y1="86" x2="741" y2="94"/><line x1="733" y1="94" x2="741" y2="86"/></g>
+<text x="737" y="106" font-size="10" text-anchor="middle" fill="#59636e">Citus</text>
+<rect x="495" y="113" width="52" height="26" fill="#edd0c5" rx="3"><title>Q01 point lookup (cold): pg_sift sift_col is 0.73× PostgreSQL (1.96 ms against 1.44 ms)</title></rect>
+<text x="521" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.73×</text>
+<rect x="549" y="113" width="52" height="26" fill="#ecab91" rx="3"><title>Q01 point lookup (cold): pg_sift sift_table is 0.16× PostgreSQL (9.07 ms against 1.44 ms)</title></rect>
+<text x="575" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.16×</text>
+<rect x="603" y="113" width="52" height="26" fill="#ec8055" rx="3"><title>Q01 point lookup (cold): Elasticsearch is 0.03× PostgreSQL (53.7 ms against 1.44 ms)</title></rect>
+<text x="629" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.03×</text>
+<rect x="657" y="113" width="52" height="26" fill="#edac93" rx="3"><title>Q01 point lookup (cold): ClickHouse is 0.17× PostgreSQL (8.57 ms against 1.44 ms)</title></rect>
+<text x="683" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.17×</text>
+<rect x="711" y="113" width="52" height="26" fill="#edbaa6" rx="3"><title>Q01 point lookup (cold): Citus columnar is 0.29× PostgreSQL (4.95 ms against 1.44 ms)</title></rect>
+<text x="737" y="130" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.29×</text>
+<rect x="495" y="141" width="52" height="26" fill="#79a9e1" rx="3"><title>Q02 orders per country (cold): pg_sift sift_col is 10× PostgreSQL (2.41 ms against 24.8 ms)</title></rect>
+<text x="521" y="158" font-size="12" text-anchor="middle" fill="#1f2328">10×</text>
+<rect x="549" y="141" width="52" height="26" fill="#89b2e4" rx="3"><title>Q02 orders per country (cold): pg_sift sift_table is 6.6× PostgreSQL (3.75 ms against 24.8 ms)</title></rect>
+<text x="575" y="158" font-size="12" text-anchor="middle" fill="#1f2328">6.6×</text>
+<rect x="603" y="141" width="52" height="26" fill="#edb39d" rx="3"><title>Q02 orders per country (cold): Elasticsearch is 0.22× PostgreSQL (113 ms against 24.8 ms)</title></rect>
+<text x="629" y="158" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.22×</text>
+<rect x="657" y="141" width="52" height="26" fill="#aac6e8" rx="3"><title>Q02 orders per country (cold): ClickHouse is 2.6× PostgreSQL (9.64 ms against 24.8 ms)</title></rect>
+<text x="683" y="158" font-size="12" text-anchor="middle" fill="#1f2328">2.6×</text>
+<rect x="711" y="141" width="52" height="26" fill="#edbdaa" rx="3"><title>Q02 orders per country (cold): Citus columnar is 0.33× PostgreSQL (75.2 ms against 24.8 ms)</title></rect>
+<text x="737" y="158" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.33×</text>
+<rect x="495" y="169" width="52" height="26" fill="#2e7ad7" rx="3"><title>Q03 revenue per month (cold): pg_sift sift_col is 90× PostgreSQL (2.16 ms against 194 ms)</title></rect>
+<text x="521" y="186" font-size="12" text-anchor="middle" fill="#ffffff">90×</text>
+<rect x="549" y="169" width="52" height="26" fill="#4287d9" rx="3"><title>Q03 revenue per month (cold): pg_sift sift_table is 51× PostgreSQL (3.84 ms against 194 ms)</title></rect>
+<text x="575" y="186" font-size="12" text-anchor="middle" fill="#ffffff">51×</text>
+<rect x="603" y="169" width="52" height="26" fill="#edd3c9" rx="3"><title>Q03 revenue per month (cold): Elasticsearch is 0.83× PostgreSQL (235 ms against 194 ms)</title></rect>
+<text x="629" y="186" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.83×</text>
+<rect x="657" y="169" width="52" height="26" fill="#5593dc" rx="3"><title>Q03 revenue per month (cold): ClickHouse is 29× PostgreSQL (6.72 ms against 194 ms)</title></rect>
+<text x="683" y="186" font-size="12" text-anchor="middle" fill="#ffffff">29×</text>
+<rect x="711" y="169" width="52" height="26" fill="#bdd2eb" rx="3"><title>Q03 revenue per month (cold): Citus columnar is 1.5× PostgreSQL (131 ms against 194 ms)</title></rect>
+<text x="737" y="186" font-size="12" text-anchor="middle" fill="#1f2328">1.5×</text>
+<rect x="495" y="197" width="52" height="26" fill="#649cde" rx="3"><title>Q04 top categories (cold): pg_sift sift_col is 19× PostgreSQL (2.15 ms against 40.2 ms)</title></rect>
+<text x="521" y="214" font-size="12" text-anchor="middle" fill="#1f2328">19×</text>
+<rect x="549" y="197" width="52" height="26" fill="#75a6e1" rx="3"><title>Q04 top categories (cold): pg_sift sift_table is 12× PostgreSQL (3.41 ms against 40.2 ms)</title></rect>
+<text x="575" y="214" font-size="12" text-anchor="middle" fill="#1f2328">12×</text>
+<rect x="603" y="197" width="52" height="26" fill="#ecac93" rx="3"><title>Q04 top categories (cold): Elasticsearch is 0.17× PostgreSQL (243 ms against 40.2 ms)</title></rect>
+<text x="629" y="214" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.17×</text>
+<rect x="657" y="197" width="52" height="26" fill="#a6c4e8" rx="3"><title>Q04 top categories (cold): ClickHouse is 2.8× PostgreSQL (14.2 ms against 40.2 ms)</title></rect>
+<text x="683" y="214" font-size="12" text-anchor="middle" fill="#1f2328">2.8×</text>
+<rect x="711" y="197" width="52" height="26" fill="#edbfae" rx="3"><title>Q04 top categories (cold): Citus columnar is 0.37× PostgreSQL (109 ms against 40.2 ms)</title></rect>
+<text x="737" y="214" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.37×</text>
+<rect x="495" y="225" width="52" height="26" fill="#a9c6e8" rx="3"><title>Q05 average shipped order (cold): pg_sift sift_col is 2.6× PostgreSQL (7.33 ms against 19 ms)</title></rect>
+<text x="521" y="242" font-size="12" text-anchor="middle" fill="#1f2328">2.6×</text>
+<rect x="549" y="225" width="52" height="26" fill="#b3ccea" rx="3"><title>Q05 average shipped order (cold): pg_sift sift_table is 1.9× PostgreSQL (9.78 ms against 19 ms)</title></rect>
+<text x="575" y="242" font-size="12" text-anchor="middle" fill="#1f2328">1.9×</text>
+<rect x="603" y="225" width="52" height="26" fill="#eca082" rx="3"><title>Q05 average shipped order (cold): Elasticsearch is 0.10× PostgreSQL (192 ms against 19 ms)</title></rect>
+<text x="629" y="242" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.10×</text>
+<rect x="657" y="225" width="52" height="26" fill="#9fc0e7" rx="3"><title>Q05 average shipped order (cold): ClickHouse is 3.5× PostgreSQL (5.45 ms against 19 ms)</title></rect>
+<text x="683" y="242" font-size="12" text-anchor="middle" fill="#1f2328">3.5×</text>
+<rect x="711" y="225" width="52" height="26" fill="#edb7a2" rx="3"><title>Q05 average shipped order (cold): Citus columnar is 0.26× PostgreSQL (74 ms against 19 ms)</title></rect>
+<text x="737" y="242" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.26×</text>
+<rect x="495" y="253" width="52" height="26" fill="#5391dc" rx="3"><title>Q06 customers per month (cold): pg_sift sift_col is 31× PostgreSQL (7.96 ms against 247 ms)</title></rect>
+<text x="521" y="270" font-size="12" text-anchor="middle" fill="#ffffff">31×</text>
+<rect x="549" y="253" width="52" height="26" fill="#5693dc" rx="3"><title>Q06 customers per month (cold): pg_sift sift_table is 28× PostgreSQL (8.7 ms against 247 ms)</title></rect>
+<text x="575" y="270" font-size="12" text-anchor="middle" fill="#1f2328">28×</text>
+<rect x="603" y="253" width="52" height="26" fill="#edc8ba" rx="3"><title>Q06 customers per month (cold): Elasticsearch is 0.53× PostgreSQL (469 ms against 247 ms)</title></rect>
+<text x="629" y="270" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.53×</text>
+<rect x="657" y="253" width="52" height="26" fill="#5b96dd" rx="3"><title>Q06 customers per month (cold): ClickHouse is 24× PostgreSQL (10.1 ms against 247 ms)</title></rect>
+<text x="683" y="270" font-size="12" text-anchor="middle" fill="#1f2328">24×</text>
+<rect x="711" y="253" width="52" height="26" fill="#edc9bc" rx="3"><title>Q06 customers per month (cold): Citus columnar is 0.55× PostgreSQL (447 ms against 247 ms)</title></rect>
+<text x="737" y="270" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.55×</text>
+<rect x="495" y="281" width="52" height="26" fill="#a4c3e7" rx="3"><title>Q07 big recent orders (cold): pg_sift sift_col is 3.0× PostgreSQL (6.42 ms against 19.4 ms)</title></rect>
+<text x="521" y="298" font-size="12" text-anchor="middle" fill="#1f2328">3.0×</text>
+<rect x="549" y="281" width="52" height="26" fill="#a4c3e7" rx="3"><title>Q07 big recent orders (cold): pg_sift sift_table is 3.0× PostgreSQL (6.45 ms against 19.4 ms)</title></rect>
+<text x="575" y="298" font-size="12" text-anchor="middle" fill="#1f2328">3.0×</text>
+<rect x="603" y="281" width="52" height="26" fill="#eca589" rx="3"><title>Q07 big recent orders (cold): Elasticsearch is 0.12× PostgreSQL (158 ms against 19.4 ms)</title></rect>
+<text x="629" y="298" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.12×</text>
+<rect x="657" y="281" width="52" height="26" fill="#89b2e4" rx="3"><title>Q07 big recent orders (cold): ClickHouse is 6.5× PostgreSQL (2.97 ms against 19.4 ms)</title></rect>
+<text x="683" y="298" font-size="12" text-anchor="middle" fill="#1f2328">6.5×</text>
+<rect x="711" y="281" width="52" height="26" fill="#edc1b0" rx="3"><title>Q07 big recent orders (cold): Citus columnar is 0.39× PostgreSQL (49.7 ms against 19.4 ms)</title></rect>
+<text x="737" y="298" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.39×</text>
+<rect x="495" y="309" width="52" height="26" fill="#95b9e5" rx="3"><title>Q08 search count (cold): pg_sift sift_col is 4.7× PostgreSQL (2.98 ms against 14.1 ms)</title></rect>
+<text x="521" y="326" font-size="12" text-anchor="middle" fill="#1f2328">4.7×</text>
+<rect x="549" y="309" width="52" height="26" fill="#9ebfe7" rx="3"><title>Q08 search count (cold): pg_sift sift_table is 3.6× PostgreSQL (3.88 ms against 14.1 ms)</title></rect>
+<text x="575" y="326" font-size="12" text-anchor="middle" fill="#1f2328">3.6×</text>
+<rect x="603" y="309" width="52" height="26" fill="#eca387" rx="3"><title>Q08 search count (cold): Elasticsearch is 0.12× PostgreSQL (121 ms against 14.1 ms)</title></rect>
+<text x="629" y="326" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.12×</text>
+<rect x="657" y="309" width="52" height="26" fill="#a1c1e7" rx="3"><title>Q08 search count (cold): ClickHouse is 3.3× PostgreSQL (4.26 ms against 14.1 ms)</title></rect>
+<text x="683" y="326" font-size="12" text-anchor="middle" fill="#1f2328">3.3×</text>
+<rect x="711" y="309" width="52" height="26" fill="#eb7444" rx="3"><title>Q08 search count (cold): Citus columnar is 0.02× PostgreSQL (873 ms against 14.1 ms)</title></rect>
+<text x="737" y="326" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.02×</text>
+<rect x="495" y="337" width="52" height="26" fill="#aec9e9" rx="3"><title>Q09 search facets (cold): pg_sift sift_col is 2.2× PostgreSQL (6.17 ms against 13.8 ms)</title></rect>
+<text x="521" y="354" font-size="12" text-anchor="middle" fill="#1f2328">2.2×</text>
+<rect x="549" y="337" width="52" height="26" fill="#aec9e9" rx="3"><title>Q09 search facets (cold): pg_sift sift_table is 2.3× PostgreSQL (6.11 ms against 13.8 ms)</title></rect>
+<text x="575" y="354" font-size="12" text-anchor="middle" fill="#1f2328">2.3×</text>
+<rect x="603" y="337" width="52" height="26" fill="#ec9675" rx="3"><title>Q09 search facets (cold): Elasticsearch is 0.07× PostgreSQL (204 ms against 13.8 ms)</title></rect>
+<text x="629" y="354" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.07×</text>
+<rect x="657" y="337" width="52" height="26" fill="#edcfc4" rx="3"><title>Q09 search facets (cold): ClickHouse is 0.70× PostgreSQL (19.7 ms against 13.8 ms)</title></rect>
+<text x="683" y="354" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.70×</text>
+<rect x="711" y="337" width="52" height="26" fill="#ec855d" rx="3"><title>Q09 search facets (cold): Citus columnar is 0.03× PostgreSQL (413 ms against 13.8 ms)</title></rect>
+<text x="737" y="354" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.03×</text>
+<rect x="495" y="365" width="52" height="26" fill="#bfd3eb" rx="3"><title>Q10 search newest (cold): pg_sift sift_col is 1.4× PostgreSQL (61.2 ms against 85.7 ms)</title></rect>
+<text x="521" y="382" font-size="12" text-anchor="middle" fill="#1f2328">1.4×</text>
+<rect x="549" y="365" width="52" height="26" fill="#86b1e3" rx="3"><title>Q10 search newest (cold): pg_sift sift_table is 7.1× PostgreSQL (12.1 ms against 85.7 ms)</title></rect>
+<text x="575" y="382" font-size="12" text-anchor="middle" fill="#1f2328">7.1×</text>
+<rect x="603" y="365" width="52" height="26" fill="#edc1b0" rx="3"><title>Q10 search newest (cold): Elasticsearch is 0.39× PostgreSQL (218 ms against 85.7 ms)</title></rect>
+<text x="629" y="382" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.39×</text>
+<rect x="657" y="365" width="52" height="26" fill="#85b0e3" rx="3"><title>Q10 search newest (cold): ClickHouse is 7.4× PostgreSQL (11.6 ms against 85.7 ms)</title></rect>
+<text x="683" y="382" font-size="12" text-anchor="middle" fill="#1f2328">7.4×</text>
+<rect x="711" y="365" width="52" height="26" fill="#ecab92" rx="3"><title>Q10 search newest (cold): Citus columnar is 0.16× PostgreSQL (540 ms against 85.7 ms)</title></rect>
+<text x="737" y="382" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="bold">0.16×</text>
+<text x="22" y="130" font-size="12" text-anchor="start" fill="#1f2328">Q01 point lookup</text>
+<text x="22" y="158" font-size="12" text-anchor="start" fill="#1f2328">Q02 orders per country</text>
+<text x="22" y="186" font-size="12" text-anchor="start" fill="#1f2328">Q03 revenue per month</text>
+<text x="22" y="214" font-size="12" text-anchor="start" fill="#1f2328">Q04 top categories</text>
+<text x="22" y="242" font-size="12" text-anchor="start" fill="#1f2328">Q05 average shipped order</text>
+<text x="22" y="270" font-size="12" text-anchor="start" fill="#1f2328">Q06 customers per month</text>
+<text x="22" y="298" font-size="12" text-anchor="start" fill="#1f2328">Q07 big recent orders</text>
+<text x="22" y="326" font-size="12" text-anchor="start" fill="#1f2328">Q08 search count</text>
+<text x="22" y="354" font-size="12" text-anchor="start" fill="#1f2328">Q09 search facets</text>
+<text x="22" y="382" font-size="12" text-anchor="start" fill="#1f2328">Q10 search newest</text>
+<rect x="20" y="409" width="44" height="14" fill="#eb6834" rx="2"/>
+<text x="42" y="442" font-size="10" text-anchor="middle" fill="#59636e">0.01×</text>
+<rect x="66" y="409" width="44" height="14" fill="#eca082" rx="2"/>
+<text x="88" y="442" font-size="10" text-anchor="middle" fill="#59636e">0.10×</text>
+<rect x="112" y="409" width="44" height="14" fill="#edc7b8" rx="2"/>
+<text x="134" y="442" font-size="10" text-anchor="middle" fill="#59636e">0.50×</text>
+<rect x="158" y="409" width="44" height="14" fill="#eef0f2" rx="2"/>
+<text x="180" y="442" font-size="10" text-anchor="middle" fill="#59636e">1.0×</text>
+<rect x="204" y="409" width="44" height="14" fill="#b3ccea" rx="2"/>
+<text x="226" y="442" font-size="10" text-anchor="middle" fill="#59636e">2.0×</text>
+<rect x="250" y="409" width="44" height="14" fill="#7aa9e1" rx="2"/>
+<text x="272" y="442" font-size="10" text-anchor="middle" fill="#59636e">10×</text>
+<rect x="296" y="409" width="44" height="14" fill="#2a78d6" rx="2"/>
+<text x="318" y="442" font-size="10" text-anchor="middle" fill="#59636e">100×</text>
+<text x="350" y="420" font-size="11" text-anchor="start" fill="#59636e">orange: slower, blue: faster than the baseline</text>
+<text x="350" y="436" font-size="11" text-anchor="start" fill="#59636e">gray: within 15%</text>
+<text x="20" y="464" font-size="11" text-anchor="start" fill="#59636e">Data: docs/results/store.json, 2026-10-22. Host: AMD Ryzen 7 9700X, 16 threads, 8g per server.</text>
+<text x="20" y="480" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 18.6, pg_sift 3.3, Elasticsearch 9.5.5, ClickHouse 26.9.19.9, Citus 14.2-1. 3 CPUs per server, 1,000,000 orders. Cold: caches</text>
+<text x="20" y="496" font-size="11" text-anchor="start" fill="#59636e">emptied (Elasticsearch: container restart).</text>
+</svg>

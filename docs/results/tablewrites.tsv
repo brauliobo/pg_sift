@@ -1,88 +1,88 @@
 # sift_table against the heap on orders: load, queries, UPDATE, DELETE, VACUUM, a COPY in one transaction, a stress run (bench/tbl.sh, tbl-bigcopy.sh, tbl-stress.sh).
-# date: 2026-10-20
-# cpu: AMD Ryzen 7 9700X 8-Core Processor (85% threads)
+# date: 2026-10-22
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (95% threads)
 # noisy_starts: 0 of the timed runs started while the pressure was above 15% for 300 s
 # postgresql: PostgreSQL 18.6
-# scope: run-p1054299-i277575858.scope
+# scope: run-p32890-i335088248.scope
 # method: bench/tbl.sh 1000000 rows (100,000 rows per load transaction), best of 3 for reads, writes once; scratch cluster, shared_buffers 2GB, one client
-# host_load_before: load 3.84 5.50 7.30 cpu_psi 0.00%
-# host_load_after: load 7.86 6.22 7.24 cpu_psi 5.48%
+# host_load_before: load 5.90 6.46 5.91 cpu_psi 0.00%
+# host_load_after: load 6.22 6.20 5.90 cpu_psi 6.87%
 version	case	arm	metric	value	min	max	n	load	note
-v3.0.2	bulk INSERT SELECT 1000000 rows	heap	ms	1324				4.01	
-v3.0.2	bulk INSERT SELECT 1000000 rows	sift_table	ms	1914				4.01	
-v3.0.2	load rate	heap	rows_per_s	755287				4.01	
-v3.0.2	load rate	sift_table	rows_per_s	522466				4.01	
-v3.0.2	CREATE INDEX btree (id)	heap	ms	103				4.01	
-v3.0.2	CREATE INDEX btree (id)	sift_table	ms	96				4.01	
-v3.0.2	count(*)	heap	ms	18				4.01	
-v3.0.2	count(*)	sift_table	ms	9				4.01	
-v3.0.2	sum(total) group by store_id	heap	ms	45				4.01	
-v3.0.2	sum(total) group by store_id	sift_table	ms	12				4.01	
-v3.0.2	filter status=paid, sum	heap	ms	31				4.01	
-v3.0.2	filter status=paid, sum	sift_table	ms	9				4.01	
-v3.0.2	jsonb extract, sum	heap	ms	47				4.01	
-v3.0.2	jsonb extract, sum	sift_table	ms	62				4.01	
-v3.0.2	btree point lookup x1000	heap	ms	10				4.01	
-v3.0.2	btree point lookup x1000	sift_table	ms	14				4.01	
-v3.0.2	btree range 10000 rows	heap	ms	8				4.01	
-v3.0.2	btree range 10000 rows	sift_table	ms	8				4.01	
-v3.0.2	UPDATE 10% non-key	heap	ms	190				4.01	
-v3.0.2	UPDATE 10% non-key	sift_table	ms	428				4.01	
-v3.0.2	DELETE 5%	heap	ms	68				4.01	
-v3.0.2	DELETE 5%	sift_table	ms	164				4.01	
-v3.0.2	count(*) after writes	heap	ms	42				4.01	
-v3.0.2	count(*) after writes	sift_table	ms	71				4.01	
-v3.0.2	VACUUM	heap	ms	84				4.01	
-v3.0.2	VACUUM	sift_table	ms	288				4.01	
-v3.0.2	count(*) after vacuum	heap	ms	17				4.01	
-v3.0.2	count(*) after vacuum	sift_table	ms	8				4.01	
-v3.0.2	VACUUM FULL	heap	ms	288				4.01	
-v3.0.2	VACUUM FULL	sift_table	ms	254				4.01	
-v3.0.2	size	heap	table_mb	130				4.01	
-v3.0.2	size	heap	indexes_mb	20				4.01	
-v3.0.2	size	sift_table	table_mb	9				4.01	
-v3.0.2	size	sift_table	indexes_mb	20				4.01	
-v3.0.2	COPY 5000000 rows, one transaction	sift_table	seconds	10.335469978				4.24	
-v3.0.2	COPY 5000000 rows, one transaction	sift_table	peak_mb	762				4.24	
-v3.0.2	VACUUM after the COPY	sift_table	seconds	2.642875318				4.24	
-v3.0.2	COPY, one transaction: checks	sift_table	failed_checks	0				4.24	
-v3.1.0	bulk INSERT SELECT 1000000 rows	heap	ms	1323				4.13	
-v3.1.0	bulk INSERT SELECT 1000000 rows	sift_table	ms	1876				4.13	
-v3.1.0	load rate	heap	rows_per_s	755857				4.13	
-v3.1.0	load rate	sift_table	rows_per_s	533049				4.13	
-v3.1.0	CREATE INDEX btree (id)	heap	ms	101				4.13	
-v3.1.0	CREATE INDEX btree (id)	sift_table	ms	96				4.13	
-v3.1.0	count(*)	heap	ms	18				4.13	
-v3.1.0	count(*)	sift_table	ms	7				4.13	
-v3.1.0	sum(total) group by store_id	heap	ms	40				4.13	
-v3.1.0	sum(total) group by store_id	sift_table	ms	11				4.13	
-v3.1.0	filter status=paid, sum	heap	ms	28				4.13	
-v3.1.0	filter status=paid, sum	sift_table	ms	7				4.13	
-v3.1.0	jsonb extract, sum	heap	ms	44				4.13	
-v3.1.0	jsonb extract, sum	sift_table	ms	58				4.13	
-v3.1.0	btree point lookup x1000	heap	ms	10				4.13	
-v3.1.0	btree point lookup x1000	sift_table	ms	13				4.13	
-v3.1.0	btree range 10000 rows	heap	ms	7				4.13	
-v3.1.0	btree range 10000 rows	sift_table	ms	8				4.13	
-v3.1.0	UPDATE 10% non-key	heap	ms	181				4.13	
-v3.1.0	UPDATE 10% non-key	sift_table	ms	420				4.13	
-v3.1.0	DELETE 5%	heap	ms	69				4.13	
-v3.1.0	DELETE 5%	sift_table	ms	162				4.13	
-v3.1.0	count(*) after writes	heap	ms	42				4.13	
-v3.1.0	count(*) after writes	sift_table	ms	70				4.13	
-v3.1.0	VACUUM	heap	ms	83				4.13	
-v3.1.0	VACUUM	sift_table	ms	417				4.13	
-v3.1.0	count(*) after vacuum	heap	ms	17				4.13	
-v3.1.0	count(*) after vacuum	sift_table	ms	7				4.13	
-v3.1.0	VACUUM FULL	heap	ms	280				4.13	
-v3.1.0	VACUUM FULL	sift_table	ms	270				4.13	
-v3.1.0	size	heap	table_mb	130				4.13	
-v3.1.0	size	heap	indexes_mb	20				4.13	
-v3.1.0	size	sift_table	table_mb	9				4.13	
-v3.1.0	size	sift_table	indexes_mb	20				4.13	
-v3.1.0	COPY 5000000 rows, one transaction	sift_table	seconds	10.740166230				4.79	
-v3.1.0	COPY 5000000 rows, one transaction	sift_table	peak_mb	773				4.79	
-v3.1.0	VACUUM after the COPY	sift_table	seconds	2.786780251				4.79	
-v3.1.0	COPY, one transaction: checks	sift_table	failed_checks	0				4.79	
-v3.1.0	stress 120 s, 16 clients	sift_table	tps_mean	1612				7.86	
-v3.1.0	stress 120 s, 16 clients	sift_table	passed	1				7.86	
+v3.0.2	bulk INSERT SELECT 1000000 rows	heap	ms	1250				5.22	
+v3.0.2	bulk INSERT SELECT 1000000 rows	sift_table	ms	1804				5.22	
+v3.0.2	load rate	heap	rows_per_s	800000				5.22	
+v3.0.2	load rate	sift_table	rows_per_s	554323				5.22	
+v3.0.2	CREATE INDEX btree (id)	heap	ms	94				5.22	
+v3.0.2	CREATE INDEX btree (id)	sift_table	ms	87				5.22	
+v3.0.2	count(*)	heap	ms	16				5.22	
+v3.0.2	count(*)	sift_table	ms	7				5.22	
+v3.0.2	sum(total) group by store_id	heap	ms	39				5.22	
+v3.0.2	sum(total) group by store_id	sift_table	ms	9				5.22	
+v3.0.2	filter status=paid, sum	heap	ms	27				5.22	
+v3.0.2	filter status=paid, sum	sift_table	ms	8				5.22	
+v3.0.2	jsonb extract, sum	heap	ms	43				5.22	
+v3.0.2	jsonb extract, sum	sift_table	ms	55				5.22	
+v3.0.2	btree point lookup x1000	heap	ms	7				5.22	
+v3.0.2	btree point lookup x1000	sift_table	ms	10				5.22	
+v3.0.2	btree range 10000 rows	heap	ms	6				5.22	
+v3.0.2	btree range 10000 rows	sift_table	ms	7				5.22	
+v3.0.2	UPDATE 10% non-key	heap	ms	168				5.22	
+v3.0.2	UPDATE 10% non-key	sift_table	ms	389				5.22	
+v3.0.2	DELETE 5%	heap	ms	64				5.22	
+v3.0.2	DELETE 5%	sift_table	ms	153				5.22	
+v3.0.2	count(*) after writes	heap	ms	40				5.22	
+v3.0.2	count(*) after writes	sift_table	ms	67				5.22	
+v3.0.2	VACUUM	heap	ms	81				5.22	
+v3.0.2	VACUUM	sift_table	ms	275				5.22	
+v3.0.2	count(*) after vacuum	heap	ms	16				5.22	
+v3.0.2	count(*) after vacuum	sift_table	ms	7				5.22	
+v3.0.2	VACUUM FULL	heap	ms	257				5.22	
+v3.0.2	VACUUM FULL	sift_table	ms	242				5.22	
+v3.0.2	size	heap	table_mb	130				5.22	
+v3.0.2	size	heap	indexes_mb	20				5.22	
+v3.0.2	size	sift_table	table_mb	9				5.22	
+v3.0.2	size	sift_table	indexes_mb	20				5.22	
+v3.0.2	COPY 5000000 rows, one transaction	sift_table	seconds	10.738030181				5.94	
+v3.0.2	COPY 5000000 rows, one transaction	sift_table	peak_mb	762				5.94	
+v3.0.2	VACUUM after the COPY	sift_table	seconds	2.606400549				5.94	
+v3.0.2	COPY, one transaction: checks	sift_table	failed_checks	0				5.94	
+v3.1.0	bulk INSERT SELECT 1000000 rows	heap	ms	1259				5.70	
+v3.1.0	bulk INSERT SELECT 1000000 rows	sift_table	ms	1830				5.70	
+v3.1.0	load rate	heap	rows_per_s	794281				5.70	
+v3.1.0	load rate	sift_table	rows_per_s	546448				5.70	
+v3.1.0	CREATE INDEX btree (id)	heap	ms	94				5.70	
+v3.1.0	CREATE INDEX btree (id)	sift_table	ms	88				5.70	
+v3.1.0	count(*)	heap	ms	17				5.70	
+v3.1.0	count(*)	sift_table	ms	7				5.70	
+v3.1.0	sum(total) group by store_id	heap	ms	40				5.70	
+v3.1.0	sum(total) group by store_id	sift_table	ms	10				5.70	
+v3.1.0	filter status=paid, sum	heap	ms	28				5.70	
+v3.1.0	filter status=paid, sum	sift_table	ms	8				5.70	
+v3.1.0	jsonb extract, sum	heap	ms	44				5.70	
+v3.1.0	jsonb extract, sum	sift_table	ms	55				5.70	
+v3.1.0	btree point lookup x1000	heap	ms	7				5.70	
+v3.1.0	btree point lookup x1000	sift_table	ms	12				5.70	
+v3.1.0	btree range 10000 rows	heap	ms	7				5.70	
+v3.1.0	btree range 10000 rows	sift_table	ms	7				5.70	
+v3.1.0	UPDATE 10% non-key	heap	ms	172				5.70	
+v3.1.0	UPDATE 10% non-key	sift_table	ms	391				5.70	
+v3.1.0	DELETE 5%	heap	ms	65				5.70	
+v3.1.0	DELETE 5%	sift_table	ms	151				5.70	
+v3.1.0	count(*) after writes	heap	ms	40				5.70	
+v3.1.0	count(*) after writes	sift_table	ms	67				5.70	
+v3.1.0	VACUUM	heap	ms	80				5.70	
+v3.1.0	VACUUM	sift_table	ms	274				5.70	
+v3.1.0	count(*) after vacuum	heap	ms	16				5.70	
+v3.1.0	count(*) after vacuum	sift_table	ms	7				5.70	
+v3.1.0	VACUUM FULL	heap	ms	256				5.70	
+v3.1.0	VACUUM FULL	sift_table	ms	243				5.70	
+v3.1.0	size	heap	table_mb	130				5.70	
+v3.1.0	size	heap	indexes_mb	20				5.70	
+v3.1.0	size	sift_table	table_mb	9				5.70	
+v3.1.0	size	sift_table	indexes_mb	20				5.70	
+v3.1.0	COPY 5000000 rows, one transaction	sift_table	seconds	10.325697429				5.96	
+v3.1.0	COPY 5000000 rows, one transaction	sift_table	peak_mb	762				5.96	
+v3.1.0	VACUUM after the COPY	sift_table	seconds	2.486911474				5.96	
+v3.1.0	COPY, one transaction: checks	sift_table	failed_checks	0				5.96	
+v3.1.0	stress 120 s, 16 clients	sift_table	tps_mean	1931				6.22	
+v3.1.0	stress 120 s, 16 clients	sift_table	passed	1				6.22	

@@ -6,6 +6,18 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
 ## Unreleased
 
+## 3.2.2
+
+- Rebuilt with the PostgreSQL release 3.2.2.
+
+## 3.2.1
+
+- Rebuilt with the PostgreSQL release 3.2.1.
+
+## 3.2.0
+
+- Rebuilt with the PostgreSQL release 3.2.0.
+
 ## 3.1.0
 
 - No change to the storage format (2) or the SQL interface: tables of 3.0.2 open as they are, and this extension still writes BM25 segment format 1. The extension is rebuilt with the PostgreSQL release 3.1.0, and `sift_version()` reports engine format 1.3 (what the build reads: the segment format 3 that PostgreSQL 3.1 writes is read by the shared core, which this extension never writes).

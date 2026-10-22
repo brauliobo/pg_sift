@@ -5,11 +5,11 @@
    "median": {
     "read_rows": 17512,
     "read_bytes": 568424,
-    "memory_usage": 5600955,
-    "query_duration_ms": 3,
+    "memory_usage": 5601259,
+    "query_duration_ms": 2,
     "peak_threads_usage": 8,
-    "real_us": 8251,
-    "user_us": 4047,
+    "real_us": 6128,
+    "user_us": 3363,
     "parts": 36,
     "marks": 2
    },
@@ -19,71 +19,71 @@
    "median": {
     "read_rows": 1000000,
     "read_bytes": 1011088,
-    "memory_usage": 5523961,
+    "memory_usage": 5524505,
     "query_duration_ms": 3,
     "peak_threads_usage": 8,
-    "real_us": 14928,
-    "user_us": 5554,
+    "real_us": 11723,
+    "user_us": 3844,
     "parts": 36,
     "marks": 123
    },
-   "client_time_s": 0.017
+   "client_time_s": 0.015
   },
   "03": {
    "median": {
     "read_rows": 1000000,
     "read_bytes": 12000000,
-    "memory_usage": 7053753,
+    "memory_usage": 7053833,
     "query_duration_ms": 5,
     "peak_threads_usage": 8,
-    "real_us": 26659,
-    "user_us": 10072,
+    "real_us": 23598,
+    "user_us": 8240,
     "parts": 36,
     "marks": 123
    },
-   "client_time_s": 0.024
+   "client_time_s": 0.023
   },
   "04": {
    "median": {
     "read_rows": 1000000,
     "read_bytes": 9020664,
-    "memory_usage": 5582083,
-    "query_duration_ms": 5,
+    "memory_usage": 5582691,
+    "query_duration_ms": 4,
     "peak_threads_usage": 8,
-    "real_us": 24541,
-    "user_us": 8558,
+    "real_us": 20262,
+    "user_us": 7693,
     "parts": 36,
     "marks": 123
    },
-   "client_time_s": 0.006
+   "client_time_s": 0.005
   },
   "05": {
    "median": {
     "read_rows": 147456,
     "read_bytes": 2066918,
-    "memory_usage": 5621771,
-    "query_duration_ms": 5,
+    "memory_usage": 5617219,
+    "query_duration_ms": 3,
     "peak_threads_usage": 8,
-    "real_us": 13711,
-    "user_us": 6198,
+    "real_us": 9401,
+    "user_us": 2384,
     "parts": 12,
     "marks": 18
    },
-   "client_time_s": 0.026
+   "client_time_s": 0.023
   },
   "06": {
    "median": {
     "read_rows": 1000000,
     "read_bytes": 8000000,
     "memory_usage": 16232359,
-    "query_duration_ms": 10,
+    "query_duration_ms": 8,
     "peak_threads_usage": 8,
-    "real_us": 49330,
-    "user_us": 18161,
+    "real_us": 38390,
+    "user_us": 15578,
     "parts": 36,
     "marks": 123
    },
-   "client_time_s": 0.011
+   "client_time_s": 0.009
   },
   "07": {
    "median": {
@@ -92,8 +92,8 @@
     "memory_usage": 5422747,
     "query_duration_ms": 2,
     "peak_threads_usage": 5,
-    "real_us": 3637,
-    "user_us": 2280,
+    "real_us": 3241,
+    "user_us": 1796,
     "parts": 1,
     "marks": 6
    },
@@ -104,10 +104,10 @@
     "read_rows": 36,
     "read_bytes": 576,
     "memory_usage": 5511187,
-    "query_duration_ms": 2,
+    "query_duration_ms": 1,
     "peak_threads_usage": 8,
-    "real_us": 4572,
-    "user_us": 2544,
+    "real_us": 3502,
+    "user_us": 2145,
     "parts": 0,
     "marks": 0
    },
@@ -117,25 +117,25 @@
    "median": {
     "read_rows": 1000000,
     "read_bytes": 11025662,
-    "memory_usage": 5885203,
-    "query_duration_ms": 12,
+    "memory_usage": 5885651,
+    "query_duration_ms": 11,
     "peak_threads_usage": 8,
-    "real_us": 42525,
-    "user_us": 15690,
+    "real_us": 41212,
+    "user_us": 15584,
     "parts": 36,
     "marks": 123
    },
-   "client_time_s": 0.013
+   "client_time_s": 0.012
   },
   "10": {
    "median": {
     "read_rows": 1035705,
-    "read_bytes": 12321318,
-    "memory_usage": 5793416,
-    "query_duration_ms": 9,
+    "read_bytes": 12742645,
+    "memory_usage": 5793656,
+    "query_duration_ms": 8,
     "peak_threads_usage": 8,
-    "real_us": 33034,
-    "user_us": 9724,
+    "real_us": 34287,
+    "user_us": 12064,
     "parts": 36,
     "marks": 123
    },
@@ -144,34 +144,34 @@
  },
  "es": {
   "01": {
-   "took_ms": 2
+   "took_ms": 1
   },
   "02": {
-   "took_ms": 3
+   "took_ms": 2
   },
   "03": {
-   "took_ms": 42
+   "took_ms": 45
   },
   "04": {
-   "took_ms": 37
+   "took_ms": 20
   },
   "05": {
-   "took_ms": 10
+   "took_ms": 9
   },
   "06": {
-   "took_ms": 72
+   "took_ms": 134
   },
   "07": {
-   "took_ms": 5
+   "took_ms": 4
   },
   "08": {
    "took_ms": 1
   },
   "09": {
-   "took_ms": 5
+   "took_ms": 9
   },
   "10": {
-   "took_ms": 5
+   "took_ms": 6
   }
  }
 }
