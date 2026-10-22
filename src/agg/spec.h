@@ -120,6 +120,7 @@ typedef struct SiftAggPred
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */
+	bool		pass_poison;	/* SAP_ANY_ELEM over a list unnested by jsonb_to_recordset: a row whose list raises when it is read again from the heap passes, and raises where the rows reach the aggregates */
 	int			nchild;
 	struct SiftAggPred **child;
 	char	   *desc;			/* EXPLAIN */
@@ -297,6 +298,8 @@ typedef struct SiftAggVLeaf
 	char	   *key;			/* the value of its element with this key, NULL when the row has none: leaf nleaves + index */
 	bool		count;			/* the number of elements of the array leaf obj (jsonb_array_length), NULL where it has none; key is unused */
 	bool		types;			/* the JSON type of the value of the scalar leaf obj (jsonb_typeof), as the name text, NULL where the path has no value; key is unused */
+	uint8		recheck;		/* a member read only through the cast of its jsonb value (SiftSrcRecheck, SRK_NONE: not): a row whose member of this key holds a value the leaf cannot store is read again from the heap, and raises the error of the cast */
+	Oid			cast;			/* ... to this type (float8, int4 or int8): the name of the type is in the message */
 } SiftAggVLeaf;
 
 /* a leaf of a member of an object by key: its element columns are its object's children "key" and "value" */

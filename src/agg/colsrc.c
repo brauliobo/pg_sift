@@ -206,9 +206,9 @@ sift_colsrc_can_recheck(Oid relam, bool index)
 }
 
 void
-sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode)
+sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode, const char *key, Oid cast)
 {
-	src->prov->set_recheck(src->impl, leaf, mode);
+	src->prov->set_recheck(src->impl, leaf, mode, key, cast);
 }
 
 void
