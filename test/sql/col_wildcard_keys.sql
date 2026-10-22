@@ -8,11 +8,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 \ir test/agg_helpers.sql
 
-CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text := runq(q, false); b text := runq(q, true);
-BEGIN
-	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
-END $$;
+\ir test/agg_same_helpers.sql
 
 -- 3 units of about 1,000 documents (a document is about 1.6 kB): the first 16 keys fill the dictionary of 16, the second unit brings keys it has not
 -- seen, the third only those it has
