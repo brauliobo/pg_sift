@@ -1,0 +1,40 @@
+{
+  "name": "pg_sift",
+  "abstract": "Exact BM25 full-text index and column-store aggregates for PostgreSQL",
+  "description": "pg_sift adds a BM25 full-text index access method (sift), a column index (sift_col) and a column table access method (sift_table), and answers grouped aggregates from them as Custom Scan (SiftAgg), with one CREATE EXTENSION and no shared_preload_libraries.",
+  "version": "3.3.0",
+  "maintainer": "Braulio Oliveira <brauliobo@gmail.com>",
+  "license": "postgresql",
+  "provides": {
+    "pg_sift": {
+      "abstract": "BM25 full-text index, column index and aggregate pushdown",
+      "file": "sql/pg_sift--3.3.sql",
+      "docfile": "docs/USAGE.md",
+      "version": "3.3.0"
+    }
+  },
+  "prereqs": {
+    "runtime": {
+      "requires": {
+        "PostgreSQL": "17.0.0"
+      }
+    }
+  },
+  "resources": {
+    "homepage": "https://github.com/brauliobo/pg_sift",
+    "bugtracker": {
+      "web": "https://github.com/brauliobo/pg_sift/issues"
+    },
+    "repository": {
+      "url": "https://github.com/brauliobo/pg_sift.git",
+      "web": "https://github.com/brauliobo/pg_sift",
+      "type": "git"
+    }
+  },
+  "tags": ["full text search", "bm25", "ranking", "analytics", "column store", "aggregates", "index"],
+  "release_status": "stable",
+  "meta-spec": {
+    "version": "1.0.0",
+    "url": "https://pgxn.org/meta/spec.txt"
+  }
+}
