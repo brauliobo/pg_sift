@@ -141,6 +141,8 @@ extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
 extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
+extern PGDLLIMPORT double sift_col_auto_merge_min_churn_pct;
+extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 
 /* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
  * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
