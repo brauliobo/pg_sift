@@ -881,6 +881,24 @@ pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
 	return false;
 }
 
+/* is every read of list grp a test of the joined tuples (SAP_ELEM_EXISTS), which raises the error of a row it reaches itself? */
+static bool
+list_read_by_tuple_tests(const SiftAggSpec *s, int grp)
+{
+	bool		found = false;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+
+		if (p->kind == SAP_ELEM_EXISTS && p->leaf2 == grp && p->pass_poison)
+			found = true;
+		else if (p->kind == SAP_ANY_ELEM && p->leaf == grp)
+			return false;
+	}
+	return found;
+}
+
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns or is applied after the others (it may drop a row that the error would reach first) */
 SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
@@ -910,5 +928,7 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->level == 0 && (s->pred[i]->late || (pred_reads_any(s->pred[i], list) && !(s->pred[i]->pass_poison && s->pred[i]->leaf == grp))))
 			return SRK_NONE;
+	if (m == grp && grp != c->group && list_read_by_tuple_tests(s, grp))
+		return SRK_RECORDSET_LAZY;
 	return leaf_recheck(c, m);
 }
