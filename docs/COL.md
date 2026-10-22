@@ -609,28 +609,34 @@ later, a leaf in both options) and the minor 15 steps of the TAPs `extension_lif
 
 The zones and the small-set summaries (sections 2.13) cut the units that cannot hold a value; the units that can still cost a read and a test of every row of each, which is most of the time of an equality
 on a column of random keys (an id, a uuid, a text of distinct values) against a b-tree. An index with the reloption `point_columns = 'col, col'` (plain integer-like, text and uuid columns of the top level,
-the leaves of `set_columns`) writes, for each of these leaves, a table of its rows by value at the end of the DICT section of the segment: an open addressing table of 8-byte slots, the low 32 bits of
-a hash of the row's key (the code of a dictionary leaf) over the row number in the segment, linear probing, at most three quarters full. A lookup of an equality, an `IN` list of up to 64 keys or a range of up to 64 keys
-hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows, ascending, without reading a chunk: the units that hold none are cut, and in the others only those rows are selected.
+the leaves of `set_columns`) writes, for each of these leaves, a table of its rows by value at the end of the DICT section of the segment: an open addressing table with a slot for each distinct key (the code of a
+dictionary leaf), 8 bytes, at most three quarters full, linear probing: the low 32 bits of a hash of the key over the key's only row (the segment's row number), or over the offset of the list of its rows when it has
+several. A lookup of an equality, an `IN` list of up to 64 keys or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
+ascending, without reading a chunk: the units that hold none are cut, and in the others only those rows are selected.
 
 ```
-u32 magic 0x4B4C4F43, u32 version 1, u32 nleaves, u32 0
-{u32 leaf, u32 nslots, u32 count, u32 0, u64 offset in the section} x nleaves
-u64 table[nslots]    per leaf: (low 32 bits of hash(key)) << 32 | row, or all ones: empty (nslots a power of two, at least 16; count of the rows listed, at most nslots)
+u32 magic 0x4B4C4F43, u32 version 2, u32 nleaves, u32 0
+{u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} x nleaves
+per leaf:
+u64 table[nslots]    (low 32 bits of hash(key)) << 32 | payload, or all ones: empty (nslots a power of two, at least 16, at most 3/4 full of the keys)
+                     payload below 2^31: the only row of the key; 0x80000000 | w: the list at word w
+u32 words[words]     the lists, {u32 count (2 or more), u32 row[count] ascending}, one for each key with more than one row; padded to 8 bytes
 u64 offset of the header, u32 magic, u32 version    the last 16 bytes of the section
 ```
 
-The section ends where the last dictionary ends when there is no directory, so the footer is looked for in the last 16 bytes (the magic and the version, then a header at the offset) of a segment of minor 14 or more.
-The dictionaries end at that offset. `hash` is the 64-bit mix of `(uint64) key`; the fingerprint is 32 bits, so a row may be listed under another key (about one in 4 billion for each other row in the same
-probe sequence): the table is a filter. The access method (`SIFT_COLO_POINTS`, set by the scans of `sift_col` indexes only) therefore has the heap check the condition again (`xs_recheck`, a bitmap scan's recheck),
-and the aggregate scans, which count the rows themselves, do not use it. A leaf gets no table in a segment when a unit holds an overflow value or an inline string for it, when the segment has 2^32 rows
-or more, when its keys would put more than 1,024 rows in one probe sequence (a key in about that many rows: a table cannot help an equality on it), or when the keys would not fit (`write buffer` units are always read).
-A lookup that finds more than 65,536 rows is answered by the units instead. An index written without the option, or at `sift.col_format_minor` below 14, has no directory and is read as before;
-`ALTER INDEX .. SET (point_columns)` applies to the segments written afterwards, and `REINDEX` and the merges write it.
+The section ends where the last dictionary ends when there is no directory, so the footer is looked for in the last 16 bytes (the magic and the version, then a header at the offset) of a segment of minor 14 or more; a
+footer of another version is no directory. The dictionaries end at that offset. `hash` is the 64-bit mix of `(uint64) key`; the fingerprint is 32 bits, so a row may be listed under another key (about one in 4 billion for
+each other key in the same probe sequence): the table is a filter. The access method (`SIFT_COLO_POINTS`, set by the scans of `sift_col` indexes only, which run when `sift.enable_col_scan` is on) therefore has the heap check
+the condition again (`xs_recheck`, a bitmap scan's recheck), and the aggregate scans, which count the rows themselves, do not use it. A leaf gets no table in a segment when a unit holds an overflow value or an inline
+string for it, or when the segment has 2^30 rows or more (a list offset is 31 bits); a key in very many rows costs a list and nothing else. A lookup that finds more than 65,536 rows is answered by the units instead.
+An index written without the option, or at `sift.col_format_minor` below 14, has no directory and is read as before; `ALTER INDEX .. SET (point_columns)` applies to the segments written afterwards, and `REINDEX` and the
+merges write it.
 
-`sift.col_verify` checks the header and the records, that every slot names a row of the segment and that the slots listed are the `count` of the record, and then, for each row of each unit, that probing its key lists
-the row. The merge of segments makes a new directory from the rows it writes. The cost is 8 bytes a slot, that is 16 to 43 bytes a row for each leaf (a power of two of slots for the rows): 200,000 rows
-with directories on an integer and a text leaf: the index of 3 columns is 11.6 MB, was 5.2 MB (a b-tree on the integer 4.3 MB).
+`sift.col_verify` checks the header and the records, that every slot is a row of the segment or a list that fits the words, that the lists ascend, that the keys, rows and words listed are those of the record, and then,
+for each row of each unit, that probing its key lists the row. The merge of segments makes a new directory from the rows it writes. The cost is the slots, 10.7 to 21.3 bytes for each distinct key (a power of two of
+slots for the keys), and 4 bytes for each row of a key with several. 200,000 rows, one segment, the index of 5 columns is 1.23 MB without the option; a directory on one leaf adds 4.21 MB for a unique key (the
+slots are the cost), 0.97 MB for 9,000 keys (22 rows a key), 0.89 MB for 6,000 text keys (33 rows), 0.81 MB for 600 keys (333 rows) and 0.80 MB for 50 keys (4,000 rows): 4.0 bytes a row once a key repeats. A b-tree
+on the same column is 4.5, 1.6, 1.5 and 1.4 MB for the integer ones.
 
 ## 3. MVCC: when a row may be read from the index
 

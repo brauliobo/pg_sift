@@ -14,7 +14,7 @@
 #include "core/limits.h"
 #include "core/live.h"
 
-/* The entries of the point directory of one leaf: the key and the row number (in the segment) of each row with a value; bad: some unit cannot be listed (an overflow value, inline strings) */
+/* The entries of the point directory of one leaf: the key and the row number (in the segment) of each row with a value; bad: some unit cannot be listed (an overflow value, inline strings, too many rows) */
 typedef struct PointAcc
 {
 	int64	   *key;
@@ -23,7 +23,9 @@ typedef struct PointAcc
 	uint32		cap;
 	bool		bad;
 	bool		want;			/* the index names the leaf (option point_columns) */
-	uint32		nslots;			/* the table, once built at the end of the segment (0: none) */
+	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
+	uint32		nkeys;
+	uint32		words;
 	StringInfoData tab;
 } PointAcc;
 
@@ -260,7 +262,7 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols)
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
 			if (v->ovf[i])
 				a->bad = true;
-		if (!v->ready || a->bad || w->rows + v->n >= UINT32_MAX)
+		if (!v->ready || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;
 			continue;
@@ -525,7 +527,7 @@ put8(SiftColSegWriter *w, const void *data, Size len)
 	return off;
 }
 
-/* The tables of the point directories, built when the last unit is in: a leaf whose rows crowd one position (a key in very many rows) has none */
+/* The blocks of the point directories, built when the last unit is in */
 static void
 build_points(SiftColSegWriter *w)
 {
@@ -539,11 +541,8 @@ build_points(SiftColSegWriter *w)
 
 			initStringInfo(&a->tab);
 			MemoryContextSwitchTo(old);
-			a->nslots = sift_cpoint_slots(a->n);
-			if (sift_cpoint_build(a->key, a->row, a->n, a->nslots, &a->tab))
-				w->anypoints = true;
-			else
-				a->nslots = 0;
+			sift_cpoint_build(a->key, a->row, a->n, &a->tab, &a->nslots, &a->nkeys, &a->words);
+			w->anypoints = true;
 		}
 		if (a->key)
 		{
@@ -557,8 +556,8 @@ build_points(SiftColSegWriter *w)
 
 /*
  * The point directories after the dictionaries, in the DICT section (docs/COL.md 2.17): a header {u32 magic, u32 version, u32 nleaves, u32 0}, a record
- * {u32 leaf, u32 nslots, u32 count, u32 0, u64 offset in the section} for each leaf, the tables, and the last 16 bytes of the section {u64 offset of the
- * header, u32 magic, u32 version}.
+ * {u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} for each leaf, the blocks, and the last 16 bytes of the section
+ * {u64 offset of the header, u32 magic, u32 version}.
  */
 static void
 write_points(SiftColSegWriter *w, SiftSectionRef *sec)
@@ -574,12 +573,12 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		return;
 	for (int c = 0; c < ncols; c++)
 		hdr[2] += w->pt[c].nslots > 0;
-	at = block + sizeof(hdr) + (uint64) hdr[2] * 24;
+	at = block + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN;
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
 	for (int c = 0; c < ncols; c++)
 	{
 		const PointAcc *a = &w->pt[c];
-		uint32		rec[4] = {c, a->nslots, a->n, 0};
+		uint32		rec[6] = {c, a->nslots, a->n, a->nkeys, a->words, 0};
 
 		if (a->nslots == 0)
 			continue;

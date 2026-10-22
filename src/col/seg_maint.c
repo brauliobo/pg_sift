@@ -10,7 +10,6 @@
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "col/ver.h"
-#include "core/cmp.h"
 #include "core/live.h"
 
 void
@@ -294,20 +293,10 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, uint
 			corrupt(seg, "Leaf %d has a point directory and an overflow value in the unit %u.", c, u);
 	for (uint32 i = 0; i < col->n; i++)
 	{
-		uint32	   *rows,
-					n,
-					lo = 0,
-					hi;
-
 		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
 			continue;
-		if (!sift_cseg_point_rows(seg, c, &col->key[i], 1, &rows, &n))
-			corrupt(seg, "The point directory of leaf %d answers the key of row %u of unit %u with too many rows.", c, base + i, u);
-		hi = n;
-		SIFT_BISECT(uint32, mid, lo, hi, rows[mid] < base + i);
-		if (lo >= n || rows[lo] != base + i)
+		if (!sift_cseg_point_has(seg, c, col->key[i], base + i))
 			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
-		pfree(rows);
 		(*listed)++;
 	}
 }
