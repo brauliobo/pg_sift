@@ -154,7 +154,8 @@ fuse_start(AggExec *ex)
 	EState	   *estate = ex->css.ss.ps.state;
 	List	   *m = list_make1(ex);
 	SiftAggSpec **specs;
-	int		  **keymap;
+	int		  **keymap,
+			  **aggmap;
 	int			n = 1;
 	bool		preagg = ex->pa_on;
 	MemoryContext old;
@@ -180,7 +181,7 @@ fuse_start(AggExec *ex)
 	keymap = palloc(sizeof(int *) * n);
 	old = MemoryContextSwitchTo(estate->es_query_cxt);
 	F = palloc0(sizeof(AggExec));
-	F->spec = sift_aggspec_fuse(specs, n, keymap);
+	F->spec = sift_aggspec_fuse(specs, n, keymap, &aggmap);
 	F->pack = sift_aggspec_pack(F->spec);
 	F->params = ex->params;
 	F->snap = ex->snap;
@@ -189,6 +190,7 @@ fuse_start(AggExec *ex)
 	fs = palloc0(sizeof(FuseSt));
 	fs->F = F;
 	fs->keymap = keymap;
+	fs->aggmap = aggmap;
 	fs->refs = n;
 	engine_contexts(F, estate->es_query_cxt);
 	engine_rels(F);
@@ -244,7 +246,7 @@ fuse_next(AggExec *ex, TupleTableSlot *slot)
 	{
 		int			c = ex->spec->nkeys + i;
 
-		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
+		slot->tts_values[c] = agg_datum(t, ex->fuse->aggmap[ex->fuse_set][i], g, &slot->tts_isnull[c]);
 	}
 	return ExecStoreVirtualTuple(slot);
 }

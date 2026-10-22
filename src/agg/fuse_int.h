@@ -10,6 +10,7 @@ typedef struct FuseSt
 {
 	AggExec    *F;				/* the executor of the fused spec */
 	int		  **keymap;			/* per set: the key of the fused spec that is each key of the node */
+	int		  **aggmap;			/* per set: the aggregate of the fused spec that is each aggregate of the node */
 	int			refs;
 } FuseSt;
 

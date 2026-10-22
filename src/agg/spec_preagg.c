@@ -353,7 +353,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 
 	if (s->narms)
 		return SPW_ARMS;
-	if (s->nsets && (s->group < 0 || s->setpred))
+	if (s->nsets && (s->group < 0 || s->setpred || s->setaggs))
 		return SPW_SETS;
 	if (s->njoin)
 		return SPW_JOIN;

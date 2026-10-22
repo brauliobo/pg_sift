@@ -760,7 +760,8 @@ agg_tuples(AggExec *ex, Tup *t)
 		compute_gids(ex, st->n);
 		sift_aggk->count_gid(ex->seen, ex->gid, NULL, st->n);
 		for (int i = 0; i < s->naggs; i++)
-			agg_update(ex, i, ex->cstart, ex->cn, st->n);
+			if (!s->setaggs || (s->setaggs[i] >> set & 1))
+				agg_update(ex, i, ex->cstart, ex->cn, st->n);
 	}
 	ex->arm_mask = ~(uint32) 0;
 }
