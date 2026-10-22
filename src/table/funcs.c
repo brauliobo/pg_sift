@@ -117,6 +117,24 @@ sift_table_segments(PG_FUNCTION_ARGS)
 }
 
 #ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_tbl_bulk_refusal);
+
+/* Why the bulk load of the table keeps the write buffers; NULL when it qualifies */
+Datum
+sift_test_tbl_bulk_refusal(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	const char *why;
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	why = sift_tbl_bulk_refusal(rel);
+	table_close(rel, AccessShareLock);
+	if (why == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(why));
+}
+
 PG_FUNCTION_INFO_V1(sift_test_tbl_hold_maint);
 
 /* Takes the maintenance lock of the table and keeps it to the end of the transaction, as a long VACUUM or merge does */
