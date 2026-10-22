@@ -288,6 +288,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.table_auto_defrag_indexes` | on |  | any user | The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included. Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM. |
 | `sift.table_compression` | empty |  | any user | Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'. |
 | `sift.table_dead_rewrite_pct` | 30 | 1 to 100 | any user | Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them. 100 never rewrites. |
+| `sift.table_init_gate` | 0 | at least 0 | any user | Test only: the first write of a sift_table waits for the advisory lock of this number before it creates the tombstone segment (0 = no gate). |
 | `sift.table_inline_promote` | on |  | any user | Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does). |
 | `sift.table_max_segments` | 128 | 16 to 128 | any user | Test only: the directory entries a sift_table may use. |
 | `sift.table_vblock_floor` | 0 | 0 to 1,073,741,824 | any user | Test only: the first virtual block a new write buffer of a sift_table may take. |
