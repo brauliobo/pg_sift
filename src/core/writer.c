@@ -16,6 +16,7 @@
 #include "storage/sinval.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
+#include "executor/instrument.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
@@ -25,6 +26,7 @@
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "col/col.h"
@@ -222,10 +224,37 @@ sift_wt_throttle(SiftWriteTarget *wt, int delay_ms)
 	wt->delay_ms = delay_ms;
 }
 
-/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly */
+void
+sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec)
+{
+	wt->wal_kbps = kb_per_sec;
+	wt->wal_base = pgWalUsage.wal_bytes;
+	wt->wal_t0 = GetCurrentTimestamp();
+}
+
+/* Sleeps until the WAL the backend wrote since the target was limited is within what its rate allows for the time that went by */
+static void
+wt_wal_wait(SiftWriteTarget *wt)
+{
+	for (;;)
+	{
+		uint64		due_ms = (pgWalUsage.wal_bytes - wt->wal_base) * 1000 / ((uint64) wt->wal_kbps * 1024);
+		int64		ahead = (int64) due_ms - (GetCurrentTimestamp() - wt->wal_t0) / 1000;
+
+		if (ahead <= 0)
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Min(ahead, 1000), PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly; a WAL rate sleeps before the page that would exceed it */
 void
 sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 {
+	if (wt->wal_kbps > 0)
+		wt_wal_wait(wt);
 	if (wt->delay_ms == 0)
 		return;
 	wt->charged += pages;

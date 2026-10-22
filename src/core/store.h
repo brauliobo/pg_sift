@@ -308,6 +308,12 @@ extern void sift_wt_throttle(SiftWriteTarget *wt, int delay_ms);
 extern void sift_wt_charge(SiftWriteTarget *wt, uint64 pages);
 
 /*
+ * SHARED targets: the page that would take the WAL this backend wrote since this call past kb_per_sec kilobytes per second waits (interruptibly)
+ * before it is written, so a long merge cannot take the WAL of the foreground; 0 (the default) never waits.
+ */
+extern void sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec);
+
+/*
  * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
  * took (written or not, published or not: the caller found nothing published) back to the free list.
  */

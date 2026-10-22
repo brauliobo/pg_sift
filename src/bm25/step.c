@@ -495,7 +495,10 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_wt_expect(wt, mi.bytes);
 	if (MyBackendType == B_BG_WORKER)
+	{
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
+		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
+	}
 #ifdef SIFT_TESTING
 	/* a long merge of the worker, the segments claimed */
 	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)

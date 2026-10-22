@@ -14,7 +14,8 @@ create table if not exists churn.qres (
 	primary key (scn, arm, cycle, stage, q));
 
 -- one row per step of a cycle: wall seconds, WAL bytes, bytes of the segments the step wrote
-create table if not exists churn.log (scn text, arm text, cycle int, step text, secs float8, wal_bytes int8, seg_bytes int8, load1 float8);
+-- merges, max_merge_ms: the merge steps of the step in the server log (CHURN_LOG) and the longest, which is how long the maintenance lock was held
+create table if not exists churn.log (scn text, arm text, cycle int, step text, secs float8, wal_bytes int8, seg_bytes int8, load1 float8, merges int, max_merge_ms int);
 
 
 -- and a group-by that sums a float8 json path and always reads the rows
