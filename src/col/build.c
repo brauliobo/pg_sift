@@ -370,7 +370,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
-						errhint("Index the underlying table of the view, or materialize it into a table.")));
+						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
 	/* the bitmap scan compares bytes, which is equality only under a deterministic collation (a query matches the index collation exactly) */
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 		if (index->rd_opcintype[i] == TEXTOID && OidIsValid(index->rd_indcollation[i]) && !get_collation_isdeterministic(index->rd_indcollation[i]))
