@@ -194,6 +194,10 @@ sift_agg_init(void)
 							 "Lets the walk of a top-N bound the units by the zones of the sort keys after the first too: a first key that ties between units is decided by the next.",
 							 NULL, &sift_topn_zone_keys, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.topn_runs",
+							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
+							 NULL, &sift_topn_runs, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
@@ -705,7 +709,10 @@ topn_run(AggExec *ex)
 			topn_parallel(ex);
 			return;
 		}
+		sift_topn_run_budget(t, nsb);
 		while (sift_topn_walk_next(t, &lo))
+			scan_units(ex, lo, lo + 1);
+		while (sift_topn_revisit_next(t, &lo))
 			scan_units(ex, lo, lo + 1);
 		sift_topn_finish(t);
 		return;
@@ -1249,6 +1256,8 @@ explain_run(AggExec *ex, ExplainState *es)
 	if (s->topn && ex->topn)
 	{
 		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+		if (sift_topn_runs_read(ex->topn) > 0)
+			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
 		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
 		if (sift_topn_sorted(ex->topn) >= 0)
 			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);

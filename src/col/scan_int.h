@@ -98,6 +98,14 @@ typedef struct ColUnit
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	ColGroup   *grp;
 	ColSelCache selc;
+	struct
+	{
+		int			col;		/* the leaf whose run was looked for last (valid with known) */
+		bool		known;
+		bool		found;
+		SiftCRun	r;
+		uint64		at;
+	}			run;
 } ColUnit;
 
 /* The test of a predicate on a dictionary leaf of a stored segment, made once for every unit that shares the dictionary (seg_test) */

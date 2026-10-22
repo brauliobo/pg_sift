@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The crash matrix of the operations that publish a new directory of an index: build, write-buffer promotion, merge and VACUUM of a BM25 index and of a
-# sift_col index (with the cube_minmax option, column format minor 7), the sealing of a sift_table and the promotion of its write buffer by the
+# sift_col index (with the options cube_minmax and order_columns, column format minors 7 and 13), the sealing of a sift_table and the promotion of its write buffer by the
 # worker. Every publication (store_update) is a named point of the testing build: sift.test_crash_dir = n kills the process with SIGKILL before the
 # nth directory update (n > 0) or after it (n < 0), its log flushed, so that the segment is written and the directory still the old one, or the
 # directory is the new one and nothing after it ran. For each operation the points are the first and the last of its updates (more in the full
@@ -27,11 +27,12 @@ IDX=("SET sift.enable_agg = on" "SET seq_page_cost = 10000" "SET enable_seqscan 
 QA="SELECT g, count(*), sum(n), min(id), max(id) FROM docs GROUP BY g ORDER BY g"
 QB="SELECT count(*), sum(id) FROM docs WHERE body @@> 'alpha3 beta4'"
 QT="SELECT count(*), sum(id), sum(g * 3 + n), count(DISTINCT id) FROM"
+QO="SELECT string_agg(id || ':' || g || ':' || n, ',' ORDER BY g DESC, n, id) FROM (SELECT id, g, n FROM docs ORDER BY g DESC, n, id LIMIT 200) x"
 BASE="CREATE TABLE docs (id int, g int, n int, body text) WITH (autovacuum_enabled = off);
 	INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 6000) i"
 more() { echo "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 3 || ' beta' || i % 7 FROM generate_series($1, $2) i"; }
 BM25="CREATE INDEX docs_idx ON docs USING sift (body) WITH (write_buffer_limit = 4096)"
-COL="CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, cube_minmax = true)"
+COL="CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, cube_minmax = true, order_columns = 'g, n')"
 TBL="CREATE TABLE tbl (id int, g int, n int) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE tbl_h (id int, g int, n int)"
 
 # scenario ~ setup (after the base table and its rows) ~ the operation
@@ -57,7 +58,7 @@ answers() {
 	local -n mode=$1
 	local has qs=("$QA" "$QB")
 	has=$(sql cm "SELECT string_agg(relname, ',') FROM pg_class WHERE relname IN ('docs', 'tbl')")
-	[[ $has != *docs* ]] || qs+=("$QT docs")
+	[[ $has != *docs* ]] || qs+=("$QT docs" "$QO")
 	[[ $has != *tbl* ]] || qs+=("$QT tbl" "$QT tbl_h")
 	sql cm "${mode[@]}" "${qs[@]}" 2>&1
 }

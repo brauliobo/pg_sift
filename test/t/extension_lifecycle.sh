@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((68 + $(wc -w <<<"$DBS") + (PG_MAJOR >= 18 ? 7 : 0)))
+plan $((71 + $(wc -w <<<"$DBS") + (PG_MAJOR >= 18 ? 7 : 0)))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -289,6 +289,19 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3 and minor 12 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols_col') WHERE kind = 'immutable') x")" == 3,12
 	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
 		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
+	# minor 13 segments (the sorted run of a leaf; opt-in) join an index of minor 3 segments: the units written before are read whole, the others by their run, the results are the heap's; REINDEX gives every unit its run
+	q life upg "CREATE TABLE cols13 (id int, grp int, v numeric(10,2))" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols13_col ON cols13 USING sift_col (id, grp, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols13_col SET (order_columns = 'grp, v')" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols13_col')" >/dev/null
+	S13Q="SELECT string_agg(id || ':' || grp, ',' ORDER BY grp DESC, id) FROM (SELECT id, grp FROM cols13 ORDER BY grp DESC, id LIMIT 300) x"
+	S13OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S13Q" | tail -n 1)
+	check "an index with minor 3 and minor 13 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")" == 3,13
+	check "the index with minor 3 and minor 13 segments verifies and answers an ORDER BY .. LIMIT as the heap" test "$(q life upg "SELECT sift.col_verify('cols13_col', true)" \
+		"SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "$S13OFF"
+	q life upg "REINDEX INDEX cols13_col" >/dev/null
+	check "after REINDEX every segment of the index is minor 13 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")/$(q life upg \
+		"SELECT sift.col_verify('cols13_col', true)" "SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "13/$S13OFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does

@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 12; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the calendar cells (days, months or years) of a date or timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the small-set summary of section 2.13; minor 12 is the superunit summaries of docs/COL-PREAGG.md section 10, in a directory of version 4)
+## 2. Format (format major 1, col minor 13; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the calendar cells (days, months or years) of a date or timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the small-set summary of section 2.13; minor 12 is the superunit summaries of docs/COL-PREAGG.md section 10, in a directory of version 4; minor 13 is the sorted run of section 2.14, in a directory of version 5)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:
@@ -46,7 +46,7 @@ of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index with the reloption `set_columns`, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index with the reloption `set_columns`, under the same conditions; 13 for a segment whose units hold the sorted run of a leaf, written only for an index with the reloption `order_columns`, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
   as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -451,6 +451,65 @@ The index grows from 1 859 584 to 2 359 296 bytes (+26.9%; the `sets` section is
 skip 1 to 15 of the 16 units and the index grows by 26.4% of a smaller base; at 25 000 rows (20 units) a key of `parent_id` skips 9 of 20. A list of 50 keys names a key in every unit, so the
 planner counts no gain from it and the summary only costs its bytes. The gain is in units not decoded, so it grows with the number of units and with the width of the rows.
 
+### 2.14 Sorted run of a leaf in a unit (column format minor 13, 3.3; opt-in)
+
+`ORDER BY col LIMIT n` over a column spread over every unit reads the key chunk of every unit and looks at every row: the zone of a unit says nothing when its
+keys cover the whole range. The reloption `order_columns = 'a, b'` (default none; the names of plain `int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`,
+`timestamptz`, `float4` and `float8` columns; a text, bool, uuid, jsonb-path, lossy or wide leaf is refused at `CREATE INDEX`) makes every unit written afterwards
+keep, for those leaves, the ordinals of its rows in the order of the key, so that a top-N scan reads the first rows of each unit and not all of them. A text
+column has no run: its dictionary codes do not follow the collation, so there is no collation question to answer. `ALTER INDEX .. SET (order_columns = ..)`
+applies to the units written afterwards (promotion, merge, REINDEX); the others have none and are read whole.
+
+Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 5 in a segment of minor 13 and ends with the offset and the bytes of the
+runs. The section has the shape of the small-set one: a header `{u32 'COLR', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}`
+per leaf (ascending; kinds: bit 0 some unit has an ORD run, bit 1 an IDENT one), and per leaf a directory of `nsb + 1` u64 offsets and the blobs. The blob of a unit
+and a leaf, little endian: `u8 kind, u8 width, u16 0, u32 n, u32 nvals, u32 nnull`, then for `kind 1` (ORD) `n` entries of `width` bytes (1 up to 256 rows, 2 up
+to 65 536, else 4), each the ordinal of a row of the unit: first the `nvals` rows that hold a value, ascending by (key, ordinal), then the `nnull` NULL rows
+ascending, then the rows whose value overflowed the leaf ascending. `kind 2` (IDENT) has no entries: the unit holds no NULL and no overflowed row and its keys
+do not fall from one row to the next, so the run is the rows in order (a column loaded in order, such as an id or a timestamp, costs 16 bytes a unit). The key
+is the chunk's; a float's `-0` and `+0` are one key, as PostgreSQL compares them; ties sort by ordinal, which is the order of the heap TIDs of the unit, so the
+order of a run is the order the executor breaks a tie in. A unit has no blob when it has fewer than two rows.
+
+Reader (`agg/topn.c`, `run_unit`): a top-N scan whose first key is a leaf with a run and whose key vector is whole (no filter left a part of the rows) and
+whose unit has at least `2 * (limit + 1)` rows passing, walks the run from the best end by groups of equal keys, stops when the rank of a group is strictly after
+the bar (the n-th best of the heap, the shared bar of the workers, or the n-th row of the unit itself), tests the NULL group and the overflowed rows one by one,
+and hands the candidates, in row order, to the same heap as before, so the rows and their ties are those of the linear scan. A descending order walks the
+groups backwards and takes the rows of each ascending. On a serial walk the first pass gives each unit at most about `2 * limit / units` rows (never fewer than 2),
+and a unit that stopped before it could prove the bar is read again, resumed at the rank where it stopped, in the order of those ranks and only while the bar can
+still be beaten. A unit of a write buffer, a unit with rows to be tested again by the heap, one read in another numbering (compacted or kept rows), a wide leaf
+and a unit with a filtered key vector are scanned as before. The decoder refuses unknown kinds, widths, flag bits, counts that do not fit the unit and an ordinal that
+is no row of it; the walk checks the order of the keys, that equal keys have ordinals ascending and that no row is listed twice; `sift.col_verify` recomputes the
+run from the chunk and compares the bytes, and the kinds a record lists with those of its units. Deletes and updates leave the run as it was (a deleted row is
+skipped when the walk meets it), so it is sound until the unit is rewritten; promotion, merge and REINDEX write it from the option.
+
+A segment is minor 13 only when some unit got a run, under `sift.col_format_minor = 13` and (as for minor 7) a schema without jsonb paths or one whose kinds are
+known; every other write writes what it wrote before, so a 3.3 library at a lower setting and an index without the option are read by 3.2 and 3.1, and a 3.3 library
+that knows only minor 12 refuses the new segments with the REINDEX hint. `sift.topn_runs` (on) turns the reading off. `sift.col_sections` lists the bytes as `runs`,
+EXPLAIN ANALYZE of SiftAgg shows `Units Read By Sorted Run`, and `sift.upgrade_commands()` lists an index with the option and older units as a gain from `REINDEX`.
+The planner does not price the runs: the cost of a top-N scan is what it was, and the runs only lower the time it takes. Code: `col/runs.[ch]`, `col/seg.c`
+(`sift_cseg_run`), `col/seg_write.c` (`add_runs`), `col/scan_unit.c` (`sift_col_run_info`), `agg/topn.c` (`run_unit`). Tests: `col_sorted_run` (minors, options, 240
+shapes three ways, the pass that reads units again, write buffer, DML, VACUUM, promotion, merge, workers, corrupt runs decoded and in the stream, verify, an index that
+takes the option later), the minor 13 steps of the TAPs `extension_lifecycle`, `compat_matrix`, `compat_31_column`, `upgrade_check` and `col_crash_matrix`.
+
+Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of 55, so the two runs of each cell differ by up to a factor of three; median of 15 warm runs, `docs/results/col-sorted-run.tsv`):
+1 000 000 rows of `(id, k, val, ts, amount, pad)` with a 400 byte `pad` (230 units), `order_columns` on every column, `SELECT id, k FROM items ORDER BY k LIMIT n` with `k` a random `int4`.
+
+| n | btree | SiftAgg, `sift.topn_runs = off` (ms) | with the runs (ms) |
+|---|---|---|---|
+| 10 | 0.01 | 0.25 to 0.34 | 0.17 to 0.22 |
+| 100 | 0.03 | 1.7 to 1.9 | 0.9 to 1.3 |
+| 1 000 | 0.34 to 0.37 | 6.5 to 8.9 | 1.9 to 4.9 |
+| 10 000 | 2.6 to 5.4 | 29 to 32 | 23 to 27 |
+
+The same on a `numeric(10,2)` column with no btree (the normal plan sorts the table in 115 to 185 ms for n = 1 000): 7.8 to 13.6 ms without the runs, 5.5 to 6.4 with them. A
+`WHERE` that removes rows (`amount < 0.1`, 10% of them) leaves the key vector sparse, so the scan does not take the run and reads what it read before (15 to 17 ms at n = 1 000;
+the btree needs 5 to 7 ms there). So the runs cut a top-N scan by two to four times at n up to a few thousand and leave the scan five to fourteen times slower than a btree at
+n = 1 000: what remains is the unit itself, about 8 to 20 microseconds a unit of the 230 (opening it, its liveness, the first rows of its order) plus the heap fetch of the rows.
+The gap to a btree closes only with a structure that is read in the order of the key across the segment, not unit by unit.
+
+Index size at 1 000 000 rows: 2 bytes a row for each leaf whose rows do not ascend with the column (`int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`, `float4`, `float8` alike:
+2 001 320 bytes each), 1 320 bytes for a leaf that does (`id`, a timestamp loaded in order). An index of 10 columns, 8 of them unordered, grows from 31 875 072 to 48 070 656 bytes (+50.8%).
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -745,6 +804,7 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 
 - 2026-10 (col minor 6, complete kinds): `SIFT_COL_FORMAT_MINOR` 6, `SIFT_COL_FORMAT_KINDS`, `sift_col_write_minor` (the minor of a segment from the setting, the schema's `kinds` and `wide`, and whether every input keeps its kinds), `sift_cseg_kinds_exact`, `SiftColLeafStats.nokinds` and `SiftSrcStats.nokinds[]`; `unit_kinds` trusts minor 6 and batches without uncertain kinds only; `sift.col_format_minor` takes 3, 4 or 6; the leaf statistics cache of an index is keyed by its relfilenumber and the format of its segments (REINDEX starts the generations over).
 
+- 2026-10 (col minor 13, sorted runs): `SIFT_COL_FORMAT_MINOR` 13, `SIFT_COL_FORMAT_RUNS`; the `COLP` directory is version 5 (`runs_off`, `runs_bytes` after the superunit entries) in a minor 13 segment: a `COLR` section laid out like the small-set summaries, per unit and leaf a blob of the rows' ordinals in the order of the key (`col/runs.[ch]`; `sift_cseg_run`, `sift_cseg_run_read`, the `run_info` and `run_read` hooks of the column source, `sift_col_run_info`, `sift_col_run_read`); `SiftCPaggSpec.run[]` and the reloption `order_columns`; `sift.topn_runs`; `sift.col_sections` row `runs`; EXPLAIN `Units Read By Sorted Run`. The sorted run is minor 13 because 11 is the write buffer of a table with a wide row and 12 the superunits.
 - 2026-10 (col minor 12, superunits): `SIFT_COL_FORMAT_MINOR` 12 (11 is the format of the write buffer of a table with a wide row, never of a segment), `SIFT_COL_FORMAT_SUPER`; the `COLP` directory is version 4 (`superdir_off`, `super_bytes` after the small-set summaries) in a minor 12 segment: per group of `superunit` units the page masks, the merged sums of the INT leaves and the merged cube (docs/COL-PREAGG.md section 10); reloption `superunit`, `SiftCPaggSpec.super`, `sift_cseg_super_*`, `sift_col_super`/`sift_col_unit_split`, `SiftColUnit.nsu`, `sift.agg_super`.
 - 2026-10 (col minor 6): zone flag `SIFT_COLZ_JNULL`, `SiftColLeafStats.has_jnull`, `SiftSrcStats.jnull`: the planner knows whether a leaf holds a JSON null, whose cast to a number raises before PostgreSQL 18.
 - 2026-10 (col minor 4, element rollups): the `COLP` directory is version 2 in a minor 4 segment (`ecubedir_off`, `ecube_bytes`; the rollup blob of each list follows the cubes of the columns and names its dims and measures), `sift_cpagg_cube(..., StringInfo out, StringInfo eout)`, `sift_cpagg_rollup_decode`, `sift_cseg_rollup`, `sift_cseg_dim_cube`, `SIFT_PAGG_MAX_RDIMS` 6 and `SIFT_PAGG_ROLLUP_TUPLES` 4096; the option `rollup` of `sift_col` and `sift_col_alter_check` (validation at CREATE and ALTER INDEX), `col/rollup.c` (the on-demand refresh: queue, worker, `sift.col_rollup_state`); `sift_aggspec_preagg` accepts the unnest of an array leaf or a map with any subset of the dims as keys; `preagg_rollup` folds the tuples (`PaVal.sumf`, min, max). The writer remembers the minor it began under (`SiftColSegWriter.minor`), so `sift.col_format_minor` is read once per segment.

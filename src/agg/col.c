@@ -561,6 +561,24 @@ col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 	return n;
 }
 
+/* the stored numbering: not a unit of a match set, of rows read again from the heap, or narrowed to a few rows */
+static bool
+col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	ColSource  *src = impl;
+
+	
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || src->lay->leaf[leaf].wide || unit->nrow != src->unit.nrows)
+		return false;
+	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
+}
+
+static void
+col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
+{
+	sift_col_run_read(&((ColSource *) impl)->unit, leaf, pos, cnt, rows);
+}
+
 bool
 col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
@@ -739,6 +757,8 @@ static const SiftSrcProvider col_provider = {
 	.zone = col_zone,
 	.zone_range = col_zone_range,
 	.overflow = col_overflow,
+	.run_info = col_run_info,
+	.run_read = col_run_read,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
