@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 6; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2)
+## 2. Format (format major 1, col minor 7; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, docs/COL-PREAGG.md section 2)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:
@@ -46,7 +46,7 @@ of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4 or 6; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.2 library reads minors 3 to 6 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6 or 7; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 7 in one index
   as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -467,7 +467,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
-  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, `sift.col_format_minor` is 3, 4 or 6 (default 6; 5 is the wide leaves' and is not a setting) and keeps writing the minor it says: segments
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, minor 7 (3.3: min and max in the cube, opt-in per index) by all of them, `sift.col_format_minor` is 3, 4, 6 or 7 (default 7; 5 is the wide leaves' and is not a setting; 7 changes no byte of an index without `cube_minmax`, so a 3.2 library reads what a 3.3 one writes under the default or 6) and keeps writing the minor it says: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata

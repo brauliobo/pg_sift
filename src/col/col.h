@@ -19,13 +19,14 @@
 #include "col/wide.h"
 #include "core/filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	6			/* the newest minor 3.2 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete (docs/COL.md 2.2) */
+#define SIFT_COL_FORMAT_MINOR	7			/* the newest minor 3.3 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete (docs/COL.md 2.2), minor 7 the minimum and maximum of each integer measure in every group of the cube (docs/COL-PREAGG.md 2) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_TAGS	4			/* what 3.1 writes: the tags and kinds of a chunk (minor 4 and 5 say nothing about their completeness); the minor of a segment of a schema without shredded leaves, and of one whose kinds a merge could not carry over, under the default setting */
 #define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
 #define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves (lanes, money, interval; docs/COL-LEAFTYPES-32.md) is written as at least this minor, and only such a segment */
 #define SIFT_COL_FORMAT_KINDS	6			/* 3.2: a segment whose schema has shredded leaves and whose every kind is known: a NULL slot that is a JSON null has its kind, one without is a missing key, an astext value has its type (docs/COL.md 2.2). A minor 3, 4 or 5 chunk may lack them (a merge of a segment written before the kinds were kept carried it over without) */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_KINDS	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_MINMAX	7			/* 3.3: the cubes of the segment hold the minimum and maximum of each integer measure per group; written only for an index with the reloption cube_minmax, and then for a schema that has no shredded leaves or whose every kind is known */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_MINMAX	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

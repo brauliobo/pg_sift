@@ -198,6 +198,9 @@ CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads in
 CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
 										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cube_damage(index regclass, units int4, OUT blobs int8, OUT intact int8, OUT with_minmax int8, OUT cut int8, OUT cut_accepted int8,
+										   OUT damaged int8, OUT accepted int8, OUT unsound int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_cube_damage' LANGUAGE C STRICT;
 
 -- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text

@@ -76,6 +76,7 @@ typedef struct SiftColOptions
 	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
 	int			rollup;			/* offset of the "rollup" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
+	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
 	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 } SiftColOptions;
