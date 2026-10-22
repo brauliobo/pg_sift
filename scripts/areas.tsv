@@ -7,10 +7,10 @@
 # test or file is never left out silently. The nightly run and the release check run every job: this map only picks what a push runs.
 #
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
-=bm25	^(installcheck-(sift_basic|limits_|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|upgrade_check|pg_upgrade|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
-=col	^(installcheck-(col_|segfmt_mixed|facet_counts|colcodec_|shred_)|tap-shell-(col_|compat_matrix)|tap-01[56]_space|soak-col$|difftest-col)
-=agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
-=tbl	^(installcheck-(tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
+=bm25	^(installcheck-(roles_|sift_basic|limits_|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|pg_upgrade|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
+=col	^(installcheck-(roles_|col_|segfmt_mixed|facet_counts|colcodec_|shred_)|tap-shell-(col_|compat_matrix)|tap-01[56]_space|soak-col$|difftest-col)
+=agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
+=tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
 =dec	^(fuzz|hardened)$
 =any	^(production-regress|coverage|coverage-pct|reference-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
@@ -22,6 +22,7 @@
 ^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas|pg19-build)\.|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^test/agg_(helpers|preagg_helpers|preagg_units|check_query|check_pushed)\.sql$	^installcheck-(agg_|col_)|{ci}
+^test/roles_helpers\.sql$	^installcheck-roles_|{ci}
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
