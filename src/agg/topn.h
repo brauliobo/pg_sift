@@ -46,7 +46,24 @@ extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
  */
 #define TOPN_SKIP_OFFSET	1
 #define TOPN_SORT			2
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, int nout, const int *attno, int flags, Node *count, Node *offset);
+/*
+ * What a sort key does to the value of its leaf before it is compared (a sort expression the scan evaluates for every row that passes, which cannot
+ * raise): TXK_COALESCE: NULL is the constant c (an integer, date or timestamp leaf and a constant of its type); TXK_LOWER, TXK_UPPER: the string of the
+ * dictionary entry through lower() or upper() under the collation coll, once per distinct entry of a unit
+ */
+#define TXK_NONE		0
+#define TXK_COALESCE	1
+#define TXK_LOWER		2
+#define TXK_UPPER		3
+
+typedef struct SiftTopXform
+{
+	int			kind;
+	int64		c;
+	Oid			coll;
+} SiftTopXform;
+
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, int nout, const int *attno, int flags, Node *count, Node *offset);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);

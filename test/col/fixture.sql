@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_coal, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -254,6 +254,18 @@ INSERT INTO t_text SELECT 1000 + i, 1 + i % 3,
 		ELSE (ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','  ','日本','é日'])[1 + i % 25] || (i % 37) END,
 	'v' || (i % 11)
 FROM generate_series(1, greatest(:n - 4000, 800)) i;
+
+-- sort keys that coalesce NULL to a constant: each integer width, date and timestamps, with NULLs, the limits of the type (and infinity) that tie with a constant,
+-- repeated values and enough rows for the scan to be the cheaper plan at the page costs of the fixtures
+CREATE TABLE t_coal (id integer PRIMARY KEY, grp integer NOT NULL, s2 smallint, i4 integer, i8 bigint, d date, ts timestamp, tz timestamptz);
+INSERT INTO t_coal SELECT i, 1 + i % 3,
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 7 = 1 THEN 32767 WHEN i % 7 = 2 THEN -32768 ELSE (i * 37) % 200 - 100 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 11 = 0 THEN 2147483647 WHEN i % 13 = 0 THEN -2147483648 ELSE (i * 7919) % 1000 - 500 END,
+	CASE WHEN i % 6 = 0 THEN NULL WHEN i % 17 = 0 THEN 9223372036854775807 WHEN i % 19 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 100000 - 50000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 23 = 0 THEN 'infinity' WHEN i % 29 = 0 THEN '-infinity' ELSE DATE '2024-01-01' + (i % 60) END,
+	CASE WHEN i % 3 = 0 THEN NULL WHEN i % 31 = 0 THEN 'infinity' ELSE TIMESTAMP '2024-01-01' + (i % 500) * interval '67 minutes' END,
+	CASE WHEN i % 4 = 0 THEN NULL WHEN i % 37 = 0 THEN '-infinity' ELSE TIMESTAMPTZ '2024-01-01 00:00:00+00' + (i % 300) * interval '131 minutes' END
+FROM generate_series(1, greatest(:n - 3000, 900)) i;
 
 -- the wide leaves (docs/COL-LEAFTYPES-32.md): numeric of 19..38 digits (two lanes), any other numeric (a canonical image: unconstrained, a negative
 -- scale, more than 38 digits), money and interval, with their traps: NaN and the infinities, the largest and smallest values, equal numbers of

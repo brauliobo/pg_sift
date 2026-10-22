@@ -29,36 +29,36 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on 5c50a2fc (2026-10-22) against v3.2.1.
+them (the nightly job `coverage-pct` verifies the file), measured on a9ad9d3a (2026-10-22) against v3.2.2.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 5c50a2fc |
+| Sub-family | Variants | By design | Covered at v3.2.2 | Covered at a9ad9d3a |
 |---|---|---|---|---|
-| **all** | 295 | 4 | 56.7% | 82.8% |
+| **all** | 324 | 4 | 51.6% | 83.1% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
 | NULLS | 16 | 0 | 75.0% | 100.0% |
 | composition | 15 | 3 | 25.0% | 33.3% |
 | filter | 98 | 1 | 93.8% | 95.9% |
-| fixtures: topn | 45 | 0 | 17.8% | 91.1% |
+| fixtures: topn | 74 | 0 | 10.8% | 83.8% |
 | key count | 12 | 0 | 0.0% | 100.0% |
 | key type | 44 | 0 | 36.4% | 68.2% |
 | select list | 8 | 0 | 100.0% | 100.0% |
-| sort expression | 14 | 0 | 0.0% | 0.0% |
-| table kind | 21 | 0 | 47.6% | 76.2% |
+| sort expression | 14 | 0 | 0.0% | 7.1% |
+| table kind | 21 | 0 | 47.6% | 90.5% |
 | tie-break | 7 | 0 | 85.7% | 100.0% |
 
-Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 39, `volatile` 1 (by design), `where` 7.
+Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 35, `volatile` 1 (by design), `where` 7.
 
 ### `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 5c50a2fc |
+| Sub-family | Variants | By design | Covered at v3.2.2 | Covered at a9ad9d3a |
 |---|---|---|---|---|
-| **all** | 516 | 34 | 87.3% | 94.6% |
+| **all** | 516 | 34 | 87.3% | 95.2% |
 | DISTINCT | 32 | 0 | 90.6% | 96.9% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
@@ -67,17 +67,17 @@ Tests: script `coverage`.
 | fixtures: flat | 81 | 0 | 96.3% | 97.5% |
 | fixtures: join | 83 | 0 | 86.7% | 97.6% |
 | fixtures: part | 32 | 0 | 81.2% | 93.8% |
-| fixtures: trap | 11 | 0 | 9.1% | 9.1% |
+| fixtures: trap | 11 | 0 | 9.1% | 18.2% |
 | join child | 33 | 0 | 78.8% | 97.0% |
-| join condition | 64 | 4 | 90.0% | 90.0% |
+| join condition | 64 | 4 | 90.0% | 93.3% |
 | join kind | 17 | 0 | 94.1% | 100.0% |
 | stable or immutable function | 24 | 0 | 83.3% | 100.0% |
 | table kind | 34 | 0 | 76.5% | 100.0% |
 | volatile function | 24 | 24 | -% | -% |
 
-Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 1, `join_condition` 4, `outer_join` 3, `volatile` 24 (by design).
+Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 1, `join_condition` 4, `outer_join` 1, `volatile` 24 (by design).
 
-238 rows: 178 Yes, 23 Partly, 27 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+239 rows: 179 Yes, 23 Partly, 27 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -244,7 +244,7 @@ Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `dist
 | W07 | Window, order, limit | Top-N rows of a text match: WHERE col @@> q [AND filters] ORDER BY created_at DESC LIMIT n | Partly (the BM25 index and a sift_col index with the sort columns are on the table; the planner takes it by cost against an ordered btree) | BM25 + sift_col | `SELECT id FROM docs WHERE body @@> 'wireless' ORDER BY created_at DESC, id LIMIT 10` | The BM25 index gives the match set without reading the heap, the column index orders the matching rows; the heap is read n + m times, whatever the number of matches. Superblocks that cannot beat the heap are skipped (EXPLAIN: Superblocks Skipped By Top-N). Proof: test `col_topn`, fixture `h_topn_search_date`, fixture `h_topn_search_asc`. |
 | W08 | Window, order, limit | Top-N sort keys: int2/4/8, bool, date, time, timestamp(tz), numeric(p<=18), money, float4/8, text, varchar, uuid, bytea, inet; ASC or DESC, NULLS FIRST or LAST, several keys, OFFSET | Yes | BM25 + sift_col | `SELECT id FROM t ORDER BY a DESC NULLS LAST, b, id LIMIT 7 OFFSET 3` | Default btree order of the type; NaN is the largest. A text key compares the entries of the unit's dictionary with varstr_cmp under the collation of the query (byte order under C, strcoll then byte order under any deterministic collation), uuid, bytea and inet by the type's own comparison, so the rows are the normal plan's; such a key has no zones, so every unit that holds matching rows is read (the planner prices that). More than 4 sort keys sort every row that passes (W09). Proof: fixture `h_topn_numeric_nulls`, fixture `h_topn_two_keys`, fixture `h_topn_columns`, fixture `topn_key_money`, fixture `topn_key_money_asc`, fixture `topn_key_time`, fixture `topn_key_time_asc`, fixture `topn_key_text`, fixture `topn_key_text_c`, fixture `topn_key_text_locale`, fixture `topn_key_text_icu`, fixture `topn_key_varchar`, fixture `topn_key_uuid`, fixture `topn_key_bytea`, fixture `topn_key_inet`, test `col_topn_text`. |
 | W09 | Window, order, limit | Top-N with a LIMIT or OFFSET that is a parameter, with n + m over 100000, or with more than 4 sort keys | Yes | sift_col | `SELECT id FROM t ORDER BY a, id LIMIT $1` | A parameter of a generic plan is read when the scan starts: up to 100000 rows and 4 keys the best are kept in a heap, past that or with LIMIT NULL every row that passes is kept as keys and TID (an array in memory up to hash_mem, then a tuplesort at work_mem that spills) and sorted, and the heap is read only for the rows the Limit takes (not for the OFFSET rows when the output is plain columns). A constant n + m past 100000, more than 4 sort keys, or a heap that costs more than the sort is planned as that sort by cost. Proof: test `col_topn`, test `col_topn_deep`, test `col_topn_deep_limits`, fixture `topn_param_limit_10`, fixture `topn_param_limit_cap1`, fixture `topn_param_limit_null`. |
-| W10 | Window, order, limit | Top-N by an expression: ORDER BY total * 2, ORDER BY lower(source), ORDER BY coalesce(x, 0) | No (a sort key must be a column of the index) | sift_col, sift_table | `SELECT id FROM t ORDER BY lower(name), id LIMIT 10` | Proof: fixture `h_topn_expr_out`. |
+| W10 | Window, order, limit | Top-N by an expression that can raise or is not one column's value: ORDER BY total * 2, ORDER BY a + 1, a CASE, a cast, coalesce of two columns, lower(a \|\| b) | No (the normal plan evaluates a sort expression for every row that passes, and these can raise (integer out of range, a failing cast) for a row far from the top; a scan that evaluates only the rows it keeps would return a result where the normal plan fails, or fail where it returns. Only coalesce(column, constant), lower(column) and upper(column) cannot raise (W18); a general evaluator over all passing rows is the follow-up in docs/COL-SEARCH.md) | sift_col, sift_table | `SELECT id FROM t ORDER BY total * 2, id LIMIT 10` | Proof: fixture `h_topn_expr_out`, fixture `topn_xf_trap_arith`, fixture `topn_xf_trap_cast`, fixture `topn_xf_trap_case`, fixture `topn_xf_trap_coalesce2`, fixture `topn_xf_trap_coalesce_wide`, fixture `topn_xf_trap_concat`, fixture `topn_xf_trap_nested`, fixture `topn_xf_trap_numeric`, test `col_topn_expr`. |
 | W11 | Window, order, limit | Top-N of rows over an inner join to a table that only filters, or an IN / EXISTS sub-select | Partly (the joined table only filters: a semi join (IN, EXISTS), or an inner join on a unique integer column, on conditions of its own columns, none of its columns in the result; NOT EXISTS and a comparison with a scalar sub-select stay on the normal plan) | sift_col | `SELECT o.id FROM orders o JOIN stores s ON s.id = o.store_id WHERE s.kind = 'outlet' ORDER BY o.total, o.id LIMIT 5` | The keys of the joined rows that pass their conditions are a set of the scan (key IN (keys)), which the top-N holds exactly. Proof: test `col_topn_join`, fixture `topn_semi_in`, fixture `topn_semi_exists`, fixture `topn_semi_two`, fixture `topn_semi_none`, fixture `topn_semi_anti`, fixture `topn_semi_text_key`, fixture `topn_part_semi`. |
 | W15 | Window, order, limit | Top-N of rows with a window function or FOR UPDATE, or over a join whose other table returns a column or may match a row twice | No (only a single table with no groups, windows or row marks, or a join that only filters (W11); a SELECT DISTINCT is the group-by of K12) | sift_col | `SELECT id, row_number() OVER (ORDER BY total) FROM orders ORDER BY total, id LIMIT 5` | A join that returns a column of the joined table, a join to a table without a unique index on its join column, or an outer join keeps the normal plan. Proof: test `col_topn`. |
 | W12 | Window, order, limit | Top-N of an OR of searches of one index: col @@> a OR col @@> b | Partly (every branch is a constant or parameter match of the same index, with no other predicate in the OR; with sift.score() or another predicate the normal plan stays) | BM25 + sift_col | `SELECT id FROM docs WHERE body @@> 'a' OR body @@> 'b' ORDER BY created_at DESC LIMIT 10` | The match set is the union of the branches, each bound as its own query: its errors and its phrase rechecks are the normal plan's. A search ORed with a predicate on a column is S16. Proof: test `col_topn`, fixture `topn_or_search_two`, fixture `topn_or_search_phrase`, fixture `topn_or_search_column`. |
@@ -252,6 +252,7 @@ Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `dist
 | W17 | Window, order, limit | Top-N rows of a partitioned table | Yes | sift_col, sift_table | `SELECT id, total FROM orders_part ORDER BY total DESC, id LIMIT 5` | The partitions after pruning are one scan: each keeps its units, the heap holds the n best rows of all of them with the partition of each, and the winners are fetched from the partitions' heaps (the attribute numbers of a partition may differ). A text search of the table stays on the normal plan (S13). Proof: fixture `topn_part_columns`, fixture `topn_part_nulls`, fixture `topn_part_pruned`, fixture `topn_part_range`, fixture `topn_part_sorted`, fixture `topn_part_text`, fixture `topn_part_ties`. |
 | W14 | Window, order, limit | Plain SELECT ... WHERE of many rows, window functions over rows | No (the column index serves aggregates and top-N, not row streams) | sift_col | `SELECT id, total FROM t WHERE total > 400` | Use a btree index for row queries. Proof: script `coverage`. |
 | W16 | Window, order, limit | Top-N by a text key under a nondeterministic collation, or by a char(n), name or cidr column | No (the equal strings of a nondeterministic collation differ as bytes and their order is the plan's; char(n), name and cidr have other comparison rules than their dictionary entries) | sift_col, sift_table | `SELECT id FROM t ORDER BY name COLLATE case_insensitive, id LIMIT 10` | The scan keeps no heap row it cannot order exactly as the normal plan does, so these keys stay on the normal plan (`topn_shape` in `sift.explain_refusals`, with the reason). Proof: fixture `topn_key_text_nondet`, test `col_topn_text`. |
+| W18 | Window, order, limit | Top-N by coalesce(int, date or timestamp column, constant), lower(text column), upper(text column) | Yes | sift_col, sift_table | `SELECT id FROM t ORDER BY coalesce(a, 0) DESC, id LIMIT 10` | These sort expressions cannot raise, so the scan that evaluates the key for every row that passes returns the normal plan's rows in its order. A NULL becomes the constant (the zone of a unit is widened to it, so units are skipped as for the column); lower() and upper() are PostgreSQL's own functions under the call's collation, called once per distinct entry of a unit. Any other expression is W10. Proof: fixture `topn_xf_coalesce_int`, fixture `topn_xf_coalesce_int_desc`, fixture `topn_xf_coalesce_int_low`, fixture `topn_xf_coalesce_int_filter`, fixture `topn_xf_coalesce_int4`, fixture `topn_xf_coalesce_int2`, fixture `topn_xf_coalesce_bigint`, fixture `topn_xf_coalesce_date`, fixture `topn_xf_coalesce_date_orders`, fixture `topn_xf_coalesce_ts`, fixture `topn_xf_coalesce_ts_orders`, fixture `topn_xf_coalesce_tz`, fixture `topn_xf_lower`, fixture `topn_xf_lower_c`, fixture `topn_xf_lower_locale`, fixture `topn_xf_lower_varchar`, fixture `topn_xf_lower_int`, fixture `topn_xf_lower_filter`, fixture `topn_xf_upper_desc`, fixture `topn_xf_upper_locale`, fixture `topn_xf_upper_long`, test `col_topn_expr`. |
 | W06 | Window, order, limit | FOR UPDATE, TABLESAMPLE on the indexed heap table, a set-returning function in the select list of the aggregate | No (row locks, sampling and per-row expansion are not aggregates over the index) | sift_col, sift_table | `SELECT ... FOR UPDATE` | Proof: fixture `t_for_update`, fixture `t_tablesample`. |
 | X01 | Parallel and workers | Parallel scan of the aggregate (count, sum, avg, min, max, count(DISTINCT), percentiles, keys of any kind, lookup joins, grouping sets) | Yes | sift_col | `SELECT store_id, count(*), sum(total) FROM orders GROUP BY store_id` | Workers are the ones a parallel sequential scan of the table would get (table size, parallel_workers, max_parallel_workers_per_gather) and are costed: a scan under about 15 ms keeps the leader alone. Not under a Gather: Workers Planned in the SiftAgg node. The merge of the workers' tables is costed per group: a query with hundreds of groups keeps the leader alone. Proof: test `aggstub_scan`, test `col_index_parallel`. |
 | X02 | Parallel and workers | count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) of numeric columns and numeric expressions (also dictionary and 32-bit integer values), percentiles, lookup-joined aggregates, per-order arms | Yes | sift_col | `SELECT source, count(DISTINCT total), sum(DISTINCT total) FROM orders GROUP BY source` | A worker sends the (group, value) pairs of its set, with the numbers themselves for a numeric value (the ids of its table of them are its own), and the leader gives them its own ids and counts or adds each once per group; a bitmap of 32-bit values goes as chunks that the leader ORs (X01). Proof: test `agg_distinct_parallel`. Proof: test `agg_distinct_parallel`, test `aggstub_scan`. |
