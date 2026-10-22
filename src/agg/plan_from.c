@@ -685,6 +685,26 @@ pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
 	return false;
 }
 
+/* does a conjunct read one of the leaves, also through the leaves of a combo (an expression over them), which its `leaf` is the number of? */
+static bool
+pred_reads_set(AggCtx *c, const SiftAggPred *p, const Bitmapset *leaves)
+{
+	if (p->kind == SAP_COMBO || p->kind == SAP_ELEM_EXISTS || p->kind == SAP_MATCHED)
+	{
+		const ComboCtx *cb = list_nth(c->combos, p->leaf);
+
+		for (int k = 0; k < cb->nl; k++)
+			if (cb->leaf[k] >= 0 && bms_is_member(cb->leaf[k], leaves))
+				return true;
+	}
+	else if ((p->leaf >= 0 && bms_is_member(p->leaf, leaves)) || (p->leaf2 >= 0 && bms_is_member(p->leaf2, leaves)))
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_reads_set(c, p->child[i], leaves))
+			return true;
+	return false;
+}
+
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns or is applied after the others (it may drop a row that the error would reach first) */
 SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
@@ -693,11 +713,19 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 
 	if (leaf_recheck(c, m) == SRK_NONE)
 		return SRK_NONE;
-	/* the row raises where it reaches the aggregate: no conjunct reads the leaf (the cast would run before the aggregates) and none of the members is dropped before it */
+	/*
+	 * the row raises where it reaches the aggregate: no conjunct reads the leaf, nor the member of a key taken from it (the cast of the conjunct would
+	 * raise before the aggregates, with the message of its own type, which the row read again does not know), and none of the members is dropped before it
+	 */
 	if (leaf_recheck(c, m) == SRK_CAST)
 	{
+		Bitmapset  *read = bms_make_singleton(m);
+
+		for (int j = 0; j < c->nvleaf; j++)
+			if (vleaf_source(c, j) == m)
+				read = bms_add_member(read, c->lay->nleaves - c->nvleaf + j);
 		for (int i = 0; i < s->npred; i++)
-			if (s->pred[i]->level != 0 || pred_reads_any(s->pred[i], bms_make_singleton(m)))
+			if (s->pred[i]->level != 0 || pred_reads_set(c, s->pred[i], read))
 				return SRK_NONE;
 		return SRK_CAST;
 	}
