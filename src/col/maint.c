@@ -77,8 +77,14 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb);
 	if (nb > 0)
 	{
+		int			format = sift_col_format_minor;
+
+		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6 or 7 */
+		for (int i = 0; i < nb; i++)
+			if (!sift_cbatch_kinds_exact(batches[i]))
+				format = Min(format, SIFT_COL_FORMAT_TAGS);
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, sift_col_format_minor, cx);
+		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, format, cx);
 		sift_colw_set_preagg(w, &sift_col_rel(index)->pagg);
 		for (int i = 0; i < nb; i++)
 			sift_colw_add(w, batches[i]);

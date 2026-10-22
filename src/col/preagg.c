@@ -5,10 +5,11 @@
  *
  * Cube blob of a unit (all integers LEB128 varints unless said): u8 ndims, a directory of ndims x (leaf, bytes of its body) so that one dim is
  * found without reading the others, then the bodies:
- *     u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group), nmeas x measure leaf,
- *     keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
+ *     u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group; bit 1, column format minor 7: min and max of the INT measures),
+ *     nmeas x measure leaf, keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
  *     counts[ngroups],
- *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits)
+ *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits) and, with the
+ *     flag, for an INT measure the smallest value of each group that has one (nn > 0) and then the largest, as zigzag keys
  *
  * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its rollup) as varints, then the rollups in that
  * order. Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
@@ -98,6 +99,9 @@ typedef struct Scratch
 	GroupKey   *ord;
 	double	   *sf;
 	SiftCI128  *si;
+	int64	   *mn;
+	int64	   *mx;
+	bool		minmax;
 } Scratch;
 
 typedef struct DimBuild
@@ -208,7 +212,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			mm[nm++] = sd->meas[i];
 	appendStringInfoChar(out, (char) nm);
 	put_u(out, ng);
-	appendStringInfoChar(out, nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP);
+	appendStringInfoChar(out, (nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP) | (sc->minmax ? PAGG_MINMAX : 0));
 	b->cut[0] = out->len;
 	for (int i = 0; i < nm; i++)
 	{
@@ -238,6 +242,8 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 		bool		fl = s->cols[mm[m]].store == SIFT_COLS_F4 || s->cols[mm[m]].store == SIFT_COLS_F8;
 		double	   *sf = sc->sf;
 		SiftCI128  *si = sc->si;
+		int64	   *mn = sc->mn,
+				   *mx = sc->mx;
 
 		memset(nn, 0, ng * sizeof(uint32));
 		if (fl)
@@ -267,13 +273,26 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			for (uint32 i = 0; i < nrows; i++)
 				if (!is_null(mc->nulls, i))
 				{
-					si[gid[i]] += mc->key[i];
-					nn[gid[i]]++;
+					uint32		g = gid[i];
+					int64		v = mc->key[i];
+
+					si[g] += v;
+					if (nn[g]++ == 0)
+						mn[g] = mx[g] = v;
+					else
+					{
+						mn[g] = Min(mn[g], v);
+						mx[g] = Max(mx[g], v);
+					}
 				}
 			for (uint32 i = 0; i < ng; i++)
 				put_u(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
+			for (int pass = 0; sc->minmax && pass < 2; pass++)
+				for (uint32 i = 0; i < ng; i++)
+					if (nn[ord[i].g] > 0)
+						put_zz(out, pass ? mx[ord[i].g] : mn[ord[i].g]);
 		}
 		b->tail[m + 1] = out->len;
 	}
@@ -321,6 +340,9 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	sc.ord = palloc((maxg + 1) * sizeof(GroupKey));
 	sc.sf = palloc((maxg + 1) * sizeof(double));
 	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
+	sc.mn = palloc((maxg + 1) * sizeof(int64));
+	sc.mx = palloc((maxg + 1) * sizeof(int64));
+	sc.minmax = spec->minmax;
 	for (int d = 0; d < spec->ndims; d++)
 	{
 		int			lean;
@@ -341,6 +363,8 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	pfree(sc.ord);
 	pfree(sc.sf);
 	pfree(sc.si);
+	pfree(sc.mn);
+	pfree(sc.mx);
 }
 
 typedef struct RuBuild

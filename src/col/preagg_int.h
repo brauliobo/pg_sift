@@ -9,5 +9,6 @@
 #include "col/preagg.h"
 
 #define PAGG_NULLGROUP	0x01
+#define PAGG_MINMAX		0x02			/* the body of the dim has the minimum and maximum of each integer measure after its sums (column format minor 7) */
 
 #endif

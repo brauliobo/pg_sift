@@ -36,6 +36,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
+PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
@@ -653,6 +654,102 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	v[2] = Int32GetDatum(ng);
 	v[3] = Int64GetDatum(rows);
 	v[4] = DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* does a decoded cube keep what the decoder promises: min <= max in every group that has a value */
+static bool
+cube_sound(const SiftCHist *h)
+{
+	for (int d = 0; d < h->ndims; d++)
+		for (int m = 0; m < h->dim[d].nmeas; m++)
+			for (uint32 g = 0; h->dim[d].min[m] != NULL && g < h->dim[d].ngroups; g++)
+				if (h->dim[d].nn[m][g] > 0 && h->dim[d].min[m][g] > h->dim[d].max[m][g])
+					return false;
+	return true;
+}
+
+/*
+ * sift._test_col_cube_damage(index, units): the cube blob of the first units of the index, decoded as stored, cut at every length, and with every
+ * byte set to some other values (one at a time). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse what it
+ * cannot trust: a cut blob is always refused, and a damaged one that is accepted still obeys min <= max.
+ */
+Datum
+sift_test_col_cube_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	int			maxunits = PG_GETARG_INT32(1);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
+	int64		blobs = 0,
+				minmax = 0,
+				intact = 0,
+				cut = 0,
+				cut_accepted = 0,
+				damaged = 0,
+				accepted = 0,
+				unsound = 0;
+	Datum		v[8];
+	bool		nulls[8] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (blobs < maxunits && test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					len;
+		const uint8 *blob;
+		uint8	   *copy;
+		SiftCHist	h;
+		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_cube(seg, u, &len)) == NULL)
+			continue;
+		blobs++;
+		copy = palloc(len);
+		MemoryContextReset(cx);
+		if (sift_cpagg_decode(sc, blob, len, cx, &h))
+		{
+			intact++;
+			minmax += h.dim[0].minmax;
+		}
+		for (uint32 l = 0; l < len; l++)
+		{
+			MemoryContextReset(cx);
+			memcpy(copy, blob, l);
+			cut++;
+			cut_accepted += sift_cpagg_decode(sc, copy, l, cx, &h);
+		}
+		for (uint32 i = 0; i < len; i++)
+			for (int k = 0; k < lengthof(vals); k++)
+			{
+				memcpy(copy, blob, len);
+				if (copy[i] == vals[k])
+					continue;
+				copy[i] = vals[k];
+				MemoryContextReset(cx);
+				damaged++;
+				if (sift_cpagg_decode(sc, copy, len, cx, &h))
+				{
+					accepted++;
+					unsound += !cube_sound(&h);
+				}
+			}
+		pfree(copy);
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(blobs);
+	v[1] = Int64GetDatum(intact);
+	v[2] = Int64GetDatum(minmax);
+	v[3] = Int64GetDatum(cut);
+	v[4] = Int64GetDatum(cut_accepted);
+	v[5] = Int64GetDatum(damaged);
+	v[6] = Int64GetDatum(accepted);
+	v[7] = Int64GetDatum(unsound);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 

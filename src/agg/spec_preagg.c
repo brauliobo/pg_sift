@@ -235,13 +235,11 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 
 	if (why != SPW_OK || leaf < 0 || d < 0)
 		return why;
-	if (a->kind == SAA_MIN || a->kind == SAA_MAX)
-		return SPW_AGG_KIND;
 	if (leaf == pa->dim[d].leaf)
 		return a->kind == SAA_COUNT ? SPW_OK : SPW_AGG_KIND;	/* the rows of the groups that are not NULL */
 	for (int m = 0; m < pa->dim[d].nmeas; m++)
 		if (pa->dim[d].meas[m] == leaf)
-			return SPW_OK;
+			return (a->kind == SAA_MIN || a->kind == SAA_MAX) && !pa->dim[d].minmax ? SPW_AGG_KIND : SPW_OK;
 	return SPW_MEAS_NOT_STORED;
 }
 

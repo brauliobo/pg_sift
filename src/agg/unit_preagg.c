@@ -392,10 +392,13 @@ preagg_hist(AggExec *ex)
 	{
 		int			leaf = pa_leaf(&s->agg[ai]);
 		int			m = 0;
+		bool		mm = s->agg[ai].kind == SAA_MIN || s->agg[ai].kind == SAA_MAX;
 
 		while (leaf >= 0 && leaf != ex->pa.dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
-		if (leaf >= 0 && leaf != ex->pa.dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
+		/* a unit written without min and max (an older segment, an index that does not ask for them) is scanned */
+		if (leaf >= 0 && leaf != ex->pa.dim &&
+			(m == h.nmeas || (mm ? h.min[m] == NULL : s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
 			return false;
 		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf, true))
 			return false;
@@ -425,6 +428,12 @@ preagg_hist(AggExec *ex)
 				v[ai].nn = h.nn[m][kept[j]];
 				v[ai].sum = h.sum[m] ? h.sum[m][kept[j]] : 0;
 				v[ai].sumf = h.sumf[m] ? h.sumf[m][kept[j]] : 0;
+				if (h.min[m])
+				{
+					v[ai].has_mm = v[ai].nn > 0;
+					v[ai].min = h.min[m][kept[j]];
+					v[ai].max = h.max[m][kept[j]];
+				}
 			}
 			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], kept[j]))
 				v[ai] = (PaVal) {0};				/* the rows of the group fail the FILTER: they add nothing to this aggregate */
