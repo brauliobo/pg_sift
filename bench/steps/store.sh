@@ -300,6 +300,22 @@ updates() { # SIZE: last, it changes the data; at the budget of the load
   point "$CPUS"
   locked py updates --rows "$1" --out "$(szdir "$1")" --cpus "$CPUS" "${extra[@]}"
 }
+section() { # SIZES: the update, delete and VACUUM section (store.py section): S_REPS repetitions (3) of the sizes up to 200,000 orders, with the churn and insert windows, one of the larger ones
+  local s r extra=() secs
+  mapfile -t extra < <(engine_args "${S_ENGINES:-pg,sift,sift_maint,sift_table,sift_table_maint}"; flags)
+  for s in ${SIZES//,/ }; do
+    for (( r = 1; r <= (s > 200000 ? 1 : ${S_REPS:-3}); r++ )); do
+      secs=$(( s > 200000 ? 0 : ${S_CHURN_SECONDS:-20} ))
+      mkdir -p "$(szdir "$s")"
+      up "$s"
+      py gen --rows "$s"
+      locked py section --rows "$s" --tier "$s-r$r" --out "$(szdir "$s")" --cpus "$CPUS" --churn-seconds "$secs" "${extra[@]}" --rates ''
+      down
+    done
+  done
+  py section-merge "$OUT"/*/store-*-section.json -o "$OUT/updates.json" --sha "$(git -C "$REPO" rev-parse --short=12 HEAD)"
+  [[ -z ${S_DOCS:-} ]] || { cp "$OUT/updates.json" "$REPO/bench/results/updates.json"; report; }
+}
 interference() { # SIZE [store.py interference options]
   local extra=()
   mapfile -t extra < <(engine_args; flags)
@@ -381,6 +397,7 @@ case $sub in
   run) mkdir -p "$OUT"; ensure "${SIZES%%,*}"; each_point run_at "${SIZES%%,*}" ;;
   cold) mkdir -p "$OUT"; ensure "${SIZES%%,*}"; point "$CPUS"; cold_at "${SIZES%%,*}" "$CPUS" ;;
   updates) mkdir -p "$OUT"; ensure "${SIZES%%,*}"; updates "${SIZES%%,*}" ;;
+  section) mkdir -p "$OUT"; trap 'down' EXIT; section ;;
   interference) mkdir -p "$OUT"; interference "${SIZES%%,*}" "${@:2}" ;;
   finish) finish ;;
   report) report ;;
@@ -389,5 +406,5 @@ case $sub in
   table|gap) py "$1" "${2:-$REPO/bench/results/store.json}" ;;
   compare) py compare "$2" "$3" ;;
   clean) clean ;;
-  *) echo "usage: store.sh all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
+  *) echo "usage: store.sh all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
 esac

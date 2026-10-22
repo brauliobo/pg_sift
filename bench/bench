@@ -553,7 +553,7 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
 
 cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
   local sub=${rest[0]:-all}
-  case $sub in all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
+  case $sub in all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
     engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
   fi
@@ -564,7 +564,7 @@ cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh;
          S_LOAD_SEC=$s_load_sec S_PROBES=$s_probes
   for c in S_SIZES S_CPUS S_CPUS_LIST S_MEMORY S_RUNS S_WARMUPS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME S_RESTARTS S_CHECK S_RATES S_UPDATE_PATHS S_PARALLEL S_REMEASURE_ALL S_REMEASURE \
            S_NO_CACHE S_CACHE_DIR S_CACHE_MAX_AGE S_MAX_RERUN S_LOAD_SEC S_PROBES; do [[ -n ${!c:-} ]] || unset "$c"; done
-  case $sub in all|plan|setup|run|cold|updates|interference|stats) new_out; export OUT ;; esac
+  case $sub in all|plan|setup|run|cold|updates|section|interference|stats) new_out; export OUT ;; esac
   "$STEPS/store.sh" "$sub" "${rest[@]:1}" ${ix[@]+"${ix[@]}"}
 }
 
