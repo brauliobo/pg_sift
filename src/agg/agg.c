@@ -93,6 +93,7 @@ bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
 bool		sift_agg_dense = true;
 bool		sift_agg_semi_lut = true;
+bool		sift_agg_two_level_on = true;
 int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
@@ -131,6 +132,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_semi_lut",
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_two_level",
+							 "Aggregates an aggregate over per-row aggregates (UNION ALL arms grouped by a row id) in one scan of the index: the cells of a row are kept in the scan.",
+							 NULL, &sift_agg_two_level_on, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_lookup_pushdown",
 							 "Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading.",
@@ -870,9 +875,11 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	PlannedStmt stmt = *estate->es_plannedstmt;
 	ExplainState child;
 	List       *own;
-	char       *label = psprintf("Correlated Lookup %d", i + 1);
+	bool        correlated = s->join[i].params != NIL;
+	char       *group = correlated ? "Correlated Lookup" : "Lookup Plan";
+	char       *label = psprintf("%s %d", group, i + 1);
 
-	ExplainOpenGroup("Correlated Lookup", label, true, es);
+	ExplainOpenGroup(group, label, true, es);
 	ExplainPropertyText("Name", s->join[i].desc, es);
 	/* the statement's identifier and settings are printed once, at the top */
 	stmt.queryId = UINT64CONST(0);
@@ -883,12 +890,13 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	child.settings = false;
 	child.printed_subplans = NULL;
 	own = query.planstate->plan->initPlan;
-	query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
+	if (correlated)
+		query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
 	ExplainPrintPlan(&child, &query);
 	query.planstate->plan->initPlan = own;
 	es->indent = child.indent;
 	es->grouping_stack = child.grouping_stack;
-	ExplainCloseGroup("Correlated Lookup", label, true, es);
+	ExplainCloseGroup(group, label, true, es);
 }
 
 /* The source's counters of the filters and lookup tables a run used */
