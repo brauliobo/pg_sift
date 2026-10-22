@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- the query ---------- */
-
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
 static RangeTblRef *
 right_table(Node *n)
@@ -217,8 +215,6 @@ group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
 {
 	return group_leaf_below(c, arg, NIL, kind);
 }
-
-/* ---------- partitioned tables ---------- */
 
 /* a column index of a partition: its layout in the terms of the partitioned table's columns, its statistics and pre-aggregates */
 typedef struct PartCand

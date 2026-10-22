@@ -10,8 +10,6 @@
 
 #include "bm25/segment_int.h"
 
-/* ---------- the live part of a segment, streamed (the input of a merge) ---------- */
-
 /*
  * The dl of every doc of an SB, in the rows of its DOCMAP record, and which of them were vacuumed: what the postings of the SB
  * look up. Terms come in dictionary order and each one runs through the SBs, so the SBs a term touches are kept (the most

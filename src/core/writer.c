@@ -60,8 +60,6 @@ struct SiftStreamWriter
 	SiftExtentList ext;
 };
 
-/* ---------- write targets ---------- */
-
 SiftWriteTarget *
 sift_wt_begin(Relation index, SiftWriteMode mode)
 {
@@ -388,8 +386,6 @@ sift_wt_abort(SiftWriteTarget *wt)
 				.extra = InvalidBuffer}, false, NULL);
 	wt->ntaken = wt->nspare = 0;
 }
-
-/* ---------- stream writer ---------- */
 
 SiftStreamWriter *
 sift_sw_begin(SiftWriteTarget *wt, uint64 gen)

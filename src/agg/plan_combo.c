@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- lookup joins and combos ---------- */
-
 JoinCtx *
 join_of_var(AggCtx *c, Node *n)
 {

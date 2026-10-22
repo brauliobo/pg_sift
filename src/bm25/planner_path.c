@@ -170,8 +170,6 @@ sift_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	*indexPages = costs.numIndexPages;
 }
 
-/* ---------- paths ---------- */
-
 /*
  * Matches of a ranked query the planner cannot read (a parameter of a generic plan), as a fraction of
  * the rows, for placing the filter's entries in the heap: the queries a ranker is asked for hold common

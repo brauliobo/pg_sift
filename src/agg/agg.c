@@ -630,8 +630,6 @@ agg_recheck(ScanState *node, TupleTableSlot *slot)
 	return true;
 }
 
-/* ---------- executor methods ---------- */
-
 void
 engine_contexts(AggExec *ex, MemoryContext parent)
 {

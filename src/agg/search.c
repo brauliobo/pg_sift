@@ -33,8 +33,6 @@
 #include "bm25/planner.h"
 #include "agg/search.h"
 
-/* ---------- planner ---------- */
-
 /* What the match set costs, in operator costs: a posting decoded and combined, a page of matches merged and copied, a term looked up */
 #define SEARCH_POSTING		0.25
 #define SEARCH_PAGE			12.0
@@ -226,8 +224,6 @@ sift_search_describe(Node *spec)
 	}
 	return buf.data;
 }
-
-/* ---------- executor ---------- */
 
 int			sift_search_chunk_sbs = 32;
 

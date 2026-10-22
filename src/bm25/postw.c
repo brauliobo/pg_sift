@@ -73,8 +73,6 @@ struct SiftPostingWriter
 	uint8		bound1[SIFT_MAX_DL + 1];	/* bound for tf 1 by dl; 0 = not computed */
 };
 
-/* ---------- writer ---------- */
-
 SiftPostingWriter *
 sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref, MemoryContext mcxt)
 {
@@ -383,8 +381,6 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 	info->codec_len = clen;
 	return out;
 }
-
-/* ---------- terms staged in temporary files ---------- */
 
 static void
 blob_too_big(void)

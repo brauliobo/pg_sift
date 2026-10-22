@@ -35,8 +35,6 @@
 #include "table/scan_int.h"
 #include "core/visibility.h"
 
-/* ---------- parallel scans ---------- */
-
 static void
 par_fill(Relation rel, SiftTblParallel *par)
 {
@@ -91,8 +89,6 @@ sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 {
 	par_fill(rel, (SiftTblParallel *) pscan);
 }
-
-/* ---------- the scan ---------- */
 
 /* Back to the position before the first row */
 static void

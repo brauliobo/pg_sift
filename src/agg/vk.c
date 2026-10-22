@@ -201,8 +201,6 @@ sift_vk_max_wg(const SiftVk *vk, uint32_t groups, uint32_t nsum)
 	return (uint32_t) (n < WG_CAP / 16 ? n : WG_CAP / 16);
 }
 
-/* ---------- buffers ---------- */
-
 static int
 memtype(const SiftVk *vk, uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid)
 {
@@ -289,8 +287,6 @@ buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 	}
 	return true;
 }
-
-/* ---------- the cache of chunks ---------- */
 
 static uint32_t
 key_hash(const SiftVkKey *k)
@@ -513,8 +509,6 @@ sift_vk_abandon(SiftVk *vk)
 	vk->batch++;
 }
 
-/* ---------- running a job ---------- */
-
 static void
 barrier(SiftVk *vk, VkPipelineStageFlags src, VkAccessFlags sa, VkPipelineStageFlags dst, VkAccessFlags da)
 {
@@ -652,8 +646,6 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), const ui
 	*results = vk->rhost.map;
 	return SIFT_VK_OK;
 }
-
-/* ---------- open, close ---------- */
 
 static int
 type_rank(int t)

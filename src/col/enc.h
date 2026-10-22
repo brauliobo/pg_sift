@@ -12,8 +12,6 @@
 #include "col/kern.h"
 #include "col/codec.h"
 
-/* ---------- schema ---------- */
-
 typedef struct SiftColSchema
 {
 	int			ncols;
@@ -34,8 +32,6 @@ extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *
 extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
-
-/* ---------- dictionaries (code = first-seen order) ---------- */
 
 typedef struct SiftCDict
 {
@@ -65,8 +61,6 @@ extern void sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, St
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
-
-/* ---------- batches: the decoded rows of one SB, keys ascending ---------- */
 
 /* Values of one leaf: key-domain integers (INT as is, F4/F8 order keys, STR codes into the batch's dictionary of the leaf) */
 typedef struct SiftCVals
@@ -123,8 +117,6 @@ extern void sift_cbatch_row_free(SiftColRow *row);
 /* The value of a leaf's slot as a SiftColValue (strings point into the dictionary) */
 extern void sift_cbatch_value(const SiftColBatch *b, int col, uint32 slot, SiftColValue *v);
 
-/* ---------- zones ---------- */
-
 #define SIFT_COLZ_NOSUM		0x1		/* the integer sum overflowed int64 */
 #define SIFT_COLZ_NAN		0x2		/* a float chunk holds a NaN */
 #define SIFT_COLZ_CONST		0x4		/* every non-NULL value equal */
@@ -144,8 +136,6 @@ typedef struct SiftCZone
 	uint32		pad;
 	uint64		set[4];			/* STR leaves: bit (code & 255) set for every code present */
 } SiftCZone;
-
-/* ---------- chunks ---------- */
 
 #define SIFT_COLC_NULLS		0x1
 #define SIFT_COLC_OVF		0x2		/* an overflow bitmap follows the null bitmap */

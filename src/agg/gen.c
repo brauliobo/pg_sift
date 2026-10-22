@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- generic aggregates (SAA_GEN): PostgreSQL's own transition and final functions ---------- */
-
 static Datum
 gen_eval_once(AggExec *ex, ExprState *e, Oid typid, bool *isnull)
 {

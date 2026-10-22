@@ -57,8 +57,6 @@ throttle(SiftWriteTarget *wt)
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 }
 
-/* ---------- promotion ---------- */
-
 static void
 promote_one(Relation index, const SiftSegEntry *sealed)
 {
@@ -115,8 +113,6 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 	pfree(snap);
 	return s ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
-
-/* ---------- merge ---------- */
 
 /* A segment worth a rewrite alone: more dead rows than dead_rewrite_pct, or an overflow flag that only dead rows account for */
 bool
@@ -235,8 +231,6 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n, sift_col_format_minor, NULL, NULL);
 	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
-
-/* ---------- the policy of the index kind ---------- */
 
 static bool
 is_col(Relation index)
@@ -444,8 +438,6 @@ sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	return sift_mops_vacuumcleanup(&col_ops, info, stats);
 }
 
-/* ---------- asynchronous maintenance ---------- */
-
 void
 sift_col_maint_worker_main(Datum main_arg)
 {
@@ -495,8 +487,6 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	PopActiveSnapshot();
 	CommitTransactionCommand();
 }
-
-/* ---------- SQL ---------- */
 
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
 Datum

@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- DISTINCT ON: the first row of a group by the ORDER BY ---------- */
-
 #define FIRST_MAX_KEYS		4		/* sort columns after the DISTINCT ON columns */
 #define FIRST_GROUP_BYTES	96		/* what a group of a DISTINCT ON column keeps besides its values: the best row's header, the state and the result */
 
@@ -224,8 +222,6 @@ distinct_on_more(AggCtx *c, Query *parse, List **more)
 	}
 	return list_length(*more) <= FIRST_MAX_KEYS && sort_is_total(c, sortexprs);
 }
-
-/* ---------- top-N: ORDER BY <columns> LIMIT n ---------- */
 
 /* The rows a plan assumes for a LIMIT it cannot know (a parameter of a generic plan): a page of a list */
 #define TOPN_ASSUMED_ROWS	1000

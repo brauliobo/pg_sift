@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- partial group tables ---------- */
-
 static void
 bw_put(StringInfo b, const void *p, Size n)
 {

@@ -78,8 +78,6 @@ fz_try(void (*fn) (void *), void *arg)
 	return false;
 }
 
-/* ---------- CPU and dispatch ---------- */
-
 void
 fz_init(void)
 {
@@ -145,8 +143,6 @@ fz_copy(const uint8 *data, size_t len, size_t pad, size_t align)
 	memset(p + len, 0, pad);
 	return p;
 }
-
-/* ---------- symbols the linked sources mention and the targets never reach ---------- */
 
 #define UNREACHED(name) fz_bad("%s reached: the fuzz target links no storage layer", name)
 

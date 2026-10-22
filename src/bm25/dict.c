@@ -87,8 +87,6 @@ prefix8(const char *s, int len)
 	return p;
 }
 
-/* ---------- writer ---------- */
-
 SiftDictWriter *
 sift_dict_writer_begin(SiftStreamWriter *sw, bool packed)
 {
@@ -275,8 +273,6 @@ sift_dict_writer_finish(SiftDictWriter *w, SiftSegHeaderData *hdr)
 	pfree(w->root);
 	pfree(w->blk.data);
 }
-
-/* ---------- reader ---------- */
 
 SiftDict *
 sift_dict_open(SiftStreamReader *sr, const SiftSegHeaderData *hdr, MemoryContext mcxt)
@@ -647,8 +643,6 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 	}
 	pfree(buf);
 }
-
-/* ---------- matchers ---------- */
 
 struct SiftTermMatcher
 {

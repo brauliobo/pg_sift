@@ -8,8 +8,6 @@
 #include "bm25/posting.h"
 #include "bm25/posting_int.h"
 
-/* ---------- positions ---------- */
-
 static void
 corrupt_pos(const SiftPostingCursor *c)
 {

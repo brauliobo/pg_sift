@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- the scan: items of work, lanes ---------- */
-
 /*
  * The superblocks are split in items that the participants take from a counter. Float sums are order dependent, so that a result
  * does not depend on the number of workers: such a scan has SIFT_AGG_LANES items, lane l being the superblocks l, l + SIFT_AGG_LANES, ..., and the
@@ -212,8 +210,6 @@ final_checks(AggExec *g, int64 ntuples)
 		if (g->spec->agg[i].kind == SAA_AVG_F64 && 8.0 * ntuples * g->amax[i] * g->amax[i] >= DBL_MAX)
 			float_overflow_error();
 }
-
-/* ---------- workers ---------- */
 
 /*
  * A scan whose plan asks for workers runs them under a parallel context of its own (not under a Gather: the partial tables are

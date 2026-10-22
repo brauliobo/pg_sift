@@ -42,8 +42,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- freezing, the rows of aborted writers, the live rows ---------- */
-
 /* An insertion that is final for every snapshot: committed before oldest (the last answer is remembered) */
 typedef struct XidFinal
 {
@@ -427,8 +425,6 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 	sift_tbl_refresh(rel, st);
 	return true;
 }
-
-/* ---------- dead rows of the column segments ---------- */
 
 int			sift_tbl_dead_rewrite_pct = SIFT_TBL_DEAD_PCT;
 
