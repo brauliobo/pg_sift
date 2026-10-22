@@ -818,6 +818,16 @@ combo_hash(const uint64 *v, int ninputs, bool null_input)
 	return (uint32) (h >> 32) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 
+/* the few inputs of an entry compared inline: a memcmp call per probe costs more than the loop */
+static inline bool
+combo_same(const uint64 *a, const uint64 *b, int n)
+{
+	for (int p = 0; p < n; p++)
+		if (a[p] != b[p])
+			return false;
+	return true;
+}
+
 /* room for one more entry */
 static void
 combo_grow_ent(ComboSt *cs)
@@ -894,8 +904,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	h = combo_hash(v, cs->ninputs, ex->null_input) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
 		if (cs->null_input[e - 1] == ex->null_input &&
-			(cs->ninputs == 1 ? cs->vid[e - 1] == v[0] :
-			 memcmp(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs * sizeof(uint64)) == 0))
+			combo_same(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs))
 			return e - 1;
 	combo_grow_ent(cs);
 	if (cs->nent >= (uint32) 1 << 24)
@@ -984,16 +993,11 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
-	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
+	for (int p = 0; p < cb->nleaves; p++)
 	{
 		uint64	   *vid = ex->cvid[p];
 
-		if (p >= cb->nleaves)
-		{
-			memset(vid, 0, n * sizeof(uint64));
-			continue;
-		}
-		else if (cb->leaf[p] < 0)
+		if (cb->leaf[p] < 0)
 		{
 			Assert(tuples != NULL);
 			for (int i = 0; i < n; i++)
@@ -1028,12 +1032,18 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 	}
 	for (int i = 0; i < n; i++)
 	{
-		uint64		v[SIFT_AGG_MAX_CLEAVES] = {0};
+		uint64		v[SIFT_AGG_MAX_CLEAVES];
 
-		for (int p = 0; p < cb->nleaves; p++)
+		if (alive && !sift_colsrc_bit(alive, i))
+		{
+			eid[i] = COMBO_NONE;
+			continue;
+		}
+		/* combo_ent reads ninputs values: one even for a combo without leaves, whose value is 0 */
+		v[0] = cb->nleaves > 0 ? ex->cvid[0][i] : 0;
+		for (int p = 1; p < cb->nleaves; p++)
 			v[p] = ex->cvid[p][i];
-
-		eid[i] = alive && !sift_colsrc_bit(alive, i) ? COMBO_NONE : combo_ent(ex, ci, v);
+		eid[i] = combo_ent(ex, ci, v);
 	}
 }
 
