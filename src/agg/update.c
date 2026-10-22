@@ -359,10 +359,14 @@ typedef struct AggUpd
 	const SiftSrcLeaf *lf;
 } AggUpd;
 
+/* n of the aggregate += its tuples of the chunk; those that take every tuple wait for the end of the chunk, when one pass counts them all with seen */
 static void
 upd_count(const AggUpd *u)
 {
-	sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
+	if (u->ok == NULL)
+		u->ex->ncnt[u->ex->nncnt++] = u->acc->n;
+	else
+		sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
 }
 
 static void
@@ -758,10 +762,12 @@ agg_tuples(AggExec *ex, Tup *t)
 		ex->curset = set;
 		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
 		compute_gids(ex, st->n);
-		sift_aggk->count_gid(ex->seen, ex->gid, NULL, st->n);
+		ex->ncnt[0] = ex->seen;
+		ex->nncnt = 1;
 		for (int i = 0; i < s->naggs; i++)
 			if (!s->setaggs || (s->setaggs[i] >> set & 1))
 				agg_update(ex, i, ex->cstart, ex->cn, st->n);
+		sift_aggk_count_gid_n(ex->ncnt, ex->nncnt, ex->gid, NULL, st->n);
 	}
 	ex->arm_mask = ~(uint32) 0;
 }
