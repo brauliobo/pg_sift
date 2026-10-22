@@ -2,6 +2,10 @@
 -- is not a superuser fails ("permission denied for schema sift"); the update gives the event trigger functions the extension owner's rights, and
 -- the tables, indexes and rows made at 3.2 go on working for the same roles.
 -- The released SQL of 3.2 is installed here by CREATE EXTENSION ... VERSION '3.2', on the library of this build.
+-- DROP EXTENSION leaves the schema sift, with the USAGE that 3.3 gave PUBLIC, so a database that had 3.3 is cleared of it first.
+SET client_min_messages = warning;
+DROP SCHEMA IF EXISTS sift;
+RESET client_min_messages;
 CREATE EXTENSION pg_sift VERSION '3.2';
 \set VERBOSITY terse
 \set ECHO none
@@ -14,10 +18,12 @@ SELECT rr_roles_drop('ru_');
 CREATE ROLE ru_own;
 CREATE ROLE ru_mem IN ROLE ru_own;
 CREATE ROLE ru_rd;
+CREATE ROLE ru_new;
 CREATE SCHEMA ru;
 GRANT USAGE ON SCHEMA ru TO ru_rd;
 GRANT USAGE, CREATE ON SCHEMA ru TO ru_own, ru_mem;
 GRANT USAGE ON SCHEMA sift TO ru_own, ru_mem, ru_rd;
+-- 3.2 grants the schema to nobody, and ru_new was not given it
 SET enable_seqscan = off;
 -- at 3.2: what the roles make works, a drop does not
 SELECT * FROM rr_run($$
@@ -35,6 +41,7 @@ ru_own | DROP TABLE ru.plain
 ru_own | DROP INDEX ru.docs_col
 ru_mem | DROP TABLE ru.plain
 ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'
+ru_new | SELECT sift.version()
 $$);
  n  |  role  |                                          stmt                                          |                     result                     
 ----+--------+----------------------------------------------------------------------------------------+------------------------------------------------
@@ -52,7 +59,8 @@ $$);
  12 | ru_own | DROP INDEX ru.docs_col                                                                 | ERROR: permission denied for table table_paths
  13 | ru_mem | DROP TABLE ru.plain                                                                    | ERROR: permission denied for table table_paths
  14 | ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'                                    | ok: (300)
-(14 rows)
+ 15 | ru_new | SELECT sift.version()                                                                  | ERROR: permission denied for schema sift
+(15 rows)
 
 SET client_min_messages = error;
 ALTER EXTENSION pg_sift UPDATE;
@@ -77,6 +85,7 @@ ru_own | CREATE INDEX docs_col ON ru.docs USING sift_col (id, g)
 ru_own | !SELECT sift.promote('ru.docs_idx')
 ru_own | !SELECT sift.col_verify('ru.docs_col', true)
 ru_rd | !SELECT * FROM sift.workers
+ru_new | SELECT sift.version()
 ru_rd | DROP TABLE ru.docs
 ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i
 ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'
@@ -97,12 +106,13 @@ $$);
  10 | ru_own | SELECT sift.promote('ru.docs_idx')                                                           | ok
  11 | ru_own | SELECT sift.col_verify('ru.docs_col', true)                                                  | ok
  12 | ru_rd  | SELECT * FROM sift.workers                                                                   | ok
- 13 | ru_rd  | DROP TABLE ru.docs                                                                           | ERROR: must be owner of table docs
- 14 | ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i | ok (20)
- 15 | ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'                                          | ok: (320)
- 16 | ru_own | DROP TABLE ru.docs                                                                           | ok
- 17 | ru_own | DROP TABLE ru.facts                                                                          | ok
-(17 rows)
+ 13 | ru_new | SELECT sift.version()                                                                        | ok: (3.3)
+ 14 | ru_rd  | DROP TABLE ru.docs                                                                           | ERROR: must be owner of table docs
+ 15 | ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i | ok (20)
+ 16 | ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'                                          | ok: (320)
+ 17 | ru_own | DROP TABLE ru.docs                                                                           | ok
+ 18 | ru_own | DROP TABLE ru.facts                                                                          | ok
+(18 rows)
 
 SELECT count(*) AS paths_left FROM sift.table_paths;
  paths_left 
@@ -112,6 +122,6 @@ SELECT count(*) AS paths_left FROM sift.table_paths;
 
 DROP SCHEMA ru CASCADE;
 DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
-DROP OWNED BY ru_own, ru_mem, ru_rd;
-DROP ROLE ru_own, ru_mem, ru_rd;
+DROP OWNED BY ru_own, ru_mem, ru_rd, ru_new;
+DROP ROLE ru_own, ru_mem, ru_rd, ru_new;
 DROP EXTENSION pg_sift;

@@ -13,7 +13,6 @@ CREATE ROLE rs_grant;
 CREATE SCHEMA rs;
 GRANT USAGE ON SCHEMA rs TO rs_user, rs_grant;
 GRANT USAGE, CREATE ON SCHEMA rs TO rs_own;
-GRANT USAGE ON SCHEMA sift TO rs_own, rs_user, rs_grant;
 SET enable_seqscan = off;
 
 -- every setting of the extension, set to its reset value by an ordinary role: the outcome follows the context of the setting

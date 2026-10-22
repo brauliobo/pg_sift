@@ -127,6 +127,10 @@ A standby that stays on the older release needs the same: its primary writes the
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there (AGENTS.md, "On-disk formats").
 
+## Schema `sift` is open to PUBLIC since 3.3
+
+Up to 3.2 a role needed `GRANT USAGE ON SCHEMA sift` before it could call any `sift.*` function or read a `sift.*` view (`permission denied for schema sift`). The install and `ALTER EXTENSION pg_sift UPDATE` to 3.3 grant it to `PUBLIC`: the grants of a DBA stay and are no longer needed, and nothing else is granted (the functions check the table or index they read, `sift.table_paths` is not readable). A database that does not want it runs `REVOKE USAGE ON SCHEMA sift FROM PUBLIC` after the update; the next update grants it again, and the schema keeps its privileges across `DROP EXTENSION` and `CREATE EXTENSION`.
+
 ## Known issue of 3.2.0 and 3.2.1: a role cannot drop anything
 
 In 3.2.0 and 3.2.1 the event trigger function `sift.table_paths_drop()` is not `SECURITY DEFINER`, so a `DROP` by a role that is neither a superuser nor the owner of the extension fails with `permission denied for schema sift` (any table, index or schema, also one without pg_sift). `ALTER EXTENSION pg_sift UPDATE` to 3.3 fixes it. Until then, run once in each database with the extension, as a superuser (and again after a restore from a dump, which creates the extension from the 3.2 script):

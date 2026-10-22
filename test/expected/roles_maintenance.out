@@ -1,7 +1,7 @@
 -- Maintenance and diagnostics as ordinary roles: the entry points a table owner (or a role with MAINTAIN) calls work for them and are refused
 -- to everyone else with the error of the object, not one about the extension's schema or tables; the diagnostics an ordinary role may use
 -- work for it; VACUUM, ANALYZE, CLUSTER and REINDEX follow the usual rules for the three kinds of sift objects.
--- Every role has USAGE on the schema sift except rm_nos.
+-- Every role has USAGE on the schema sift (PUBLIC has it) except in the one section that takes it back.
 CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 \set ECHO none
@@ -21,7 +21,6 @@ CREATE ROLE rm_nos;
 CREATE SCHEMA rm;
 GRANT USAGE ON SCHEMA rm TO rm_mt, rm_wr, rm_rd, rm_non, rm_nos;
 GRANT USAGE, CREATE ON SCHEMA rm TO rm_own, rm_mem;
-GRANT USAGE ON SCHEMA sift TO rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non;
 SET enable_seqscan = off;
 SELECT * FROM rr_run($$
 rm_own | CREATE TABLE rm.docs (id int PRIMARY KEY, body text, g int, v float8)
@@ -65,54 +64,39 @@ SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm
 !SELECT sift.table_maintain('rm.facts')
 !SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4')
 $$);
-                             stmt                              |                    result                     |           by_role           
----------------------------------------------------------------+-----------------------------------------------+-----------------------------
+                             stmt                              |                    result                     |               by_role               
+---------------------------------------------------------------+-----------------------------------------------+-------------------------------------
  SELECT sift.promote('rm.docs_idx')                            | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.promote('rm.docs_idx')                            | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT sift.promote('rm.docs_idx')                            | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.promote('rm.docs_idx')                            | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.merge('rm.docs_idx')                              | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.merge('rm.docs_idx')                              | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT sift.merge('rm.docs_idx')                              | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.merge('rm.docs_idx')                              | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.merge('rm.docs_idx', true)                        | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.merge('rm.docs_idx', true)                        | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT sift.merge('rm.docs_idx', true)                        | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.merge('rm.docs_idx', true)                        | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.verify('rm.docs_idx', true)                       | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.verify('rm.docs_idx', true)                       | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT sift.verify('rm.docs_idx', true)                       | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.verify('rm.docs_idx', true)                       | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.segments('rm.docs_idx')                    | ok                                            | rm_own, rm_mem, rm_mt
- SELECT * FROM sift.segments('rm.docs_idx')                    | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT * FROM sift.segments('rm.docs_idx')                    | ERROR: permission denied for schema sift      | rm_nos
+ SELECT * FROM sift.segments('rm.docs_idx')                    | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.segment_postings('rm.docs_idx')            | ok                                            | rm_own, rm_mem, rm_mt
- SELECT * FROM sift.segment_postings('rm.docs_idx')            | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT * FROM sift.segment_postings('rm.docs_idx')            | ERROR: permission denied for schema sift      | rm_nos
+ SELECT * FROM sift.segment_postings('rm.docs_idx')            | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.index_info('rm.docs_idx')                  | ok                                            | rm_own, rm_mem, rm_mt
- SELECT * FROM sift.index_info('rm.docs_idx')                  | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non
- SELECT * FROM sift.index_info('rm.docs_idx')                  | ERROR: permission denied for schema sift      | rm_nos
+ SELECT * FROM sift.index_info('rm.docs_idx')                  | ERROR: permission denied for index "docs_idx" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_promote('rm.docs_col')                        | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_promote('rm.docs_col')                        | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_promote('rm.docs_col')                        | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_promote('rm.docs_col')                        | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_merge('rm.docs_col')                          | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_merge('rm.docs_col')                          | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_merge('rm.docs_col')                          | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_merge('rm.docs_col')                          | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_merge('rm.docs_col', true)                    | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_merge('rm.docs_col', true)                    | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_merge('rm.docs_col', true)                    | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_merge('rm.docs_col', true)                    | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_maintain('rm.docs_col')                       | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_maintain('rm.docs_col')                       | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_maintain('rm.docs_col')                       | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_maintain('rm.docs_col')                       | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_refresh('rm.docs_col', 1)                     | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_refresh('rm.docs_col', 1)                     | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_refresh('rm.docs_col', 1)                     | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_refresh('rm.docs_col', 1)                     | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.col_rollup_refresh('rm.docs_col')                 | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.col_rollup_refresh('rm.docs_col')                 | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non
- SELECT sift.col_rollup_refresh('rm.docs_col')                 | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.col_rollup_refresh('rm.docs_col')                 | ERROR: permission denied for index "docs_col" | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.table_maintain('rm.facts')                        | ok                                            | rm_own, rm_mem, rm_mt
- SELECT sift.table_maintain('rm.facts')                        | ERROR: permission denied for table facts      | rm_wr, rm_rd, rm_non
- SELECT sift.table_maintain('rm.facts')                        | ERROR: permission denied for schema sift      | rm_nos
+ SELECT sift.table_maintain('rm.facts')                        | ERROR: permission denied for table facts      | rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4') | ok                                            | rm_own, rm_mem
- SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4') | ERROR: must be owner of table facts           | rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4') | ERROR: permission denied for schema sift      | rm_nos
-(45 rows)
+ SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4') | ERROR: must be owner of table facts           | rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+(30 rows)
 
 -- the diagnostics: counters of the session, the indexes the role can read, why a query was not pushed down
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm_non', 'rm_nos'], $$
@@ -120,7 +104,7 @@ SELECT sift.version()
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
-!SELECT * FROM sift.reindex_needed()
+!SELECT * FROM sift.upgrade_commands()
 !SELECT * FROM sift.col_rollup_counters()
 !SELECT * FROM sift.col_rollup_queue()
 !SELECT * FROM sift.col_rollup_misses()
@@ -147,74 +131,91 @@ SELECT index::text, kind FROM sift.workers ORDER BY 1
 !SELECT sift.parse_query('alpha beta')
 !SELECT sift.highlight('alpha beta', 'alpha')
 $$);
-                                     stmt                                      |                        result                        |                   by_role                   
--------------------------------------------------------------------------------+------------------------------------------------------+---------------------------------------------
- SELECT sift.version()                                                         | ok: (3.3)                                            | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.version()                                                         | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.stats()                                                    | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.stats()                                                    | ERROR: permission denied for schema sift             | rm_nos
- SELECT sift.stats_reset()                                                     | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.stats_reset()                                                     | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.refusal_slugs()                                            | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.refusal_slugs()                                            | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.reindex_needed()                                           | ERROR: function sift.reindex_needed() does not exist | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.reindex_needed()                                           | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_rollup_counters()                                      | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_rollup_counters()                                      | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_rollup_queue()                                         | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_rollup_queue()                                         | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_rollup_misses()                                        | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_rollup_misses()                                        | ERROR: permission denied for schema sift             | rm_nos
- SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (rm.docs_col,sift_col) ; (rm.docs_idx,sift)      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd
- SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (no rows)                                        | rm_non
- SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_rollup_state                                           | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_rollup_state                                           | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_rollup_requests                                        | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_rollup_requests                                        | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ERROR: permission denied for table docs              | rm_non
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ERROR: permission denied for table facts             | rm_non
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.worker_state('rm.docs_idx')                                | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.worker_state('rm.docs_idx')                                | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_maintenance_due('rm.docs_col')                         | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_maintenance_due('rm.docs_col')                         | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_index_info('rm.docs_col')                              | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_index_info('rm.docs_col')                              | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_segments('rm.docs_col')                                | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_segments('rm.docs_col')                                | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_leaves('rm.docs_col')                                  | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_leaves('rm.docs_col')                                  | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_sections('rm.docs_col')                                | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_sections('rm.docs_col')                                | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_clustering('rm.docs_col')                              | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_clustering('rm.docs_col')                              | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd
- SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for table docs              | rm_non
- SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd
- SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for table docs              | rm_non
- SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for schema sift             | rm_nos
- SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.col_verify('rm.docs_col', true)                                   | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.table_segments('rm.facts')                                 | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.table_segments('rm.facts')                                 | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.table_space('rm.facts')                                    | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.table_space('rm.facts')                                    | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.col_sections('rm.facts')                                   | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.col_sections('rm.facts')                                   | ERROR: permission denied for schema sift             | rm_nos
- SELECT * FROM sift.table_paths                                                | ERROR: permission denied for table table_paths       | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT * FROM sift.table_paths                                                | ERROR: permission denied for schema sift             | rm_nos
- SELECT sift.tokenize('Hello World')                                           | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.tokenize('Hello World')                                           | ERROR: permission denied for schema sift             | rm_nos
- SELECT sift.parse_query('alpha beta')                                         | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.parse_query('alpha beta')                                         | ERROR: permission denied for schema sift             | rm_nos
- SELECT sift.highlight('alpha beta', 'alpha')                                  | ok                                                   | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non
- SELECT sift.highlight('alpha beta', 'alpha')                                  | ERROR: permission denied for schema sift             | rm_nos
-(65 rows)
+                                     stmt                                      |                     result                      |                       by_role                       
+-------------------------------------------------------------------------------+-------------------------------------------------+-----------------------------------------------------
+ SELECT sift.version()                                                         | ok: (3.3)                                       | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.stats()                                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.stats_reset()                                                     | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.refusal_slugs()                                            | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.upgrade_commands()                                         | ERROR: permission denied for table table_paths  | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_counters()                                      | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_queue()                                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_misses()                                        | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (rm.docs_col,sift_col) ; (rm.docs_idx,sift) | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (no rows)                                   | rm_non
+ SELECT * FROM sift.col_rollup_state                                           | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_requests                                        | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ERROR: permission denied for table docs         | rm_non
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ERROR: permission denied for table facts        | rm_non
+ SELECT * FROM sift.worker_state('rm.docs_idx')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_maintenance_due('rm.docs_col')                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_index_info('rm.docs_col')                              | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_segments('rm.docs_col')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_leaves('rm.docs_col')                                  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_sections('rm.docs_col')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_clustering('rm.docs_col')                              | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for table docs         | rm_non
+ SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for table docs         | rm_non
+ SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_segments('rm.facts')                                 | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_space('rm.facts')                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_sections('rm.facts')                                   | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_paths                                                | ERROR: permission denied for table table_paths  | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.tokenize('Hello World')                                           | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.parse_query('alpha beta')                                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.highlight('alpha beta', 'alpha')                                  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+(35 rows)
+
+-- with USAGE on the schema sift taken back from PUBLIC and given to the owner: every other role is refused the schema, not an object of it
+REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
+GRANT USAGE ON SCHEMA sift TO rm_own;
+SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_rd', 'rm_nos'], $$
+SELECT sift.version()
+!SELECT sift.promote('rm.docs_idx')
+!SELECT * FROM sift.stats()
+!SELECT * FROM sift.workers
+$$);
+                stmt                |                  result                  |    by_role    
+------------------------------------+------------------------------------------+---------------
+ SELECT sift.version()              | ok: (3.3)                                | rm_own
+ SELECT sift.version()              | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT sift.promote('rm.docs_idx') | ok                                       | rm_own
+ SELECT sift.promote('rm.docs_idx') | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT * FROM sift.stats()         | ok                                       | rm_own
+ SELECT * FROM sift.stats()         | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT * FROM sift.workers         | ok                                       | rm_own
+ SELECT * FROM sift.workers         | ERROR: permission denied for schema sift | rm_rd, rm_nos
+(8 rows)
+
+REVOKE USAGE ON SCHEMA sift FROM rm_own;
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
+-- what a role that owns and may read nothing can do with the relations of the schema sift: read the three views and nothing else
+SELECT c.relname, c.relkind, has_table_privilege('rm_nos', c.oid, 'SELECT') AS can_select
+	FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
+	  AND has_table_privilege('rm_nos', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') ORDER BY 1;
+       relname       | relkind | can_select 
+---------------------+---------+------------
+ col_rollup_requests | v       | t
+ col_rollup_state    | v       | t
+ workers             | v       | t
+(3 rows)
+
+SELECT has_schema_privilege('rm_nos', 'sift', 'USAGE') AS usage, has_schema_privilege('rm_nos', 'sift', 'CREATE') AS create_in_sift;
+ usage | create_in_sift 
+-------+----------------
+ t     | f
+(1 row)
+
+SELECT count(*) AS other_privileges FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
+	AND has_table_privilege('rm_nos', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER');
+ other_privileges 
+------------------
+                0
+(1 row)
 
 -- VACUUM, ANALYZE, CLUSTER and REINDEX: the owner and a role with MAINTAIN may; any other role is skipped with a warning (VACUUM, ANALYZE) or refused
 SET SESSION AUTHORIZATION rm_own;

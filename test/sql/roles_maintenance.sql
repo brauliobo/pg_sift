@@ -1,7 +1,7 @@
 -- Maintenance and diagnostics as ordinary roles: the entry points a table owner (or a role with MAINTAIN) calls work for them and are refused
 -- to everyone else with the error of the object, not one about the extension's schema or tables; the diagnostics an ordinary role may use
 -- work for it; VACUUM, ANALYZE, CLUSTER and REINDEX follow the usual rules for the three kinds of sift objects.
--- Every role has USAGE on the schema sift except rm_nos.
+-- Every role has USAGE on the schema sift (PUBLIC has it) except in the one section that takes it back.
 CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 \set ECHO none
@@ -18,7 +18,6 @@ CREATE ROLE rm_nos;
 CREATE SCHEMA rm;
 GRANT USAGE ON SCHEMA rm TO rm_mt, rm_wr, rm_rd, rm_non, rm_nos;
 GRANT USAGE, CREATE ON SCHEMA rm TO rm_own, rm_mem;
-GRANT USAGE ON SCHEMA sift TO rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non;
 SET enable_seqscan = off;
 
 SELECT * FROM rr_run($$
@@ -58,7 +57,7 @@ SELECT sift.version()
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
-!SELECT * FROM sift.reindex_needed()
+!SELECT * FROM sift.upgrade_commands()
 !SELECT * FROM sift.col_rollup_counters()
 !SELECT * FROM sift.col_rollup_queue()
 !SELECT * FROM sift.col_rollup_misses()
@@ -85,6 +84,26 @@ SELECT index::text, kind FROM sift.workers ORDER BY 1
 !SELECT sift.parse_query('alpha beta')
 !SELECT sift.highlight('alpha beta', 'alpha')
 $$);
+
+-- with USAGE on the schema sift taken back from PUBLIC and given to the owner: every other role is refused the schema, not an object of it
+REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
+GRANT USAGE ON SCHEMA sift TO rm_own;
+SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_rd', 'rm_nos'], $$
+SELECT sift.version()
+!SELECT sift.promote('rm.docs_idx')
+!SELECT * FROM sift.stats()
+!SELECT * FROM sift.workers
+$$);
+REVOKE USAGE ON SCHEMA sift FROM rm_own;
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
+
+-- what a role that owns and may read nothing can do with the relations of the schema sift: read the three views and nothing else
+SELECT c.relname, c.relkind, has_table_privilege('rm_nos', c.oid, 'SELECT') AS can_select
+	FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
+	  AND has_table_privilege('rm_nos', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') ORDER BY 1;
+SELECT has_schema_privilege('rm_nos', 'sift', 'USAGE') AS usage, has_schema_privilege('rm_nos', 'sift', 'CREATE') AS create_in_sift;
+SELECT count(*) AS other_privileges FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
+	AND has_table_privilege('rm_nos', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER');
 
 -- VACUUM, ANALYZE, CLUSTER and REINDEX: the owner and a role with MAINTAIN may; any other role is skipped with a warning (VACUUM, ANALYZE) or refused
 SET SESSION AUTHORIZATION rm_own;
