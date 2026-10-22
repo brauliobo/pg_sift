@@ -251,6 +251,14 @@ CREATE FUNCTION sift.col_rollup_queue(OUT index regclass, OUT segment int8, OUT 
 CREATE FUNCTION sift.col_rollup_refresh(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_col_rollup_refresh' LANGUAGE C STRICT VOLATILE;
 
+-- Rewrites the segments of a sift_col index whose pre-aggregates are not what its options ask now (preagg, rollup, cube_minmax take effect for the
+-- units written afterwards only), one segment at a time, each an atomic replacement under the maintenance lock that readers and writers do not wait
+-- for. max_segments bounds the segments rewritten by this call (NULL: all, 0: only count); the call is made again to go on after a cancel or a crash.
+-- refreshed: segments rewritten; remaining: stale segments this call left. The rewrite writes what sift.col_format_minor allows (4 or more).
+CREATE FUNCTION sift.col_refresh(index regclass, max_segments int4 DEFAULT NULL, OUT refreshed int4, OUT remaining int4)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_refresh' LANGUAGE C VOLATILE;
+
 CREATE VIEW sift.col_rollup_state AS SELECT * FROM sift.col_rollup_counters();
 CREATE VIEW sift.col_rollup_requests AS SELECT * FROM sift.col_rollup_queue();
 

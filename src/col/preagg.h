@@ -239,6 +239,25 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
 							 const uint8 *eblob, uint32 elen, bool minmax_ok);
+/*
+ * What the stored sidecar of the units of a segment holds, against what the spec of the index writes now (sift_col_refresh, the planner's share of the
+ * units that have a section). Read from the headers of the blobs only. dim[i], mm[i] and roll[i] count the units that hold the dim of spec dim i (with
+ * min and max), and the rollup of spec rollup i; odd counts the units that hold something the spec no longer asks: a dim or a list it does not
+ * name, other measures (exactly its own with cube(...)), other rollup dims (exactly its own with rollup(...)), min and max it does not ask, or
+ * bytes that do not parse. minmax: whether the spec's min and max are written at all (the setting and the kinds of the segment allow minor 7).
+ */
+typedef struct SiftCPaggCensus
+{
+	uint32		units;
+	uint32		odd;
+	uint32		dim[SIFT_PAGG_MAX_DIMS];
+	uint32		mm[SIFT_PAGG_MAX_DIMS];
+	uint32		roll[SIFT_PAGG_MAX_ROLLUPS];
+} SiftCPaggCensus;
+
+/* Adds one unit (blobs of length 0: none) */
+extern void sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+							  SiftCPaggCensus *c);
 /* The leaves a stored cube and element blob read (lists, dims and measures), marked true in need[ncols]; false when they do not decode */
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
 

@@ -871,10 +871,21 @@ double
 preagg_share(AggCtx *c, SiftAggSpec *s)
 {
 	SiftAggPaShape shape;
+	int			dim;
+	double		miss = 0.0;
+	bool		minmax = false;
 
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape))
 		return 0.0;
-	return Min(Max(c->stats.exact_frac, 0.0), 1.0);
+	/* a unit written before the options asked for the section it is answered from has none and is scanned: a half refreshed index is priced for the units that have it */
+	for (int i = 0; i < s->naggs; i++)
+		minmax |= s->agg[i].kind == SAA_MIN || s->agg[i].kind == SAA_MAX;
+	dim = shape.dim >= 0 ? shape.dim : shape.hdim;
+	if (shape.list >= 0)
+		miss = c->stats.roll_miss[shape.list];
+	else if (dim >= 0)
+		miss = minmax ? c->stats.mm_miss[dim] : c->stats.dim_miss[dim];
+	return Min(Max(c->stats.exact_frac, 0.0), 1.0) * (1.0 - Min(Max(miss, 0.0), 1.0));
 }
 
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */

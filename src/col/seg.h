@@ -154,6 +154,9 @@ extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, u
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
 extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
+/* What the sidecar of the segment holds against the spec an index writes now, and whether a rewrite can give it what it lacks (sift_col_refresh); setting: sift.col_format_minor */
+extern void sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, SiftCPaggCensus *c);
+extern bool sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */
 extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep);

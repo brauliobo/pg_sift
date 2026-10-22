@@ -15,6 +15,7 @@
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
@@ -462,8 +463,19 @@ static struct
 	int			ncols;
 	SiftColLeafStats *st;
 	SiftColZones *zones;
+	SiftColPreStats *pre;
 }			leaf_cache[LEAF_STATS_CACHE];
 static int	leaf_cache_next;
+
+uint32
+sift_col_pagg_hash(Relation index)
+{
+	const char *a = sift_col_options_preagg(index),
+			   *b = sift_col_options_rollup(index);
+
+	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^
+		(sift_col_options(index)->cube_minmax ? 0x9e3779b9 : 0) ^ ((uint32) sift_col_format_minor * 0x85ebca6b);
+}
 
 static void
 zones_free(SiftColZones *zs)
@@ -502,6 +514,7 @@ leaf_cache_entry(Relation index)
 	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
 	int			slot = -1;
 
+	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
 	sift_dir_read(index, &dir);
 	for (int i = 0; i < dir.nsegs; i++)
 		stamp = stamp * 31 + dir.segs[i].gen * 8 + dir.segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
@@ -515,12 +528,15 @@ leaf_cache_entry(Relation index)
 	if (leaf_cache[slot].st)
 	{
 		pfree(leaf_cache[slot].st);
+		pfree(leaf_cache[slot].pre);
 		zones_free(leaf_cache[slot].zones);
 	}
 	leaf_cache[slot].st = NULL;
 	{
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
 		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
+		const SiftCPaggSpec *spec = &sift_col_rel(index)->pagg;
 		SiftColZones *zs = zones_new(d);
 
 		for (int c = 0; c < d->ncols; c++)
@@ -528,6 +544,7 @@ leaf_cache_entry(Relation index)
 		for (int i = 0; i < dir.nsegs; i++)
 		{
 			SiftColSegment *seg;
+			SiftCPaggCensus census;
 
 			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
 				continue;
@@ -535,6 +552,15 @@ leaf_cache_entry(Relation index)
 			for (int c = 0; c < d->ncols; c++)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
 			sift_cseg_zone_sample(seg, zs);
+			sift_cseg_pre_census(seg, spec, sift_col_format_minor, &census);
+			pre->units += census.units;
+			for (int k = 0; k < spec->ndims; k++)
+			{
+				pre->dim[spec->dim[k].leaf] += census.dim[k];
+				pre->mm[spec->dim[k].leaf] += census.mm[k];
+			}
+			for (int k = 0; k < spec->nrollups; k++)
+				pre->roll[spec->rollup[k].list] += census.roll[k];
 			sift_cseg_close(seg);
 		}
 		for (int i = 0; i < dir.nsegs; i++)
@@ -547,8 +573,15 @@ leaf_cache_entry(Relation index)
 		leaf_cache[slot].ncols = d->ncols;
 		leaf_cache[slot].st = st;
 		leaf_cache[slot].zones = zs;
+		leaf_cache[slot].pre = pre;
 		return slot;
 	}
+}
+
+const SiftColPreStats *
+sift_col_pre_stats(Relation index)
+{
+	return leaf_cache[leaf_cache_entry(index)].pre;
 }
 
 const SiftColLeafStats *
