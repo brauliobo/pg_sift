@@ -218,10 +218,11 @@ CREATE FUNCTION sift.table_segments(tbl regclass,
 	AS 'MODULE_PATHNAME', 'sift_table_segments' LANGUAGE C STRICT VOLATILE;
 
 -- The space of a sift_table: relation_blocks (the file), high_water (blocks ever used), free_blocks (on the free list, of which
--- reusable_blocks can be taken now, the rest wait for snapshots that may still read them), free_extents.
+-- reusable_blocks can be taken now, the rest wait for snapshots that may still read them), free_extents, vblocks_left (the virtual
+-- blocks of TIDs not handed out yet, up to 291 rows each; they are never reused, and VACUUM FULL renumbers them).
 CREATE FUNCTION sift.table_space(tbl regclass,
 								 OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
-								 OUT free_extents int8)
+								 OUT free_extents int8, OUT vblocks_left int8)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_table_space' LANGUAGE C STRICT VOLATILE;
 
@@ -597,6 +598,13 @@ END
 $fn$;
 
 CREATE EVENT TRIGGER sift_table_paths_drop ON sql_drop EXECUTE FUNCTION sift.table_paths_drop();
+
+-- A column added to a sift_table past the 127 it holds (or a column of declared paths renamed or retyped into the excess) fails the ALTER
+-- TABLE, as CREATE TABLE does, instead of the next write.
+CREATE FUNCTION sift.table_ddl_check() RETURNS event_trigger
+	AS 'MODULE_PATHNAME', 'sift_table_ddl_check' LANGUAGE C;
+
+CREATE EVENT TRIGGER sift_table_ddl_check ON ddl_command_end WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION sift.table_ddl_check();
 
 -- Operator classes that let the planner use a sift_col index as a bitmap index scan (docs/COL-SCAN.md; sift.enable_col_scan, off by
 -- default). Opt-in per column: CREATE INDEX ON t USING sift_col (id sift.col_int4_ops, ts sift.col_timestamptz_ops). The stored index

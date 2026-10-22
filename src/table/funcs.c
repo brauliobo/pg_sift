@@ -314,7 +314,7 @@ sift_test_tbl_page_rec_end(PG_FUNCTION_ARGS)
 }
 #endif
 
-/* The space of a table as one row: the file, the blocks ever used, and the free list (reusable: no snapshot can read them) */
+/* The space of a table as one row: the file, the blocks ever used, the free list (reusable: no snapshot can read them) and the virtual blocks of TIDs not handed out yet */
 Datum
 sift_table_space(PG_FUNCTION_ARGS)
 {
@@ -322,8 +322,8 @@ sift_table_space(PG_FUNCTION_ARGS)
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TupleDesc	tupdesc;
 	SiftFreeStats fs;
-	Datum		v[5];
-	bool		nulls[5] = {0};
+	Datum		v[6];
+	bool		nulls[6] = {0};
 
 	if (!sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
@@ -336,6 +336,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 	v[2] = Int64GetDatum(fs.blocks);
 	v[3] = Int64GetDatum(fs.reusable);
 	v[4] = Int64GetDatum(fs.records);
+	v[5] = Int64GetDatum((int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
 	table_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
