@@ -84,7 +84,7 @@ INSERT INTO shapes VALUES
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
  ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id FROM events ORDER BY kind, parent_id'),
  ('top n', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3'),
- ('top n order', 'topn', 'SELECT id FROM events ORDER BY parent_id + id LIMIT 3'),
+ ('top n order', 'topn', 'SELECT id FROM events ORDER BY id + extract(year FROM now())::int LIMIT 3'),
  ('top n where', 'topn', 'SELECT id FROM events WHERE length(doc::text) > 3 ORDER BY parent_id LIMIT 3'),
  ('top n volatile', 'topn', 'SELECT id FROM events WHERE random() < 0.5 ORDER BY parent_id LIMIT 3'),
  ('top n locked', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 FOR UPDATE'),

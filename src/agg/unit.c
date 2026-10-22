@@ -159,10 +159,18 @@ topn_viable(AggExec *ex)
 }
 
 /* the rows that pass go to the heap of the best n, by the sort leaves (agg/topn.h) */
+static const SiftSrcVec *
+topn_leaf_vec(void *ex, int leaf)
+{
+	return get_vec(ex, leaf);
+}
+
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
+	int			leaf = sift_topn_leaf(ex->topn, 0);
+
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, leaf >= 0 ? get_vec(ex, leaf) : NULL, rmask, nrow, topn_leaf_vec, ex);
 }
 
 /* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */

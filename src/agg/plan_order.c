@@ -348,6 +348,15 @@ topn_sort_cost(double rows, int nkey, double keybytes, double cmpx)
  * 38.8 ms against 13.8 for the key itself under C, 97.1 against 25.8 under en_US.utf8 (about three times that): 25 ms is 0.027 units a row, 11 operators
  */
 #define TOPN_CMP_XFORM	11.0
+/*
+ * What a row costs the evaluator of a sort expression besides PostgreSQL's cost of the expression itself (cost_qual_eval_node: an operator is one operator),
+ * in operators. Measured on 200,000 rows, LIMIT 10, serial, the scan against the plan's sort: g + 1 5.3 ms (24 ns a row, the call and the datum of the column),
+ * numeric * 2 36.7 ms (the numeric of the leaf's scaled integer and the numeric product kept as a string: 157 ns a row more), g::text 15.9 ms. 1 ms is about 218 units.
+ */
+#define TOPN_EXPR_ROW	1.5
+#define TOPN_EXPR_LEAF	0.5
+#define TOPN_EXPR_NUMERIC	0.5
+#define TOPN_EXPR_STRING	5.0
 
 /* The bytes a key of byte strings holds in an entry of the heap or a row of the sort: the column's average width, a header and the allocation's */
 static double
@@ -394,15 +403,216 @@ topn_xform(Node *e, SiftTopXform *xf, Node **konst)
 	return e;
 }
 
+/*
+ * A sort expression the scan evaluates itself, with PostgreSQL's own evaluator, for every row that passes (agg/topn.h, TXK_EXPR). The normal plan computes
+ * the sort expression of every row that passes the WHERE, so an error (integer out of range, a division by zero, a failing cast) is raised for the rows
+ * the scan evaluates it for, and only for them: the scan keeps that set and PostgreSQL's functions, operators and casts, so that the results, the NULLs and the
+ * errors are the plan's. What it takes: an immutable expression of the columns of the scanned table that the index keeps as leaves of a plain type, whose
+ * result sorts by the default btree operator class of its type.
+ */
+typedef struct TopXprWalk
+{
+	AggCtx	   *c;
+	List	   *leaves;			/* the leaves the Vars stand for, in the order of their numbers in the evaluator's row */
+	const char *why;
+} TopXprWalk;
+
+/* The types the numbers of a sort expression are of: an operator or function over them gives a number, not a string */
+static bool
+topn_num_type(Oid t)
+{
+	switch (t)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case FLOAT4OID:
+		case FLOAT8OID:
+		case NUMERICOID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case TIMEOID:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* The types a cast reads or gives besides the numbers: the strings its text form is made of */
+static bool
+topn_str_type(Oid t)
+{
+	return t == TEXTOID || t == VARCHAROID;
+}
+
+/* A leaf the evaluator can build a datum of: the plain types of a column, as the index keeps them */
+static bool
+topn_in_leaf_ok(const SiftSrcLeaf *lf)
+{
+	if (lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->path != NIL || lf->astext || lf->lossy || !OidIsValid(lf->typid))
+		return false;
+	switch (lf->typid)
+	{
+		case NUMERICOID:
+			return lf->vtype == SCV_I64 && !lf->wide && lf->scale >= 0;
+		case TEXTOID:
+		case VARCHAROID:
+		case UUIDOID:
+		case BYTEAOID:
+		case INETOID:
+			return lf->vtype == SCV_CODE;
+		default:
+			return topn_num_type(lf->typid) && lf->vtype != SCV_CODE && !lf->wide;
+	}
+}
+
+static bool
+topn_expr_walker(Node *n, TopXprWalk *w)
+{
+	if (n == NULL)
+		return false;
+	switch (nodeTag(n))
+	{
+		case T_Const:
+			return false;
+		case T_Var:
+			{
+				Var		   *v = (Var *) n;
+				int			leaf;
+
+				if (v->varno != w->c->relid || v->varlevelsup != 0 || v->varattno <= 0)
+					w->why = "reads a column that is not of the scanned table";
+				else if ((leaf = match_leaf(w->c, normalize_expr(w->c, n))) < 0 || !topn_in_leaf_ok(leaf_of(w->c, leaf)))
+					w->why = "reads a column that the index does not keep as a leaf of a plain type";
+				else
+				{
+					if (!list_member_int(w->leaves, leaf))
+						w->leaves = lappend_int(w->leaves, leaf);
+					return false;
+				}
+				return true;
+			}
+		case T_RelabelType:
+			break;
+		case T_CoerceViaIO:
+			{
+				CoerceViaIO *cv = (CoerceViaIO *) n;
+				Oid			from = exprType((Node *) cv->arg);
+
+				if (!(topn_num_type(from) || topn_str_type(from)) || !(topn_num_type(cv->resulttype) || topn_str_type(cv->resulttype)))
+				{
+					w->why = "casts a type that is not a number or a string";
+					return true;
+				}
+				break;
+			}
+		case T_OpExpr:
+		case T_FuncExpr:
+			{
+				List	   *args = IsA(n, OpExpr) ? ((OpExpr *) n)->args : ((FuncExpr *) n)->args;
+				bool		cast = IsA(n, FuncExpr) && ((FuncExpr *) n)->funcformat != COERCE_EXPLICIT_CALL;
+
+				/* an operator or function gives a number from numbers; a cast may read or give a string (its text form) */
+				if (!(topn_num_type(exprType(n)) || (cast && topn_str_type(exprType(n)))))
+				{
+					w->why = "calls a function or operator whose result is not a number";
+					return true;
+				}
+				foreach_ptr(Node, a, args)
+					if (!IsA(a, Const) && !topn_num_type(exprType(a)) && !(cast && topn_str_type(exprType(a))))
+					{
+						w->why = "calls a function or operator on strings";
+						return true;
+					}
+				break;
+			}
+		default:
+			w->why = "has a construct the scan does not evaluate";
+			return true;
+	}
+	return expression_tree_walker(n, topn_expr_walker, w);
+}
+
+typedef struct TopXprMut
+{
+	AggCtx	   *c;
+	List	   *leaves;
+} TopXprMut;
+
+/* The Vars become the columns of the evaluator's row: varno 1, the number of the leaf's place in the list */
+static Node *
+topn_expr_mutator(Node *n, TopXprMut *m)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var))
+	{
+		Var		   *v = (Var *) n;
+		int			leaf = match_leaf(m->c, normalize_expr(m->c, n)),
+					at = 0;
+
+		foreach_int(l, m->leaves)
+		{
+			if (l == leaf)
+				break;
+			at++;
+		}
+		return (Node *) makeVar(1, at + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	}
+	return expression_tree_mutator(n, topn_expr_mutator, m);
+}
+
+/*
+ * The sort expression e as a key: false (a named refusal) when the scan cannot evaluate it as the plan does. On success *exprs has it appended (with the
+ * leaves it reads, for the spec) and the leaves are used by the scan; c->topn_xcost has what PostgreSQL's cost of the expression and the row it is
+ * evaluated over come to for each row that passes.
+ */
+static bool
+topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
+{
+	Oid			rtype = exprType(e);
+	TopXprWalk	w = {c, NIL, NULL};
+	TopXprMut	m;
+	QualCost	qc;
+	double		ops;
+
+	if (!(topn_num_type(rtype) || topn_str_type(rtype) || rtype == UUIDOID || rtype == BYTEAOID || rtype == INETOID))
+		return agg_refuse_on(TOPN_SHAPE, "the sort expression has a result type the scan does not hold as a key");
+	if (contain_mutable_functions(e))
+		return agg_refuse_on(TOPN_SHAPE, "the sort expression calls a function that is not immutable");
+	if (topn_expr_walker(e, &w))
+		return agg_refuse_f(TOPN_SHAPE, "the sort expression %s", w.why);
+	if (w.leaves == NIL)
+		return agg_refuse_on(TOPN_SHAPE, "the sort expression reads no column");
+	m.c = c;
+	m.leaves = w.leaves;
+	foreach_int(leaf, w.leaves)
+		use_leaf(c, leaf);
+	cost_qual_eval_node(&qc, e, c->root);
+	ops = TOPN_EXPR_ROW + TOPN_EXPR_LEAF * list_length(w.leaves) + (topn_num_type(rtype) && rtype != NUMERICOID ? 0 : TOPN_EXPR_STRING);
+	foreach_int(leaf, w.leaves)
+		if (leaf_of(c, leaf)->typid == NUMERICOID)
+			ops += TOPN_EXPR_NUMERIC;
+	c->topn_xcost += qc.per_tuple + ops * cpu_operator_cost;
+	xf->kind = TXK_EXPR;
+	xf->c = list_length(*exprs);
+	xf->coll = rtype;
+	*exprs = lappend(*exprs, list_make2(topn_expr_mutator(e, &m), w.leaves));
+	return true;
+}
+
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */
 static bool
-topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf)
+topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs)
 {
 	Node	   *e = (Node *) get_sortgroupclause_expr(sgc, c->root->processed_tlist),
 			   *konst = NULL;
 	const SiftSrcLeaf *lf;
 	Oid			opfamily,
-				opcintype;
+				opcintype,
+				rtype;
 #if PG_VERSION_NUM >= 180000
 	CompareType strategy;
 #define TOPN_DESC	COMPARE_GT
@@ -415,8 +625,18 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
 	*leaf = match_leaf(c, normalize_expr(c, topn_xform(e, xf, &konst)));
 	lf = *leaf >= 0 ? leaf_of(c, *leaf) : NULL;
+	if (lf == NULL)
+	{
+		/* not a leaf, nor coalesce or lower or upper of one: an expression PostgreSQL evaluates */
+		xf->kind = TXK_NONE;
+		if (!topn_expr(c, e, exprs, xf))
+			return false;
+		rtype = exprType(e);
+	}
+	else
+		rtype = lf ? lf->typid : InvalidOid;
 	/* a varchar column sorts by the operators of text */
-	if (lf == NULL || !sift_topn_key_ok(lf) || (opcintype != lf->typid && !(lf->typid == VARCHAROID && opcintype == TEXTOID)) ||
+	if ((lf != NULL && !sift_topn_key_ok(lf)) || (lf == NULL && xf->kind != TXK_EXPR) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID)) ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
 		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order (an expression of one only if it cannot raise: coalesce(leaf, constant), lower(leaf), upper(leaf)), or its operator is not the default btree one of its type");
 	if (xf->kind == TXK_COALESCE && lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID && lf->typid != DATEOID &&
@@ -425,7 +645,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	if ((xf->kind == TXK_LOWER || xf->kind == TXK_UPPER) && (lf->vtype != SCV_CODE || lf->wide || (lf->typid != TEXTOID && lf->typid != VARCHAROID)))
 		return agg_refuse_on(TOPN_SHAPE, "lower and upper in a sort key are of a text or varchar column");
 	*cmp = *collid = InvalidOid;
-	if (lf->vtype == SCV_CODE)
+	if (lf ? lf->vtype == SCV_CODE : !topn_num_type(rtype) || rtype == NUMERICOID)
 	{
 		*cmp = get_opfamily_proc(opfamily, opcintype, opcintype, BTORDER_PROC);
 		*collid = exprCollation(e);
@@ -437,14 +657,15 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	appendStringInfo(txt, "%s", txt->len ? ", " : "");
 	if (xf->kind == TXK_COALESCE)
 		appendStringInfo(txt, "coalesce(%s, %s)", leaf_name(c, *leaf), deparse_expression(konst, NIL, false, false));
-	else if (xf->kind != TXK_NONE)
+	else if (xf->kind == TXK_LOWER || xf->kind == TXK_UPPER)
 		appendStringInfo(txt, "%s(%s)", xf->kind == TXK_LOWER ? "lower" : "upper", leaf_name(c, *leaf));
 	else
-		appendStringInfoString(txt, leaf_name(c, *leaf));
+		appendStringInfoString(txt, xf->kind == TXK_EXPR ? deparse_expression(e, deparse_context_for(get_rel_name(c->heapoid), c->heapoid), false, false) : leaf_name(c, *leaf));
 	appendStringInfoString(txt, *desc ? " DESC" : "");
 	if (sgc->nulls_first != *desc)
 		appendStringInfoString(txt, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
-	use_leaf(c, *leaf);
+	if (*leaf >= 0)
+		use_leaf(c, *leaf);
 	return true;
 }
 
@@ -647,7 +868,8 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.pathkeys = root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
-	extra = c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
+	extra = matches * c->topn_xcost;
+	extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
 		topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
@@ -736,7 +958,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	Oid		   *sortop,
 			   *cmp,
 			   *collid;
-	SiftTopXform *xf;
+	SiftTopXform *xf,
+				first;
+	List	   *exprs;
 	double		count = 0,
 				offset = 0,
 				rows;
@@ -781,12 +1005,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	cmp = palloc(nkey * sizeof(Oid));
 	collid = palloc(nkey * sizeof(Oid));
 	xf = palloc0(nkey * sizeof(SiftTopXform));
-	c->topn_cmpx = c->topn_keybytes = 0;
+	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
+	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
 		int			j = foreach_current_index(sgc);
 
-		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt, &cmp[j], &collid[j], &xf[j]))
+		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt, &cmp[j], &collid[j], &xf[j], &exprs))
 		{
 			agg_refused(TOPN_SHAPE);
 			return;
@@ -834,9 +1059,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_sorted = false;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
-			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &xf[0], NULL),
+			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
-		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
 		nworkers = c->joins == NIL && s->naggs == 0 ? parallel_workers(c, s, input_rel, output_rel) : 0;
@@ -847,6 +1072,6 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	}
 	c->topn_sorted = true;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, nout, attno, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 }
