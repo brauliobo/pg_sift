@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: bench: the aggregate benchmarks are presented in layers: generated plain-text performance highlights at the top of README.md (`steps/highlights.py`), charts of the ten store questions in a light and a dark variant (latency per question with the spread of the runs, speed-up over PostgreSQL warm and cold, CPUs, size and load time, update growth, pg_duckdb; `steps/store_charts.py`), the page docs/perf/AGGREGATES.md (what each table and chart answers, the scale tables, the shapes), and `bench/bench scaling` (partitions to 4096 and parallel workers). The store size rows show the index or columnar data with the heap beside it; README.md drops the places table, the Vulkan table and the rows that are sums of others.
+
 ## 3.2.1 - 2026-10-22
 
 - Added: bench: `bench/bench duckdb` measures pg_duckdb (the official release image, DuckDB reading the heap and a Parquet file it writes) against pg_sift and PostgreSQL on the store benchmark's orders and ten questions, in two containers with equal limits, warm and cold; the questions pg_duckdb cannot run are reported as not supported (`docs/results/duckdb.tsv`, the `duckdb` block of docs/BENCHMARKS.md and README.md).
