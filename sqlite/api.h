@@ -77,7 +77,6 @@ extern bool sq_store_refresh(SqStore *st, bool changed_only);
 extern const SiftDirSnapshot *sq_store_dir(const SqStore *st);
 extern uint64 sq_store_new_gen(SqStore *st);
 extern BlockNumber sq_store_hw(const SqStore *st);
-extern void sq_store_set_hw(SqStore *st, BlockNumber hw);
 extern BlockNumber sq_wt_first(const SiftWriteTarget *wt);
 
 /* Reads and writes the persistent settings of <t>_config */
@@ -139,7 +138,6 @@ extern bool sq_inv_empty(const SqInv *inv);
 extern uint64 sq_inv_postings(const SqInv *inv);
 extern void sq_inv_add(SqInv *inv, SiftKey key, const SiftTermFreq *terms, int nterms, uint32 dl);
 extern bool sq_inv_remove(SqInv *inv, SiftKey key);
-extern bool sq_inv_has(const SqInv *inv, SiftKey key);
 extern void sq_inv_clear(SqInv *inv);
 
 /* Writes the live content of inv as one new segment and publishes it */

@@ -14,12 +14,6 @@ sq_store_hw(const SqStore *st)
 	return st->hw;
 }
 
-void
-sq_store_set_hw(SqStore *st, BlockNumber hw)
-{
-	st->hw = hw;
-}
-
 const SiftDirSnapshot *
 sq_store_dir(const SqStore *st)
 {
