@@ -30,6 +30,10 @@ CREATE TABLE facts (id int, metrics jsonb);
 INSERT INTO facts SELECT i, jsonb_build_object('p_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
 INSERT INTO facts VALUES (5001, '{"p_total": "abc"}');
 CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+-- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
+CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
+INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
+CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
@@ -70,6 +74,7 @@ INSERT INTO shapes VALUES
  ('group key', 'single', 'SELECT random(), count(*) FROM events GROUP BY 1'),
  ('too many keys', 'single', repeated(40)),
  ('output', 'single', 'SELECT id, kind, count(*) FROM events GROUP BY id'),
+ ('error parity', 'single', 'SELECT sum((doc->>''m'')::float8) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') FROM guarded'),
  ('aggregate', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
  ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''p_total'''),
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
@@ -145,6 +150,6 @@ SELECT count(*) AS shapes, count(*) FILTER (WHERE plan_of(q, false) <> plan_of(q
 SHOW sift.explain_refusals;
 
 RESET client_min_messages;
-DROP TABLE shapes, events, dims, plain, parted, ticks, facts;
+DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift;

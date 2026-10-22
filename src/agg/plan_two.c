@@ -584,8 +584,8 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 					pos = foreach_current_index(d);
 			if (pos < 0)
 			{
-				if (s->nkeys + sets >= SIFT_AGG_MAX_KEYS)
-					return false;
+				if (s->nkeys + sets >= sift_limit(group_keys, SIFT_AGG_MAX_KEYS))
+					return agg_refuse_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS), "%d keys with the hidden ones of the arms", s->nkeys + sets + 1);
 				key = &s->key[s->nkeys];
 				if (!compile_key(c, sgc, g, key))
 					return false;
@@ -1086,7 +1086,7 @@ two_spine(TwoLevel *t)
 	set_pathtarget_cost_width(root, target);
 	p = (Path *) create_projection_path(root, rel, rel->cheapest_total_path, target);
 	if (!agg_lookup_fits(p->rows, p->pathtarget->width))
-		return agg_refuse(SPINE_ROWS);
+		return agg_refuse_limit(SPINE_ROWS, lookup_kb, sift_agg_lookup_max_kb, "the spine is estimated at %.0f rows of width %d", p->rows, p->pathtarget->width);
 	t->ctx.spine = p;
 	sp->child = 0;
 	sp->ncol = list_length(t->spine_cols);
@@ -1120,9 +1120,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	if (!two_from(&t))
 		return;
 	agg_arm_candidate();
-	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
+	if (list_length(parse->groupClause) > sift_limit(group_keys, SIFT_AGG_MAX_KEYS) - 1)
 	{
-		agg_refused(TOO_MANY_KEYS);
+		agg_refused_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS) - 1, "%d group keys, and the arms' row id takes one", list_length(parse->groupClause));
 		return;
 	}
 	if ((base = two_arms(&t)) == NULL)

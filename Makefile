@@ -52,7 +52,7 @@ endif
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
 TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_% tbl_cap tbl_bulk_eligible tbl_bulk_groups tbl_vblocks tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds
-TESTING_REGRESS += limits_registry tbl_limits_lowered agg_combo_cap
+TESTING_REGRESS += limits_registry tbl_limits_lowered agg_combo_cap agg_limit_refusals
 TESTING_REGRESS += errors_hints
 TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += tbl_wide_rows
@@ -105,7 +105,7 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
@@ -115,6 +115,9 @@ difftest fuzz soak:
 # docs/LIMITS.md from the registry in src/core/limits.h (scripts/gen-limits.sh --check proves it)
 limits:
 	scripts/gen-limits.sh
+# the slug tables of docs/USAGE.md and docs/COL-PLAN.md from src/agg/refuse.h (scripts/gen-refusals.sh --check proves them and the planner sources)
+refusals:
+	scripts/gen-refusals.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:

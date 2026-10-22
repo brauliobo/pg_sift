@@ -253,7 +253,7 @@ agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *f
 	if (agg_base(c, root, input_rel, fs))
 		return true;
 	if (!fs->flippable)
-		return false;
+		return agg_refuse_on(FROM_SHAPE, "no other table of the FROM list can be the scanned one");
 	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
 	c->planned = planned;
@@ -533,6 +533,7 @@ reads_json_null_cast(AggCtx *c)
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not cast \"%s\": some unit may hold a JSON null there, which the cast raises for before PostgreSQL 18",
 									leaf_name(c, src)),
 							 errhint("docs/COL.md 2.2")));
+			agg_refused_on(ERROR_PARITY, leaf_name(c, src));
 			return true;
 		}
 	}
@@ -545,17 +546,21 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 {
 	double		lists;
 
-	if (c->other_group || types_guard_reads(c))
-		return false;
+	if (c->other_group)
+		return agg_refuse_on(FROM_SHAPE, "the query reads the elements of a second list besides the one it unnests");
+	if (types_guard_reads(c))
+		return agg_refuse_on(ERROR_PARITY, "a jsonb_typeof guard (FILTER or CASE) wraps a read of the same path: the leaf cannot hold the values the guard skips");
 	share_ordered(s);
 	if (c->group < 0)
 		for (int i = 0; i < c->lay->nleaves; i++)
 			if (bms_is_member(i, c->used) && leaf_of(c, i)->parent >= 0)
-				return false;
+				return agg_refuse_f(FROM_SHAPE, "%s is an element of a list the query does not unnest", leaf_name(c, i));
 	if (c->group >= 0 && !bms_is_member(c->group, c->used))
-		return false;
-	if (list_length(c->combos) > SIFT_AGG_MAX_COMBOS || list_length(c->joins) > SIFT_AGG_MAX_JOINS)
-		return false;
+		return agg_refuse_f(FROM_SHAPE, "the unnested list %s is read by no leaf", leaf_name(c, c->group));
+	if (list_length(c->combos) > sift_limit(combos, SIFT_AGG_MAX_COMBOS))
+		return agg_refuse_limit(SHAPE_WIDTH, combos, sift_limit(combos, SIFT_AGG_MAX_COMBOS), "%d value combinations", list_length(c->combos));
+	if (list_length(c->joins) > sift_limit(joins, SIFT_AGG_MAX_JOINS))
+		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
 	typeof_reads(c, s);
 	s->npreds_total = c->npred;
 	s->nvleaf = c->nvleaf;
@@ -564,7 +569,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
 	finish_leaves(c, s);
 	if (reads_overflow(c, s) || reads_json_null_cast(c))
-		return false;
+		return agg_refuse(DIRTY_UNITS);
 	finish_combos(c, s);
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows, false);
 	/*
@@ -735,7 +740,7 @@ bool
 compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out)
 {
 	if (g->agglevelsup != 0 || parse->groupingSets == NIL)
-		return false;
+		return agg_refuse_on(GROUPING_SETS, "GROUPING() of an outer query level, or in a query without grouping sets");
 	out->kind = SAA_GROUPING;
 	out->leaf = -1;
 	out->restype = INT4OID;
@@ -815,9 +820,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		return;
 
 	/* keys */
-	if (list_length(groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
+	if (list_length(groupClause) + (parse->groupingSets != NIL) > sift_limit(group_keys, SIFT_AGG_MAX_KEYS))
 	{
-		agg_refused(TOO_MANY_KEYS);
+		agg_refused_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS), "%d group keys (grouping sets count as one more)",
+						  list_length(groupClause) + (parse->groupingSets != NIL));
 		return;
 	}
 	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
@@ -830,7 +836,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
 		{
-			agg_refused(GROUP_KEY);
+			agg_refused_f(GROUP_KEY, "the group key %s is not a leaf, or an expression of leaves, the scan reads", expr_text(c, e));
 			return;
 		}
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
@@ -872,7 +878,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		if (!(IsA(a, GroupingFunc) ? compile_grouping(parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
 			  compile_agg(c, (Aggref *) a, &s->agg[s->naggs], s->naggs)))
 		{
-			agg_refused(AGGREGATE);
+			agg_refused_f(AGGREGATE, "%s is not an aggregate the scan computes over its arguments, filter and ordering", IsA(a, Aggref) ? get_func_name(((Aggref *) a)->aggfnoid) : "GROUPING()");
 			return;
 		}
 		if (first)

@@ -655,19 +655,15 @@ part_source(AggCtx *c)
 	int			n;
 
 	if (c->rel->part_scheme == NULL || c->rel->nparts == 0)
-		return false;
+		return agg_refuse_on(PARTITION_SOURCE, "the table is not partitioned, or has no partition");
 	part_leaves(c->rel, &leaves);
 	n = list_length(leaves);
 	if (n == 0)
-		return false;
+		return agg_refuse_on(PARTITION_SOURCE, "no partition is left after the pruning");
 	if (n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
-	{
-		if (sift_explain_refusals)
-			agg_refused_on(PARTITION_COUNT, psprintf("%d partitions, up to %d", n, (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS)));
-		return false;
-	}
+		return agg_refuse_limit(PARTITION_COUNT, partitions, sift_limit(partitions, SIFT_AGG_MAX_PARTS), "%d partitions are left after the pruning", n);
 	if (!part_prune_clauses(c))
-		return false;
+		return agg_refuse_on(PARTITION_SOURCE, "a condition on the partition key cannot be evaluated when the scan starts");
 	first = part_candidates(c, linitial_node(RelOptInfo, leaves));
 	foreach_ptr(PartCand, f, first)
 	{
@@ -706,7 +702,7 @@ part_source(AggCtx *c)
 		c->indexoid = f->indexoid;
 		return true;
 	}
-	return false;
+	return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
 }
 
 /* Opens the source of the rel and its layout, the agg_index_pick-th of its column indexes (agg_index_usable: how many there are); false if none */

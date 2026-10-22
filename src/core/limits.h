@@ -34,9 +34,9 @@
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec.h", SIFT_AGG_MAX_JOINS, "tables", \
-	  "lookup-joined tables per scan", "normal plan", "-", 0) \
+	  "lookup-joined tables per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \
-	  "value combinations per scan", "normal plan", "-", 0) \
+	  "value combinations per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combo_entries, "COMBO_MAX_ENTRIES", "agg/combo.c", 16777216, "entries", \
 	  "distinct input tuples of one value-combination cache", "the caches start again (re-evaluates the values they held)", "-", 1) \
 	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec.h", SIFT_AGG_MAX_JKEYS, "columns", \
@@ -62,7 +62,7 @@
 	X(first_out_cols, "SIFT_AGG_MAX_FOUT", "agg/spec.h", SIFT_AGG_MAX_FOUT, "columns", \
 	  "output columns of a first-row lookup child that map to the table", "normal plan", "-", 0) \
 	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec.h", SIFT_AGG_MAX_KEYS, "keys", \
-	  "group keys (grouping sets count with their keys)", "normal plan (slug too_many_keys)", "-", 0) \
+	  "group keys (grouping sets count with their keys)", "normal plan (slug too_many_keys)", "-", 1) \
 	X(num_in_list, "AGG_MAX_NUM_IN", "agg/plan_pred.c", 64, "constants", \
 	  "constants of a numeric IN list compared one by one; a longer list is tested as a hash set", "a hash set of the scaled values", "-", 1) \
 	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec.h", SIFT_AGG_MAX_ARMS, "arms", \
@@ -84,7 +84,7 @@
 	X(combo_leaves, "SIFT_AGG_MAX_CLEAVES", "agg/spec.h", SIFT_AGG_MAX_CLEAVES, "leaves", \
 	  "leaves one value combination reads", "normal plan", "-", 0) \
 	X(rows_shared, "SIFT_ROWS_MAX_SHARED", "agg/rows.h", SIFT_ROWS_MAX_SHARED, "aggregates", \
-	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan", "-", 0) \
+	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan (slug rows_shape)", "-", 0) \
 	X(text_prune, "COL_MAX_STR_PRUNE", "agg/col_int.h", COL_MAX_STR_PRUNE, "conditions", \
 	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
