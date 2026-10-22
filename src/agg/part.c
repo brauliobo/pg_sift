@@ -517,7 +517,7 @@ part_bound(Relation part, Oid parent)
 
 		if (bound_cx == NULL)
 		{
-			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift partition bounds", ALLOCSET_DEFAULT_SIZES);
+			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition bounds", ALLOCSET_DEFAULT_SIZES);
 			CacheRegisterRelcacheCallback(bound_inval, (Datum) 0);
 		}
 		ctl.hcxt = bound_cx;
