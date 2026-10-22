@@ -33,7 +33,7 @@ CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
 CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t
-SELECT i, 1 + i % 2, i / 10, jsonb_build_object('overall', i % 11, 'asp_i', (i % 7) + 0.5, 'asp_k', i % 5)
+SELECT i, 1 + i % 2, i / 10, jsonb_build_object('p_total', i % 11, 'asp_i', (i % 7) + 0.5, 'asp_k', i % 5)
 FROM generate_series(1, 6000) i;
 UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 100;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{asp_i}', '"9"') WHERE id = 6000;
@@ -146,26 +146,26 @@ SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src 
 (1 row)
 
 -- a cast that only a FILTER or a CASE evaluates is evaluated for the members it keeps: the dirty one raises nothing here, so the plan stays
-SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
  filter_only 
 -------------
  same
 (1 row)
 
-SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
+SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
  filter_only_pushed 
 --------------------
  f
 (1 row)
 
-SELECT same(mq('sum(CASE WHEN e.key = $$overall$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
+SELECT same(mq('sum(CASE WHEN e.key = $$p_total$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
  case_only 
 -----------
  same
 (1 row)
 
 -- the same cast also in an unconditional aggregate: the dirty member raises
-SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$overall$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
  filter_and_plain 
 ------------------
  same
@@ -185,7 +185,7 @@ SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')
 (1 row)
 
 -- rows in the write buffer, updated and deleted ones, and after promotion
-INSERT INTO m_t VALUES (7001, 1, 10, '{"overall": 3, "asp_i": 4}'), (7002, 1, 11, '{"overall": "x"}');
+INSERT INTO m_t VALUES (7001, 1, 10, '{"p_total": 3, "asp_i": 4}'), (7002, 1, 11, '{"p_total": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
  write_buffer 
 --------------
@@ -198,7 +198,7 @@ SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND 
  same
 (1 row)
 
-UPDATE m_t SET metrics = '{"overall": 1}' WHERE id = 7002;
+UPDATE m_t SET metrics = '{"p_total": 1}' WHERE id = 7002;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
  after_update 
 --------------

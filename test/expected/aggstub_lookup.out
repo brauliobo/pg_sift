@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE o (id int PRIMARY KEY, store int, kind text, metrics jsonb, items jsonb, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO o
 SELECT g, g % 7, (ARRAY['web', 'shop', 'phone'])[1 + g % 3],
-	   CASE g % 6 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN jsonb_build_object('value', g % 5) ELSE jsonb_build_object('overall', 1 + (g % 40) / 10.0, 'value', g % 5) END,
+	   CASE g % 6 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN jsonb_build_object('value', g % 5) ELSE jsonb_build_object('p_total', 1 + (g % 40) / 10.0, 'value', g % 5) END,
 	   CASE WHEN g % 19 = 0 THEN NULL ELSE jsonb_build_array(
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + g % 5], 'kind', CASE WHEN g % 4 = 0 THEN NULL ELSE (ARRAY['x', 'y'])[1 + g % 2] END, 'qty', g % 5, 'price', (g % 9) * 2.5),
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + (g / 3) % 5], 'kind', 'y', 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
@@ -46,13 +46,13 @@ LEFT JOIN cat_map m ON m.category = i.category GROUP BY 1;
    Lookup Joins: cat_map (left)
 (6 rows)
 
-EXPLAIN (COSTS OFF) SELECT i.category, avg((o.metrics->>'overall')::float8) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1;
+EXPLAIN (COSTS OFF) SELECT i.category, avg((o.metrics->>'p_total')::float8) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1;
                 QUERY PLAN                 
 -------------------------------------------
  Custom Scan (SiftAgg)
    Index: o_col
    Group Keys: items[].category
-   Pushed Aggregates: avg(metrics.overall)
+   Pushed Aggregates: avg(metrics.p_total)
    Unnests: yes
 (5 rows)
 
@@ -113,15 +113,15 @@ SELECT same($$SELECT CASE WHEN o.kind = 'web' THEN i.category ELSE coalesce(i.ki
 (1 row)
 
 -- a key of the metrics next to the unnest
-SELECT same($$SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
+SELECT same($$SELECT i.category, count((o.metrics->>'p_total')::float8) AS c, round(avg((o.metrics->>'p_total')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS metric_key;
  metric_key 
 ------------
  t
 (1 row)
 
-SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, avg((metrics->>'overall')::float8) AS a
-			  FROM o WHERE (metrics->>'overall')::float8 IS NOT NULL GROUP BY 1$$) AS metric_key_rows;
+SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, avg((metrics->>'p_total')::float8) AS a
+			  FROM o WHERE (metrics->>'p_total')::float8 IS NOT NULL GROUP BY 1$$) AS metric_key_rows;
  metric_key_rows 
 -----------------
  t
@@ -260,14 +260,14 @@ EXPLAIN (COSTS OFF) SELECT m.mapped, count(*) AS n, sum(i.qty) AS q, count(DISTI
    Workers Planned: 2
 (7 rows)
 
-EXPLAIN (COSTS OFF) SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
+EXPLAIN (COSTS OFF) SELECT i.category, count((o.metrics->>'p_total')::float8) AS c, round(avg((o.metrics->>'p_total')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1;
                                       QUERY PLAN                                       
 ---------------------------------------------------------------------------------------
  Custom Scan (SiftAgg)
    Index: o_col
    Group Keys: items[].category
-   Pushed Aggregates: count(metrics.overall), avg(metrics.overall), max(metrics.value)
+   Pushed Aggregates: count(metrics.p_total), avg(metrics.p_total), max(metrics.value)
    Unnests: yes
    Workers Planned: 2
 (6 rows)
@@ -302,7 +302,7 @@ SELECT same($$SELECT CASE WHEN o.kind = 'web' THEN i.category ELSE coalesce(i.ki
  t
 (1 row)
 
-SELECT same($$SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
+SELECT same($$SELECT i.category, count((o.metrics->>'p_total')::float8) AS c, round(avg((o.metrics->>'p_total')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS metric_key_workers;
  metric_key_workers 
 --------------------

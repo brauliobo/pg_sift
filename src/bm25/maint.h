@@ -165,6 +165,9 @@ extern void sift_maint_truncate(Relation index, int elevel);
  * The caller holds the maintenance lock exclusively. Reports at elevel what it did.
  */
 extern void sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel);
+/* The same with a cap on the bytes copied under the lock (0: only the free tail is cut), and its screen for a run of free blocks */
+extern void sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
+extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);

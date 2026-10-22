@@ -292,13 +292,26 @@ done:
 	pfree(snap);
 }
 
+/* Is a free run of blocks worth the exclusive lock of the space step (the screen of sift_maint_space) */
+bool
+sift_maint_space_worth(int64 blocks, BlockNumber nblocks)
+{
+	return space_worth(blocks, nblocks);
+}
+
 void
 sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
+{
+	sift_maint_space_budget(rel, relocate_page, elevel, (uint64) sift_vacuum_rewrite_limit << 20);
+}
+
+/* The space step with a cap on the bytes it may copy under the lock (0: only the free tail is cut) */
+void
+sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
 	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
 	BlockNumber nblocks;
 	BlockNumber freed = 0;
-	uint64		budget = (uint64) sift_vacuum_rewrite_limit << 20;
 
 	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
 	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))

@@ -1,0 +1,79 @@
+-- The plan the planner picks on its own costs, for shapes where one plan is several times faster than the other at 200000 rows (the times are
+-- measured: the scan reads and groups at a fraction of the cost the operator counts gave it, and the normal plan of a free-key member, a
+-- span list or an unnest is 8 to 35 times slower). The scan is chosen for the large scopes and the normal plan for a few rows of one parent, where
+-- the btree plan reads them in a fraction of a millisecond. Every statement is also run with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE cs_dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL);
+INSERT INTO cs_dims SELECT p, CASE WHEN p <= 20 THEN 'tier_a' WHEN p <= 45 THEN 'tier_b' ELSE 'tier_c' END, p % 7 <> 0 FROM generate_series(1, 60) p;
+CREATE TABLE cs_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, deleted_at timestamptz, doc jsonb NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO cs_facts SELECT i, 1 + (i * 7919) % 60, date '2025-01-01' + (hashint4(i + 17) & 1023) % 730, 'cat_' || chr(97 + i % 4), CASE WHEN i % 37 = 0 THEN now() END,
+	jsonb_build_object(
+		'parts', jsonb_build_array(
+			jsonb_build_object('kind', 'cat_' || chr(97 + i % 4), 'sub', 'asp_' || chr(97 + i % 6), 'sign', CASE WHEN i % 3 = 0 THEN 'neg' ELSE 'pos' END, 'score', 1 + (i * 3) % 10),
+			jsonb_build_object('kind', 'cat_' || chr(97 + (i + 1) % 4), 'sub', 'asp_' || chr(97 + (i + 2) % 6), 'sign', CASE WHEN i % 5 = 0 THEN 'neg' ELSE 'pos' END, 'score', 1 + (i * 7) % 10),
+			jsonb_build_object('kind', 'cat_' || chr(97 + (i + 2) % 4), 'sub', 'asp_' || chr(97 + (i + 4) % 6), 'sign', 'pos', 'score', 1 + (i * 11) % 10)),
+		'metrics', jsonb_build_object('m_a', 1 + (i * 13) % 10, 'asp_a', 1 + (i * 3) % 10, 'asp_b', 1 + (i * 5) % 10)) FROM generate_series(1, 200000) i;
+CREATE INDEX cs_facts_parent ON cs_facts (parent_id, ts, deleted_at);
+CREATE INDEX cs_facts_col ON cs_facts USING sift_col (id, parent_id, ts, kind, deleted_at, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{kind astext, sub astext, sign astext, score float8}');
+VACUUM (FREEZE, ANALYZE) cs_facts, cs_dims;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN CASE n WHEN 0 THEN 'normal' ELSE 'SiftAgg' END;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- a member of a free-key object by the bucket, over a joined parent table
+SELECT * FROM same($q$SELECT d.tier, date_trunc('month', f.ts)::date AS bucket, round(avg((f.doc->'metrics'->>'m_a')::float8)::numeric, 3) AS score, count(*) AS n
+FROM cs_facts f JOIN cs_dims d ON d.id = f.parent_id
+WHERE f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2026-03-01' GROUP BY 1, 2 ORDER BY 1, 2$q$);
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |          36 |              0
+(1 row)
+
+-- two spans from a VALUES list, the rows of the active parents
+SELECT * FROM same($q$WITH spans AS (SELECT * FROM (VALUES ('span_a', daterange('2025-03-01', '2026-02-28', '[]')), ('span_b', daterange('2024-03-01', '2025-02-28', '[]'))) p(span, range))
+SELECT p.span, f.kind, count(*) AS n, round(avg((f.doc->'metrics'->>'m_a')::float8)::numeric, 3) AS score
+FROM cs_facts f JOIN spans p ON f.ts <@ p.range
+WHERE f.parent_id IN (SELECT id FROM cs_dims WHERE active) AND f.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2$q$);
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           8 |              0
+(1 row)
+
+-- an unnest of the array of parts, grouped by two of its fields
+SELECT * FROM same($q$SELECT p.kind, p.sub, round(avg(p.score)::numeric, 3) AS score, count(DISTINCT f.id) AS n
+FROM cs_facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc->'parts') AS p(kind text, sub text, sign text, score float8)
+WHERE f.parent_id IN (SELECT id FROM cs_dims WHERE active) AND f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2026-03-01' GROUP BY 1, 2 ORDER BY 1, 2$q$);
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |          24 |              0
+(1 row)
+
+-- one parent, one narrow range: the btree plan reads a few hundred rows
+SELECT * FROM same($q$SELECT p.kind, count(*) AS n, round(avg(p.score)::numeric, 3) AS score
+FROM cs_facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc->'parts') AS p(kind text, sub text, sign text, score float8)
+WHERE f.parent_id = 7 AND f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2025-04-01' GROUP BY 1 ORDER BY 1$q$);
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           3 |              0
+(1 row)
+
+DROP FUNCTION same(text), plan_of(text);
+DROP TABLE cs_facts, cs_dims;
+DROP EXTENSION pg_sift;

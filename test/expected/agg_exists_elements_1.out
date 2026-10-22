@@ -18,7 +18,7 @@ SELECT i, i % 52, '2026-01-01'::date + (i % 9),
    WHEN i % 3 = 0 THEN '[{"category":"asp_l","val":"","sign":"positive","score":8}]'::jsonb
    ELSE '[{"category":"asp_l","val":"","sign":"positive","score":9},{"category":"asp_a","val":"x","sign":"negative","score":3},{"category":"zzz","val":"","sign":"neutral","score":null},{"category":"nul","val":null,"sign":"neutral","score":1}]'::jsonb END)
    || CASE WHEN i % 5 = 0 THEN '{"mapped":false}'::jsonb WHEN i % 11 = 0 THEN '{"mapped":null}'::jsonb WHEN i % 13 = 0 THEN '{"mapped":true}'::jsonb ELSE '{}'::jsonb END END,
- CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('overall', i % 11, 'asp_j_asp_i', (i * 3) % 11) END,
+ CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('p_total', i % 11, 'asp_j_asp_i', (i * 3) % 11) END,
  repeat('payload', 30)
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, day, document, metrics, jsonb_exists(document, 'mapped'))
@@ -47,7 +47,7 @@ BEGIN
   DROP TABLE r_off, r_on;
   RETURN NEXT;
 END $$;
--- The topic shape: a lookup per element chosen by the entity's kind, the unmapped category of a document that is not mapped, the element's own otherwise.
+-- The lookup-per-element shape: a lookup per element chosen by the entity's kind, the unmapped category of a document that is not mapped, the element's own otherwise.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n, avg(f.id) AS mean FROM facts f JOIN entities e ON e.id = f.entity_id
  WHERE EXISTS (SELECT 1 FROM LATERAL (

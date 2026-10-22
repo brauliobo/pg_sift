@@ -138,6 +138,8 @@ again:
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote)
 		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false);
+	if (old.gen)
+		sift_tbl_auto_defrag_check(rel, st);
 	return first;
 }
 

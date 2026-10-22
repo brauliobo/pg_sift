@@ -1,5 +1,5 @@
--- A synthetic event analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of feedback items with jsonb metrics
--- (numbers, and dirty values: numbers as strings, JSON nulls, text), a jsonb comments array and a document with a nested array of parts and the flags
+-- A synthetic event analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of event items with jsonb metrics
+-- (numbers, and dirty values: numbers as strings, JSON nulls, text), a jsonb notes array and a document with a nested array of parts and the flags
 -- of a mapping, dimension tables of entities (typed), sources and mappings, dates and a soft-delete column. Included by fixture.sql (small) and
 -- usable alone for a larger table:
 --
@@ -23,10 +23,10 @@ CREATE OR REPLACE FUNCTION coldiff.wl_value(id bigint, draw int, seed int) RETUR
 				WHEN x < 0.10 THEN to_jsonb(d < 5) WHEN x < 0.20 THEN to_jsonb(d::int) ELSE to_jsonb(d::float8) END
 	FROM (SELECT coldiff.u(id, draw, seed) AS x, round((coldiff.u(id, draw + 500, seed) * 10)::numeric, 1) AS d) v $$;
 
--- the metrics object: the keys overall (95%), asp_j, asp_b, asp_e, value and a key no mapping knows (10%)
+-- the metrics object: the keys p_total (95%), asp_j, asp_b, asp_e, value and a key no mapping knows (10%)
 CREATE OR REPLACE FUNCTION coldiff.wl_metrics(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_object_agg(k, coldiff.wl_value(id, 100 + n::int, seed)) FILTER (WHERE coldiff.u(id, 90 + n::int, seed) < p), '{}')
-	FROM unnest(ARRAY['overall', 'asp_j', 'asp_b', 'asp_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
+	FROM unnest(ARRAY['p_total', 'asp_j', 'asp_b', 'asp_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
 
 CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'role_a', 'role_b'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')

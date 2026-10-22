@@ -3,7 +3,7 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT i.category, count(*) AS n, count((o.metrics->>'overall')::float8) AS with_metric, avg((o.metrics->>'overall')::float8) AS overall,
+SELECT i.category, count(*) AS n, count((o.metrics->>'p_total')::float8) AS with_metric, avg((o.metrics->>'p_total')::float8) AS p_total,
        sum(i.qty * (i.price - i.discount)) AS revenue
 FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8)
 WHERE o.store_id < 120 AND o.deleted_at IS NULL

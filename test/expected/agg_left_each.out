@@ -5,8 +5,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"other": 3}'::jsonb WHEN 2 THEN NULL WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
-                  ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END
+       CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"other": 3}'::jsonb WHEN 2 THEN NULL WHEN 3 THEN '{"p_total": 6.5, "other": 9}'::jsonb
+                  ELSE jsonb_build_object('p_total', i % 10, 'other', i % 3) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
@@ -34,7 +34,7 @@ END $$;
 -- the rows without the member are counted, with NULL columns
 SELECT * FROM check_query('count', $q$
  SELECT f.entity_id % 3 AS k, count(*) AS rows, count(CAST(r.value AS float)) AS members, sum(CAST(r.value AS float)) AS total
- FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' GROUP BY 1
+ FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' GROUP BY 1
 $q$);
  label | scan | same |                                               outcome                                                
 -------+------+------+------------------------------------------------------------------------------------------------------
@@ -43,7 +43,7 @@ $q$);
 
 SELECT * FROM check_query('filter', $q$
  SELECT count(*) AS n, avg(CAST(r.value AS float)) AS mean
- FROM facts f LEFT JOIN LATERAL (SELECT key, value FROM jsonb_each(f.metrics)) r ON r.key = 'overall' WHERE f.entity_id < 30
+ FROM facts f LEFT JOIN LATERAL (SELECT key, value FROM jsonb_each(f.metrics)) r ON r.key = 'p_total' WHERE f.entity_id < 30
 $q$);
  label  | scan | same |                  outcome                  
 --------+------+------+-------------------------------------------
@@ -53,7 +53,7 @@ $q$);
 -- a correlated child reads the member through casts: a row without it gives the child NULL
 SELECT * FROM check_query('child', $q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids
- FROM facts f LEFT JOIN LATERAL (SELECT key, value FROM jsonb_each(f.metrics)) ra ON ra.key = 'overall'
+ FROM facts f LEFT JOIN LATERAL (SELECT key, value FROM jsonb_each(f.metrics)) ra ON ra.key = 'p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION (SELECT CASE WHEN CAST(ra.value AS integer) > 6 THEN 'high' ELSE 'low' END)) c ON true
  GROUP BY 1
 $q$);
@@ -64,7 +64,7 @@ $q$);
 
 -- a child that reads the member another way, and a read of the key: the normal plan
 SELECT * FROM check_query('child text', $q$
- SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+ SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
  JOIN LATERAL (SELECT r.value::text AS v UNION ALL SELECT 'x') c ON true GROUP BY 1
 $q$);
    label    | scan | same |                                               outcome                                                
@@ -73,15 +73,15 @@ $q$);
 (1 row)
 
 SELECT * FROM check_query('key', $q$
- SELECT r.key, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' GROUP BY 1
+ SELECT r.key, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' GROUP BY 1
 $q$);
  label | scan | same |                              outcome                               
 -------+------+------+--------------------------------------------------------------------
- key   | f    | t    | [{"key": "overall", "count": 11428}, {"key": null, "count": 8572}]
+ key   | f    | t    | [{"key": "p_total", "count": 11428}, {"key": null, "count": 8572}]
 (1 row)
 
 SELECT * FROM check_query('child union all, bare read', $q$
- SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) ra ON ra.key = 'overall'
+ SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) ra ON ra.key = 'p_total'
  JOIN LATERAL (SELECT 'a' AS v UNION ALL SELECT (ra.value IS NULL)::text) c ON true GROUP BY 1
 $q$);
            label            | scan | same |                                          outcome                                           
@@ -90,9 +90,9 @@ $q$);
 (1 row)
 
 -- Error timing: the cast of the member raises for the rows that reach it, with PostgreSQL's SQLSTATE and message.
-INSERT INTO facts VALUES (20001, 1, '{"overall": 3000000000}'), (20002, 2, '{"overall": 1e30}');
+INSERT INTO facts VALUES (20001, 1, '{"p_total": 3000000000}'), (20002, 2, '{"p_total": 1e30}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id < 20000 GROUP BY 1$q$);
     label     | scan | same |                                               outcome                                               
@@ -100,7 +100,7 @@ SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FR
  excluded row | t    | t    | [{"n": 14571, "category": "low"}, {"n": 19999, "category": "all"}, {"n": 5428, "category": "high"}]
 (1 row)
 
-SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20001 GROUP BY 1$q$);
       label       | scan | same |          outcome           
@@ -109,24 +109,24 @@ SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS 
 (1 row)
 
 -- a JSON null member is NULL in PostgreSQL 18 and an error before it (the text is not compared: it depends on the version)
-INSERT INTO facts VALUES (20004, 4, '{"overall": null}');
+INSERT INTO facts VALUES (20004, 4, '{"p_total": null}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20004$q$);
+SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20004$q$);
    label   | same 
 -----------+------
  json null | t
 (1 row)
 
 -- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
-INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"overall": "abc"}');
+INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"p_total": "abc"}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20003$q$);
+SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20003$q$);
      label      | scan | same |                   outcome                    
 ----------------+------+------+----------------------------------------------
  array document | f    | t    | 22023 cannot call jsonb_each on a non-object
 (1 row)
 
-SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall' WHERE f.id = 20005$q$);
+SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20005$q$);
      label     | scan | same |                         outcome                         
 ---------------+------+------+---------------------------------------------------------
  string member | f    | t    | 22023 cannot cast jsonb string to type double precision

@@ -23,17 +23,17 @@ BEGIN
   RETURN NEXT;
 END $$;
 
--- two grouping sets; the key computed in the input is in both, the dimension in one; days nothing matches keep a row
+-- two grouping sets; the key computed in the input is in both, the attribute in one; days nothing matches keep a row
 SELECT * FROM check_query($q$
  WITH parsed AS (
    SELECT f.id, f.day, f.kind, split_part(e.key, '_', 1) AS category, nullif(split_part(e.key, '_', 2), '') AS val,
-          CASE WHEN f.entity_id % 2 = 0 THEN 'even' ELSE 'odd' END AS dimension, e.value::float8 AS v
+          CASE WHEN f.entity_id % 2 = 0 THEN 'even' ELSE 'odd' END AS attribute, e.value::float8 AS v
    FROM gs_facts f CROSS JOIN LATERAL jsonb_each(f.scores) e
  )
- SELECT coalesce(p.category, 'overall') AS category, p.val, p.dimension, d.day, count(DISTINCT p.id) AS n, avg(p.v) AS mean
+ SELECT coalesce(p.category, 'p_total') AS category, p.val, p.attribute, d.day, count(DISTINCT p.id) AS n, avg(p.v) AS mean
  FROM (VALUES (date '2024-01-01'), (date '2024-01-03'), (date '2030-01-01')) d(day)
  LEFT JOIN parsed p ON p.day = d.day
- GROUP BY GROUPING SETS ((p.category, p.val, p.dimension, d.day), (p.category, p.val, d.day))
+ GROUP BY GROUPING SETS ((p.category, p.val, p.attribute, d.day), (p.category, p.val, d.day))
 $q$);
 -- the same with a ROLLUP over the placeholders
 SELECT * FROM check_query($q$

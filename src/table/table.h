@@ -200,6 +200,9 @@ typedef struct SiftTblRel
 	Relation	curvers_rel;
 	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
+	/* what this backend saw when it last asked for the background pass (sift_tbl_auto_defrag_check) */
+	uint64		defrag_tombs;
+	int64		defrag_free;
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
@@ -555,7 +558,8 @@ extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
 
 /*
  * Space maintenance without VACUUM (table/vacuum.c, docs/COL-TAM.md section 7): sift_tbl_maintain is VACUUM's work on the column segments
- * and the file minus what needs the indexes (their cleanup, and so the tombstone rewrite).
+ * and the file minus what needs the indexes (their cleanup, and so the tombstone rewrite). The background pass is requested by the backend
+ * that closes a write buffer when sift_tbl_auto_defrag_check finds the table worth it.
  */
 typedef struct SiftTblMaintain
 {
@@ -567,7 +571,14 @@ typedef struct SiftTblMaintain
 	BlockNumber blocks_after;
 } SiftTblMaintain;
 
-/* The caller holds ShareUpdateExclusiveLock on rel */
-extern void sift_tbl_maintain(Relation rel, SiftTblMaintain *r);
+/* The caller holds ShareUpdateExclusiveLock on rel. background: a worker (throttled, short exclusive window); clear: also clears the dead rows */
+extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r);
+extern void sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st);
+extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_tbl_maint_clear_worker_main(Datum main_arg);
+extern PGDLLIMPORT bool sift_tbl_auto_defrag;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
+extern PGDLLIMPORT bool sift_tbl_auto_defrag_indexes;
 
 #endif							/* SIFT_TABLE_H */

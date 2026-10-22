@@ -32,7 +32,7 @@ metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `me
 | Parallel | parallel sequential scan over write buffer pages and (engine) SB morsels, one frozen directory copy shared by all workers. Parallel DML is not offered by PostgreSQL for any AM. |
 | Aggregates | the SiftAgg pushdown of col-plan runs over the table through the engine's `SiftColVisibility` hook: `sift_col_open_table` (section 12) opens a `SiftColSource` over the column groups with the table's visibility (a unit of a superblock without tombstones is entirely visible; others are filtered per row); write buffer rows are fed as in-memory batches (section 6). |
 | Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_write_buffer_limit` (kB), `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct` (docs/USAGE.md, Maintenance and operations); the heap reloptions PostgreSQL parses for every table (`autovacuum_*`, `vacuum_truncate`) apply. Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
-| Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, promotion, merge, stats); autovacuum triggers through the `pgstat` counters the AM maintains (inserts alone trigger it: `autovacuum_vacuum_insert_threshold`). Inline promotion when a write buffer fills (`sift.table_inline_promote`). There is no background worker for tables. |
+| Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, promotion, merge, stats); autovacuum triggers through the `pgstat` counters the AM maintains (inserts alone trigger it: `autovacuum_vacuum_insert_threshold`). Inline promotion when a write buffer fills (`sift.table_inline_promote`). Without VACUUM, a worker does the space work that needs no index (`sift.table_maintain`, section 7, `sift.table_auto_defrag`). |
 
 ---
 
@@ -405,6 +405,16 @@ recycles, sweeps, relocates the tail segments and cuts the free end. The tombsto
 shortens; the rows of an aborted writer are left to it too (only the live bits say which they are). It takes the table with `ShareUpdateExclusiveLock` and the maintenance
 lock only if they are free (`busy` in the result otherwise), the file's lock as VACUUM does (`ConditionalLockRelation`, given up at once), never waits for a reader or a writer, and
 refuses a read-only transaction, a standby and a role without `MAINTAIN`. It writes only what VACUUM writes (liveness pages, directory switches, free list, truncation: same crash points).
+
+*Background pass* (`sift.table_auto_defrag`, off by default for 3.2, needs `sift.async_maintenance`). The backend that closes a write buffer (every `sift.table_write_buffer_limit`
+of writes, where the inline promotion runs; not inside a VACUUM) asks for a worker, `sift_maint_request_worker` as for the indexes (at most one request per `sift.maintenance_naptime` of a table, backing
+off after failures; one worker of a table at a time), when (1) the tombstone entries are at least `sift.table_dead_rewrite_pct` percent of the rows of the column segments and have
+grown by half of that since this backend asked last (the exact percent of a segment is known once its bits are cleared), or (2) the free blocks of the file are at least
+`sift.table_auto_defrag_free_pct` percent of it, worth the exclusive lock by VACUUM's rule (1000 blocks or a 16th of the file) and grown by a 32nd of it since the last request. For (1) the worker runs
+the whole table VACUUM (`sift.table_auto_defrag_indexes`, on: without the index cleanup the tombstone log, which every scan reads and which holds the file above the live rows, cannot shrink; with it off the pass is `sift.table_maintain`),
+for (2) `sift.table_maintain`, in transactions of its own with no snapshot, the page accesses of the index cleanup charged to `sift.table_auto_defrag_delay` as a cost delay and at most 32 MB copied under the table lock.
+The request comes while the writer is still at work (its rows are not final and the lock of the end of the file is not free), so the worker stays and passes again every fourth of `sift.maintenance_naptime` while a pass finds something to do (two in a row that do not end it, 20 at most).
+A workload that only deletes closes no write buffer and asks for nothing: autovacuum, or `sift.table_maintain` from a scheduler, covers it. With `sift.table_auto_defrag_indexes` off the tombstones outlive the pass until a VACUUM.
 
 **ANALYZE** (section 4): statistics columns as PostgreSQL computes them from the sample; jsonb shredded paths are not statistics targets.
 

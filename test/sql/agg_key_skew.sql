@@ -51,11 +51,11 @@ END $$;
 
 CREATE FUNCTION in_list(tbl text, grp int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM %s f
-WHERE f.parent_id IN (SELECT p.parent_id FROM ks_pick p WHERE p.grp = %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
+WHERE f.parent_id IN (SELECT p.parent_id FROM ks_pick p WHERE p.grp = %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' AND f.ts < date '2024-02-15' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
 
 CREATE FUNCTION join_list(tbl text, grp int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM %s f JOIN ks_pick p ON p.parent_id = f.parent_id
-WHERE p.grp = %s AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
+WHERE p.grp = %s AND f.deleted_at IS NULL AND f.ts >= date '2024-01-01' AND f.ts < date '2024-02-15' GROUP BY 1 ORDER BY 1$f$, tbl, grp) $$;
 
 -- skewed column: the heaviest and the rarest five parents take the same plan, and the rows are the same from either plan
 SELECT * FROM same(in_list('ks_events', 1));

@@ -831,6 +831,36 @@ compute_kids(AggExec *ex, int nsel, uint32 *kid)
 	}
 }
 
+/* The ids of the tuples' keys, kid[j * (VEC + PADW) + i] for key j and tuple i (0: NULL, or a key the tuples do not have). */
+void
+compute_kids(AggExec *ex, int nsel, uint32 *kid)
+{
+	uint32	   *maps[SIFT_AGG_MAX_KEYS];
+	int32		bases[SIFT_AGG_MAX_KEYS];
+
+	for (int j = 0; j < ex->spec->nkeys; j++)
+	{
+		const uint32 *idx = NULL;
+		const SiftSrcLeaf *lf = key_lf(ex, j);
+		uint32	   *vals = ex->kids + (Size) j * (VEC + PADW),
+				   *out = kid + (Size) j * (VEC + PADW);
+
+		if (lf)
+			gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
+		key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals);
+		memset(out, 0, nsel * sizeof(uint32));
+		if (maps[j] == NULL)
+			memcpy(out, vals, nsel * sizeof(uint32));
+		else if (lf->vtype == SCV_CODE)
+			sift_aggk->gid_code(out, vals, maps[j], nsel, 1);
+		else
+		{
+			sift_aggk->gid_i32(out, (const int32 *) vals, bases[j], maps[j], nsel, 1);
+			key_null_fix(ex, j, nsel, idx, vals, NULL, 1, out);
+		}
+	}
+}
+
 void
 compute_gids(AggExec *ex, int nsel)
 {

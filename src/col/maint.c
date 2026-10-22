@@ -488,6 +488,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	CommitTransactionCommand();
 }
 
+
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
 Datum
 sift_col_maintenance_due(PG_FUNCTION_ARGS)

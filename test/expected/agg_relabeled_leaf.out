@@ -30,13 +30,13 @@ BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
 SELECT * FROM check_query('key', $q$
- SELECT jsonb_build_array(jsonb_build_object('kind', kind), CASE WHEN country_code IN (SELECT iso2 FROM countries) THEN jsonb_build_object('iso2', country_code, 'type', 'country') END) AS dimension,
+ SELECT jsonb_build_array(jsonb_build_object('kind', kind), CASE WHEN country_code IN (SELECT iso2 FROM countries) THEN jsonb_build_object('iso2', country_code, 'type', 'country') END) AS attribute,
         count(*) AS n
  FROM facts GROUP BY 1
 $q$);
  label | scan | same |                                               outcome                                                
 -------+------+------+------------------------------------------------------------------------------------------------------
- key   | t    | t    | [{"n": 1666, "dimension": [{"kind": "a"}, {"iso2": "BR", "type": "country"}]}, {"n": 1666, "dimensio
+ key   | t    | t    | [{"n": 1666, "attribute": [{"kind": "a"}, {"iso2": "BR", "type": "country"}]}, {"n": 1666, "attribut
 (1 row)
 
 SELECT * FROM check_query('key and filter', $q$

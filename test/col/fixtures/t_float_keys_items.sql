@@ -3,7 +3,7 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT i.price, o.store_id, (o.metrics->>'overall')::float8 AS overall, count(*) AS n, sum(i.qty) AS qty
+SELECT i.price, o.store_id, (o.metrics->>'p_total')::float8 AS p_total, count(*) AS n, sum(i.qty) AS qty
 FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8)
 WHERE o.deleted_at IS NULL
-GROUP BY i.price, o.store_id, (o.metrics->>'overall')::float8 ORDER BY 1, 2, 3 NULLS FIRST
+GROUP BY i.price, o.store_id, (o.metrics->>'p_total')::float8 ORDER BY 1, 2, 3 NULLS FIRST

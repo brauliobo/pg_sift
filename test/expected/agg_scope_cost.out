@@ -33,10 +33,10 @@ BEGIN
 END $$;
 CREATE FUNCTION in_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
-WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
 CREATE FUNCTION join_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f JOIN sc_dims d ON d.id = f.parent_id
-WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
 -- a filter on a jsonb path or an expression: no statistics, so PostgreSQL's one row is a guess and the scan reads the units of the parents
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
   plan   | result_rows | vs_normal_plan 

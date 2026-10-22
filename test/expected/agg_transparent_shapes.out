@@ -8,7 +8,7 @@ SELECT i, i%3,
   'entries', CASE WHEN i%2=0 THEN '[{"bucket":"x","value":2}]'::jsonb
                  ELSE '[{"bucket":"x","value":8},{"bucket":"x","value":10}]'::jsonb END,
   'notes', CASE WHEN i%3=0 THEN '[{"kind":"reply"}]'::jsonb ELSE '[]'::jsonb END),
- jsonb_build_object('overall', i%10), repeat('payload',50)
+ jsonb_build_object('p_total', i%10), repeat('payload',50)
 FROM generate_series(1,10000) i;
 CREATE INDEX events_col ON events USING sift_col(id,entity_id,document,metrics,jsonb_exists(document,'flag'))
  WITH(paths='document.flag astext, document.entries[]{bucket text,value float8}, document.notes[]{kind text}, metrics.* float8');
@@ -63,7 +63,7 @@ $q$);
 SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_shape($q$
  SELECT category, count(DISTINCT f.id) AS ids,
  count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "reply")')) AS replies
- FROM events f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key='overall'
+ FROM events f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key='p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int>6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY category
 $q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;
