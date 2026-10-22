@@ -351,6 +351,25 @@ sift_aggjoin_preserves(SiftJoinKind kind)
 	return kind == SJ_RIGHT || kind == SJ_FULL;
 }
 
+#define SIFT_AGG_MAX_FOUT	16		/* output columns of a first-row child that can be mapped to the table's */
+
+/*
+ * A correlated child that is `SELECT columns FROM table WHERE column = parameter [AND ...] LIMIT 1` over a table whose unique index is
+ * on those columns returns the one row with the key, whatever its plan: it can be read like a lookup table instead (SiftAggJoin.first).
+ */
+typedef struct SiftAggFirst
+{
+	bool		ok;				/* the child has that form (planner) */
+	bool		use;			/* the planner expects the lookup table to cost less than running the child per input */
+	Oid			relid;
+	int			nkey;
+	int			keyatt[SIFT_AGG_MAX_JKEYS];	/* column of the table */
+	Oid			keytype[SIFT_AGG_MAX_JKEYS];
+	int			keyarg[SIFT_AGG_MAX_JKEYS];	/* position of the parameter, in the join's params and args */
+	int			ncol;			/* output columns of the child */
+	int			col[SIFT_AGG_MAX_FOUT];		/* the column of the table each is, 0 when it is not one */
+} SiftAggFirst;
+
 typedef struct SiftAggJoin
 {
 	Oid			relid;			/* the table; InvalidOid when the rows are those of a plan (child) */
@@ -378,6 +397,7 @@ typedef struct SiftAggJoin
 	Oid			coltype[SIFT_AGG_MAX_JCOLS];
 	int32		coltypmod[SIFT_AGG_MAX_JCOLS];
 	Oid			colcoll[SIFT_AGG_MAX_JCOLS];
+	SiftAggFirst first;			/* a correlated child that is a lookup of one row by unique key */
 	char	   *desc;
 } SiftAggJoin;
 
