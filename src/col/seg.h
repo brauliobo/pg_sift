@@ -125,6 +125,18 @@ extern void sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint3
 
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
+
+/* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows and their running sums, nrows + 1 of them */
+typedef struct SiftCLens
+{
+	uint32		nelems;
+	uint32	   *counts;
+	uint32	   *eoff;
+} SiftCLens;
+/* the entry, pinned until the memory context arena is reset (the next unit), or NULL */
+extern const SiftCLens *sift_cseg_lens_find(SiftColSegment *seg, uint32 unit, int col, MemoryContext arena);
+/* a copy of the structure a scan just decoded for n rows (counts[n], eoff[n + 1]), when the cache has room */
+extern void sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, const uint32 *eoff);
 /* The bytes the dictionary of a STR leaf takes in the stream (0 for other leaves), as stored: smaller than its parsed size when it is compressed */
 extern uint64 sift_cseg_dict_stored(SiftColSegment *seg, int col);
 

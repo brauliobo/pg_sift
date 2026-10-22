@@ -144,11 +144,26 @@ unit_group(ColUnit *cu, int group)
 		MemoryContext arena = cu->src->arena;
 		uint32		n = cu->v.nrows;
 		SiftCChunk	c;
-		uint32	   *lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
+		const SiftCLens *kept = cu->seg ? sift_cseg_lens_find(cu->seg, cu->u, group, arena) : NULL;
+		uint32	   *lead;
+		bool		have;
 
+		/* the chunk is still looked at (its pages are checked, its row count too), what is decoded and summed from it is the cache's */
+		if (kept && unit_chunk(cu, group, &c) && c.n == n)
+		{
+			g->counts = kept->counts;
+			g->eoff = kept->eoff;
+			g->nelems = kept->nelems;
+			g->nulls = c.nulls;
+			g->ovf = c.ovf;
+			g->ready = true;
+			return g;
+		}
+		lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
 		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
 		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
-		if (unit_chunk(cu, group, &c))
+		have = unit_chunk(cu, group, &c);
+		if (have)
 		{
 			if (c.n != n)
 				corrupt("The counts of group %d hold %u values for %u rows.", group, c.n, n);
@@ -167,6 +182,8 @@ unit_group(ColUnit *cu, int group)
 				corrupt("The counts of group %d add up to more than %u elements.", group, PG_UINT32_MAX);
 		}
 		g->nelems = g->eoff[n];
+		if (have && cu->seg)
+			sift_cseg_lens_keep(cu->seg, cu->u, group, n, g->counts, g->eoff);
 		g->ready = true;
 	}
 	return g;
