@@ -391,7 +391,7 @@ Unfrozen groups merge with everything: the output keeps the version vectors of t
    remain and the dead rows not yet removable, and the truncation. The counters of insert/update/delete that the AM reports keep
    autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
 
-`VACUUM FULL` and `CLUSTER` are `relation_copy_for_cluster`: the kept versions are written straight into frozen column segments of the
+`pg_repack` cannot rewrite a `sift_table` (it copies the rows into a heap table and swaps the files, which would replace the column segments with heap pages): the event trigger `sift_table_repack_guard` refuses its `repack.repack_trigger` on one, `pg_repack --only-indexes` is fine, and a run without `-t` stops at the first `sift_table`. `VACUUM FULL` and `CLUSTER` are `relation_copy_for_cluster`: the kept versions are written straight into frozen column segments of the
 new table with dense TIDs (`sift_tbl_bulk_*`: no row-format pages, no promotion). VACUUM FULL re-keys the rows of the old units as they decode
 (no tuple is formed) when every column segment has the current layout, then adds the write buffer rows; otherwise (after `ALTER TABLE`) it reads
 the scan's tuples. CLUSTER sorts the scan's tuples by a btree index whatever the planner's `use_sort` says (a TID fetch decodes the unit of
