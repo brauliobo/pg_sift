@@ -63,7 +63,7 @@ LANES = {
 }
 
 
-DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch', 'citus']
+DEFAULT_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint', 'es', 'es_cached', 'ch', 'citus']
 
 
 PG_ENGINES = ['pg', 'sift', 'sift_table', 'sift_maint', 'sift_table_maint', 'citus', *COMPRESSION]
