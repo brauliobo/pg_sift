@@ -24,19 +24,26 @@
 
 #include "agg/agg.h"
 #include "agg/colsrc.h"
+#include "agg/plan_int.h"
 #include "agg/refuse.h"
 #include "agg/rows.h"
 
 /*
- * The part of the inline plan that is the scans must cost this many times less than what the shared CTE's plan costs for it, on top of the unnest
- * factor that agg_cost charges its scans (the plain plan is priced with the 100 rows per call that PostgreSQL assumes for jsonb_to_recordset, the
- * data has a handful): S4 on 300000 orders stays on the materialized plan for the 400 store set and takes the inline one for the 4000 store set,
- * where it is 5 times cheaper. What is above the scans (a join of two aggregates, a window) is the same plan in both and not part of the test:
- * with scans S and the rest U, the plain plan costs U + P, the inline one U + S, and the margin is on P against S.
+ * The inline plan is kept when the scans cost this many times less than what the shared plan spends on the work they replace (the plans of the
+ * CTEs and the aggregates that read them). Both are prices of the same rows, so the plan above them, which PostgreSQL estimates from the rows
+ * each plan expects (the shared CTE one row, the scans a group count, and a join on an expression key the default selectivity), is not part of
+ * the comparison. The factor covers the scans' unnest charge (agg_cost prices the plain plan with the 100 rows per call that PostgreSQL assumes
+ * for jsonb_to_recordset, the data has a handful): shapes priced between 1.5 and 1.6 times cheaper ran slower inline than shared, 1.75 and up faster.
  */
-#define CTE_INLINE_MARGIN	2.0
+#define CTE_INLINE_MARGIN	1.6
+
+/* A plan above the scans priced this many times the shared plan has an estimate that cannot be trusted (a nested loop over a join of rows it takes for one). */
+#define CTE_INLINE_ABOVE	20.0
 
 static planner_hook_type prev_planner_hook;
+
+/* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
+static bool inline_won;
 
 static bool
 has_column_index(Oid relid)
@@ -64,85 +71,123 @@ shared_cte_over_column_index(CommonTableExpr *cte)
 	return false;
 }
 
-/* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With *inline_them they are all written NOT MATERIALIZED (the walk is of a copy of the query, and goes on) */
+/* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
+typedef struct SharedCteWalk
+{
+	bool		inline_them;
+	List	   *names;
+} SharedCteWalk;
+
+/* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With inline_them the walk goes on (it is of a copy of the query) */
 static bool
-shared_cte_walker(Node *n, bool *inline_them)
+shared_cte_walker(Node *n, SharedCteWalk *w)
 {
 	if (n == NULL)
 		return false;
 	if (!IsA(n, Query))
-		return expression_tree_walker(n, shared_cte_walker, inline_them);
+		return expression_tree_walker(n, shared_cte_walker, w);
 	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
 		if (shared_cte_over_column_index(cte))
 		{
-			if (!*inline_them)
+			if (!w->inline_them)
 				return true;
 			cte->ctematerialized = CTEMaterializeNever;
+			w->names = lappend(w->names, cte->ctename);
 		}
-	return query_tree_walker((Query *) n, shared_cte_walker, inline_them, 0);
+	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
 }
 
 static bool
 has_shared_cte(Query *parse)
 {
-	bool		inline_them = false;
+	SharedCteWalk w = {false, NIL};
 
-	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &inline_them);
+	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &w);
 }
 
-static double sift_agg_cost(Plan *plan);
-
-static double
-sift_agg_cost_list(List *plans)
+/* the plans a plan reads besides its left and right tree */
+static List *
+child_plans(Plan *plan)
 {
-	double		cost = 0;
-
-	foreach_ptr(Plan, p, plans)
-		cost += sift_agg_cost(p);
-	return cost;
-}
-
-/* what the SiftAgg nodes of the plan cost (they hold what is below them): 0 when it has none */
-static double
-sift_agg_cost(Plan *plan)
-{
-	double		cost = 0;
-
-	if (plan == NULL)
-		return 0;
-	if (IsA(plan, CustomScan) &&
-		(((CustomScan *) plan)->methods == &sift_agg_plan_methods || ((CustomScan *) plan)->methods == &sift_agg_rows_plan_methods))
-		return plan->total_cost;
 	switch (nodeTag(plan))
 	{
 		case T_Append:
-			cost += sift_agg_cost_list(((Append *) plan)->appendplans);
-			break;
+			return ((Append *) plan)->appendplans;
 		case T_MergeAppend:
-			cost += sift_agg_cost_list(((MergeAppend *) plan)->mergeplans);
-			break;
+			return ((MergeAppend *) plan)->mergeplans;
 		case T_SubqueryScan:
-			cost += sift_agg_cost(((SubqueryScan *) plan)->subplan);
-			break;
+			return list_make1(((SubqueryScan *) plan)->subplan);
 		case T_CustomScan:
-			cost += sift_agg_cost_list(((CustomScan *) plan)->custom_plans);
-			break;
+			return ((CustomScan *) plan)->custom_plans;
 		default:
-			break;
+			return NIL;
 	}
-	return cost + sift_agg_cost(plan->lefttree) + sift_agg_cost(plan->righttree);
+}
+
+typedef struct ScanArms
+{
+	double		total;
+	double		first;			/* the dearest arm */
+	int			n;
+} ScanArms;
+
+/*
+ * The SiftAgg nodes of the plan (they hold what is below them). The arms below a SiftAggRows node run as the sets of one pass over the index
+ * (agg/fuse.c), so they cost what plan_rows.c credits them; the node's own work and the join below it are the plan above the scans, as they
+ * are in the shared plan.
+ */
+static void
+sift_agg_arms(Plan *plan, ScanArms *a)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+	{
+		a->total += plan->total_cost;
+		a->first = Max(a->first, plan->total_cost);
+		a->n++;
+		return;
+	}
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_rows_plan_methods)
+	{
+		ScanArms	below = {0};
+
+		foreach_ptr(Plan, p, ((CustomScan *) plan)->custom_plans)
+			sift_agg_arms(p, &below);
+		a->total += below.total - (below.total - below.first) * (1.0 - AGG_FUSED_ARM);
+		a->first = Max(a->first, below.first);
+		a->n += below.n;
+		return;
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		sift_agg_arms(p, a);
+	sift_agg_arms(plan->lefttree, a);
+	sift_agg_arms(plan->righttree, a);
+}
+
+static void
+sift_agg_arms_list(List *plans, ScanArms *a)
+{
+	foreach_ptr(Plan, p, plans)
+		sift_agg_arms(p, a);
 }
 
 static bool
 uses_sift_agg(Plan *plan)
 {
-	return sift_agg_cost(plan) > 0;
+	ScanArms	a = {0};
+
+	sift_agg_arms(plan, &a);
+	return a.n > 0;
 }
 
 static bool
 any_sift_agg(List *plans)
 {
-	return sift_agg_cost_list(plans) > 0;
+	ScanArms	a = {0};
+
+	sift_agg_arms_list(plans, &a);
+	return a.n > 0;
 }
 
 /* the CTEs (plan ids) that a CteScan of the plan, or of a CTE it reads, names */
@@ -204,6 +249,74 @@ plan_cost_without_unread_ctes(PlannedStmt *stmt)
 	return Max(cost, 0.0);
 }
 
+/*
+ * What the shared plan spends on the work the scans take over: the plans of the CTEs that the inline plan has no more (once each), and the
+ * aggregates that read them (the node a scan replaces; a read with no aggregate above it counts as itself).
+ */
+typedef struct SharedWork
+{
+	PlannedStmt *stmt;
+	List	   *names;
+	Bitmapset  *seen;
+	List	   *arms;
+	int			readers;		/* the aggregates (or reads with none above) that take the CTEs' rows */
+	double		cost;
+} SharedWork;
+
+static void
+shared_work(SharedWork *w, Plan *plan, Plan *agg)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, Agg))
+		agg = plan;
+	if (IsA(plan, CteScan))
+	{
+		int			id = ((CteScan *) plan)->ctePlanId;
+		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, w->stmt->rtable);
+		bool		named = false;
+		Plan	   *body = list_nth(w->stmt->subplans, id - 1);
+
+		foreach_ptr(char, name, w->names)
+			named |= strcmp(name, rte->ctename) == 0;
+		if (named)
+		{
+			if (agg == NULL)
+			{
+				w->readers++;
+				w->cost += plan->total_cost;
+			}
+			else if (!list_member_ptr(w->arms, agg))
+			{
+				w->arms = lappend(w->arms, agg);
+				w->readers++;
+				w->cost += agg->total_cost;
+			}
+		}
+		if (!bms_is_member(id, w->seen))
+		{
+			w->seen = bms_add_member(w->seen, id);
+			if (named)
+				w->cost += body->total_cost;
+			shared_work(w, body, NULL);
+		}
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		shared_work(w, p, agg);
+	shared_work(w, plan->lefttree, agg);
+	shared_work(w, plan->righttree, agg);
+}
+
+static double
+shared_work_cost(PlannedStmt *stmt, List *names, int *readers)
+{
+	SharedWork	w = {stmt, names, NULL, NIL, 0, 0};
+
+	shared_work(&w, stmt->planTree, NULL);
+	*readers = w.readers;
+	return w.cost;
+}
+
 static PlannedStmt *
 plan_cte(SIFT_PLANNER_PARAMS)
 {
@@ -211,31 +324,44 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	PlannedStmt *plain,
 			   *inlined;
 	const char *outer_variant;
+	SharedCteWalk walk = {true, NIL};
+	ScanArms	scans = {0};
 	double		plain_cost,
-				scan_cost;
+				work;
+	int			readers;
 
+	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
 			standard_planner(SIFT_PLANNER_ARGS(parse));
 	inline_parse = copyObject(parse);
-	shared_cte_walker((Node *) inline_parse, &(bool) {true});
+	shared_cte_walker((Node *) inline_parse, &walk);
 	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
 		standard_planner(SIFT_PLANNER_ARGS(parse));
 	outer_variant = agg_variant_push("inline");
 	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
 		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
 	agg_variant = outer_variant;
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
 	plain_cost = plan_cost_without_unread_ctes(plain);
-	scan_cost = sift_agg_cost(inlined->planTree) + sift_agg_cost_list(inlined->subplans);
-	if (scan_cost > 0 && (CTE_INLINE_MARGIN - 1.0) * scan_cost < plain_cost - inlined->planTree->total_cost)
+	sift_agg_arms(inlined->planTree, &scans);
+	sift_agg_arms_list(inlined->subplans, &scans);
+	work = shared_work_cost(plain, walk.names, &readers);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans for %d readers",
+		 plain_cost, inlined->planTree->total_cost, scans.total, work, scans.n, readers);
+	/*
+	 * When every reader of the CTE is a scan, the scans are weighed against the work they replace. When some reader stays an ordinary aggregate
+	 * (the index lacks a column of it) the plan reads the table twice and the totals decide.
+	 */
+	if (scans.n > 0 && (scans.n >= readers ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
+						scans.total < plain_cost - inlined->planTree->total_cost))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
+		inline_won = true;
 		return inlined;
 	}
-	if (sift_explain_refusals && scan_cost > 0)
+	if (sift_explain_refusals && scans.n > 0)
 		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
-				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f", inlined->planTree->total_cost, scan_cost, plain_cost), false);
+				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", inlined->planTree->total_cost, scans.total, plain_cost, work), false);
 	return plain;
 }
 
@@ -273,8 +399,12 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	if (flat == NULL)
 		return plain;
 	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat));
-	return (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && flatplan->planTree->total_cost < plain->planTree->total_cost ?
-		flatplan : plain;
+	if (!uses_sift_agg(flatplan->planTree) && !any_sift_agg(flatplan->subplans))
+		return plain;
+	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
+	if (inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans))
+		return flatplan;
+	return flatplan->planTree->total_cost < plain->planTree->total_cost ? flatplan : plain;
 }
 
 /*
