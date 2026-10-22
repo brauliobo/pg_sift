@@ -84,6 +84,7 @@
 #include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/stats.h"
+#include "col/am.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -985,6 +986,8 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
+	if (OidIsValid(c->spec->indexoid))
+		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted);
 	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
 	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
 	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);
