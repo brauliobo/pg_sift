@@ -8,6 +8,7 @@
 #include "bm25/query.h"
 #include "bm25/query_int.h"
 #include "core/cmp.h"
+#include "core/limits.h"
 
 /* ---------------------------------------------------------------- analysis */
 
@@ -84,8 +85,8 @@ analyze_words(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 
 	if (nt <= 1)
 		return nt ? new_leaf(raw, SQ_TERM, tok[0].str, tok[0].len, boost) : NULL;
-	if (nt > SIFT_MAX_PHRASE)
-		LIMIT(raw->loc, "phrase longer than %d terms", SIFT_MAX_PHRASE);
+	if (nt > sift_limit(phrase_terms, SIFT_MAX_PHRASE))
+		LIMIT(raw->loc, "phrase longer than %d terms", (int) sift_limit(phrase_terms, SIFT_MAX_PHRASE));
 	n = sift_query_new_node(SQ_PHRASE, raw->loc);
 	n->boost = boost;
 	n->nterms = nt;
