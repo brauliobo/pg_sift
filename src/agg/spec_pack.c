@@ -249,6 +249,22 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, j->coltypmod[k]);
 			put_int(p, (int) j->colcoll[k]);
 		}
+		put_int(p, j->first.ok);
+		if (j->first.ok)
+		{
+			put_int(p, j->first.use);
+			put_int(p, (int) j->first.relid);
+			put_int(p, j->first.nkey);
+			for (int k = 0; k < j->first.nkey; k++)
+			{
+				put_int(p, j->first.keyatt[k]);
+				put_int(p, (int) j->first.keytype[k]);
+				put_int(p, j->first.keyarg[k]);
+			}
+			put_int(p, j->first.ncol);
+			for (int k = 0; k < j->first.ncol; k++)
+				put_int(p, j->first.col[k]);
+		}
 		put_str(p, j->desc);
 	}
 	put_int(p, s->ncombo);
@@ -602,6 +618,21 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->coltype[k] = (Oid) get_int(u);
 			j->coltypmod[k] = get_int(u);
 			j->colcoll[k] = (Oid) get_int(u);
+		}
+		if ((j->first.ok = get_int(u)))
+		{
+			j->first.use = get_int(u);
+			j->first.relid = (Oid) get_int(u);
+			j->first.nkey = get_int(u);
+			for (int k = 0; k < j->first.nkey; k++)
+			{
+				j->first.keyatt[k] = get_int(u);
+				j->first.keytype[k] = (Oid) get_int(u);
+				j->first.keyarg[k] = get_int(u);
+			}
+			j->first.ncol = get_int(u);
+			for (int k = 0; k < j->first.ncol; k++)
+				j->first.col[k] = get_int(u);
 		}
 		j->desc = get_str(u);
 	}

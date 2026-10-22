@@ -1081,8 +1081,18 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		if (jc->j.params != NIL)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
+			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
+			double		native = combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 
-			k->child_cost += combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			/* the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input */
+			f->use = f->ok && jc->frows * AGG_JOIN_ROW < native;
+			if (f->use)
+			{
+				k->load_rows += jc->frows;
+				k->load_cost += jc->frows * AGG_JOIN_ROW;
+			}
+			else
+				k->child_cost += native;
 			continue;
 		}
 		rows = join_load_rows(jc, c->root, &row_cost);
