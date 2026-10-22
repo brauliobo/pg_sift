@@ -208,6 +208,7 @@ put_arms(Pack *p, const SiftAggSpec *s)
 	put_int(p, s->spine != NULL);
 	if (s->spine == NULL)
 		return;
+	put_int(p, s->spine->left);
 	put_int(p, s->spine->child);
 	put_int(p, s->spine->ncol);
 	put_int(p, s->spine->npair);
@@ -611,6 +612,7 @@ get_arms(Unpack *u, SiftAggSpec *s)
 	if (!get_int(u))
 		return;
 	s->spine = palloc0(sizeof(SiftAggSpine));
+	s->spine->left = get_int(u);
 	s->spine->child = get_int(u);
 	s->spine->ncol = get_int(u);
 	s->spine->npair = get_int(u);

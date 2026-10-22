@@ -871,9 +871,19 @@ spine_item(Node *n)
 	return IsA(n, RangeTblRef) ? ((RangeTblRef *) n)->rtindex : 0;
 }
 
+/* the WHERE of the query reads the spine only (PostgreSQL moved the WHERE of a spine sub-select up): the rows of the spine are the filtered ones */
+static bool
+spine_where(PlannerInfo *root, Index spine)
+{
+	foreach_ptr(Node, q, (List *) root->parse->jointree->quals)
+		if (!bms_equal(pull_varnos(root, q), bms_make_singleton(spine)))
+			return false;
+	return true;
+}
+
 /*
- * The FROM item is the arms, or `spine JOIN arms ON equalities` (either order; the WHERE would filter the joined rows, so there is none).
- * A subquery PostgreSQL did not pull up and a plan of a few rows are what the spine can be.
+ * The FROM item is the arms, or `spine JOIN arms ON equalities` (either order) or `spine LEFT JOIN arms ON equalities`; the WHERE would
+ * filter the joined rows, so it reads the spine only. A subquery PostgreSQL did not pull up and a plan of a few rows are what the spine can be.
  */
 static bool
 two_from(TwoLevel *t)
@@ -892,24 +902,26 @@ two_from(TwoLevel *t)
 	}
 	while (IsA(from, FromExpr) && list_length(((FromExpr *) from)->fromlist) == 1 && ((FromExpr *) from)->quals == NULL)
 		from = linitial(((FromExpr *) from)->fromlist);
-	if (!IsA(from, JoinExpr) || parse->jointree->quals != NULL || parse->groupingSets != NIL)
+	if (!IsA(from, JoinExpr) || parse->groupingSets != NIL)
 		return false;
 	j = (JoinExpr *) from;
-	if (j->jointype != JOIN_INNER)
+	if (j->jointype != JOIN_INNER && j->jointype != JOIN_LEFT)
 		return false;
-	for (int side = 0; side < 2; side++)
+	/* the preserved side of a LEFT JOIN is the left one: the spine */
+	for (int side = 0; side < (j->jointype == JOIN_LEFT ? 1 : 2); side++)
 	{
 		Node	   *a = side == 0 ? j->rarg : j->larg,
 				   *b = side == 0 ? j->larg : j->rarg;
 		Index		spine = spine_item(b);
 
 		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY &&
-			outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
+			spine_where(t->root, spine) && outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
 		{
 			t->join = j;
 			t->srti = ((RangeTblRef *) a)->rtindex;
 			t->spine_rti = spine;
 			t->spine = palloc0(sizeof(SiftAggSpine));
+			t->spine->left = j->jointype == JOIN_LEFT;
 			return true;
 		}
 	}

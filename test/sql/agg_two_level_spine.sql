@@ -1,6 +1,7 @@
--- The arms of a two-level aggregate joined to a spine (a VALUES list, a series or a small table: `spine JOIN arms ON key equalities`): each cell is
--- repeated for each spine row its keys equal, and the columns of the spine are group keys. Every query runs as the two-level scan, as the arms
--- alone (sift.agg_two_level off) and as the normal plan; the answers must be the same.
+-- The arms of a two-level aggregate joined to a spine (a VALUES list, a series or a small table of buckets: `spine JOIN arms ON key equalities`, or
+-- `spine LEFT JOIN arms`, which keeps the buckets no arm row has): each cell is added to the group of each spine row its keys equal, and the
+-- columns of the spine are group keys. Every query runs as the two-level scan, as the arms alone (sift.agg_two_level off) and as the normal
+-- plan; the answers must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
@@ -17,8 +18,11 @@ CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) 
 CREATE TABLE buckets (kind text, ts date, label text) WITH (autovacuum_enabled = false);
 INSERT INTO buckets VALUES ('k0', '2025-01-01', 'a'), ('k0', '2025-01-02', 'b'), ('k1', '2025-01-01', 'c'), ('k1', '2025-01-01', 'd'),
                            ('k2', '2025-01-04', 'e'), (NULL, '2025-01-03', 'f'), (NULL, NULL, 'g'), ('k9', '2025-01-01', 'h');
+CREATE TABLE ticks (a int, b int) WITH (autovacuum_enabled = false);
+INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 3000) i;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) buckets;
+VACUUM (FREEZE, ANALYZE) ticks;
 
 -- the arms: per row and category, and per row (a column of the table of rows can be a key of the cells)
 CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
@@ -29,10 +33,11 @@ CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
 	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
 $$;
 
--- the outer aggregates over the spine (columns kind, ts and label) joined to the arms
+-- the outer aggregates over the spine (columns kind, ts and label) joined to the arms; count(*) counts the joined rows, a row of a LEFT JOIN no cell matched included
 CREATE FUNCTION report(spine text, cond text, keys text DEFAULT 'category, sp.label', jointype text DEFAULT 'JOIN', hint text DEFAULT '') RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH sp(kind, ts, label) AS %s (%s)
-	  SELECT %s, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(*) AS cells, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	  SELECT %s, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(*) AS cells, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents,
+	         count(*) FILTER (WHERE score >= 5.0::float8) AS high, sum(n) FILTER (WHERE n > 1) AS multi
 	  FROM sp %s %s ON %s GROUP BY %s ORDER BY 1, 2$q$, hint, spine, keys, jointype, arms(), cond, keys)
 $$;
 
@@ -65,32 +70,42 @@ BEGIN
 	RETURN a = 0 AND b = 0 AND (n > 0) <> empty AND (NOT scan OR pushed(q));
 END $$;
 
--- a VALUES list, joined by an equality: a NULL kind of the spine matches no cell, one kind that is twice in it repeats the cells
-SELECT same(report($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), ('k1', NULL, 'c'), (NULL, NULL, 'd'), ('k7', NULL, 'e')$s$, 'm.kind = sp.kind')) AS values_equal;
+-- each check as an inner and as a left join of the spine
+CREATE FUNCTION each_join(spine text, cond text, keys text DEFAULT 'category, sp.label', hint text DEFAULT '') RETURNS TABLE (jointype text, ok bool) LANGUAGE sql AS $$
+	SELECT j, same(report(spine, cond, keys, j, hint)) FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j
+$$;
+
+-- a VALUES list, joined by an equality: a NULL kind of the spine matches no cell, one kind that is twice in it repeats the cells, 'k7' has none
+SELECT * FROM each_join($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), ('k1', NULL, 'c'), (NULL, NULL, 'd'), ('k7', NULL, 'e')$s$, 'm.kind = sp.kind');
 -- null-safe: the NULL kind of the spine matches the cells without a kind
-SELECT same(report($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), ('k1', NULL, 'c'), (NULL, NULL, 'd'), ('k7', NULL, 'e')$s$,
-                   'm.kind IS NOT DISTINCT FROM sp.kind')) AS values_null_safe;
+SELECT * FROM each_join($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), ('k1', NULL, 'c'), (NULL, NULL, 'd'), ('k7', NULL, 'e')$s$, 'm.kind IS NOT DISTINCT FROM sp.kind');
 -- two columns as the elements of jsonb arrays (null-safe), a table of buckets with duplicates, NULLs and a row nothing matches
-SELECT same(report('SELECT kind, ts, label FROM buckets', 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, sp.ts)')) AS table_jsonb_array;
-SELECT same(report('TABLE buckets', 'm.kind = sp.kind AND m.ts = sp.ts')) AS table_two_equalities;
--- the spine column is the only key, and a key of the arms is not an outer key (the join reads it)
-SELECT same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'sp.label')) AS spine_key_only;
+SELECT * FROM each_join('SELECT kind, ts, label FROM buckets', 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, sp.ts)');
+SELECT * FROM each_join('TABLE buckets', 'm.kind = sp.kind AND m.ts = sp.ts');
+-- the spine column is the only key (a label that two rows have, one that no cell matches), and the key of the arms is not an outer key
+SELECT * FROM each_join($s$VALUES ('k0', NULL::date, 'x'), ('k7', NULL, 'x'), ('k1', NULL, 'y'), ('k8', NULL, 'z'), ('k8', NULL, 'z')$s$, 'm.kind = sp.kind', 'sp.label');
 -- the arms' column is a key too, next to the spine's
-SELECT same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'category, m.kind, sp.label')) AS arm_key_and_spine_key;
--- a constant of the spine: only the cells with a NULL timestamp, which there are none of
-SELECT same(report($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b')$s$, 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, NULL::date)'), true) AS constant_no_match;
-SELECT same(report($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b')$s$, 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, DATE ''2025-01-03'')')) AS constant_match;
--- a series (the integer parent of the rows, which is NULL for some)
-SELECT same(format($q$SELECT s.i, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(*) AS cells, count(DISTINCT id) AS ids
-                      FROM generate_series(0, 5) s(i) JOIN %s ON m.parent_id = s.i GROUP BY s.i ORDER BY 1$q$, arms())) AS series;
--- a VALUES list of one row is constants in the query: no spine
-SELECT same(report($s$VALUES ('k2', NULL::date, 'only')$s$, 'm.kind = sp.kind'), scan => false) AS one_row;
+SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'category, m.kind, sp.label');
+-- a constant of the spine: only the cells with a NULL timestamp, which there are none of (no group, or the spine's rows alone); or those of one day
+SELECT j AS jointype, same(report($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b')$s$, 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, NULL::date)',
+                                  'category, sp.label', j), j = 'JOIN') AS ok
+FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
+SELECT * FROM each_join($s$VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b')$s$, 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, DATE ''2025-01-03'')');
+-- a series (the integer parent of the rows, which is NULL for some); 600 and above have no row
+SELECT j AS jointype, same(format($q$SELECT s.i, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(*) AS cells, count(DISTINCT id) AS ids
+                                      FROM generate_series(595, 603) s(i) %s %s ON m.parent_id = s.i GROUP BY s.i ORDER BY 1$q$, j, arms())) AS ok
+FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
+-- two spine columns of 3,000 values each are more groups than the direct table holds: the groups are hashed
+SELECT j AS jointype, same(format($q$SELECT t.a, t.b, round(avg(score)::numeric, 6) AS value, count(*) AS cells, count(DISTINCT id) AS ids
+                                      FROM ticks t %s %s ON m.parent_id = t.a GROUP BY t.a, t.b ORDER BY 1, 2$q$, j, arms())) AS ok
+FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
 -- a spine without rows: no group
-SELECT same(report($s$SELECT * FROM buckets WHERE label > 'zzz'$s$, 'm.kind = sp.kind'), true) AS empty_spine;
--- a spine that no cell matches
-SELECT same(report($s$VALUES ('nothing', NULL::date, 'x'), ('none', NULL, 'y')$s$, 'm.kind = sp.kind'), true) AS no_match;
+SELECT same(report($s$SELECT * FROM buckets WHERE label > 'zzz'$s$, 'm.kind = sp.kind', 'category, sp.label', j), true) AS empty_spine FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
+-- a spine that no cell matches: no group, or one per spine row, of NULL arm columns
+SELECT j AS jointype, same(report($s$VALUES ('nothing', NULL::date, 'x'), ('none', NULL, 'y')$s$, 'm.kind = sp.kind', 'category, sp.label', j), j = 'JOIN') AS ok
+FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
 -- the spine is read twice by the query: a common table expression that PostgreSQL keeps
-SELECT same(report('TABLE buckets', 'm.kind = sp.kind', hint => 'MATERIALIZED')) AS materialized_spine;
+SELECT * FROM each_join('TABLE buckets', 'm.kind = sp.kind', hint => 'MATERIALIZED');
 
 -- the plan shows the spine's rows as a child of the scan
 CREATE FUNCTION plan_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
@@ -100,12 +115,14 @@ BEGIN
 		IF l ~ '(Group Keys|Cell Keys|Seq Scan|Values Scan)' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
-SELECT * FROM plan_lines(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind'));
+SELECT * FROM plan_lines(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'category, sp.label', 'LEFT JOIN'));
 
--- shapes that keep the normal plan, with the same answer: an outer join, a condition of the join that is no equality, a WHERE, a column of another type
+-- shapes that keep the normal plan, with the same answer: a VALUES list of one row (constants in the query), a volatile condition of the spine,
+-- the arms on the preserved side, a condition of the join that is no equality, one that is an OR, an expression, a column of another type
+SELECT same(report($s$VALUES ('k2', NULL::date, 'only')$s$, 'm.kind = sp.kind'), scan => false) AS one_row;
 SELECT same(report($s$SELECT * FROM buckets WHERE random() < 2$s$, 'm.kind = sp.kind'), scan => false) AS volatile_spine;
-SELECT same(report('TABLE buckets', 'm.kind = sp.kind', jointype => 'LEFT JOIN'), scan => false) AS left_join;
-SELECT same(report('TABLE buckets', 'm.kind = sp.kind AND m.n > 1'), scan => false) AS other_condition;
+SELECT same(report('TABLE buckets', 'm.kind = sp.kind', jointype => 'RIGHT JOIN'), scan => false) AS arms_preserved;
+SELECT same(report('TABLE buckets', 'm.kind = sp.kind AND m.n > 1', jointype => 'LEFT JOIN'), scan => false) AS other_condition;
 SELECT same(report('TABLE buckets', 'm.kind = sp.kind OR m.ts = sp.ts'), scan => false) AS or_condition;
 SELECT same(report('TABLE buckets', 'm.ts + 1 = sp.ts + 1'), scan => false) AS expression_key;
 SELECT same(report('SELECT kind::varchar, ts, label FROM buckets', 'm.kind = sp.kind'), scan => false) AS other_type;
@@ -114,15 +131,16 @@ SELECT same(report('SELECT kind::varchar, ts, label FROM buckets', 'm.kind = sp.
 UPDATE events SET doc = jsonb_set(doc, '{parts,0,score}', '9') WHERE id % 17 = 0 AND doc IS NOT NULL;
 UPDATE events SET kind = 'k' || (id + 1) % 5, ts = ts + 1, parent_id = (parent_id + 1) % 600 WHERE id % 19 = 0;
 DELETE FROM events WHERE id % 23 = 0;
-SELECT same(report('TABLE buckets', 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, sp.ts)')) AS dirty_rows;
-SELECT same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind')) AS dirty_null_safe;
+SELECT * FROM each_join('TABLE buckets', 'jsonb_build_array(m.kind, m.ts) = jsonb_build_array(sp.kind, sp.ts)');
+SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind');
+-- a bucket that had no cell has some now
 UPDATE buckets SET kind = 'k3' WHERE label = 'h';
-SELECT same(report('TABLE buckets', 'm.kind = sp.kind')) AS dirty_spine;
+SELECT * FROM each_join('TABLE buckets', 'm.kind = sp.kind');
 
 -- a hash that does not fit the memory
 SET work_mem = '256kB';
 SET hash_mem_multiplier = 1;
-SELECT same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind')) AS small_memory;
+SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind');
 RESET work_mem;
 RESET hash_mem_multiplier;
 
@@ -132,14 +150,14 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
-SELECT same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind'), scan => false) AS parallel;
+SELECT j AS jointype, same(report('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'category, sp.label', j), scan => false) AS ok FROM unnest(ARRAY['JOIN', 'LEFT JOIN']) j;
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
 RESET min_parallel_index_scan_size;
 
-DROP FUNCTION plan_lines(text), same(text, bool, bool), pushed(text), report(text, text, text, text, text), arms();
+DROP FUNCTION plan_lines(text), each_join(text, text, text, text), same(text, bool, bool), pushed(text), report(text, text, text, text, text), arms();
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
