@@ -14,7 +14,7 @@ INSERT INTO cc SELECT i,
 	CASE WHEN i % 31 = 0 THEN NULL ELSE timestamptz '2000-01-01 00:00+00' + (i::bigint * 10007 % (700 * 86400)) * interval '1 second' END,
 	i % 10, ((i::bigint * 37) % 100000)::numeric / 100, repeat('p', 100)
 FROM generate_series(1, 30000) i;
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cc;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) cc;
 CREATE INDEX cc_off ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CREATE INDEX cc_on ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts, d, tz', cube_minmax = false, superunit = 0);
 CREATE INDEX cc_all ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'all', cube_minmax = false, superunit = 0);

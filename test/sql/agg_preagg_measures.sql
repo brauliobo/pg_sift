@@ -73,7 +73,7 @@ CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, flag, amt, score, n2, n
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, flag, amt, score, n2, n4, n8, cnt, extra) WITH (write_buffer_limit = 4096);
 CREATE INDEX eo_col ON eo USING sift_col (id, kind, grp, flag, amt, score, n2, n4, n8, cnt, extra) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
 SELECT sift.col_verify('ec_col', true);
 
 -- 1. built, every page all-visible
@@ -96,7 +96,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) ec, ed;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
 SELECT * FROM pa_check('ec');
 
 -- 4. rows in the write buffer (a kind no unit holds), then sealed
@@ -105,12 +105,12 @@ FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ec');
 SELECT kind, sum(n8), sum(n4) FROM ec WHERE kind >= 7 GROUP BY kind ORDER BY kind;
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT * FROM pa_check('ec');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT sift.col_verify('ec_col', true);
 SELECT * FROM pa_check('ec');
 
@@ -122,7 +122,7 @@ SELECT sift.col_promote('ed_col') >= 0 AS promoted;
 ALTER INDEX ed_col SET (preagg = 'default');
 INSERT INTO ed SELECT g + 600000, g % 7, 'g' || (g % 30), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 200) FROM generate_series(1, 6000) g;
 SELECT sift.col_promote('ed_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ed;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ed;
 SELECT * FROM pa_check('ed', 1, 9);
 
 -- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge

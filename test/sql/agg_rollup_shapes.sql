@@ -19,7 +19,7 @@ FROM generate_series(1, 12000) g;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, items)
 	WITH (paths = 'items[]{kind text, flag text, band int4, seen text, score float8, qty int4}', write_buffer_limit = 4096,
 	      rollup = 'items[].kind, items[].flag, items[].band, items[].seen');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ev;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ev;
 CREATE TABLE ev_dim AS SELECT 'k' || k AS kind, 'L' || (k % 2) AS label FROM generate_series(0, 4) k;
 ANALYZE ev_dim;
 
@@ -82,7 +82,7 @@ SELECT * FROM pa_check('ev');
 UPDATE ev SET items = '[{"kind": "k1", "flag": "fa", "band": 9, "seen": "2026-02-10", "score": 1.5, "qty": 2}]' WHERE id BETWEEN 100 AND 150;
 DELETE FROM ev WHERE id BETWEEN 7000 AND 7100;
 SELECT * FROM pa_check('ev');
-VACUUM (index_cleanup on, disable_page_skipping) ev;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
 
 -- rows in the write buffer, then sealed
@@ -90,13 +90,13 @@ INSERT INTO ev SELECT g, g % 7, '[{"kind": null, "flag": "fc", "band": null, "se
 FROM generate_series(20001, 20800) g;
 SELECT * FROM pa_check('ev');
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ev;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
 SELECT sift.col_verify('ev_col', true);
 
 -- merged: the dead rows are gone and every unit is stored with its rollup again
 SELECT sift.col_merge('ev_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ev;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ev;
 SELECT sift.col_verify('ev_col', true);
 SELECT * FROM pa_check('ev');
 

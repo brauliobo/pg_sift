@@ -216,7 +216,7 @@ SELECT count(*) FILTER (WHERE NOT exact) > 0 AS some_inexact, count(*) FILTER (W
 (1 row)
 
 -- VACUUM makes the pages all-visible again but the units still hold the dead rows: still inexact where dirty
-VACUUM (DISABLE_PAGE_SKIPPING) pe;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
