@@ -58,8 +58,7 @@ sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **b
 		if (!istr_split(c, &pre, &prelen, &pl, &len))
 			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the inline text payload is malformed")));
 	}
-	if (sift_cc_decode_strs(mcxt, pl, len, off, bytes) != c->n)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the string list does not hold %u values", c->n)));
+	sift_cc_decode_strs(mcxt, pl, len, c->n, off, bytes);
 }
 
 /* The lengths of the strings of a STRS or ISTR chunk, the keys of its VAR zone and of its row tests */
