@@ -4,6 +4,8 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "col/codec.h"
+#include "col/compress.h"
 #include "col/enc_int.h"
 #include "core/cmp.h"
 #include "core/limits.h"
@@ -324,30 +326,79 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
  * (1) with the codec's list (the lengths as an integer cascade, the bytes under the cold wrapper rule), which starts 8-aligned.
  */
 
-/* The form searched in place: the strings as they are (no offsets when they all have one length) and the codes in byte order of the strings */
+/*
+ * The form searched in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a
+ * string is one read of its block, the work of a bisection is a few of them), and the codes in byte order of the strings
+ */
 static void
-serialize_lookup(SiftCDict *d, StringInfo out)
+serialize_lookup(SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
 {
 	uint32		form = DICT_LOOKUP,
 				fixed = d->n > 0 ? cdict_len(d, 0) : 0,
-				nbytes = (uint32) d->nbytes;
-	int			start = out->len;
+				nbytes = (uint32) d->nbytes,
+				nblk = (d->n + DICT_BLOCK - 1) / DICT_BLOCK,
+				zero = 0;
+	int			start = out->len,
+				tab;
+	uint32	   *boff = palloc((nblk + 1) * sizeof(uint32));
+	uint8	   *raw = palloc(DICT_BLOCK_RAW_MAX),
+			   *z = NULL;
+	Size		zcap = sift_colz_bound(SIFT_CC_ALG_ZSTD, DICT_BLOCK_RAW_MAX);
+	bool		zip = pol != NULL && pol->mode != SIFT_CCM_NONE && sift_colz_available(SIFT_CC_ALG_ZSTD);
 
 	for (uint32 c = 1; c < d->n && fixed != 0; c++)
 		if (cdict_len(d, c) != fixed)
 			fixed = 0;
 	if (d->sorted == NULL)
 		cdict_sort(d);
+	if (zip)
+		z = palloc(zcap);
 	put_val(out, form);
 	put_val(out, d->n);
 	put_val(out, fixed);
 	put_val(out, nbytes);
-	if (fixed == 0)
-		put_bytes(out, d->off, ((Size) d->n + 1) * sizeof(uint32));
-	put_bytes(out, d->bytes, d->nbytes);
+	tab = out->len;
+	for (uint32 b = 0; b <= nblk; b++)
+		put_val(out, zero);
+	boff[0] = 0;
+	for (uint32 b = 0; b < nblk; b++)
+	{
+		uint32		lo = b * DICT_BLOCK,
+					cnt = Min(DICT_BLOCK, d->n - lo),
+					rawlen = 0,
+					clen = 0;
+		uint8		hdr[DICT_BLOCK_HEAD] = {0};
+
+		if (fixed == 0)
+			for (uint32 i = 0; i < cnt; i++)
+				raw[rawlen++] = (uint8) cdict_len(d, lo + i);
+		memcpy(raw + rawlen, d->bytes + d->off[lo], d->off[lo + cnt] - d->off[lo]);
+		rawlen += d->off[lo + cnt] - d->off[lo];
+		if (zip)
+			clen = (uint32) sift_colz_compress(SIFT_CC_ALG_ZSTD, 0, raw, rawlen, z, zcap);
+		hdr[2] = (uint8) rawlen;
+		hdr[3] = (uint8) (rawlen >> 8);
+		if (clen > 0 && clen < rawlen)
+		{
+			hdr[0] = SIFT_CC_ALG_ZSTD;
+			put_bytes(out, hdr, sizeof(hdr));
+			put_bytes(out, z, clen);
+		}
+		else
+		{
+			put_bytes(out, hdr, sizeof(hdr));
+			put_bytes(out, raw, rawlen);
+		}
+		boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
+	}
+	memcpy(out->data + tab, boff, (nblk + 1) * sizeof(uint32));
 	while ((out->len - start) % sizeof(uint32))
 		appendStringInfoChar(out, '\0');
 	put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
+	pfree(boff);
+	pfree(raw);
+	if (z)
+		pfree(z);
 }
 
 void
@@ -359,7 +410,7 @@ sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringI
 
 	if (lookup && d->n > 0)
 	{
-		serialize_lookup(d, out);
+		serialize_lookup(d, pol, out);
 		return;
 	}
 	z.data = NULL;
@@ -410,41 +461,114 @@ cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
 static SiftCDict *
 parse_lookup(MemoryContext mcxt, const uint8 *p, Size len, Size *used)
 {
-	uint32		head[4];
-	uint64		offs,
-				end,
+	uint32		head[4],
+				n,
+				fixed,
+				nbytes,
+				nblk,
+				pos = 0;
+	uint64		blk0,
 				total;
-	uint32	   *off;
-	SiftCDict  *d;
+	uint32	   *boff,
+			   *off;
+	uint8	   *raw;
+	char	   *bytes;
+	SiftCDict  *d = NULL;
+	bool		ok = true;
 
 	if (len < DICT_HEAD_LOOKUP)
 		return NULL;
 	memcpy(head, p, DICT_HEAD_LOOKUP);
-	offs = head[2] == 0 ? ((uint64) head[1] + 1) * sizeof(uint32) : 0;
-	end = DICT_HEAD_LOOKUP + offs + head[3];
-	total = (end + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) head[1] * sizeof(uint32);
-	if (head[1] == 0 || total > len || head[2] > SIFT_COL_DICT_MAX_ENTRY || (head[2] != 0 && (uint64) head[1] * head[2] != head[3]))
+	n = head[1];
+	fixed = head[2];
+	nbytes = head[3];
+	if (n == 0 || fixed > SIFT_COL_DICT_MAX_ENTRY || (fixed != 0 && (uint64) n * fixed != nbytes))
 		return NULL;
-	off = palloc(((Size) head[1] + 1) * sizeof(uint32));
-	if (head[2] == 0)
-		memcpy(off, p + DICT_HEAD_LOOKUP, offs);
-	else
-		for (uint32 c = 0; c <= head[1]; c++)
-			off[c] = c * head[2];
-	if (off[head[1]] != head[3])
+	nblk = (n + DICT_BLOCK - 1) / DICT_BLOCK;
+	blk0 = DICT_HEAD_LOOKUP + ((uint64) nblk + 1) * sizeof(uint32);
+	if (blk0 > len)
+		return NULL;
+	boff = palloc(((Size) nblk + 1) * sizeof(uint32));
+	memcpy(boff, p + DICT_HEAD_LOOKUP, ((Size) nblk + 1) * sizeof(uint32));
+	total = (blk0 + boff[nblk] + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) n * sizeof(uint32);
+	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
-		pfree(off);
+		pfree(boff);
 		return NULL;
 	}
-	d = cdict_from(mcxt, head[1], off, (const char *) p + DICT_HEAD_LOOKUP + offs);
+	off = palloc(((Size) n + 1) * sizeof(uint32));
+	bytes = palloc(Max(nbytes, 1));
+	raw = palloc(DICT_BLOCK_RAW_MAX);
+	for (uint32 b = 0; b < nblk && ok; b++)
+	{
+		uint32		lo = b * DICT_BLOCK,
+					cnt = Min(DICT_BLOCK, n - lo),
+					rawlen,
+					clen,
+					sum = 0;
+		const uint8 *h = p + blk0 + boff[b],
+				   *src;
+
+		if (boff[b + 1] < boff[b] + DICT_BLOCK_HEAD)
+		{
+			ok = false;
+			break;
+		}
+		clen = boff[b + 1] - boff[b] - DICT_BLOCK_HEAD;
+		rawlen = h[2] | (uint32) h[3] << 8;
+		src = h + DICT_BLOCK_HEAD;
+		if (rawlen > DICT_BLOCK_RAW_MAX)
+			ok = false;
+		else if (h[0] == 0)
+			ok = clen == rawlen;
+		else
+		{
+			ok = h[0] == SIFT_CC_ALG_ZSTD && sift_colz_available(h[0]) && sift_colz_decompress(h[0], src, clen, raw, rawlen);
+			src = raw;
+		}
+		if (ok && fixed != 0)
+		{
+			ok = rawlen == cnt * fixed;
+			for (uint32 i = 0; ok && i < cnt; i++)
+				off[lo + i] = pos + i * fixed;
+			sum = rawlen;
+		}
+		else if (ok)
+		{
+			ok = rawlen >= cnt;
+			for (uint32 i = 0; ok && i < cnt; i++)
+			{
+				off[lo + i] = pos + sum;
+				sum += src[i];
+				ok = src[i] <= SIFT_COL_DICT_MAX_ENTRY;
+			}
+			ok = ok && sum == rawlen - cnt;
+			src += cnt;
+		}
+		if (ok)
+			ok = (uint64) pos + sum <= nbytes;
+		if (ok)
+		{
+			memcpy(bytes + pos, src, sum);
+			pos += sum;
+		}
+	}
+	if (ok && pos == nbytes)
+	{
+		off[n] = pos;
+		d = cdict_from(mcxt, n, off, bytes);
+	}
+	pfree(boff);
 	pfree(off);
+	pfree(bytes);
+	pfree(raw);
 	if (d == NULL)
 		return NULL;
 	d->stored_order = true;
-	d->sorted = MemoryContextAlloc(mcxt, (Size) head[1] * sizeof(uint32));
-	memcpy(d->sorted, p + (total - (uint64) head[1] * sizeof(uint32)), (Size) head[1] * sizeof(uint32));
-	for (uint32 i = 0; i < head[1]; i++)
-		if (d->sorted[i] >= head[1])
+	d->sorted = MemoryContextAlloc(mcxt, (Size) n * sizeof(uint32));
+	memcpy(d->sorted, p + (total - (uint64) n * sizeof(uint32)), (Size) n * sizeof(uint32));
+	for (uint32 i = 0; i < n; i++)
+		if (d->sorted[i] >= n)
 			return NULL;
 	*used = total;
 	return d;
