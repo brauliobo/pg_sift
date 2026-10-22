@@ -6,7 +6,7 @@ crafted query string, a crafted document, concurrent DML, or recovery after a cr
 
 Please report such problems privately with GitHub's "Report a vulnerability" button (Security tab of the repository)
 instead of opening a public issue, and include the PostgreSQL version, the `CREATE INDEX` statement and a reproduction
-if you have one. Only the latest release and the `main` branch receive fixes.
+if you have one. The two newest minor releases and the `main` branch receive fixes ([docs/SUPPORT.md](docs/SUPPORT.md)).
 
 The SQLite extension (`sift` for SQLite, in `sqlite/`) is C code that runs inside the process of the application that loads it and
 parses documents and queries the application supplies; the same classes of problem are in scope (a crash, memory error, data race, wrong
