@@ -63,8 +63,44 @@ expression of the score, `sift.max_score()`) is an error: filter on the score fr
 `ORDER BY name, sift.score(ctid) DESC LIMIT k` (columns of the scanned table first, then the score) scores only the rows tied with the
 k-th best `name` instead of every match, and gives the answer of ranking every match and sorting after; `EXPLAIN` shows
 `Order: name, score DESC` and `Key Passes`. A query with no `LIMIT` ranks every match in one search.
-It works on materialized views too. It is not available in `UPDATE`, `DELETE`, `MERGE` or `FOR UPDATE` (error when planned): rank in a
-`SELECT` and change or lock the rows by key.
+It works on materialized views too, in `INSERT ... SELECT`, and in a `HAVING` that reads the score of an aggregate. `UPDATE`, `DELETE`,
+`MERGE` and `FOR UPDATE` re-check the rows they read, which a scan cannot do: a subquery, view or `WITH` query of such a statement that
+reads the score is planned apart (as with `OFFSET 0` or `MATERIALIZED`) and the statement uses its rows by key (`UPDATE t SET s = q.s FROM
+(SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'case') q WHERE t.id = q.id`); a score read straight from a table the statement
+joins is an error (planned, with a hint).
+
+### Row-level security
+
+A role under a row-level security policy gets no ranked scan by default: the match is not leakproof and the index statistics
+(document count, document frequencies, field lengths, the vocabulary a wildcard expands over) include the rows the policy hides.
+`sift.rls_scores = on` (a superuser setting: `ALTER ROLE app SET sift.rls_scores = on`, or `GRANT SET ON PARAMETER` to a role that may
+change it) lets the ranked scan serve such a role:
+
+```sql
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON docs USING (tenant = current_user);
+SET sift.rls_scores = on;       -- as a superuser, or per role with ALTER ROLE ... SET
+SET ROLE app;
+SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' ORDER BY sift.score(ctid) DESC LIMIT 10;
+```
+
+The policy's quals run on every row the ranker offers before any qual of the query (the order PostgreSQL gives a sequential scan, so a
+function or an expression of the query that raises for a row is never evaluated on a hidden one), the ranker is asked for more rows until
+`k` pass the policy, and no hidden row is ever returned. Policies that call functions or read other tables work. `EXPLAIN` does not
+estimate the matches from the index and `EXPLAIN ANALYZE` does not print its counters (`Candidates`, `Superblocks`, `Heap Checks`, ...), as
+those count the hidden rows; the plan's estimates are the same whatever the hidden rows hold. Without a ranking (`WHERE body @@> ...` with
+no score), `count(*)`, `sift.facets` and the column index behave as before: a sequential scan, no pushdown. `sift.max_score()` stays an
+error (it is the best score of all the matches, hidden ones included). A table owner and a role with `BYPASSRLS` are not under the policy
+and score as always; `FORCE ROW LEVEL SECURITY` puts the owner under it.
+
+**The caveat, in full.** The score of a visible row is computed from the statistics of the whole index. It is the score the table owner
+sees for the same row, and it depends on the hidden rows: a term that the hidden rows repeat has a lower weight, and a row's score changes
+when a hidden row is added. No hidden row is returned and none is counted in a result, but a role that can write the documents it searches
+(or knows when others change) could read the numbers as information about the corpus: its size, how common a term is in all of it, and
+whether a wildcard expands past `sift.max_expansions`. Time is a side channel as for any query. Enable the setting for roles whose
+tenants may see that much (a shared corpus with per-user visibility), not for tenants whose documents must be unobservable by each other;
+for those, index each tenant's rows separately (a partition per tenant, a sift index on each) or leave the setting off. Because the
+setting is read when the query is planned, a prepared statement planned with it on keeps its plan for the session.
 
 ```sql
 SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly OR case' AND sift.score(ctid) > 0.5
@@ -243,6 +279,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.prefix_cache_size` | 8MB | superuser setting: memory per backend for the postings of broad leaves, `0` keeps none |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
+| `sift.rls_scores` | off | superuser setting: let a ranked scan serve a role under row-level security; its scores come from the statistics of the whole index, hidden rows included ([Row-level security](#row-level-security)) |
 | `sift.async_maintenance` | on | promote and merge in a background worker; off leaves it to the inserts and `VACUUM` (superuser) |
 | `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the write buffers a bulk load closes in between are promoted too |
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
@@ -622,6 +659,8 @@ Every fixed limit of the code, with its value, what happens at it and the settin
 - Row-level security and security barrier views: a role under a policy gets no ranked scan, no `count(*)` pushdown and no index estimate
   (the document frequencies would include the rows the policy hides), so `sift.score()` raises an error for it and its matches come from
   a sequential scan; the table owner and roles that bypass row-level security are not affected ([SIZING.md](SIZING.md#features-and-their-costs)).
+  `sift.rls_scores = on` (superuser) gives the role a ranked scan whose scores count the hidden rows: [Row-level security](#row-level-security).
+  Security barrier views stay refused.
 - Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
   still work).
 - Partitions: BM25 statistics are per partition, so scores can differ across partitions.

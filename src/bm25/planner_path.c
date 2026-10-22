@@ -199,7 +199,11 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost
 {
 	QualCost	qual;
 
-	index_work(c->index->indexoid, c->index->reltablespace, c->queries, &sc->idx);
+	/* the index counts the rows a policy hides: its matches and postings must not show in the rows and costs of the plan */
+	if (rel_secured(root, rel))
+		sc->idx = (IndexWork) {.known = false};
+	else
+		index_work(c->index->indexoid, c->index->reltablespace, c->queries, &sc->idx);
 	cost_qual_eval(&qual, c->residual, root);
 	sc->qual = qual.per_tuple;
 	scan_cost_docs(root, rel, c, sc->idx.known ? sc->idx.est.docs : ranked ? rel->tuples * UNKNOWN_QUERY_SEL : rel->rows, sc);

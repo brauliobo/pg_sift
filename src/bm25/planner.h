@@ -6,7 +6,9 @@
  *   custom_private = list of Const/Integer nodes, see SiftPrivateField
  *   custom_exprs   = five lists: the query right-hand sides (Const or Param), ANDed; the residual quals; the LIMIT
  *                    (OFFSET) Params of a generic plan; the leading sort keys of a keyed scan (SIFT_PRIV_KEYOPS);
- *                    the cutoffs of the score (sift.score(ctid) > c ...), which the scan tests on the score it computed
+ *                    the cutoffs of the score (sift.score(ctid) > c ...), which the scan tests on the score it computed;
+ *                    for a scan of a relation under a policy or security barrier view (sift.rls_scores), a sixth entry, a
+ *                    NIL list (SIFT_EXPR_SECURE): EXPLAIN ANALYZE then keeps the counters of the whole index to itself
  *   custom_scan_tlist:
  *     SiftScan:  needed Vars of the rel, then every sift.score/max_score
  *                expression of the rel (setrefs maps them to INDEX_VAR;
@@ -37,6 +39,8 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_KEYOPS,			/* List of Const, three per leading sort key: its ordering operator, collation and NULLS FIRST (nil: ranked by score alone) */
 	SIFT_NPRIV
 } SiftPrivateField;
+
+#define SIFT_EXPR_SECURE	5
 
 extern PGDLLIMPORT const CustomPathMethods sift_scan_path_methods;
 extern PGDLLIMPORT const CustomPathMethods sift_count_path_methods;

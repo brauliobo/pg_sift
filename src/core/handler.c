@@ -84,6 +84,7 @@ int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
 bool		sift_enable_count = true;
 bool		sift_parallel_scan = false;
+bool		sift_rls_scores = false;
 bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
@@ -118,6 +119,11 @@ define_gucs(void)
 							 "Lets the planner use parallel sift scans and counts (they pay off on large, heap-bound scans only).",
 							 NULL, &sift_parallel_scan, false,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.rls_scores",
+							 "Lets a ranked scan serve a role under a row-level security policy.",
+							 "The scores count the rows the policy hides: document frequencies and field lengths come from the whole index. Off, such a role gets no ranked scan and sift.score() raises an error.",
+							 &sift_rls_scores, false,
+							 PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.prefetch",
 							 "Reads ahead the heap pages an unordered scan is about to visit.",
 							 NULL, &sift_prefetch, true,

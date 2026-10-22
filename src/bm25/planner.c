@@ -36,6 +36,7 @@
 #include "utils/spccache.h"
 
 #include "agg/agg.h"
+#include "core/compat.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
@@ -46,10 +47,11 @@
 static set_rel_pathlist_hook_type prev_pathlist_hook;
 static set_join_pathlist_hook_type prev_join_hook;
 static create_upper_paths_hook_type prev_upper_hook;
+static planner_hook_type prev_planner_hook;
 
 /* Splits the rel's restrictions for one sift index; false when none is a sift qual of it */
 static bool
-split_quals(RelOptInfo *rel, IndexOptInfo *ii, ScanCand *c)
+split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, ScanCand *c)
 {
 	c->index = ii;
 	c->queries = c->residual = NIL;
@@ -59,7 +61,7 @@ split_quals(RelOptInfo *rel, IndexOptInfo *ii, ScanCand *c)
 	{
 		Expr	   *q;
 
-		if (scan_match_clause((Node *) rinfo, ii, &q))
+		if (scan_match_clause(root, (Node *) rinfo, ii, ranked, &q))
 			c->queries = lappend(c->queries, q);
 		else
 			c->residual = lappend(c->residual, rinfo);
@@ -277,7 +279,7 @@ reject_scores(PlannerInfo *root, RelOptInfo *rel)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift.score() is not available in %s", unranked_statement(root)),
-				 errhint("Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.")));
+				 errhint("Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.")));
 }
 
 /* what the paths of a relation are chosen from: the shape of the query, the filter bitmap, and the best path of each kind so far */
@@ -306,7 +308,8 @@ scannable(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
 		sift_catalog()->am == InvalidOid)
 		return false;
-	if (root->parse->commandType != CMD_SELECT || root->rowMarks != NIL)
+	/* the rows of an INSERT ... SELECT are read, not re-checked: only the statements that change or lock the rows they read reject scores */
+	if ((root->parse->commandType != CMD_SELECT && root->parse->commandType != CMD_INSERT) || root->rowMarks != NIL)
 	{
 		reject_scores(root, rel);
 		return false;
@@ -354,7 +357,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	bool		parallel = mode == SIFT_MODE_UNORDERED ||
 		(ps->ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON);
 
-	if (!split_quals(rel, ii, &c))
+	if (!split_quals(root, rel, ii, ps->only_best, &c))
 		return;
 	if (mode == SIFT_MODE_RANKED && !ps->filter_looked)
 	{
@@ -395,11 +398,12 @@ publish_paths(PathSearch *ps, RangeTblEntry *rte)
 			rel->pathlist = lappend(rel->pathlist, ps->best_keyed);
 		rel->partial_pathlist = ps->best_partial ? list_make1(ps->best_partial) : NIL;
 	}
-	else if (ps->only_best && rte->securityQuals != NIL)
+	else if (ps->only_best && rte->securityQuals != NIL && !sift_rls_scores)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
-				 errdetail("A ranked scan counts the rows that the policy hides in the scores.")));
+				 errdetail("A ranked scan counts the rows that the policy hides in the scores."),
+				 errhint("A superuser can allow it for a role with sift.rls_scores = on (docs/USAGE.md, \"Row-level security\").")));
 	else if (ps->only_best && is_partition(rel) && has_match_clause(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -427,11 +431,20 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	ps.cuts = score_cutoffs(rel);
 	ps.ranked = sorted_by_score(root, rel, &ps.pk);
 	ps.only_best = ps.ranked || scores != NIL || ps.cuts != NIL;
-	/* the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score */
+	/*
+	 * the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score; not on a rel with
+	 * security quals, as such a scan rechecks a match on the row's text before it runs the quals (next_row)
+	 */
 	ps.keyed = ps.only_best && !ps.ranked && ps.cuts == NIL && !is_partition(rel) && !reads_max_score(rel, scores) &&
-		(query_limit(root) > 0 || param_limits(root) != NIL) && keyed_order(root, rel, &ps.ko);
+		(query_limit(root) > 0 || param_limits(root) != NIL) && !rel_secured(root, rel) && keyed_order(root, rel, &ps.ko);
 	if (score_in_filter(rel, rti, ps.cuts))
 		return;
+	if (sift_rls_scores && reads_max_score(rel, scores) && rel_secured(root, rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.max_score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
+				 errdetail("It is the best score of all the matches, the rows that the policy hides included."),
+				 errhint("Use sift.score(), which is that of a row the role may see.")));
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		consider_index(&ps, ii, rti);
 	publish_paths(&ps, rte);
@@ -459,10 +472,10 @@ plain_count(Node *expr)
 
 /* The index every restriction of the rel is a sift qual of */
 static bool
-count_cand(RelOptInfo *rel, ScanCand *c)
+count_cand(PlannerInfo *root, RelOptInfo *rel, ScanCand *c)
 {
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
-		if (split_quals(rel, ii, c) && c->residual == NIL)
+		if (split_quals(root, rel, ii, false, c) && c->residual == NIL)
 			return true;
 	return false;
 }
@@ -516,11 +529,47 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	foreach_ptr(Node, e, output_rel->reltarget->exprs)
 		if (!plain_count(e))
 			return;
-	if (!count_cand(input_rel, &c))
+	if (!count_cand(root, input_rel, &c))
 		return;
 	cp = count_path(root, input_rel, output_rel, &c, rte->relid, 0);
 	add_path(output_rel, &cp->path);
 	add_parallel_count(root, input_rel, output_rel, &c, rte->relid);
+}
+
+static bool
+reads_score(Node *node, void *context)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, FuncExpr) && (((FuncExpr *) node)->funcid == cat->score_func || ((FuncExpr *) node)->funcid == cat->max_score_func))
+		return true;
+	if (IsA(node, Query))
+		return query_tree_walker((Query *) node, reads_score, context, 0);
+	return expression_tree_walker(node, reads_score, context);
+}
+
+/*
+ * A statement that changes or locks rows re-checks each row it reads, which a scan that computes the score cannot do. A subquery or
+ * CTE of it that reads the score is planned apart, as written with OFFSET 0 or MATERIALIZED (PostgreSQL pulls up neither),
+ * rather than flattened into the statement and refused there.
+ */
+static PlannedStmt *
+sift_score_planner(SIFT_PLANNER_PARAMS)
+{
+	if ((parse->commandType == CMD_UPDATE || parse->commandType == CMD_DELETE || parse->commandType == CMD_MERGE || parse->rowMarks != NIL) &&
+		sift_enable_scan && sift_catalog()->am != InvalidOid)
+	{
+		foreach_node(RangeTblEntry, rte, parse->rtable)
+			if (rte->rtekind == RTE_SUBQUERY && rte->subquery->limitOffset == NULL && rte->subquery->limitCount == NULL &&
+				reads_score((Node *) rte->subquery, NULL))
+				rte->subquery->limitOffset = (Node *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, FLOAT8PASSBYVAL);
+		foreach_node(CommonTableExpr, cte, parse->cteList)
+			if (cte->ctematerialized == CTEMaterializeDefault && reads_score(cte->ctequery, NULL))
+				cte->ctematerialized = CTEMaterializeAlways;
+	}
+	return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 }
 
 void
@@ -534,4 +583,6 @@ sift_planner_init(void)
 	set_join_pathlist_hook = sift_set_join_pathlist;
 	prev_upper_hook = create_upper_paths_hook;
 	create_upper_paths_hook = sift_upper_paths;
+	prev_planner_hook = planner_hook;
+	planner_hook = sift_score_planner;
 }

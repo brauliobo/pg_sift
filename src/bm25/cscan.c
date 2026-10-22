@@ -585,6 +585,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 		ss->query_any[foreach_current_index(q)] = OidIsValid(get_element_type(exprType(q)));
 	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
 	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
+	ss->secure = list_length(cs->custom_exprs) > SIFT_EXPR_SECURE;
 	init_keys(ss, cs);
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
@@ -705,7 +706,8 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 				ExplainPropertyFloat("Filter Mask Up To Matches", NULL, ss->gate_to, 0, es);
 		}
 	}
-	if (!es->analyze)
+	/* the counters of the index count the rows the policy hides too: the rows of the plan node are what the role may see */
+	if (!es->analyze || ss->secure)
 		return;
 	if (ss->plan)
 	{
