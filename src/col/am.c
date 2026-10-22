@@ -988,12 +988,16 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
 	SiftColRel *r = sift_col_rel(index);
+	SiftCWbufHint hint = r->hint;
+	MemoryContext rowcxt = r->rowcxt;
 	SiftColRow	row;
 	bool		crossed;
 
-	sift_col_make_row(r, heap_tid, values, isnull, &row, r->rowcxt);
-	crossed = sift_cwbuf_append(index, &r->hint, r->schema, &row);
-	MemoryContextReset(r->rowcxt);
+	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
+	crossed = sift_cwbuf_append(index, &hint, r->schema, &row);
+	MemoryContextReset(rowcxt);
+	/* the append reads the catalog, which can reload the relcache entry and free r: keep the hint in the entry as it is now */
+	sift_col_rel(index)->hint = hint;
 	if (crossed)
 		sift_col_maint_after_seal(index);
 	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0);

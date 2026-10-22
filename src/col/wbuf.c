@@ -22,6 +22,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/wbuf.h"
 #include "col/pg.h"
 #include "core/lane.h"
@@ -342,6 +343,9 @@ flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 			{
 				sift_dir_update(index, &(SiftDirChange) {.fn = or_overflow,.arg = &(OvfArg) {h->gen, mask, jmask},.extra = InvalidBuffer});
 				sift_cwbuf_invalidate_plans(index->rd_index->indrelid);
+#ifdef SIFT_TESTING
+				sift_col_test_inval(index);
+#endif
 			}
 			h->ovf_known = snap->segs[i].reserved | mask;
 			h->jnull_known = (uint32) snap->segs[i].sum_dl | jmask;
