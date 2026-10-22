@@ -185,6 +185,31 @@ SELECT :n_normal >= 2 * 1201 AS two_per_partition, :n_scan BETWEEN :n_normal * 0
 (1 row)
 
 DROP FUNCTION plan_locks(text, bool);
+-- a cached generic plan locks again when it runs: the heap of every partition it lists (as the normal plan's), and the index of the partitions it
+-- reads only (3 of 1,201 here), not two for each partition
+CREATE FUNCTION exec_locks(stmt text) RETURNS bigint LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE lk ON COMMIT DROP AS ' || stmt;
+	RETURN (SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'relation');
+END $$;
+SET plan_cache_mode = force_generic_plan;
+PREPARE pm_n (date[]) AS SELECT g, count(*) AS n FROM pm WHERE d = ANY ($1) GROUP BY g;
+PREPARE pm_s (date[]) AS SELECT g, count(*) AS n FROM pm WHERE d = ANY ($1) GROUP BY g;
+SET sift.enable_agg = off;
+EXECUTE pm_n(ARRAY[DATE '2020-02-02', DATE '2020-02-03', DATE '2020-02-04']) \g /dev/null
+SET sift.enable_agg = on;
+EXECUTE pm_s(ARRAY[DATE '2020-02-02', DATE '2020-02-03', DATE '2020-02-04']) \g /dev/null
+SELECT exec_locks('EXECUTE pm_n(ARRAY[DATE ''2020-02-02'', DATE ''2020-02-03'', DATE ''2020-02-04''])') AS n_normal \gset
+SELECT exec_locks('EXECUTE pm_s(ARRAY[DATE ''2020-02-02'', DATE ''2020-02-03'', DATE ''2020-02-04''])') AS n_scan \gset
+SELECT :n_scan BETWEEN :n_normal * 0.99 AND :n_normal * 1.01 AS scan_like_normal_plan, :n_scan < 1.5 * 1201 AS one_per_partition;
+ scan_like_normal_plan | one_per_partition 
+-----------------------+-------------------
+ t                     | t
+(1 row)
+
+RESET plan_cache_mode;
+DEALLOCATE pm_n; DEALLOCATE pm_s;
+DROP FUNCTION exec_locks(text);
 DROP FUNCTION many_scan(text);
 DROP TABLE pm, pm_days, pc;
 DROP EXTENSION pg_sift;
