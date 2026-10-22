@@ -478,6 +478,31 @@ drop_pushed(AggCtx *c, List *quals)
 	return kept;
 }
 
+/* every column of the query's own level is NULL, as in the row an outer join makes for a preserved row that nothing matched */
+static Node *
+null_row_mutator(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0)
+		return (Node *) makeNullConst(((Var *) n)->vartype, ((Var *) n)->vartypmod, ((Var *) n)->varcollid);
+	if (IsA(n, PlaceHolderVar))
+		return null_row_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, ctx);
+	return expression_tree_mutator(n, null_row_mutator, ctx);
+}
+
+/* does the condition hold for the row of NULL columns? Then it is no filter of the rows the scan reads, but of the joined rows */
+static bool
+null_row_passes(Node *q)
+{
+	Node	   *e;
+
+	if (contain_volatile_functions(q) || checkExprHasSubLink(q) || contain_subplans(q))
+		return false;
+	e = eval_const_expressions(NULL, null_row_mutator(q, NULL));
+	return IsA(e, Const) && !((Const *) e)->constisnull && DatumGetBool(((Const *) e)->constvalue);
+}
+
 /*
  * The conjuncts of the WHERE and of the ON clauses that read a joined table. Those of an inner join are its ON clause (the same rows
  * either way); those of an outer, semi or anti join filter its output rows (*post). In the ON clause of every join an equality of a
@@ -506,9 +531,21 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 		else
 			*post = lappend(*post, q);
 	}
-	/* a WHERE the scanned table's NULL row can pass is evaluated after the outer join: it is not a filter of the rows the scan reads */
+	/*
+	 * A WHERE that reads the scanned table only is evaluated after a preserved join: a row it drops after matching is no row of the join, so
+	 * it is no filter of the rows the scan reads but of the matched tuples (post), and the rows nothing matched, which have NULL columns,
+	 * must pass it (a condition they fail would drop them, which the scan does not).
+	 */
 	if (rest != NIL && !nullable_input && preserved_join(c))
-		return agg_refuse_on(OUTER_JOIN, "a WHERE the NULL row of the scanned table can pass is evaluated after the outer join");
+	{
+		foreach_ptr(Node, q, rest)
+		{
+			if (!null_row_passes(q))
+				return agg_refuse_on(OUTER_JOIN, "a WHERE the rows of the preserved side that nothing matched fail is evaluated after the outer join");
+			*post = lappend(*post, q);
+		}
+		rest = NIL;
+	}
 	*quals = rest;
 	return true;
 }

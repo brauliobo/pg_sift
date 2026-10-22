@@ -641,6 +641,9 @@ post_holds(AggExec *ex, const SiftAggPred *p, const Tup *t, int j)
 		return elem_exists(ex, t, j, p);
 	if (p->kind == SAP_MATCHED)
 		return cs->maprow[t->cout[p->leaf][j]] != UINT32_MAX;
+	/* a combo of the scanned table's columns only (a WHERE after a preserved join) has no join: its rows are resolved for the tuples */
+	if (ex->spec->combo[p->leaf].join < 0)
+		return combo_val(ex, p->leaf, combo_outs(ex, p->leaf)[j], p->op) != 0;
 	return cs->val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
 }
 
@@ -738,7 +741,11 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->ridx = t->ridx;
 	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	if (s->npost > s->nprepost)
+	{
 		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj, -1);
+		/* the free combos were resolved for the tuples as they came */
+		memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
+	}
 	if (t->n == 0)
 		return;
 	if (s->narms > 0)
