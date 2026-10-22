@@ -191,31 +191,52 @@ preagg_sums(AggExec *ex)
 	return true;
 }
 
+/* the entries (groups of a histogram, tuples of a rollup) that pass the test p of qlevel, ANDed into keep (NULL: all pass so far): a bitmap, the vectors bound for the leaves p reads */
+static uint64 *
+pred_pass(AggExec *ex, const SiftAggPred *p, int qlevel, int nt, uint64 *keep)
+{
+	if (keep == NULL)
+	{
+		keep = MemoryContextAlloc(ex->ucxt, ((nt + 63) / 64 + PADW) * sizeof(uint64));
+		fill_ones(keep, nt);
+	}
+	for (int st = 0; st < nt; st += VEC)
+	{
+		int			n = Min(VEC, nt - st);
+		uint64		t[VECW + PADW];
+
+		eval_pred(ex, (SiftAggPred *) p, qlevel, st, n, t);
+		sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
+	}
+	return keep;
+}
+
 /*
- * The groups of the histogram that pass the conjuncts on the key's column (a bitmap; NULL: all): the tests run on the groups as
- * on the rows of a unit that has one per group, the column's vector being the histogram's keys.
+ * The groups of the histogram that pass the conjuncts on the key's column (a bitmap; NULL: all), and for each aggregate the groups that pass its FILTER
+ * when that tests the column (fkeep[ai]; NULL: all): the tests run on the groups as on the rows of a unit that has one per group, the column's vector
+ * being the histogram's keys.
  */
 static uint64 *
-preagg_keep(AggExec *ex, const SiftSrcHist *h)
+preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 {
 	SiftAggSpec *s = ex->spec;
-	int			ng = h->ngroups,
-				nw = (ng + 63) / 64;
+	int			ng = h->ngroups;
 	uint64	   *keep = NULL;
-	void	   *data = NULL;
-	bool		wide = ex->lay->leaf[ex->pa.dim].vtype == SCV_I64;
+	bool		wide = ex->lay->leaf[ex->pa.dim].vtype == SCV_I64,
+				bound = false;
 
-	for (int i = 0; i < s->npred; i++)
+	for (int i = 0; i < s->npred + s->naggs; i++)
 	{
-		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase, s->group) != ex->pa.dim)
+		int			ai = i - s->npred;
+		const SiftAggPred *p = ai < 0 ? s->pred[i] : s->agg[ai].filter;
+
+		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim)
 			continue;
-		if (keep == NULL)
+		if (!bound)
 		{
 			uint8	   *isnull = h->has_null ? MemoryContextAllocZero(ex->ucxt, ng + SIFT_AGG_PAD) : NULL;
+			void	   *data = (void *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, ng * sizeof(int64) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 
-			keep = MemoryContextAlloc(ex->ucxt, (nw + PADW) * sizeof(uint64));
-			fill_ones(keep, ng);
-			data = (void *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, ng * sizeof(int64) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 			for (int k = 0; k < ng - h->has_null; k++)
 			{
 				if (wide)
@@ -231,15 +252,12 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 			}
 			ex->uvec[ex->pa.dim] = (SiftSrcVec) {data, isnull, h->dict, ng, NULL};
 			ex->uvec_ok[ex->pa.dim] = true;
+			bound = true;
 		}
-		for (int st = 0; st < ng; st += VEC)
-		{
-			int			n = Min(VEC, ng - st);
-			uint64		t[VECW + PADW];
-
-			eval_pred(ex, s->pred[i], s->group >= 0, st, n, t);
-			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
-		}
+		if (ai < 0)
+			keep = pred_pass(ex, p, s->group >= 0, ng, keep);
+		else
+			fkeep[ai] = pred_pass(ex, p, s->group >= 0, ng, NULL);
 	}
 	ex->uvec_ok[ex->pa.dim] = false;
 	return keep;
@@ -348,7 +366,8 @@ preagg_hist(AggExec *ex)
 	uint32	   *kept,
 			   *ids,
 			   *gid;
-	uint64	   *keep;
+	uint64	   *keep,
+			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
 	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim, &h))
@@ -366,7 +385,7 @@ preagg_hist(AggExec *ex)
 			return false;
 		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa.dim ? -2 : m;
 	}
-	keep = preagg_keep(ex, &h);
+	keep = preagg_keep(ex, &h, fkeep);
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
 	for (uint32 k = 0; k < h.ngroups; k++)
 		if (keep == NULL || sift_colsrc_bit(keep, k))
@@ -391,6 +410,8 @@ preagg_hist(AggExec *ex)
 				v[ai].sum = h.sum[m] ? h.sum[m][kept[j]] : 0;
 				v[ai].sumf = h.sumf[m] ? h.sumf[m][kept[j]] : 0;
 			}
+			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], kept[j]))
+				v[ai] = (PaVal) {0};				/* the rows of the group fail the FILTER: they add nothing to this aggregate */
 		}
 		preagg_fold(ex, gid[j], h.count[kept[j]], v);
 	}
@@ -423,26 +444,6 @@ rollup_bind(AggExec *ex, const SiftSrcRollup *r)
 		ex->uvec[ex->pa.rdim[d]] = (SiftSrcVec) {data, r->isnull[j], r->dict[j], nt, NULL};
 		ex->uvec_ok[ex->pa.rdim[d]] = true;
 	}
-}
-
-/* the tuples that pass the conjunct p (an element test): a bitmap, the vectors of rollup_bind read */
-static uint64 *
-rollup_pass(AggExec *ex, const SiftAggPred *p, int nt, uint64 *keep)
-{
-	if (keep == NULL)
-	{
-		keep = MemoryContextAlloc(ex->ucxt, ((nt + 63) / 64 + PADW) * sizeof(uint64));
-		fill_ones(keep, nt);
-	}
-	for (int st = 0; st < nt; st += VEC)
-	{
-		int			n = Min(VEC, nt - st);
-		uint64		t[VECW + PADW];
-
-		eval_pred(ex, (SiftAggPred *) p, 1, st, n, t);
-		sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
-	}
-	return keep;
 }
 
 static bool
@@ -672,9 +673,9 @@ preagg_rollup(AggExec *ex)
 	keep = NULL;
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->level == 1)
-			keep = rollup_pass(ex, s->pred[i], r.ntuples, keep);
+			keep = pred_pass(ex, s->pred[i], 1, r.ntuples, keep);
 	for (int ai = 0; ai < s->naggs; ai++)
-		fkeep[ai] = s->agg[ai].filter ? rollup_pass(ex, s->agg[ai].filter, r.ntuples, NULL) : NULL;
+		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, 1, r.ntuples, NULL) : NULL;
 	for (int d = 0; d < ex->pa.ndims; d++)
 		ex->uvec_ok[ex->pa.rdim[d]] = false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
