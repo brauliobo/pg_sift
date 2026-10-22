@@ -411,7 +411,7 @@ such a leaf is format minor 5; a `sift_table` stores these types by size and is 
 For a key spread over every unit the zone (a minimum and a maximum) is the whole range and prunes nothing, and a scan then decodes the key chunk of every unit to
 find the one that holds the key. The reloption `set_columns = 'a, b'` (default none; the names of plain integer or text leaves, as `preagg` names them) makes every unit
 written afterwards keep, for those leaves, the set of its distinct keys: exactly while there are at most `set_limit` (default 32, 2 to 1024) of them, else as a
-bloom filter of 10 bits a key. `ALTER INDEX .. SET (set_columns = ..)` applies to the units written afterwards (promotion, merge, REINDEX); the others have none.
+bloom filter of 10 bits a key. `ALTER INDEX .. SET (set_columns = ..)` applies to the units written afterwards (promotion, merge, REINDEX); the others have none. `CREATE INDEX` and `REINDEX` tell with a NOTICE when 10% of the units or more hold more than `set_limit` keys of a leaf (a bloom filter, not its keys), and the `set_limit` that makes them exact; the same NOTICE names a `cube(..)` dim that has no histogram in that share of the units.
 
 Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 3 in a segment of minor 10 and ends with the offset and the bytes of the
 summaries. The section is a header `{u32 'COLT', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}` (kinds: bit 0 some unit has an exact set, bit 1 a filter; a hint that lets a wide range skip a leaf of filters) per leaf (ascending) and per leaf

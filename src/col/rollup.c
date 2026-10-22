@@ -27,8 +27,10 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
@@ -36,6 +38,7 @@
 #include "col/am.h"
 #include "col/pagg.h"
 #include "col/seg.h"
+#include "col/setsum.h"
 #include "bm25/maint.h"
 #include "core/ops.h"
 
@@ -414,6 +417,95 @@ stale_segments(Relation index, uint64 *gens)
 	return n;
 }
 
+#define CAPS_REPORT_PCT		10		/* a cap that costs this share of the units, or more, is worth a notice */
+
+static int
+share_pct(uint32 n, uint32 units)
+{
+	return (int) Max(1, (n * UINT64CONST(100) + units - 1) / units);
+}
+
+static const char *
+leaf_label(Relation index, const SiftColDef *d)
+{
+	return d->path[0] ? d->path : NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
+}
+
+/*
+ * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
+ * has no histogram in a unit with more groups than max_groups, and a set_columns leaf keeps a bloom filter instead of its keys where a unit holds more
+ * than set_limit of them. Read from the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
+ */
+void
+sift_col_report_caps(Relation index)
+{
+	const SiftColRel *rel = sift_col_rel(index);
+	const SiftCPaggSpec *spec = &rel->pagg;
+	const char *name = quote_identifier(RelationGetRelationName(index));
+	SiftDirSnapshot *snap;
+	MemoryContext cx;
+	uint32		units = 0,
+				with_dim[SIFT_PAGG_MAX_DIMS] = {0},
+				bloom[SIFT_COL_MAX_COLS] = {0},
+				keys[SIFT_COL_MAX_COLS] = {0};
+	bool		any = spec->fixed && spec->ndims > 0;
+
+	for (int c = 0; c < SIFT_COL_MAX_COLS; c++)
+		any |= spec->set[c];
+	if (!any)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col cap report", ALLOCSET_DEFAULT_SIZES);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		SiftCPaggCensus c;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], cx);
+		sift_cseg_pre_census(seg, spec, sift_col_format_minor, &c);
+		units += seg->nsb;
+		for (int d = 0; d < spec->ndims; d++)
+			with_dim[d] += c.dim[d];
+		for (int l = 0; l < seg->schema->ncols; l++)
+			for (uint32 u = 0; spec->set[l] && u < seg->nsb; u++)
+			{
+				uint32		len;
+				const uint8 *blob = sift_cseg_set(seg, l, u, &len);
+				SiftCSet	s;
+
+				if (blob != NULL && sift_cset_open(blob, len, &s) && s.kind == SIFT_CSET_BLOOM)
+				{
+					bloom[l]++;
+					keys[l] = Max(keys[l], s.n);
+				}
+			}
+		sift_cseg_close(seg);
+		MemoryContextReset(cx);
+	}
+	for (int d = 0; units > 0 && spec->fixed && d < spec->ndims; d++)
+		if ((units - with_dim[d]) * 100 >= (uint64) units * CAPS_REPORT_PCT)
+			ereport(NOTICE, (errmsg("sift_col index %s: the cube dim \"%s\" has no histogram in %d%% of %u units, which hold more than %u groups of it",
+									name, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), share_pct(units - with_dim[d], units), units, spec->max_groups),
+							 errdetail("A query that groups or filters by it scans those units (sift.col_rollup_misses counts them)."),
+							 errhint("Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.")));
+	for (int l = 0; units > 0 && l < rel->schema->ncols; l++)
+		if (bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
+		{
+			uint32		limit = spec->set_limit ? spec->set_limit : SIFT_CSET_LIMIT;
+
+			ereport(NOTICE, (errmsg("sift_col index %s: the set summary of \"%s\" is a bloom filter, not its keys, in %d%% of %u units, which hold more than set_limit = %u distinct keys",
+									name, leaf_label(index, &rel->schema->cols[l]), share_pct(bloom[l], units), units, limit),
+							 keys[l] <= SIFT_CSET_LIMIT_MAX ?
+							 errhint("ALTER INDEX %s SET (set_limit = %u), then REINDEX.", name, pg_nextpower2_32(keys[l])) :
+							 errhint("A unit holds up to %u distinct keys, more than the %d that set_limit can take: the filter stays.", keys[l], SIFT_CSET_LIMIT_MAX)));
+		}
+	MemoryContextDelete(cx);
+	pfree(snap);
+}
+
 /*
  * sift.col_refresh(index, max_segments): rewrites the segments whose pre-aggregates are not what the options of the index ask now (preagg, rollup,
  * cube_minmax: a change takes effect for the units written afterwards only), one at a time, as the on-demand refresh does: each is the atomic
@@ -463,6 +555,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 			done++;
 		}
 	}
+	sift_col_report_caps(index);
 	index_close(index, RowExclusiveLock);
 	v[0] = Int32GetDatum(done);
 	v[1] = Int32GetDatum(n - visited);
