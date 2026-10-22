@@ -51,8 +51,14 @@ off). The index stays in the relation's index list, SiftAgg reads it as before.
 **Tuple by tuple** (`amgettuple`, `amcanreturn`, also under `sift.enable_col_scan`): the index offers an `Index Scan` and an `Index Only Scan` in the order of the
 units (it has no order to give: `amcanorder` is off). A plan that stops early (`LIMIT 10` without `ORDER BY`), reads a few rows or runs on the inner side of a nested
 loop does not build a bitmap, and a query that needs only integer, date, timestamp, boolean, float and numeric columns of the index does not read the heap (the
-visibility map decides, as for a btree: `Heap Fetches` in `EXPLAIN`). Text, char(n) and uuid are not returnable: returning one loads the dictionary of the
-segment (a million strings, 10 to 30 ms), and the executor asks for every returnable column whether the query needs it or not. `pg_stat_user_indexes`
+visibility map decides, as for a btree: `Heap Fetches` in `EXPLAIN`). Text, varchar and uuid columns are returnable only when the index names them in the reloption `return_columns = 's, u'` (default none; plain columns,
+not expressions; char(n) never): a string is read out of the dictionary of its segment one code at a time, without parsing the dictionary when few rows are read of a
+dictionary stored plain or for a lookup (column format minor 14, [COL.md](COL.md) section 2.15), and from the heap by the AM for a value the index could not keep (a leaf whose strings in a unit
+pass `unit_bytes`). It is off by default because it is not a gain when the heap is in memory: the executor asks for every returnable column of the index whether the query needs it or not,
+so the strings are read for a `SELECT id` too, and an Index Scan that fetches the rows is cheaper than reading their strings from the index. 300,000 rows (an int, a uuid and a text), warm, median of 10,
+load average 35 on 32 CPUs, without / with the option: `SELECT id` 100 rows 0.066 / 0.158 ms, 10,000 rows 1.49 / 1.81 ms (the first query of a new backend 2.2 / 15 ms, which parses the dictionaries for 10,000 rows);
+`SELECT id, u, s` 100 rows 0.055 (Index Scan) / 0.155 ms (Index Only Scan), 10,000 rows 0.95 / 1.54 ms. The option is for a table much larger than memory, where the heap fetches are reads from disk
+(not measured here). It is a setting of the index, taken on the next scan. `pg_stat_user_indexes`
 counts the scans and `EXPLAIN` shows `Index Searches`.
 
 **Limits** (measured below or by construction): no ordered scan (`amcanorder`, backward scans, `CLUSTER USING`) so `ORDER BY .. LIMIT` stays with the top-N of

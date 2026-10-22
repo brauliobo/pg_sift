@@ -24,6 +24,7 @@ typedef struct SiftColRel
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
 	bool	   *name;			/* [natts + 1] the attribute is a name (a fixed buffer, not a varlena) */
+	bool	   *ret;			/* [natts + 1] the attribute is a text, varchar or uuid column named by return_columns */
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
@@ -56,6 +57,9 @@ extern void sift_col_validate_rollup_dims(const char *value);
 extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_set_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);
+extern void sift_col_validate_return_columns(const char *value);
+/* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
+extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */

@@ -124,6 +124,54 @@ sift_col_validate_set_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option \"%s\": %s", value, err)));
 }
 
+/* 'a, b': the names of the text, varchar and uuid columns a tuple scan returns; r NULL: just the syntax. Empty or 'off': none */
+static const char *
+return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
+{
+	const char *p = opt;
+
+	while (*p == ' ')
+		p++;
+	if (*p == '\0' || strcmp(p, "off") == 0)
+		return NULL;
+	for (;;)
+	{
+		const char *end = strchr(p, ',');
+		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		int			a = 0;
+
+		while (len > 0 && p[len - 1] == ' ')
+			len--;
+		if (len == 0)
+			return "empty column name";
+		if (r != NULL)
+		{
+			for (int i = 1; i <= r->natts && a == 0; i++)
+				if (strlen(NameStr(TupleDescAttr(desc, i - 1)->attname)) == len && strncmp(NameStr(TupleDescAttr(desc, i - 1)->attname), p, len) == 0)
+					a = i;
+			if (a == 0)
+				return "unknown column";
+			if (!sift_col_returns_str(desc, a, r->nleaves[a], r->json[a]))
+				return "not a text, varchar or uuid column";
+			r->ret[a] = true;
+		}
+		if (end == NULL)
+			return NULL;
+		p = end + 1;
+		while (*p == ' ')
+			p++;
+	}
+}
+
+void
+sift_col_validate_return_columns(const char *value)
+{
+	const char *err = return_walk(value, NULL, NULL);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option \"%s\": %s", value, err)));
+}
+
 void
 sift_col_validate_order_columns(const char *value)
 {
@@ -274,6 +322,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "return_columns",
+						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
+						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "set_limit",
 					  "Up to this many distinct values a unit keeps a column's small-set summary exactly, beyond it as a bloom filter",
 					  SIFT_CSET_LIMIT, 2, SIFT_CSET_LIMIT_MAX, ShareUpdateExclusiveLock);
@@ -303,6 +354,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 		{"dict_lookup", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, dict_lookup)},
 		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
+		{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
 		{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 		{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
@@ -367,6 +419,14 @@ sift_col_options_order_columns(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->order_columns ? (const char *) o + o->order_columns : "";
+}
+
+const char *
+sift_col_options_return_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->return_columns ? (const char *) o + o->return_columns : "";
 }
 
 const char *
@@ -450,6 +510,16 @@ build_rel(Relation index, MemoryContext mcxt)
 			d->parent = d->parent < 0 ? -1 : n + d->parent;
 		}
 		n += k;
+	}
+	r->ret = palloc0((natts + 1) * sizeof(bool));
+	{
+		const char *err = return_walk(sift_col_options_return_columns(index), r, desc);
+
+		if (err)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: %s", err)));
+		for (int a = 1; a <= natts; a++)
+			if (r->ret[a] && index->rd_index->indkey.values[a - 1] == 0)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: \"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname))));
 	}
 	r->schema = sift_cschema_create(mcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));

@@ -89,6 +89,7 @@ typedef struct ColUnit
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
+	bool		codes_only;		/* sift_col_read_text: a STR leaf is read as codes, without its dictionary */
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;

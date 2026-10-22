@@ -134,6 +134,14 @@ extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
  * match may be used, and it is valid for the life of the segment.
  */
 extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
+/*
+ * The strings of a few codes without parsing the dictionary of the leaf: whether that is cheaper for want more strings (the dictionary is not at
+ * hand, is stored plain or for a lookup, and has more than DICT_LAZY_RATIO times as many codes as the strings read so far from this open segment),
+ * and the string of a code, read in place into buf (SIFT_COL_DICT_MAX_ENTRY bytes) or, when the dictionary is at hand, from it. Valid until the next call.
+ */
+#define DICT_LAZY_RATIO			16
+extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
+extern const char *sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char *buf);
 
 /* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows and their running sums, nrows + 1 of them */
 typedef struct SiftCLens
