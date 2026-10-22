@@ -98,7 +98,7 @@ figure where the scan is not used and the planner reads the heap or SiftAgg):
 | `WHERE id = c`, rows, ascending key | 0.04 / 0.05 | 0.10 / 0.11 (heap scan 10.0 / 78.8) | replaces |
 | `WHERE id = c`, `count(*)` | 0.04 / 0.07 | 0.11 / 0.10 | replaces |
 | `WHERE rnd = c`, rows, random int | 0.03 / 0.05 | 0.26 / 1.99 | replaces up to about 100,000 rows; at 1,000,000 rows 40 times slower (every unit is read: zones do not prune a random key) |
-| `WHERE s_short = c`, `WHERE u = c` (distinct text, uuid) | 0.06 / 0.05, 0.04 / 0.03 | 4.45 / 41.7, 4.18 / 64.4 | cannot replace for point lookups: linear in the rows, 70 to 2,000 times slower; 2 to 4 times faster than the heap scan |
+| `WHERE s_short = c`, `WHERE u = c` (distinct text, uuid) | 0.06 / 0.05, 0.04 / 0.03 | 4.45 / 41.7, 4.18 / 64.4 (bitmap scan, before the dictionary lookup tables) | see the generated tables below: a connection that has run the query before is within a few times of the btree, a new connection pays the parse of the segment dictionary |
 | `id IN (10 values)`, `IN (100 values)`, rows | 0.04 / 0.07, 0.48 / 0.61 | 0.15 / 0.43, 1.58 / 5.41 | replaces with caveat (3 to 9 times slower, under 6 ms at 1,000,000 rows) |
 | narrow range (0.1%), ascending key, rows | 0.07 / 0.35 | 0.11 / 0.24 | replaces |
 | range of 20%, rows | 2.54 / 29.7 | 3.39 / 24.3 | replaces |
@@ -114,7 +114,7 @@ figure where the scan is not used and the planner reads the heap or SiftAgg):
 | `min(rnd), max(rnd)` | 0.06 / 0.06 | 0.21 / 1.44 | replaces with caveat (3.5 to 24 times slower, under 1.5 ms) |
 | `DISTINCT grp`, `GROUP BY grp` with `sum` | 7.5 / 61.7, 26.4 / 248 | 0.71 / 4.9, 0.47 / 3.0 | better, 10 to 80 times faster (SiftAgg) |
 | `count(*) WHERE rnd BETWEEN` 20% | 1.91 / 18.5 | 0.48 / 2.84 | better, 4 to 6.5 times |
-| `LIKE 'abc%'` count | 0.06 / 0.10 | 2.93 / 22.6 | cannot: `LIKE` with a literal prefix is an index condition now, but the prefix test reads every entry of the segment dictionary (rows: 30 to 150 ms at 1,000,000 rows, btree 0.07) |
+| `LIKE 'abc%'` count | 0.06 / 0.10 | 2.93 / 22.6 (bitmap scan, before the dictionary lookup tables) | `LIKE` with a literal prefix is an index condition; see the generated tables below |
 | nested loop of 100 id lookups | 0.17 / 0.19 | 0.19 / 0.29 | replaces |
 | referential check of a foreign key on the referencing column (100,000 rows) | 0.31 | 0.27 (heap scan 9.75) | replaces |
 | index-only scan of a covering btree (`SELECT id WHERE rnd BETWEEN` 0.1%) | 0.04 / 0.18 | 0.71 / 6.13 as a bitmap scan + heap; 0.93 / 4.45 as an `Index Only Scan` | replaces with caveat (the first version read the dictionaries of the text columns: see Tuple by tuple) |
@@ -131,40 +131,69 @@ primary keys; any index that serves single-row lookups of a high-cardinality key
 100,000 rows, which is the point lookup of an OLTP table; ordered scans without a `LIMIT` and `ORDER BY .. LIMIT` where a few hundred
 microseconds count; covering indexes that avoid the heap; `LIKE 'abc%'` row lookups.
 
-**What would make it a drop-in for the rest.** The point lookup of a random int at 1,000,000 rows is 1.9 to 2.5 ms with the classes alone and 0.18 to 0.23 ms with
-`set_columns = 'rnd'` (the btree 0.04 ms): the summary leaves one unit to decode, and the rest is the price of opening the source and decoding that unit. Text
-and uuid equality and `LIKE 'abc%'` cost 30 to 150 ms at 1,000,000 rows with or without a summary (`set_columns` takes integer and text columns, not uuid): they
-test every entry of the segment dictionary, which is kept in the order the strings came; a hash over the cached dictionary, or dictionaries in byte order, is what
-they wait for. The classes could become the default ones for their types once this is done.
+**What would make it a drop-in for the rest.** The point lookup of a random int at 1,000,000 rows reads the one unit that holds the key (the summary of
+`set_columns = 'rnd'` leaves it; without one every unit is read), after the cost of opening the source: a lookup inside the unit (a sorted run or a hash per
+unit, a change of the format) is what is left, see the generated tables below. Text and uuid equality and `LIKE 'abc%'` go through the segment dictionary of
+the column: a backend parses it once (the cost is that of the distinct values, so a new connection pays it on its first query), and the dictionary it keeps
+(`dict_cache_kb`, docs/LIMITS.md) gets a table of its codes after 8 equalities and its codes in byte order after 16 prefix or range tests, so a repeated
+lookup is a probe and a prefix costs the matches (`set_columns` takes uuid columns since 3.3). What a new connection still pays needs the lookup structure to be
+stored with the dictionary (a change of the format). The classes could become the default ones for their types once this is done.
 
 ## Which of your btree indexes can be dropped
 
-index with the classes and `set_columns = 'id, rnd, s_short'`, against the btree on the column, `sift.enable_col_scan = on`. A btree that serves several
-rows of this table can go only if every one of them says drop.
+18.6, release build of the 3.3 branch, the neutral generator of the tables above, `shared_buffers` 256 MB, `jit` off, no parallel workers, a host at a load
+average of 30 to 40, so a ratio under 1.5 is noise): the planner's pick on a `sift_col` index with the classes and `set_columns = 'id, rnd, s_short, u'`, against the
+btree on the column, `sift.enable_col_scan = on`. Two tables, because they answer different clients: one that opens a connection for each query (the first
+query of a backend parses what it reads), and one that keeps its connection (the same query after 24 runs). A btree that serves several rows of a table can go
+only if every one of them says drop.
 
 <!-- col-scan-table:start -->
+**A client that connects for each query**: the first query of a new backend (median of three sessions), which parses the dictionaries of its string
+columns and fills its caches.
+
 | a btree that serves | sift_col / btree, 1,000,000 rows (ms) | 100,000 rows (ms) | ratio | verdict |
 |---|---|---|---|---|
-| point lookup of a clustered key (`id = c`), rows | 0.09 / 0.06 | 0.19 / 0.05 | 1.5x | drop the btree |
-| point lookup of a random int (`rnd = c`), rows | 0.23 / 0.04 | 0.12 / 0.05 | 5.6x | drop it if 6 times the time is fine |
-| covering lookup (`SELECT id, rnd WHERE rnd = c`) | 0.47 / 0.10 | 0.13 / 0.09 | 4.5x | drop it if 5 times the time is fine |
-| `IN` of 10 / 100 values, rows | 0.36 / 0.08, 4.07 / 0.86 | 0.17 / 0.12, 1.69 / 0.93 | 4.5x, 4.7x | drop it if 5 times the time is fine |
-| narrow range of a clustered key, rows | 0.34 / 0.30 | 0.21 / 0.10 | 1.1x | drop the btree |
-| range of 0.1% of a random int, rows / covering | 6.08 / 3.46, 4.45 / 0.20 | 0.89 / 0.74, 0.93 / 0.10 | 1.8x, 22.8x | keep the btree (23 times slower) |
-| equality on one column and a range on another, rows | 1.90 / 3.82 | 0.43 / 0.45 | 0.5x | drop the btree (faster) |
-| unordered `LIMIT 10` | 0.11 / 0.09 | 0.20 / 0.11 | 1.3x | drop the btree |
-| `count(*)` of an `IN` of 100 values | 3.35 / 0.36 | 1.41 / 0.47 | 9.3x | drop it if 9 times the time is fine |
-| `count(*)` of a range of 20% | 0.68 / 9.64 | 8.57 / 2.77 | 0.07x | drop the btree (faster) |
-| `DISTINCT`, `GROUP BY` | 4.56 / 81.96 | 0.75 / 10.76 | 0.06x | drop the btree (faster) |
-| text / uuid equality, rows | 66.37 / 0.10, 74.17 / 0.08 | 5.83 / 0.08, 5.46 / 0.09 | 684.2x, 976.0x | keep the btree (976 times slower) |
-| `LIKE 'abc%'`, rows | 72.70 / 0.07 | 21.70 / 0.09 | 969.4x | keep the btree (969 times slower) |
-| `ORDER BY .. LIMIT 10` / `LIMIT 1000` | 0.51 / 0.07, 7.21 / 0.32 | 0.32 / 0.05, 3.35 / 0.22 | 7.4x, 22.3x | keep the btree (22 times slower) |
-| `min(rnd), max(rnd)` | 1.54 / 0.18 | 0.24 / 0.11 | 8.5x | drop it if 8 times the time is fine |
+| point lookup of a clustered key (`id = c`), rows | 0.16 / 0.032 | 0.13 / 0.086 | 5.0x | drop it if 5 times the time is fine |
+| point lookup of a random int (`rnd = c`), rows | 0.34 / 0.038 | 0.12 / 0.10 | 8.9x | drop it if 9 times the time is fine |
+| covering lookup (`SELECT id, rnd WHERE rnd = c`) | 0.39 / 0.048 | 0.16 / 0.081 | 8.2x | drop it if 8 times the time is fine |
+| `IN` of 10 / 100 values, rows | 0.58 / 0.072, 7.44 / 0.35 | 0.17 / 0.16, 2.38 / 1.26 | 8.0x, 21.2x | keep the btree (21 times slower) |
+| narrow range of a clustered key, rows | 0.50 / 0.27 | 0.20 / 0.17 | 1.9x | drop the btree |
+| range of 0.1% of a random int, rows / covering | 8.38 / 2.79, 7.08 / 0.23 | 0.98 / 1.09, 0.78 / 0.12 | 3.0x, 31.4x | keep the btree (31 times slower) |
+| equality on one column and a range on another, rows | 3.44 / 3.59 | 0.29 / 0.41 | 1.0x | drop the btree (faster) |
+| unordered `LIMIT 10` | 0.20 / 0.052 | 0.12 / 0.074 | 3.9x | drop it if 4 times the time is fine |
+| `count(*)` of an `IN` of 100 values | 6.73 / 0.32 | 1.93 / 0.44 | 21.2x | keep the btree (21 times slower) |
+| `count(*)` of a range of 20% | 1.14 / 13.61 | 5.53 / 2.79 | 0.08x | drop the btree (faster) |
+| `DISTINCT`, `GROUP BY` | 7.54 / 82.64 | 0.49 / 13.97 | 0.09x | drop the btree (faster) |
+| text / uuid equality, rows | 31.60 / 0.072, 34.22 / 0.077 | 1.96 / 0.10, 3.64 / 0.076 | 438.8x, 444.4x | keep the btree (444 times slower) |
+| `LIKE 'abc%'`, rows | 39.38 / 0.082 | 2.70 / 0.082 | 480.3x | keep the btree (480 times slower) |
+| `ORDER BY .. LIMIT 10` / `LIMIT 1000` | 0.89 / 0.065, 10.01 / 0.33 | 0.39 / 0.073, 5.03 / 0.24 | 13.7x, 30.7x | keep the btree (31 times slower) |
+| `min(rnd), max(rnd)` | 3.01 / 0.11 | 0.25 / 0.13 | 26.8x | keep the btree (27 times slower) |
+| `UNIQUE`, `PRIMARY KEY`, `EXCLUDE`, the target of a foreign key |  |  |  | keep the btree (no unique check, docs/COL-SCAN.md) |
+
+**A backend that has run the query before**: the median of the last three of 24 runs in one session (a pooled connection).
+
+| a btree that serves | sift_col / btree, 1,000,000 rows (ms) | 100,000 rows (ms) | ratio | verdict |
+|---|---|---|---|---|
+| point lookup of a clustered key (`id = c`), rows | 0.032 / 0.005 | 0.033 / 0.009 | 6.4x | drop it if 6 times the time is fine |
+| point lookup of a random int (`rnd = c`), rows | 0.15 / 0.007 | 0.034 / 0.010 | 21.3x | keep the btree (21 times slower) |
+| covering lookup (`SELECT id, rnd WHERE rnd = c`) | 0.12 / 0.009 | 0.040 / 0.010 | 13.1x | keep the btree (13 times slower) |
+| `IN` of 10 / 100 values, rows | 0.30 / 0.022, 7.08 / 0.10 | 0.047 / 0.026, 1.54 / 0.15 | 13.5x, 69.5x | keep the btree (69 times slower) |
+| narrow range of a clustered key, rows | 0.22 / 0.12 | 0.071 / 0.021 | 1.9x | drop the btree |
+| range of 0.1% of a random int, rows / covering | 4.26 / 0.55, 4.00 / 0.22 | 0.26 / 0.058, 0.41 / 0.019 | 7.7x, 18.0x | keep the btree (18 times slower) |
+| equality on one column and a range on another, rows | 0.79 / 0.51 | 0.062 / 0.064 | 1.5x | drop the btree |
+| unordered `LIMIT 10` | 0.044 / 0.013 | 0.031 / 0.016 | 3.4x | drop it if 3 times the time is fine |
+| `count(*)` of an `IN` of 100 values | 6.80 / 0.076 | 1.29 / 0.13 | 89.5x | keep the btree (89 times slower) |
+| `count(*)` of a range of 20% | 0.67 / 11.23 | 5.16 / 2.53 | 0.06x | drop the btree (faster) |
+| `DISTINCT`, `GROUP BY` | 7.10 / 85.90 | 0.29 / 10.42 | 0.08x | drop the btree (faster) |
+| text / uuid equality, rows | 0.045 / 0.011, 0.048 / 0.009 | 0.030 / 0.010, 0.028 / 0.008 | 4.1x, 5.3x | drop it if 5 times the time is fine |
+| `LIKE 'abc%'`, rows | 1.12 / 0.011 | 0.10 / 0.012 | 102.3x | keep the btree (102 times slower) |
+| `ORDER BY .. LIMIT 10` / `LIMIT 1000` | 0.33 / 0.014, 7.64 / 0.19 | 0.14 / 0.014, 3.54 / 0.18 | 23.8x, 40.0x | keep the btree (40 times slower) |
+| `min(rnd), max(rnd)` | 1.75 / 0.028 | 0.062 / 0.028 | 62.4x | keep the btree (62 times slower) |
 | `UNIQUE`, `PRIMARY KEY`, `EXCLUDE`, the target of a foreign key |  |  |  | keep the btree (no unique check, docs/COL-SCAN.md) |
 
 | 1,000,000 rows, 7 columns | index bytes | bytes a row | of the btrees |
 |---|---|---|---|
-| btree (6 indexes) | 170,000,384 | 170.00 | 1.00x |
-| sift_col classes | 28,893,184 | 28.89 | 0.17x |
+| btree (6 indexes) | 170,221,568 | 170.22 | 1.00x |
+| sift_col classes | 29,122,560 | 29.12 | 0.17x |
 | sift_col classes + set_columns | 30,269,440 | 30.27 | 0.18x |
 <!-- col-scan-table:end -->
