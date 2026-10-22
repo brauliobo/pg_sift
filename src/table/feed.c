@@ -42,8 +42,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- the column source of the aggregate scan (table/src.c) ---------- */
-
 const SiftColSchema *
 sift_tbl_layout_schema(Relation rel, SiftTblRel *st)
 {
@@ -124,8 +122,6 @@ sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uin
 	MemoryContextDelete(rowcx);
 	return b;
 }
-
-/* ---------- the statistics of the declared paths ---------- */
 
 /* The values a path leaf cannot hold, which make a query that reads it keep the normal plan (SiftSrcStats.ovf) */
 typedef struct PathWbuf

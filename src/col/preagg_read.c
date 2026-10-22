@@ -89,8 +89,6 @@ get_zz128(Rd *r)
 	return 0;
 }
 
-/* ---------- reading ---------- */
-
 /* One dim's body (cube blob format above, after the directory): false when it is not consistent with the schema */
 static bool
 decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
@@ -266,8 +264,6 @@ sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 			return i;
 	return -1;
 }
-
-/* ---------- the rollup, read ---------- */
 
 /* the varints of n values are passed over */
 static void
@@ -605,8 +601,6 @@ sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, int leaf, Me
 	(void) s;
 	return true;
 }
-
-/* ---------- verification ---------- */
 
 /* Marks the leaves the cube and the rollups read; false when a blob does not decode */
 bool

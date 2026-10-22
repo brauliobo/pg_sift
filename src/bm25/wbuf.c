@@ -33,8 +33,6 @@
 #define RECSIZE(nterms, termbytes) \
 	TYPEALIGN(4, sizeof(SiftWbufDocData) + (Size) (nterms) * 6 + (termbytes))
 
-/* ---------- bloom ---------- */
-
 static inline void
 bloom_add(uint64 *bloom, uint32 h)
 {
@@ -53,8 +51,6 @@ sift_wbuf_bloom_has(const uint64 *bloom, uint32 h)
 
 	return ((bloom[a >> 6] >> (a & 63)) & (bloom[b >> 6] >> (b & 63)) & 1) != 0;
 }
-
-/* ---------- segments ---------- */
 
 static uint32
 limit_pages(Relation index)
@@ -75,8 +71,6 @@ sift_wbuf_seal(Relation index, bool force)
 {
 	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), 0, limit_pages(index), has_docs);
 }
-
-/* ---------- append ---------- */
 
 /* Cached per relation: the active segment and the lane tails last seen */
 typedef struct WbufHint
@@ -274,8 +268,6 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	return false;
 }
 
-/* ---------- reading ---------- */
-
 struct SiftWbufReader
 {
 	Relation	index;
@@ -469,15 +461,11 @@ has_docs(Relation index, const SiftSegEntry *entry)
 	return any;
 }
 
-/* ---------- pages ---------- */
-
 SiftExtent *
 sift_wbuf_pages(Relation index, const SiftSegEntry *entry, int *n)
 {
 	return sift_lane_extents(index, entry, n);
 }
-
-/* ---------- VACUUM ---------- */
 
 static int
 collect_docs(void *arg, Page page, Size *offs, ItemPointerData *tids)
@@ -519,8 +507,6 @@ sift_wbuf_bulkdelete(Relation index, const SiftSegEntry *entry, IndexBulkDeleteC
 	sift_wbuf_close(r);
 	return removed;
 }
-
-/* ---------- verification ---------- */
 
 typedef struct VerifyState
 {

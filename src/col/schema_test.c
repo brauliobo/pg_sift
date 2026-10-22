@@ -9,10 +9,6 @@
 #include "col/enc.h"
 #include "col/enc_test_int.h"
 
-/* ---------------------------------------------------------------------------
- * Schemas and dictionaries
- * ------------------------------------------------------------------------- */
-
 static bool
 dict_is(const SiftCDict *d, uint32 code, const char *s, uint32 len)
 {

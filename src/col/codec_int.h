@@ -68,10 +68,6 @@ extern const float sift_cc_p10f[11];
 #define CC_RUP8(x)			(((x) + 7) & ~(size_t) 7)
 #define CC_CAP32(n)			((size_t) SIFT_CC_CAP32(n))
 
-/* ======================================================================== */
-/* helpers                                                                  */
-/* ======================================================================== */
-
 static inline uint32
 get32(const uint8 *p)
 {

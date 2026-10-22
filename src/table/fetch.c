@@ -29,8 +29,6 @@
 #include "core/visibility.h"
 #include "table/scan_int.h"
 
-/* ---------- TID fetches ---------- */
-
 typedef struct SiftTblFetch
 {
 	IndexFetchTableData base;
@@ -275,8 +273,6 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	return horizon;
 }
 
-/* ---------- bitmap scans ---------- */
-
 static void
 bitmap_add(SiftTblScan *s, HeapTuple tup)
 {
@@ -356,8 +352,6 @@ bitmap_emit(SiftTblScan *s, TupleTableSlot *slot)
 	sift_tbl_store(slot, s->brows[s->bri++]);
 	return true;
 }
-
-/* ---------- TABLESAMPLE ---------- */
 
 static int
 cmp_offset(const void *a, const void *b)

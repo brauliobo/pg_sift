@@ -20,8 +20,6 @@
 #include "table/store_int.h"
 #include "core/cmp.h"
 
-/* ---------- tombstones ---------- */
-
 static int
 cmp_tomb(const void *a, const void *b)
 {

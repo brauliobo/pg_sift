@@ -13,10 +13,6 @@
 #include "col/enc.h"
 #include "col/enc_int.h"
 
-/* ---------------------------------------------------------------------------
- * Small helpers
- * ------------------------------------------------------------------------- */
-
 /* Appends n zero bytes */
 static void
 put_zero(StringInfo out, Size n)

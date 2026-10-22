@@ -15,8 +15,6 @@
 #include "bm25/segment_int.h"
 #include "core/cmp.h"
 
-/* ---------- reader ---------- */
-
 SiftSegment *
 sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 {

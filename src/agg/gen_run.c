@@ -136,8 +136,6 @@ gen_spill(AggExec *ex, int ai)
 	d->n = d->cap = 0;
 }
 
-/* ---------- DISTINCT ON: the best row of each group ---------- */
-
 /* does an argument go into the best row (a constant is the same in every row) */
 static bool
 gen_stored(const SiftAggGen *g, int k)

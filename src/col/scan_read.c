@@ -26,8 +26,6 @@
 #include "core/visibility.h"
 #include "col/scan_int.h"
 
-/* ---------- reading ---------- */
-
 /* The bits of src at idx[0..m) as a bit vector of m bits; NULL when none is set */
 static uint64 *
 gather_bits(MemoryContext cx, const uint64 *src, const uint32 *idx, uint32 m)

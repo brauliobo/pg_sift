@@ -9,10 +9,6 @@
 #include "col/enc_test_int.h"
 #include "core/popcount.h"
 
-/* ---------------------------------------------------------------------------
- * Units
- * ------------------------------------------------------------------------- */
-
 /* bits 0..7: CONST, PACK of up to 7 / 9..15 / 17..31 bits, FOR 8 / 16 / 32 / 64; bit 8: a text leaf with codes of 16 bits or more */
 static void
 note_encoding(TCtx *t, SiftColStore store, const SiftCChunk *c)

@@ -13,8 +13,6 @@
 #include "bm25/segment.h"
 #include "core/cmp.h"
 
-/* ---------- ranker ---------- */
-
 /*
  * Best-first search over (segment, SB) units ordered by their score upper
  * bound, then over the 16-page scoring blocks of a unit. A unit or block is

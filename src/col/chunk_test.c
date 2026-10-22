@@ -11,10 +11,6 @@
 #include "col/enc_test_int.h"
 #include "core/popcount.h"
 
-/* ---------------------------------------------------------------------------
- * Chunks, zones and predicates of a leaf
- * ------------------------------------------------------------------------- */
-
 static int64
 key_of(const SiftColDef *d, SiftCDict *segdict, const SiftColValue *v)
 {

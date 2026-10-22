@@ -28,8 +28,6 @@ typedef struct SiftColSBRef
 	uint32		pad;
 } SiftColSBRef;
 
-/* ---------- writer ---------- */
-
 typedef struct SiftColSegWriter SiftColSegWriter;
 
 /*
@@ -61,8 +59,6 @@ extern uint64 sift_colw_rows(const SiftColSegWriter *w);
 extern Size sift_colw_memory(const SiftColSegWriter *w);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
-
-/* ---------- reader ---------- */
 
 typedef struct SiftColSegment
 {
