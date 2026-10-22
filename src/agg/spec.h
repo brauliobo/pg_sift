@@ -269,6 +269,7 @@ typedef struct SiftAggAgg
 	SiftAggNum	num;			/* a numeric argument (SUM_NUM, AVG_NUM, and MIN, MAX, COUNT, COUNT_DISTINCT of a numeric): the argument is this program, leaf is -1 */
 	bool		distinct;		/* SUM_NUM, AVG_NUM: of the distinct values */
 	SiftAggPred *filter;		/* NULL: none */
+	Bitmapset  *reads;			/* planner only, not packed: the leaves its arguments read */
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
 	Oid			collid;			/* input collation: count(DISTINCT) of dictionary values */
@@ -488,6 +489,7 @@ typedef struct SiftAggSpec
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
 	uint8	   *recheck;		/* per entry of leaves: how the query reads the leaf when the source holds a value it cannot store (SiftSrcRecheck, SRK_NONE: such a value is an error) */
+	uint64	   *gate;			/* per entry of leaves: the aggregates (bit j: agg[j]) that read the leaf, all of them with a FILTER; a row of a value the leaf cannot store raises only if the FILTER of one holds (0: it raises for every row) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;
 	int			nkeys;
