@@ -8,7 +8,6 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/table.h"
-#include "access/visibilitymap.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_index.h"
@@ -36,6 +35,7 @@
 #include "core/cpu.h"
 #include "core/limits.h"
 #include "core/ops.h"
+#include "core/visibility.h"
 
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
@@ -670,7 +670,6 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	const SiftColIndexMeta *d = sift_col_index_defs(index);
 	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	BlockNumber allvis;
 	Relation	heap;
 	BlockNumber relpages;
 
@@ -694,9 +693,8 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
 	heap = table_open(d->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
-	visibilitymap_count(heap, &allvis, NULL);
 	m->stats.heap_pages = relpages;
-	m->stats.allvisible_frac = relpages > 0 ? (double) allvis / relpages : 0;
+	m->stats.allvisible_frac = relpages > 0 ? (double) sift_vis_count_allvisible(heap, relpages) / relpages : 0;
 	table_close(heap, AccessShareLock);
 	if (memo != NULL)
 	{

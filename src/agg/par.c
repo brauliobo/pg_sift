@@ -425,7 +425,7 @@ void
 par_launch(AggExec *ex)
 {
 	ParallelContext *pcxt;
-	char	   *spec_txt = nodeToString(ex->pack),
+	char	   *spec_txt,
 			   *p;
 	Size		plen = EstimateParamListSpace(ex->params),
 				slen = EstimateSnapshotSpace(ex->snap);
@@ -438,6 +438,7 @@ par_launch(AggExec *ex)
 
 	if (nw <= 0 || IsParallelWorker())
 		return;
+	spec_txt = nodeToString(ex->pack);
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)

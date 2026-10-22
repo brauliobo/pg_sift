@@ -31,6 +31,8 @@ typedef struct SiftVis
 
 /* Blocks of the table in TID space (the relation size for a heap, the virtual blocks of a sift_table) */
 extern BlockNumber sift_vis_nblocks(Relation heap);
+/* The all-visible pages among the first nblocks of a heap, as visibilitymap_count counts them, reading only the map bytes they use */
+extern BlockNumber sift_vis_count_allvisible(Relation heap, BlockNumber nblocks);
 /*
  * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
  * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0.
