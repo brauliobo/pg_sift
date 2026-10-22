@@ -61,7 +61,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->mcxt = mcxt;
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
-		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
+		SIFT_SEG_CORRUPT(index, entry->gen, "The segment is not immutable.");
 	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MAX_READ)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),

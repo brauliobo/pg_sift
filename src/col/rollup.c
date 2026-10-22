@@ -441,8 +441,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
 	if (limit < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
 	if (!sift_col_is_index(index))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
@@ -520,8 +519,7 @@ sift_col_rollup_counters(PG_FUNCTION_ARGS)
 	int			queued = 0,
 				busy = 0;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	SpinLockAcquire(&sh->lock);
 	for (int i = 0; i < sh->nreq; i++)
 		if (sh->req[i].db == MyDatabaseId)

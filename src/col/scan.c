@@ -78,7 +78,8 @@ check_access(Relation heap)
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(heap))));
+				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(heap)),
+				 errhint("Run the statement as the table owner or as a role with BYPASSRLS; the normal plan applies the policies.")));
 }
 
 static SiftColSource *
@@ -425,8 +426,8 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
 	for (int i = 0; i < npreds; i++)
-		if (preds[i].col < 0 || preds[i].col >= src->schema->ncols)
-			elog(ERROR, "sift_col: predicate on leaf %d of %d", preds[i].col, src->schema->ncols);
+		SIFT_INVARIANT(preds[i].col >= 0 && preds[i].col < src->schema->ncols, "sift_col: predicate on leaf %d of %d", preds[i].col,
+					   src->schema->ncols);
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
@@ -488,8 +489,8 @@ load_memory(ColUnit *cu, const ColMem *m)
 
 	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
 	sift_cunit_encode(m->b, NULL, NULL, NULL, true, buf, &start, cu->mzones);
-	if (!sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v))
-		elog(ERROR, "sift_col: an in-memory unit does not parse");
+	SIFT_INVARIANT(sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v),
+				   "sift_col: an in-memory unit does not parse");
 	cu->batch = m->b;
 	cu->sb = m->b->sb;
 	cu->memid = m->id;

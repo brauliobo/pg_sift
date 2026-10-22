@@ -336,7 +336,8 @@ build_rel(Relation index, MemoryContext mcxt)
 	int			n = 0;
 
 	if (index->rd_index->indnatts != natts)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns"),
+						errhint("List the columns in the index key: a sift_col index stores all of them.")));
 	r->natts = natts;
 	r->first = palloc((natts + 1) * sizeof(int));
 	r->nleaves = palloc((natts + 1) * sizeof(int));
@@ -358,7 +359,10 @@ build_rel(Relation index, MemoryContext mcxt)
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
 					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(att->attname))));
 		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS))));
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
+							errdetail("Column \"%s\" brings the index to %d columns and paths.", NameStr(att->attname), n + k),
+							errhint("Leave out the columns the queries do not read, or create several indexes: the planner picks among them.")));
 		r->first[a] = n;
 		r->json[a] = isjson;
 		r->name[a] = att->atttypid == NAMEOID;

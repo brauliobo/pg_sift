@@ -788,8 +788,7 @@ sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, con
 	int			inner;
 
 	check_policy(pol);
-	if (n > SIFT_CC_MAXROWS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("too many rows for one column chunk: %u", n)));
+	SIFT_INVARIANT(n <= SIFT_CC_MAXROWS, "too many rows for one column chunk: %u", n);
 	v = palloc(sizeof(int64) * (n + 1));
 	for (uint32 i = 0; i < n; i++)
 	{

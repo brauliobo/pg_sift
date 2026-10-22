@@ -100,7 +100,7 @@ key_value(Oid argtype, Datum d, SiftColValue *v)
 			v->len = UUID_LEN;
 			break;
 		default:
-			elog(ERROR, "sift_col: no scan on a key of type %u", argtype);
+			SIFT_INVARIANT(false, "sift_col: no scan on a key of type %u", argtype);
 	}
 }
 
@@ -121,7 +121,7 @@ strategy_op(StrategyNumber s)
 		case BTGreaterStrategyNumber:
 			return SIFT_COLOP_GT;
 	}
-	elog(ERROR, "sift_col: strategy %d is not an operator of the scan", s);
+	SIFT_INVARIANT(false, "sift_col: strategy %d is not an operator of the scan", s);
 	return 0;
 }
 
