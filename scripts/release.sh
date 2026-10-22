@@ -175,6 +175,8 @@ check_versions() {
 	[[ $(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") == "$VERSION" ]] || bad+=("packaging/PKGBUILD pkgver")
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ $(<"$R/$f/VERSION") == "$VERSION" ]] || bad+=("$f/VERSION"); done
 	grep -q "release-$VERSION-blue" "$R/README.md" || bad+=("README.md badge")
+	grep -q "^version: \"$VERSION\"" "$R/packaging/pgxman.yaml" || bad+=("packaging/pgxman.yaml")
+	[[ $(grep -c "\"version\": \"$VERSION\"" "$R/META.json") == 2 ]] || bad+=("META.json")
 	grep -q "^## $VERSION - " "$R/CHANGELOG.md" || bad+=("CHANGELOG.md heading")
 	(( ${#bad[@]} == 0 )) || { echo "not at $VERSION: ${bad[*]}"; return 1; }
 }
@@ -207,10 +209,11 @@ bump() {
 	done
 	sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" "$R/packaging/PKGBUILD"
 	sed -i "s/release-$oldre-blue/release-$VERSION-blue/" "$R/README.md"
+	sed -i "s/$oldre/$VERSION/g" "$R/packaging/pgxman.yaml" "$R/META.json"
 	sed -i "s/\([^0-9.]\)$oldre\([^0-9]\)/\1$VERSION\2/g" "$R/docs/USAGE.md"
 	sed -i "s/^V=$oldre\$/V=$VERSION/" "$R/sqlite/README.md"
 	check_versions || return 1
-	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD sqlite/README.md
+	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || g add "$f/VERSION" "$f/CHANGELOG.md"; done
 	g commit -q -m "release: $VERSION"
 }
