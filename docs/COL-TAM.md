@@ -169,7 +169,7 @@ old copy, whose pages are not reused until the scan's snapshot is gone.
 
 ## 4. TableAmRoutine: every callback
 
-PostgreSQL 17 and 18; the differences are marked. Every callback below is implemented and tested.
+PostgreSQL 17, 18 and 19; the differences are marked. Every callback below is implemented and tested.
 
 | callback | decision | status |
 |---|---|---|

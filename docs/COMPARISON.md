@@ -36,7 +36,7 @@ Feature facts for search and for analytics, pg_sift against the PostgreSQL optio
 | S19 Joins with other tables | Yes (nested loop and semi joins, ranked) | Yes | Yes (join pushdown is beta) | Partly (the index is used in a join only with the explicit `to_bm25query()` form) | Yes (inferred) | Partly (in a join use the query-qualified `bm25_score(ctid, query)`) | Yes (a ranked side needs a text predicate) | Partly (ES\ | QL `LOOKUP JOIN`; no SQL joins in the query DSL) |
 | S20 License | PostgreSQL License | PostgreSQL License | AGPL-3.0 (Enterprise edition: commercial) | PostgreSQL License | PostgreSQL License | PostgreSQL License | ? | AGPL-3.0, SSPL-1.0 or Elastic-2.0 |
 | S21 Source available, self-hostable | Yes | Yes | Yes (Community) | Yes | Yes | Yes | ? (offered on PlanetScale; no download or source found) | Yes |
-| S22 PostgreSQL versions | 17, 18 (19 experimental) | 14-18 supported by the project (docs read: 18) | 15-18 | 17, 18 | 12 or later (1.3.15 supports 18) | 17, 18 | 17, 18 | n/a |
+| S22 PostgreSQL versions | 17, 18, 19 | 14-18 supported by the project (docs read: 18) | 15-18 | 17, 18 | 12 or later (1.3.15 supports 18) | 17, 18 | 17, 18 | n/a |
 
 ### Notes on the search rows
 

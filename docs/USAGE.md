@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 and macOS arm64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 and macOS arm64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
 development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
 
 ```sh
@@ -538,7 +538,7 @@ its own docker container.
 
 ## Limits
 
-- PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- PostgreSQL 17, 18 and 19; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
   - a single `COPY` or `INSERT ... SELECT` writes any number of rows in one transaction (the write buffers of one command become column groups that carry their writer while it runs, and `VACUUM` freezes them once it is committed or drops them if it aborted; a 10,000,000-row `COPY` takes about 180 MB in the backend). A transaction that writes its rows with many commands (a loop of single-row `INSERT`s, or several sessions into the same write buffers) cannot do that: its rows are promoted only once it has ended, so it is limited to about 126 write buffers of `sift.table_write_buffer_limit` (504 MB of row format at the default, 1 GB at 8192 kB), and a larger one fails with `54000` (the message says so: load with `COPY` or `INSERT ... SELECT`, or in several transactions); writers merge the column segments as they go;
