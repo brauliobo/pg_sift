@@ -20,16 +20,21 @@ done
 sql pw "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.col_auto_merge_partition_kb = 128" \
 	"ALTER DATABASE postgres SET sift.vacuum_rewrite_limit = 0" >/dev/null
 
-# churn TABLE FROM M: of the rows from that id on, one of M updated and one of M deleted (other rows each time), 200 inserted, then VACUUM (the worker is asked for at its end)
+# quiet: no maintenance worker runs. The snapshot of a worker that started before the DELETEs of a churn keeps VACUUM from removing the dead rows, so the index
+# never learns of them and nothing is due (the same for the UPDATE of another table in the database); and the log a step measures from must hold all that
+# the workers of the steps before it write
+quiet() { for _ in $(seq 600); do [[ $(sql pw "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
+# churn_rows TABLE FROM M: of the rows from that id on, one of M updated and one of M deleted (other rows each time), 200 inserted; churn: and then VACUUM (the worker is asked for at its end)
 n=0
-churn() { n=$((n + 1)); local r=$((n % $3)); sql pw "UPDATE $1 SET amount = amount + 1 WHERE id >= $2 AND id % $3 = $r" "DELETE FROM $1 WHERE id >= $2 AND id % $3 = ($r + $3 / 2) % $3" \
-	"INSERT INTO $1 SELECT $n * 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 1000), md5(($n * 100000 + g)::text), md5(($n * 100000 + g)::text || 'b') FROM generate_series(1, 200) g" \
-	"VACUUM (INDEX_CLEANUP ON) $1" >/dev/null; }
-# state INDEX: partitions (segments of more than 1500 rows: the overlays of a churn have fewer), segments and rows that are dirty, rows in the write buffer
-state() { sql pw "SELECT count(*) FILTER (WHERE kind = 'immutable' AND rows > 1500) || ' partitions, ' || count(*) FILTER (WHERE dirty) || ' dirty, ' || coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) || ' buffered' FROM sift.col_segments('$1')"; }
+churn_rows() { quiet; n=$((n + 1)); local r=$((n % $3)); sql pw "UPDATE $1 SET amount = amount + 1 WHERE id >= $2 AND id % $3 = $r" "DELETE FROM $1 WHERE id >= $2 AND id % $3 = ($r + $3 / 2) % $3" \
+	"INSERT INTO $1 SELECT $n * 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 1000), md5(($n * 100000 + g)::text), md5(($n * 100000 + g)::text || 'b') FROM generate_series(1, 200) g" >/dev/null; }
+churn() { churn_rows "$@"; sql pw "VACUUM (INDEX_CLEANUP ON) $1" >/dev/null; }
+# state INDEX: partitions (immutable segments of at least half of sift.col_auto_merge_partition_kb, as the worker counts them: the overlays of a churn are smaller,
+# and the rows of a partition depend on what the rows hold), segments and rows that are dirty, rows in the write buffer
+state() { sql pw "SELECT count(*) FILTER (WHERE kind = 'immutable' AND bytes >= 128 * 512) || ' partitions, ' || count(*) FILTER (WHERE dirty) || ' dirty, ' || coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) || ' buffered' FROM sift.col_segments('$1')"; }
 settled() { [[ $(state "$1") =~ ^([0-9]+)\ partitions,\ 0\ dirty,\ 0\ buffered$ ]] && (( BASH_REMATCH[1] >= 6 )); }
 await() { for _ in $(seq 600); do settled "$1" && return 0; sleep 0.1; done; return 1; }
-gens() { sql pw "SELECT gen FROM sift.col_segments('$1') WHERE kind = 'immutable' AND rows > 1500 ORDER BY gen"; }
+gens() { sql pw "SELECT gen FROM sift.col_segments('$1') WHERE kind = 'immutable' AND bytes >= 128 * 512 ORDER BY gen"; }
 groups() { sql pw "SET sift.enable_agg = $2" "SET max_parallel_workers_per_gather = 0" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM $1 GROUP BY kind) x" | tail -1; }
 merges() { grep -c "sift: merged .* of index \"$1\"" "$D/postgres.log"; }
 # since LINE: the log after that many lines; await_log PATTERN LINE: until PATTERN is logged after them
@@ -55,26 +60,33 @@ check "the window of churn is rewritten: no dirty segment, nothing buffered" set
 check "and the partitions it did not reach are the segments they were" test "$KEPT" -ge $(( $(wc -l <<<"$BEFORE") - 3 ))
 check "the index verifies and the answers are the heap's" test "$(verified fa_idx && echo ok)|$(groups fa on)" == "ok|$(groups fa off)"
 
-# 3. the rewrite of many partitions goes in steps (the lock is let go between them): a cost delay makes each last, and no step is most of the time. The
-# units listed twice would take the index in one step (an overlay over every partition), so the rule for them is off here
-sql pw "ALTER DATABASE postgres SET sift.maintenance_cost_delay = 5" "ALTER DATABASE postgres SET sift.col_auto_merge_fragmentation = 1000" >/dev/null
+# 3. the rewrite of many partitions goes in steps (the lock is let go between them), none of them most of the rows: the documents each step rewrites are
+# counted, not its time, which a busy host stretches. The units listed twice would take the index in one step (an overlay over every partition), so the rule
+# for them is off here
+sql pw "ALTER DATABASE postgres SET sift.col_auto_merge_fragmentation = 1000" >/dev/null
+quiet
 L0=$(wc -l <"$D/postgres.log")
 churn fa 0 20
 await_log "column rewrite worker finished index \"fa_idx\"" $L0
-STEPS=$(since $L0 | grep -c "sift: merged .* of index \"fa_idx\"")
-TOTAL=$(since $L0 | grep "rewrote (.*) the segments of index \"fa_idx\"" | grep -o 'in [0-9]* ms' | grep -o '[0-9]*' | head -1)
-LONGEST=$(since $L0 | grep "sift: merged .* of index \"fa_idx\"" | grep -o 'in [0-9]* ms' | grep -o '[0-9]*' | sort -n | tail -1)
-diag "$STEPS steps, the longest $LONGEST ms of $TOTAL ms"
-check "the partitions are rewritten in several steps, none of them most of the time" test "$STEPS" -ge 5 -a "${LONGEST:-9999999}" -lt $(( ${TOTAL:-0} / 3 ))
+DOCS=$(since $L0 | grep "sift: merged .* of index \"fa_idx\"" | grep -o '[0-9]* documents' | grep -o '[0-9]*')
+STEPS=$(wc -w <<<"$DOCS")
+TOTAL=$(awk '{ s += $1 } END { print s + 0 }' <<<"$DOCS")
+LONGEST=$(sort -n <<<"$DOCS" | tail -1)
+diag "$STEPS steps, the largest $LONGEST documents of $TOTAL"
+check "the partitions are rewritten in several steps, none of them most of the rows" test "$STEPS" -ge 5 -a "$(( ${LONGEST:-0} * 3 ))" -lt "$TOTAL"
 await fa_idx
-sql pw "ALTER DATABASE postgres RESET sift.maintenance_cost_delay" "ALTER DATABASE postgres RESET sift.col_auto_merge_fragmentation" >/dev/null
+sql pw "ALTER DATABASE postgres RESET sift.col_auto_merge_fragmentation" >/dev/null
 
 # 4. sift.col_auto_merge_max_workers: two workers for two indexes, one slot (an advisory lock of the key space 0x51F7, 0x53520000 + slot): never both at once
 sql pw "ALTER DATABASE postgres SET sift.col_auto_merge_max_workers = 1" "ALTER DATABASE postgres SET sift.maintenance_cost_delay = 40" >/dev/null
 slots() { sql pw "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND objid >= 1397882880 AND granted"; }
-churn fa 0 20 &
+# the rows of both tables change before either VACUUM: a snapshot of the database taken before a DELETE (the UPDATE of the other table, the worker the first VACUUM
+# asked for) keeps the second VACUUM from removing the dead rows, and the index would have nothing to rewrite
+churn_rows fa 0 20
+churn_rows fb 0 20
+sql pw "VACUUM (INDEX_CLEANUP ON) fa" >/dev/null &
 cp=$!
-churn fb 0 20
+sql pw "VACUUM (INDEX_CLEANUP ON) fb" >/dev/null
 wait "$cp"
 PEAK=0
 for _ in $(seq 1200); do
@@ -90,6 +102,7 @@ sql pw "ALTER DATABASE postgres RESET sift.col_auto_merge_max_workers" "ALTER DA
 # 5. sift.maintenance_wal_rate: the rewrite writes about as much WAL as the segments it writes are large, at no more than the rate
 RATE=1000
 sql pw "ALTER DATABASE postgres SET sift.maintenance_wal_rate = $RATE" >/dev/null
+quiet
 L0=$(wc -l <"$D/postgres.log")
 churn fa 0 20
 await_log "column rewrite worker finished index \"fa_idx\"" $L0
