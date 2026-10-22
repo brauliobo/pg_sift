@@ -131,90 +131,60 @@ pa_cal(const SiftSrcPreagg *pa, int leaf)
 	return -1;
 }
 
-static const char *const pawhy_name[] = {
-	[SPW_OK] = "ok",
-	[SPW_OFF] = "sift.agg_preagg is off",
-	[SPW_NONE] = "the index stores no pre-aggregates",
-	[SPW_ARMS] = "union arms",
-	[SPW_SETS] = "grouping sets",
-	[SPW_JOIN] = "joined table",
-	[SPW_COMBO] = "combination or lookup",
-	[SPW_POST] = "post-aggregation",
-	[SPW_VLEAF] = "virtual leaf",
-	[SPW_NO_AGG] = "no aggregate",
-	[SPW_SEARCH] = "text search",
-	[SPW_TOPN] = "top-N",
-	[SPW_NOT_LIST] = "unnested leaf is not a list",
-	[SPW_NO_ROLLUP] = "no rollup of the list",
-	[SPW_KEY_EXPR] = "group key is an expression",
-	[SPW_KEY_LEAF] = "group key is not a dim leaf",
-	[SPW_PRED] = "conjunct is not on the dims",
-	[SPW_AGG_FILTER] = "aggregate with FILTER",
-	[SPW_AGG_DISTINCT] = "aggregate with DISTINCT",
-	[SPW_AGG_KIND] = "aggregate not additive over tuples",
-	[SPW_AGG_ARG] = "aggregate argument is not a plain leaf",
-	[SPW_AGG_TYPE] = "aggregate type not summed",
-	[SPW_DIM_NOT_STORED] = "dim not in the rollup",
-	[SPW_MEAS_NOT_STORED] = "measure not in the rollup",
-	[SPW_ROW_KEYS] = "rows: several group keys",
-	[SPW_ROW_KEY] = "rows: key is not a column",
-	[SPW_ROW_PRED] = "rows: conjunct the histogram cannot test",
-	[SPW_ROW_NO_HIST] = "rows: no histogram of the key",
-	[SPW_ROW_NO_SUMS] = "rows: no sums",
-	[SPW_ZONE] = "row comparison decides no unit",
-	[SPW_ROW_CAL_ZONE] = "rows: calendar key uses the session time zone",
-	[SPW_ROW_CAL_FINE] = "rows: calendar key finer than a day",
+/* the text of an EXPLAIN line, and the stable name of sift.col_rollup_misses */
+static const struct
+{
+	const char *name;
+	const char *slug;
+}			pawhy[] = {
+	[SPW_OK] = {"ok", "ok"},
+	[SPW_OFF] = {"sift.agg_preagg is off", "preagg_off"},
+	[SPW_NONE] = {"the index stores no pre-aggregates", "no_preagg"},
+	[SPW_ARMS] = {"union arms", "union_arms"},
+	[SPW_SETS] = {"grouping sets", "grouping_sets"},
+	[SPW_JOIN] = {"joined table", "joined_table"},
+	[SPW_COMBO] = {"combination or lookup", "combination"},
+	[SPW_POST] = {"post-aggregation", "post_aggregation"},
+	[SPW_VLEAF] = {"virtual leaf", "virtual_leaf"},
+	[SPW_NO_AGG] = {"no aggregate", "no_aggregate"},
+	[SPW_SEARCH] = {"text search", "text_search"},
+	[SPW_TOPN] = {"top-N", "top_n"},
+	[SPW_NOT_LIST] = {"unnested leaf is not a list", "not_a_list"},
+	[SPW_NO_ROLLUP] = {"no rollup of the list", "no_rollup"},
+	[SPW_KEY_EXPR] = {"group key is an expression", "key_expression"},
+	[SPW_KEY_LEAF] = {"group key is not a dim leaf", "key_not_a_dim"},
+	[SPW_PRED] = {"conjunct is not on the dims", "conjunct_not_on_dims"},
+	[SPW_AGG_FILTER] = {"aggregate with FILTER", "aggregate_filter"},
+	[SPW_AGG_DISTINCT] = {"aggregate with DISTINCT", "aggregate_distinct"},
+	[SPW_AGG_KIND] = {"aggregate not additive over tuples", "aggregate_kind"},
+	[SPW_AGG_ARG] = {"aggregate argument is not a plain leaf", "aggregate_argument"},
+	[SPW_AGG_TYPE] = {"aggregate type not summed", "aggregate_type"},
+	[SPW_DIM_NOT_STORED] = {"dim not in the rollup", "dim_not_stored"},
+	[SPW_MEAS_NOT_STORED] = {"measure not in the rollup", "measure_not_stored"},
+	[SPW_ROW_KEYS] = {"rows: several group keys", "rows_several_keys"},
+	[SPW_ROW_KEY] = {"rows: key is not a column", "rows_key_not_a_column"},
+	[SPW_ROW_PRED] = {"rows: conjunct the histogram cannot test", "rows_conjunct"},
+	[SPW_ROW_NO_HIST] = {"rows: no histogram of the key", "rows_no_histogram"},
+	[SPW_ROW_NO_SUMS] = {"rows: no sums", "rows_no_sums"},
+	[SPW_ZONE] = {"row comparison decides no unit", "zone_decides_nothing"},
+	[SPW_ROW_CAL_ZONE] = {"rows: calendar key uses the session time zone", "rows_key_time_zone"},
+	[SPW_ROW_CAL_FINE] = {"rows: calendar key finer than a day", "rows_key_finer_than_day"},
 };
+
+StaticAssertDecl(lengthof(pawhy) == SPW_ROW_CAL_FINE + 1, "pawhy lists every SiftPaWhy");
 
 const char *
 sift_pawhy_name(SiftPaWhy why)
 {
-	return pawhy_name[why];
+	return pawhy[why].name;
 }
-
-/* the stable names of sift.col_rollup_misses */
-static const char *const pawhy_slug[] = {
-	[SPW_OK] = "ok",
-	[SPW_OFF] = "preagg_off",
-	[SPW_NONE] = "no_preagg",
-	[SPW_ARMS] = "union_arms",
-	[SPW_SETS] = "grouping_sets",
-	[SPW_JOIN] = "joined_table",
-	[SPW_COMBO] = "combination",
-	[SPW_POST] = "post_aggregation",
-	[SPW_VLEAF] = "virtual_leaf",
-	[SPW_NO_AGG] = "no_aggregate",
-	[SPW_SEARCH] = "text_search",
-	[SPW_TOPN] = "top_n",
-	[SPW_NOT_LIST] = "not_a_list",
-	[SPW_NO_ROLLUP] = "no_rollup",
-	[SPW_KEY_EXPR] = "key_expression",
-	[SPW_KEY_LEAF] = "key_not_a_dim",
-	[SPW_PRED] = "conjunct_not_on_dims",
-	[SPW_AGG_FILTER] = "aggregate_filter",
-	[SPW_AGG_DISTINCT] = "aggregate_distinct",
-	[SPW_AGG_KIND] = "aggregate_kind",
-	[SPW_AGG_ARG] = "aggregate_argument",
-	[SPW_AGG_TYPE] = "aggregate_type",
-	[SPW_DIM_NOT_STORED] = "dim_not_stored",
-	[SPW_MEAS_NOT_STORED] = "measure_not_stored",
-	[SPW_ROW_KEYS] = "rows_several_keys",
-	[SPW_ROW_KEY] = "rows_key_not_a_column",
-	[SPW_ROW_PRED] = "rows_conjunct",
-	[SPW_ROW_NO_HIST] = "rows_no_histogram",
-	[SPW_ROW_NO_SUMS] = "rows_no_sums",
-	[SPW_ZONE] = "zone_decides_nothing",
-	[SPW_ROW_CAL_ZONE] = "rows_key_time_zone",
-	[SPW_ROW_CAL_FINE] = "rows_key_finer_than_day",
-};
-
-StaticAssertDecl(lengthof(pawhy_slug) == SPW_ROW_CAL_FINE + 1 && lengthof(pawhy_name) == SPW_ROW_CAL_FINE + 1, "pawhy tables list every SiftPaWhy");
 
 const char *
 sift_pawhy_slug(SiftPaWhy why)
 {
-	return pawhy_slug[why];
+	return pawhy[why].slug;
 }
+
 
 /* would other options of the index (rollup, preagg, cube) answer the scan: it needs a dim or measure the index does not store */
 bool
