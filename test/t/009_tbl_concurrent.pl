@@ -17,6 +17,26 @@ $node->start;
 install_sift($node);
 $node->safe_psql('postgres', 'CREATE TABLE w (id bigint, v text) USING sift_table');
 
+# The first write of a new table lays out its tombstone segment and flags the metapage. A session that read the table meanwhile (the metapage
+# is there, the segment not yet) must not take the table for laid out: its own first write then added a write buffer to a directory that
+# was never flagged, and every later read of the table failed as corrupt.
+$node->safe_psql('postgres', 'CREATE TABLE g (id int) USING sift_table');
+my $gate = $node->background_psql('postgres');
+my $first = $node->background_psql('postgres');
+my $reader = $node->background_psql('postgres');
+$gate->query_safe('SELECT pg_advisory_lock(7101)');
+$first->query_until(qr/stalled/, "SET sift.table_init_gate = 7101;\n\\echo stalled\nINSERT INTO g VALUES (1);\n");
+$node->poll_query_until('postgres', "SELECT count(*) = 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted");
+$reader->query_safe('SELECT count(*) FROM g');
+# (psql stops at the first error, which ends the session)
+ok(eval { $reader->query_safe('INSERT INTO g VALUES (2)'); 1 }, 'a session that read the table before its first write lays it out itself');
+$gate->query_safe('SELECT pg_advisory_unlock(7101)');
+$first->query_safe('SELECT 1');
+$node->psql('postgres', 'SELECT count(*) FROM g', stdout => \my $rows_in_g);
+is($rows_in_g, 2, 'and the stalled first writer finds it laid out: both rows are there');
+$_->quit for ($gate, $first);
+eval { $reader->quit };
+
 my $dir = PostgreSQL::Test::Utils::tempdir;
 my $len = '4100 + (:id % 7)::int * 5000';
 open(my $f, '>', "$dir/ins.sql") or die;
