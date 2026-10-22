@@ -167,8 +167,7 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 
 	if (!sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
@@ -327,8 +326,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 
 	if (!sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh_full(rel, st);
 	fs = sift_store_free_stats(rel);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
@@ -357,8 +355,7 @@ sift_table_maintain(PG_FUNCTION_ARGS)
 	Datum		v[6];
 	bool		nulls[6] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	PreventCommandIfReadOnly("sift.table_maintain()");
 	PreventCommandDuringRecovery("sift.table_maintain()");
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock))

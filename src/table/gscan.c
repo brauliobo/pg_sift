@@ -339,7 +339,10 @@ unit_goto(SiftTblGroupScan *g, int64 k)
 	sift_col_begin(g->s[u->src].src, NULL, 0, u->sb, u->sb + 1);
 	for (uint32 j = 0; j <= u->ordinal; j++)
 		if (!sift_col_next(g->s[u->src].src, &g->unit))
-			elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, u->sb);
+			ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("sift_table: the unit %u of superblock %u is gone", u->ordinal, u->sb),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	unit_start(g);
 	g->uidx = k;
 }
@@ -661,7 +664,10 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 	sift_col_begin(src, NULL, 0, sb, sb + 1);
 	for (uint32 j = 0; j <= u->ordinal; j++)
 		if (!sift_col_next(src, &g->unit))
-			elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, sb);
+			ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("sift_table: the unit %u of superblock %u is gone", u->ordinal, sb),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	MemoryContextReset(g->unitcxt);
 	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
 		g->vec[c].n = PG_UINT32_MAX;

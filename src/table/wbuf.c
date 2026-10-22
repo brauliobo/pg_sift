@@ -535,8 +535,11 @@ void
 sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
 {
 	if (rv->tuple == NULL && !fetch_row(rel, st, tid, rv, false))
-		elog(ERROR, "could not read the row (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
-			 ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not read the row (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
+					ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 }
 
 void

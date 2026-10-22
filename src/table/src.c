@@ -242,8 +242,7 @@ part_col(const TblPart *p, const SiftColDef *want)
 				return j;
 			continue;
 		}
-		if (have->store != want->store)
-			elog(ERROR, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		SIFT_INVARIANT(have->store == want->store, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
 		return j;
 	}
 	return -1;
