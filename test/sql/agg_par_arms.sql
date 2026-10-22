@@ -1,0 +1,228 @@
+-- The outer aggregate over per-row aggregates (the arms of a UNION ALL grouped by a row id) runs with workers: a row is in one item of work, so the
+-- cells it makes are flushed into the item's table, and the tables of the items are merged (counts, sums, the distinct rows and the distinct ids of a
+-- key the arms group by). Each query is planned with workers and gives the rows of the scan without workers and of the normal plan; a float sum is
+-- the same with 0, 2 and 4 workers to the last digit. A child plan that runs per combination of leaves keeps one process, a unique-key LIMIT 1 child
+-- (read as a table) does not.
+CREATE EXTENSION pg_sift;
+
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 10000;
+SET sift.agg_preagg = off;
+
+CREATE TABLE items (id int PRIMARY KEY, parent_id int, region text, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO items
+SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, CASE WHEN i % 17 = 0 THEN NULL ELSE 'r' || i % 9 END,
+       CASE WHEN i % 13 = 0 THEN NULL
+            ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3], 'tag', CASE WHEN (i + j) % 7 = 0 THEN NULL ELSE 't' || (i * j) % 5 END,
+                                                                                  'n', (i * j) % 10, 'x', ((i * j) % 10) / 4.0 + 0.1))
+                                              FROM generate_series(1, 1 + i % 4) j)) END
+FROM generate_series(1, 7000) i;
+-- a row with forty cells in a group, and one that spans several chunks of tuples
+INSERT INTO items
+SELECT 9000 + i, i, 'wide', jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b'])[1 + j % 2], 'tag', 'w' || j, 'n', j % 10, 'x', (j % 10) / 4.0 + 0.1))
+                                                         FROM generate_series(1, CASE WHEN i = 1 THEN 5000 ELSE 40 END) j))
+FROM generate_series(1, 4) i;
+CREATE INDEX items_col ON items USING sift_col (id, parent_id, region, doc) WITH (paths = 'doc.parts[]{k text, tag text, n int4, x float8}');
+CREATE TABLE kinds (k text, mk text);
+INSERT INTO kinds VALUES ('a', 'm0'), ('b', 'm0'), ('c', 'm1');
+CREATE TABLE kinds_u (k text PRIMARY KEY, mk text);
+INSERT INTO kinds_u SELECT * FROM kinds;
+CREATE TABLE parents (id int PRIMARY KEY, live bool);
+INSERT INTO parents SELECT i, i % 5 <> 0 FROM generate_series(0, 599) i;
+VACUUM (FREEZE, ANALYZE) items;
+ANALYZE kinds;
+ANALYZE kinds_u;
+ANALYZE parents;
+
+-- the outer aggregates, the arms' extra group column and its HAVING, the WHERE of the scan, a join of the arms, and the outer tail
+CREATE FUNCTION report(aggs text, hid text DEFAULT 'parent_id', arm_having text DEFAULT '', tail text DEFAULT '', filt text DEFAULT 'true', j text DEFAULT '') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH base AS (SELECT t.id, t.parent_id, t.region, p.k, p.tag, p.n, p.x
+	                                FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, tag text, n int, x float8) %6$s WHERE %4$s)
+	                 SELECT k, %1$s FROM (SELECT id, %2$s, k, sum(n) AS s, count(*) AS c, sum(x) AS fs, avg(x) AS fa FROM base GROUP BY id, %2$s, k %3$s
+	                                      UNION ALL
+	                                      SELECT id, %2$s, NULL::text, sum(n), count(*), sum(x), avg(x) FROM base GROUP BY id, %2$s) q
+	                 GROUP BY k %5$s$q$, aggs, hid, arm_having, filt, tail, j)
+$$;
+
+CREATE FUNCTION p_rows(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; par bool := false; agg bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		par := par OR l LIKE '%Workers Planned: 2%';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
+END $$;
+
+-- did workers scan? (a launch can fail when the other sessions hold the workers: tried again)
+CREATE FUNCTION p_launched(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; launched bool;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+	FOR i IN 1..20 LOOP
+		launched := false;
+		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+			launched := launched OR l ~ 'Workers Launched: [1-9]';
+		END LOOP;
+		IF launched THEN RETURN true; END IF;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- q is compared with the plain scan and the normal plan after rounding its floats; raw (floats as they are) with the scan without workers and with four
+CREATE TABLE p_q (n serial, q text, par bool, raw bool DEFAULT false);
+INSERT INTO p_q (q, par) VALUES
+	-- a hidden key that is a column of the row: one cell per row and outer group
+	(report('sum(s) AS total, sum(c) AS cells, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents'), true),
+	(report('sum(s) AS total, count(DISTINCT region) AS regions', 'region'), true),
+	-- a hidden key that is an element's tag: several cells in a row, NULL tags among them
+	(report('sum(s) AS total, sum(c) AS cells, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT tag) AS tags', 'tag'), true),
+	(report('sum(s) AS total, count(*) AS n, count(DISTINCT parent_id) AS parents, count(DISTINCT tag) AS tags', 'parent_id, tag'), true),
+	-- the arms' HAVING and WHERE, the outer HAVING, a filter on the cells
+	(report('sum(s) AS total, count(*) AS n, count(DISTINCT tag) AS tags', 'tag', 'HAVING sum(n) > 2'), true),
+	(report('sum(s) AS total, count(*) AS n, count(DISTINCT parent_id) AS parents', 'parent_id', '', '', 'n > 3 AND t.parent_id < 400'), true),
+	(report('count(DISTINCT parent_id) AS parents, count(*) AS n', 'parent_id', '', 'HAVING count(DISTINCT parent_id) > 100'), true),
+	(report('count(DISTINCT parent_id) AS parents, count(*) FILTER (WHERE s > 9) AS big', 'parent_id'), true),
+	-- grouping sets over the outer key
+	(replace(report('sum(s) AS total, count(*) AS n, count(DISTINCT parent_id) AS parents, count(DISTINCT tag) AS tags', 'parent_id, tag'), 'GROUP BY k', 'GROUP BY ROLLUP (k)'), true),
+	-- an arm that has no hidden key next to one that has: its cells are the outer groups
+	($q$WITH base AS (SELECT t.id, t.parent_id, p.k, p.n FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int))
+	    SELECT k, sum(s) AS total, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	    FROM (SELECT id, parent_id, k, sum(n) AS s FROM base GROUP BY id, parent_id, k
+	          UNION ALL
+	          SELECT id, NULL::int, k, sum(n) FROM base GROUP BY id, k) q GROUP BY k$q$, true),
+	-- float sums and averages of the cells
+	(report('round(sum(fs)::numeric, 3) AS fsum, round(avg(fa)::numeric, 4) AS favg, count(*) AS n'), true),
+	(report('round(avg(fa)::numeric, 4) AS favg, count(DISTINCT parent_id) AS parents', 'parent_id, tag'), true),
+	-- a joined table, a lookup of a unique key and one of a key a table holds twice, a sub-select
+	(report('sum(s) AS total, count(DISTINCT parent_id) AS parents', 'parent_id', '', '', 'true', 'JOIN parents pa ON pa.id = t.parent_id AND pa.live'), true),
+	($q$WITH base AS (SELECT t.id, t.parent_id, kk.mk AS mk, p.k, p.n FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	                  LEFT JOIN LATERAL (SELECT mk FROM kinds_u m WHERE m.k = p.k LIMIT 1) kk ON true)
+	    SELECT mk, sum(s) AS total, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	    FROM (SELECT id, parent_id, mk, sum(n) AS s FROM base GROUP BY id, parent_id, mk
+	          UNION ALL
+	          SELECT id, parent_id, NULL::text, sum(n) FROM base GROUP BY id, parent_id) q GROUP BY mk$q$, true),
+	($q$WITH base AS (SELECT t.id, t.parent_id, kk.mk AS mk, p.k, p.n FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	                  LEFT JOIN LATERAL (SELECT mk FROM kinds m WHERE m.k = p.k LIMIT 1) kk ON true)
+	    SELECT mk, sum(s) AS total, count(*) AS n, count(DISTINCT id) AS ids
+	    FROM (SELECT id, parent_id, mk, sum(n) AS s FROM base GROUP BY id, parent_id, mk
+	          UNION ALL
+	          SELECT id, parent_id, NULL::text, sum(n) FROM base GROUP BY id, parent_id) q GROUP BY mk$q$, false),
+	-- the arms joined to a spine of buckets: the spine is the leader's plan and its unmatched rows are the end of the scan
+	($q$WITH base AS (SELECT t.id, t.region, p.k, p.n FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)),
+	         sp(region, label) AS (VALUES ('r1', 'one'), ('r2', 'two'), ('r2', 'deux'), ('r9', 'none'))
+	    SELECT sp.label, m.k, sum(m.s) AS total, count(*) AS cells, count(DISTINCT m.id) AS ids
+	    FROM sp LEFT JOIN (SELECT id, region, k, sum(n) AS s FROM base GROUP BY id, region, k
+	                       UNION ALL
+	                       SELECT id, region, NULL::text, sum(n) FROM base GROUP BY id, region) m ON m.region = sp.region GROUP BY sp.label, m.k$q$, false),
+	-- floats as they are
+	(report('sum(fs) AS fsum, avg(fa) AS favg, count(*) AS n'), true),
+	(report('sum(fs) AS fsum, avg(fa) AS favg, count(DISTINCT parent_id) AS parents', 'parent_id, tag', '', 'HAVING count(*) > 1'), true);
+UPDATE p_q SET raw = true WHERE n IN (SELECT n FROM p_q WHERE q LIKE '%sum(fs) AS fsum, avg(fa)%');
+
+CREATE FUNCTION p_compare(pick int[] DEFAULT NULL, OUT n int, OUT mode text, OUT par_same bool, OUT off_same text) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE q text; x bool; r bool; want text; r0 text; r2 text;
+BEGIN
+	FOR n, q, x, r IN SELECT p_q.n, p_q.q, p_q.par, p_q.raw FROM p_q WHERE pick IS NULL OR p_q.n = ANY (pick) ORDER BY p_q.n LOOP
+		mode := p_mode(q);
+		want := CASE WHEN x THEN 'parallel' ELSE 'serial' END;
+		mode := CASE WHEN mode = want THEN 'as expected' ELSE mode || ' (expected ' || want || ')' END;
+		r0 := p_rows(q, true, 0);
+		r2 := p_rows(q, true, 2);
+		par_same := r2 IS NOT DISTINCT FROM r0 AND p_rows(q, true, 4) IS NOT DISTINCT FROM r0;
+		off_same := CASE WHEN r THEN 'not compared' ELSE (r2 IS NOT DISTINCT FROM p_rows(q, false, 0))::text END;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+SELECT n, mode, par_same, off_same FROM p_compare();
+
+-- the leader does not scan: the tables of the workers are the whole answer
+SET parallel_leader_participation = off;
+SELECT n, mode, par_same, off_same FROM p_compare(ARRAY[1, 4, 11, 14, 16, 18]);
+RESET parallel_leader_participation;
+
+-- the workers scanned
+SELECT p_launched(q) AS launched FROM p_q WHERE n IN (1, 3, 9, 14) ORDER BY n;
+
+-- more distinct ids than hash_mem holds
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT n, mode, par_same, off_same FROM p_compare(ARRAY[1, 4]);
+RESET work_mem;
+RESET hash_mem_multiplier;
+
+-- rows in the write buffer, rows updated and deleted since the index was built (the units that are dirty are read again from the heap)
+INSERT INTO items SELECT 20000 + i, i % 600, 'r' || i % 9, jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('k', 'a', 'tag', 't' || j, 'n', (i * j) % 10, 'x', j / 4.0))
+                                                                                       FROM generate_series(1, 1 + i % 3) j)) FROM generate_series(1, 500) i;
+UPDATE items SET parent_id = parent_id + 1, doc = jsonb_set(doc, '{parts,0,n}', '7') WHERE id % 97 = 0 AND doc IS NOT NULL;
+DELETE FROM items WHERE id % 89 = 0;
+SELECT n, mode, par_same, off_same FROM p_compare();
+
+-- a prepared statement with a generic plan, run again with other values
+PREPARE p_gen (int) AS
+	SELECT k, sum(s) AS total, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	FROM (SELECT t.id, t.parent_id, p.k, sum(p.n) AS s FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	      WHERE t.parent_id >= $1 GROUP BY t.id, t.parent_id, p.k
+	      UNION ALL
+	      SELECT t.id, t.parent_id, NULL::text, sum(p.n) FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	      WHERE t.parent_id >= $1 GROUP BY t.id, t.parent_id) q GROUP BY k ORDER BY 1;
+SET plan_cache_mode = force_generic_plan;
+SET sift.enable_agg = on;
+EXECUTE p_gen (100);
+EXECUTE p_gen (400);
+EXECUTE p_gen (100);
+SET sift.enable_agg = off;
+EXECUTE p_gen (100);
+EXECUTE p_gen (400);
+RESET plan_cache_mode;
+SET sift.enable_agg = on;
+
+-- a cursor, and a query that runs again for every row of the outer query
+BEGIN;
+DECLARE c NO SCROLL CURSOR FOR
+	SELECT k, sum(s) AS total, count(DISTINCT parent_id) AS parents
+	FROM (SELECT t.id, t.parent_id, p.k, sum(p.n) AS s FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int) GROUP BY t.id, t.parent_id, p.k
+	      UNION ALL
+	      SELECT t.id, t.parent_id, NULL::text, sum(p.n) FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int) GROUP BY t.id, t.parent_id) q GROUP BY k ORDER BY 1;
+FETCH 2 FROM c;
+FETCH ALL FROM c;
+COMMIT;
+
+CREATE FUNCTION p_each(off bool) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (NOT off)::text, true);
+	FOR r IN SELECT g.v,
+	           (SELECT sum(s) FROM (SELECT t.id, sum(p.n) AS s FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	                                WHERE t.parent_id = g.v GROUP BY t.id
+	                                UNION ALL
+	                                SELECT t.id, sum(p.n) FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)
+	                                WHERE t.parent_id = g.v GROUP BY t.id) q) AS total
+	    FROM generate_series(1, 4) g(v) ORDER BY 1 LOOP
+		RETURN NEXT r.v || ' ' || coalesce(r.total::text, 'null');
+	END LOOP;
+END $$;
+SELECT * FROM p_each(false);
+SELECT * FROM p_each(true);
+
+DROP TABLE items, kinds, kinds_u, parents, p_q;
+DROP FUNCTION report(text, text, text, text, text, text), p_rows(text, bool, int), p_mode(text), p_launched(text), p_compare(int[]), p_each(bool);
+DROP EXTENSION pg_sift;

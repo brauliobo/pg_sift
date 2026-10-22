@@ -340,6 +340,14 @@ plain_agg(const SiftAggAgg *a)
 			return !a->distinct;
 		case SAA_COUNT_DISTINCT:
 			return a->num.n == 0;
+		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
+		case SAA_O_COUNT_STAR:
+		case SAA_O_COUNT_ROWS:
+		case SAA_O_COUNT_KEY:
+		case SAA_O_SUM_I64:
+		case SAA_O_SUM_F64:
+		case SAA_O_AVG_F64:
+			return true;
 		case SAA_MIN:
 		case SAA_MAX:
 			return true;
@@ -353,11 +361,16 @@ plain_agg(const SiftAggAgg *a)
 bool
 sift_aggspec_parallel_ok(const SiftAggSpec *s)
 {
-	if (s->narms)
+	/* the rows of the spine are those of a plan the leader runs, and the rows no cell joined are a group of the end of the scan */
+	if (s->spine)
 		return false;
-	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan run per combination of leaves (params) is not */
+	/*
+	 * a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan
+	 * run per combination of leaves (params) is not, unless the leader reads it as a table of the unique key it takes the first row of
+	 * (join_first_rows; a leader that cannot runs the scan alone)
+	 */
 	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].params != NIL)
+		if (s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use))
 			return false;
 	/* the rows nothing matched are known when every row of the table was seen: by one scan */
 	for (int i = 0; i < s->njoin; i++)
