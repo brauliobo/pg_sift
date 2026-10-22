@@ -724,6 +724,10 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 				for (int j = 0; has_nan && j < nsel; j++)
 					if (NFLAG(sp - 1)[j] && (!alive || sift_colsrc_bit(alive, j)))
 						nan_cast_error(x->a);
+				/* b: the result of int8 arithmetic, which PostgreSQL's int8pl, int8mi and int8mul raise for when it leaves int8 */
+				for (int j = 0; x->b && j < nsel; j++)
+					if ((NSTK(sp - 1)[j] < PG_INT64_MIN || NSTK(sp - 1)[j] > PG_INT64_MAX) && (!alive || sift_colsrc_bit(alive, j)))
+						ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("bigint out of range")));
 				break;
 			default:
 				d = sift_pow10(x->a);
