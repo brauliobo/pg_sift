@@ -1,0 +1,123 @@
+-- A semi or anti join (IN, EXISTS, NOT EXISTS) whose right side is a tree of joined tables: PostgreSQL plans the tree as a join of its own and the scan
+-- looks up its keys. The tree is an inner join, or a LEFT JOIN whose result only gives the key set (coalesce of columns of both tables). Every query runs
+-- with and without the scan: the rows must be the same, and the scan answers the query. The key sets have NULL keys, duplicate keys and no key at all.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE items (id int PRIMARY KEY, kind text) WITH (autovacuum_enabled = false);
+INSERT INTO items SELECT i, 'k' || i % 4 FROM generate_series(0, 299) i;
+-- links: an item of its own, or a group (the items of the group are the members), some with neither
+CREATE TABLE links (id int PRIMARY KEY, item_id int, grp_id int, owner int, live bool) WITH (autovacuum_enabled = false);
+INSERT INTO links SELECT i, CASE WHEN i % 3 = 0 THEN i % 250 END, CASE WHEN i % 3 = 1 THEN i % 10 END, i % 4, i % 5 <> 0 FROM generate_series(1, 400) i;
+CREATE TABLE dim_b (id int PRIMARY KEY, grp_id int, item_id int, live bool) WITH (autovacuum_enabled = false);
+INSERT INTO dim_b SELECT i, i % 12, CASE WHEN i % 17 = 0 THEN NULL ELSE (i * 7) % 280 END, i % 6 <> 0 FROM generate_series(1, 120) i;
+CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 320 END, 'k' || i % 5, i % 1000 FROM generate_series(1, 8000) i;
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, amount);
+VACUUM (FREEZE, ANALYZE) items, links, dim_b, events;
+-- whether the scan answers the query, and the rows it differs by from the plan without it
+CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  SELECT count(*) INTO rows FROM r_on;
+  pushed := false;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+  END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+-- an inner join on the right of IN: duplicate keys (a link has several members), a NULL key
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT kind, count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE m.live AND l.owner = 1) GROUP BY kind$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    5 |           0
+(1 row)
+
+-- the same as EXISTS, and as NOT EXISTS (a NULL parent is in no key set: the anti join keeps it)
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE EXISTS (SELECT 1 FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE l.item_id = e.parent_id)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT count(*) AS n, sum(amount) AS total, count(parent_id) AS parents FROM events e
+  WHERE NOT EXISTS (SELECT 1 FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE m.item_id = e.parent_id)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+-- a LEFT JOIN whose result is the key set: the key is a coalesce of both tables, and a link without a member keeps its own key. A key that
+-- reads two tables of the tree stays with the normal plan (the first query); behind a table of its own, whose column is the key, it is pushed down (the second)
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT coalesce(l.item_id, m.item_id) FROM links l LEFT JOIN dim_b m ON m.grp_id = l.grp_id AND m.live WHERE l.live)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ f      |    1 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT kind, count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT i.id FROM items i WHERE i.kind <> 'k0'
+    AND i.id IN (SELECT coalesce(l.item_id, m.item_id) FROM links l LEFT JOIN dim_b m ON m.grp_id = l.grp_id AND m.live
+                 WHERE coalesce(l.item_id, m.item_id) IS NOT NULL)) GROUP BY kind$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    5 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE e.parent_id NOT IN (SELECT i.id FROM items i WHERE i.id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE m.item_id IS NOT NULL))$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+-- no key at all, and only NULL keys
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE l.owner = 9)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE NOT EXISTS (SELECT 1 FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE l.owner = 9 AND m.item_id = e.parent_id)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
+  WHERE e.parent_id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id WHERE m.item_id IS NULL)$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    1 |           0
+(1 row)
+
+-- with an ordinary join and a filter beside the tree
+SELECT * FROM check_same($q$SELECT i.kind, count(*), sum(amount) FROM events e JOIN items i ON i.id = e.parent_id
+  WHERE e.amount > 100 AND e.parent_id IN (SELECT m.item_id FROM links l JOIN dim_b m ON m.grp_id = l.grp_id) GROUP BY i.kind$q$);
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    4 |           0
+(1 row)
+
+DROP TABLE events, items, links, dim_b;
+DROP FUNCTION check_same(text);
+DROP EXTENSION pg_sift;
