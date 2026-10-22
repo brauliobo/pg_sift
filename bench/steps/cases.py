@@ -328,6 +328,10 @@ def cmd_run(args):
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results, load_before)
+    if args.docs and not failed:   # the blocks that quote docs/results/cases.tsv
+        import cases_render
+        cases_render.render(os.path.join(REPO, 'docs', 'results'), os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+        subprocess.run([sys.executable, '-I', os.path.join(HERE, 'highlights.py')], check=True, stdout=subprocess.DEVNULL)
     return 1 if failed else 0
 
 
