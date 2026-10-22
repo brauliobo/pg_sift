@@ -516,6 +516,7 @@ ERROR:  invalid preagg option "rollup(items[].k: ": a measure name is missing
 -- a list inside a list is not an index (the cubes are depth 1 because the index is)
 CREATE INDEX pe_nest ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, sub[]{z int4}}');
 ERROR:  sift_col holds one level of arrays and objects: "items[].sub[]" is nested in another
+HINT:  Declare the nested path as an astext or jsonb leaf, or keep the inner array in a table of its own.
 DROP TABLE pe;
 DROP FUNCTION pe_hist(regclass, regclass, text, text, text, text, text, bool), pe_battery(regclass), units_with(regclass, text, text),
               mk_items(int), mk_tags(int), mk_map(int), pa_sb(tid), fmt(regclass);
