@@ -273,6 +273,7 @@ extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
+extern int		sift_agg_lookup_shared_kb;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */

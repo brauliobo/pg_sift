@@ -7,7 +7,9 @@
  * same rows for every snapshot, and a write to it moves its LSN: so an entry keeps the LSN of every page of the table, taken before the
  * load and again after it, and serves a query that finds the same file of the same size with the same LSNs, all pages visible. A table
  * with a page that is not (rows not vacuumed yet) is not kept. A scan pins the entries it uses until its memory context goes (a
- * callback), and eviction only takes unpinned ones, least recently used first. Like the dictionaries of col/dictcache.c.
+ * callback), and eviction only takes unpinned ones, least recently used first. Like the dictionaries of col/dictcache.c. The rows go to the
+ * shared memory of all backends too (sift.agg_lookup_shared_kb, agg/lookshm.c), under the same key and pages, and a query that finds none of its
+ * own reads them there.
  */
 #include "postgres.h"
 
@@ -24,8 +26,10 @@
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;
 #define LOOKCACHE_BYTES		((Size) sift_agg_lookup_cache_kb * 1024)
+/* what the pages of a table are weighed against: the larger of the caches that are on */
+#define LOOKCACHE_BUDGET	((Size) Max(sift_agg_lookup_cache_kb, sift_agg_lookup_shared_kb) * 1024)
 /* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget */
-#define LOOKCACHE_MAX_BLOCKS	(LOOKCACHE_BYTES / 2 / sizeof(XLogRecPtr))
+#define LOOKCACHE_MAX_BLOCKS	(Min(LOOKCACHE_BUDGET / 2, MaxAllocSize) / sizeof(XLogRecPtr))
 /* tables whose rows did not fit, by key: they are not fingerprinted again while the file is no smaller and the budget no larger */
 #define LOOKCACHE_REFUSED		16
 
@@ -77,7 +81,7 @@ lookcache_finger(Relation rel)
 	BufferAccessStrategy bas;
 	bool		seen = true;
 
-	if (sift_agg_lookup_cache_kb <= 0 || IsParallelWorker() || rel->rd_tableam != GetHeapamTableAmRoutine() || !RelationNeedsWAL(rel) ||
+	if (LOOKCACHE_BUDGET == 0 || IsParallelWorker() || rel->rd_tableam != GetHeapamTableAmRoutine() || !RelationNeedsWAL(rel) ||
 		rel->rd_createSubid != InvalidSubTransactionId || rel->rd_firstRelfilelocatorSubid != InvalidSubTransactionId)
 		return NULL;
 	f = palloc(sizeof(LookFinger));
@@ -108,7 +112,7 @@ lookcache_refused(const char *key, Relation rel)
 
 	for (int i = 0; i < nrefused; i++)
 		if (strcmp(refused[i].key, key) == 0 && RelFileLocatorEquals(refused[i].rel, rel->rd_locator))
-			return nblocks >= refused[i].nblocks && LOOKCACHE_BYTES <= refused[i].budget;
+			return nblocks >= refused[i].nblocks && LOOKCACHE_BUDGET <= refused[i].budget;
 	return false;
 }
 
@@ -135,7 +139,7 @@ look_refuse(const char *key, const LookFinger *f)
 	r->key = pstrdup(key);
 	r->rel = f->rel;
 	r->nblocks = f->nblocks;
-	r->budget = LOOKCACHE_BYTES;
+	r->budget = LOOKCACHE_BUDGET;
 	MemoryContextSwitchTo(old);
 }
 
@@ -198,7 +202,7 @@ look_room(Size need)
 	return true;
 }
 
-static bool
+bool
 cols_cover(const LookCols *have, const LookCols *need)
 {
 	for (int i = 0; i < need->n; i++)
@@ -249,6 +253,15 @@ lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookC
 				look_drop(other);
 			return e->map;
 		}
+	if (sift_agg_lookup_shared_kb > 0)
+	{
+		LookCols	shared;
+		MapTab	   *m = lookshm_find(key, f, need, &shared, mcxt);
+
+		if (m != NULL || shared.n > have->n)
+			*have = shared;
+		return m;
+	}
 	return NULL;
 }
 
@@ -262,16 +275,20 @@ lookcache_keep(const char *key, const LookFinger *before, const LookFinger *afte
 	LookEnt    *e;
 	MemoryContext old;
 	Size		size;
+	bool		shared_large;
 
 	if (!finger_same(before, after))
 		return false;
+	lookshm_keep(key, before, m, cols, &shared_large);
 	/* the rows of an older state of the table go; dropping changes the list, so it is searched again */
 	while ((e = look_unpinned(key)) != NULL)
 		look_drop(e);
 	size = MemoryContextMemAllocated(cx, true) + (Size) before->nblocks * sizeof(XLogRecPtr);
 	if (size > LOOKCACHE_BYTES / 2)
 	{
-		look_refuse(key, before);
+		/* the table is refused when no cache that is on could take its rows */
+		if (shared_large)
+			look_refuse(key, before);
 		return false;
 	}
 	if (!look_room(size))
