@@ -158,7 +158,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 		wide_fill(src, leaf, NULL, 0, buf, vec);
 		return;
 	}
-	if (src->sel.keep && src->sel.compact)
+	if (src->sel.compact)
 	{
 		col_read_selected(src, leaf, buf, vec);
 		return;
@@ -323,7 +323,7 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	SiftColVec	v;
 	uint32	   *idx;
 
-	if (src->sel.keep && src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
+	if (src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
 	{
 		col_read(impl, unit, leaf, vec);
 		return;
@@ -358,7 +358,7 @@ col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	}
 	ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
 	for (int i = 0; i < n; i++)
-		ords[i] = src->sel.keep && src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
+		ords[i] = src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
 	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
 	sift_col_read_idx(&src->unit, leaf, ords, n, &v);
 	b = leaf_buf(src, leaf, n);

@@ -19,6 +19,20 @@ sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt)
 	a->mcxt = mcxt;
 }
 
+/* idx: the stored ordinal of each kept row of a compacted unit */
+static void
+compact_idx(SiftAggSel *a)
+{
+	if (a->idxcap < a->sel.count + SIFT_COL_IDXPAD)
+	{
+		if (a->idx)
+			pfree(a->idx);
+		a->idxcap = Max(a->sel.count + SIFT_COL_IDXPAD, 1024);
+		a->idx = MemoryContextAlloc(a->mcxt, a->idxcap * sizeof(uint32));
+	}
+	sift_col_sel_idx(&a->sel, a->idx);
+}
+
 bool
 sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
 {
@@ -33,23 +47,30 @@ sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
 	a->units_compact += a->compact;
 	*nrow = a->compact ? a->sel.count : a->nrow;
 	if (a->compact)
-	{
-		if (a->idxcap < a->sel.count + SIFT_COL_IDXPAD)
-		{
-			if (a->idx)
-				pfree(a->idx);
-			a->idxcap = Max(a->sel.count + SIFT_COL_IDXPAD, 1024);
-			a->idx = MemoryContextAlloc(a->mcxt, a->idxcap * sizeof(uint32));
-		}
-		sift_col_sel_idx(&a->sel, a->idx);
-	}
+		compact_idx(a);
 	return true;
+}
+
+void
+sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, const uint64 *bits, uint32 *nrow)
+{
+	SiftColSel	kept;
+
+	Assert(!a->compact);
+	sift_col_sel_alloc(src, a->keep ? a->nrow : cu->nrows, &kept);
+	memcpy(kept.bits, bits, kept.nwords * sizeof(uint64));
+	sift_col_sel_count(&kept);
+	a->nrow = kept.n;
+	a->sel = kept;
+	a->compact = true;
+	compact_idx(a);
+	*nrow = kept.count;
 }
 
 void
 sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec)
 {
-	if (a->keep && a->compact)
+	if (a->compact)
 		sift_col_read_idx(cu, col, a->idx, a->sel.count, vec);
 	else
 		sift_col_read(cu, col, NULL, vec);
@@ -60,7 +81,7 @@ sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
 {
 	SiftColSel	all;
 
-	if (a->keep && a->compact)
+	if (a->compact)
 	{
 		memset(bits, 0, ((a->sel.count + 63) / 64) * sizeof(uint64));
 		for (uint32 i = 0; i < a->sel.count; i++)
@@ -83,7 +104,7 @@ sift_aggsel_stored(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uin
 	SiftColSel	vs;
 	const uint32 *idx = a->idx;
 
-	if (a->keep && a->compact)
+	if (a->compact)
 	{
 		sift_col_sel_alloc(src, a->nrow, &vs);
 		for (uint32 i = 0; i < a->sel.count; i++)
@@ -202,7 +223,7 @@ src_type(uint8 tag)
 void
 sift_aggsel_read_types(SiftAggSel *a, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 nrow, uint8 *tags)
 {
-	bool		compact = a->keep && a->compact;
+	bool		compact = a->compact;
 	uint8	   *all = compact ? palloc(a->nrow) : tags;
 
 	if (!sift_col_row_types(cu, col, stored_tag(typid), astext, all))

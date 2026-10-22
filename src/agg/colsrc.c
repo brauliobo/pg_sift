@@ -372,6 +372,18 @@ sift_colsrc_can_read_sel(const SiftSrcSource *src)
 	return src->prov->read_sel != NULL;
 }
 
+bool
+sift_colsrc_can_narrow(const SiftSrcSource *src)
+{
+	return src->prov->narrow != NULL;
+}
+
+bool
+sift_colsrc_narrow(SiftSrcSource *src, SiftSrcUnit *unit, const uint64 *bits)
+{
+	return src->prov->narrow(src->impl, unit, bits);
+}
+
 void
 sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
 {
