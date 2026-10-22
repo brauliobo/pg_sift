@@ -21,12 +21,15 @@
 #include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
+#include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
+#include "utils/typcache.h"
 
 #include "agg/part.h"
+#include "core/cmp.h"
 
 #define PART_DICT_ID_BASE	UINT64CONST(0x6000000000000000)	/* no id of a provider has these bits: the engine's counters and pointers are below, its flags above */
 
@@ -409,6 +412,32 @@ hash_refuted(List *bound, List *sets)
 	return false;
 }
 
+/* drops the partitions the conditions refute, or all of them (none); returns how many it dropped now */
+static int
+prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
+{
+	int			dropped = 0;
+
+	Assert(!ps->have_off);
+	if (ps->skip == NULL)
+		ps->skip = palloc0(ps->n * sizeof(bool));
+	for (int i = 0; i < ps->n; i++)
+	{
+		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
+		List	   *bound;
+
+		if (ps->skip[i])
+			continue;
+		bound = none ? NIL : (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
+		if (none || (qv.ok && bound != NIL && (predicate_refuted_by(bound, conds, false) || hash_refuted(bound, sets))))
+		{
+			ps->skip[i] = true;
+			dropped++;
+		}
+	}
+	return dropped;
+}
+
 /*
  * The partitions whose bounds the conditions refute (they hold the partitioned table's columns, with varno 1 and constants for the operands the
  * query evaluated when it started) are not read: they have no superblocks. Before the first sift_colsrc_nsb. PostgreSQL's own test of a
@@ -418,11 +447,8 @@ hash_refuted(List *bound, List *sets)
 int
 sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds)
 {
-	PartSource *ps = src->impl;
 	List	   *sets = NIL;
-	int			dropped = 0;
 
-	Assert(!ps->have_off);
 	if (conds == NIL)
 		return 0;
 	foreach_ptr(Node, cl, conds)
@@ -432,19 +458,83 @@ sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds)
 		if (kv)
 			sets = lappend(sets, kv);
 	}
-	ps->skip = palloc0(ps->n * sizeof(bool));
-	for (int i = 0; i < ps->n; i++)
-	{
-		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
-		List	   *bound = (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
+	return prune(src->impl, parent, conds, sets, false);
+}
 
-		if (qv.ok && bound != NIL && (predicate_refuted_by(bound, conds, false) || hash_refuted(bound, sets)))
+#define KEYS_MAX_TESTS		20000	/* the keys times the partitions a list of keys is tested against exactly: more, and only the range of the keys is */
+
+static Datum
+key_datum(int16 len, int64 v)
+{
+	return len == 8 ? Int64GetDatum(v) : len == 4 ? Int32GetDatum((int32) v) : Int16GetDatum((int16) v);
+}
+
+/*
+ * The partitions that none of the keys can be in (the keys a join needs of the rows, a column of the partitioned table: col is its Var as the
+ * first partition has it) are not read. A range or list bound is refuted by the range of the keys and, when they are few enough, by each of
+ * them; a hash remainder by the remainders of the keys; no key at all refutes every partition. Returns how many are dropped.
+ */
+int
+sift_aggpart_prune_keys(SiftSrcSource *src, Oid parent, const Node *col, const int64 *vals, int n)
+{
+	PartSource *ps = src->impl;
+	Var		   *v;
+	AttrNumber	att;
+	TypeCacheEntry *tc;
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *keys;
+	int			nk = 0;
+	KeyVals		kv;
+	List	   *conds = NIL;
+	int64	   *sorted;
+
+	if (!IsA(col, Var))
+		return 0;
+	v = (Var *) col;
+	get_typlenbyvalalign(v->vartype, &len, &byval, &align);
+	att = get_attnum(parent, get_attname(RelationGetRelid(ps->heap[0]), v->varattno, false));
+	tc = lookup_type_cache(v->vartype, TYPECACHE_EQ_OPR | TYPECACHE_BTREE_OPFAMILY);
+	if (!byval || (len != 2 && len != 4 && len != 8) || att == InvalidAttrNumber || !OidIsValid(tc->eq_opr) || !OidIsValid(tc->btree_opf))
+		return 0;
+	if (n == 0)
+		return prune(ps, parent, NIL, NIL, true);
+	sorted = palloc(n * sizeof(int64));
+	memcpy(sorted, vals, n * sizeof(int64));
+	qsort(sorted, n, sizeof(int64), sift_cmp_i64);
+	keys = palloc(n * sizeof(Datum));
+	for (int i = 0; i < n; i++)
+		if (i == 0 || sorted[i] != sorted[i - 1])
+			keys[nk++] = key_datum(len, sorted[i]);
+	kv = (KeyVals) {att, v->vartype, tc->eq_opr, InvalidOid, nk, keys};
+	{
+		Var		   *col1 = makeVar(1, att, v->vartype, v->vartypmod, InvalidOid, 0);
+		Oid			ge = get_opfamily_member(tc->btree_opf, v->vartype, v->vartype, BTGreaterEqualStrategyNumber),
+					le = get_opfamily_member(tc->btree_opf, v->vartype, v->vartype, BTLessEqualStrategyNumber);
+
+		if (OidIsValid(ge) && OidIsValid(le))
 		{
-			ps->skip[i] = true;
-			dropped++;
+			conds = list_make2(make_opclause(ge, BOOLOID, false, (Expr *) col1, (Expr *) makeConst(v->vartype, -1, InvalidOid, len, keys[0], false, true), InvalidOid, InvalidOid),
+							   make_opclause(le, BOOLOID, false, (Expr *) col1, (Expr *) makeConst(v->vartype, -1, InvalidOid, len, keys[nk - 1], false, true), InvalidOid, InvalidOid));
+			foreach_ptr(OpExpr, op, conds)
+				set_opfuncid(op);
+		}
+		if ((uint64) nk * ps->n <= KEYS_MAX_TESTS)
+		{
+			ScalarArrayOpExpr *any = makeNode(ScalarArrayOpExpr);
+
+			any->opno = tc->eq_opr;
+			any->opfuncid = get_opcode(tc->eq_opr);
+			any->useOr = true;
+			any->inputcollid = InvalidOid;
+			any->args = list_make2(col1, makeConst(get_array_type(v->vartype), -1, InvalidOid, -1,
+												   PointerGetDatum(construct_array(keys, nk, v->vartype, len, byval, align)), false, false));
+			any->location = -1;
+			conds = lappend(conds, any);
 		}
 	}
-	return dropped;
+	return prune(ps, parent, conds, list_make1(&kv), false);
 }
 
 /* Starts the next partition that has superblocks in [lo, hi); false when there is none */

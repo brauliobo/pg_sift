@@ -751,6 +751,214 @@ SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum
 (1 row)
 
 RESET plan_cache_mode;
+-- the keys of an inner or semi join with a table decide the partitions of the join column: the scan loads the keys when it starts (the join key filter)
+-- and does not read the partitions that none of them can be in (range and list bounds by the keys, hash by their remainders, the default partition
+-- when the bounds of the others refute it)
+CREATE TABLE pt_days (d date);
+CREATE TABLE pt_ids (id int, w int);
+CREATE TABLE pk (id int, k int, v int) PARTITION BY LIST (k);
+CREATE TABLE pk_a PARTITION OF pk FOR VALUES IN (1, 2, 3) WITH (autovacuum_enabled = false);
+CREATE TABLE pk_b PARTITION OF pk FOR VALUES IN (4, 5, 6) WITH (autovacuum_enabled = false);
+CREATE TABLE pk_c PARTITION OF pk FOR VALUES IN (7, 8, 9) WITH (autovacuum_enabled = false);
+CREATE TABLE pk_n PARTITION OF pk FOR VALUES IN (NULL) WITH (autovacuum_enabled = false);
+CREATE TABLE pk_rest PARTITION OF pk DEFAULT WITH (autovacuum_enabled = false);
+INSERT INTO pk SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 12 END, i % 100 FROM generate_series(1, 3000) i;
+CREATE INDEX pk_col ON pk USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) pk;
+CREATE TABLE pk_keys (k int, kind text);
+INSERT INTO pk_keys SELECT i, 'cat_' || chr(97 + i % 3) FROM generate_series(0, 14) i;
+-- the columns of a join: the statement, then the partitions read and whether the rows are the normal plan's
+CREATE FUNCTION same_join(stmt text) RETURNS TABLE (scan text, partitions_read int, key_filters int, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE l text; listed int := 0; removed int := 0;
+BEGIN
+	scan := 'normal'; key_filters := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scan := 'SiftAgg'; END IF;
+		IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
+		IF l LIKE '%Partitions Removed:%' THEN removed := trim(split_part(l, ':', 2))::int; END IF;
+		IF l LIKE '%Join Key Filters:%' THEN key_filters := trim(split_part(l, ':', 2))::int; END IF;
+	END LOOP;
+	partitions_read := CASE WHEN scan = 'SiftAgg' THEN listed - removed END;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', stmt);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', stmt);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- a range: the dates of two partitions; one in the default partition; none; all
+INSERT INTO pt_days VALUES ('2024-02-02'), ('2024-11-08');
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days x ON x.d = p.d GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |          11 |              0
+(1 row)
+
+INSERT INTO pt_days VALUES ('2023-12-08');
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days x ON x.d = p.d GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               3 |           1 |          11 |              0
+(1 row)
+
+DELETE FROM pt_days;
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days x ON x.d = p.d GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               0 |           1 |           0 |              0
+(1 row)
+
+INSERT INTO pt_days SELECT DATE '2023-11-01' + i FROM generate_series(0, 500) i;
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days x ON x.d = p.d GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               6 |           1 |          11 |              0
+(1 row)
+
+-- a semi join, a key set that excludes the rows of the default partition, a condition on the dimension
+DELETE FROM pt_days WHERE d NOT IN (DATE '2024-02-02', DATE '2024-05-03', DATE '2024-07-05');
+SELECT * FROM same_join('SELECT p.g, count(*) AS n FROM pt p WHERE p.d IN (SELECT d FROM pt_days) GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               4 |           1 |          11 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT p.g, count(*) AS n FROM pt p WHERE EXISTS (SELECT 1 FROM pt_days x WHERE x.d = p.d) GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               4 |           1 |          11 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT p.g, count(*) AS n FROM pt p JOIN pt_days x ON x.d = p.d WHERE x.d > DATE ''2024-05-03'' GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |          11 |              0
+(1 row)
+
+-- the keys of a hash level under the range level; the partitions of the other levels stay
+INSERT INTO pt_ids VALUES (7, 1), (8, 2), (31, 3);
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(i.w) AS s FROM pt p JOIN pt_ids i ON i.id = p.id GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               5 |           1 |           3 |              0
+(1 row)
+
+DELETE FROM pt_ids WHERE id <> 8;
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(i.w) AS s FROM pt p JOIN pt_ids i ON i.id = p.id GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               5 |           1 |           1 |              0
+(1 row)
+
+-- a list: the keys name the partitions (a NULL partition and the default partition, which the keys 0, 10 and 11 reach)
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 11) GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (0, 4, 5) GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           3 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k < 0 GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               0 |           1 |           0 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               4 |           1 |           3 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT count(*) AS n FROM pk f WHERE f.k IN (SELECT k FROM pk_keys WHERE kind = ''cat_a'' AND k < 5)');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+-- a key that is NULL in the dimension matches nothing
+INSERT INTO pk_keys VALUES (NULL, 'cat_z');
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.kind IN (''cat_z'', ''cat_b'') AND x.k IS NOT DISTINCT FROM f.k GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               4 |           1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.kind = ''cat_z'' GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               0 |           1 |           0 |              0
+(1 row)
+
+-- the keys of a hash table
+CREATE TABLE ph_keys (k int);
+INSERT INTO ph_keys VALUES (7), (8);
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f WHERE f.k IN (SELECT k FROM ph_keys)');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+DELETE FROM ph_keys;
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               0 |           1 |           1 |              0
+(1 row)
+
+INSERT INTO ph_keys SELECT i FROM generate_series(0, 299) i;
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               8 |           1 |           1 |              0
+(1 row)
+
+-- off: the join key filter off reads every partition, with the rows of the normal plan
+SET sift.agg_join_filter = off;
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               5 |           0 |           1 |              0
+(1 row)
+
+RESET sift.agg_join_filter;
+-- the workers take the superblocks of the partitions the leader kept
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               2 |           1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days x ON x.d = p.d GROUP BY p.g');
+  scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
+---------+-----------------+-------------+-------------+----------------
+ SiftAgg |               4 |           1 |          11 |              0
+(1 row)
+
+SET max_parallel_workers_per_gather = 0;
+DROP FUNCTION same_join(text);
+DROP TABLE pt_days, pt_ids, pk, pk_keys, ph_keys;
 DROP FUNCTION same_exec(text, text);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
