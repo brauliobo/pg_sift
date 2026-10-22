@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- two level: per-row aggregates under an outer aggregate ---------- */
-
 /* the cells of every arm to newcap groups, renumbered through remap (NULL: as they are); the touched list follows */
 void
 arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)

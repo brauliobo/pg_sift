@@ -221,8 +221,6 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 		UnlockReleaseBuffer(buf[i]);
 }
 
-/* ---------- format 2: rows of live offsets ---------- */
-
 #ifndef MAX_GENERIC_XLOG_PAGES
 #define MAX_GENERIC_XLOG_PAGES	4
 #endif

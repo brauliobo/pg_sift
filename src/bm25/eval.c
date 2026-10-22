@@ -23,8 +23,6 @@
 
 static EvalNode nothing = {EN_NOTHING, .phrase = -1};
 
-/* ---------- state ---------- */
-
 SiftIndexState *
 sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir)
 {
@@ -107,8 +105,6 @@ state_segment(SiftIndexState *st, int i)
 	}
 	return segs[i];
 }
-
-/* ---------- bind ---------- */
 
 static EvalNode *
 en_make(SiftPlan *p, EvalKind kind, int nchild, EvalNode **child)
@@ -691,8 +687,6 @@ sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
 {
 	plan->filter = filter;
 }
-
-/* ---------- estimate ---------- */
 
 typedef struct Estimate
 {

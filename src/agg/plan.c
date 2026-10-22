@@ -880,8 +880,6 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	agg_index_usable = outer_usable;
 }
 
-/* ---------- plan ---------- */
-
 /* the native plans of the correlated children, made now that the plan has its place in the statement; true when the spec holds their IDs */
 static bool
 plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)

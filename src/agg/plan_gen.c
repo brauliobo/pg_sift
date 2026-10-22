@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- generic aggregates: PostgreSQL's own transition and final functions (SAA_GEN) ---------- */
-
 /* a leaf the executor can turn into a Datum of its type */
 static bool
 gen_leaf_ok(AggCtx *c, int id)

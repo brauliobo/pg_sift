@@ -426,8 +426,6 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
 
-/* ---------- space maintenance without VACUUM ---------- */
-
 /*
  * The heap reloption vacuum_truncate (a table access method has no options of its own, so the heap ones apply), read from the catalog row
  * because the struct that holds it changes between releases
@@ -517,8 +515,6 @@ sift_tbl_maintain(Relation rel, SiftTblMaintain *r)
 	if (v.dead_tids.tid)
 		pfree(v.dead_tids.tid);
 }
-
-/* ---------- rewrite: VACUUM FULL, CLUSTER ---------- */
 
 typedef struct CopyState
 {
@@ -645,8 +641,6 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();
 }
-
-/* ---------- CREATE INDEX CONCURRENTLY: second pass ---------- */
 
 void
 sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *indexInfo, Snapshot snapshot,

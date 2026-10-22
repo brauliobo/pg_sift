@@ -19,10 +19,6 @@
 
 #define IS_NUMERIC(t)	((t) >= SIFT_SHRED_INT2 && (t) <= SIFT_SHRED_FLOAT8)
 
-/* ======================================================================== */
-/* wildcard keys: ids are the codes of the shredder's SiftCDict, capped by max_keys and SIFT_SHRED_MAX_KEY_BYTES */
-/* ======================================================================== */
-
 StaticAssertDecl(SIFT_SHRED_MAX_KEY_BYTES <= SIFT_COL_DICT_MAX_ENTRY, "a wildcard key must fit a col dictionary string");
 
 static uint32
@@ -36,10 +32,6 @@ intern_key(SiftShred *sh, const char *key, uint32 len)
 		return SIFT_SHRED_NO_KEY;
 	return sift_cdict_intern(sh->dict, key, len);
 }
-
-/* ======================================================================== */
-/* numbers: the decimal text of a jsonb numeric (or any JSON number) to the declared type */
-/* ======================================================================== */
 
 typedef struct Dec
 {
@@ -164,10 +156,6 @@ dec_float(const Dec *d, const char *text, int len, bool is4, double *out)
 	*out = v == 0 ? 0.0 : v;
 	return true;
 }
-
-/* ======================================================================== */
-/* the shredder */
-/* ======================================================================== */
 
 #define MAX_FRAMES	(2 * SIFT_SHRED_MAX_STEPS + 2)
 
@@ -334,8 +322,6 @@ sift_shred_begin(SiftShred *sh)
 	open_element(sh, 0, 0);
 }
 
-/* ---------- where the next value goes ---------- */
-
 typedef const SiftShredNode *NodeP;
 
 static NodeP
@@ -459,8 +445,6 @@ take_target(SiftShred *sh)
 	}
 	return n->elem;
 }
-
-/* ---------- events ---------- */
 
 SiftShredKey
 sift_shred_key(SiftShred *sh, const char *key, int len)

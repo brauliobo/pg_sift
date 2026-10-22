@@ -16,8 +16,6 @@
 
 #include "core/lane.h"
 
-/* ---------- pages ---------- */
-
 void
 sift_lane_init_page(Page page, Size hdrsize)
 {
@@ -74,8 +72,6 @@ find_kind(const SiftDirSnapshot *snap, SiftSegKind kind)
 			return &snap->segs[i];
 	return NULL;
 }
-
-/* ---------- segment creation and sealing ---------- */
 
 /* Allocates and initializes (logged) the pages of an empty active segment; not yet reachable */
 static SiftSegEntry
@@ -242,8 +238,6 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 l
 	pfree(snap);
 	return arg.sealed;
 }
-
-/* ---------- append ---------- */
 
 void
 sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, bool (*make_room) (Relation),
@@ -454,8 +448,6 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 	UnlockReleaseBuffer(cur);
 	return nb;
 }
-
-/* ---------- walking ---------- */
 
 void
 sift_lane_copy_page(Relation index, const SiftSegEntry *e, BlockNumber blk, Page dst, Size hdrsize)

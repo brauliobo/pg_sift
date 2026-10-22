@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- cost ---------- */
-
 /*
  * The executor's cost per value in units of cpu_operator_cost (about 3 ns: docs/COL-PLAN.md, "Cost", fitted on whole table runs of
  * one to three keys and aggregates), and the elements per row of an array whose statistics are missing.

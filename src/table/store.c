@@ -30,8 +30,6 @@ int			sift_tbl_write_buffer_limit = 4096;	/* kB */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 
-/* ---------- the per relation cache ---------- */
-
 typedef struct CacheEnt
 {
 	Oid			relid;
@@ -131,8 +129,6 @@ sift_tbl_rel(Relation rel)
 	}
 	return e->st;
 }
-
-/* ---------- pages and segments ---------- */
 
 bool
 sift_tbl_is_table(Relation rel)

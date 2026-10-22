@@ -125,8 +125,6 @@ typedef struct Facets
 	EState	   *estate;
 } Facets;
 
-/* ---------- the query's matches ---------- */
-
 static void
 add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
@@ -231,8 +229,6 @@ grp_has(const sift_grp *g, SiftKey key)
 	r = (const uint64 *) (g->off + (size_t) row * ROW_BYTES);
 	return r[off / 64] >> (off % 64) & 1;
 }
-
-/* ---------- the keyword index ---------- */
 
 /* The query's group i restricted to the docs of seg that are live; NULL when it has none there */
 static const sift_grp *
@@ -402,8 +398,6 @@ collect_entries(Facets *f, SiftIndexState *st)
 	}
 }
 
-/* ---------- counting ---------- */
-
 /* The matches among the docs of a term kept inline in the dictionary */
 static int64
 count_inline(Facets *f, FacetSeg *fs, const SiftTermInfo *info)
@@ -470,8 +464,6 @@ count_value(Facets *f, const Value *v)
 	}
 	return n;
 }
-
-/* ---------- results ---------- */
 
 static int
 res_cmp(const Res *a, const Res *b)
@@ -613,8 +605,6 @@ count_values(Facets *f, bool nulls)
 	if (nulls && f->total > counted)
 		res_add(f, (Res) {NULL, 0, f->total - counted});
 }
-
-/* ---------- SQL ---------- */
 
 static Relation
 open_index(Oid oid)

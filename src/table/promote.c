@@ -42,8 +42,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- promotion ---------- */
-
 typedef enum Fate
 {
 	FATE_KEEP,

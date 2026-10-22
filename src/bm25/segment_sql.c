@@ -258,8 +258,6 @@ verify_disjoint(Relation index, SiftSegment *a, SiftSegment *b)
 	}
 }
 
-/* ---------- heapallindexed ---------- */
-
 typedef struct HeapCheck
 {
 	bloom_filter *bf;

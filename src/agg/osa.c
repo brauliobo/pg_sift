@@ -77,8 +77,6 @@
 #include "agg/agg_int.h"
 #include "core/cmp.h"
 
-/* ---------- ordered-set aggregates ---------- */
-
 #define OSA_SIGN	(UINT64CONST(1) << 63)
 
 /* the key of a float8 that sorts as float8_cmp does: unsigned order, -0 and 0 one key, every NaN the last */

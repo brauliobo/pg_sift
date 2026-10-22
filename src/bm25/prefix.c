@@ -390,8 +390,6 @@ union_build(SiftSegment *seg, const SiftTermMatcher *m, const SiftScoreRef *ref,
 	return blob;
 }
 
-/* ---------- cache ---------- */
-
 /* A blob is named by the segment (index file and generation) and the term it stands for */
 typedef struct CacheKey
 {

@@ -41,8 +41,6 @@ sift_col_jitter(void)
 }
 #endif
 
-/* ---------- visibility hook ---------- */
-
 static void
 vis_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
@@ -69,8 +67,6 @@ sift_col_set_visibility(SiftColSource *src, const SiftColVisibility *vis)
 {
 	src->visibility = *vis;
 }
-
-/* ---------- open / close ---------- */
 
 static void
 check_access(Relation heap)
@@ -197,8 +193,6 @@ sift_col_counters(const SiftColSource *src)
 	return &src->cnt;
 }
 
-/* ---------- in-memory batches ---------- */
-
 static void
 add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 {
@@ -316,8 +310,6 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 	*t = e->t;
 	t->pred = p;
 }
-
-/* ---------- begin / next ---------- */
 
 static void
 prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep)
@@ -532,8 +524,6 @@ sift_col_schema(const SiftColSource *src)
 {
 	return src->schema;
 }
-
-/* ---------- selections ---------- */
 
 void
 sift_col_sel_alloc(SiftColSource *src, uint32 n, SiftColSel *sel)

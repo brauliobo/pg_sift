@@ -208,8 +208,6 @@ sift_col_read_lanes(const SiftColUnit *unit, int col, const SiftColSel *sel, Sif
 		sift_col_read(unit, col + k, sel, &vecs[k]);
 }
 
-/* ---------- the conjunct of a query on a wide leaf ---------- */
-
 static bool
 is_numeric_wide(const SiftColDef *d)
 {

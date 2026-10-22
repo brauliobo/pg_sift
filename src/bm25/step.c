@@ -37,8 +37,6 @@
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
 
-/* ---------- claims: the segments a step replaces ---------- */
-
 bool
 claim(Relation index, uint64 gen, bool wait)
 {
@@ -74,8 +72,6 @@ score_ref(Relation index)
 
 	return (SiftScoreRef) {(float4) opts->k1, (float4) opts->b, 0};
 }
-
-/* ---------- steps ---------- */
 
 static void
 stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
@@ -133,8 +129,6 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 			.extra = InvalidBuffer});
 	return SIFT_STEP_FAILED;
 }
-
-/* ---------- promotion ---------- */
 
 /*
  * The live docs of a write buffer go through a tuplesort, so that promoting a segment of any size stays within
@@ -383,8 +377,6 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 	pfree(snap);
 	return r;
 }
-
-/* ---------- merge ---------- */
 
 typedef struct MergeSel
 {

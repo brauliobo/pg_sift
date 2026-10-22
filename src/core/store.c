@@ -57,8 +57,6 @@ sift_store_space_test_point(int phase)
 }
 #endif
 
-/* ---------- pages ---------- */
-
 /*
  * Copies srcs into the exclusively locked bufs and logs them as full images
  * in one record, inside one critical section (P4: content enters the buffer
@@ -133,8 +131,6 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 	corrupt(index, "Block %u: expected page type %d generation %llu, found type %d generation %llu.",
 			blkno, type, ULL(gen), found.type, ULL(found.gen));
 }
-
-/* ---------- metapage and directory ---------- */
 
 /*
  * The metapage minor a build must read to understand the segment: the segment format of a BM25 segment, 1.3 for a column segment with unfrozen
