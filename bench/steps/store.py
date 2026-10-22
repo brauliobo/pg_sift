@@ -30,6 +30,7 @@ from store_lib import CH_AUTH, DEFAULT_ENGINES, UPDATE_ENGINES, container, die, 
 from store_plan import cmd_cache_save, cmd_merge, cmd_noisy, cmd_patch, cmd_plan, cmd_planget, cmd_stable  # noqa: E402
 from store_render import cmd_compare, cmd_gap, cmd_render, cmd_table  # noqa: E402
 from store_run import cmd_cold, cmd_interference, cmd_run, cold_cell, evict, one_container, run_query, time_cell, time_wave  # noqa: E402
+from store_section import cmd_section, cmd_section_merge  # noqa: E402
 from store_updates import Writer, churn, cmd_updates, cmd_verify, read_after_write, read_latency, update_engine, with_load  # noqa: E402
 
 
@@ -102,8 +103,13 @@ def main():
         p.add_argument('--cache-dir', default=os.environ.get('STORE_CACHE', '/tmp/sift-store-cache'), help='the cache of the cells of the servers that are not under test')
         p.add_argument('--no-cache', action='store_true', help='read nothing from the cache and write nothing to it')
         p.add_argument('--cache-max-age', type=int, default=30, help='days after which a cached cell is measured again')
-    for name in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan', 'datakey', 'interference'):
+    for name in ('gen', 'load', 'run', 'cold', 'updates', 'section', 'verify', 'plan', 'datakey', 'interference'):
         common(sub.add_parser(name))
+    sub.choices['section'].add_argument('--churn-seconds', type=int, default=20, help='section: how long each of the steady churn and the inserts-only windows runs (0: bulk changes only)')
+    sm = sub.add_parser('section-merge')
+    sm.add_argument('files', nargs='+')
+    sm.add_argument('-o', required=True)
+    sm.add_argument('--sha', default='')
     it = sub.choices['interference']
     it.add_argument('--target', default='sift', help='the engine whose requests are timed')
     it.add_argument('--concurrent', type=int, default=3, help='containers that loop the same question at the same time')
@@ -160,10 +166,10 @@ def main():
     store_common.LOAD_CODE = benchlib.key_of([inspect.getsource(f) for f in (load_pg, build_indexes, copy_chunks, load_ch, load_es, bulk_docs)], 12)
     store_common.MEASURE_CODE = benchlib.key_of([store_common.LOAD_CODE] + [inspect.getsource(f) for f in (run_query, time_cell, time_wave, one_container, cold_cell, evict, restart, update_engine, with_load, churn, read_latency,
                                                                                    read_after_write, Client.run, Writer.bulk, Writer.probe_set)], 12)
-    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan', 'datakey', 'interference') and not args.engines:
+    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'section', 'verify', 'plan', 'datakey', 'interference') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
     args.cell = 0
-    if args.cmd in ('load', 'run', 'cold', 'updates', 'interference'):
+    if args.cmd in ('load', 'run', 'cold', 'updates', 'section', 'interference'):
         store_engine.UTIL = Utilization(args.busy_cores)
     if getattr(args, 'rows', None) and not getattr(args, 'tier', 'x'):
         args.tier = (f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k') + f'-c{args.cpus}'
@@ -182,7 +188,7 @@ def main():
         log(f'{args.cmd}: {part_path(args, PARTS[args.cmd])} holds the key of this command: measured before, kept')
         sys.exit(0)
     try:
-        sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table,
+        sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'section': cmd_section, 'section-merge': cmd_section_merge, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table,
                   'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare, 'plan': cmd_plan, 'planget': cmd_planget, 'cache-save': cmd_cache_save, 'noisy': cmd_noisy, 'patch': cmd_patch,
                   'stable': cmd_stable, 'datakey': cmd_datakey, 'interference': cmd_interference}[args.cmd](args))
     except (RuntimeError, benchlib.ForeignHost) as x:
