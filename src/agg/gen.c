@@ -216,8 +216,7 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		aclcheck_error(ar, OBJECT_AGGREGATE, get_func_name(ref->aggfnoid));
 	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(ref->aggfnoid));
 	proc = SearchSysCache1(PROCOID, ObjectIdGetDatum(ref->aggfnoid));
-	if (!HeapTupleIsValid(tup) || !HeapTupleIsValid(proc))
-		elog(ERROR, "cache lookup failed for aggregate %u", ref->aggfnoid);
+	SIFT_INVARIANT(HeapTupleIsValid(tup) && HeapTupleIsValid(proc), "cache lookup failed for aggregate %u", ref->aggfnoid);
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
 	owner = ((Form_pg_proc) GETSTRUCT(proc))->proowner;
 	ReleaseSysCache(proc);

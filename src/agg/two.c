@@ -391,7 +391,7 @@ cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 			*dv = a->d[ai][g] / (double) a->n[ai][g];
 			return true;
 		default:
-			elog(ERROR, "sift: unexpected inner aggregate");
+			SIFT_INVARIANT(false, "sift: unexpected inner aggregate");
 	}
 	return false;
 }

@@ -31,8 +31,7 @@ find_param(Node *expr)
 	Param	   *p = NULL;
 
 	param_walker(expr, &p);
-	if (p == NULL)
-		elog(ERROR, "sift: aggregate plan expression without its input");
+	SIFT_INVARIANT(p != NULL, "sift: aggregate plan expression without its input");
 	return p;
 }
 

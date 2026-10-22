@@ -74,7 +74,7 @@ leaf_vtype(const SiftColDef *def)
 		case SIFT_COLS_STR:
 			return SCV_CODE;
 		default:
-			elog(ERROR, "sift: leaf of storage %d has no column vector type", def->store);
+			SIFT_INVARIANT(false, "sift: leaf of storage %d has no column vector type", def->store);
 	}
 	return SCV_I32;
 }
@@ -100,8 +100,7 @@ path_below(const char *path, const char *att)
 
 	if (*path == '\0')
 		return NIL;
-	if (strncmp(path, att, alen) != 0)
-		elog(ERROR, "sift: leaf path \"%s\" does not start with its attribute \"%s\"", path, att);
+	SIFT_INVARIANT(strncmp(path, att, alen) == 0, "sift: leaf path \"%s\" does not start with its attribute \"%s\"", path, att);
 	initStringInfo(&key);
 	while (*p)
 	{

@@ -966,8 +966,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	List	   *keys;
 	int			nk;
 
-	if (!fuse_build(m, n, &f))
-		elog(ERROR, "sift: arms that cannot share a pass");
+	SIFT_INVARIANT(fuse_build(m, n, &f), "sift: arms that cannot share a pass");
 	keys = fused_keys(&f, keymap);
 	nk = list_length(keys);
 	fuse_key_slots(&f, keys);

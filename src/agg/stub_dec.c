@@ -428,8 +428,7 @@ decode_container(StubDecode *dc, const SiftSrcLeaf *g, const SiftSrcLeaf *lf, Js
 		val_finish(dc, lf, &v);
 		out_put(o, *idx, &v);
 	}
-	if (seen != n)
-		elog(ERROR, "sift_colstub: group of %d elements has %d", n, seen);
+	SIFT_INVARIANT(seen == n, "sift_colstub: group of %d elements has %d", n, seen);
 }
 
 static void

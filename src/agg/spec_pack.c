@@ -426,8 +426,7 @@ typedef struct Unpack
 static Node *
 get_item(Unpack *u)
 {
-	if (u->pos >= list_length(u->items))
-		elog(ERROR, "sift: truncated aggregate plan");
+	SIFT_INVARIANT(u->pos < list_length(u->items), "sift: truncated aggregate plan");
 	return list_nth(u->items, u->pos++);
 }
 
@@ -464,8 +463,7 @@ get_num(Unpack *u, SiftAggNum *n)
 		x->leaf = get_int(u);
 		x->a = get_int(u);
 		x->b = get_int(u);
-		if (!sift_parse_decimal(get_str(u), &x->c, &scale))
-			elog(ERROR, "sift: bad number in the aggregate plan");
+		SIFT_INVARIANT(sift_parse_decimal(get_str(u), &x->c, &scale), "sift: bad number in the aggregate plan");
 	}
 }
 

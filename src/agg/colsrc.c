@@ -19,8 +19,7 @@ static int	nproviders;
 void
 sift_colsrc_register(const SiftSrcProvider *prov)
 {
-	if (nproviders == MAX_PROVIDERS)
-		elog(ERROR, "sift: too many column source providers");
+	SIFT_INVARIANT(nproviders < MAX_PROVIDERS, "sift: too many column source providers");
 	providers[nproviders++] = prov;
 }
 
@@ -52,8 +51,7 @@ provider_of_rel(Relation rel)
 	bool		index = rel->rd_rel->relkind == RELKIND_INDEX;
 	const SiftSrcProvider *prov = provider_of(rel->rd_rel->relam, index);
 
-	if (prov == NULL)
-		elog(ERROR, "sift: \"%s\" has no column source", RelationGetRelationName(rel));
+	SIFT_INVARIANT(prov != NULL, "sift: \"%s\" has no column source", RelationGetRelationName(rel));
 	return prov;
 }
 
@@ -271,8 +269,7 @@ sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 void
 sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
 {
-	if (src->prov->select == NULL)
-		elog(ERROR, "sift: this column source cannot be restricted to a match set");
+	SIFT_INVARIANT(src->prov->select != NULL, "sift: this column source cannot be restricted to a match set");
 	src->prov->select(src->impl, keep);
 }
 
