@@ -105,6 +105,14 @@ INSERT INTO shapes VALUES
  ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
 SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
 
+-- a condition on a column the index does not hold names it
+CREATE TABLE narrow (id int, kind text, note int);
+INSERT INTO narrow SELECT i, 'k' || i % 5, i % 7 FROM generate_series(1, 2000) i;
+CREATE INDEX narrow_col ON narrow USING sift_col (id, kind);
+ANALYZE narrow;
+SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM narrow WHERE note > 3 GROUP BY 1');
+DROP TABLE narrow;
+
 -- a spine of 12,001 rows is used; one above the memory of the lookups is refused
 SET sift.agg_lookup_max_kb = 512;
 SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';

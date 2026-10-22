@@ -148,6 +148,18 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  shared cte          | cte_inline | f    | cte_cost
 (43 rows)
 
+-- a condition on a column the index does not hold names it
+CREATE TABLE narrow (id int, kind text, note int);
+INSERT INTO narrow SELECT i, 'k' || i % 5, i % 7 FROM generate_series(1, 2000) i;
+CREATE INDEX narrow_col ON narrow USING sift_col (id, kind);
+ANALYZE narrow;
+SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM narrow WHERE note > 3 GROUP BY 1');
+  arm   | used | slug  |                                                     reason                                                     
+--------+------+-------+----------------------------------------------------------------------------------------------------------------
+ single | f    | where | a condition of the WHERE or ON clause is not one the scan can test (the index does not hold the column "note")
+(1 row)
+
+DROP TABLE narrow;
 -- a spine of 12,001 rows is used; one above the memory of the lookups is refused
 SET sift.agg_lookup_max_kb = 512;
 SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';
