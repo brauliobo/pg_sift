@@ -30,9 +30,13 @@ step s1prep	{ BEGIN;
 step s1member	{ EXECUTE member; }
 step s1len	{ EXECUTE len; }
 step s1end	{ ROLLBACK; DEALLOCATE ALL; }
+step s1rollback	{ ROLLBACK; }
+step s1drop	{ DEALLOCATE ALL; }
+step s1again	{ EXECUTE member; EXPLAIN (COSTS OFF) EXECUTE member; }
 
 session s2
 step s2text	{ INSERT INTO iso_vl VALUES (100001, 0, jsonb_build_object('a', 'x'), jsonb_build_object('l', jsonb_build_array(1))); }
+step s2num	{ INSERT INTO iso_vl VALUES (100003, 0, jsonb_build_object('a', '7'), jsonb_build_object('l', jsonb_build_array(1))); }
 step s2scalar	{ INSERT INTO iso_vl VALUES (100002, 0, jsonb_build_object('a', 1), jsonb_build_object('l', 'x')); }
 step s2begin	{ BEGIN; }
 step s2abort	{ ROLLBACK; }
@@ -40,5 +44,7 @@ step s2abort	{ ROLLBACK; }
 # committed after the plan was made, before the statement: the statement sees the row
 permutation s1prep s2text s1member s1end
 permutation s1prep s2scalar s1len s1end
+# the error is the last one of the plan: the next transaction plans the statement again, which the flagged leaf keeps on the normal plan
+permutation s1prep s2num s1member s1rollback s1again s1drop
 # in flight, then rolled back: the statement does not see it
 permutation s1prep s2begin s2text s1member s2abort s1member s1end

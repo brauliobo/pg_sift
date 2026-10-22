@@ -98,7 +98,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 
 	vec->ovf = NULL;
 	if (v->ovf && !buf->ovf)
-		sift_aggsel_overflow_error();
+		sift_aggsel_overflow_error(RelationGetRelid(src->heap));
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -175,7 +175,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 		vec->ovf = buf->ovf;
 	}
 	else if (info.ovf)
-		sift_aggsel_overflow_error();
+		sift_aggsel_overflow_error(RelationGetRelid(src->heap));
 	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->n = info.n;

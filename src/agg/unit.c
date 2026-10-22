@@ -67,6 +67,7 @@
 #include "agg/back.h"
 #include "agg/kern.h"
 #include "agg/part.h"
+#include "agg/sel.h"
 #include "agg/spec.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
@@ -75,15 +76,6 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
-
-static void
-overflow_error(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-			 errhint("Set sift.enable_agg to off for this query.")));
-}
 
 /* bits [lo, hi) of a bit vector cleared */
 static void
@@ -276,7 +268,7 @@ check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 		return;
 	if (rechecked)
 		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	overflow_error();
+	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /*
@@ -300,7 +292,7 @@ check_overflow_after_late(AggExec *ex, const uint64 *live)
 	if (sift_colk->bits_count(rows, nrw) == 0)
 		return;
 	sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	overflow_error();
+	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /* check_overflow for the rows that keep an element of the unit, at the point the aggregates read them (SRK_CAST) */
