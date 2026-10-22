@@ -207,3 +207,6 @@ SELECT tag, pw_check(replace(q, '{t}', 'pw')) AS sift_col, pw_check(replace(q, '
  whole_frame | same+topn+totals 8    | same+topn+totals 8
 (28 rows)
 
+DROP TABLE pw, pw_q, pw_r, pw_t;
+DROP FUNCTION pw_check(text), pw_mode(boolean), pw_why(text);
+DROP EXTENSION pg_sift;

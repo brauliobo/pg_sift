@@ -222,4 +222,7 @@ FROM unnest(ARRAY['not_ignored', 'phrase_as_and', 'float8_score', 'idf_df_plus1'
 
 DROP TABLE ref_docs;
 RESET sift_ref.tokenizer;
+SET client_min_messages = warning;
+DROP SCHEMA sift_ref CASCADE;
+RESET client_min_messages;
 \endif

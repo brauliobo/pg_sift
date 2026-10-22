@@ -371,3 +371,4 @@ SELECT scan FROM rs_check('SELECT id, s FROM rs WHERE id < 50');
 DROP TABLE rs CASCADE;
 DROP FUNCTION rs_mode(bool), rs_run(text, bool), rs_check(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP TABLE rs_q, rs_q2;

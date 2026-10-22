@@ -163,3 +163,6 @@ SELECT tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20) DESC, id LIMIT 30 OFFSET 100$q$) AS coalesce_desc,
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, -1), id LIMIT 30$q$) AS coalesce_below,
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 100), id DESC LIMIT 30$q$) AS coalesce_above;
+DROP TABLE tc, tc_q, tq, tv;
+DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

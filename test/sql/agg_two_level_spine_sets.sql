@@ -111,3 +111,6 @@ UPDATE events SET doc = jsonb_set(doc, '{parts,0,score}', '9') WHERE id % 17 = 0
 UPDATE events SET kind = 'k' || (id + 1) % 5, ts = ts + 1, parent_id = (parent_id + 1) % 600 WHERE id % 19 = 0;
 DELETE FROM events WHERE id % 23 = 0;
 SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 'GROUPING SETS ((category, m.kind, sp.label), (category, sp.label), (m.kind, sp.label))', 'category, m.kind, sp.label');
+DROP TABLE buckets, events, ticks;
+DROP FUNCTION arms(), each_join(text,text,text,text), plan_lines(text), pushed(text), report(text,text,text,text,text), same(text,boolean,boolean);
+DROP EXTENSION pg_sift;

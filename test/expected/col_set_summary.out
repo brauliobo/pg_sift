@@ -624,3 +624,4 @@ DROP TABLE su, su_b, su_q;
 DROP TABLE sa, ss, ss_b, ss_q, sr CASCADE;
 DROP FUNCTION ss_rows(text, bool), ss_units(text), ss_check(text, text), ss_cost(text), ss_by_set(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP FUNCTION ss_split(text);

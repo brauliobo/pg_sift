@@ -430,3 +430,4 @@ DROP FUNCTION fac_summary(text), fac_all(regclass, text), fac_actual(regclass, t
 	fac_expected(text, regclass, text, int, bool);
 ERROR:  function fac_expected(text, regclass, text, integer, boolean) does not exist
 DROP EXTENSION pg_sift;
+DROP FUNCTION fac_actual(regclass,text,integer,boolean), fac_all(regclass,text), fac_expected(text,regclass,text,boolean), fac_summary(text);
