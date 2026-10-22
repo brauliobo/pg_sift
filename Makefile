@@ -107,7 +107,7 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals reference
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals reference options
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
@@ -123,6 +123,9 @@ refusals:
 # docs/REFERENCE.md and the README block from the sift.* objects of the install scripts (scripts/gen-reference.sh --check proves them)
 reference:
 	scripts/gen-reference.sh
+# the options tables of README.md and docs/USAGE.md from the reloption and setting definitions in src/ and docs/options.tsv (scripts/gen-options.sh --check proves them)
+options:
+	scripts/gen-options.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:

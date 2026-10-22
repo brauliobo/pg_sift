@@ -24,9 +24,9 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 
 - Commit subject `context: subcontext: change` (the module or feature, never the project name); stage files individually.
 - LF line endings only. Public docs use neutral wording: no private paths, hosts or internal names.
-- Generated blocks (the `bench:` blocks of `docs/BENCHMARKS.md` and README.md, the coverage block, `docs/COVERAGE.md`, `docs/LIMITS.md`, `docs/REFERENCE.md` and the `sift-reference` block of README.md) are never edited by hand: change the data or the generator.
+- Generated blocks (the `bench:` blocks of `docs/BENCHMARKS.md` and README.md, the coverage block, `docs/COVERAGE.md`, `docs/LIMITS.md`, `docs/REFERENCE.md` the `sift-reference` and `sift-options` blocks of README.md and the `sift-settings` and `sift-reloptions` tables of `docs/USAGE.md`) are never edited by hand: change the data or the generator.
 - A new or changed `sift.*` function or view needs a `COMMENT ON` in the 3.3+ install and upgrade scripts (never the released ones: `docs/reference-notes.tsv`), then `make reference` (`scripts/gen-reference.sh`, no server needed) and
-  commit `docs/REFERENCE.md` and the README block. A new limit goes in the registry, then `make limits`. `--check` of both runs in lint and `scripts/ci.sh`, and fails otherwise.
+  commit `docs/REFERENCE.md` and the README block. A new limit goes in the registry, then `make limits`. A new reloption or `sift.*` setting needs its description in the `DefineCustom*Variable` / `add_*_reloption` call and a row in `docs/options.tsv` (applies to, what it buys, what it costs, link), then `make options`; defaults and ranges come from the call, and a changed default is flagged against `scripts/options-released.tsv` by itself. `--check` of both runs in lint and `scripts/ci.sh`, and fails otherwise.
 - Fix root causes; a bug gets a failing test first. Comments only for non-obvious code.
 
 ## On-disk formats
