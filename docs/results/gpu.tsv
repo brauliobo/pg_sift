@@ -1,28 +1,28 @@
-# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS 9), pg_sift v3.1.0 built with VULKAN=1, one backend, one core on the CPU side, NVIDIA GeForce RTX 3090, measured 2026-10-20 under the perf lock.
-# host load before: load 5.70 5.40 7.86 cpu_psi 0.00%; after: load 8.85 6.26 8.06 cpu_psi 1.09%.
+# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS 9), pg_sift v3.1.0 built with VULKAN=1, one backend, one core on the CPU side, NVIDIA GeForce RTX 3090, measured 2026-10-22 under the perf lock.
+# host load before: load 5.03 4.17 4.70 cpu_psi 9.09%; after: load 5.41 4.32 4.73 cpu_psi 0.97%.
 # first_ms: the first query (cpu_1core: sift.gpu off) or the first query after the device is open, chunks uploaded (gpu_cold_resident); median_ms: median of the 9 repeats (chunks resident for the device).
 rows	query	mode	first_ms	median_ms
-1000000	q7	cpu_1core	2.190	1.269
-1000000	q7	gpu_cold_resident	5.177	0.357
-1000000	q8	cpu_1core	1.878	0.704
-1000000	q8	gpu_cold_resident	4.358	0.346
-1000000	q9	cpu_1core	4.676	3.625
-1000000	q9	gpu_cold_resident	4.276	0.392
-1000000	g1	cpu_1core	4.831	3.645
-1000000	g1	gpu_cold_resident	4.617	0.402
-1000000	g2	cpu_1core	3.541	2.548
-1000000	g2	gpu_cold_resident	4.244	0.517
-1000000	g3	cpu_1core	4.965	4.147
-1000000	g3	gpu_cold_resident	4.852	0.660
-10000000	q7	cpu_1core	19.238	10.379
-10000000	q7	gpu_cold_resident	26.591	1.957
-10000000	q8	cpu_1core	13.538	8.309
-10000000	q8	gpu_cold_resident	17.982	2.296
-10000000	q9	cpu_1core	28.122	24.588
-10000000	q9	gpu_cold_resident	16.207	1.705
-10000000	g1	cpu_1core	41.235	32.448
-10000000	g1	gpu_cold_resident	17.514	1.455
-10000000	g2	cpu_1core	25.751	18.860
-10000000	g2	gpu_cold_resident	18.368	2.007
-10000000	g3	cpu_1core	30.185	26.631
-10000000	g3	gpu_cold_resident	17.965	2.060
+1000000	q7	cpu_1core	1.424	0.440
+1000000	q7	gpu_cold_resident	1.430	0.575
+1000000	q8	cpu_1core	0.991	0.331
+1000000	q8	gpu_cold_resident	1.112	0.361
+1000000	q9	cpu_1core	2.691	1.819
+1000000	q9	gpu_cold_resident	2.438	1.812
+1000000	g1	cpu_1core	2.843	2.054
+1000000	g1	gpu_cold_resident	2.740	1.972
+1000000	g2	cpu_1core	2.188	1.348
+1000000	g2	gpu_cold_resident	2.067	1.262
+1000000	g3	cpu_1core	2.854	2.147
+1000000	g3	gpu_cold_resident	2.752	2.083
+10000000	q7	cpu_1core	13.589	8.602
+10000000	q7	gpu_cold_resident	13.649	8.600
+10000000	q8	cpu_1core	10.020	5.267
+10000000	q8	gpu_cold_resident	9.992	5.307
+10000000	q9	cpu_1core	23.829	19.850
+10000000	q9	gpu_cold_resident	23.803	19.916
+10000000	g1	cpu_1core	27.431	22.171
+10000000	g1	gpu_cold_resident	26.314	22.120
+10000000	g2	cpu_1core	20.351	15.780
+10000000	g2	gpu_cold_resident	20.336	15.860
+10000000	g3	cpu_1core	27.531	22.917
+10000000	g3	gpu_cold_resident	27.017	22.844

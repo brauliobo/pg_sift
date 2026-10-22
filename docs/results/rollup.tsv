@@ -1,125 +1,87 @@
 # Element rollups of jsonb arrays: j02 and j17 as the normal plan, the scan of every unit and the answer from the rollups (bench/sql/jsonb/rollup/run.sql).
-# date: 2026-10-20
-# cpu: AMD Ryzen 7 9700X 8-Core Processor (87% threads)
+# date: 2026-10-22
+# cpu: AMD Ryzen 7 9700X 8-Core Processor (89% threads)
 # noisy_starts: 0 of the timed runs started while the pressure was above 15% for 300 s
 # postgresql: PostgreSQL 18.6
-# scope: run-p1092377-i277623473.scope
+# scope: run-p32890-i335088248.scope
 # build: v3.1.0
 # method: server-side median ms of 21 runs (normal plan: 7), one backend, no parallel workers, seq_page_cost 10000, rollup worker off; index and build rows with the default rollups and with rollup = 'off'
-# host_load_before: load 6.41 6.19 7.13 cpu_psi 0.00%
-# host_load_after: load 4.64 5.50 7.31 cpu_psi 0.01%
+# host_load_before: load 4.62 4.60 5.23 cpu_psi 0.02%
+# host_load_after: load 5.90 6.46 5.91 cpu_psi 0.00%
 version	case	arm	metric	value	min	max	n	load	note
-v3.1.0	build@100k	default	cpu_ms	285	276		3	6.35	
-v3.1.0	build@100k	default	wall_ms	274	272		3	6.35	
-v3.1.0	build@100k	default	wall_ms_2_workers	100	99		3	6.35	
-v3.1.0	index@100k	default	bytes	2555904				6.35	
-v3.1.0	j02@100k	normal	ms	159.03				6.35	rollup=default
-v3.1.0	j02@100k	scanned	ms	0.84				6.35	rollup=default
-v3.1.0	j02@100k	rollup	ms	0.09				6.35	rollup=default
-v3.1.0	j17@100k	normal	ms	165.92				6.35	rollup=default
-v3.1.0	j17@100k	scanned	ms	1.01				6.35	rollup=default
-v3.1.0	j17@100k	rollup	ms	0.11				6.35	rollup=default
-v3.1.0	j17b@100k	normal	ms	158.09				6.35	rollup=default
-v3.1.0	j17b@100k	scanned	ms	0.86				6.35	rollup=default
-v3.1.0	j17b@100k	rollup	ms	0.09				6.35	rollup=default
-v3.1.0	j17d@100k	normal	ms	142.30				6.35	rollup=default
-v3.1.0	j17d@100k	scanned	ms	0.79				6.35	rollup=default
-v3.1.0	j17d@100k	rollup	ms	0.78				6.35	rollup=default
-v3.1.0	j17c@100k	normal	ms	184.05				6.35	rollup=default
-v3.1.0	j17c@100k	scanned	ms	5.75				6.35	rollup=default
-v3.1.0	j17c@100k	rollup	ms	5.77				6.35	rollup=default
-v3.1.0	build@100k	off	cpu_ms	268	265		3	6.87	
-v3.1.0	build@100k	off	wall_ms	266	263		3	6.87	
-v3.1.0	build@100k	off	wall_ms_2_workers	112	99		3	6.87	
-v3.1.0	index@100k	off	bytes	2506752				6.87	
-v3.1.0	j02@100k	normal	ms	158.77				6.87	rollup=off
-v3.1.0	j02@100k	scanned	ms	0.84				6.87	rollup=off
-v3.1.0	j02@100k	rollup	ms	0.84				6.87	rollup=off
-v3.1.0	j17@100k	normal	ms	166.56				6.87	rollup=off
-v3.1.0	j17@100k	scanned	ms	1.02				6.87	rollup=off
-v3.1.0	j17@100k	rollup	ms	1.01				6.87	rollup=off
-v3.1.0	j17b@100k	normal	ms	159.31				6.87	rollup=off
-v3.1.0	j17b@100k	scanned	ms	0.84				6.87	rollup=off
-v3.1.0	j17b@100k	rollup	ms	0.84				6.87	rollup=off
-v3.1.0	j17d@100k	normal	ms	146.56				6.87	rollup=off
-v3.1.0	j17d@100k	scanned	ms	1.28				6.87	rollup=off
-v3.1.0	j17d@100k	rollup	ms	0.86				6.87	rollup=off
-v3.1.0	j17c@100k	normal	ms	182.62				6.87	rollup=off
-v3.1.0	j17c@100k	scanned	ms	6.67				6.87	rollup=off
-v3.1.0	j17c@100k	rollup	ms	5.72				6.87	rollup=off
-v3.1.0	build@1M	default	cpu_ms	3227	2566		3	9.48	
-v3.1.0	build@1M	default	wall_ms	3196	3181		3	9.48	
-v3.1.0	build@1M	default	wall_ms_2_workers	1627	1481		3	9.48	
-v3.1.0	index@1M	default	bytes	25247744				9.48	
-v3.1.0	j02@1M	normal	ms	2211.76				9.48	rollup=default
-v3.1.0	j02@1M	scanned	ms	10.18				9.48	rollup=default
-v3.1.0	j02@1M	rollup	ms	0.74				9.48	rollup=default
-v3.1.0	j17@1M	normal	ms	2416.68				9.48	rollup=default
-v3.1.0	j17@1M	scanned	ms	16.50				9.48	rollup=default
-v3.1.0	j17@1M	rollup	ms	1.61				9.48	rollup=default
-v3.1.0	j17b@1M	normal	ms	1958.84				9.48	rollup=default
-v3.1.0	j17b@1M	scanned	ms	10.13				9.48	rollup=default
-v3.1.0	j17b@1M	rollup	ms	0.70				9.48	rollup=default
-v3.1.0	j17d@1M	normal	ms	1580.31				9.48	rollup=default
-v3.1.0	j17d@1M	scanned	ms	9.58				9.48	rollup=default
-v3.1.0	j17d@1M	rollup	ms	10.20				9.48	rollup=default
-v3.1.0	j17c@1M	normal	ms	2165.73				9.48	rollup=default
-v3.1.0	j17c@1M	scanned	ms	58.06				9.48	rollup=default
-v3.1.0	j17c@1M	rollup	ms	58.44				9.48	rollup=default
-v3.1.0	build@1M	off	cpu_ms	2907	2800		3	12.25	
-v3.1.0	build@1M	off	wall_ms	2717	2716		3	12.25	
-v3.1.0	build@1M	off	wall_ms_2_workers	1504	1432		3	12.25	
-v3.1.0	index@1M	off	bytes	24756224				12.25	
-v3.1.0	j02@1M	normal	ms	1821.86				12.25	rollup=off
-v3.1.0	j02@1M	scanned	ms	9.65				12.25	rollup=off
-v3.1.0	j02@1M	rollup	ms	9.93				12.25	rollup=off
-v3.1.0	j17@1M	normal	ms	1950.17				12.25	rollup=off
-v3.1.0	j17@1M	scanned	ms	11.31				12.25	rollup=off
-v3.1.0	j17@1M	rollup	ms	11.32				12.25	rollup=off
-v3.1.0	j17b@1M	normal	ms	1713.62				12.25	rollup=off
-v3.1.0	j17b@1M	scanned	ms	15.77				12.25	rollup=off
-v3.1.0	j17b@1M	rollup	ms	14.83				12.25	rollup=off
-v3.1.0	j17d@1M	normal	ms	2025.27				12.25	rollup=off
-v3.1.0	j17d@1M	scanned	ms	10.42				12.25	rollup=off
-v3.1.0	j17d@1M	rollup	ms	10.50				12.25	rollup=off
-v3.1.0	j17c@1M	normal	ms	1942.62				12.25	rollup=off
-v3.1.0	j17c@1M	scanned	ms	54.55				12.25	rollup=off
-v3.1.0	j17c@1M	rollup	ms	53.26				12.25	rollup=off
-v3.1.0	build@10M	default	cpu_ms	26269	25967		3	5.39	
-v3.1.0	build@10M	default	wall_ms	25819	25472		3	5.39	
-v3.1.0	build@10M	default	wall_ms_2_workers	10868	10264		3	5.39	
-v3.1.0	index@10M	default	bytes	252428288				5.39	
-v3.1.0	j02@10M	normal	ms	25956.90				5.39	rollup=default
-v3.1.0	j02@10M	scanned	ms	131.63				5.39	rollup=default
-v3.1.0	j02@10M	rollup	ms	26.09				5.39	rollup=default
-v3.1.0	j17@10M	normal	ms	27053.28				5.39	rollup=default
-v3.1.0	j17@10M	scanned	ms	117.11				5.39	rollup=default
-v3.1.0	j17@10M	rollup	ms	16.36				5.39	rollup=default
-v3.1.0	j17b@10M	normal	ms	14937.59				5.39	rollup=default
-v3.1.0	j17b@10M	scanned	ms	98.04				5.39	rollup=default
-v3.1.0	j17b@10M	rollup	ms	16.03				5.39	rollup=default
-v3.1.0	j17d@10M	normal	ms	13516.62				5.39	rollup=default
-v3.1.0	j17d@10M	scanned	ms	94.79				5.39	rollup=default
-v3.1.0	j17d@10M	rollup	ms	100.78				5.39	rollup=default
-v3.1.0	j17c@10M	normal	ms	17517.37				5.39	rollup=default
-v3.1.0	j17c@10M	scanned	ms	515.93				5.39	rollup=default
-v3.1.0	j17c@10M	rollup	ms	517.53				5.39	rollup=default
-v3.1.0	build@10M	off	cpu_ms	25445	25202		3	4.64	
-v3.1.0	build@10M	off	wall_ms	25760	25599		3	4.64	
-v3.1.0	build@10M	off	wall_ms_2_workers	11578	9905		3	4.64	
-v3.1.0	index@10M	off	bytes	247480320				4.64	
-v3.1.0	j02@10M	normal	ms	18001.84				4.64	rollup=off
-v3.1.0	j02@10M	scanned	ms	110.80				4.64	rollup=off
-v3.1.0	j02@10M	rollup	ms	113.05				4.64	rollup=off
-v3.1.0	j17@10M	normal	ms	15983.65				4.64	rollup=off
-v3.1.0	j17@10M	scanned	ms	113.73				4.64	rollup=off
-v3.1.0	j17@10M	rollup	ms	116.01				4.64	rollup=off
-v3.1.0	j17b@10M	normal	ms	14779.96				4.64	rollup=off
-v3.1.0	j17b@10M	scanned	ms	97.88				4.64	rollup=off
-v3.1.0	j17b@10M	rollup	ms	97.47				4.64	rollup=off
-v3.1.0	j17d@10M	normal	ms	13026.63				4.64	rollup=off
-v3.1.0	j17d@10M	scanned	ms	90.18				4.64	rollup=off
-v3.1.0	j17d@10M	rollup	ms	90.88				4.64	rollup=off
-v3.1.0	j17c@10M	normal	ms	16982.80				4.64	rollup=off
-v3.1.0	j17c@10M	scanned	ms	516.64				4.64	rollup=off
-v3.1.0	j17c@10M	rollup	ms	524.76				4.64	rollup=off
+v3.1.0	build@100k	default	cpu_ms	268	265		3	4.57	
+v3.1.0	build@100k	default	wall_ms	270	266		3	4.57	
+v3.1.0	build@100k	default	wall_ms_2_workers	93	92		3	4.57	
+v3.1.0	index@100k	default	bytes	2555904				4.57	
+v3.1.0	j02@100k	normal	ms	151.39				4.57	rollup=default
+v3.1.0	j02@100k	scanned	ms	0.79				4.57	rollup=default
+v3.1.0	j02@100k	rollup	ms	0.08				4.57	rollup=default
+v3.1.0	j17@100k	normal	ms	159.68				4.57	rollup=default
+v3.1.0	j17@100k	scanned	ms	0.95				4.57	rollup=default
+v3.1.0	j17@100k	rollup	ms	0.10				4.57	rollup=default
+v3.1.0	j17b@100k	normal	ms	150.78				4.57	rollup=default
+v3.1.0	j17b@100k	scanned	ms	0.82				4.57	rollup=default
+v3.1.0	j17b@100k	rollup	ms	0.09				4.57	rollup=default
+v3.1.0	j17d@100k	normal	ms	137.17				4.57	rollup=default
+v3.1.0	j17d@100k	scanned	ms	0.75				4.57	rollup=default
+v3.1.0	j17d@100k	rollup	ms	0.74				4.57	rollup=default
+v3.1.0	j17c@100k	normal	ms	177.79				4.57	rollup=default
+v3.1.0	j17c@100k	scanned	ms	5.52				4.57	rollup=default
+v3.1.0	j17c@100k	rollup	ms	5.54				4.57	rollup=default
+v3.1.0	build@100k	off	cpu_ms	257	253		3	4.33	
+v3.1.0	build@100k	off	wall_ms	255	253		3	4.33	
+v3.1.0	build@100k	off	wall_ms_2_workers	91	90		3	4.33	
+v3.1.0	index@100k	off	bytes	2506752				4.33	
+v3.1.0	j02@100k	normal	ms	151.67				4.33	rollup=off
+v3.1.0	j02@100k	scanned	ms	0.81				4.33	rollup=off
+v3.1.0	j02@100k	rollup	ms	0.80				4.33	rollup=off
+v3.1.0	j17@100k	normal	ms	158.91				4.33	rollup=off
+v3.1.0	j17@100k	scanned	ms	0.96				4.33	rollup=off
+v3.1.0	j17@100k	rollup	ms	0.95				4.33	rollup=off
+v3.1.0	j17b@100k	normal	ms	151.30				4.33	rollup=off
+v3.1.0	j17b@100k	scanned	ms	0.79				4.33	rollup=off
+v3.1.0	j17b@100k	rollup	ms	0.80				4.33	rollup=off
+v3.1.0	j17d@100k	normal	ms	138.32				4.33	rollup=off
+v3.1.0	j17d@100k	scanned	ms	0.74				4.33	rollup=off
+v3.1.0	j17d@100k	rollup	ms	0.74				4.33	rollup=off
+v3.1.0	j17c@100k	normal	ms	173.39				4.33	rollup=off
+v3.1.0	j17c@100k	scanned	ms	5.47				4.33	rollup=off
+v3.1.0	j17c@100k	rollup	ms	5.45				4.33	rollup=off
+v3.1.0	build@1M	default	cpu_ms	2508	2505		3	11.34	
+v3.1.0	build@1M	default	wall_ms	2505	2452		3	11.34	
+v3.1.0	build@1M	default	wall_ms_2_workers	975	961		3	11.34	
+v3.1.0	index@1M	default	bytes	25247744				11.34	
+v3.1.0	j02@1M	normal	ms	1887.98				11.34	rollup=default
+v3.1.0	j02@1M	scanned	ms	9.21				11.34	rollup=default
+v3.1.0	j02@1M	rollup	ms	1.99				11.34	rollup=default
+v3.1.0	j17@1M	normal	ms	2080.01				11.34	rollup=default
+v3.1.0	j17@1M	scanned	ms	11.98				11.34	rollup=default
+v3.1.0	j17@1M	rollup	ms	0.86				11.34	rollup=default
+v3.1.0	j17b@1M	normal	ms	1993.04				11.34	rollup=default
+v3.1.0	j17b@1M	scanned	ms	9.01				11.34	rollup=default
+v3.1.0	j17b@1M	rollup	ms	0.63				11.34	rollup=default
+v3.1.0	j17d@1M	normal	ms	1404.33				11.34	rollup=default
+v3.1.0	j17d@1M	scanned	ms	7.76				11.34	rollup=default
+v3.1.0	j17d@1M	rollup	ms	8.01				11.34	rollup=default
+v3.1.0	j17c@1M	normal	ms	1779.25				11.34	rollup=default
+v3.1.0	j17c@1M	scanned	ms	49.98				11.34	rollup=default
+v3.1.0	j17c@1M	rollup	ms	49.86				11.34	rollup=default
+v3.1.0	build@1M	off	cpu_ms	2521	2518		3	5.90	
+v3.1.0	build@1M	off	wall_ms	2548	2526		3	5.90	
+v3.1.0	build@1M	off	wall_ms_2_workers	1000	946		3	5.90	
+v3.1.0	index@1M	off	bytes	24756224				5.90	
+v3.1.0	j02@1M	normal	ms	1553.33				5.90	rollup=off
+v3.1.0	j02@1M	scanned	ms	8.19				5.90	rollup=off
+v3.1.0	j02@1M	rollup	ms	8.18				5.90	rollup=off
+v3.1.0	j17@1M	normal	ms	1615.52				5.90	rollup=off
+v3.1.0	j17@1M	scanned	ms	10.92				5.90	rollup=off
+v3.1.0	j17@1M	rollup	ms	10.82				5.90	rollup=off
+v3.1.0	j17b@1M	normal	ms	1519.18				5.90	rollup=off
+v3.1.0	j17b@1M	scanned	ms	8.44				5.90	rollup=off
+v3.1.0	j17b@1M	rollup	ms	8.16				5.90	rollup=off
+v3.1.0	j17d@1M	normal	ms	1375.53				5.90	rollup=off
+v3.1.0	j17d@1M	scanned	ms	7.81				5.90	rollup=off
+v3.1.0	j17d@1M	rollup	ms	7.77				5.90	rollup=off
+v3.1.0	j17c@1M	normal	ms	1754.14				5.90	rollup=off
+v3.1.0	j17c@1M	scanned	ms	49.80				5.90	rollup=off
+v3.1.0	j17c@1M	rollup	ms	49.73				5.90	rollup=off
