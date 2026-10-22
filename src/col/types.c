@@ -414,13 +414,14 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 				sift_w128	w = 0;
 
 				if (sift_col_decimal_to_w128(txt, def->scale, &w) != SIFT_W128_OK)
-					ereport(ERROR,
-							(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-							 errmsg("sift_col: the numeric %s does not fit a 128-bit integer scaled by 10^%d", txt, def->scale),
-							 errhint("A wide numeric leaf holds at most 38 digits: leave the column out of the index, or store the value as text.")));
+					for (int k = 0; k < lanes; k++)
+						v[k].isnull = v[k].overflow = true;
+				else
+				{
+					v[0].v.i = sift_col_wide_hi(w);
+					v[1].v.i = sift_col_wide_lo(w);
+				}
 				pfree(txt);
-				v[0].v.i = sift_col_wide_hi(w);
-				v[1].v.i = sift_col_wide_lo(w);
 			}
 			break;
 		case SIFT_COLT_INTERVAL:
