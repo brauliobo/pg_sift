@@ -275,6 +275,126 @@ CREATE FUNCTION sift.col_clustering(index regclass, width_pct float8 DEFAULT 1,
 	AS 'MODULE_PATHNAME', 'sift_col_clustering' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.col_clustering(regclass, float8) IS 'How well the rows of a sift_col index are ordered for its zone maps, one row per leaf: the units an equality or a range touches, the correlation and a verdict (clustered, partial or scattered).';
 
+-- Which physical order of a table (CLUSTER, or pg_repack --order-by on a heap table) would let the scans of its sift_col index skip the most units,
+-- one row per index of rel (a table or an index; every index you may read when NULL). min_rows: the rows a query must save for the order to be
+-- worth it (the default is what a scan reads in about a millisecond). It sorts the zones of the units virtually (docs/USAGE.md
+-- "Should the table be ordered"): units_now is what an equality or range on the best leaf reads now (sift.col_clustering), units_after what a table
+-- sorted by it reads (the units of the rows of one value, or of a window), saved_rows the rows a query no longer reads, churn_pct the share of the
+-- rows modified since the last ANALYZE. verdict: recommended or not recommended, and reason says why (the table is small, already ordered, a
+-- competing leaf that is ordered now would be scattered, the rows change faster than an order lasts, or the advice is switched off by the setting
+-- sift.cluster_advice or the index option cluster_advice); command: the pg_repack call, NULL when the table has no unique index for it.
+CREATE FUNCTION sift.cluster_advice(rel regclass DEFAULT NULL, min_rows int8 DEFAULT 100000,
+									OUT tbl regclass, OUT index regclass, OUT key text, OUT units int8, OUT units_now float8,
+									OUT units_after float8, OUT saved_rows int8, OUT churn_pct float8, OUT verdict text,
+									OUT reason text, OUT command text)
+	RETURNS SETOF record
+	LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $fn$
+DECLARE
+	ix record;
+	b record;
+	n_rows int8;
+	rpu float8;
+	age float8;
+	rate float8;
+	second text;
+	has_unique bool;
+BEGIN
+	FOR ix IN
+		SELECT i.indexrelid::regclass AS idx, i.indrelid AS heap, c.reloptions, h.reltuples, h.relam, n.nspname, h.relname
+		FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam
+			JOIN pg_class h ON h.oid = i.indrelid JOIN pg_namespace n ON n.oid = h.relnamespace
+		WHERE a.amname = 'sift_col' AND c.relkind = 'i' AND i.indisvalid AND (rel IS NULL OR rel IN (i.indrelid, i.indexrelid))
+			AND has_table_privilege(i.indrelid, 'SELECT')
+		ORDER BY i.indexrelid
+	LOOP
+		tbl := ix.heap; index := ix.idx; key := NULL; units := NULL; units_now := NULL; units_after := NULL; saved_rows := NULL;
+		churn_pct := NULL; command := NULL; verdict := 'not recommended';
+		IF NOT coalesce(current_setting('sift.cluster_advice', true)::bool, true) THEN
+			reason := 'switched off by the setting sift.cluster_advice';
+			RETURN NEXT; CONTINUE;
+		END IF;
+		IF NOT coalesce((SELECT split_part(o, '=', 2) FROM unnest(ix.reloptions) o WHERE o LIKE 'cluster_advice=%'), 'true')::bool THEN
+			reason := 'switched off by the option cluster_advice of the index';
+			RETURN NEXT; CONTINUE;
+		END IF;
+		SELECT i.rows, i.units INTO n_rows, units FROM sift.col_index_info(ix.idx) i;
+		IF coalesce(units, 0) = 0 THEN
+			reason := 'the index has no sealed unit yet';
+			RETURN NEXT; CONTINUE;
+		END IF;
+		rpu := n_rows::float8 / units;
+
+		-- the best leaf: most units saved when the table is sorted by it. An equality leaf (several rows a value, from the statistics of the column)
+		-- is read at the units of its value; any other by a window of 1% of its span. A leaf that is ordered now (clustered, partial) is what a
+		-- sort by another, scattered leaf would give up.
+		WITH leafs AS (
+			SELECT l.path, l.verdict AS lv, l.units AS total, s.rpv,
+				   CASE WHEN s.rpv >= 2 THEN l.point_units ELSE l.range_units END AS now_u,
+				   CASE WHEN s.rpv >= 2 THEN 1 + (s.rpv - 1) / rpu ELSE l.range_ideal END AS after_u
+			FROM sift.col_clustering(ix.idx, 1) l
+			CROSS JOIN LATERAL (
+				SELECT n_rows / greatest(1, CASE WHEN st.n_distinct > 0 THEN st.n_distinct ELSE -st.n_distinct * ix.reltuples END) AS rpv
+				FROM pg_stats st WHERE st.schemaname = ix.nspname AND st.tablename = ix.relname AND st.attname = l.path
+				ORDER BY st.inherited LIMIT 1) s
+			WHERE l.point_units IS NOT NULL
+			UNION ALL
+			SELECT l.path, l.verdict, l.units, NULL, l.range_units, l.range_ideal
+			FROM sift.col_clustering(ix.idx, 1) l
+			WHERE l.point_units IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM pg_stats st WHERE st.schemaname = ix.nspname AND st.tablename = ix.relname AND st.attname = l.path)
+		), best AS (SELECT * FROM leafs ORDER BY now_u - after_u DESC, path LIMIT 1)
+		SELECT best.path, best.lv, best.now_u, best.after_u, best.rpv,
+			   coalesce(sum((o.total - o.now_u) * rpu), 0) AS lost, string_agg(o.path, ', ' ORDER BY o.path) AS lost_paths
+		INTO b
+		FROM best LEFT JOIN leafs o ON o.path <> best.path AND o.lv IN ('clustered', 'partial') AND best.lv = 'scattered'
+		GROUP BY best.path, best.lv, best.now_u, best.after_u, best.rpv;
+		IF b.path IS NULL THEN
+			reason := 'the index has no integer, date or timestamp leaf with zones';
+			RETURN NEXT; CONTINUE;
+		END IF;
+
+		key := b.path;
+		-- the rows of one value fill several units: a date or timestamp leaf after it sorts the rows inside the value, so a window prunes there too
+		IF b.rpv > rpu THEN
+			SELECT a.attname INTO second FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+			WHERE a.attrelid = ix.heap AND a.attnum > 0 AND NOT a.attisdropped AND a.attname <> b.path
+				AND t.typname IN ('date', 'timestamp', 'timestamptz')
+				AND a.attname IN (SELECT l.path FROM sift.col_clustering(ix.idx, 1) l WHERE l.point_units IS NOT NULL)
+			ORDER BY a.attnum LIMIT 1;
+			IF second IS NOT NULL THEN key := key || ', ' || second; END IF;
+		END IF;
+		units_now := b.now_u; units_after := b.after_u; saved_rows := ((b.now_u - b.after_u) * rpu)::int8;
+		SELECT CASE WHEN ix.reltuples > 0 THEN 100.0 * s.n_mod_since_analyze / ix.reltuples END,
+			   extract(epoch FROM now() - greatest(s.last_analyze, s.last_autoanalyze)) / 86400.0
+		INTO churn_pct, age FROM pg_stat_all_tables s WHERE s.relid = ix.heap;
+		rate := churn_pct / greatest(age, 1.0 / 24);
+
+		SELECT EXISTS (SELECT 1 FROM pg_index u WHERE u.indrelid = ix.heap AND u.indisunique AND u.indisvalid AND u.indpred IS NULL) INTO has_unique;
+		IF has_unique AND ix.relam = (SELECT oid FROM pg_am WHERE amname = 'heap') THEN
+			command := format('pg_repack --table=%s --order-by=%L', format('%I.%I', ix.nspname, ix.relname), key);
+		END IF;
+
+		IF b.now_u <= b.after_u * 1.5 + 0.5 THEN
+			reason := format('already ordered: %s reads %s units, a sorted table about %s', b.path, round(b.now_u::numeric, 1), round(b.after_u::numeric, 1));
+		ELSIF units < 16 OR saved_rows < min_rows THEN
+			reason := format('small: sorting by %s saves %s rows a query (under %s) in %s units', key, saved_rows, min_rows, units);
+		ELSIF b.lost > 0 AND b.lost * 2 >= saved_rows THEN
+			reason := format('competing leaves: sorting by %s would scatter %s, ordered now, which saves about %s rows a query against %s', b.path, b.lost_paths, round(b.lost), saved_rows);
+		ELSIF rate >= 10 THEN
+			reason := format('rows change too fast: %s%% modified since the last ANALYZE, %s%% a day; the order is lost faster than a repack restores it', round(churn_pct::numeric), round(rate::numeric));
+		ELSE
+			verdict := 'recommended';
+			reason := format('an equality or range on %s reads %s units now and about %s sorted: %s rows fewer a query', b.path, round(b.now_u::numeric, 1), round(b.after_u::numeric, 1), saved_rows);
+			IF b.lost > 0 THEN reason := reason || format('; it scatters %s, which saves about %s rows', b.lost_paths, round(b.lost)); END IF;
+			IF command IS NULL THEN reason := reason || '; pg_repack needs a unique index (CLUSTER takes an exclusive lock)'; END IF;
+		END IF;
+		IF verdict <> 'recommended' THEN command := NULL; END IF;
+		RETURN NEXT;
+	END LOOP;
+END
+$fn$;
+COMMENT ON FUNCTION sift.cluster_advice(regclass, int8) IS 'Which physical order of a table (CLUSTER, pg_repack --order-by) would let the scans of its sift_col index skip the most units, one row per index: the units read now and after, the rows saved, the churn, a recommended or not recommended verdict with its reason, and the pg_repack call; off by the setting sift.cluster_advice or the index option cluster_advice.';
+
 -- What an update to 3.3 leaves to do, one row per command, the ones that cost least first (a REINDEX CONCURRENTLY before a VACUUM FULL, and what queries
 -- need before what they only gain from). kind: reindex or rewrite; object: the index or table; reason: what the command changes; command: the statement;
 -- required: queries miss rows until it runs (a word over 255 bytes is stored as its start and a hash since 3.3, and a text index of an older release holds
