@@ -46,7 +46,7 @@
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
 ^\.coderabbit\.yaml$	-
 ^Formula/	-
-^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|LICENSE|NOTICE|\.gitignore)	-
+^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
 ^scripts/(check-neutral|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$

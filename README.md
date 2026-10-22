@@ -19,6 +19,8 @@ server, no separate analytics database, no `shared_preload_libraries`. The searc
 
 Supports PostgreSQL 17, 18 and 19 on Linux and macOS (19 tested on its release candidate). Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
 
+Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container image recipes (PostgreSQL 17 and 18, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: [docs/SUPPORT.md](docs/SUPPORT.md).
+
 ### Install with Homebrew
 
 On macOS, the [formula](Formula/pg_sift.rb) in this repository builds for Homebrew PostgreSQL 17 and 18:
@@ -139,6 +141,8 @@ Reproduce:
 <!-- bench:readme:end -->
 
 ### Analytics
+
+`bench/bench kit` runs these ten questions with docker on a laptop at 100,000 orders and compares every answer with the plan PostgreSQL has without sift ([docs/QUICKSTART.md](docs/QUICKSTART.md#check-the-numbers-on-your-machine)).
 
 Each row is a query on the `orders` table; `month` is `date_trunc('month', created_at)` and `...` stands for the other filters of the query (the full queries are in `bench/sql/store/queries/`).
 
