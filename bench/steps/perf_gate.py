@@ -43,6 +43,8 @@ T95 = {6:  2.570581835636305,
 DEADLINE = math.inf
 PROCESS_ORIGIN = time.monotonic()
 BATCH_WALL_LIMIT = 1.0
+# the nightly fixture (32768 rows) takes 1.85 s to restore on a hosted runner, more than the one second of the pull request tier
+NIGHTLY_BATCH_WALL_LIMIT = 4.0
 INSERT_PILOT = 2048
 INSERT_GROWTH_CAP = 2048
 INSERT_HISTORY_CAP = 5
@@ -1621,8 +1623,11 @@ def check_fixture(revisions,report):
 
 
 def main(argv=None):
-    global DEADLINE
+    global DEADLINE, BATCH_WALL_LIMIT
     args = parser().parse_args(argv)
+    pr_wall_limit = BATCH_WALL_LIMIT
+    if args.tier=='nightly':
+        BATCH_WALL_LIMIT = NIGHTLY_BATCH_WALL_LIMIT
     groups_supplied = args.groups is not None
     args.groups = args.groups or ''
     args.output = args.output.resolve()
@@ -1699,7 +1704,14 @@ def main(argv=None):
             else:
                 for index, case in enumerate(selected):
                     later = sum(c.lifecycle != 'read' for c in selected[index+1:])
-                    measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
+                    try:
+                        measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
+                    except BudgetExpired:
+                        raise
+                    except Inconclusive:
+                        # a case that does not gate stays inconclusive in the report; the cases after it are still measured
+                        if case.gate:
+                            raise
                     write_report(args.output,report)
                 report['size_checks'].append(churn_sizes(revisions))
             if time.monotonic()>=deadline:
@@ -1748,6 +1760,7 @@ def main(argv=None):
                 report.setdefault('terminal_errors',[]).append(f'budget status publication failed: {exc}')
             end=time.monotonic()
         write_terminal(report,args,start,end)
+    BATCH_WALL_LIMIT = pr_wall_limit
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]
