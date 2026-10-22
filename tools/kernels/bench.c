@@ -277,7 +277,7 @@ main(int argc, char **argv)
 	printf("%-12s %-22s %-12s %9s %8s %9s %9s\n", "kernel", "scenario", "level", "ns/call",
 		   "lanes", "Glanes/s", "L1 GB/s");
 	if (nlevels < 3)
-		printf("# AVX-512 rows (the rejected bm25_accum designs, avx512-1pg) not run: this host has no AVX-512\n");
+		printf("# AVX-512 rows (the rejected bm25_accum designs, avx512-1pg, the DRAM read reference) not run: this host has no AVX-512\n");
 	if (argc > 1 && strcmp(argv[1], "col") == 0)
 	{
 		bench_col();
@@ -291,6 +291,7 @@ main(int argc, char **argv)
 	bench_tf("P(tf>1)=0.75", 25, 65536);
 	bench_tf("P(tf>1)=0.02", 98, 65536);
 	bench_misc();
-	bench_bandwidth();
+	if (nlevels == 3)
+		bench_bandwidth();
 	return 0;
 }
