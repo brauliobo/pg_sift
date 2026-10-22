@@ -82,6 +82,7 @@
 #include "agg/refuse.h"
 #include "agg/rows.h"
 #include "agg/spec.h"
+#include "agg/stats.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -853,6 +854,50 @@ agg_exec(CustomScanState *node)
 	return ExecScan(&node->ss, agg_next, agg_recheck);
 }
 
+/* what the source counted for the run, with the workers' */
+static void
+run_counters(AggExec *c, SiftSrcCounters *cc)
+{
+	sift_colsrc_counters(c->src, cc);
+	if (c->par)
+	{
+		cc->units_pruned += c->par->cc.units_pruned;
+		cc->rows_vetted += c->par->cc.rows_vetted;
+		cc->heap_pages += c->par->cc.heap_pages;
+		cc->rechecked += c->par->cc.rechecked;
+		cc->recheck_units += c->par->cc.recheck_units;
+	}
+}
+
+/*
+ * Folds the run into the counters of the backend (sift.stats) when it ends, from the counters the loops keep for EXPLAIN ANALYZE: the loops
+ * count nothing more. A scan whose pre-aggregates did not answer it is a miss of its index, for the reason pa_why gives (or, when they were on,
+ * for the units that lacked their rollup).
+ */
+static void
+stats_run(AggExec *c)
+{
+	SiftSrcCounters cc;
+	Oid			rel = OidIsValid(c->spec->indexoid) ? c->spec->indexoid : c->spec->heapoid;
+
+	run_counters(c, &cc);
+	sift_stat_add(SIFT_STAT_SCANS, 1);
+	sift_stat_add(SIFT_STAT_WORKERS, c->par ? c->par->nlaunched : 0);
+	sift_stat_add(SIFT_STAT_UNITS, c->n_units);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED, cc.units_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
+	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
+	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
+	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
+	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
+	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);
+	sift_stat_add(SIFT_STAT_UNITS_ROLLUP_COST, c->n_rollup_cost);
+	if (c->pa_why != SPW_OFF && c->pa_why != SPW_OK)
+		sift_stats_preagg_miss(rel, sift_pawhy_slug(c->pa_why), sift_pawhy_fixable(c->pa_why), 0);
+	else if (c->n_rollup_miss > 0)
+		sift_stats_preagg_miss(rel, "unit_without_rollup", true, c->n_rollup_miss);
+}
+
 static void
 agg_end(CustomScanState *node)
 {
@@ -865,10 +910,15 @@ agg_end(CustomScanState *node)
 	if (ex->css.ss.ps.state)
 		fuse_unregister(ex);
 	if (ex->fuse && --ex->fuse->refs == 0)
+	{
+		stats_run(ex->fuse->F);
 		engine_close(ex->fuse->F);
+	}
 	dist_end_all(ex);
 	if (ex->gtab)
 		dist_end_all(ex->gtab);
+	if (ex->started && !ex->fuse)
+		stats_run(ex);
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
@@ -1099,20 +1149,12 @@ explain_run(AggExec *ex, ExplainState *es)
 	SiftSrcCounters cc;
 	AggExec    *c = ex->fuse ? ex->fuse->F : ex;
 
-	sift_colsrc_counters(c->src, &cc);
+	run_counters(c, &cc);
 	if (ex->fuse)
 		ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
 	ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
-	if (c->par)
-	{
-		cc.units_pruned += c->par->cc.units_pruned;
-		cc.rows_vetted += c->par->cc.rows_vetted;
-		cc.heap_pages += c->par->cc.heap_pages;
-		cc.rechecked += c->par->cc.rechecked;
-		cc.recheck_units += c->par->cc.recheck_units;
-	}
 	if (s->search)
 		ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
 	if (s->topn && ex->topn)

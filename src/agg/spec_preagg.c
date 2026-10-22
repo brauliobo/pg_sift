@@ -170,6 +170,66 @@ sift_pawhy_name(SiftPaWhy why)
 	return pawhy_name[why];
 }
 
+/* the stable names of sift.col_rollup_misses */
+static const char *const pawhy_slug[] = {
+	[SPW_OK] = "ok",
+	[SPW_OFF] = "preagg_off",
+	[SPW_NONE] = "no_preagg",
+	[SPW_ARMS] = "union_arms",
+	[SPW_SETS] = "grouping_sets",
+	[SPW_JOIN] = "joined_table",
+	[SPW_COMBO] = "combination",
+	[SPW_POST] = "post_aggregation",
+	[SPW_VLEAF] = "virtual_leaf",
+	[SPW_NO_AGG] = "no_aggregate",
+	[SPW_SEARCH] = "text_search",
+	[SPW_TOPN] = "top_n",
+	[SPW_NOT_LIST] = "not_a_list",
+	[SPW_NO_ROLLUP] = "no_rollup",
+	[SPW_KEY_EXPR] = "key_expression",
+	[SPW_KEY_LEAF] = "key_not_a_dim",
+	[SPW_PRED] = "conjunct_not_on_dims",
+	[SPW_AGG_FILTER] = "aggregate_filter",
+	[SPW_AGG_DISTINCT] = "aggregate_distinct",
+	[SPW_AGG_KIND] = "aggregate_kind",
+	[SPW_AGG_ARG] = "aggregate_argument",
+	[SPW_AGG_TYPE] = "aggregate_type",
+	[SPW_DIM_NOT_STORED] = "dim_not_stored",
+	[SPW_MEAS_NOT_STORED] = "measure_not_stored",
+	[SPW_ROW_KEYS] = "rows_several_keys",
+	[SPW_ROW_KEY] = "rows_key_not_a_column",
+	[SPW_ROW_PRED] = "rows_conjunct",
+	[SPW_ROW_NO_HIST] = "rows_no_histogram",
+	[SPW_ROW_NO_SUMS] = "rows_no_sums",
+	[SPW_ZONE] = "zone_decides_nothing",
+};
+
+StaticAssertDecl(lengthof(pawhy_slug) == SPW_ZONE + 1 && lengthof(pawhy_name) == SPW_ZONE + 1, "pawhy tables list every SiftPaWhy");
+
+const char *
+sift_pawhy_slug(SiftPaWhy why)
+{
+	return pawhy_slug[why];
+}
+
+/* would other options of the index (rollup, preagg, cube) answer the scan: it needs a dim or measure the index does not store */
+bool
+sift_pawhy_fixable(SiftPaWhy why)
+{
+	switch (why)
+	{
+		case SPW_NO_ROLLUP:
+		case SPW_KEY_LEAF:
+		case SPW_DIM_NOT_STORED:
+		case SPW_MEAS_NOT_STORED:
+		case SPW_ROW_NO_HIST:
+		case SPW_ROW_NO_SUMS:
+			return true;
+		default:
+			return false;
+	}
+}
+
 /* The leaf aggregate a reads (-1: count(*)) when pre-aggregates can give it at all; group: the list leaf of an element level scan, else -1 */
 static SiftPaWhy
 preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int group, int *leaf_out)

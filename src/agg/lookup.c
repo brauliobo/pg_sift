@@ -68,6 +68,7 @@
 #include "agg/kern.h"
 #include "agg/part.h"
 #include "agg/spec.h"
+#include "agg/stats.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -785,8 +786,10 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
+		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
 	}
+	sift_stat_add(SIFT_STAT_LOOKUP_MISSES, 1);
 	t->cols = need;
 	/* the columns of the entry that lacked some, and these: a table loaded for one arm after another does not make an entry for each */
 	for (int p = 0; !own && p < have.n && t->cols.n < SIFT_AGG_MAX_JCOLS; p++)
