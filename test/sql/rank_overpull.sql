@@ -2,16 +2,7 @@
 -- many below 4096, 4 times beyond), and the rows and their order stay those of the full ranking
 CREATE EXTENSION pg_sift;
 
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
 
 CREATE TABLE ov (id int, body text);
 INSERT INTO ov SELECT i, repeat('alpha ', 1 + i % 5) || repeat('beta ', i % 4) || 'w' || i % 311 FROM generate_series(1, 6000) i;

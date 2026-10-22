@@ -3,16 +3,8 @@
 -- bit for bit (ctids, scores, order) and the sequential evaluation of the same query, for exact, lossy and combined
 -- bitmaps, partial and partitioned tables, and rows in every state (updates, deletes, inserts, vacuumed or not).
 CREATE EXTENSION pg_sift;
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
+\set ECHO none
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;

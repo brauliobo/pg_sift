@@ -6,16 +6,7 @@
 -- are those of the scan without a join under every plan.
 CREATE EXTENSION pg_sift;
 
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
 
 -- rows the planner expects of a query against the rows it returns
 CREATE FUNCTION est_ratio(q text) RETURNS numeric LANGUAGE plpgsql AS $$
