@@ -4,6 +4,10 @@
 CREATE FUNCTION sift._test_limits(OUT id text, OUT macro text, OUT dflt int8, OUT effective int8, OUT hooked bool)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_limits' LANGUAGE C STRICT;
 
+-- The reloptions of sift and sift_col as registered, to compare with the sources.
+CREATE FUNCTION sift._test_reloptions(OUT am text, OUT name text, OUT type text, OUT dflt text)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_reloptions' LANGUAGE C STRICT;
+
 -- Store module (src/core/store_test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.
 CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler
