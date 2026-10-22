@@ -40,8 +40,6 @@ typedef struct BlockMap
 	Bitmapset  *set;
 } BlockMap;
 
-/* ---------- reference maps, orphans, verification ---------- */
-
 static BlockNumber
 high_water(Relation index)
 {

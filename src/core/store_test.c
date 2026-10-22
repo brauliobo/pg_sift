@@ -152,8 +152,6 @@ sleep_ms(int ms)
 	}
 }
 
-/* ---------- segments ---------- */
-
 void
 sift_test_write_segment(SiftWriteTarget *wt, uint64 gen, uint64 payload, uint64 seed, uint32 piece,
 			  uint32 align, SiftSegEntry *entry)
@@ -463,8 +461,6 @@ alloc_many(Relation index, uint32 nblocks, int count, int release)
 	MAINT_UNLOCK(index, ShareLock);
 	return last;
 }
-
-/* ---------- SQL functions ---------- */
 
 Datum
 sift_test_seg_write(PG_FUNCTION_ARGS)

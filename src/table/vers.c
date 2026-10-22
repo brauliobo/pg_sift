@@ -42,8 +42,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- groups with unfrozen rows ---------- */
-
 static const VerGroup *
 ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 {

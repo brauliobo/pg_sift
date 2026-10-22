@@ -45,8 +45,6 @@ typedef struct SiftTblChange
 
 static bool rmgr_registered;
 
-/* ---------- writing ---------- */
-
 bool
 sift_tbl_check_publication(Relation rel)
 {
@@ -119,8 +117,6 @@ sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple o
 	if (key && key != old)
 		heap_freetuple(key);
 }
-
-/* ---------- the resource manager ---------- */
 
 static void
 tbl_redo(XLogReaderState *record)
