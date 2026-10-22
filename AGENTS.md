@@ -31,6 +31,9 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 - A new or changed `sift.*` function or view needs a `COMMENT ON` in the 3.3+ install and upgrade scripts (never the released ones: `docs/reference-notes.tsv`), then `make reference` (`scripts/gen-reference.sh`, no server needed) and
   commit `docs/REFERENCE.md` and the README block. A new limit goes in the registry, then `make limits`. A new reloption or `sift.*` setting needs its description in the `DefineCustom*Variable` / `add_*_reloption` call and a row in `docs/options.tsv` (applies to, what it buys, what it costs, link), then `make options`; defaults and ranges come from the call, and a changed default is flagged against `scripts/options-released.tsv` by itself. `--check` of both runs in lint and `scripts/ci.sh`, and fails otherwise.
 - Fix root causes; a bug gets a failing test first. Comments only for non-obvious code.
+- A test that counts units answered from pre-aggregates VACUUMs with `FREEZE, DISABLE_PAGE_SKIPPING`: a plain VACUUM skips a page another backend has pinned (the
+  checkpointer writing it) and leaves it not all-visible. A TAP that measures a background worker or reads the log from a position first waits until no `sift maintenance` backend runs (`quiet` in
+  `test/t/col_auto_merge_partition.sh`): a worker's snapshot keeps VACUUM from removing the dead rows of a table changed after it started.
 
 ## On-disk formats
 
