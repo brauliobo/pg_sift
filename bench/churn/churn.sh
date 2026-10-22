@@ -14,7 +14,8 @@
 #
 # arms: none = VACUUM only (the built-in policy); worker = VACUUM + the automatic rewrite of sift.col_auto_merge (the session runs the rule the server's own
 # worker applies, sift.col_maintenance_due(index, true), then the work, sift.col_maintain); force = VACUUM + sift.col_promote + sift.col_merge(index, true)
-# every cycle; reindex = VACUUM + REINDEX; any other name is a table with the options of ARM_OPTS_<name> that runs like worker with the settings of ARM_GUC_<name>.
+# every cycle; bgw = VACUUM and the server's own worker (set sift.col_auto_merge and sift.async_maintenance for the database, ALTER DATABASE: the worker reads no
+# session setting, and then every arm of the database has them); reindex = VACUUM + REINDEX; any other name is a table with the options of ARM_OPTS_<name> that runs like worker with the settings of ARM_GUC_<name>.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 DB=${CHURN_DB:-churn}
@@ -45,6 +46,7 @@ maint() {
 	local a=$1 c=$2 ix=ev_${1}_col
 	case $a in
 		none) ;;
+		bgw) sleep 0.3; for _ in $(seq 300); do [[ $(q -c "select count(*) from pg_stat_activity where backend_type = 'sift maintenance'") == 0 ]] && break; sleep 0.1; done ;;
 		force) step "$a" "$c" promote "select sift.col_promote('$ix')"; step "$a" "$c" merge "select sift.col_merge('$ix', true)" ;;
 		reindex) step "$a" "$c" reindex "reindex index $ix" ;;
 		*) step "$a" "$c" maintain "select case when sift.col_maintenance_due('$ix', true) is not null then sift.col_maintain('$ix') end" ;;
