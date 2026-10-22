@@ -14,15 +14,7 @@ FROM generate_series(1, 5000) i;
 CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
 VACUUM (FREEZE, ANALYZE) b_t;
 
--- the plan of a statement (a prepared one: its cached plan) has the scan
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 -- the rows of on_q with the pushdown and of off_q without it are the same (and not empty)
 CREATE FUNCTION same(on_q text, off_q text) RETURNS bool LANGUAGE plpgsql AS $$
