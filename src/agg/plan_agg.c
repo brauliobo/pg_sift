@@ -450,20 +450,20 @@ count_rows_kind(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 }
 
 /*
- * sum(int8) and avg(int8) of a column: PostgreSQL gives a numeric from a sum that does not overflow, as the numeric aggregates of an exact
- * 128-bit sum do (and avg is the same division of that sum by the count), so the program is the column itself and the stored sums of a unit
- * answer it.
+ * sum(int8) and avg(int8) of a column, or of one + - * of it with a constant: PostgreSQL gives a numeric from a sum that does not overflow, as the
+ * numeric aggregates of an exact 128-bit sum do (and avg is the same division of that sum by the count), so the program is the column itself (or
+ * the operation, whose result is checked against int8 per row) and the stored sums of a unit answer it.
  */
 static bool
 compile_int8_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 {
 	int			leaf = match_leaf(c, arg);
 
-	if (leaf < 0 || leaf_of(c, leaf)->wide || leaf_of(c, leaf)->typid != INT8OID || !compile_nx(c, arg, 26, &out->num))
+	if (leaf >= 0 ? (leaf_of(c, leaf)->wide || leaf_of(c, leaf)->typid != INT8OID || !compile_nx(c, arg, 26, &out->num)) : !compile_int8_arith(c, arg, &out->num))
 		return false;
 	out->kind = a->aggfnoid == F_SUM_INT8 ? SAA_SUM_NUM : SAA_AVG_NUM;
 	out->argtype = NUMERICOID;
-	out->desc = psprintf("%s(%s)", get_func_name(a->aggfnoid), leaf_name(c, leaf));
+	out->desc = psprintf("%s(%s)", get_func_name(a->aggfnoid), leaf >= 0 ? leaf_name(c, leaf) : expr_text(c, arg));
 	return true;
 }
 

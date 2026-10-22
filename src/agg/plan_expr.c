@@ -766,6 +766,80 @@ compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig;
 }
 
+/* + - * of int8, int4 and int2 operands (int8pl, int84pl, int48pl ...): the SNX op of the function, -1 for any other */
+static int
+int8_arith_op(Oid fid)
+{
+	switch (fid)
+	{
+		case F_INT8PL:
+		case F_INT84PL:
+		case F_INT82PL:
+		case F_INT48PL:
+		case F_INT28PL:
+			return SNX_ADD;
+		case F_INT8MI:
+		case F_INT84MI:
+		case F_INT82MI:
+		case F_INT48MI:
+		case F_INT28MI:
+			return SNX_SUB;
+		case F_INT8MUL:
+		case F_INT84MUL:
+		case F_INT82MUL:
+		case F_INT48MUL:
+		case F_INT28MUL:
+			return SNX_MUL;
+		default:
+			return -1;
+	}
+}
+
+/*
+ * `leaf OP constant` or `constant OP leaf` of an int8 column, OP being + - *: the program ends in a cast to int8 that raises "bigint out of range" for
+ * a result outside it, as int8pl and its kin do. The rows the cast looks at are the aggregate's (eval_nx).
+ */
+bool
+compile_int8_arith(AggCtx *c, Node *e, SiftAggNum *o)
+{
+	Node	   *e1 = strip_relabel(e);
+	int			op = int8_arith_op(func_of(e1)),
+				leaf = -1,
+				k = -1;
+	List	   *args = func_args(e1);
+
+	if (op < 0 || list_length(args) != 2)
+		return false;
+	for (int i = 0; i < 2; i++)
+	{
+		Node	   *a = strip_relabel(list_nth(args, i));
+		Const	   *kc = (Const *) a;
+
+		if (IsA(a, Const))
+		{
+			if (kc->constisnull || (kc->consttype != INT8OID && kc->consttype != INT4OID && kc->consttype != INT2OID) || k >= 0)
+				return false;
+			k = i;
+		}
+		else if ((leaf = match_leaf(c, a)) < 0)
+			return false;
+	}
+	if (k < 0 || leaf < 0 || leaf_of(c, leaf)->kind != SCL_SCALAR || leaf_of(c, leaf)->vtype != SCV_I64 || leaf_of(c, leaf)->typid != INT8OID ||
+		leaf_of(c, leaf)->wide)
+		return false;
+	{
+		Const	   *kc = (Const *) strip_relabel(list_nth(args, k));
+		int64		v = kc->consttype == INT8OID ? DatumGetInt64(kc->constvalue) : kc->consttype == INT4OID ? DatumGetInt32(kc->constvalue) : DatumGetInt16(kc->constvalue);
+
+		o->n = 0;
+		o->scale = 0;
+		o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
+		use_leaf(c, leaf);
+		return (k == 0 ? nx_put(o, SNX_CONST, -1, 0, 0, v) && nx_put(o, SNX_LEAF, leaf, 0, 0, 0) : nx_put(o, SNX_LEAF, leaf, 0, 0, 0) && nx_put(o, SNX_CONST, -1, 0, 0, v)) &&
+			nx_put(o, op, -1, 0, 0, 0) && nx_put(o, SNX_INTCAST, -1, 8, 1, 0);
+	}
+}
+
 /* the level (0 row, 1 element) of the leaves of a program, -1 when it mixes them */
 int
 nx_level(AggCtx *c, const SiftAggNum *o)

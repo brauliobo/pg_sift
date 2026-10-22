@@ -271,6 +271,7 @@ extern int leaf_digits(Oid typid, int32 typmod);
 extern bool nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2);
 extern bool nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig);
 extern bool compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o);
+extern bool compile_int8_arith(AggCtx *c, Node *e, SiftAggNum *o);
 extern int nx_level(AggCtx *c, const SiftAggNum *o);
 extern bool nx_raises(const SiftAggNum *o);
 
