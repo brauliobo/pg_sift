@@ -504,7 +504,10 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	for (int k = 0; k < f->nord; k++)
 		atts[f->nkey + k] = f->ordatt[k];
 	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
+	{
+		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false);
 		return;
+	}
 	foreach_node(TargetEntry, te, q->targetList)
 	{
 		Var		   *v = (Var *) te->expr;

@@ -687,6 +687,7 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	}
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);
+	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
 }
 

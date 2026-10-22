@@ -902,7 +902,7 @@ two_from(TwoLevel *t)
 	}
 	while (IsA(from, FromExpr) && list_length(((FromExpr *) from)->fromlist) == 1 && ((FromExpr *) from)->quals == NULL)
 		from = linitial(((FromExpr *) from)->fromlist);
-	if (!IsA(from, JoinExpr) || parse->groupingSets != NIL)
+	if (!IsA(from, JoinExpr))
 		return false;
 	j = (JoinExpr *) from;
 	if (j->jointype != JOIN_INNER && j->jointype != JOIN_LEFT)
@@ -917,6 +917,8 @@ two_from(TwoLevel *t)
 		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY &&
 			spine_where(t->root, spine) && outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
 		{
+			if (parse->groupingSets != NIL)
+				return agg_refuse(GROUPING_SETS);
 			t->join = j;
 			t->srti = ((RangeTblRef *) a)->rtindex;
 			t->spine_rti = spine;
@@ -1086,7 +1088,7 @@ two_spine(TwoLevel *t)
 	set_pathtarget_cost_width(root, target);
 	p = (Path *) create_projection_path(root, rel, rel->cheapest_total_path, target);
 	if (p->rows > SPINE_MAX_ROWS)
-		return false;
+		return agg_refuse(SPINE_ROWS);
 	t->ctx.spine = p;
 	sp->child = 0;
 	sp->ncol = list_length(t->spine_cols);
@@ -1117,21 +1119,51 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	FromScan	fs = {.ok = true};
 	PlannerInfo *base;
 
-	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1 || !two_from(&t))
+	if (!two_from(&t))
 		return;
+	agg_arm_candidate();
+	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
+	{
+		agg_refused(TOO_MANY_KEYS);
+		return;
+	}
 	if ((base = two_arms(&t)) == NULL)
+	{
+		agg_refused(TWO_ARMS);
 		return;
+	}
 	c->detached = true;
 	if (!agg_base(c, base, arm_input(base), &fs) || c->nparts > 0)
 		return;
 	t.s = agg_spec_new(c);
-	if (!agg_quals(c, t.s, &fs) || !arm_gates(c, t.s, t.gates))
+	if (!agg_quals(c, t.s, &fs))
 		return;
+	if (!arm_gates(c, t.s, t.gates))
+	{
+		agg_refused(TWO_ARMS);
+		return;
+	}
 	for (int k = 0; k < t.narms; k++)
 		if (!two_arm_terms(&t, k))
+		{
+			agg_refused(TWO_ARMS);
 			return;
-	if (!two_keys(&t) || !two_aggs(&t, output_rel, gextra) || (t.join != NULL && !two_spine(&t)))
+		}
+	if (!two_keys(&t))
+	{
+		agg_refused(TWO_KEYS);
 		return;
+	}
+	if (!two_aggs(&t, output_rel, gextra))
+	{
+		agg_refused(TWO_AGGS);
+		return;
+	}
+	if (t.join != NULL && !two_spine(&t))
+	{
+		agg_refused(SPINE_SHAPE);
+		return;
+	}
 	t.s->spine = t.spine;
 	t.s->narms = t.narms;
 	t.s->arm = palloc0(t.narms * sizeof(SiftAggArm));

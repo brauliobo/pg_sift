@@ -372,6 +372,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min((double) rows, Max(input_rel->rows, 1.0)));
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
 }
 
@@ -400,25 +401,44 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
+	agg_arm_candidate();
 	c->joinless = true;
-	if (!agg_base(c, root, input_rel, &fs) || c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
-		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
+	if (!agg_base(c, root, input_rel, &fs))
 		return;
+	if (c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
+	{
+		agg_refused(TOPN_SHAPE);
+		return;
+	}
 	s = agg_spec_new(c);
 	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
-	if (!agg_quals(c, s, &fs) || s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))
+	if (!agg_quals(c, s, &fs))
 		return;
+	if (s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))
+	{
+		agg_refused(TOPN_SHAPE);
+		return;
+	}
 	initStringInfo(&txt);
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
 		int			j = foreach_current_index(sgc);
 
 		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt))
+		{
+			agg_refused(TOPN_SHAPE);
 			return;
+		}
 		nulls_first[j] = sgc->nulls_first;
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
-	if (!topn_columns(c, target, &scan_tlist, attno) || !spec_finish(c, s, root, input_rel, NIL))
+	if (!topn_columns(c, target, &scan_tlist, attno))
+	{
+		agg_refused(TOPN_SHAPE);
+		return;
+	}
+	if (!spec_finish(c, s, root, input_rel, NIL))
 		return;
 	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
 								 leaf[0], input_rel->rows, rows);
