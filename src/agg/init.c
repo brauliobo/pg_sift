@@ -139,7 +139,7 @@ semi_lut_build(AggExec *ex, int ci)
 				hi = PG_INT32_MIN;
 	bool	   *keep;
 
-	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
+	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || j->keynull[0] || cb->nleaves != 1 || m->ktext[0] ||
 		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || !sift_agg_semi_lut || combo_read(ex, ci) ||
 		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;

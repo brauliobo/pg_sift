@@ -22,7 +22,7 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	const SiftSrcLeaf *lf;
 
-	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || cb->level != 0)
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
 		return false;
 	*leaf = cb->leaf[j->keypos[k]];
 	if (*leaf < 0 || *leaf >= ex->nbase)
