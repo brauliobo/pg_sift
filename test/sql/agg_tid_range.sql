@@ -75,8 +75,8 @@ SELECT n, (SELECT count(*) FROM th WHERE ctid >= lo::tid AND ctid <= hi::tid) AS
 RESET sift.enable_agg;
 
 -- all the ranges, all the forms: the plan is SiftAgg, the result is the normal plan's
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th');
-SELECT * FROM all_ranges('th') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('th');
 
 -- the plan shows the range, and the scan reads the superblocks it touches only
 SELECT plan_of('SELECT count(*) FROM th WHERE ctid >= ''(10,1)'' AND ctid < ''(20,1)''') AS range,
@@ -101,8 +101,8 @@ CREATE TEMP TABLE th_before AS SELECT id, ctid AS tid FROM th;
 UPDATE th SET pad = repeat('y', 500) WHERE id % 5 = 0;
 SELECT count(*) > 0 AS hot_versions_moved_on_their_page
 FROM th JOIN th_before USING (id) WHERE th.ctid <> th_before.tid AND (th.ctid::text::point)[0] = (th_before.tid::text::point)[0];
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th');
-SELECT * FROM all_ranges('th') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('th');
 -- a range that ends at the offset of a new version
 SELECT * FROM same(format('SELECT count(*) AS n, sum(v) AS s FROM th WHERE ctid >= %L AND ctid <= %L', (SELECT min(ctid) FROM th WHERE id % 5 = 0 AND ctid > '(100,0)'), (SELECT max(ctid) FROM th WHERE id % 5 = 0 AND ctid < '(200,0)')));
 -- the same rows updated again: chains of two versions, then pruned by a VACUUM
@@ -135,8 +135,8 @@ SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS s
 UPDATE tt SET v = v + 1 WHERE id % 7 = 0;
 DELETE FROM tt WHERE id % 11 = 0;
 INSERT INTO tt SELECT i, i % 7, i % 100, repeat('n', 100) FROM generate_series(30001, 31000) i;
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt');
-SELECT * FROM all_ranges('tt') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('tt');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= ''(255,30)'' AND ctid < ''(257,10)'' AND v < 60 GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= (SELECT min(ctid) FROM tt WHERE id > 20000) GROUP BY g');
 SELECT units_of('SELECT count(*) FROM tt') AS all_units,
