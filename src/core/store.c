@@ -34,7 +34,7 @@
 #include "core/store.h"
 #include "core/store_int.h"
 
-bool		sift_standby_conflicts = false;
+bool		sift_standby_conflicts = true;
 
 #ifdef SIFT_TESTING
 int			sift_test_space_crash = 0;

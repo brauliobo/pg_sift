@@ -93,7 +93,7 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
 | `maintenance_work_mem`, `max_parallel_maintenance_workers` | `CREATE INDEX` speed and segment count (above) |
 | `temp_file_limit`, `temp_tablespaces` | `CREATE INDEX` runs and merge staging (above) |
 | `autovacuum` and its scale factors | marks dead documents, promotes and merges; the index does not shrink without it |
-| `hot_standby_feedback = on` on replicas | merges free blocks a replica query may still read; without feedback such a query fails with a retryable "segment recycled during scan" (40001) |
+| `hot_standby_feedback = on` on replicas | merges free blocks a replica query may still read; without feedback the replay waits for such a query up to `max_standby_streaming_delay` and then cancels it (`sift.standby_conflicts`, on), as for a heap query; with that setting off it fails at once with a retryable "segment recycled during scan" (40001) |
 | `max_worker_processes` | the maintenance worker needs a slot; when none is free the log says so and the inserting session promotes and merges itself |
 | `sift.log_min_duration` | logs promotions, merges and worker runs that take at least that long (default 1s, -1 off) |
 | `sift.async_maintenance` | off: only VACUUM and the inserting sessions promote and merge |
