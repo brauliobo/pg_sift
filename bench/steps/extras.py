@@ -10,7 +10,7 @@ A results file is `# title`, `# key: value` lines (the run: build, host, load, m
 `case` is the point of the benchmark (a size, a query), `arm` what was measured there (a plan, a build, an engine), `metric` its unit's name
 (`ms`, `bytes`, `rows_per_s`, ...), `load` the 1-minute load average while it ran. The runners (steps/sets.py, steps/extras.sh) write the files through
 `write`; `render` only reads them, so no number of a block is typed by hand. Block markers are `<!-- bench:NAME:begin ... -->` / `<!-- bench:NAME:end -->`
-(readme.replace_block): sets, rollup, writepath, bm25size, leaftypes, fields, buildcost, gpu.
+(readme.replace_block): sets, rollup, writepath, bm25size, leaftypes, fields, buildcost, gpu, duckdb.
 """
 import argparse
 import csv
@@ -383,6 +383,112 @@ def gpu_section(meta, rows):
 
 
 
+# ---- pg_duckdb --------------------------------------------------------------------------------------------------------------------------
+
+def fold(summary, lines):
+    return ['<details><summary>%s</summary>' % summary, ''] + lines + ['', '</details>']
+
+
+DUCK_ARMS = [('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_heap', 'pg_duckdb heap'), ('duckdb_parquet', 'pg_duckdb Parquet')]
+
+
+def question_label(case):
+    """the label of a question of bench/sql/store/queries (its `-- label:` line, else its title)"""
+    num, name = case.split(' ', 1)
+    with open(os.path.join(REPO, 'bench', 'sql', 'store', 'queries', '%s_%s.sql' % (num, name))) as f:
+        lines = f.read().split('\n')
+    return next((l[10:] for l in lines if l.startswith('-- label: ')), lines[0][3:])
+
+
+def duck_cell(rows, case, arm, metric, best):
+    r = get(rows, case=case, arm=arm, metric=metric)
+    if r is None:
+        return 'n/a'
+    if r['value'] in ('NA', 'error'):
+        return 'not supported' if r['value'] == 'NA' else 'error'
+    text = ms(float(r['value'])) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
+    return '**%s**' % text if float(r['value']) <= best * 1.05 else text   # the fastest, and anything within 5% of it, in bold
+
+
+def duck_table(rows, cases, metric):
+    body = []
+    for c in cases:
+        done = {a: x for a, _ in DUCK_ARMS if (x := num(rows, case=c, arm=a, metric=metric)) is not None}
+        best = min(done, key=done.get) if done else None
+        body.append(['Q' + c.split(' ')[0]] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
+    return table(['question (ms)'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---'])
+
+
+def duck_summary(rows, cases, metric):
+    """what the table says in words: who is fastest, and where pg_duckdb (the better of its two modes) beats PostgreSQL and pg_sift"""
+    fastest, unsupported, vs_pg, vs_sift = {}, [], {'faster': [], 'slower': []}, {'faster': [], 'slower': []}
+    best_gap = (1.0, '')
+    for c in cases:
+        v = {a: num(rows, case=c, arm=a, metric=metric) for a, _ in DUCK_ARMS}
+        done = {a: x for a, x in v.items() if x is not None}
+        duck = {a: x for a, x in done.items() if a.startswith('duckdb')}
+        q = 'Q' + c.split(' ')[0]
+        if not done:
+            continue
+        best = min(done, key=done.get)
+        fastest.setdefault('pg_duckdb' if best.startswith('duckdb') else dict(DUCK_ARMS)[best], []).append(q)
+        if not duck:
+            unsupported.append(q)
+            continue
+        d = min(duck, key=duck.get)
+        for ref, tally in (('pg', vs_pg), ('sift', vs_sift)):
+            if v[ref] is not None:
+                tally['faster' if duck[d] < v[ref] else 'slower'].append(q)
+                if ref == 'pg' and v[ref] / duck[d] > best_gap[0]:
+                    best_gap = (v[ref] / duck[d], '%s, %s' % (q, dict(DUCK_ARMS)[d].replace('pg_duckdb ', '')))
+    names = lambda qs: ', '.join(qs) if qs else 'none'  # noqa: E731
+    return ['- Fastest of the four: ' + '; '.join('%s on %d (%s)' % (a, len(q), names(q)) for a, q in sorted(fastest.items(), key=lambda x: -len(x[1]))) + '.',
+            '- pg_duckdb (the better of heap and Parquet) against the PostgreSQL executor: faster on %d (%s)%s, slower on %d (%s).' % (
+                len(vs_pg['faster']), names(vs_pg['faster']), ', by up to %.1f× (%s)' % best_gap if best_gap[1] else '', len(vs_pg['slower']), names(vs_pg['slower'])),
+            '- pg_duckdb against pg_sift: faster on %d (%s), slower on %d (%s).' % (len(vs_sift['faster']), names(vs_sift['faster']), len(vs_sift['slower']), names(vs_sift['slower']))
+            ] + ['- Not supported by pg_duckdb: %s.' % names(unsupported)] * bool(unsupported)
+
+
+def duckdb_cases(rows):
+    cases = []
+    for r in rows:
+        if r['case'] != 'load' and r['case'] not in cases:
+            cases.append(r['case'])
+    return cases
+
+
+def duckdb_brief(meta, rows):
+    cases = duckdb_cases(rows)
+    return ['pg_duckdb %s (DuckDB reading the heap, and a Parquet file it writes) on the %s orders and ten questions of the store benchmark above, in a container with the same CPU and memory budget as pg_sift, '
+            'median of 3 warm runs, %s:' % (meta.get('pg_duckdb', '?').split(',')[0], '{:,}'.format(int(meta.get('orders', 0))), meta.get('date', '?')), ''] + duck_summary(rows, cases, 'warm_ms') + [
+            '', 'Q01 to Q10 are the questions of the store table above. Every question, both pg_duckdb modes, the cold runs, what pg_duckdb cannot run as written and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#pg_duckdb).']
+
+
+def duckdb_section(meta, rows):
+    cases = duckdb_cases(rows)
+    load = []
+    for arm, label in (('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_parquet', 'pg_duckdb Parquet')):
+        g = lambda m: num(rows, case='load', arm=arm, metric=m)  # noqa: E731
+        load.append([label, ms(g('load_s')), ms(g('index_s')) if g('index_s') is not None else '-', '%.1f' % g('table_mib'), '%.1f' % g('index_mib') if g('index_mib') is not None else '-'])
+    notes = [r['note'] for r in rows if r['metric'] == 'warm_ms']
+    foot = [s for flag, s in (
+        (any(r['value'] == 'NA' for r in rows), '"not supported": pg_duckdb cannot execute the statement; under `duckdb.force_execution` it runs it on the PostgreSQL executor with a warning, which is not a pg_duckdb figure.'),
+        (any('substring' in n for n in notes), '† the full-text questions have no tsvector in DuckDB, so they run as `lower(title) LIKE \'%wireless%\' AND ...` (a substring match, checked against the rows of PostgreSQL), a different way to search than an index.'),
+        (any('RESULT DIFFERS' in n for n in notes), '! the rows differ from those of PostgreSQL.')) if flag]
+    lines = [
+        '%s orders of the store benchmark (`bench/sql/store`, the same CSV in both servers) and its ten questions, one client, milliseconds, lower is better, the fastest of a row and anything within 5%% of it in bold. '
+        'The servers are PostgreSQL 18 in a container each with the same CPU quota, memory limit and flags; pg_duckdb is the official release image, unmodified. The client is `psql` with `\\timing`, not the client of the store table above, so sub-millisecond cells differ from it; the PostgreSQL cells above 10 ms agree with it within 15%%. %s Versions: pg_duckdb %s; %s.' % (
+            '{:,}'.format(int(meta.get('orders', 0))), footer(meta), meta.get('pg_duckdb', '?'), meta.get('duckdb', '?')),
+        '', meta.get('method', ''), '',
+        '- **PostgreSQL**: its own executor on the heap of the pg_duckdb server (`duckdb.force_execution = off`; btree and GIN indexes).',
+        '- **pg_sift**: the pg_sift server, a `sift_col` and a BM25 index on the same rows.',
+        '- **pg_duckdb heap**: `duckdb.force_execution = on`, DuckDB reading the same heap through its Postgres scanner.',
+        '- **pg_duckdb Parquet**: a view over `read_parquet()` of a file that pg_duckdb wrote from that table.',
+        '', 'Warm:', ''] + duck_table(rows, cases, 'warm_ms') + [''] + duck_summary(rows, cases, 'warm_ms') + [''] + [
+        '- **Q%s**: %s' % (c.split(' ')[0], question_label(c)) for c in cases] + [''] + foot * bool(foot) + [''] * bool(foot) + (fold('Cold (new session, buffer cache emptied)', duck_table(rows, cases, 'cold_ms') + [''] + duck_summary(rows, cases, 'cold_ms')) if get(rows, metric='cold_ms') else []) + [
+        '', 'Load and size (the Parquet file is written from the PostgreSQL table):', ''] + table(['lane', 'load s', 'index build s', 'data MiB', 'index MiB'], load, ['---', '---:', '---:', '---:', '---:'])
+    return lines + ['', 'Reproduce: `bench/bench duckdb` (results: [results/duckdb.tsv](results/duckdb.tsv)).']
+
 
 def wrap(a):
     """rows of a runner (no header) -> a results file: title, the run's meta, the host load at the start and now"""
@@ -426,12 +532,14 @@ def main():
             replace_block(a.benchmarks, name, lines)
             for doc in ALSO.get(name, []):   # the other documents that carry the block
                 if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
-                    replace_block(doc, name, [l.replace('](results/', '](docs/results/') for l in lines] if os.path.basename(doc) == 'README.md' else lines)
+                    readme = os.path.basename(doc) == 'README.md'
+                    replace_block(doc, name, BRIEF[name](meta, rows) if readme and name in BRIEF else [l.replace('](results/', '](docs/results/') for l in lines] if readme else lines)
 
 
-ALSO = {'gpu': [os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'GPU.md')]}
+BRIEF = {'duckdb': duckdb_brief}   # the shorter block of README.md
+ALSO = {'gpu': [os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'GPU.md')], 'duckdb': [os.path.join(REPO, 'README.md')]}
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
-            'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section}
+            'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section, 'duckdb': duckdb_section}
 
 if __name__ == '__main__':
     main()
