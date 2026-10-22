@@ -65,6 +65,9 @@ Commands
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
+  cases      the benchmark cases of the 3.3 optimizations (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
+             asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--rounds R] [--runs N] [--cpus N] [--docs] [--no-wait]`,
+             `cases --list`, `cases --check [--strict]` (steps/cases.sh)
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`; docs/BENCHMARKS.md, "Run time")
@@ -654,7 +657,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets compare final resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases compare final resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -676,6 +679,7 @@ case $cmd in
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
+  cases) exec "$STEPS/cases.sh" "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac

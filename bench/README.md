@@ -297,6 +297,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README (`docs/results/updates.json`): PostgreSQL, `sift_col`, `sift_table` and the same two layouts with the automatic maintenance on (lanes `sift_maint`, `sift_table_maint`: `ALTER DATABASE ... SET` of `sift.col_auto_merge` / `sift.table_auto_defrag`, read back into the results) change a table in bulk at 200,000 (three runs) and 1,000,000 orders, then four clients of mixed churn and of 1,000-row inserts (pgbench), with the WAL of every phase; the renderer states the README block, the part of docs/BENCHMARKS.md and `docs/img/updates-reads.svg` from those rows, with the losses and their causes only where the rows have them (`store.py render`) |
 | `store.sh`, `store.py` | the online-store benchmark against Citus (columnar), Elasticsearch and ClickHouse (`store`): docker containers, seeded data, load, warm and cold runs, updates, the Markdown tables of README.md and docs/BENCHMARKS.md |
 | `duckdb.sh`, `duckdb.py` | pg_duckdb against pg_sift and PostgreSQL on the store questions (`duckdb`): two docker containers, the heap and a Parquet file as pg_duckdb's data, warm and cold; rows to `docs/results/duckdb.tsv`, rendered by `extras.py` |
+| `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared; `cases.py check` is `scripts/check-bench-cases.sh` |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
@@ -472,6 +473,25 @@ running (ClickHouse `system.merges` and unfinished mutations, Elasticsearch `_no
 with `scripts/quiet.sh` (pressure stall information below 10% for CPU and I/O). A batch that runs anyway is marked NOISY in the results. After the load the same wait
 runs, so the merges that follow the load (ClickHouse `OPTIMIZE`, Elasticsearch force-merge) are over before anything is timed. The ClickHouse container turns off the logs of
 its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) because an idle server writing them uses 3-7% of a CPU.
+
+## Cases: one per optimization (`bench/bench cases`)
+
+The benchmarks above measure fixed questions; an optimization that adds a query shape appears in no number until someone writes a case for it. `bench/cases.tsv` is the registry (one row per case: the CHANGELOG
+phrase it measures, the dataset and index, the plan the scan must show, the baselines, the README block it feeds, whether it is a headline) and `bench/cases/ID.sql` holds the statement in the layout of
+`sql/store/queries` (`--@ pg` for every lane, `--@ sift` or `--@ duck` to replace it, `--@ setup` DDL after the index, `--@ prepare` / `--@ load` / `--@ check` for a case that times a load). The data is
+the `orders` table of the store benchmark with two derived columns (`segment_id`, 6,313 values; `order_date`), its btrees and a `sift_col` index with the options of the row.
+
+```sh
+bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
+bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
+bench/bench cases --docs --rows 1000000    # the published size: docs/results/cases.tsv and the generated blocks (steps/cases.sh)
+bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict]   # the coverage gate (scripts/check-bench-cases.sh), no measurement
+```
+
+Lanes: `sift` is the planner's own choice and its EXPLAIN must match the `plan` of the row (a case that falls back to the normal plan fails, and so does a wrong answer: every lane is compared with `native`,
+the same table and statement with `sift.enable_agg = off`); variants are further sift lanes with settings (`scan`: `sift.agg_preagg = off`, the units scanned; `bulk_off`: the write buffers); `pg_duckdb` is
+a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
+store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block.
 
 ## Remote host
 
