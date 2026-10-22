@@ -1,6 +1,6 @@
 # pg_sift: design
 
-`pg_sift` is a PostgreSQL extension (17 and 18; 19 is experimental) whose index access method (AM) `sift` does full-text search. This document is the design of that BM25 index and of the code it shares with the SQLite and MariaDB ports; the column engine (`sift_col`, `sift_table`, the aggregate pushdown) is described in [docs/COL.md](docs/COL.md) and the documents it links. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
+`pg_sift` is a PostgreSQL extension (17, 18 and 19) whose index access method (AM) `sift` does full-text search. This document is the design of that BM25 index and of the code it shares with the SQLite and MariaDB ports; the column engine (`sift_col`, `sift_table`, the aggregate pushdown) is described in [docs/COL.md](docs/COL.md) and the documents it links. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
 - top-k BM25;
 - boolean and phrase queries;
 - `count(*)`;
