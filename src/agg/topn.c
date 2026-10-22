@@ -17,10 +17,13 @@
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/numeric.h"
 #include "utils/tuplesort.h"
+#include "utils/uuid.h"
 #include "utils/varlena.h"
 
 #include "agg/part.h"
@@ -70,7 +73,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, int nout, const int *attno, int flags, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
@@ -84,12 +87,13 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 	for (int c = 0; c < nout; c++)
 		l = lappend_int(l, attno[c]);
 	l = lappend_int(l, flags);
-	return (Node *) list_make3(l, count, offset);
+	return (Node *) list_make4(l, count, offset, exprs);
 }
 
 #define SPEC_KEYS(spec)		((List *) linitial((List *) (spec)))
 #define SPEC_COUNT(spec)	((Node *) lsecond((List *) (spec)))
 #define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
+#define SPEC_EXPRS(spec)	((List *) lfourth((List *) (spec)))
 
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes */
 char *
@@ -113,6 +117,34 @@ typedef struct KeyBlob
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 } KeyBlob;
 
+/*
+ * A sort expression: PostgreSQL's own ExprState over a virtual row of the leaves it reads, evaluated for every row of a unit that passes (the normal plan
+ * evaluates a sort expression for each of them, so an error is raised for the same rows), its results kept as a vector of the type the key sorts by
+ */
+typedef struct TopIn
+{
+	int			leaf;
+	Oid			typid;
+	SiftSrcVecType vtype;
+	int			scale;			/* numeric leaf: digits after the point */
+	const SiftSrcVec *v;		/* the unit's */
+	Datum	   *memo;			/* a leaf of strings: the datum of each code of the unit's dictionary, once built */
+	bool	   *built;
+} TopIn;
+
+typedef struct TopExpr
+{
+	ExprState  *state;
+	ExprContext *econtext;
+	TupleTableSlot *slot;
+	int			nin;
+	TopIn	   *in;
+	Oid			rtype;
+} TopExpr;
+
+static SiftSrcVecType expr_vtype(Oid typid);
+static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, MemoryContext cxt);
+
 typedef struct TopKey
 {
 	int			leaf;
@@ -130,6 +162,8 @@ typedef struct TopKey
 	int64		xc;				/* TXK_COALESCE: the constant */
 	Oid			xcoll;			/* TXK_LOWER, TXK_UPPER: the collation of the call */
 	FmgrInfo   *xfn;
+	struct TopExpr *x;			/* TXK_EXPR: the evaluator of the sort expression */
+	SiftSrcVec	xv;				/* ... its result for the rows of the unit */
 	KeyBlob   **xmemo;			/* TXK_LOWER, TXK_UPPER: the result for each code of the dictionary (xid, xbytes, xn) once it is known (NULL: not yet) */
 	const void *xid;
 	const char *xbytes;
@@ -185,6 +219,7 @@ struct SiftTopN
 	int			nkey;
 	TopKey	   *key;
 	int			nblob;			/* keys of byte strings */
+	int			nexpr;			/* keys that are sort expressions */
 	MemoryContext ucxt;			/* the copies of the unit's entries that the rows of one unit hold (reset at the next unit) */
 	int			nout;
 	int		   *attno;
@@ -346,8 +381,13 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 					xhi = (uint32) list_nth_int(l, i++);
 		Oid			xcoll = (Oid) list_nth_int(l, i++);
 
-		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = lay->leaf[leaf].vtype,
+		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = leaf >= 0 ? lay->leaf[leaf].vtype : expr_vtype(xcoll),
 			.xk = xk, .xc = (int64) (((uint64) xhi << 32) | xlo), .xcoll = xcoll};
+		if (xk == TXK_EXPR)
+		{
+			k->x = expr_open(list_nth(SPEC_EXPRS(spec), (int) xlo), lay, xcoll, cxt);
+			t->nexpr++;
+		}
 		if (xk == TXK_LOWER || xk == TXK_UPPER)
 		{
 			k->xfn = palloc0(sizeof(FmgrInfo));
@@ -357,7 +397,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		{
 			k->blob = true;
 			k->bkind = cmp == F_BTTEXTCMP ? BK_TEXT : cmp == F_UUID_CMP ? BK_UUID : cmp == F_BYTEACMP ? BK_BYTEA : BK_FMGR;
-			k->typid = k->bkind == BK_TEXT ? TEXTOID : lay->leaf[leaf].typid;
+			k->typid = k->bkind == BK_TEXT ? TEXTOID : leaf >= 0 ? lay->leaf[leaf].typid : xcoll;
 			k->sortop = sortop;
 			k->collid = collid;
 			if (k->bkind == BK_FMGR)
@@ -368,10 +408,10 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			t->nblob++;
 		}
 	}
-	if (t->nblob > 0)
+	if (t->nblob > 0 || t->nexpr > 0)
 		t->ucxt = AllocSetContextCreate(cxt, "sift top-N unit", ALLOCSET_DEFAULT_SIZES);
 	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */
-	for (t->wkeys = 1; sift_topn_zone_keys && t->wkeys < t->nkey && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64); t->wkeys++)
+	for (t->wkeys = 1; sift_topn_zone_keys && t->wkeys < t->nkey && t->key[t->wkeys].leaf >= 0 && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64); t->wkeys++)
 		;
 	t->nout = list_nth_int(l, i++);
 	t->attno = palloc(Max(t->nout, 1) * sizeof(int));
@@ -704,6 +744,259 @@ row_val(SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out)
 	return true;
 }
 
+/* ---- sort expressions (TXK_EXPR) ---- */
+
+/* The vector a key of this result type is kept in: the integer types by their width, floats widened, anything else as byte strings of a dictionary */
+static SiftSrcVecType
+expr_vtype(Oid typid)
+{
+	switch (typid)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case DATEOID:
+			return SCV_I32;
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case TIMEOID:
+			return SCV_I64;
+		case FLOAT4OID:
+		case FLOAT8OID:
+			return SCV_F64;
+		default:
+			return SCV_CODE;
+	}
+}
+
+/* xs: the expression over Vars numbered 1.. and the leaves they stand for, in that order */
+static TopExpr *
+expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, MemoryContext cxt)
+{
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	TopExpr    *x = palloc0(sizeof(TopExpr));
+	List	   *leaves = lsecond(xs);
+	TupleDesc	desc;
+
+	x->nin = list_length(leaves);
+	x->in = palloc0(Max(x->nin, 1) * sizeof(TopIn));
+	desc = CreateTemplateTupleDesc(Max(x->nin, 1));
+	for (int a = 0; a < x->nin; a++)
+	{
+		const SiftSrcLeaf *lf = &lay->leaf[list_nth_int(leaves, a)];
+
+		x->in[a] = (TopIn) {.leaf = lf->id, .typid = lf->typid, .vtype = lf->vtype, .scale = lf->scale};
+		TupleDescInitEntry(desc, a + 1, NULL, lf->typid, -1, 0);
+	}
+	sift_tupdesc_finalize(desc);
+	x->slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	x->econtext = CreateStandaloneExprContext();
+	x->econtext->ecxt_scantuple = x->slot;
+	/* no parent: the Vars are of the slot above whatever the scan's own tuple is */
+	x->state = ExecInitExpr((Expr *) linitial(xs), NULL);
+	x->rtype = rtype;
+	MemoryContextSwitchTo(old);
+	return x;
+}
+
+/* The datum of the entry c of the string dictionary of an input, built once for the unit */
+static Datum
+in_entry(SiftTopN *t, TopIn *in, uint32 c)
+{
+	const SiftSrcDict *d = in->v->dict;
+	const char *p = d->bytes + d->off[c];
+	uint32		len = d->off[c + 1] - d->off[c];
+	char	   *r;
+
+	if (in->built[c])
+		return in->memo[c];
+	switch (in->typid)
+	{
+		case TEXTOID:
+		case VARCHAROID:
+			r = MemoryContextAlloc(t->ucxt, VARHDRSZ + len);
+			SET_VARSIZE(r, VARHDRSZ + len);
+			memcpy(VARDATA(r), p, len);
+			break;
+		case UUIDOID:
+			r = MemoryContextAlloc(t->ucxt, len);
+			memcpy(r, p, len);
+			break;
+		default:				/* bytea, inet: the image of the datum, its header says the length */
+			{
+				varattrib_4b h;
+
+				memcpy(&h, p, sizeof(uint32));
+				len = VARSIZE_4B(&h);
+				r = MemoryContextAlloc(t->ucxt, len);
+				memcpy(r, p, len);
+			}
+	}
+	in->built[c] = true;
+	return in->memo[c] = PointerGetDatum(r);
+}
+
+static Datum
+in_datum(SiftTopN *t, TopIn *in, int i, bool *isnull)
+{
+	const SiftSrcVec *v = in->v;
+
+	*isnull = v->isnull && v->isnull[i];
+	if (*isnull)
+		return (Datum) 0;
+	switch (in->vtype)
+	{
+		case SCV_I32:
+			return Int32GetDatum(((const int32 *) v->data)[i]);
+		case SCV_I64:
+			if (in->typid != NUMERICOID)
+				return Int64GetDatum(((const int64 *) v->data)[i]);
+			if (v->ovf && ((v->ovf[i / 64] >> (i % 64)) & 1))
+				return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+			return NumericGetDatum(int64_div_fast_to_numeric(((const int64 *) v->data)[i], in->scale));
+		case SCV_F64:
+			return in->typid == FLOAT4OID ? Float4GetDatum((float4) ((const double *) v->data)[i]) : Float8GetDatum(((const double *) v->data)[i]);
+		default:
+			return in_entry(t, in, ((const uint32 *) v->data)[i]);
+	}
+}
+
+/*
+ * The key j of every row of the unit that passes, from PostgreSQL's evaluation of its expression over those rows' leaves: one result for each
+ * (the normal plan computes the sort expression of every row that passes the WHERE, and raises its errors for them). The result is the vector a
+ * key of the leaf of that type would be, and the rest of the scan reads it as such.
+ */
+static void
+expr_eval_unit(SiftTopN *t, TopKey *k, SiftTopLeaf leaf, void *ctx, const uint64 *rmask, int nrow)
+{
+	TopExpr    *x = k->x;
+	int			nw = (nrow + 63) / 64,
+				npass = 0,
+				at = 0,
+				esz = k->vtype == SCV_I32 ? sizeof(int32) : k->vtype == SCV_CODE ? sizeof(uint32) : sizeof(int64);
+	uint8	   *nul = MemoryContextAllocZero(t->ucxt, Max(nrow, 1));
+	char	   *data = MemoryContextAllocZero(t->ucxt, Max(nrow, 1) * (Size) esz);
+	SiftSrcDict *dict = NULL;
+	uint32	   *off = NULL;
+	StringInfoData bytes = {0};
+	MemoryContext tup = x->econtext->ecxt_per_tuple_memory;
+
+	for (int w = 0; w < nw; w++)
+		npass += pg_popcount64(rmask[w]);
+	for (int a = 0; a < x->nin; a++)
+	{
+		TopIn	   *in = &x->in[a];
+
+		in->v = leaf(ctx, in->leaf);
+		if (in->vtype == SCV_CODE)
+		{
+			in->memo = MemoryContextAllocZero(t->ucxt, Max(in->v->dict->n, 1) * sizeof(Datum));
+			in->built = MemoryContextAllocZero(t->ucxt, Max(in->v->dict->n, 1));
+		}
+	}
+	if (k->vtype == SCV_CODE)
+	{
+		MemoryContext old = MemoryContextSwitchTo(t->ucxt);
+
+		dict = palloc0(sizeof(SiftSrcDict));
+		off = palloc((npass + 1) * sizeof(uint32));
+		initStringInfo(&bytes);
+		off[0] = 0;
+		MemoryContextSwitchTo(old);
+	}
+	for (int w = 0; w < nw; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			int			i = w * 64 + pg_rightmost_one_pos64(b);
+			bool		isnull;
+			Datum		d;
+			MemoryContext old = MemoryContextSwitchTo(tup);
+
+			ExecClearTuple(x->slot);
+			for (int a = 0; a < x->nin; a++)
+				x->slot->tts_values[a] = in_datum(t, &x->in[a], i, &x->slot->tts_isnull[a]);
+			ExecStoreVirtualTuple(x->slot);
+			MemoryContextSwitchTo(old);
+			d = ExecEvalExprSwitchContext(x->state, x->econtext, &isnull);
+			if (isnull)
+				nul[i] = 1;
+			switch (k->vtype)
+			{
+				case SCV_I32:
+					((int32 *) data)[i] = x->rtype == INT2OID ? DatumGetInt16(d) : x->rtype == BOOLOID ? DatumGetBool(d) : DatumGetInt32(d);
+					break;
+				case SCV_I64:
+					((int64 *) data)[i] = DatumGetInt64(d);
+					break;
+				case SCV_F64:
+					((double *) data)[i] = x->rtype == FLOAT4OID ? DatumGetFloat4(d) : DatumGetFloat8(d);
+					break;
+				default:
+					if (!isnull)
+					{
+						MemoryContext o2 = MemoryContextSwitchTo(t->ucxt);
+
+						if (k->bkind == BK_UUID)
+							appendBinaryStringInfo(&bytes, DatumGetPointer(d), UUID_LEN);
+						else
+						{
+							struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+							uint32		len = VARSIZE_ANY_EXHDR(v);
+
+							if (k->bkind == BK_TEXT)
+								appendBinaryStringInfo(&bytes, VARDATA_ANY(v), len);
+							else
+							{
+								/* the image of the datum, with the four byte header the entries of a dictionary have */
+								varattrib_4b hdr;
+
+								SET_VARSIZE(&hdr, VARHDRSZ + len);
+								appendBinaryStringInfo(&bytes, (char *) &hdr, VARHDRSZ);
+								appendBinaryStringInfo(&bytes, VARDATA_ANY(v), len);
+							}
+						}
+						MemoryContextSwitchTo(o2);
+					}
+					((uint32 *) data)[i] = at;
+					off[++at] = bytes.len;
+			}
+			ResetExprContext(x->econtext);
+			if ((i & 4095) == 4095)
+				CHECK_FOR_INTERRUPTS();
+		}
+	k->xv = (SiftSrcVec) {.data = data, .isnull = nul, .n = nrow};
+	if (dict)
+	{
+		*dict = (SiftSrcDict) {.id = dict, .n = at, .off = off, .bytes = bytes.data};
+		k->xv.dict = dict;
+	}
+}
+
+/* The key j of the rows t->cand[0..n): read from the leaf, or taken from the vector of the expression */
+static void
+key_rows(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int j, int n, SiftSrcVec *v)
+{
+	const TopKey *k = &t->key[j];
+	int			esz = k->vtype == SCV_I32 ? sizeof(int32) : k->vtype == SCV_CODE ? sizeof(uint32) : sizeof(int64);
+	char	   *data;
+	uint8	   *nul;
+
+	if (k->x == NULL)
+	{
+		sift_colsrc_read_rows(src, unit, k->leaf, t->cand, n, v);
+		return;
+	}
+	data = MemoryContextAlloc(t->ucxt, Max(n, 1) * (Size) esz);
+	nul = MemoryContextAlloc(t->ucxt, Max(n, 1));
+	for (int x = 0; x < n; x++)
+	{
+		memcpy(data + (Size) x * esz, (const char *) k->xv.data + (Size) t->cand[x] * esz, esz);
+		nul[x] = k->xv.isnull[t->cand[x]];
+	}
+	*v = (SiftSrcVec) {.data = data, .isnull = nul, .dict = k->xv.dict, .n = n};
+}
+
 /* The heap of the result keeps its own copies of the byte strings of the entries it takes, and frees them when it drops the row */
 static void
 res_own(SiftTopN *t, TopEnt *e)
@@ -800,7 +1093,7 @@ read_other_keys(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc
 	{
 		SiftSrcVec	v;
 
-		sift_colsrc_read_rows(src, unit, t->key[j].leaf, t->cand, nc, &v);
+		key_rows(t, src, unit, j, nc, &v);
 		for (int x = 0; x < nc; x++)
 			if (!row_val(t, j, &v, x, &t->ce[x].k[j]))
 				t->ce[x].nul |= 1 << j;
@@ -1063,7 +1356,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 	{
 		SiftSrcVec	v;
 
-		sift_colsrc_read_rows(src, unit, t->key[j].leaf, t->cand, nc, &v);
+		key_rows(t, src, unit, j, nc, &v);
 		for (int x = 0; x < nc; x++)
 			t->snull[(Size) x * nk + j] = !row_val(t, j, &v, x, &t->skey[(Size) x * nk + j]);
 	}
@@ -1339,7 +1632,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	RunTrunc   *rt = NULL;
 
 	/* the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
-	if (!sift_topn_runs || k0->xk != TXK_NONE || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
+	if (!sift_topn_runs || k0->xk != TXK_NONE || k0->leaf < 0 || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
 		return false;
 	if (t->revisit)
 	{
@@ -1494,7 +1787,7 @@ sift_topn_run_budget(SiftTopN *t, uint32 units)
 {
 	int			b;
 
-	if (!sift_topn_runs || t->key[0].xk != TXK_NONE || t->all || t->sort || t->limit <= 0 || units < 8)
+	if (!sift_topn_runs || t->key[0].xk != TXK_NONE || t->key[0].leaf < 0 || t->all || t->sort || t->limit <= 0 || units < 8)
 		return;
 	b = Max(2, (int) (((uint64) t->limit * 2 + units - 1) / units));
 	if (b * 2 < t->limit)
@@ -1545,7 +1838,7 @@ sift_topn_revisit_next(SiftTopN *t, uint32 *sb)
  * the n-th).
  */
 void
-sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, SiftTopLeaf leaf, void *ctx)
 {
 	const TopKey *k0 = &t->key[0];
 	Rank		bar = {0, 0},
@@ -1560,6 +1853,14 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		MemoryContextReset(t->ucxt);
 		for (int j = 0; j < t->nkey; j++)
 			t->key[j].xid = NULL;
+	}
+	if (t->nexpr > 0)
+	{
+		for (int j = 0; j < t->nkey; j++)
+			if (t->key[j].x)
+				expr_eval_unit(t, &t->key[j], leaf, ctx, rmask, nrow);
+		if (t->key[0].x)
+			key0 = &t->key[0].xv;
 	}
 	if (t->all)
 	{
@@ -1648,7 +1949,7 @@ key_zone(const TopKey *k, const SiftSrcZone *z)
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
-	return !t->all && !t->totals && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
+	return !t->all && !t->totals && t->key[0].leaf >= 0 && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
 }
 
 /*

@@ -339,12 +339,21 @@ def gen_topn(r, ctx):
     cols = EVENTS
     sortable = ['amount', 'ts', 'kind', 'grp', 'val', 'big', 'num', 'flag', 'parent_id', 'a']
     ks = r.sample(sortable, r.choice([1, 2, 2, 3, 5, 6]))  # more than 4 sort keys sort every row that passes
-    # sort expressions the scan evaluates itself (they cannot raise): coalesce of a column and a constant of its type, lower and upper of the text column
-    xform = {'parent_id': lambda c: f'coalesce({c}, {r.choice([0, 300, 5000])})', 'grp': lambda c: f'coalesce({c}, {r.choice([-1, 6, 99])})',
-             'a': lambda c: f'coalesce({c}, {r.choice([0, 100, 100000])})', 'amount': lambda c: f'coalesce({c}, {r.choice([0, 50, 2147483647])})',
-             'big': lambda c: f'coalesce({c}, {r.choice([0, 9223372036854775807, -9223372036854775807 - 1])})',
-             'ts': lambda c: f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", 'kind': lambda c: f"{r.choice(['lower', 'upper'])}({c})"}
-    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.35 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
+    # sort expressions the scan evaluates itself: coalesce of a column and a constant of its type, lower and upper of the text column, arithmetic and casts with
+    # PostgreSQL's own evaluation (the data keeps them clear of overflow, division by a column and NaN into an integer)
+    k1, k2, d = r.choice([1, 7, 100, 5000]), r.choice([2, 3, 11]), r.choice([3, 7, 1000])
+    ints = lambda c: r.choice([f'coalesce({c}, {r.choice([0, 300, 5000])})', f'{c} + {k1}', f'{k1} - {c}', f'-{c}', f'{c} * {k2}', f'{c} % {d}', f'{c}::bigint', f'{c}::text',
+                               f'({c}::numeric / {d})', f'{c}::float8 / {d}', f'{c} > {k1}'])
+    xform = {'parent_id': ints, 'grp': ints, 'a': ints, 'amount': ints,
+             'big': lambda c: r.choice([f'coalesce({c}, {r.choice([0, 9223372036854775807, -9223372036854775807 - 1])})', f'{c} / {d}', f'{c} * {k2}', f'{c}::numeric', f'{c} % {d}']),
+             'val': lambda c: r.choice([f'{c} * {k2}', f'-{c}', f'{c} + {k1}', f'{c} / {k2}']),
+             'num': lambda c: r.choice([f'{c} * {k2}', f'{c} + 1.5', f'{c} / {k2}', f'{c}::float8', f'{c}::text', f'-{c}']),
+             'ts': lambda c: r.choice([f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", f'{c} + {k1}', f'{c} - {k2}', f"{c} - DATE '2025-06-01'"]),
+             'kind': lambda c: f"{r.choice(['lower', 'upper'])}({c})"}
+    two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a'}
+    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
+    if r.random() < 0.15:
+        order[0] = f"{two[r.choice(list(two))]} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip()
     grouped_ = r.random() < 0.25
     # the page with the totals of its set: aggregates over the whole set as window functions (not a float: the sums of another order differ in the last digits)
     windows = [] if grouped_ or r.random() < 0.6 else r.sample(['count(*)', 'count(e.amount)', 'sum(e.amount)', 'sum(e.big)', 'max(e.ts)', 'min(e.grp)', 'sum(e.num)', 'avg(e.num)', 'min(e.kind)',
