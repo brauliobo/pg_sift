@@ -338,7 +338,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
@@ -420,7 +420,7 @@ static void
 col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	ColSource  *src = impl;
-	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
+	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES];
 	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
 	int			n = 0;
 
@@ -438,6 +438,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	for (int k = 0; k < nprune; k++)
 		if (prune[k].nkids == 0)
 		{
+			memset(&vals[n], 0, 2 * sizeof(SiftColValue));
 			zone_preds(src->cxt, &prune[k], &vals[n], &preds[n]);
 			n += 2;
 		}

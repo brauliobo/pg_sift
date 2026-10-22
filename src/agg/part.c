@@ -30,6 +30,7 @@
 #include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
+#include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
 #include "agg/part.h"
@@ -150,7 +151,7 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	check_access(parent);
 	ps->n = n;
 	ps->parent = parent;
-	ps->snapshot = snapshot;
+	ps->snapshot = RegisterSnapshot(snapshot);	/* once for all the sources: the partitions' own registrations are held by this one (SIFT_COLO_SNAP_HELD) */
 	ps->mcxt = mcxt;
 	ps->heapoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
 	memcpy(ps->heapoid, heaps, n * sizeof(Oid));
@@ -185,6 +186,7 @@ part_close(void *impl)
 		if (ps->heap[i])
 			table_close(ps->heap[i], NoLock);
 	}
+	UnregisterSnapshot(ps->snapshot);
 }
 
 static const SiftSrcLayout *
@@ -916,15 +918,27 @@ static void
 part_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	PartSource *ps = impl;
+	int			lo,
+				hi;
 
 	count_sbs(ps);
 	ps->lo = sb_lo;
 	ps->hi = sb_hi;
 	ps->prune = prune;
 	ps->nprune = nprune;
-	ps->next = 0;
-	while (ps->next < ps->n && ps->off[ps->next + 1] <= sb_lo)
-		ps->next++;
+	/* the first partition that ends past sb_lo (the offsets only grow): a scan of thousands of partitions begins once for each item */
+	lo = 0;
+	hi = ps->n;
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (ps->off[mid + 1] <= sb_lo)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	ps->next = lo;
 	if (ps->cur >= 0)
 		sift_colsrc_unpin(ps->src[ps->cur]);
 	ps->cur = -1;

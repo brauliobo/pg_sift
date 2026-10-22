@@ -85,8 +85,9 @@ check_access(Relation heap)
 static SiftColSource *
 col_source(Relation heap, Relation store, const SiftColSchema *schema, MemoryContext mcxt, uint32 flags)
 {
-	SiftColSource *src = MemoryContextAllocZero(mcxt, sizeof(SiftColSource));
+	SiftColSource *src = MemoryContextAlloc(mcxt, sizeof(SiftColSource));
 
+	memset(src, 0, offsetof(SiftColSource, tests));
 	src->heap = heap;
 	src->index = store;
 	src->mcxt = mcxt;
@@ -136,7 +137,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 		check_access(heap);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
-	src->snap = RegisterSnapshot(snapshot);
+	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
 	sift_dir_read(index, &src->dir);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
@@ -166,7 +167,8 @@ sift_col_close(SiftColSource *src)
 	if (src->flags & COLO_TABLE)		/* a table source stays usable: its owner frees the memory, and parks it between uses */
 		return;
 	sift_vis_end(&src->vis);
-	UnregisterSnapshot(src->snap);
+	if (!(src->flags & SIFT_COLO_SNAP_HELD))
+		UnregisterSnapshot(src->snap);
 }
 
 void
@@ -282,7 +284,8 @@ test_copy(SiftColSource *src, const SiftColSegment *seg, const SiftColPred *p)
 {
 	ColTest    *e = &src->tests[src->ntests++ % COL_TEST_CACHE];
 
-	test_drop(e);
+	if (src->ntests > COL_TEST_CACHE)	/* the slot held a test: the slots are not zeroed (col_source) */
+		test_drop(e);
 	e->seg = seg;
 	e->pred = *p;
 	e->vals = MemoryContextAlloc(src->mcxt, Max(p->nvals, 1) * sizeof(SiftColValue));
