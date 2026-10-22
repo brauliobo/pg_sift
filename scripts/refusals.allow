@@ -17,7 +17,7 @@ plan_leaf.c: has_exec_param_walker paths_equal path_keys json_access reads_prese
 plan_path.c: jsonb_lit path_lit # tests of a jsonpath literal: the caller names where
 plan_pred.c: false_on_absent # a test of a compiled predicate: no refusal
 plan_rows.c: pg_aggregate_ok # a test of an aggregate of the rows plan: the caller names rows_shape
-plan_two.c: append_arms same_scan cond_split outer_cond arm_gates arm_having_expr count_aggs_walker outer_agg hidden_keys two_arm_terms spine_key arm_key two_keys two_aggs spine_where two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
+plan_two.c: append_arms same_scan cond_split outer_cond arm_gates arm_having_expr count_aggs_walker outer_agg spine_key two_keys two_aggs spine_where two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 plan_type.c: typeof_cmp_operands typeof_test wide_test types_guard_reads # tests of a jsonb_typeof or wide comparison: the caller names where
 plan_zone.c: array_consts zone_range zone_meets zone_may # zone pruning tests: a unit that cannot be pruned is read, no refusal
 spec.c: sift_aggspec_spillable sift_parse_decimal sift_aggspec_zone_cmp str_const str_cmp_test str_in_test sift_aggspec_str_test plain_agg # tests of a compiled spec (parallel workers, string tests): a scan that cannot use workers or a kernel is not a refusal
