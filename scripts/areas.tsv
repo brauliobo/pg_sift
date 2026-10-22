@@ -27,6 +27,7 @@
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
 ^test/col/	^difftest-col|^plan-gate$|^coverage$|{ci}
+^test/matrix/	^coverage-pct$|{ci}
 ^test/plan/	^plan-gate$|{ci}
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/[^d]	^(fuzz|hardened)$|{ci}
