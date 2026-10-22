@@ -16,6 +16,10 @@ CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LA
 	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
 $$;
 
+CREATE FUNCTION cte_why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
+	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q) WHERE arm = 'cte_inline'
+$$;
+
 -- what the empty map adds to the scan is bounded by the pages of the units the zones keep: a tenth of the table (k < 20 keeps 10% of the units)
 -- charges less than half of what the whole table (k < 300) does
 CREATE TABLE costs AS
@@ -30,7 +34,13 @@ FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROU
 -- a scan that loses for another reason says nothing of the map: one key of a table the btree reads at once
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
+-- the same for a shared CTE that two aggregates read: the inlined scans pay the heap check and lose to the shared plan
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+-- no way out is promised when the shared plan pays the heap check too: a VACUUM would cut both
+SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');
+
 VACUUM ordered;
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
 CREATE TABLE charges AS
 SELECT k_below, c.empty_cost - (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))) AS charge
 FROM costs c;
@@ -39,6 +49,6 @@ SELECT (SELECT charge FROM charges WHERE k_below = 20) > 0 AS charged,
 SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
-DROP FUNCTION why(text);
+DROP FUNCTION why(text), cte_why(text);
 DROP TABLE ordered, costs, charges;
 DROP EXTENSION pg_sift;
