@@ -1067,7 +1067,7 @@ combo_trim(AggExec *ex)
 	if (!full)
 		return;
 	ex->n_combo_trim++;
-	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 		combo_reset(ex, ci);
 }

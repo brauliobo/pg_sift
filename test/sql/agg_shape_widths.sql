@@ -15,10 +15,18 @@ SELECT i, i % 50, 'k' || i % 5, date '2025-01-01' + i % 6, i % 7, i % 5, i % 3, 
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 3000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, a, b, c, d, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
--- a dimension with four key columns and eight value columns
-CREATE TABLE dd (id int, a int, b int, c int, d int, v1 int, v2 int, v3 int, v4 int, v5 int, v6 int, v7 int, v8 int) WITH (autovacuum_enabled = false);
-INSERT INTO dd SELECT i, i % 7, i % 5, i % 3, i % 2, i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7 FROM generate_series(0, 49) i;
-VACUUM (FREEZE, ANALYZE) events, dd;
+-- a dimension with four key columns and seventeen value columns
+CREATE TABLE dd (id int NOT NULL, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v1 int NOT NULL, v2 int NOT NULL, v3 int NOT NULL, v4 int NOT NULL, v5 int NOT NULL, v6 int NOT NULL, v7 int NOT NULL, v8 int NOT NULL, v9 int NOT NULL, v10 int NOT NULL, v11 int NOT NULL, v12 int NOT NULL, v13 int NOT NULL, v14 int NOT NULL, v15 int NOT NULL, v16 int NOT NULL, v17 int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT i, i % 7, i % 5, i % 3, i % 2, i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16 FROM generate_series(0, 49) i;
+-- the unique index on the key and the first ORDER BY column leaves no tie to a first-row lookup
+CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
+-- seventeen integer columns: 136 pairs of them, each a value combination of its own
+CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
+INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
+CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
+VACUUM (FREEZE, ANALYZE) events, dd, wide;
+SET join_collapse_limit = 64;
+SET from_collapse_limit = 64;
 
 -- the rows of the scan and of the normal plan, the arm's answer and the reason
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -38,6 +46,16 @@ CREATE FUNCTION probe(q text, want_arm text) RETURNS TABLE (used bool, slug text
 	SELECT w.used, w.slug, substring(w.reason from 'the limit [a-z_]+ is [0-9]+') FROM sift.explain_why(q) w WHERE w.arm = want_arm
 $$;
 
+-- the tables the scan read as first-row lookups (a sub-select with more ORDER BY columns than the width runs once per key instead)
+CREATE FUNCTION first_row_lookups(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l LIKE '%First Row Lookup Tables: %' THEN n := regexp_replace(l, '.*: ', '')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
 -- the shapes: n of something
 CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE kind
@@ -50,6 +68,12 @@ CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
 		 FROM generate_series(1, n) j)
 	WHEN 'joins' THEN
 		(SELECT format('SELECT %s, count(*) FROM events e %s GROUP BY 1', 'd1.v1 % 3', string_agg(format('JOIN dd d%s ON d%s.id = e.parent_id', j, j), ' ') ) FROM generate_series(1, n) j)
+	WHEN 'combos' THEN
+		(SELECT format('SELECT kind, %s FROM wide GROUP BY kind', string_agg(format('sum((c%s * c%s)::numeric / 3) AS s%s_%s', i, j, i, j), ', ' ORDER BY i, j))
+		 FROM (SELECT i, j FROM generate_series(1, 17) i, generate_series(1, 17) j WHERE i < j ORDER BY i, j LIMIT n) p)
+	WHEN 'first_order_cols' THEN
+		(SELECT format('SELECT d.v1 %% 3, count(*) FROM events e LEFT JOIN LATERAL (SELECT x.v1 FROM dd x WHERE x.a = e.a AND x.b = e.b ORDER BY %s LIMIT 1) d ON true GROUP BY 1',
+				string_agg('x.' || k, ', ')) FROM unnest((ARRAY['v2', 'c', 'd', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9'])[1:n]) k)
 	WHEN 'join_keys' THEN
 		(SELECT format('SELECT d.v1 %% 3, count(*) FROM events e JOIN dd d ON %s GROUP BY 1', string_agg(format('d.%s = e.%s', k, k), ' AND ')) FROM unnest((ARRAY['a', 'b', 'c', 'd'])[1:n]) k)
 	WHEN 'join_cols' THEN
@@ -70,11 +94,14 @@ CREATE TABLE widths (kind text, limit_id text, arm text, dflt int, lowered int);
 INSERT INTO widths VALUES
 	('virtual_leaves', 'virtual_leaves', 'single', 16, 3),
 	('arms', 'arms', 'two_level', 16, 3),
-	('joins', 'joins', 'single', 8, 3),
+	('joins', 'joins', 'single', 32, 3),
+	('combos', 'combos', 'single', 128, 3),
 	('join_keys', 'join_keys', 'single', 3, NULL),
-	('join_cols', 'join_cols', 'single', 6, 3),
+	('join_cols', 'join_cols', 'single', 16, 3),
+	('first_order_cols', 'first_order_cols', 'single', 8, 3),
 	('float_ops', 'float_ops', 'single', 16, NULL),
 	('rows_shared', 'rows_shared', 'rows', 32, 3);
+-- first_order_cols is a width too: past it the sub-select runs once per key and the scan reads no first-row lookup (the detail counts them).
 -- float_ops and join_keys are widths too, but a shape past them does not keep the normal plan: PostgreSQL evaluates the longer float8 expression for the distinct values of its
 -- leaves, and the equality columns of a join beyond the third key by the leaves they read; the rows are those of the normal plan at both sizes
 
@@ -90,6 +117,7 @@ BEGIN
 			q := shape(w.kind, i);
 			SELECT * INTO p FROM probe(q, w.arm);
 			kind := w.kind; n := i; used := p.used; slug := p.slug; detail := p.detail;
+			IF w.kind = 'first_order_cols' THEN detail := format('first-row lookups: %s', first_row_lookups(q)); END IF;
 			rows_ok := CASE WHEN p.used THEN same(q) END;
 			RETURN NEXT;
 		END LOOP;
@@ -99,6 +127,6 @@ END $$;
 SELECT * FROM at_width(false);
 SELECT * FROM at_width(true);
 
-DROP FUNCTION at_width(bool), shape(text, int), probe(text, text), same(text);
-DROP TABLE widths, dd, events;
+DROP FUNCTION at_width(bool), shape(text, int), first_row_lookups(text), probe(text, text), same(text);
+DROP TABLE widths, wide, dd, events;
 DROP EXTENSION pg_sift;

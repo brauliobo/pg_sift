@@ -253,12 +253,12 @@ unmatched_tail(AggExec *ex)
 	int			ci;
 	Tup		   *own;
 	ComboEnt	ent;
-	uint32		prior[SIFT_AGG_MAX_COMBOS] = {0};
+	uint32	   *prior = palloc0(Max(ex->spec->ncombo, 1) * sizeof(uint32));
 
 	if (ex->nj == 0 || !ex->cs[ex->jcombo[ex->nj - 1]].map->keep)
 		return;
 	ci = ex->jcombo[ex->nj - 1];
-	own = &ex->stage[ex->nj - 1];
+	own = stage_tuples(ex, ex->nj - 1);
 	null_unit(ex);
 	for (int x = 0; x < ex->nj - 1; x++)
 	{

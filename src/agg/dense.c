@@ -266,7 +266,7 @@ dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 		return false;
 	ex->cstart = start;
 	ex->cn = n;
-	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	ex->n_tuples += cnt;
 	ex->n_dense++;
 	ex->hist = NULL;

@@ -24,14 +24,14 @@
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	8	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
-#define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
+#define SIFT_AGG_MAX_JCOLS	16		/* columns of the joined table that expressions read */
 #define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */
 #define SIFT_AGG_NULL_INPUT	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_NULL_INPUT_LOC (-0x51F7)
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_NULL_INPUT + 1)
 #define SIFT_AGG_INIT_PARAM	(1 << 24)	/* added to the id of an ARRAY sub-select's output Param in a lookup table expression (Param 0 is the leaf's value) */
-#define SIFT_AGG_MAX_COMBOS	16
-#define SIFT_AGG_MAX_JOINS	8
+#define SIFT_AGG_MAX_COMBOS	128
+#define SIFT_AGG_MAX_JOINS	32
 #define SIFT_AGG_MAX_VLEAVES	16
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
@@ -380,7 +380,7 @@ sift_aggjoin_preserves(SiftJoinKind kind)
 	return kind == SJ_RIGHT || kind == SJ_FULL;
 }
 
-#define SIFT_AGG_MAX_FORD	3		/* ORDER BY columns of a first-row child */
+#define SIFT_AGG_MAX_FORD	8		/* ORDER BY columns of a first-row child */
 #define SIFT_AGG_MAX_FOUT	16		/* output columns of a first-row child that can be mapped to the table's */
 
 /*

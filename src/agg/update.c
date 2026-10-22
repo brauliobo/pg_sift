@@ -699,6 +699,7 @@ set_tuples(AggExec *ex, const Tup *t, int set)
 		own->sel = MemoryContextAlloc(ex->cxt, (VEC + PADW + 16) * sizeof(uint32));
 		own->tidx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
 		own->ridx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+		own->cout = MemoryContextAllocZero(ex->cxt, ex->spec->ncombo * sizeof(uint32 *));
 		for (int x = 0; x < ex->nj; x++)
 			own->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
 	}
@@ -735,7 +736,7 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->sel = t->sel;
 	ex->tidx = t->tidx;
 	ex->ridx = t->ridx;
-	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	if (s->npost > s->nprepost)
 		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj, -1);
 	if (t->n == 0)
@@ -754,7 +755,7 @@ agg_tuples(AggExec *ex, Tup *t)
 			continue;
 		/* the free combos are resolved for the tuples they were asked for: the set's own are not the chunk's */
 		if (st != t || ex->cur != t)
-			memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+			memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 		ex->cur = st;
 		ex->sel = st->sel;
 		ex->tidx = st->tidx;
@@ -772,6 +773,18 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->arm_mask = ~(uint32) 0;
 }
 
+/* the stage's tuples: the outputs of the earlier joins are copied only by a stage that repeats or drops tuples, so a chain of one-row lookups holds one array per stage */
+Tup *
+stage_tuples(AggExec *ex, int s)
+{
+	Tup		   *own = &ex->stage[s];
+
+	if (s > 0 && own->cout[ex->jcombo[0]] == NULL)
+		for (int y = 0; y < s; y++)
+			own->cout[ex->jcombo[y]] = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+	return own;
+}
+
 static void
 semi_stage(AggExec *ex, int s, Tup *in)
 {
@@ -783,7 +796,7 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
 	const int32 *x = pass ? NULL : (const int32 *) v->data;
-	Tup		   *own = &ex->stage[s];
+	Tup		   *own = stage_tuples(ex, s);
 	int			k = 0;
 
 	for (int i = 0; i < in->n; i++)
@@ -845,11 +858,13 @@ join_stage(AggExec *ex, int s, Tup *in)
 
 		for (int i = 0; i < n; i++)
 			own->cout[ci][i] = cs->ent[eid[i]].base;
+		al.cout = memcpy(ex->alcout[s], in->cout, ex->spec->ncombo * sizeof(uint32 *));
 		al.cout[ci] = own->cout[ci];
 		join_stage(ex, s + 1, &al);
 		return;
 	}
 	/* the entries of this stage's tuples stay in eid only until the next stage resolves its own: keep a copy */
+	own = stage_tuples(ex, s);
 	eid = memcpy(ex->seid[s], eid, n * sizeof(uint32));
 	for (int j = 0, e = 0; j < n;)
 	{
