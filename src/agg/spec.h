@@ -133,7 +133,8 @@ typedef enum SiftAggKeyKind
 	SAK_LUT,					/* expr(leaf value), evaluated once per distinct value */
 	SAK_COMBO,					/* key slot (slot) of a combo (leaf) */
 	SAK_SET,					/* the number of the grouping set of a row: the last key of a query with grouping sets */
-	SAK_NUM						/* a numeric expression (a numeric or int8 column included): the key is its scaled value */
+	SAK_NUM,					/* a numeric expression (a numeric or int8 column included): the key is its scaled value */
+	SAK_SPINE					/* a column of the spine of a two level aggregate: no arm computes it, the spine rows give its ids */
 } SiftAggKeyKind;
 
 typedef struct SiftAggKey
@@ -326,6 +327,33 @@ typedef struct SiftAggArm
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
 
+#define SIFT_AGG_MAX_ARMS	4
+
+/*
+ * The spine of a two level aggregate: the rows of a small plan (a VALUES list, a series, a table of buckets) that the arms are joined to
+ * by equality of their keys. A cell is repeated for each spine row its join keys equal; the spine columns the outer query groups by are
+ * keys of the scan (SAK_SPINE) that the spine rows give.
+ */
+typedef struct SiftAggSpine
+{
+	int			child;			/* the plan of the rows: custom_plans[child] */
+	int			ncol;			/* its output columns */
+	int			npair;			/* the equalities of the join */
+	struct SiftAggSpinePair
+	{
+		int			col;		/* the spine column; -1: a constant */
+		Node	   *konst;
+		bool		nullsafe;	/* NULL equals NULL */
+		Oid			typid;
+		Oid			collid;
+		Oid			eqop;
+		int			key[SIFT_AGG_MAX_ARMS];	/* per arm: the key of the scan its side is; -1: NULL in the arm */
+	}			pair[SIFT_AGG_MAX_JKEYS];
+	int			nout;			/* the spine columns that are keys of the scan */
+	int			outcol[SIFT_AGG_MAX_KEYS];
+	int			outkey[SIFT_AGG_MAX_KEYS];
+} SiftAggSpine;
+
 /*
  * A table joined by equality to leaves of the scan or to expressions of them (INNER, LEFT, SEMI or ANTI): a tuple's join key is read
  * from the leaves, the table's rows with that key that pass the rest of the ON clause are its matches (any number: the join is exact
@@ -477,6 +505,7 @@ typedef struct SiftAggSpec
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
 	int			narms;			/* > 0: the two level form (SiftAggArm) */
 	SiftAggArm *arm;
+	SiftAggSpine *spine;		/* the arms are joined to a spine; NULL: they are not */
 	int			nsets;			/* > 0: grouping sets, as PostgreSQL expanded them; the last key is the number of the set */
 	int			nhidden;		/* keys after the outer ones (and before the set's): group expressions of the arms that are no outer key. A cell is an inner group, so these are part of its identity; no group has them */
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */

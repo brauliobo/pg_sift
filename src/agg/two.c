@@ -520,10 +520,11 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 
 /*
  * The group that cell g of arm k belongs to (in grouping set `set`): the outer keys the arm (and the set) have, and the set's number.
- * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps.
+ * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps. sid: the ids of the spine row the cell is
+ * joined to, for the keys the spine gives.
  */
 static uint32
-cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
+cell_outer_gid(AggExec *ex, int k, uint32 g, int set, const uint32 *sid)
 {
 	SiftAggSpec *s = ex->spec;
 	uint32		mask = s->arm[k].keymask,
@@ -538,11 +539,38 @@ cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
 	for (int j = 0; j < s->nkeys; j++)
 		if (mask >> j & 1)
 			ids[j] = cell_key(ex, k, g, j);
+	for (int o = 0; sid && o < s->spine->nout; o++)
+		ids[s->spine->outkey[o]] = sid[o];
 	if (ex->hash)
 		return hash_group(ex, ids);
 	for (int j = 0; j < s->nkeys; j++)
 		gid += ids[j] * ex->ks[j].mult;
 	return gid;
+}
+
+/* The cell (arm k, group g) of the row `row` joins the spine rows its keys equal: it is a cell of the group of each. */
+static void
+spine_cell(AggExec *ex, int k, uint32 g, uint64 row)
+{
+	const SiftAggSpine *sa = ex->spec->spine;
+	SpineSt    *sp = ex->spine;
+	uint32		ids[SIFT_AGG_MAX_JKEYS],
+				n;
+	const uint32 *rows;
+
+	for (int p = 0; p < sa->npair; p++)
+		ids[p] = sa->pair[p].key[k] < 0 ? 0 : cell_key(ex, k, g, sa->pair[p].key[k]);
+	n = spine_rows(ex, k, ids, &rows);
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint32		og = cell_outer_gid(ex, k, g, 0, &sp->oid[(Size) rows[i] * sa->nout]);
+
+		if (ex->hash && ex->ngroups > ex->gcap)
+			groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+		sp->hit[rows[i]] = true;
+		ex->seen[og]++;
+		cell_into(ex, k, g, og, row);
+	}
 }
 
 /*
@@ -568,6 +596,11 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	}
 	if (a->hstate && !cell_having(ex, k, g))
 		return;
+	if (s->spine)
+	{
+		spine_cell(ex, k, g, row);
+		return;
+	}
 	if (s->nsets == 0 && sa->hmask == 0)
 	{
 		ex->seen[g]++;
@@ -575,7 +608,7 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 		return;
 	}
 	for (int set = 0; set < Max(s->nsets, 1); set++)
-		ex->setg[set] = cell_outer_gid(ex, k, g, set);
+		ex->setg[set] = cell_outer_gid(ex, k, g, set, NULL);
 	if (ex->hash && ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
 	for (int set = 0; set < Max(s->nsets, 1); set++)

@@ -607,7 +607,12 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 typedef struct TwoLevel
 {
 	PlannerInfo *root;
-	Index		srti;			/* the outer query's FROM item */
+	Index		srti;			/* the outer query's FROM item: the arms */
+	JoinExpr   *join;			/* the arms are joined to a spine; NULL: they are the FROM item */
+	Index		spine_rti;
+	List	   *spine_cols;		/* the Vars of the spine that the join and the keys read: the columns of its plan */
+	SiftAggSpine *spine;
+	int			pair_att[SIFT_AGG_MAX_JKEYS];	/* the column of the arms each pair of the join reads */
 	List	   *roots;			/* the planned roots of the arms */
 	List	   *gates;
 	ArmIn		arms[AGG_MAX_ARMS];
@@ -722,7 +727,86 @@ null_key(SortGroupClause *sgc, Node *e, SiftAggKey *k)
 	k->desc = "NULL";
 }
 
-/* the outer keys: columns that every arm groups by or has as NULL */
+/* the spine's Var: a column of the spine at the query's own level */
+static bool
+spine_var(const TwoLevel *t, Node *n)
+{
+	return t->join != NULL && IsA(n, Var) && ((Var *) n)->varno == t->spine_rti && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varattno > 0;
+}
+
+/* the column of the spine's plan that spine Var v is */
+static int
+spine_col(TwoLevel *t, Var *v)
+{
+	foreach_ptr(Var, x, t->spine_cols)
+		if (x->varattno == v->varattno)
+			return foreach_current_index(x);
+	t->spine_cols = lappend(t->spine_cols, makeVar(t->spine_rti, v->varattno, v->vartype, v->vartypmod, v->varcollid, 0));
+	return list_length(t->spine_cols) - 1;
+}
+
+/* a group column of the spine is a key no arm computes: the ids are those of the spine's values */
+static bool
+spine_key(TwoLevel *t, SortGroupClause *sgc, Var *v, SiftAggKey *k)
+{
+	SiftAggSpine *sp = t->spine;
+	RegProcedure lhs,
+				rhs;
+
+	if (sp->nout >= SIFT_AGG_MAX_KEYS || !get_op_hash_functions(sgc->eqop, &lhs, &rhs))
+		return false;
+	sp->outcol[sp->nout] = spine_col(t, v);
+	sp->outkey[sp->nout++] = t->s->nkeys;
+	k->kind = SAK_SPINE;
+	k->leaf = -1;
+	k->typid = v->vartype;
+	k->typmod = v->vartypmod;
+	k->collid = v->varcollid;
+	k->eqop = sgc->eqop;
+	k->desc = psprintf("spine.%s", get_rte_attribute_name(rt_fetch(t->spine_rti, t->root->parse->rtable), v->varattno));
+	return true;
+}
+
+/* a group column of the arms: every arm groups by the same expression or has NULL */
+static bool
+arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
+{
+	SiftAggSpec *s = t->s;
+	Node	   *def = NULL;
+	int			col;
+
+	/* a bucket column of the spine that is NULL, which the planner folded into the query */
+	if (t->join != NULL && null_const(e))
+	{
+		null_key(sgc, e, key);
+		return true;
+	}
+	if (!IsA(e, Var) || ((Var *) e)->varno != t->srti || ((Var *) e)->varlevelsup != 0 || ((Var *) e)->varattno > t->ncols)
+		return false;
+	col = ((Var *) e)->varattno - 1;
+	for (int k = 0; k < t->narms; k++)
+	{
+		Node	   *x = list_nth(t->arms[k].cols, col);
+
+		if (null_const(x))
+			continue;
+		if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
+			return false;
+		def = x;
+		t->arms[k].used = lappend(t->arms[k].used, x);
+		t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
+		t->arms[k].kidx = lappend_int(t->arms[k].kidx, s->nkeys);
+		t->arms[k].out->keymask |= (uint32) 1 << s->nkeys;
+	}
+	if (def == NULL)
+	{
+		null_key(sgc, e, key);
+		return true;
+	}
+	return compile_key(&t->ctx, sgc, def, key);
+}
+
+/* the outer keys: columns that every arm groups by or has as NULL, and the spine's */
 static bool
 two_keys(TwoLevel *t)
 {
@@ -730,7 +814,6 @@ two_keys(TwoLevel *t)
 	SiftAggSpec *s = t->s;
 	Query	   *parse = t->root->parse;
 	int			nkeyslots = list_length(parse->groupClause) + 1;
-	int			okey[SIFT_AGG_MAX_KEYS];
 
 	for (int k = 0; k < t->narms; k++)
 		nkeyslots += list_length(t->arms[k].group);
@@ -738,28 +821,8 @@ two_keys(TwoLevel *t)
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, t->root->processed_tlist);
-		Node	   *def = NULL;
 
-		if (!IsA(e, Var) || ((Var *) e)->varno != t->srti || ((Var *) e)->varlevelsup != 0 || ((Var *) e)->varattno > t->ncols)
-			return false;
-		okey[s->nkeys] = ((Var *) e)->varattno - 1;
-		for (int k = 0; k < t->narms; k++)
-		{
-			Node	   *x = list_nth(t->arms[k].cols, okey[s->nkeys]);
-
-			if (null_const(x))
-				continue;
-			if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
-				return false;
-			def = x;
-			t->arms[k].used = lappend(t->arms[k].used, x);
-			t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
-			t->arms[k].kidx = lappend_int(t->arms[k].kidx, s->nkeys);
-			t->arms[k].out->keymask |= (uint32) 1 << s->nkeys;
-		}
-		if (def == NULL)
-			null_key(sgc, e, &s->key[s->nkeys]);
-		else if (!compile_key(c, sgc, def, &s->key[s->nkeys]))
+		if (!(spine_var(t, e) ? spine_key(t, sgc, (Var *) e, &s->key[s->nkeys]) : arm_key(t, sgc, e, &s->key[s->nkeys])))
 			return false;
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
 		t->ow.keys = lappend(t->ow.keys, e);
@@ -797,6 +860,227 @@ two_aggs(TwoLevel *t, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 	return true;
 }
 
+#define SPINE_MAX_ROWS	10000	/* a spine is matched by its rows for each distinct key of the cells: few rows */
+
+/* the spine's range table entry: a table, or a sub-select over one with a WHERE that PostgreSQL pulled up (its rows are the rel's filtered ones); 0 if it is not */
+static Index
+spine_item(Node *n)
+{
+	if (IsA(n, FromExpr) && list_length(((FromExpr *) n)->fromlist) == 1)
+		n = linitial(((FromExpr *) n)->fromlist);
+	return IsA(n, RangeTblRef) ? ((RangeTblRef *) n)->rtindex : 0;
+}
+
+/*
+ * The FROM item is the arms, or `spine JOIN arms ON equalities` (either order; the WHERE would filter the joined rows, so there is none).
+ * A subquery PostgreSQL did not pull up and a plan of a few rows are what the spine can be.
+ */
+static bool
+two_from(TwoLevel *t)
+{
+	Query	   *parse = t->root->parse;
+	Node	   *from = linitial(parse->jointree->fromlist);
+	JoinExpr   *j;
+	List	   *gates = NIL;
+
+	if (list_length(parse->jointree->fromlist) != 1)
+		return false;
+	if (IsA(from, RangeTblRef))
+	{
+		t->srti = ((RangeTblRef *) from)->rtindex;
+		return true;
+	}
+	while (IsA(from, FromExpr) && list_length(((FromExpr *) from)->fromlist) == 1 && ((FromExpr *) from)->quals == NULL)
+		from = linitial(((FromExpr *) from)->fromlist);
+	if (!IsA(from, JoinExpr) || parse->jointree->quals != NULL || parse->groupingSets != NIL)
+		return false;
+	j = (JoinExpr *) from;
+	if (j->jointype != JOIN_INNER)
+		return false;
+	for (int side = 0; side < 2; side++)
+	{
+		Node	   *a = side == 0 ? j->rarg : j->larg,
+				   *b = side == 0 ? j->larg : j->rarg;
+		Index		spine = spine_item(b);
+
+		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY &&
+			outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
+		{
+			t->join = j;
+			t->srti = ((RangeTblRef *) a)->rtindex;
+			t->spine_rti = spine;
+			t->spine = palloc0(sizeof(SiftAggSpine));
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
+arm_var(const TwoLevel *t, Node *n)
+{
+	return IsA(n, Var) && ((Var *) n)->varno == t->srti && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varattno > 0 &&
+		((Var *) n)->varattno <= t->ncols;
+}
+
+/* the types whose equality is that of their JSON images, which the jsonb arrays of a join compare */
+static bool
+spine_type(Oid typid, Oid collid)
+{
+	switch (typid)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case NUMERICOID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return true;
+		case TEXTOID:
+		case VARCHAROID:
+			return !OidIsValid(collid) || get_collation_isdeterministic(collid);
+		default:
+			return false;
+	}
+}
+
+/* `arm column = spine column or constant` (either order; opno: the equality operator, InvalidOid for the elements of jsonb arrays): a pair of the join */
+static bool
+spine_eq(TwoLevel *t, Oid opno, Node *a, Node *b, bool nullsafe)
+{
+	struct SiftAggSpinePair *q;
+	Node	   *x = strip_relabel(a),
+			   *y = strip_relabel(b);
+	TypeCacheEntry *tc;
+
+	if (!arm_var(t, x))
+	{
+		Node	   *z = x;
+
+		x = y;
+		y = z;
+	}
+	if (!arm_var(t, x) || !(spine_var(t, y) || IsA(y, Const)) || t->spine->npair >= SIFT_AGG_MAX_JKEYS ||
+		exprType(x) != exprType(y) || exprCollation(x) != exprCollation(y) || !spine_type(exprType(x), exprCollation(x)))
+		return false;
+	tc = lookup_type_cache(exprType(x), TYPECACHE_EQ_OPR);
+	if (!OidIsValid(tc->eq_opr) || (OidIsValid(opno) && opno != tc->eq_opr))
+		return false;
+	q = &t->spine->pair[t->spine->npair];
+	q->col = IsA(y, Var) ? spine_col(t, (Var *) y) : -1;
+	q->konst = IsA(y, Const) ? y : NULL;
+	q->nullsafe = nullsafe;
+	q->typid = exprType(x);
+	q->collid = exprCollation(x);
+	q->eqop = tc->eq_opr;
+	t->pair_att[t->spine->npair++] = ((Var *) x)->varattno;
+	return true;
+}
+
+/* a conjunct of the join: an equality, `IS NOT DISTINCT FROM`, or the equality of two jsonb arrays (each element null-safe) */
+static bool
+spine_conjunct(TwoLevel *t, Node *q)
+{
+	if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2)
+	{
+		OpExpr	   *op = (OpExpr *) q;
+		Node	   *l = linitial(op->args),
+				   *r = lsecond(op->args);
+		ListCell   *la,
+				   *lb;
+
+		if (get_opcode(op->opno) != F_JSONB_EQ)
+			return spine_eq(t, op->opno, l, r, false);
+		if (!IsA(l, FuncExpr) || !IsA(r, FuncExpr) || ((FuncExpr *) l)->funcid != F_JSONB_BUILD_ARRAY_ANY ||
+			((FuncExpr *) r)->funcid != F_JSONB_BUILD_ARRAY_ANY || list_length(((FuncExpr *) l)->args) != list_length(((FuncExpr *) r)->args))
+			return false;
+		forboth(la, ((FuncExpr *) l)->args, lb, ((FuncExpr *) r)->args)
+			if (!spine_eq(t, InvalidOid, lfirst(la), lfirst(lb), true))
+				return false;
+		return true;
+	}
+	if (IsA(q, BoolExpr) && ((BoolExpr *) q)->boolop == NOT_EXPR && IsA(linitial(((BoolExpr *) q)->args), DistinctExpr))
+	{
+		DistinctExpr *d = linitial_node(DistinctExpr, ((BoolExpr *) q)->args);
+
+		return list_length(d->args) == 2 && spine_eq(t, d->opno, linitial(d->args), lsecond(d->args), true);
+	}
+	return false;
+}
+
+/* the spine: the pairs of the join resolved to the keys of each arm, and the plan of its rows (the one child of the path) */
+static bool
+two_spine(TwoLevel *t)
+{
+	SiftAggSpine *sp = t->spine;
+	PlannerInfo *root = t->root;
+	RelOptInfo *rel = root->simple_rel_array[t->spine_rti];
+	RangeTblEntry *e = rt_fetch(t->spine_rti, root->parse->rtable);
+	AggCtx		outer = {.root = root};
+	PathTarget *target = create_empty_pathtarget();
+	Path	   *p;
+
+	foreach_ptr(Node, q, t->join->quals == NULL ? NIL : IsA(t->join->quals, List) ? (List *) t->join->quals : list_make1(t->join->quals))
+		if (!spine_conjunct(t, q))
+			return false;
+	if (sp->npair == 0)
+		return false;
+	for (int i = 0; i < sp->npair; i++)
+		for (int k = 0; k < t->narms; k++)
+		{
+			Node	   *x = list_nth(t->arms[k].cols, t->pair_att[i] - 1);
+
+			sp->pair[i].key[k] = null_const(x) ? -1 : arm_key_of(&t->arms[k], x);
+			if (sp->pair[i].key[k] < 0 && !null_const(x))
+				return false;
+		}
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || !bms_is_empty(rel->lateral_relids) || rel->cheapest_total_path == NULL ||
+		t->spine_cols == NIL)
+		return false;
+	/* the rows are read once, when the scan starts: a condition of the spine that changes between rescans cannot be */
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		if (contain_volatile_functions((Node *) rinfo->clause) || has_exec_param_walker((Node *) rinfo->clause, NULL))
+			return false;
+	switch (e->rtekind)
+	{
+		case RTE_RELATION:
+			if (e->relkind != RELKIND_RELATION)
+				return false;
+			break;
+		case RTE_CTE:
+			{
+				PlannerInfo *owner = root;
+
+				for (Index up = e->ctelevelsup; up > 0; up--)
+					owner = owner->parent_root;
+				if (e->self_reference || cte_owner_correlated(owner))
+					return false;
+			}
+			break;
+		case RTE_VALUES:
+		case RTE_FUNCTION:
+		case RTE_SUBQUERY:
+			if (reads_outer(&outer, e, 1) || contain_volatile_functions(e->rtekind == RTE_VALUES ? (Node *) e->values_lists :
+																		 e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery))
+				return false;
+			break;
+		default:
+			return false;
+	}
+	foreach_ptr(Var, v, t->spine_cols)
+		add_column_to_pathtarget(target, (Expr *) v, 0);
+	set_pathtarget_cost_width(root, target);
+	p = (Path *) create_projection_path(root, rel, rel->cheapest_total_path, target);
+	if (p->rows > SPINE_MAX_ROWS)
+		return false;
+	t->ctx.spine = p;
+	sp->child = 0;
+	sp->ncol = list_length(t->spine_cols);
+	return true;
+}
+
 /* the join PostgreSQL made of the tables of the arms' FROM, the input of the arms' own aggregates */
 static RelOptInfo *
 arm_input(PlannerInfo *base)
@@ -816,12 +1100,12 @@ void
 sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 {
 	Query	   *parse = root->parse;
-	TwoLevel	t = {.root = root, .srti = ((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex};
+	TwoLevel	t = {.root = root};
 	AggCtx	   *c = &t.ctx;
 	FromScan	fs = {.ok = true};
 	PlannerInfo *base;
 
-	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
+	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1 || !two_from(&t))
 		return;
 	if ((base = two_arms(&t)) == NULL)
 		return;
@@ -834,8 +1118,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	for (int k = 0; k < t.narms; k++)
 		if (!two_arm_terms(&t, k))
 			return;
-	if (!two_keys(&t) || !two_aggs(&t, output_rel, gextra))
+	if (!two_keys(&t) || !two_aggs(&t, output_rel, gextra) || (t.join != NULL && !two_spine(&t)))
 		return;
+	t.s->spine = t.spine;
 	t.s->narms = t.narms;
 	t.s->arm = palloc0(t.narms * sizeof(SiftAggArm));
 	for (int k = 0; k < t.narms; k++)
