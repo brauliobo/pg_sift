@@ -346,7 +346,10 @@ def gen_topn(r, ctx):
              'ts': lambda c: f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", 'kind': lambda c: f"{r.choice(['lower', 'upper'])}({c})"}
     order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.35 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     grouped_ = r.random() < 0.25
-    return dict(order=order, limit=r.choice([1, 5, 10, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500, 2500]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
+    # the page with the totals of its set: aggregates over the whole set as window functions (not a float: the sums of another order differ in the last digits)
+    windows = [] if grouped_ or r.random() < 0.6 else r.sample(['count(*)', 'count(e.amount)', 'sum(e.amount)', 'sum(e.big)', 'max(e.ts)', 'min(e.grp)', 'sum(e.num)', 'avg(e.num)', 'min(e.kind)',
+                                                                'count(*) FILTER (WHERE e.flag)', 'max(e.big) FILTER (WHERE e.grp > 3)'], r.choice([1, 1, 2, 4]))
+    return dict(order=order, windows=windows, limit=r.choice([1, 5, 10, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500, 2500]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
                 grouped=grouped_, keys=[], aggs=[], having=[], ordered=True, gkeys=keys(r, 'e', cols, 2), gagg=[r.choice(['count(*)', 'sum(e.amount)', 'max(e.amount)', 'count(DISTINCT e.grp)', 'min(e.big)', 'sum(e.big)'])])  # not a float: ties within the tolerance would order differently
 
 
@@ -358,7 +361,8 @@ def render_topn(p):
         sql = f"SELECT {ks}, {p['gagg'][0]} AS s FROM events e {where(p)} GROUP BY {pos} ORDER BY s DESC NULLS LAST, {pos} LIMIT {p['limit']}"
     else:
         order = ', '.join(p['order'] + ['e.id'])
-        sql = f"SELECT e.id, e.kind, e.ts, e.amount, e.val FROM events e {where(p)} ORDER BY {order} LIMIT {p['limit']} OFFSET {p['offset']}"
+        win = ''.join(f', {w} OVER () AS w{i}' for i, w in enumerate(p['windows']))
+        sql = f"SELECT e.id, e.kind, e.ts, e.amount, e.val{win} FROM events e {where(p)} ORDER BY {order} LIMIT {p['limit']} OFFSET {p['offset']}"
     return sql, True
 
 

@@ -733,12 +733,51 @@ topn_run(AggExec *ex)
 	sift_topn_finish(t);
 }
 
+/* The groups of the scan as the aggregate pass of agg_next ends them */
+static void
+finish_groups(AggExec *ex)
+{
+	empty_set_groups(ex->gtab);
+	dist_finish_all(ex->gtab);
+	dist_end_all(ex->gtab);
+	mapped_finish(ex->gtab);
+	list_groups(ex->gtab);
+	gen_finish(ex->gtab);
+	ex->n_groups = ex->gtab->nglist;
+}
+
+/* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
 static TupleTableSlot *
 topn_next(AggExec *ex, TupleTableSlot *slot)
 {
+	SiftAggSpec *s = ex->spec;
+	int			nout = slot->tts_tupleDescriptor->natts - s->naggs;
+
 	if (!ex->started)
+	{
 		topn_run(ex);
-	return !sift_topn_empty(ex->topn) && sift_topn_next(ex->topn, slot) ? slot : NULL;
+		if (s->naggs > 0 && !sift_topn_empty(ex->topn))
+		{
+			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+			ex->gtab = ex;
+			finish_groups(ex);
+			ex->total_val = palloc(s->naggs * sizeof(Datum));
+			ex->total_null = palloc(s->naggs * sizeof(bool));
+			for (int i = 0; i < s->naggs; i++)
+				ex->total_val[i] = agg_datum(ex->gtab, i, ex->gtab->glist[0], &ex->total_null[i]);
+			MemoryContextSwitchTo(old);
+		}
+	}
+	if (sift_topn_empty(ex->topn))
+		return NULL;
+	/* before the row: it materializes the slot, which copies every value of the tuple */
+	for (int i = 0; i < s->naggs; i++)
+	{
+		slot->tts_values[nout + i] = ex->total_val[i];
+		slot->tts_isnull[nout + i] = ex->total_null[i];
+	}
+	return sift_topn_next(ex->topn, slot) ? slot : NULL;
 }
 
 /* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
@@ -776,13 +815,7 @@ agg_next(ScanState *node)
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
-		empty_set_groups(ex->gtab);
-		dist_finish_all(ex->gtab);
-		dist_end_all(ex->gtab);
-		mapped_finish(ex->gtab);
-		list_groups(ex->gtab);
-		gen_finish(ex->gtab);
-		ex->n_groups = ex->gtab->nglist;
+		finish_groups(ex);
 	}
 	if (ex->fuse)
 		return fuse_next(ex, slot);
