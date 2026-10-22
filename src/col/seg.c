@@ -662,6 +662,67 @@ sift_cseg_preagg_units(SiftColSegment *seg)
 	return n;
 }
 
+void
+sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, SiftCPaggCensus *c)
+{
+	/* the segment is minor 7 only when the setting allows and the kinds of its rows are known: what a rewrite of it writes */
+	bool		minmax = spec->minmax && spec->ndims > 0 && setting >= SIFT_COL_FORMAT_MINMAX && sift_cseg_kinds_exact(seg);
+
+	memset(c, 0, sizeof(*c));
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		uint32		len,
+					elen;
+		const uint8 *cube = sift_cseg_cube(seg, u, &len);
+		const uint8 *ecube = sift_cseg_ecube(seg, u, &elen);
+
+		sift_cpagg_census(seg->schema, spec, minmax, cube, cube ? len : 0, ecube, ecube ? elen : 0, c);
+	}
+}
+
+/* Can every unit of the segment hold a histogram or a rollup dim of the leaf with at most cap groups: its values lie in a range of that width, or its dictionary has that many entries */
+static bool
+leaf_fits(SiftColSegment *seg, int leaf, uint32 cap)
+{
+	const SiftColDef *def = &seg->schema->cols[leaf];
+	SiftColLeafStats ls;
+
+	sift_col_leaf_stats_init(&ls);
+	sift_cseg_leaf_stats(seg, leaf, &ls);
+	if (ls.nvals == ls.nnull)
+		return false;
+	if (def->store == SIFT_COLS_STR)
+		return !ls.inl && ls.dict_n <= cap;
+	return def->store == SIFT_COLS_INT && ls.has_range && (double) ls.max - (double) ls.min + 1 <= cap;
+}
+
+bool
+sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c)
+{
+	if (c->odd > 0)
+		return true;
+	if (c->units == 0)
+		return false;
+	/*
+	 * A section the spec asks and no unit holds is missing only where a unit is sure to fit it: a dim of cube(...) has no byte budget, a default
+	 * dim fits when it has few groups; the rollups of rollup(...) likewise, the default ones are missing in a segment that is too old for them.
+	 * A unit that is over a cap or a budget has none, and rewriting it would not change that.
+	 */
+	for (int i = 0; i < spec->ndims; i++)
+		if (c->dim[i] == 0 && leaf_fits(seg, spec->dim[i].leaf, spec->fixed ? spec->max_groups : Min(spec->max_groups, 32)))
+			return true;
+	for (int r = 0; setting >= PAGG_ECUBE_MINOR && r < spec->nrollups; r++)
+	{
+		bool		fits = spec->rfixed || seg->entry.format < PAGG_ECUBE_MINOR;
+
+		for (int d = 0; spec->rfixed && d < spec->rollup[r].ndims; d++)
+			fits = fits && leaf_fits(seg, spec->rollup[r].dim[d], SIFT_PAGG_ROLLUP_TUPLES);
+		if (c->roll[r] == 0 && fits)
+			return true;
+	}
+	return false;
+}
+
 /* does the sorted set hold a key in [lo, hi]? */
 static bool
 set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)

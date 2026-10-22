@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
 PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
@@ -670,10 +671,22 @@ cube_sound(const SiftCHist *h)
 	return true;
 }
 
+/* does the census of the sidecar (sift_col_refresh) call a unit with these bytes odd (it must never read outside them either) */
+static int
+census_odd_units(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen)
+{
+	SiftCPaggCensus c;
+
+	memset(&c, 0, sizeof(c));
+	sift_cpagg_census(sc, spec, spec->minmax, blob, len, eblob, elen, &c);
+	return c.odd;
+}
+
 /*
  * sift._test_col_cube_damage(index, units): the cube blob of the first units of the index, decoded as stored, cut at every length, and with every
  * byte set to some other values (one at a time). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse what it
- * cannot trust: a cut blob is always refused, and a damaged one that is accepted still obeys min <= max.
+ * cannot trust: a cut blob is always refused, and a damaged one that is accepted still obeys min <= max. The census that sift.col_refresh takes of
+ * the same bytes reads headers only: it must stay inside them, and call every cut blob odd (census_cut_odd; the empty cut is no blob).
  */
 Datum
 sift_test_col_cube_damage(PG_FUNCTION_ARGS)
@@ -691,9 +704,11 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 				cut_accepted = 0,
 				damaged = 0,
 				accepted = 0,
-				unsound = 0;
-	Datum		v[8];
-	bool		nulls[8] = {false};
+				unsound = 0,
+				census_cut_odd = 0,
+				census_odd = 0;
+	Datum		v[10];
+	bool		nulls[10] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -702,14 +717,18 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 	{
 		SiftColSegment *seg;
 		uint32		u,
-					len;
-		const uint8 *blob;
+					len,
+					elen;
+		const uint8 *blob,
+				   *eblob;
 		uint8	   *copy;
 		SiftCHist	h;
 		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
+		const SiftCPaggSpec *spec = &sift_col_rel(ts.index)->pagg;
 
 		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_cube(seg, u, &len)) == NULL)
 			continue;
+		eblob = sift_cseg_ecube(seg, u, &elen);
 		blobs++;
 		copy = palloc(len);
 		MemoryContextReset(cx);
@@ -724,6 +743,7 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 			memcpy(copy, blob, l);
 			cut++;
 			cut_accepted += sift_cpagg_decode(sc, copy, l, cx, &h);
+			census_cut_odd += census_odd_units(sc, spec, copy, l, eblob, eblob ? elen : 0);
 		}
 		for (uint32 i = 0; i < len; i++)
 			for (int k = 0; k < lengthof(vals); k++)
@@ -734,6 +754,7 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 				copy[i] = vals[k];
 				MemoryContextReset(cx);
 				damaged++;
+				census_odd += census_odd_units(sc, spec, copy, len, eblob, eblob ? elen : 0);
 				if (sift_cpagg_decode(sc, copy, len, cx, &h))
 				{
 					accepted++;
@@ -751,6 +772,8 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 	v[5] = Int64GetDatum(damaged);
 	v[6] = Int64GetDatum(accepted);
 	v[7] = Int64GetDatum(unsound);
+		v[8] = Int64GetDatum(census_cut_odd);
+		v[9] = Int64GetDatum(census_odd);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
@@ -1026,6 +1049,27 @@ sift_test_col_damage(PG_FUNCTION_ARGS)
 		v[i] = Int64GetDatum(t[i]);
 	v[7] = Int32GetDatum((int32) d.flags);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* sift._test_col_pre_stats(index): the units that hold the histogram (with min and max) of a leaf, or the rollup of a list, as the planner counts them */
+Datum
+sift_test_col_pre_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	const SiftColPreStats *pre = sift_col_pre_stats(index);
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
+	{
+		Datum		v[5] = {Int32GetDatum(c), Float8GetDatum(pre->units), Float8GetDatum(pre->dim[c]), Float8GetDatum(pre->mm[c]), Float8GetDatum(pre->roll[c])};
+		bool		nulls[5] = {false};
+
+		if (pre->dim[c] > 0 || pre->roll[c] > 0)
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 /* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
