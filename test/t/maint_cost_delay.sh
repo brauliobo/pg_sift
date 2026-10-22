@@ -60,9 +60,11 @@ check "the throttled worker sleeps while it merges, in at least 10 more samples 
 check "both merged the backlog" test "$(sql delay "SELECT count(*) <= 12 FROM sift.segments('fast_idx') UNION SELECT count(*) <= 12 FROM sift.segments('slow_idx')")" == t
 check "both are intact and find every row" test "$(sql delay "SELECT sift.verify('fast_idx', true)" "SELECT sift.verify('slow_idx', true)" "SELECT sift._test_check('fast_idx') + sift._test_check('slow_idx')" | tail -1)" == 0
 
-# only the worker is throttled: VACUUM merges at full speed
+# only the worker is throttled: VACUUM merges at full speed, in less than a throttled pass over the index takes (2 s at the least; a
+# loaded runner can take that long for a free VACUUM)
+FLOOR=$((${MB%%.*} * 8 * DELAY_MS))
 t0=$(now_ms)
 sql delay "VACUUM slow" >/dev/null
-check "VACUUM is not throttled" test "$(($(now_ms) - t0))" -lt 2000
+check "VACUUM is not throttled" test "$(($(now_ms) - t0))" -lt "$((FLOOR > 2000 ? FLOOR : 2000))"
 check "out of range is an error" test "$(sql delay "SELECT sift.version() IS NOT NULL" "SET sift.maintenance_cost_delay = 101" 2>&1 | grep -c 'outside the valid range')" == 1
 finish
