@@ -168,7 +168,7 @@ SELECT idx, string_agg(DISTINCT format::text, ',') AS format FROM (SELECT 'w_all
 	UNION ALL SELECT 'w_iv', format FROM sift._test_col_formats('w_iv') UNION ALL SELECT 'w_m', format FROM sift._test_col_formats('w_m')) f GROUP BY idx ORDER BY idx;
   idx  | format 
 -------+--------
- w_all | 12
+ w_all | 14
  w_iv  | 12
  w_m   | 12
 (3 rows)
