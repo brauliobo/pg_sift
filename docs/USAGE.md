@@ -235,43 +235,66 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 - pg_dump restores rebuild the index. Replication: see [Replication](#replication).
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
 
-| GUC | default | meaning |
-|---|---|---|
-| `sift.max_expansions` | 512 | superuser setting: terms a wildcard, regex, fuzzy or prefix leaf scores individually; above it the leaf scores as one term |
-| `sift.prefix_cache_size` | 8MB | superuser setting: memory per backend for the postings of broad leaves, `0` keeps none |
-| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
-| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
-| `sift.async_maintenance` | on | promote and merge in a background worker; off leaves it to the inserts and `VACUUM` (superuser) |
-| `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the write buffers a bulk load closes in between are promoted too |
-| `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
-| `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
-| `sift.enable_col` | on | use `sift_col` indexes for column scans |
-| `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
-| `sift.agg_preagg` | on | answer the units of a `SiftAgg` scan whose rows are all visible from the sums and group counts the `sift_col` index stored with them (`Units From Pre-aggregates` in `EXPLAIN ANALYZE`); `off` scans every unit |
-| `sift.agg_rollup_cost` | 1 | scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit with a rollup is answered from it only when that costs less (0: always, large: never) |
-| `sift.enable_topn` | on | push `WHERE ... [col @@> q] ORDER BY <index columns> LIMIT n` down to `sift_col` indexes (`Custom Scan (SiftAgg)` with `Top-N`, [docs/COL-SEARCH.md](COL-SEARCH.md)); needs `sift.enable_agg` |
-| `sift.topn_walk` | on | a top-N scan without a search visits the units of a sort column that does not follow the table by the best value of their zones and stops at the first that cannot beat the n-th row ([docs/COL-SEARCH.md](COL-SEARCH.md)); `off` visits them in table order |
-| `sift.agg_combo_cache` | 1048576 | 16 to 16777216: distinct value combinations of an expression PostgreSQL evaluates for an aggregate scan that are kept before the cache starts again ([docs/COL-PLAN.md](COL-PLAN.md)) |
-| `sift.agg_param_set_size` | 1000 | elements the planner assumes for an array parameter of a set filter (`col = ANY($1)`) in a generic plan, to cost the index and bitmap scans against `Custom Scan (SiftAgg)`; `0` keeps PostgreSQL's guess of 10 ([docs/SET-FILTERS.md](SET-FILTERS.md)); it also switches off the keys assumed for a lookup join whose rows PostgreSQL cannot count |
-| `sift.agg_key_skew` | on | price the probes of the normal plan for the keys of a lookup join (`IN (SELECT ..)`, a join on a list table) by the rows the column's most common values own, not by the mean rows of a key, when the column is more than twice as uneven as a flat one; `off` keeps the mean (needs `sift.agg_param_set_size` above 0) |
-| `sift.agg_semi_lut` | on | answer a semi or anti join (`IN (SELECT ..)`, `EXISTS`, `NOT EXISTS`) on an integer or date leaf from a byte table over the keys of the joined table (`Semi Lookup Tables` in `EXPLAIN ANALYZE`); `off` uses the generic lookup join |
-| `sift.agg_semi_lut_size` | 4096 kB | 0 to 1048576: memory of that byte table, per scan and per worker; keys that span more keep the generic lookup join |
-| `sift.agg_lookup_pushdown` | on | the lookup table of a join (a set kept in a table, an attribute table) is loaded with only the rows its own conditions `column = value` can match: an index scan on the leading columns of a btree, else the filter runs as each row is read; off loads the whole table ([docs/SET-FILTERS.md](SET-FILTERS.md)) |
-| `sift.agg_lookup_cache_kb` | 256 MB | 0 to 2147483647 kB: memory per backend that keeps the rows of the tables a `SiftAgg` scan joined for the next query while the table is unchanged and fully vacuumed (`Cached Lookup Tables` in `EXPLAIN ANALYZE`); a table whose rows need more than half of it is loaded per query; `0` keeps nothing ([docs/AGG.md](AGG.md)) |
-| `sift.agg_lookup_max_rows` | 1000000 | rows a sub-select, `VALUES` list or function joined to a `SiftAgg` scan may have, as the planner estimates them (the rows go into a lookup table in memory when the scan starts); a larger one keeps the normal join ([docs/AGG.md](AGG.md), "Joins to plans") |
-| `sift.col_auto_merge` | off | after a `VACUUM` that leaves a `sift_col` index scattered by churn, a background worker seals its write buffer and merges all its segments into one (the end state of `REINDEX`, without its exclusive lock); it needs `sift.async_maintenance`, sleeps as `sift.maintenance_cost_delay` says, skips an index over `sift.vacuum_rewrite_limit` MB and one whose maintenance lock is held (superuser; set it per database or in `postgresql.conf`, the worker reads no session setting) |
-| `sift.col_auto_merge_dirty_pct`, `_fragmentation`, `_buffer_pct` | 30, 2.0, 1.0 | the rule of that rewrite: more than this percent of the units hold a dead row, or the units listed are this many times the superblocks they cover, or the write buffer holds more than this percent of the rows |
-| `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
-| `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
-| `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
-| `sift.table_write_buffer_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write buffer of a `sift_table` before it is closed and promoted into columns; a row must fit one |
-| `sift.table_inline_promote` | on | a `sift_table` promotes its closed write buffers into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
-| `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings ([Limits](#limits)) |
-| `sift.table_dead_rewrite_pct` | 30 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
-| `sift.table_auto_defrag` | off | the backend that closes a write buffer of a `sift_table` asks a background worker (with `sift.async_maintenance`) to clear the dead rows, rewrite the mostly dead segments and give the free space back without VACUUM, when the tombstones reach `sift.table_dead_rewrite_pct` of the rows or the free blocks reach `sift.table_auto_defrag_free_pct`; it stays a few seconds and passes again while the writer's rows settle |
-| `sift.table_auto_defrag_indexes` | on | that worker runs a whole VACUUM (index cleanup, tombstone rewrite) when the dead rows reach the threshold; off: only what needs no index, and a VACUUM has to follow for the indexes and the tombstone log |
-| `sift.table_auto_defrag_free_pct` | 25 | 1-100: percent of the file that is free blocks from which that worker gathers and returns them |
-| `sift.table_auto_defrag_delay` | 10 ms | the cost delay of that worker's index cleanup and its pause after each segment it rewrites (0: none) |
+<!-- gen:gucs (generated by `scripts/gen-docs.py` from the settings the library defines in src/; do not edit by hand) -->
+| setting | default | range | set by | meaning |
+|---|---|---|---|---|
+| `sift.agg_combo_cache` | 1,048,576 | 16 to 16,777,216 | any user | Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again. |
+| `sift.agg_dense` | on |  | any user | Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples. |
+| `sift.agg_fuse` | on |  | any user | Runs the UNION ALL arms that read the same rows in one pass over the index, as the grouping sets of one scan. |
+| `sift.agg_join_filter` | on |  | any user | Tests the integer key leaf of an inner or semi lookup join against the keys of the loaded table before tuples are made (zone pruning, source filters, row bitmaps). |
+| `sift.agg_key_skew` | on |  | any user | Prices the probes of the normal plan for the keys of a lookup join by the rows a key owns by the column's most common values, not by the mean rows of a key. |
+| `sift.agg_lookup_cache_kb` | 256 MB | at least 0 kB | any user | Memory per backend that keeps the rows of the joined tables a scan loaded for the next query, while the table does not change (0: off). |
+| `sift.agg_lookup_max_rows` | 1,000,000 | at least 0 | any user | Rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join. |
+| `sift.agg_lookup_pushdown` | on |  | any user | Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading. |
+| `sift.agg_param_set_size` | 1000 | 0 to 100,000,000 | any user | Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess. |
+| `sift.agg_preagg` | on |  | any user | Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them. |
+| `sift.agg_rollup_cost` | 1.0 |  | any user | Scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit is answered from its rollup only when that costs less (0: always). |
+| `sift.agg_rows` | on |  | any user | Groups the rows of a plan that reads Custom Scan (SiftAgg) nodes with exact count(DISTINCT) in Custom Scan (SiftAggRows), without a sort of the rows. |
+| `sift.agg_semi_lut` | on |  | any user | Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table. |
+| `sift.agg_semi_lut_size` | 4 MB | 0 kB to 1024 MB | any user | Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join. |
+| `sift.agg_share_lookups` | on |  | any user | Lets the Custom Scan (SiftAgg) nodes of one statement that join the same table share the rows they load (UNION ALL arms). |
+| `sift.agg_two_level` | on |  | any user | Aggregates an aggregate over per-row aggregates (UNION ALL arms grouped by a row id) in one scan of the index: the cells of a row are kept in the scan. |
+| `sift.async_maintenance` | on |  | superuser | Promotes and merges segments in a dynamic background worker. |
+| `sift.col_auto_merge` | off |  | superuser | After a VACUUM that left a sift_col index scattered by churn, a background worker seals its write buffer and merges all its segments into one. The rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. Set it for the server or the database: the worker reads no session setting. |
+| `sift.col_auto_merge_buffer_pct` | 1.0 |  | superuser | Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs. The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion. |
+| `sift.col_auto_merge_dirty_pct` | 30 | 1 to 100 | superuser | Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs. Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead. |
+| `sift.col_auto_merge_fragmentation` | 2.0 |  | superuser | Units listed per superblock they cover from which the automatic rewrite of a sift_col index runs. Each promotion of the write buffer adds a segment over the superblocks the churn touched. |
+| `sift.col_format_minor` | 6 | 3 to 6 | superuser | Column format minor of the segments written: 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0. Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. |
+| `sift.col_rollup_on_demand` | on |  | any user | A scan that reads units for lack of their rollups asks the background worker to rebuild them. Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX. |
+| `sift.col_rollup_worker` | on |  | any user | A request for a rollup refresh starts the background worker that makes it. Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called. |
+| `sift.enable_agg` | on |  | any user | Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)). |
+| `sift.enable_col` | on |  | any user | Enables the column scans over sift_col indexes. |
+| `sift.enable_count` | on |  | any user | Enables count(*) pushdown into the sift index. |
+| `sift.enable_scan` | on |  | any user | Enables the sift custom scan (ranked and unordered). |
+| `sift.enable_topn` | on |  | any user | Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg. |
+| `sift.filter_pushdown` | on | `off`, `on`, `force` | any user | Ranked scans take the tuples a bitmap of the other quals keeps: off, on (by cost) or force. |
+| `sift.gpu` | off | `off`, `auto`, `on` | superuser | Runs the integer aggregates of a SiftAgg scan on a Vulkan device (docs/GPU.md): off, auto (above sift.gpu_min_rows) or on. A build without Vulkan support (make VULKAN=1) runs on the CPU whatever this says. |
+| `sift.gpu_cache_mb` | 256 | 16 to 1,048,576 | superuser | Device memory, in MB, for the column chunks that stay on the Vulkan device between queries (per backend). |
+| `sift.gpu_device` | empty |  | superuser | The Vulkan device sift.gpu uses: its index, or a part of its name. Empty: the best one. |
+| `sift.gpu_min_rows` | 5,000,000 | at least 0 | any user | Rows of the index above which sift.gpu = auto uses the device for a grouped aggregate; an ungrouped one runs there only with sift.gpu = on. |
+| `sift.grouped_min_df` | 8192 | at least 3 | any user | Testing: df from which a term's postings are GROUPED rather than LIST. |
+| `sift.log_min_duration` | 1 s | at least -1 ms | superuser | Logs the promotions, merges and maintenance worker runs of an index that take at least this long (ms), -1 to log none. |
+| `sift.maintenance_cost_delay` | 0 ms | 0 ms to 100 ms | superuser | Milliseconds the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, 0 to run them at full speed. |
+| `sift.maintenance_naptime` | 2 s | 200 ms to 60 s | reload | Time between background maintenance workers of an index; a worker stays this long after it starts. |
+| `sift.max_expansions` | 512 | 1 to 1,000,000 | superuser | Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over. A prefix with more terms matches all of them and scores as the one term prefix_index would index. |
+| `sift.parallel_scan` | off |  | any user | Lets the planner use parallel sift scans and counts (they pay off on large, heap-bound scans only). |
+| `sift.prefetch` | on |  | any user | Reads ahead the heap pages an unordered scan is about to visit. |
+| `sift.prefix_cache_size` | 8 MB | 0 kB to 1024 MB | superuser | Memory a backend keeps the postings of broad prefixes in (kB), 0 to keep none. |
+| `sift.simd` | auto | `scalar`, `avx2`, `avx512`, `auto` | any user | Caps the SIMD level used by sift kernels. auto uses the best level the CPU supports. |
+| `sift.standby_conflicts` | off |  | superuser | Logs the reuse of released blocks as a recovery conflict, so a standby without hot_standby_feedback waits for or cancels the queries that may still read them. Off, such a query fails with "segment recycled during scan, retry" when the blocks it reads are reused. |
+| `sift.table_auto_defrag` | off |  | any user | A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM. Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those. |
+| `sift.table_auto_defrag_delay` | 10 ms | 0 ms to 10 s | any user | Milliseconds the background pass of a sift_table waits after each segment it rewrites. 0 never waits. |
+| `sift.table_auto_defrag_free_pct` | 25 | 1 to 100 | any user | Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them. |
+| `sift.table_auto_defrag_indexes` | on |  | any user | The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included. Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM. |
+| `sift.table_compression` | empty |  | any user | Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'. |
+| `sift.table_dead_rewrite_pct` | 30 | 1 to 100 | any user | Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them. 100 never rewrites. |
+| `sift.table_inline_promote` | on |  | any user | Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does). |
+| `sift.table_max_segments` | 128 | 16 to 128 | any user | Test only: the directory entries a sift_table may use. |
+| `sift.table_vblock_floor` | 0 | 0 to 1,073,741,824 | any user | Test only: the first virtual block a new write buffer of a sift_table may take. |
+| `sift.table_write_buffer_limit` | 4 MB | 2 MB to 8 MB | any user | Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns. Rounded down to whole superblocks of 2 MB; a row has to fit one segment. |
+| `sift.topn_walk` | on |  | any user | Lets a top-N scan visit the units of a sort column that does not follow the table by the best value of their zones, and stop at the first that cannot beat the n-th. |
+| `sift.vacuum_rewrite_limit` | 128 | 0 to 1,048,576 | any user | Megabytes of segments a column VACUUM may rewrite to merge (past the first merge step), with a separate equal allowance to copy the end of the file into free blocks below it, which holds the table or index under an exclusive lock; 0 keeps the one merge step and moves nothing. |
+<!-- /gen:gucs -->
 
 Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
