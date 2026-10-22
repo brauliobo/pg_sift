@@ -16,12 +16,7 @@
 SiftCc *
 cc_open(const SiftCChunk *c, bool verify)
 {
-	SiftCc	   *cc = sift_cc_open(CurrentMemoryContext, c->payload, c->paylen, verify);
-
-	if (sift_cc_nrows(cc) != c->n)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the blob has %u values, the chunk %u",
-																 sift_cc_nrows(cc), c->n)));
-	return cc;
+	return sift_cc_open_rows(CurrentMemoryContext, c->payload, c->paylen, verify, c->n);
 }
 
 /*

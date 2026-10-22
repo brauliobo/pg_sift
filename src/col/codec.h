@@ -123,6 +123,7 @@ typedef struct SiftCc SiftCc;
 
 /* Validates the blob (header, lengths, widths, tags, sums; the check word when verify) and unwraps general-purpose layers into mcxt. */
 extern SiftCc *sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify);
+extern SiftCc *sift_cc_open_rows(MemoryContext mcxt, const uint8 *blob, Size len, bool verify, uint32 nrows);	/* the same, for a blob of exactly nrows values */
 extern void sift_cc_close(SiftCc *c);			/* frees what open allocated */
 extern SiftCcKind sift_cc_kind(const SiftCc *c);
 extern uint32 sift_cc_nrows(const SiftCc *c);
