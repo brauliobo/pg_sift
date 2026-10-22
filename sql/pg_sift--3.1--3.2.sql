@@ -42,3 +42,14 @@ CREATE FUNCTION sift.table_maintain(tbl regclass,
 									OUT blocks_before int8, OUT blocks_after int8)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_table_maintain' LANGUAGE C STRICT VOLATILE;
+
+-- The rewrite of sift.col_auto_merge, now and in this session (for a job: pg_cron): when the churn has scattered the index (many units with a dead row,
+-- many units over the same superblocks, many rows in the write buffer), the write buffer is sealed and every segment merged into one, without
+-- blocking readers or writers. False when nothing is due or the maintenance lock is held.
+CREATE FUNCTION sift.col_maintain(index regclass) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_col_maintain' LANGUAGE C STRICT VOLATILE;
+
+-- Why sift.col_maintain would rewrite the index now: 'dirty units', 'fragmented units' or 'write buffer rows' (the thresholds are sift.col_auto_merge_*),
+-- NULL when it is not due. automatic: as the server's own rewrite, which leaves an index over sift.vacuum_rewrite_limit megabytes alone.
+CREATE FUNCTION sift.col_maintenance_due(index regclass, automatic bool DEFAULT true) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_col_maintenance_due' LANGUAGE C STRICT VOLATILE;

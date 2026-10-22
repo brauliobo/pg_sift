@@ -1,0 +1,217 @@
+-- The rewrite of a sift_col index that churn left scattered (sift.col_auto_merge*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
+-- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing
+-- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
+-- in the write buffer. The end state after the rewrite is the one of a REINDEX of the same table, and the answers never change.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE facts_a (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false);
+INSERT INTO facts_a SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 40000) g;
+CREATE TABLE facts_b (LIKE facts_a) WITH (autovacuum_enabled = false);
+INSERT INTO facts_b SELECT * FROM facts_a ORDER BY id;
+CREATE TABLE facts_c (LIKE facts_a) WITH (autovacuum_enabled = false);
+INSERT INTO facts_c SELECT * FROM facts_a ORDER BY id;
+CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount);
+CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount);
+CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount);
+VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+-- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
+CREATE FUNCTION fa_state(tbl text) RETURNS TABLE (units int, from_preagg int, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; u int; p int; q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
+		p := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, p);
+	END LOOP;
+	SET LOCAL sift.agg_preagg = on;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
+	SET LOCAL sift.agg_preagg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
+	RETURN QUERY SELECT u, p, a = b AND b = c;
+END $$;
+-- what the index holds: segments, buffer rows, units listed and the superblocks they cover
+CREATE FUNCTION fa_index(idx regclass) RETURNS TABLE (segments int, buffer_rows int, listed int, covered int) LANGUAGE sql AS $$
+	SELECT (SELECT count(*)::int FROM sift.col_segments(idx) WHERE kind = 'immutable'), (SELECT coalesce(sum(rows), 0)::int FROM sift.col_segments(idx) WHERE kind <> 'immutable'),
+	       (SELECT coalesce(sum(units), 0)::int FROM sift.col_segments(idx)), (SELECT units::int FROM sift.col_index_info(idx)) $$;
+-- the reason for the rewrite under the three thresholds (percent of units with a dead row, units per superblock, percent of rows in the buffer)
+CREATE FUNCTION fa_due(idx regclass, dirty int, frag numeric, buf numeric) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.col_auto_merge_dirty_pct', dirty::text, true), set_config('sift.col_auto_merge_fragmentation', frag::text, true),
+	        set_config('sift.col_auto_merge_buffer_pct', buf::text, true);
+	RETURN coalesce(sift.col_maintenance_due(idx, false), 'not due');
+END $$;
+-- one cycle of churn spread over the whole table, 1% of the rows each of updated, deleted and inserted
+CREATE PROCEDURE fa_churn(n int) LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	FOREACH t IN ARRAY ARRAY['facts_a', 'facts_b', 'facts_c'] LOOP
+		EXECUTE format('UPDATE %s SET amount = amount + 1 WHERE id %% 100 = %s', t, n);
+		EXECUTE format('DELETE FROM %s WHERE id %% 100 = %s', t, n + 50);
+		EXECUTE format('INSERT INTO %s SELECT %s * 100000 + g, g %% 1000, ''cat_'' || (g %% 8), g %% 997, repeat(''x'', 150) FROM generate_series(1, 400) g', t, n);
+	END LOOP;
+END $$;
+SELECT 'built' AS step, * FROM fa_state('facts_a');
+ step  | units | from_preagg | same 
+-------+-------+-------------+------
+ built |     4 |           4 | t
+(1 row)
+
+-- cycle 1: the policy of VACUUM leaves every unit with a dead row, none answers from the pre-aggregates, and 1% of dead rows is far from dead_rewrite_pct
+CALL fa_churn(1);
+VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+SELECT 'cycle 1' AS step, * FROM fa_state('facts_a');
+  step   | units | from_preagg | same 
+---------+-------+-------------+------
+ cycle 1 |     5 |           0 | t
+(1 row)
+
+SELECT sum(dead_rows) * 100 / sum(rows) < 10 AS under_dead_rewrite_pct, bool_and(dirty) AS all_dirty FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable';
+ under_dead_rewrite_pct | all_dirty 
+------------------------+-----------
+ t                      | t
+(1 row)
+
+-- the rule: each threshold alone, at the value of the index (due) and just above it (not due)
+SELECT 'dirty units' AS rule, fa_due('facts_a_col', 99, 1000, 100) AS at_99, fa_due('facts_a_col', 100, 1000, 100) AS at_100;
+    rule     |    at_99    | at_100  
+-------------+-------------+---------
+ dirty units | dirty units | not due
+(1 row)
+
+WITH b AS (SELECT buffer_rows * 100.0 / (buffer_rows + (SELECT sum(rows) FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable')) AS pct FROM fa_index('facts_a_col'))
+SELECT 'write buffer rows' AS rule, fa_due('facts_a_col', 100, 1000, greatest(floor(pct * 100) / 100 - 0.01, 0.01)) AS below, fa_due('facts_a_col', 100, 1000, ceil(pct * 100) / 100) AS at_pct FROM b;
+       rule        |       below       | at_pct  
+-------------------+-------------------+---------
+ write buffer rows | write buffer rows | not due
+(1 row)
+
+SELECT 'nothing due' AS rule, fa_due('facts_a_col', 100, 1000, 100) AS thresholds_off, fa_due('facts_a_col', 30, 2, 1) AS defaults;
+    rule     | thresholds_off |  defaults   
+-------------+----------------+-------------
+ nothing due | not due        | dirty units
+(1 row)
+
+-- the server's own rewrite leaves an index over sift.vacuum_rewrite_limit alone, the explicit one does not
+SET sift.vacuum_rewrite_limit = 0;
+SELECT sift.col_maintenance_due('facts_a_col') AS automatic, sift.col_maintenance_due('facts_a_col', false) AS explicit;
+ automatic |  explicit   
+-----------+-------------
+           | dirty units
+(1 row)
+
+RESET sift.vacuum_rewrite_limit;
+-- units listed per superblock covered: the promotion of the buffer adds a segment over the superblocks the churn touched
+SELECT sift.col_promote('facts_a_col') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT segments, buffer_rows, listed > covered AS fragmented FROM fa_index('facts_a_col');
+ segments | buffer_rows | fragmented 
+----------+-------------+------------
+        2 |           0 | t
+(1 row)
+
+WITH r AS (SELECT listed::numeric / covered AS ratio FROM fa_index('facts_a_col'))
+SELECT 'fragmented units' AS rule, fa_due('facts_a_col', 100, floor(ratio * 100) / 100, 100) AS at_ratio, fa_due('facts_a_col', 100, floor(ratio * 100) / 100 + 0.01, 100) AS above FROM r;
+       rule       |     at_ratio     |  above  
+------------------+------------------+---------
+ fragmented units | fragmented units | not due
+(1 row)
+
+-- cycle 2, then the rewrite in this session: the index is the one a REINDEX of the same table gives
+CALL fa_churn(2);
+VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+SELECT 'cycle 2' AS step, * FROM fa_state('facts_a');
+  step   | units | from_preagg | same 
+---------+-------+-------------+------
+ cycle 2 |    10 |           0 | t
+(1 row)
+
+SELECT sift.col_maintenance_due('facts_a_col') AS due;
+     due     
+-------------
+ dirty units
+(1 row)
+
+SELECT sift.col_maintain('facts_a_col') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT sift.col_maintain('facts_a_col') AS rewritten_again;
+ rewritten_again 
+-----------------
+ f
+(1 row)
+
+REINDEX INDEX facts_c_col;
+SELECT 'maintained' AS step, * FROM fa_state('facts_a');
+    step    | units | from_preagg | same 
+------------+-------+-------------+------
+ maintained |     5 |           5 | t
+(1 row)
+
+SELECT 'reindexed' AS step, * FROM fa_state('facts_c');
+   step    | units | from_preagg | same 
+-----------+-------+-------------+------
+ reindexed |     5 |           5 | t
+(1 row)
+
+SELECT 'maintained' AS index, * FROM fa_index('facts_a_col') UNION ALL SELECT 'reindexed', * FROM fa_index('facts_c_col');
+   index    | segments | buffer_rows | listed | covered 
+------------+----------+-------------+--------+---------
+ maintained |        1 |           0 |      5 |       5
+ reindexed  |        1 |           0 |      5 |       5
+(2 rows)
+
+SELECT sum(dead_rows) AS dead_rows FROM sift.col_segments('facts_a_col');
+ dead_rows 
+-----------
+         0
+(1 row)
+
+SELECT sift.col_verify('facts_a_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- sift.col_auto_merge off: VACUUM leaves facts_b as the policy does, the answers are the same as those of the rewritten and of the reindexed one
+SELECT 'not rewritten' AS step, * FROM fa_state('facts_b');
+     step      | units | from_preagg | same 
+---------------+-------+-------------+------
+ not rewritten |     9 |           0 | t
+(1 row)
+
+SELECT (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_a GROUP BY kind) x)
+     = (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_b GROUP BY kind) x) AS same_as_not_rewritten,
+       (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_a GROUP BY kind) x)
+     = (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_c GROUP BY kind) x) AS same_as_reindexed;
+ same_as_not_rewritten | same_as_reindexed 
+-----------------------+-------------------
+ t                     | t
+(1 row)
+
+-- not in a read-only transaction
+BEGIN READ ONLY;
+SELECT sift.col_maintain('facts_b_col');
+ERROR:  cannot execute sift.col_maintain() in a read-only transaction
+ROLLBACK;
+SELECT sift.col_maintain('facts_b_col') AS rewritten, sift.col_maintenance_due('facts_b_col') AS due_again;
+ rewritten | due_again 
+-----------+-----------
+ t         | 
+(1 row)
+
+DROP TABLE facts_a, facts_b, facts_c;
+DROP FUNCTION fa_state(text);
+DROP FUNCTION fa_index(regclass);
+DROP FUNCTION fa_due(regclass, int, numeric, numeric);
+DROP PROCEDURE fa_churn(int);
+DROP EXTENSION pg_sift;
