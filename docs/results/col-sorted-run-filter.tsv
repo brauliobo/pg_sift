@@ -1,0 +1,16 @@
+# columns: shape, limit n, median over 4 rounds of the median of 15 warm runs in ms (EXPLAIN ANALYZE, TIMING OFF) of the library before this walk (old) and after (new), the two swapped between rounds; btree = sift.enable_agg off, one pass
+# shapes: SELECT id, k FROM items [WHERE ..] ORDER BY k LIMIT n; none; f50 / f10 / f1 = g < 50 / 10 / 1 (that share of the rows); k500000 / k990000 = k > 500000 / 990000 (k random in 1,000,000 values)
+# pg_sift sorted run, 2026-10-22, PostgreSQL 18.6, 1,000,000 rows of (id, k, val, ts, amount, g, pad) with a 400 byte pad (230 units), order_columns = 'k, val', shared_buffers 256MB, host load average 5 to 9
+shape	n	old	new	btree
+none	100	0.25	0.26	0.01
+none	1000	0.94	0.96	0.10
+f50	100	0.48	0.47	0.02
+f50	1000	1.19	1.18	0.25
+f10	100	1.50	1.32	0.09
+f10	1000	2.53	2.16	1.16
+f1	100	0.85	0.86	1.22
+f1	1000	1.44	1.58	114.72
+k500000	100	5.18	1.96	0.01
+k500000	1000	5.71	2.54	0.12
+k990000	100	0.79	0.80	0.01
+k990000	1000	1.40	1.43	0.11
