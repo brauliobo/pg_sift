@@ -182,7 +182,7 @@ check_meta(Relation index, Buffer buf)
 				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build (pg_sift %s) reads formats %u.0 to %u.%u",
 						RelationGetRelationName(index), meta->format_major, meta->format_minor, SIFT_MODULE_VERSION,
 						SIFT_FORMAT_MAJOR, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
-				 errhint("Install the pg_sift release that wrote the index, or a later one, on every node that reads it; REINDEX rewrites it with this build.")));
+				 errhint("Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.")));
 	if (meta->high_water < FIRST_DATA_BLKNO)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
 }
