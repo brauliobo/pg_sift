@@ -797,7 +797,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift indexes require a heap or sift_table table"),
-				 errhint("Index the underlying table of the view, or materialize it into a table.")));
+				 errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
 	{
 		SiftAnalyzerConfig cfg;

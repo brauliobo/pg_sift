@@ -329,7 +329,8 @@ write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
-				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit)));
+				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit),
+				 errhint("Raise sift.table_write_buffer_limit (up to 1048576 kB), or keep the document outside the row.")));
 	for (uint32 i = 0; i < npg; i++)
 		if (!BlockNumberIsValid(blks[i] = claim_page_in(rel, st, gen, SIFT_TBL_PAGE_OVFDATA)))
 			goto done;
