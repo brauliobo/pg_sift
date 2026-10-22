@@ -56,6 +56,8 @@ typedef struct MapTab
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
+	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
+	ExprContext *kcx;
 } MapTab;
 
 /* does a NULL key of the row equal nothing, so that it is in no chain? */
