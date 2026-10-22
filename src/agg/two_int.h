@@ -17,11 +17,26 @@ typedef struct ArmSt
 	double	  **dx;				/* its float8 value */
 	int64	  **ix;				/* its integer value */
 	uint64	   *ord;			/* per outer group: the row its cell holds, UINT64_MAX none */
-	int64	  **n;				/* per inner aggregate and group */
+	int64	  **n;				/* per inner aggregate and group (local: and cell) */
 	int64	  **i;
 	double	  **d;
 	uint8	  **nf;
 	double	   *amax;			/* per inner aggregate: the largest absolute float input */
+	/*
+	 * A local arm has hidden keys: its cells are finer than the outer groups and live for one row, so they are numbered in the row (a small
+	 * table of the key ids of its cells) and not in the group table, which then holds the outer groups only.
+	 */
+	bool		local;
+	int			nlk;			/* the keys of a cell: the arm's outer and hidden keys, lk[] */
+	int			lk[SIFT_AGG_MAX_KEYS];
+	int8		lpos[SIFT_AGG_MAX_KEYS];	/* per key: its place in lk, -1 not a key of the arm */
+	uint32	   *kid;			/* per key and tuple of the chunk: the key's id */
+	uint32		nc;				/* the cells of the row */
+	uint32		ccap;
+	uint32	   *cid;			/* per cell: the ids of its keys, nlk each */
+	uint32		lcap;			/* the slots of the row's table of cells, a power of 2 */
+	uint64	   *ltab;			/* a slot: the row's stamp << 32 | cell + 1, free when the stamp is not the row's */
+	uint32		stamp;
 } ArmSt;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */

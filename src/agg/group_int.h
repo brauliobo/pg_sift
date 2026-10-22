@@ -43,6 +43,19 @@ key_used(KeyState *k)
 	return (k->numk ? k->im.n : k->ident ? k->nident : k->ot.n) + 1;
 }
 
+static inline uint32
+ids_hash(const uint32 *ids, int nk, uint32 nslot)
+{
+	uint64		h = 0;
+
+	for (int j = 0; j < nk; j++)
+	{
+		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
+		h ^= h >> 32;
+	}
+	return (uint32) h & (nslot - 1);
+}
+
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
@@ -57,6 +70,7 @@ uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
 void ident_go_wide(AggExec *ex, KeyState *k);
 void key_range_fill(void *arg, int32 v, void *entry);
 bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel);
+void compute_kids(AggExec *ex, int nsel, uint32 *kid);
 void compute_gids(AggExec *ex, int nsel);
 
 #pragma GCC visibility pop
