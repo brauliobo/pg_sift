@@ -80,10 +80,10 @@ host compiler (clang 23, gcc 16), where neither finding appears.
   scalar`; the input is `test/fuzz/regress/colchunk-gcc12-pointer-overflow` (26909 bytes, sha1 26292c50..., moved from docs/safety). Replay, in the
   container with `build-essential postgresql-server-dev-17 liblz4-dev libzstd-dev`:
 
-      make -s -C test/fuzz OUT=/tmp/o /tmp/o/colchunk
-      /tmp/o/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # FINDING (gcc 12.2, the sanitizers of test/fuzz/Makefile at -O1)
-      make -s -C test/fuzz OUT=/tmp/p "SAN=-fsanitize=address,undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" /tmp/p/colchunk
-      /tmp/p/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # clean
+      make -s -C test/fuzz OUT=/tmp/o "SAN=-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" /tmp/o/colchunk
+      /tmp/o/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # FINDING (gcc 12.2, pointer-overflow on, an AVX-512 CPU)
+      make -s -C test/fuzz OUT=/tmp/p /tmp/p/colchunk
+      /tmp/p/colchunk test/fuzz/regress/colchunk-gcc12-pointer-overflow      # clean (the Makefile leaves pointer-overflow out below gcc 13)
 
   What was seen (on the first artifact of this kind, `FZ_TRACE=1` and prints in `nd_filter`): decode and `decode_off32` agree at every
   level, the `filter` step differs; the column is a DELTA node (n = 5000, W = 19, off32), filtered by decoding to a `uint32` array
@@ -100,7 +100,7 @@ host compiler (clang 23, gcc 16), where neither finding appears.
   C is right (the mask is returned as `uint64`, which is a zero extension); this is a gcc 12 code generation bug at -O1 with the
   instrumentation of `pointer-overflow` adding calls between the lanes. **Refuted as a kernel defect; fixed in the harness**:
   test/fuzz/Makefile adds `-fno-sanitize=pointer-overflow` for gcc < 13. The production build (-O2) is not affected (the SIMD installcheck
-  tests pass in that container). The input is now in `test/fuzz/regress`, so the fuzz job and `make -C test/fuzz regress` replay it first.
+  tests pass in that container). The input is in `test/fuzz/regress`: `make -C test/fuzz regress` replays it with the other inputs, and `scripts/fuzz.sh colchunk` adds it to the corpus it starts from.
 
 ## Other tools
 
