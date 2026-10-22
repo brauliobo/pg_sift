@@ -401,6 +401,7 @@ scan_buffers(AggExec *ex)
 	ex->pri = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->kids = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
+	ex->knul = MemoryContextAlloc(ex->cxt, (Size) Max(s->nkeys, 1) * (VECW + PADW) * sizeof(uint64));
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->c64 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	ex->okb = MemoryContextAlloc(ex->cxt, maxv);

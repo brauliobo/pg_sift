@@ -222,6 +222,7 @@ typedef struct AggExec
 	uint32	   *pri;
 	uint32	   *gid;
 	uint32	   *kids;			/* hash mode: ids per key, spec->nkeys * VEC */
+	uint64	   *knul;			/* per key (VECW + PADW words each): the tuples of the chunk whose value is NULL, set by key_prepare */
 	uint32	   *cu32;
 	uint64	   *c64;
 	uint8	   *okb;
