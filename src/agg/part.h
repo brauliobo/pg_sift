@@ -24,6 +24,9 @@ extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps
  */
 extern int sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds);
 
+/* A condition `col = operand` or `col = ANY (operand)` (an operand with no column): the column, the operand and the operator. The planner asks it to keep the pruning of a hash level. */
+extern bool sift_aggpart_key_clause(Node *cl, Var **var, Node **operand, Oid *opno, Oid *collid, bool *any);
+
 /*
  * The first superblock of each partition and the total (n + 1 entries), as the first sift_colsrc_nsb of the source counted them. The processes of a
  * parallel scan open the partitions at different times and a heap may have grown: they must number the superblocks as the leader did, so the leader
