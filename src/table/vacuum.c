@@ -652,7 +652,8 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	SiftFreeStats fs;
 	uint64		tombs;
 	bool		dead,
-				space;
+				space,
+				writing;
 
 	if (!sift_tbl_auto_defrag || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
 		return;
@@ -662,11 +663,18 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	tombs = removable_tombs(rel, st);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	fs = sift_store_free_stats(rel);
+	/*
+	 * The free blocks of a table that is being written are the write buffers of the promoted rows, about to be taken again by the next
+	 * buffers: an append flood has half its file free at any moment, and a pass would cut it for the writers to extend it. The space is
+	 * asked for when no write buffer was opened since this backend last looked (the first look sees none to compare with).
+	 */
+	writing = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) != st->defrag_vblock;
+	st->defrag_vblock = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta);
 	/* a VACUUM rewrote the log, or a pass or a truncation used the free blocks: what is asked next is relative to what is left */
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
 	dead = dead_wanted(rel, st, tombs, st->defrag_tombs);
-	space = fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
+	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
 		return;
@@ -723,6 +731,8 @@ background_vacuum(Relation rel, SiftTblMaintain *r)
 
 /* The tombstones the last pass of this worker left: the next one waits for them to grow, not for the rows it could not remove */
 static uint64 worker_tombs = 0;
+/* The last pass cleared dead rows (a VACUUM or the pass without the indexes): it found work even when it merged nothing and gave no block back */
+static bool pass_cleared = false;
 
 typedef enum WorkerPass
 {
@@ -741,6 +751,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 	bool		ran = false;
 
 	*r = (SiftTblMaintain) {.busy = true};
+	pass_cleared = false;
 	merge_cap = sift_tbl_auto_defrag_budget > 0 ? (uint64) sift_tbl_auto_defrag_budget << 20 : PG_UINT64_MAX;
 	StartTransactionCommand();
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock) && (rel = try_table_open(relid, NoLock)) != NULL)
@@ -761,6 +772,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 					background_vacuum(rel, r);
 				else
 					sift_tbl_maintain(rel, true, true, r);
+				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
 				sift_tbl_tomb_sync(rel, st);
 				worker_tombs = removable_tombs(rel, st);
@@ -776,6 +788,12 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 	return ran;
 }
 
+static bool
+pass_found_work(const SiftTblMaintain *r, BlockNumber before)
+{
+	return r->promoted + r->merged > 0 || merge_capped || r->blocks_after < before || pass_cleared;
+}
+
 /*
  * The request comes while the writer that made it is at work: its rows are not final yet and the lock of the end of the file is not free. The
  * worker stays a few seconds and passes again until two passes in a row find nothing to do.
@@ -787,7 +805,7 @@ maint_worker(Datum main_arg, WorkerPass first)
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			relid = sift_maint_worker_connect(main_arg, &errctx);
 	SiftTblMaintain r;
-	int			idle = 0;
+	int			idle;
 
 	/* the page accesses of every pass are charged as autovacuum's are (vacuum_cost_limit), and the steps sleep for them */
 	SetConfigOption("vacuum_cost_delay", psprintf("%d", sift_tbl_auto_defrag_delay), PGC_SUSET, PGC_S_OVERRIDE);
@@ -807,6 +825,8 @@ maint_worker(Datum main_arg, WorkerPass first)
 	pass_wal_start = pgWalUsage.wal_bytes;
 	if (!worker_pass(relid, first, &r))
 		return;
+	/* a pass that found nothing leaves at once: the writer that asked is not waited for (only the settling of write buffers stays for the rows still coming) */
+	idle = first == PASS_SPACE && !pass_found_work(&r, r.blocks_before) ? DEFRAG_IDLE_TRIES : 0;
 	for (int i = 0; i < DEFRAG_TRIES && idle < DEFRAG_IDLE_TRIES; i++)
 	{
 		BlockNumber before = r.blocks_after;
@@ -818,7 +838,7 @@ maint_worker(Datum main_arg, WorkerPass first)
 			break;
 		if (!worker_pass(relid, first == PASS_SETTLE ? PASS_SETTLE : PASS_SPACE, &r))
 			break;
-		idle = (r.promoted + r.merged > 0 || merge_capped || r.blocks_after < before) ? 0 : idle + 1;
+		idle = pass_found_work(&r, before) ? 0 : idle + 1;
 	}
 	StartTransactionCommand();
 	{

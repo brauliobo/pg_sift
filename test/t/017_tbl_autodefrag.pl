@@ -66,6 +66,20 @@ subtest 'below the thresholds nothing is asked for' => sub {
 	is($node->safe_psql('postgres', "SELECT sum(dead_rows) FROM sift.table_segments('a') WHERE kind = 'columns'"), '0', 'no bit cleared');
 };
 
+# Half the file of a table that only appends is free blocks at any moment (the write buffers of the promoted rows, taken again by the next
+# ones): a pass would cut the file for the writers to extend it
+subtest 'a table that only appends asks for no pass' => sub {
+	$node->safe_psql('postgres', 'DROP TABLE IF EXISTS ap; CREATE TABLE ap (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false)');
+	my $offset = -s $node->logfile;
+	for my $i (1 .. 8)
+	{
+		$node->safe_psql('postgres', "INSERT INTO ap SELECT g + $i * 100000, g * 3, 'text ' || md5(g::text) FROM generate_series(1, $rows) g");
+	}
+	my ($blocks, $free) = split /\|/, $node->safe_psql('postgres', "SELECT relation_blocks, free_blocks FROM sift.table_space('ap')");
+	cmp_ok($blocks, '>=', 1000, 'a file the space rule looks at');
+	ok(quiet_for($offset, 2), 'no worker');
+};
+
 subtest 'with the setting off nothing is asked for above them' => sub {
 	fill('b');
 	$node->safe_psql('postgres', 'DELETE FROM b WHERE id % 10 < 4');	# 40%
