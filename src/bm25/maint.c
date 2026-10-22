@@ -407,6 +407,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
 		sift_maint_space(index, NULL, info->message_level);
 	sift_maint_unlock(index);
+	if (ops->vacuum_done)
+		ops->vacuum_done(index);
 	sift_dir_read(index, snap);
 	stats->num_pages = RelationGetNumberOfBlocks(index);
 	stats->estimated_count = false;
@@ -467,6 +469,32 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_maint_unlock(index);
+	return n;
+}
+
+int
+sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
+{
+	const char *why;
+	int			n = -1;
+
+	if (!maint_lock_mode(index, false, ops->step_lock))
+		return -1;
+	if ((why = ops->rewrite_due(index, automatic)) != NULL)
+	{
+		TimestampTz start = GetCurrentTimestamp();
+		uint64		busy = 0;
+
+		n = 0;
+		promote_locked(ops, index, true, true);
+		while (ops->merge_next(index, n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
+		{
+			n++;
+			CHECK_FOR_INTERRUPTS();
+		}
+		sift_log_maint(index, psprintf("rewrote (%s) the segments of", why), start, -1, -1);
+	}
+	maint_unlock_mode(index, ops->step_lock);
 	return n;
 }
 
@@ -565,20 +593,11 @@ stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 }
 
 bool
-sift_maint_request_worker(Relation index, const char *function)
+sift_maint_register_worker(Relation index, const char *function)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TimestampTz now = GetCurrentTimestamp();
 	BackgroundWorker bw = {0};
 	BackgroundWorkerHandle *handle;
-	bool		started;
 
-	sift_dir_read(index, snap);
-	started = now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000);
-	pfree(snap);
-	if (!started)
-		return false;
-	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_request,.arg = &now,.extra = InvalidBuffer});
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bw.bgw_restart_time = BGW_NEVER_RESTART;
@@ -592,6 +611,22 @@ sift_maint_request_worker(Relation index, const char *function)
 		return true;
 	sift_log_refused(index);
 	return false;
+}
+
+bool
+sift_maint_request_worker(Relation index, const char *function)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TimestampTz now = GetCurrentTimestamp();
+	bool		started;
+
+	sift_dir_read(index, snap);
+	started = now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000);
+	pfree(snap);
+	if (!started)
+		return false;
+	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_request,.arg = &now,.extra = InvalidBuffer});
+	return sift_maint_register_worker(index, function);
 }
 
 Oid

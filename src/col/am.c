@@ -106,6 +106,23 @@ sift_col_init(void)
 							 "A request for a rollup refresh starts the background worker that makes it.",
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_auto_merge",
+							 "After a VACUUM that left a sift_col index scattered by churn, a background worker seals its write buffer and merges all its segments into one.",
+							 "The rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
+							 "when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. Set it for the server or the database: the worker reads no session setting.",
+							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
+							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
+							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
+							&sift_col_auto_merge_dirty_pct, 30, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_merge_fragmentation",
+							 "Units listed per superblock they cover from which the automatic rewrite of a sift_col index runs.",
+							 "Each promotion of the write buffer adds a segment over the superblocks the churn touched.",
+							 &sift_col_auto_merge_fragmentation, 2.0, 1.1, 1000.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_merge_buffer_pct",
+							 "Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs.",
+							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
+							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written: 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "

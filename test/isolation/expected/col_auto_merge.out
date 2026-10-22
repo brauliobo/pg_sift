@@ -1,0 +1,130 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3d s1b s3m s1q s1c s1n s3v
+step s3d: SELECT sift.col_maintenance_due('iso_am_idx') AS due;
+due        
+-----------
+dirty units
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s3m: SELECT sift.col_maintain('iso_am_idx') AS rewritten;
+rewritten
+---------
+t        
+(1 row)
+
+step s1q: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s1c: COMMIT;
+step s1n: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s3v: SELECT count(*) FILTER (WHERE kind = 'immutable') AS segments, count(*) FILTER (WHERE kind <> 'immutable' AND rows > 0) AS buffers, bool_or(dirty) AS dirty, (SELECT sift.col_verify('iso_am_idx')::text = '') AS verified FROM sift.col_segments('iso_am_idx');
+segments|buffers|dirty|verified
+--------+-------+-----+--------
+       1|      0|f    |t       
+(1 row)
+
+
+starting permutation: s3d s2b s2i s3m s2j s2c s1n s3v
+step s3d: SELECT sift.col_maintenance_due('iso_am_idx') AS due;
+due        
+-----------
+dirty units
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_am SELECT 100000 + g, 'cat_' || (g % 4), 5, repeat('x', 150) FROM generate_series(1, 300) g;
+step s3m: SELECT sift.col_maintain('iso_am_idx') AS rewritten;
+rewritten
+---------
+t        
+(1 row)
+
+step s2j: INSERT INTO iso_am SELECT 200000 + g, 'cat_' || (g % 4), 7, repeat('x', 150) FROM generate_series(1, 100) g;
+step s2c: COMMIT;
+step s1n: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+20200|952044.00|t    
+(1 row)
+
+step s3v: SELECT count(*) FILTER (WHERE kind = 'immutable') AS segments, count(*) FILTER (WHERE kind <> 'immutable' AND rows > 0) AS buffers, bool_or(dirty) AS dirty, (SELECT sift.col_verify('iso_am_idx')::text = '') AS verified FROM sift.col_segments('iso_am_idx');
+segments|buffers|dirty|verified
+--------+-------+-----+--------
+       1|      1|f    |t       
+(1 row)
+
+
+starting permutation: s3d s2b s2i s3m s2j s2a s1n s3v
+step s3d: SELECT sift.col_maintenance_due('iso_am_idx') AS due;
+due        
+-----------
+dirty units
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_am SELECT 100000 + g, 'cat_' || (g % 4), 5, repeat('x', 150) FROM generate_series(1, 300) g;
+step s3m: SELECT sift.col_maintain('iso_am_idx') AS rewritten;
+rewritten
+---------
+t        
+(1 row)
+
+step s2j: INSERT INTO iso_am SELECT 200000 + g, 'cat_' || (g % 4), 7, repeat('x', 150) FROM generate_series(1, 100) g;
+step s2a: ROLLBACK;
+step s1n: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s3v: SELECT count(*) FILTER (WHERE kind = 'immutable') AS segments, count(*) FILTER (WHERE kind <> 'immutable' AND rows > 0) AS buffers, bool_or(dirty) AS dirty, (SELECT sift.col_verify('iso_am_idx')::text = '') AS verified FROM sift.col_segments('iso_am_idx');
+segments|buffers|dirty|verified
+--------+-------+-----+--------
+       1|      1|f    |t       
+(1 row)
+
+
+starting permutation: s1b s2b s2i s3m s2c s1q s1c s1n
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_am SELECT 100000 + g, 'cat_' || (g % 4), 5, repeat('x', 150) FROM generate_series(1, 300) g;
+step s3m: SELECT sift.col_maintain('iso_am_idx') AS rewritten;
+rewritten
+---------
+t        
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+19800|949844.00|t    
+(1 row)
+
+step s1c: COMMIT;
+step s1n: SELECT n, total, agree FROM iso_am_q();
+    n|    total|agree
+-----+---------+-----
+20100|951344.00|t    
+(1 row)
+
