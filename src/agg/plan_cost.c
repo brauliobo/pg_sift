@@ -1235,15 +1235,109 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 	*startup += setup;
 }
 
+/* the per-group arrays of one aggregate, as acc_alloc (agg/group.c) allocates them */
+static double
+acc_bytes(const SiftAggAgg *a)
+{
+	double		b = sizeof(int64);	/* n */
+
+	switch (a->kind)
+	{
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+		case SAA_PCT_CONT:
+		case SAA_PCT_DISC:
+		case SAA_O_SUM_I64:
+			return b + sizeof(int64);
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			return b + sizeof(sift_i128) + 1;
+		case SAA_MIN:
+		case SAA_MAX:
+			return b + sizeof(int64) + sizeof(double) + (a->num.n ? sizeof(sift_i128) : 0);
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+		case SAA_O_SUM_F64:
+		case SAA_O_AVG_F64:
+			return b + sizeof(double) + 1;
+		case SAA_M_PG:
+			return b + 1 + sizeof(Datum);
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			return b + (a->restype == NUMERICOID ? sizeof(int64) + sizeof(sift_i128) : 0) + sizeof(double) + 1 + sizeof(Datum);
+		case SAA_M_SUM:
+		case SAA_M_AVG:
+			return b + sizeof(double) + 1 + sizeof(Datum);
+		case SAA_M_MIN:
+		case SAA_M_MAX:
+		case SAA_X_MIN:
+		case SAA_X_MAX:
+			return b + sizeof(Datum);
+		case SAA_O_COUNT_ROWS:
+		case SAA_COUNT_ROWS:
+			return b + sizeof(uint64);
+		case SAA_GEN:
+			return b + 2 * sizeof(Datum) + 1 + (a->gen->ordered || a->gen->sorted || a->gen->distinct ? sizeof(int64) : 0);
+		default:
+			return b;
+	}
+}
+
+/*
+ * The bytes a group holds in the table of the scan: its keys' ids and values, its row in the group arrays, the arrays' room to grow.
+ * *state: of them, what a partial state of the group carries when the table is written out (its aggregates and its key values).
+ */
+static double
+group_bytes(const SiftAggSpec *s, double *state)
+{
+	double		b = sizeof(int64);	/* seen */
+	double		vals = 0;
+
+	for (int i = 0; i < s->naggs; i++)
+		b += acc_bytes(&s->agg[i]);
+	*state = b;
+	/* the id tuple of the hash table and its slot, at most half full */
+	b += s->nkeys * sizeof(uint32) + 4 * sizeof(uint32);
+	for (int j = 0; j < s->nkeys; j++)
+		vals += get_typavgwidth(s->key[j].typid, s->key[j].typmod);
+	*state += vals;
+	return b * AGG_GROUP_SLACK + s->nkeys * AGG_GROUP_KEY_BYTES + vals;
+}
+
+/*
+ * The group table has no memory of its own to give up: when it outgrows the memory a hash aggregate gets, the groups that do not fit go to
+ * sorted runs of partial states and are merged by the end (the spill of the normal plan, which cost_agg prices the same way: the pages
+ * of what is written and read back, the tuples through the sort). A group in no run is in the table: the rows that are written are the
+ * share of the rows whose group is not in it, and no more than a run for each of the groups.
+ */
+static double
+group_spill_cost(const SiftAggSpec *s, double rows, double *table)
+{
+	double		mem = (double) get_hash_memory_limit(),
+				state,
+				runs,
+				written;
+
+	*table = Max(s->est_groups, 1.0) * group_bytes(s, &state);
+	if (*table <= mem)
+		return 0;
+	runs = ceil(*table / mem);
+	written = Min(rows * (1.0 - mem / *table), s->est_groups * runs);
+	return written * state / BLCKSZ * (random_page_cost + seq_page_cost) + 2.0 * cpu_tuple_cost * written +
+		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost;
+}
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
 	CostAcc		k = {0};
 	double		vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
-				exact;
+				exact,
+				spill,
+				table;
 	Cost		startup;
 
-	k.rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
+	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
 	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
@@ -1285,6 +1379,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	startup = AGG_START_COST * cpu_operator_cost + k.child_cost + c->subplan_cost + AGG_PART_PAIR * c->nparts * c->nparts * cpu_operator_cost;
 	if (s->nworkers > 0)
 		cost_parallel(s, &k, &startup);
+	/* each process holds a table of its own (and spills it) */
+	spill = group_spill_cost(s, k.agg_rows / (s->nworkers + 1), &table);
+	k.scan_cost += spill;
+	agg_arm_spill(spill, s->est_groups, table);
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each */

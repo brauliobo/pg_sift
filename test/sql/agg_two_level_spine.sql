@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+-- the memory of the group tables is not under test here: the scan is priced without a spill
+SET work_mem = '64MB';
 
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO events
