@@ -1400,6 +1400,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	CostAcc		k = {0};
 	double		vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
 				exact,
+				vet,
 				spill,
 				table,
 				groups;
@@ -1435,7 +1436,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	k.scan_cost += k.gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
-	k.scan_cost += vis * Min(k.sel_rows, Max(rel_pages(c), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	vet = vis * Min(k.sel_rows, Max(rel_pages(c), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	k.scan_cost += vet;
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);
 	if (exact > 0)
@@ -1452,6 +1454,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	spill = group_spill_cost(s, groups, k.agg_rows / (s->nworkers + 1), &table);
 	k.scan_cost += spill;
 	agg_arm_spill(spill, groups, table);
+	agg_arm_vet(vet, vis * 100.0);
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each */

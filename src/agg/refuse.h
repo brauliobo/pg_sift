@@ -76,6 +76,7 @@ extern bool agg_refuse_limit_note(AggRefusal why, int lim, const char *detail);
 extern void agg_arm_begin(const char *name, bool candidate);
 extern void agg_arm_candidate(void);
 extern void agg_arm_spill(double cost, double groups, double bytes);
+extern void agg_arm_vet(double cost, double pct);
 extern void agg_arm_path(Path *p);
 extern void agg_arm_end(void);
 extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used);
