@@ -300,6 +300,8 @@ sift_tbl_page_rec(Page page, uint64 gen, uint32 off)
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page counts %u rows, at most %d fit", ph->nrows, SIFT_TBL_MAX_OFF)));
 	if (ph->slot[off - 1] == 0)
 		return NULL;
+	if (ph->slot[off - 1] % _Alignof(SiftTblRec))
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page holds a record at a misaligned offset")));
 	rec = (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
 	end = (const char *) PageGetSpecialPointer(page);
 	if ((const char *) (rec + 1) > end || rec->inline_len > end - (const char *) (rec + 1))
