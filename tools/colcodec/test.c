@@ -498,7 +498,7 @@ test_strs(SiftRng *r, int scale)
 		sift_cc_encode_strs(&s, off, bytes, n, &pol);
 		blob = xalloc(s.len);
 		memcpy(blob, s.data, s.len);
-		CHECK(sift_cc_decode_strs(CurrentMemoryContext, blob, s.len, &o2, &b2) == n, "strs: count");
+		sift_cc_decode_strs(CurrentMemoryContext, blob, s.len, n, &o2, &b2);
 		CHECK(!memcmp(o2, off, 4 * (n + 1)) && !memcmp(b2, bytes, tot), "strs: round trip n=%u policy %s", n, policies[it % NPOL]);
 		free(off), free(bytes), free(blob);
 	}
@@ -562,8 +562,11 @@ fuzz_fn(void *a)
 	{
 		uint32	   *o;
 		char	   *b;
+		uint32		n = 0;
 
-		sift_cc_decode_strs(CurrentMemoryContext, f->blob, f->len, &o, &b);
+		if (f->len >= 8)
+			memcpy(&n, f->blob + 4, sizeof(n));
+		sift_cc_decode_strs(CurrentMemoryContext, f->blob, f->len, n, &o, &b);
 	}
 	else if (f->what == 2)
 	{

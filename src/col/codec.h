@@ -161,8 +161,8 @@ extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
 
 /* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule. */
 extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol);
-/* off[n + 1] and bytes palloc'd in mcxt; returns n */
-extern uint32 sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **off, char **bytes);
+/* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt */
+extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 **off, char **bytes);
 /* A bit vector of nbits: constant, raw words, or the positions of the minority bit as an integer cascade. */
 extern void sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const SiftCcPolicy *pol);
 extern void sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words);
