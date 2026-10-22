@@ -107,6 +107,7 @@ typedef struct SiftColOptions
 	int			set_columns;	/* offset of the "set_columns" string (the leaves that get a small-set summary in every unit, docs/COL.md 2.13), 0 = none */
 	int			set_limit;		/* up to this many distinct keys a unit keeps exactly, else a bloom filter (0 = the default) */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
+	bool		dict_lookup;	/* a dictionary of many strings is stored to be searched in place (column format minor 14) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */

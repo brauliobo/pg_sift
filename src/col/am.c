@@ -52,7 +52,7 @@ check_col_format_minor(int *newval, void **extra, GucSource source)
 	{
 		GUC_check_errdetail("Column format minor %d is written for %s only, whatever the setting.", *newval,
 							*newval == SIFT_COL_FORMAT_WIDE ? "wide leaves" : "the write buffer of a table with a wide row");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12 or 13.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13 or 14.");
 		return false;
 	}
 	return true;
@@ -194,9 +194,9 @@ sift_col_init(void)
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written (13, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
+							"Column format minor of the segments written (14, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup).",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -256,6 +256,9 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
 					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "dict_lookup",
+					   "A dictionary of 1,024 strings or more of the segments written from now on is stored so that an equality, an IN list or a prefix test reads it in place, without loading it (default on; the segments are column format minor 14)",
+					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
 					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
 					   true, ShareUpdateExclusiveLock);
@@ -298,6 +301,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 		{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
+		{"dict_lookup", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, dict_lookup)},
 		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
 		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
 		{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
@@ -313,7 +317,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = true, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -471,6 +475,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
+		r->pagg.nolookup = !sift_col_options(index)->dict_lookup;
 		if ((err = sift_cset_spec_parse(sift_col_options_set_columns(index), r->schema, (const char *const *) names, r->pagg.set)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
 		r->pagg.set_limit = sift_col_options(index)->set_limit;

@@ -10,9 +10,12 @@
 #include "col/seg_int.h"
 #include "col/setsum.h"
 #include "col/ver.h"
+#include "core/limits.h"
 #include "core/live.h"
 
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
+#define CDICT_LOOKUP_MIN	1024
+
 typedef struct SetAcc
 {
 	StringInfoData blobs;
@@ -52,6 +55,8 @@ struct SiftColSegWriter
 	bool		anysets;
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
+	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
+	bool	   *lookup;			/* [ncols] the dictionary is written in the form that is searched in place (minor 14) */
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -355,6 +360,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9, 10 and 12 promise complete kinds */
 		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set || w->run),
 					   "sift_col: a unit without its kinds in a segment of column format %d", w->run ? SIFT_COL_FORMAT_RUNS : w->set ? SIFT_COL_FORMAT_SETS : w->format);
+		w->inexact = true;
 		/* a schema with a calendar dim has no leaf with kinds to lose: the minor stays */
 		if (w->format != SIFT_COL_FORMAT_CALENDAR)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
@@ -457,7 +463,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
-		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, &blob);
+		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, w->lookup && w->lookup[c], &blob);
 	}
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
@@ -821,6 +827,17 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_SETS);
 	if (w->anyruns)
 		w->format = Max(w->format, SIFT_COL_FORMAT_RUNS);
+	/* a dictionary of many strings is written to be searched in place when the setting allows it, the index has not turned it off and the kinds are complete */
+	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->pagg.nolookup && !w->inexact)
+	{
+		w->lookup = palloc0(w->schema->ncols * sizeof(bool));
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (w->dict[c] != NULL && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+			{
+				w->lookup[c] = true;
+				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+			}
+	}
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	write_dicts(w, &h.sections[SIFT_SEC_DICT]);
 	write_zones(w, &h.sections[SIFT_SEC_DICTIDX]);

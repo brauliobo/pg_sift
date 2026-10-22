@@ -116,6 +116,8 @@ sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 {
 	if (d->n == 0)
 		return -1;
+	if (d->look)
+		return d->look->find(d->look, s, len);
 	if (d->slots == NULL && d->finds++ < DICT_HASH_AFTER)
 	{
 		for (uint32 c = 0; c < d->n; c++)
@@ -128,8 +130,8 @@ sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 }
 
 /* Bytewise order of dictionary values (the C collation) */
-static int
-str_cmp(const char *a, uint32 alen, const char *b, uint32 blen)
+int
+sift_cstr_cmp(const char *a, uint32 alen, const char *b, uint32 blen)
 {
 	int			r = memcmp(a, b, Min(alen, blen));
 
@@ -142,13 +144,13 @@ sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c
 	switch (op)
 	{
 		case SIFT_COLOP_LT:
-			return str_cmp(s, len, c->v.s, c->len) < 0;
+			return sift_cstr_cmp(s, len, c->v.s, c->len) < 0;
 		case SIFT_COLOP_LE:
-			return str_cmp(s, len, c->v.s, c->len) <= 0;
+			return sift_cstr_cmp(s, len, c->v.s, c->len) <= 0;
 		case SIFT_COLOP_GT:
-			return str_cmp(s, len, c->v.s, c->len) > 0;
+			return sift_cstr_cmp(s, len, c->v.s, c->len) > 0;
 		case SIFT_COLOP_GE:
-			return str_cmp(s, len, c->v.s, c->len) >= 0;
+			return sift_cstr_cmp(s, len, c->v.s, c->len) >= 0;
 		default:					/* PREFIX */
 			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
 	}
@@ -167,7 +169,7 @@ sort_ent_cmp(const void *a, const void *b, void *arg)
 	uint32		x = ((const SortEnt *) a)->code,
 				y = ((const SortEnt *) b)->code;
 
-	return str_cmp(d->bytes + d->off[x], cdict_len(d, x), d->bytes + d->off[y], cdict_len(d, y));
+	return sift_cstr_cmp(d->bytes + d->off[x], cdict_len(d, x), d->bytes + d->off[y], cdict_len(d, y));
 }
 
 /* d->sorted: a radix sort on the first 8 bytes of every string, then the entries that tie on them by their whole strings */
@@ -229,16 +231,57 @@ cdict_sort(SiftCDict *d)
 }
 
 /* The first position of the sorted order whose string is not below c (after: not at or below it) */
-static uint32
-sorted_bound(const SiftCDict *d, const SiftColValue *c, bool after)
+uint32
+sift_csorted_bound(const SiftCSorted *s, const SiftColValue *c, bool after)
 {
 	uint32		lo = 0,
-				hi = d->n;
+				hi = s->n;
 
 	SIFT_BISECT(uint32, m, lo, hi,
-				after ? str_cmp(SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c->v.s, c->len) <= 0
-				: str_cmp(SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c->v.s, c->len) < 0);
+				after ? sift_csorted_cmp(s, m, c) <= 0 : sift_csorted_cmp(s, m, c) < 0);
 	return lo;
+}
+
+/* The positions [from, to) of the sorted order whose strings pass op (LT, LE, GT, GE in byte order, PREFIX) against c */
+void
+sift_csorted_range(const SiftCSorted *s, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to)
+{
+	switch (op)
+	{
+		case SIFT_COLOP_LT:
+			*from = 0;
+			*to = sift_csorted_bound(s, c, false);
+			break;
+		case SIFT_COLOP_LE:
+			*from = 0;
+			*to = sift_csorted_bound(s, c, true);
+			break;
+		case SIFT_COLOP_GT:
+			*from = sift_csorted_bound(s, c, true);
+			*to = s->n;
+			break;
+		case SIFT_COLOP_GE:
+			*from = sift_csorted_bound(s, c, false);
+			*to = s->n;
+			break;
+		default:					/* PREFIX: the strings that start with c are the run that begins where c would be inserted */
+			{
+				uint32		lo = sift_csorted_bound(s, c, false),
+							hi = s->n;
+
+				*from = lo;
+				SIFT_BISECT(uint32, m, lo, hi, sift_csorted_prefix(s, m, c));
+				*to = lo;
+			}
+	}
+}
+
+static const char *
+mem_str(const void *ctx, uint32 pos, uint32 *len)
+{
+	const SiftCDict *d = ctx;
+
+	return sift_cdict_str(d, d->sorted[pos], len);
 }
 
 uint32
@@ -248,6 +291,8 @@ sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut)
 				from,
 				to;
 
+	if (d->look)
+		return d->look->match(d->look, op, c, lut);
 	if (d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
 		cdict_sort(d);
 	if (d->sorted == NULL)
@@ -261,35 +306,7 @@ sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut)
 			}
 		return count;
 	}
-	switch (op)
-	{
-		case SIFT_COLOP_LT:
-			from = 0;
-			to = sorted_bound(d, c, false);
-			break;
-		case SIFT_COLOP_LE:
-			from = 0;
-			to = sorted_bound(d, c, true);
-			break;
-		case SIFT_COLOP_GT:
-			from = sorted_bound(d, c, true);
-			to = d->n;
-			break;
-		case SIFT_COLOP_GE:
-			from = sorted_bound(d, c, false);
-			to = d->n;
-			break;
-		default:					/* PREFIX: the strings that start with c are the run that begins where c would be inserted */
-			{
-				uint32		lo = sorted_bound(d, c, false);
-
-				from = lo;
-				to = d->n;
-				SIFT_BISECT(uint32, m, lo, to,
-							sift_cstr_matches(SIFT_COLOP_PREFIX, SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c));
-			}
-			break;
-	}
+	sift_csorted_range(&(SiftCSorted) {d->n, mem_str, d}, op, c, &from, &to);
 	for (uint32 i = from; i < to; i++)
 		lut[d->sorted[i] >> 6] |= UINT64CONST(1) << (d->sorted[i] & 63);
 	return to - from;
@@ -306,17 +323,45 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
  * A serialized dictionary starts with u32 form, u32 n. The plain form (0) goes on with u32 off[n + 1] and the bytes; the string list form
  * (1) with the codec's list (the lengths as an integer cascade, the bytes under the cold wrapper rule), which starts 8-aligned.
  */
-#define DICT_PLAIN		0
-#define DICT_STRS		1
-#define DICT_HEAD		(2 * sizeof(uint32))
+
+/* The form searched in place: the strings as they are (no offsets when they all have one length) and the codes in byte order of the strings */
+static void
+serialize_lookup(SiftCDict *d, StringInfo out)
+{
+	uint32		form = DICT_LOOKUP,
+				fixed = d->n > 0 ? cdict_len(d, 0) : 0,
+				nbytes = (uint32) d->nbytes;
+	int			start = out->len;
+
+	for (uint32 c = 1; c < d->n && fixed != 0; c++)
+		if (cdict_len(d, c) != fixed)
+			fixed = 0;
+	if (d->sorted == NULL)
+		cdict_sort(d);
+	put_val(out, form);
+	put_val(out, d->n);
+	put_val(out, fixed);
+	put_val(out, nbytes);
+	if (fixed == 0)
+		put_bytes(out, d->off, ((Size) d->n + 1) * sizeof(uint32));
+	put_bytes(out, d->bytes, d->nbytes);
+	while ((out->len - start) % sizeof(uint32))
+		appendStringInfoChar(out, '\0');
+	put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
+}
 
 void
-sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
+sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringInfo out)
 {
 	Size		plain = sizeof(uint32) * (d->n + 1) + d->nbytes;
 	uint32		form = DICT_PLAIN;
 	StringInfoData z;
 
+	if (lookup && d->n > 0)
+	{
+		serialize_lookup(d, out);
+		return;
+	}
 	z.data = NULL;
 	if (pol != NULL && pol->mode != SIFT_CCM_NONE && d->n <= SIFT_CC_MAXROWS && plain >= SIFT_CC_MIN_WRAP)
 	{
@@ -361,6 +406,50 @@ cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
 	return d;
 }
 
+/* The dictionary of the searched form in memory, with its order (the codes are checked: the order is trusted to find and match, sift.col_verify checks that it is one) */
+static SiftCDict *
+parse_lookup(MemoryContext mcxt, const uint8 *p, Size len, Size *used)
+{
+	uint32		head[4];
+	uint64		offs,
+				end,
+				total;
+	uint32	   *off;
+	SiftCDict  *d;
+
+	if (len < DICT_HEAD_LOOKUP)
+		return NULL;
+	memcpy(head, p, DICT_HEAD_LOOKUP);
+	offs = head[2] == 0 ? ((uint64) head[1] + 1) * sizeof(uint32) : 0;
+	end = DICT_HEAD_LOOKUP + offs + head[3];
+	total = (end + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) head[1] * sizeof(uint32);
+	if (head[1] == 0 || total > len || head[2] > SIFT_COL_DICT_MAX_ENTRY || (head[2] != 0 && (uint64) head[1] * head[2] != head[3]))
+		return NULL;
+	off = palloc(((Size) head[1] + 1) * sizeof(uint32));
+	if (head[2] == 0)
+		memcpy(off, p + DICT_HEAD_LOOKUP, offs);
+	else
+		for (uint32 c = 0; c <= head[1]; c++)
+			off[c] = c * head[2];
+	if (off[head[1]] != head[3])
+	{
+		pfree(off);
+		return NULL;
+	}
+	d = cdict_from(mcxt, head[1], off, (const char *) p + DICT_HEAD_LOOKUP + offs);
+	pfree(off);
+	if (d == NULL)
+		return NULL;
+	d->stored_order = true;
+	d->sorted = MemoryContextAlloc(mcxt, (Size) head[1] * sizeof(uint32));
+	memcpy(d->sorted, p + (total - (uint64) head[1] * sizeof(uint32)), (Size) head[1] * sizeof(uint32));
+	for (uint32 i = 0; i < head[1]; i++)
+		if (d->sorted[i] >= head[1])
+			return NULL;
+	*used = total;
+	return d;
+}
+
 SiftCDict *
 sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 {
@@ -371,6 +460,8 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (len < DICT_HEAD)
 		return NULL;
 	memcpy(head, p, DICT_HEAD);
+	if (head[0] == DICT_LOOKUP)
+		return parse_lookup(mcxt, p, len, used);
 	p += DICT_HEAD;
 	len -= DICT_HEAD;
 	if (head[0] == DICT_STRS)

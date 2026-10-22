@@ -433,12 +433,12 @@ $fn$;
 CREATE EVENT TRIGGER sift_publication_check ON ddl_command_end WHEN TAG IN ('CREATE PUBLICATION', 'ALTER PUBLICATION')
 	EXECUTE FUNCTION sift.publication_check();
 
--- 3.3 writes column formats up to 13 by default (sift.col_format_minor), which a 3.2 library refuses; said plainly once, as a warning because the script
+-- 3.3 writes column formats up to 14 by default (sift.col_format_minor), which a 3.2 library refuses; said plainly once, as a warning because the script
 -- runs at warning level and the user decides whether a standby or a rollback still needs 3.2.
 DO $do$
 BEGIN
 	RAISE WARNING 'pg_sift 3.3: a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6 first'
-		USING HINT = 'The default is 12 in 3.3. Set 6 (3.2), 4 (3.1) or 3 (3.0) for a standby or a rollback that stays on an older release; SELECT * FROM sift.upgrade_check(''3.2'') lists what it cannot read (docs/UPGRADING.md section 4).';
+		USING HINT = 'The default is 14 in 3.3. Set 6 (3.2), 4 (3.1) or 3 (3.0) for a standby or a rollback that stays on an older release; SELECT * FROM sift.upgrade_check(''3.2'') lists what it cannot read (docs/UPGRADING.md section 4).';
 END
 $do$;
 

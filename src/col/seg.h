@@ -128,6 +128,12 @@ extern void sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint3
 
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
+/*
+ * The dictionary a test of a STR leaf is made over: the parsed one when it is at hand, else (a dictionary of the form that is searched in place,
+ * docs/COL.md 2.15) a dictionary of n codes that find and match search in the stream, without parsing it; else the parsed one. Only n, find and
+ * match may be used, and it is valid for the life of the segment.
+ */
+extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
 
 /* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows and their running sums, nrows + 1 of them */
 typedef struct SiftCLens

@@ -3,7 +3,7 @@
 # sift_table; promoted segments and unpromoted write-buffer records), taken over by this tree in the same cluster: ALTER EXTENSION UPDATE, answers
 # through the indexes equal to the plain plan and to what the release answered, sift.verify and sift.col_verify clean, REINDEX, writes (insert,
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
-# (3), at the newest minor it reads, and refuses an index of the minor 7 (cube_minmax) or the minor 13 (order_columns) with a format error instead of a wrong answer; an index with order_columns under the lowest setting writes no run and is read.
+# (3), at the newest minor it reads, and refuses an index of the minor 7 (cube_minmax), the minor 13 (order_columns) or the minor 14 (a stored dictionary) with a format error instead of a wrong answer; an index with order_columns under the lowest setting writes no run and is read.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)

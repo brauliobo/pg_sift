@@ -33,6 +33,8 @@ extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
 
+struct SiftCDictLook;
+
 typedef struct SiftCDict
 {
 	MemoryContext mcxt;
@@ -47,7 +49,16 @@ typedef struct SiftCDict
 	uint32		finds;			/* linear finds so far, before the table is worth building */
 	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
 	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
+	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
+	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 } SiftCDict;
+
+/* The two searches a test makes of a dictionary, for one that stays in the stream */
+typedef struct SiftCDictLook
+{
+	int64		(*find) (const struct SiftCDictLook *look, const char *s, uint32 len);
+	uint32		(*match) (const struct SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut);
+} SiftCDictLook;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
 /* The code of the value, adding it when new; len <= SIFT_COL_MAX_VALUE (ERRCODE_PROGRAM_LIMIT_EXCEEDED otherwise) */
@@ -58,13 +69,49 @@ extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
 extern bool sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c);
 /* Sets in lut the bit of every code whose string satisfies op (LT, LE, GT, GE in byte order, PREFIX) against c; returns how many */
 extern uint32 sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut);
+/* Bytewise order of strings */
+extern int	sift_cstr_cmp(const char *a, uint32 alen, const char *b, uint32 blen);
+/* The strings of a dictionary in byte order, by position: a search of them is the same whether they are in memory or in the stream */
+typedef struct SiftCSorted
+{
+	uint32		n;
+	const char *(*str) (const void *ctx, uint32 pos, uint32 *len);
+	const void *ctx;
+} SiftCSorted;
+static inline int
+sift_csorted_cmp(const SiftCSorted *s, uint32 pos, const SiftColValue *c)
+{
+	uint32		len;
+	const char *p = s->str(s->ctx, pos, &len);
+
+	return sift_cstr_cmp(p, len, c->v.s, c->len);
+}
+
+static inline bool
+sift_csorted_prefix(const SiftCSorted *s, uint32 pos, const SiftColValue *c)
+{
+	uint32		len;
+	const char *p = s->str(s->ctx, pos, &len);
+
+	return sift_cstr_matches(SIFT_COLOP_PREFIX, p, len, c);
+}
+
+extern uint32 sift_csorted_bound(const SiftCSorted *s, const SiftColValue *c, bool after);
+extern void sift_csorted_range(const SiftCSorted *s, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to);
 /* The bytes and length of a code < d->n */
 extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
+#define DICT_PLAIN		0
+#define DICT_STRS		1
+#define DICT_LOOKUP		2
+#define DICT_HEAD		(2 * sizeof(uint32))
+#define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 /*
  * DICTS section entry: u32 form, u32 n, then the plain dictionary (u32 off[n + 1], bytes) or, when the policy is not "none" and it is
- * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain
+ * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. lookup: the form that is
+ * searched in place (docs/COL.md 2.15): u32 form 2, u32 n, u32 length of every string (0: they differ and u32 off[n + 1] follows), u32 bytes, the
+ * strings, u32 code[n] in byte order of the strings (4-aligned)
  */
-extern void sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, StringInfo out);
+extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringInfo out);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
