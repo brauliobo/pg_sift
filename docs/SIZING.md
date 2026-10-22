@@ -111,7 +111,8 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   frequencies, expansion limits) include rows the role cannot see, so a score and an `EXPLAIN` estimate would depend on hidden rows (before
   2.0.1 a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000 rows a policy hid).
   Its matches come from a sequential scan, which is slower on a large table, and `sift.score()` raises an error. The table owner, who
-  bypasses the policy, keeps the scan.
+  bypasses the policy, keeps the scan. With `sift.rls_scores = on` (superuser) the role gets the ranked scan, and a score then does depend
+  on the hidden rows ([USAGE.md](USAGE.md#row-level-security)).
 - **`ALTER INDEX ... SET/RESET`** of `k1`, `b` or an analyzer option (`stemmer`, `fields`, `analyzer`, `prefix_index`, folding)
   needs a `REINDEX`. Until then queries and inserts on the table fail ("built with other analyzer options"), and the statement warns about
   it. To change them without downtime build the new index with `CREATE INDEX CONCURRENTLY` and drop the old one.
@@ -119,7 +120,7 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   (`sift.score()`, `ORDER BY`, `LIMIT` and `count(*)` work). A NULL element is skipped; a NULL or empty array matches no rows. A list with no
   score or order that is estimated above 100,000 rows (after a `LIMIT`) is left to the bitmap scan, which was as fast or faster there
   on a 1,000,000-row table ([docs/results/any-array.tsv](results/any-array.tsv)).
-- **`FOR UPDATE`, `UPDATE`, `DELETE`, `MERGE`**: matching works through a bitmap scan; `sift.score()` in those statements is an error
-  (rank in a `SELECT` and change the rows by key).
+- **`FOR UPDATE`, `UPDATE`, `DELETE`, `MERGE`**: matching works through a bitmap scan; `sift.score()` read straight from a table those statements
+  join is an error; a subquery or `WITH` query that reads it is planned apart (rank there and change the rows by key).
 - **Indexes beyond 2^31 blocks (16 TB).** The orphan sweep and `sift.verify` collect block numbers in PostgreSQL `Bitmapset`s, which stop at
   2^31 members: an index larger than that is untested and unsupported (the format itself allows 32 TB).
