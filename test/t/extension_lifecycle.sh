@@ -56,7 +56,9 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((75 + $(wc -w <<<"$DBS") + (PG_MAJOR >= 18 ? 7 : 0)))
+# the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
+UPG_CHECKS=70
+plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -342,7 +344,7 @@ if (( PG_MAJOR >= 18 )); then
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 56 "extension_control_path needs PostgreSQL 18"
+	skip "$UPG_CHECKS" "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
