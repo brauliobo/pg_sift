@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
-#        bench/bench cases --list                                                                       (bench/steps/cases.sh, called by bench/bench)
+#        bench/bench cases --list
+#        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases of the 3.3 optimizations (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
 # EXPLAIN), on PostgreSQL with sift.enable_agg = off (the same table and statement), on the sift variants of its row and, with --engines pg_duckdb, on a pg_duckdb container that holds a
 # plain copy of the rows; every answer is compared with PostgreSQL's. A private cluster (scripts/pgtest.sh, release build) under a CPU quota of --cpus (default 1: one backend, no
@@ -13,10 +14,11 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=cases
 
-ROWS=200000 ROUNDS=3 RUNS=5 CPUS=1 DOCS='' KEEP='' ENGINES='' PY=()
+ROWS=200000 ROUNDS=3 RUNS=5 CPUS=1 DOCS='' KEEP='' ENGINES='' PY=() DISC='' DISCOVER=()
 while (( $# )); do
   case $1 in
     --list) exec python3 -I "$STEPS/cases.py" list ;;
+    --discover) DISC=1; shift; DISCOVER=("$@"); break ;;
     --rows) ROWS=$2; shift ;;
     --rounds) ROUNDS=$2; shift ;;
     --runs) RUNS=$2; shift ;;
@@ -26,7 +28,7 @@ while (( $# )); do
     --keep) KEEP=1 ;;
     --cases|--out|--wait) PY+=("$1" "$2"); shift ;;
     --no-wait) PY+=("$1") ;;
-    *) sed -n '2,10p' "$0"; exit 1 ;;
+    *) sed -n '2,11p' "$0"; exit 1 ;;
   esac
   shift
 done
@@ -69,4 +71,5 @@ if [[ ,$ENGINES, == *,pg_duckdb,* ]]; then
   PY+=(--duck-port "$DUCK_PORT" --engines "$ENGINES")
 fi
 
+if [[ -n $DISC ]]; then locked python3 -I "$STEPS/cases_discover.py" ${DISCOVER[@]+"${DISCOVER[@]}"}; exit; fi
 locked python3 -I "$STEPS/cases.py" run --rows "$ROWS" --rounds "$ROUNDS" --runs "$RUNS" ${DOCS:+--docs} ${PY[@]+"${PY[@]}"}
