@@ -9,6 +9,9 @@ SET client_min_messages = warning;
 SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts
+-- below (units answered from the pre-aggregates, segments of an index) follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ae (id int, grp int, items jsonb, tags jsonb, pad text) WITH (autovacuum_enabled = off);
 
@@ -271,7 +274,7 @@ RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('ac_col');
 SELECT sift.col_verify('ac_col', true);
 SELECT * FROM pa_check('ac');
-RESET max_parallel_maintenance_workers;
+SET max_parallel_maintenance_workers = 0;
 
 -- 7. a minor 3 index that gets default minor 6 segments (rows inserted and sealed after the format changed): the units of each answer by what they hold
 SET sift.col_format_minor = 3;
@@ -282,13 +285,11 @@ INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k'
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 CALL pa_settle();
 VACUUM (index_cleanup on, disable_page_skipping) a3;
-SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
+SELECT array_agg(format ORDER BY format) = ARRAY[3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
 SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
--- a serial rebuild gives the one layout of units the counts below are for: a parallel rebuild divides the rows among its workers as they run, and some divisions leave a query with no unit answered from the pre-aggregates
-SET max_parallel_maintenance_workers = 0;
+-- a rebuild gives the one layout of units the counts below are for
 REINDEX INDEX a3_col;
-RESET max_parallel_maintenance_workers;
 CALL pa_settle();
 SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
 SELECT * FROM pa_sum('a3');
