@@ -21,6 +21,7 @@ typedef void (*StepFn) (Relation index, SiftWriteTarget *wt, const void *arg);
 extern bool claim(Relation index, uint64 gen, bool wait);
 extern void unclaim(Relation index, uint64 gen);
 extern SiftStepResult run_step(Relation index, bool propagate, StepFn fn, const void *arg);
+extern int64 backoff_ms(const SiftMetaPageData *meta);
 extern bool in_backoff(const SiftMetaPageData *meta);
 extern SiftStepResult promote_next(Relation index, bool propagate, uint64 *busy);
 extern SiftStepResult merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);

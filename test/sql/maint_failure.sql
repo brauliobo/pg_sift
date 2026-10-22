@@ -43,8 +43,20 @@ VACUUM mf;
 RESET sift.test_fail_pages;
 SELECT sift._test_maint_failures('mf_idx') AS failures;
 SELECT sift._test_check('mf_idx') AS orphans;
+-- sift.workers keeps the failure for whoever looks: what failed, when, and when the background tries again
+SELECT index, kind, failures, error_code, last_error, next_retry > failed_at AS retry_later, due
+	FROM sift.workers WHERE index = 'mf_idx'::regclass;
 VACUUM mf;
 SELECT sift._test_maint_failures('mf_idx') AS failures;
+SELECT failures, error_code, last_error, next_retry FROM sift.workers WHERE index = 'mf_idx'::regclass;
+SELECT sift.verify('mf_idx', true);
+
+-- a metapage written before the note reads as no note, and bytes no build wrote are never shown as text
+SELECT sift._test_meta_note('mf_idx', 'old');
+SELECT failures, failed_at, error_code, last_error, next_retry IS NOT NULL AS has_retry, running
+	FROM sift.workers WHERE index = 'mf_idx'::regclass;
+SELECT sift._test_meta_note('mf_idx', 'junk');
+SELECT failures, error_code IS NOT NULL AS has_code, last_error FROM sift.workers WHERE index = 'mf_idx'::regclass;
 SELECT sift.verify('mf_idx', true);
 
 -- inserts reach the point where they would merge for room (112 of 128 entries) with every step

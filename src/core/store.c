@@ -173,7 +173,7 @@ check_meta(Relation index, Buffer buf)
 	SiftMetaPageData *meta = META(page);
 
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < sizeof(SiftMetaPageData))
+	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE)
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
@@ -223,6 +223,8 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	SiftDirectoryData *dir = DIR(BufferGetPage(dirbuf));
 
 	snap->meta = *META(BufferGetPage(metabuf));
+	if (SiftPageGetUsed(BufferGetPage(metabuf)) < sizeof(SiftMetaPageData))
+		memset((char *) &snap->meta + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	snap->version = dir->version;
 	snap->nsegs = dir->nsegs;
 	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
@@ -368,6 +370,11 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		fp = GenericXLogRegisterBuffer(state, plan.flbuf, 0);
 	if (BufferIsValid(chg->extra))
 		xp = GenericXLogRegisterBuffer(state, chg->extra, 0);
+	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
+	{
+		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+		SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
+	}
 	before = *META(mp);
 	if (publish)
 	{
