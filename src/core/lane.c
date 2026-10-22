@@ -261,7 +261,9 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift index \"%s\" has %d segments that cannot be merged", RelationGetRelationName(index),
-							SIFT_MAX_SEGMENTS)));
+							SIFT_MAX_SEGMENTS),
+					 errdetail("A merge only takes segments whose rows every running transaction can see."),
+					 errhint("End the long-running transactions, run VACUUM, then run sift.merge() on the index.")));
 	}
 	sift_lane_read_header(index, act, &hdr);
 	*gen = act->gen;
