@@ -30,7 +30,7 @@ $q$) AS insensitive_key;
  t
 (1 row)
 
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP COLLATION ci;
 DROP EXTENSION pg_sift;

@@ -28,6 +28,6 @@ SELECT same($q$
  SELECT f.k, count(*) AS n, count(f.id) AS scanned
  FROM (SELECT id, dim_id, coalesce(v::text, 'x') AS k FROM facts) f FULL JOIN dims d ON d.id = f.dim_id GROUP BY 1
 $q$) AS scanned_value;
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dims;
 DROP EXTENSION pg_sift;

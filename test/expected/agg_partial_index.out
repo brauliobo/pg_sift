@@ -203,6 +203,6 @@ SELECT * FROM check_query('partitions, after changes', 'SELECT grp, count(*), su
  partitions, after changes | t    | t    | [{"grp": 0, "sum": 11797, "count": 1965}, {"grp": 1, "sum": 11816, "count": 1965}, {"grp": 2, "sum":
 (1 row)
 
-DROP FUNCTION check_prepared(text), check_all(), check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_prepared(text), check_all(), check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dims, ev;
 DROP EXTENSION pg_sift;

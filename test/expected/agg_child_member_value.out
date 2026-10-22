@@ -81,6 +81,6 @@ $q$);
  t
 (1 row)
 
-DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool);
+DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

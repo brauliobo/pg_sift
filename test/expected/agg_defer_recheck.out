@@ -140,5 +140,5 @@ DROP FUNCTION plan_of(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool);
 DROP TABLE cases, events;
-DROP FUNCTION ev_payload(int);
+DROP FUNCTION ev_payload(int), outcome, pushed, runs_in_scan;
 DROP EXTENSION pg_sift;

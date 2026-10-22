@@ -87,6 +87,6 @@ SELECT * FROM check_query('partitions, not implied', 'SELECT grp, count(*), sum(
 UPDATE ev SET deleted_at = timestamp '2026-03-05' WHERE id % 40 = 1;
 UPDATE ev SET deleted_at = NULL WHERE id % 40 = 0;
 SELECT * FROM check_query('partitions, after changes', 'SELECT grp, count(*), sum(score) FROM ev WHERE deleted_at IS NULL AND day >= ''2026-01-20'' GROUP BY grp');
-DROP FUNCTION check_prepared(text), check_all(), check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_prepared(text), check_all(), check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dims, ev;
 DROP EXTENSION pg_sift;

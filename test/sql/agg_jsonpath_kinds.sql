@@ -223,3 +223,7 @@ SELECT sift.col_verify('k_col', true);
 INSERT INTO k VALUES (13001, 0, '[{"s":1,"n":2147483648,"b":{}},{"s":[],"n":"3","b":1}]', 1);
 SELECT n, t_check(q) FROM q ORDER BY n;
 DROP TABLE k;
+DROP FUNCTION doc, doc_full, fmt, t_check, t_outcome, t_pushed, t_rows, tfmt;
+DROP TABLE q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

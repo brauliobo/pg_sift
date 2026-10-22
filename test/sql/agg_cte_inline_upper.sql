@@ -64,3 +64,6 @@ END $$;
 -- the CTE as PostgreSQL keeps it (read twice: materialized) and as written inline: both arms are scans, and the rows are the normal plan's
 SELECT scan_nodes(series_query('')) AS shared_cte_nodes, scan_nodes(series_query('NOT MATERIALIZED')) AS inline_nodes;
 SELECT differences(series_query('')) AS shared_cte_differences, differences(series_query('NOT MATERIALIZED')) AS inline_differences;
+DROP FUNCTION differences, scan_nodes, series_query;
+DROP TABLE events, dims;
+DROP EXTENSION pg_sift;

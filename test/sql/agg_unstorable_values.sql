@@ -131,5 +131,5 @@ DROP FUNCTION eq(text, text, text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION answers(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP EXTENSION pg_sift;

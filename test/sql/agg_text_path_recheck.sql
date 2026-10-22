@@ -101,6 +101,6 @@ DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same_costs(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE kinds, t;
 DROP EXTENSION pg_sift;

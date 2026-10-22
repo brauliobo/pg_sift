@@ -45,6 +45,6 @@ SELECT same FROM check_query('keyed int cast', $q$
  SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'k'
  JOIN LATERAL (SELECT r.value::int8 AS v UNION ALL SELECT 1) c ON true GROUP BY 1
 $q$);
-DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool);
+DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

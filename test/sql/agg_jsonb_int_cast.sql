@@ -49,6 +49,6 @@ INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"p_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''p_total'')::int = 1', false);
 SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''p_total'')::int = 1', false);
-DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, entities;
 DROP EXTENSION pg_sift;

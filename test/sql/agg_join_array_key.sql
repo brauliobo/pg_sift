@@ -75,3 +75,6 @@ SELECT * FROM each_join('jsonb_build_array(f.kind, f.ts) = jsonb_build_array(b.k
 SELECT * FROM each_join('f.kind = b.kind AND f.ts = b.ts');
 -- groups by a column of the facts as well
 SELECT * FROM each_join('jsonb_build_array(f.kind, f.ts) = jsonb_build_array(b.kind, b.ts)', 'b.label, f.ts');
+DROP FUNCTION each_join, outcome, pushed, report, runq, runs_in_scan, same;
+DROP TABLE buckets, facts;
+DROP EXTENSION pg_sift;
