@@ -162,7 +162,7 @@ pred_num_ops(const SiftAggPred *p)
  * The distinct values of a column under the table's own conditions on it: the values of the table (PostgreSQL's statistics) times the
  * share the conditions keep (a range of dates keeps the dates of the range). 0 when there are no statistics.
  */
-static double
+double
 column_distinct(AggCtx *c, Var *v)
 {
 	List	   *clauses = NIL;
@@ -630,6 +630,20 @@ lookup_counted(AggCtx *c, JoinCtx *jc)
 		if (!filter_has_stats(c->root, ri))
 			return false;
 	return true;
+}
+
+/*
+ * How many times more rows than PostgreSQL expects the table's own filters keep, for the groups the path reports: a filter without statistics
+ * (a jsonb path, an expression) keeps a default guess of the rows, a few hundred of a large table, and the groups of that many rows are
+ * fewer than the keys have. The rows are taken as the geometric mean of the guess and the table's rows, as child_rows does.
+ */
+double
+filter_rows_ratio(AggCtx *c)
+{
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+		if (!filter_has_stats(c->root, ri))
+			return sqrt(Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
+	return 1.0;
 }
 
 /*
