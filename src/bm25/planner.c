@@ -395,7 +395,7 @@ publish_paths(PathSearch *ps, RangeTblEntry *rte)
 			rel->pathlist = lappend(rel->pathlist, ps->best_keyed);
 		rel->partial_pathlist = ps->best_partial ? list_make1(ps->best_partial) : NIL;
 	}
-	else if (ps->only_best && rte->securityQuals != NIL)
+	else if (ps->only_best && (rte->securityQuals != NIL || rel_secured(ps->root, rel)))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),

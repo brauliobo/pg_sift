@@ -62,4 +62,7 @@ extern bool sift_index_serves(Oid indexoid, Oid analyzer);
 /* true if expr is sift.score(ctid) / sift.max_score(ctid) of rel relid */
 extern bool sift_is_score_expr(Node *expr, Index relid, bool *is_max);
 
+/* Do quals of a policy or a security barrier view sit on the rel (a partition or inheritance child carries its parent's in its restrictions)? */
+extern bool rel_secured(PlannerInfo *root, RelOptInfo *rel);
+
 #endif							/* SIFT_PLANNER_H */
