@@ -178,6 +178,25 @@ sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec)
 	}
 }
 
+int
+sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max)
+{
+	int			n = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+	{
+		bool		have = false;
+
+		if (!sift_cpagg_cal_type(s, c) || !depth1(s, &s->cols[c]) || !plain_type(&s->cols[c]))
+			continue;
+		for (int d = 0; d < spec->ndims; d++)
+			have |= spec->dim[d].leaf == c && spec->dim[d].cal;
+		if (!have && n++ < max)
+			out[n - 1] = c;
+	}
+	return n;
+}
+
 typedef struct OptCur
 {
 	const char *p;
@@ -621,7 +640,10 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 	if (all)
 	{
 		if (s)
+		{
 			sift_cpagg_spec_calendar(s, spec);
+			spec->cal_all = true;
+		}
 		return NULL;
 	}
 	do
@@ -656,7 +678,10 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 	{
 		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (minor 8 has no kinds) */
 		if (!spec->off && !spec->fixed && !s->kinds)
+		{
 			sift_cpagg_spec_calendar(s, spec);
+			spec->cal_all = true;
+		}
 		return NULL;
 	}
 	return parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);

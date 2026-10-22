@@ -1,5 +1,7 @@
--- The caps of the options, told at CREATE INDEX: a cube(...) dim has no histogram in a unit with more groups than its cap, and a set_columns leaf keeps a
--- bloom filter, not its keys, in a unit with more than set_limit distinct ones; a query on them scans those units, so the build says how many, and what to set.
+-- The caps of the options, told at CREATE INDEX: a cube(...) dim has no histogram in a unit with more groups than its cap, a set_columns leaf keeps a
+-- bloom filter, not its keys, in a unit with more than set_limit distinct ones and nothing where its keys are one value or fill their range, a key_presence
+-- leaf keeps no bitmap over 3% of the unit, a rollup_dims rollup is not written in a unit with too many cells, and calendar_columns = 'all' leaves out the
+-- date columns past the 16 dimensions of the cube; a query on them scans those units, so the build says how many, and what to set.
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '60s';
@@ -9,7 +11,7 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE caps (id int, few int, many int, mid int, wide int) WITH (autovacuum_enabled = off);
 INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3 FROM generate_series(1, 100000) g;
 -- a dim over its cap, and a set summary over set_limit that a higher one makes exact
-CREATE INDEX caps_a ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id; many: id)', set_columns = 'few, mid', set_limit = 32);
+CREATE INDEX caps_a ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id; many: id)', set_columns = 'mid', set_limit = 32);
 NOTICE:  sift_col index caps_a: the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
 DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
 HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
@@ -20,9 +22,39 @@ CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (set_columns = '
 NOTICE:  sift_col index caps_b: the set summary of "wide" is a bloom filter, not its keys, in 100% of 3 units, which hold more than set_limit = 32 distinct keys
 HINT:  A unit holds up to 3000 distinct keys, more than the 1024 that set_limit can take: the filter stays.
 -- the caps hold: nothing to tell
-CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', set_columns = 'few, mid', set_limit = 512);
+CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', set_columns = 'mid', set_limit = 512);
 -- the default spec asks for no dim by name, and no set: silent
 CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid);
+-- nothing written: a set summary of keys that fill their range (few), a bitmap over 3% of the unit (many), a rollup of more cells than a tenth of the rows
+CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (set_columns = 'few', key_presence = 'many', rollup_dims = 'few, many');
+NOTICE:  sift_col index caps_e: set_columns wrote no summary of "few" in 100% of 3 units, whose keys are one value, or every integer of a range, or inline text
+DETAIL:  A summary that could not skip a unit is not stored; a query that filters by the column scans those units.
+HINT:  Leave "few" out of set_columns, or sort the table by it before REINDEX.
+NOTICE:  sift_col index caps_e: key_presence wrote no bitmap of "many" in 100% of 3 units, where it would take more than 3% of the bytes of the unit
+DETAIL:  The bitmap takes a bit for each integer from the smallest key of a unit to its largest; a count(DISTINCT) of the column scans those units.
+HINT:  Leave "many" out of key_presence, or sort the table by it before REINDEX.
+NOTICE:  sift_col index caps_e: rollup_dims wrote no rollup of "few, many" in 100% of 3 units, which hold more combinations of them than a unit may keep
+DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+HINT:  Name fewer columns, or columns with fewer values per unit.
+-- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
+CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_presence = 'few', rollup_dims = 'few, mid');
+NOTICE:  sift_col index caps_f: rollup_dims wrote no rollup of "few, mid" in 34% of 3 units, which hold more combinations of them than a unit may keep
+DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+HINT:  Name fewer columns, or columns with fewer values per unit.
+-- a calendar list that does not fit the cube, 'all' that leaves the last date columns out
+CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
+INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;
+CREATE INDEX caps_cal_all ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2) WITH (calendar_columns = 'all');
+NOTICE:  sift_col index caps_cal_all: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out 2 columns: "d1", "d2"
+DETAIL:  The cube holds at most 16 dimensions, and the other columns of the index take the rest; a query that groups by those dates scans the units.
+HINT:  Name the columns the queries group by in calendar_columns (the list must fit the 16 dimensions), or give preagg = 'cube(...)' only the dims they need.
+-- the default is the same list
+CREATE INDEX caps_cal_default ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
+NOTICE:  sift_col index caps_cal_default: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out 2 columns: "d1", "d2"
+DETAIL:  The cube holds at most 16 dimensions, and the other columns of the index take the rest; a query that groups by those dates scans the units.
+HINT:  Name the columns the queries group by in calendar_columns (the list must fit the 16 dimensions), or give preagg = 'cube(...)' only the dims they need.
+-- all of them fit
+CREATE INDEX caps_cal_two ON caps_cal USING sift_col (c1, c2, d1, d2) WITH (calendar_columns = 'all');
 -- what the hint says to do
 ALTER INDEX caps_a SET (set_limit = 512);
 REINDEX INDEX caps_a;
@@ -40,5 +72,5 @@ HINT:  Group by a leaf with fewer values per unit, or sort the table by it befor
          0 |         0
 (1 row)
 
-DROP TABLE caps;
+DROP TABLE caps, caps_cal;
 DROP EXTENSION pg_sift;

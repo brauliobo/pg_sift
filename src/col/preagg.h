@@ -100,6 +100,7 @@ typedef struct SiftCPaggSpec
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
+	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that get a small-set summary in every unit (option set_columns, column format minor 8; col/setsum.h) */
 	uint16		set_limit;				/* up to this many distinct keys a unit keeps exactly, a filter beyond */
@@ -140,6 +141,8 @@ extern int64 sift_cpagg_cal_next(int grain, int64 day);
 extern bool sift_cpagg_cal_key_ok(int type, int grain, int64 key);
 /* Is leaf c a date, timestamp or timestamptz leaf of the top level that has calendar cells? */
 extern bool sift_cpagg_cal_type(const SiftColSchema *s, int c);
+/* The date, timestamp and timestamptz leaves of the top level with no calendar dim in spec, in leaf order, at most max of them in out; returns how many there are */
+extern int	sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max);
 
 /* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);

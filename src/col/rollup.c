@@ -431,10 +431,32 @@ leaf_label(Relation index, const SiftColDef *d)
 	return d->path[0] ? d->path : NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
 }
 
+/* a share of the units that tells a cap is worth a notice: CAPS_REPORT_PCT of them or more */
+static bool
+cap_hits(uint32 n, uint32 units)
+{
+	return n > 0 && n * UINT64CONST(100) >= (uint64) units * CAPS_REPORT_PCT;
+}
+
+/* "a, b, c": the names of the leaves of a rollup */
+static char *
+leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	for (int i = 0; i < n; i++)
+		appendStringInfo(&buf, "%s%s", i ? ", " : "", leaf_label(index, &schema->cols[leaf[i]]));
+	return buf.data;
+}
+
 /*
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
- * has no histogram in a unit with more groups than max_groups, and a set_columns leaf keeps a bloom filter instead of its keys where a unit holds more
- * than set_limit of them. Read from the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
+ * has no histogram in a unit with more groups than max_groups, a set_columns leaf keeps a bloom filter instead of its keys where a unit holds more
+ * than set_limit of them and nothing where its keys are one value or fill their range, a key_presence leaf keeps no bitmap where that would take
+ * more than a few percent of the unit, a rollup_dims rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
+ * leaves out the date columns past the 16 dimensions of the cube. Read from the headers of the stored sidecar, like the census of a refresh;
+ * sift.col_rollup_misses counts the scans that paid.
  */
 void
 sift_col_report_caps(Relation index)
@@ -445,14 +467,22 @@ sift_col_report_caps(Relation index)
 	SiftDirSnapshot *snap;
 	MemoryContext cx;
 	uint32		units = 0,
+				sets_units = 0,
+				pres_units = 0,
+				rows_units = 0,
 				with_dim[SIFT_PAGG_MAX_DIMS] = {0},
+				with_roll[SIFT_PAGG_MAX_ROLLUPS] = {0},
 				bloom[SIFT_COL_MAX_COLS] = {0},
-				keys[SIFT_COL_MAX_COLS] = {0};
+				keys[SIFT_COL_MAX_COLS] = {0},
+				no_set[SIFT_COL_MAX_COLS] = {0},
+				no_pres[SIFT_COL_MAX_COLS] = {0};
 	bool		any = spec->fixed && spec->ndims > 0;
 
 	for (int c = 0; c < SIFT_COL_MAX_COLS; c++)
-		any |= spec->set[c];
-	if (!any)
+		any |= spec->set[c] || spec->pres[c];
+	for (int r = 0; r < spec->nrollups; r++)
+		any |= spec->rollup[r].list < 0;
+	if (!any && !spec->cal_all)
 		return;
 	snap = palloc(sizeof(SiftDirSnapshot));
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col cap report", ALLOCSET_DEFAULT_SIZES);
@@ -461,26 +491,43 @@ sift_col_report_caps(Relation index)
 	{
 		SiftColSegment *seg;
 		SiftCPaggCensus c;
+		bool		sets_ok,
+					pres_ok,
+					rows_ok;
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], cx);
+		/* the sections a segment holds only when the setting allows them and the kinds of its rows are known: where they are not, nothing was asked of it */
+		sets_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_SETS;
+		pres_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE;
+		rows_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_ROWS;
 		sift_cseg_pre_census(seg, spec, sift_col_format_minor, &c);
 		units += seg->nsb;
+		sets_units += sets_ok ? seg->nsb : 0;
+		pres_units += pres_ok ? seg->nsb : 0;
+		rows_units += rows_ok ? seg->nsb : 0;
 		for (int d = 0; d < spec->ndims; d++)
 			with_dim[d] += c.dim[d];
+		for (int r = 0; r < spec->nrollups; r++)
+			with_roll[r] += rows_ok ? c.roll[r] : 0;
 		for (int l = 0; l < seg->schema->ncols; l++)
-			for (uint32 u = 0; spec->set[l] && u < seg->nsb; u++)
+			for (uint32 u = 0; (spec->set[l] || spec->pres[l]) && u < seg->nsb; u++)
 			{
 				uint32		len;
 				const uint8 *blob = sift_cseg_set(seg, l, u, &len);
 				SiftCSet	s;
+				bool		open = blob != NULL && sift_cset_open(blob, len, &s);
 
-				if (blob != NULL && sift_cset_open(blob, len, &s) && s.kind == SIFT_CSET_BLOOM)
+				if (open && s.kind == SIFT_CSET_BLOOM)
 				{
 					bloom[l]++;
 					keys[l] = Max(keys[l], s.n);
 				}
+				if (spec->set[l] && sets_ok && !open)
+					no_set[l]++;
+				if (spec->pres[l] && pres_ok && !(open && s.kind == SIFT_CSET_PRES))
+					no_pres[l]++;
 			}
 		sift_cseg_close(seg);
 		MemoryContextReset(cx);
@@ -492,6 +539,7 @@ sift_col_report_caps(Relation index)
 							 errdetail("A query that groups or filters by it scans those units (sift.col_rollup_misses counts them)."),
 							 errhint("Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.")));
 	for (int l = 0; units > 0 && l < rel->schema->ncols; l++)
+	{
 		if (bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
 		{
 			uint32		limit = spec->set_limit ? spec->set_limit : SIFT_CSET_LIMIT;
@@ -502,6 +550,39 @@ sift_col_report_caps(Relation index)
 							 errhint("ALTER INDEX %s SET (set_limit = %u), then REINDEX.", name, pg_nextpower2_32(keys[l])) :
 							 errhint("A unit holds up to %u distinct keys, more than the %d that set_limit can take: the filter stays.", keys[l], SIFT_CSET_LIMIT_MAX)));
 		}
+		if (cap_hits(no_set[l], sets_units))
+			ereport(NOTICE, (errmsg("sift_col index %s: set_columns wrote no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
+									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_set[l], sets_units), sets_units),
+							 errdetail("A summary that could not skip a unit is not stored; a query that filters by the column scans those units."),
+							 errhint("Leave \"%s\" out of set_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+		if (cap_hits(no_pres[l], pres_units))
+			ereport(NOTICE, (errmsg("sift_col index %s: key_presence wrote no bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
+									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_pres[l], pres_units), pres_units, SIFT_CSET_PRES_PCT),
+							 errdetail("The bitmap takes a bit for each integer from the smallest key of a unit to its largest; a count(DISTINCT) of the column scans those units."),
+							 errhint("Leave \"%s\" out of key_presence, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+	}
+	for (int r = 0; rows_units > 0 && r < spec->nrollups; r++)
+		if (spec->rollup[r].list < 0 && cap_hits(rows_units - with_roll[r], rows_units))
+			ereport(NOTICE, (errmsg("sift_col index %s: rollup_dims wrote no rollup of \"%s\" in %d%% of %u units, which hold more combinations of them than a unit may keep",
+									name, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims),
+									share_pct(rows_units - with_roll[r], rows_units), rows_units),
+							 errdetail("A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", SIFT_PAGG_ROWS_CELLS),
+							 errhint("Name fewer columns, or columns with fewer values per unit.")));
+	if (spec->cal_all)
+	{
+		int			missing[SIFT_COL_MAX_COLS];
+		int			n = sift_cpagg_cal_missing(rel->schema, spec, missing, lengthof(missing));
+		StringInfoData names;
+
+		initStringInfo(&names);
+		for (int i = 0; i < n && i < lengthof(missing); i++)
+			appendStringInfo(&names, "%s\"%s\"", i ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
+		if (n > 0)
+			ereport(NOTICE, (errmsg("sift_col index %s: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out %d column%s: %s",
+									name, n, n == 1 ? "" : "s", names.data),
+							 errdetail("The cube holds at most %d dimensions, and the other columns of the index take the rest; a query that groups by those dates scans the units.", SIFT_PAGG_MAX_DIMS),
+							 errhint("Name the columns the queries group by in calendar_columns (the list must fit the %d dimensions), or give preagg = 'cube(...)' only the dims they need.", SIFT_PAGG_MAX_DIMS)));
+	}
 	MemoryContextDelete(cx);
 	pfree(snap);
 }
