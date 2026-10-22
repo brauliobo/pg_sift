@@ -111,12 +111,12 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P2-1 | bm25/posting.c:post_attach, sift_post_group_tf, list_tf_pos | nnib/df/ng/esc length raw (F-BM25-5, fixed by explicit checks in 3.0.0, 7f59d1a; the Span conversion is open): carve sidecar Spans at attach |
 | P2-2 | bm25/posting.c:post_open; bm25/dict.c:sift_dict_open; bm25/segment.c:docmap, load_sb; bm25/walk.c:walk_docs | allocation before validation (up to 32 GB) |
 | P2-3 | bm25/rank.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
-| P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream |
+| P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream. The pre-aggregate sums and cubes of col/seg.c are compared without a wrapping sum; every read is bounded by `sift_sr_get` |
 | P2-5 | core/live.c:sift_live_clear | page index and write unchecked (Assert only) |
 | P2-6 | table/tomb.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
-| P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in |
+| P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in. Done: `sift_cc_open_rows` |
 | P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
-| P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed |
+| P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed. Done for the count and the raw form (`sift_cc_decode_strs` takes the expected n); `total` of a compressed list stays bounded by 2^31 and the allocation limit |
 | P2-10 | col/seg.c:sift_cseg_unit, sift_cseg_unit_head | unit buffer lacks `SIFT_COL_PAD`; `unpack` reads 31 bytes past |
 | P2-11 | col/enc.c:sift_cchunk_zone, col/ctest.c:chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
 | P3-1 | col/codec_parse.c:parse_node, parse_child, sift_cc_open, col/codec_blob.c:sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
@@ -129,7 +129,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
 | P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
 | P4-2 | core/varint.h:sift_get_varint64_n, bm25/pos.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
-| P4-3 | col/unit.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
+| P4-3 | col/unit.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2: done for `sift_cunit_chunk`); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
 Also: extend sift.verify (src/bm25/segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: bm25/docdir.c, core/lane.c, rest of bm25/wbuf.c, bm25/cscan.c, sift_cscan consumers.
