@@ -64,17 +64,17 @@ def window(eid, rows, args, name, script, read=None):
         path = os.path.join(d, 'w.pgb')
         open(path, 'w').write(script)
         start, t0 = lsn(eid), time.time()
-        w = pgbench(eid, path, args.rows, args.churn_seconds, CLIENTS, os.path.join(d, 'w'))
+        w = pgbench(eid, path, args.rows, args.churn_seconds, CLIENTS, os.path.join(d, 'log-w'))
         r = None
         if read:
             rp = os.path.join(d, 'r.pgb')
             open(rp, 'w').write(read + ';\n')
-            r = pgbench(eid, rp, args.rows, args.churn_seconds, 1, os.path.join(d, 'r'), ('-R', '20'))
+            r = pgbench(eid, rp, args.rows, args.churn_seconds, 1, os.path.join(d, 'log-r'), ('-R', '20'))
         out = w.communicate()[0]
         if r:
             r.communicate()
         secs = time.time() - t0
-        lat = latencies_ms(os.path.join(d, 'w'))
+        lat = latencies_ms(os.path.join(d, 'log-w'))
         wal = wal_bytes(eid, start)
         if not lat:
             raise RuntimeError(f'{name}: pgbench ran no transaction: {out.strip()[-300:]}')
@@ -84,7 +84,7 @@ def window(eid, rows, args, name, script, read=None):
         rows.add(eid, name, 'steady', 'wal_bytes_per_tx', 'bytes', value=round(wal / len(lat)))
         rows.add(eid, name, 'steady', 'window_s', 's', value=round(secs, 1))
         if read:
-            rl = latencies_ms(os.path.join(d, 'r'))
+            rl = latencies_ms(os.path.join(d, 'log-r'))
             if rl:
                 rows.add(eid, name, 'steady', 'read_p50_ms', 'ms', value=round(percentile(rl, 50), 2))
         rows.add(eid, name, 'steady', 'size_mib', 'MiB', value=size_mib(eid))
