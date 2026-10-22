@@ -396,6 +396,8 @@ COMMENT ON FUNCTION sift.col_rollup_misses() IS 'The scans of this session that 
 
 CREATE VIEW sift.col_rollup_state AS SELECT * FROM sift.col_rollup_counters();
 CREATE VIEW sift.col_rollup_requests AS SELECT * FROM sift.col_rollup_queue();
+-- the functions they list are open to every role with USAGE on the schema; the views are too (they were readable by superusers only)
+GRANT SELECT ON sift.col_rollup_state, sift.col_rollup_requests TO PUBLIC;
 
 -- Facet counts over a search (docs/FIELDS-FACETS.md): terms, range, histogram and date_histogram facets of any column type, several in one
 -- statement, with the facets of a multi-select (drill-sideways) and a top N with an "other" count. sift.facet_sql builds the SQL statement
@@ -791,12 +793,16 @@ CREATE VIEW sift.workers AS
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
 COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index the caller can read: its maintenance state (sift.worker_state) and, for a sift_col index, why it would be rewritten now.';
+-- it lists what the caller can read (has_table_privilege on the table), so every role may select from it
+GRANT SELECT ON sift.workers TO PUBLIC;
 
 -- Logical replication of a sift_table needs pg_sift in shared_preload_libraries (docs/COL-TAM.md section 5): a custom resource manager can only
 -- be registered at preload time. Without it the first DML on a published table fails; this trigger refuses CREATE/ALTER PUBLICATION instead, when
 -- the publication would carry a sift_table (wal_level = logical, a permanent table, a publication that publishes inserts, updates or deletes).
+-- It fires for every role that creates a publication and reads shared_preload_libraries, which only roles with pg_read_all_settings may examine: it
+-- runs as the extension's owner (the check of who may publish what is the server's).
 CREATE FUNCTION sift.publication_check() RETURNS event_trigger
-	LANGUAGE plpgsql AS $fn$
+	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
 DECLARE
 	tbl regclass;
 BEGIN
