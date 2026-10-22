@@ -110,8 +110,7 @@ sift_cpu_init(void)
 void
 sift_cpu_register(SiftDispatchRebind fn)
 {
-	if (nrebinds == SIFT_MAX_REBINDS)
-		elog(ERROR, "sift: too many SIMD dispatch tables");
+	SIFT_INVARIANT(nrebinds < SIFT_MAX_REBINDS, "sift: too many SIMD dispatch tables");
 	rebinds[nrebinds++] = fn;
 	fn(&sift_cpu);
 }

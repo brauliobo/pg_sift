@@ -293,8 +293,7 @@ sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, con
 	emit(&e, &h, sizeof(h));
 	emit_zeros(&e, dirty_len);
 	emit(&e, reg, (uint64) (nsb + 1) * sizeof(uint64));
-	if (BufFileSeek(rows, 0, 0, SEEK_SET) != 0)
-		elog(ERROR, "sift: could not rewind a spool file");
+	SIFT_INVARIANT(BufFileSeek(rows, 0, 0, SEEK_SET) == 0, "sift: could not rewind a spool file");
 	for (uint64 left = reg[nsb], n; left > 0; left -= n)
 	{
 		n = Min(left, SIFT_PAGE_PAYLOAD);
@@ -304,8 +303,7 @@ sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, con
 	emit_zeros(&e, (uint64) nslots * sizeof(uint32));
 	if (e.used > 0)
 		emit_flush(&e);
-	if (e.next != *npages)
-		elog(ERROR, "sift: LIVE run of %u pages written as %u", *npages, e.next);
+	SIFT_INVARIANT(e.next == *npages, "sift: LIVE run of %u pages written as %u", *npages, e.next);
 	pfree(buf);
 }
 
@@ -366,7 +364,10 @@ sift_live2_clear(const SiftLive *l, uint32 sbidx, const uint64 *bits, int nd, ui
 		if (k == n)
 		{
 			if (n == MAX_GENERIC_XLOG_PAGES)
-				elog(ERROR, "sift: the docs of one superblock span more than %d LIVE pages", MAX_GENERIC_XLOG_PAGES - 1);
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("sift: the docs of one superblock span more than %d LIVE pages", MAX_GENERIC_XLOG_PAGES - 1),
+						 errhint("Run sift.merge() on the index to rewrite the segment without its dead documents.")));
 			pg[n++] = p;
 		}
 	}

@@ -42,7 +42,7 @@ sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExt
 	for (int i = 0; i < n; i++)
 		if (blk >= old[i].start && blk - old[i].start < old[i].nblocks)
 			return fresh[i].start + (blk - old[i].start);
-	elog(ERROR, "sift: relocation references a block outside its segment");
+	SIFT_INVARIANT(false, "sift: relocation references a block outside its segment");
 	pg_unreachable();
 }
 
@@ -210,8 +210,8 @@ sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry
 	gen = sift_store_new_gen(rel);
 	space_limit = limit;
 	for (int i = 0; i < plan.parts; i++)
-		if (sift_wt_reserve(wt, plan.source[i].nblocks) != plan.fresh[i].start)
-			elog(ERROR, "sift: relocation allocation differs from its plan");
+		SIFT_INVARIANT(sift_wt_reserve(wt, plan.source[i].nblocks) == plan.fresh[i].start,
+					   "sift: relocation allocation differs from its plan");
 	space_limit = InvalidBlockNumber;
 	for (int i = 0; i < plan.parts; i++)
 		for (uint32 j = 0; j < plan.source[i].nblocks; j++)

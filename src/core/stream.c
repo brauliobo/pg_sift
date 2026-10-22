@@ -25,8 +25,7 @@ sift_sw_align(SiftStreamWriter *sw, size_t align)
 {
 	static const char zeros[SIFT_SIMD_ALIGN];
 
-	if (align == 0 || (align & (align - 1)) != 0 || align > SIFT_SIMD_ALIGN)
-		elog(ERROR, "sift: invalid stream alignment %zu", align);
+	SIFT_INVARIANT(align != 0 && (align & (align - 1)) == 0 && align <= SIFT_SIMD_ALIGN, "sift: invalid stream alignment %zu", align);
 	for (;;)
 	{
 		size_t		used = sift_sw_tell(sw) % SIFT_PAGE_PAYLOAD;
@@ -49,8 +48,7 @@ sift_sw_write_file(SiftStreamWriter *sw, BufFile *file, uint64 len)
 {
 	char	   *buf = palloc(SPOOL_CHUNK);
 
-	if (BufFileSeek(file, 0, 0, SEEK_SET) != 0)
-		elog(ERROR, "sift: could not rewind a spool file");
+	SIFT_INVARIANT(BufFileSeek(file, 0, 0, SEEK_SET) == 0, "sift: could not rewind a spool file");
 	for (uint64 n; len > 0; len -= n)
 	{
 		n = Min(len, SPOOL_CHUNK);
