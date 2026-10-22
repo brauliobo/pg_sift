@@ -37,6 +37,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		return false;
 	switch (lf->typid)
 	{
+		case BOOLOID:
 		case INT2OID:
 		case INT4OID:
 		case DATEOID:
@@ -45,6 +46,8 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
 		case NUMERICOID:
+		case CASHOID:
+		case TIMEOID:
 			return lf->vtype == SCV_I64;
 		case FLOAT4OID:
 		case FLOAT8OID:
