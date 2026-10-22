@@ -534,8 +534,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	bool	   *desc,
 			   *nulls_first,
 				skip_offset = true;
-	double		count,
-				offset,
+	double		count = 0,
+				offset = 0,
 				rows;
 	int			nkey = list_length(parse->sortClause);
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
