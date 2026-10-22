@@ -14,11 +14,15 @@
 #include "access/heapam.h"
 #include "access/table.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/tupmacs.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
+#include "commands/event_trigger.h"
+#include "nodes/parsenodes.h"
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -233,6 +237,48 @@ sift_tbl_layout_check(Relation rel)
 
 	(void) layout_build(rel, cx);
 	MemoryContextDelete(cx);
+}
+
+PG_FUNCTION_INFO_V1(sift_table_ddl_check);
+
+/*
+ * The event trigger after ALTER TABLE: a column added, a column's type changed or a column renamed (declared paths follow the name of a
+ * jsonb column) fails with the message of CREATE TABLE when the sift_table, or a partition of it, would hold more leaves than a segment,
+ * instead of at its next write. DROP COLUMN is not checked, so that a table made too wide by 3.2 can be narrowed.
+ */
+Datum
+sift_table_ddl_check(PG_FUNCTION_ARGS)
+{
+	Node	   *stmt;
+	RangeVar   *rv = NULL;
+
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
+		elog(ERROR, "not fired by the event trigger manager");
+	stmt = ((EventTriggerData *) fcinfo->context)->parsetree;
+	if (IsA(stmt, AlterTableStmt))
+	{
+		foreach_node(AlterTableCmd, cmd, ((AlterTableStmt *) stmt)->cmds)
+			if (cmd->subtype == AT_AddColumn || cmd->subtype == AT_AlterColumnType)
+				rv = ((AlterTableStmt *) stmt)->relation;
+	}
+	else if (IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)
+		rv = ((RenameStmt *) stmt)->relation;
+	if (rv)
+	{
+		Oid			relid = RangeVarGetRelid(rv, NoLock, true);
+
+		/* the statement holds the lock of each table it altered */
+		if (OidIsValid(relid))
+			foreach_oid(oid, find_all_inheritors(relid, NoLock, NULL))
+			{
+				Relation	rel = relation_open(oid, NoLock);
+
+				if (sift_tbl_is_table(rel))
+					sift_tbl_layout_check(rel);
+				relation_close(rel, NoLock);
+			}
+	}
+	PG_RETURN_NULL();
 }
 
 static int64

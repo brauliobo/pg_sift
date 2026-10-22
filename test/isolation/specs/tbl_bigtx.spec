@@ -1,7 +1,7 @@
 # A sift_table written by one transaction that needs more write buffers than the directory has entries for (the limit is lowered): once
 # the directory is half full the transaction's write buffers become column groups that carry the writer. Other sessions see none of its
 # rows while it runs (at any isolation level, through a scan, an index and a VACUUM that runs meanwhile), all of them once it commits at
-# the snapshots taken after, and none if it rolls back.
+# the snapshots taken after, and none if it rolls back. A loop of single-row INSERTs, whose write buffers no command closes as a whole, does the same.
 # requires: tam gates
 
 setup
@@ -21,6 +21,7 @@ teardown
 session w
 step wb		{ BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
 step wi		{ INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g; }
+step wloop	{ DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$; }
 step wtag	{ SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer; }
 step wown	{ SELECT count(*) FROM iso_big; }
 step wc		{ COMMIT; }
@@ -46,3 +47,6 @@ permutation rrr wb wi wc rscan ragg rend rscan ragg
 permutation rser wb wi wc rscan rend rscan
 # VACUUM while the writer runs leaves its groups alone
 permutation wb wi rv rscan ragg wtag wc rscan ragg wv rscan ragg
+# the same for a loop of single-row INSERTs
+permutation wb wloop wtag wown rscan ridx rbm ragg wc rscan ridx rbm ragg
+permutation wb wloop wtag rscan wa rscan ridx rv rscan
