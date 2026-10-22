@@ -11,30 +11,9 @@ SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ap (id int, grp text, cat int, d date, amt numeric(10,2), qty int, big bigint, huge numeric(18, 0), f float8, ts timestamp, pad text) WITH (autovacuum_enabled = off);
 
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+\ir test/agg_preagg_helpers.sql
 
--- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
-CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		workers := coalesce(substring(l from 'Workers Planned: (\d+)')::int, workers);
-	END LOOP;
-EXCEPTION WHEN OTHERS THEN
-	units := NULL; pre := NULL; workers := NULL;
-END $$;
+\ir test/agg_preagg_units.sql
 
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
@@ -87,22 +66,6 @@ BEGIN
 		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
 		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
 	RETURN NEXT;
-END $$;
-
--- a snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the pages of rows written
--- since from becoming all-visible, so the units stay scanned. Wait for the conditions themselves: the queue drained and no such session.
-CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
-DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
-BEGIN
-	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
-	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
-		IF clock_timestamp() > deadline THEN
-			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
-				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
-				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
-		END IF;
-		PERFORM pg_sleep(0.01);
-	END LOOP;
 END $$;
 
 INSERT INTO ap
