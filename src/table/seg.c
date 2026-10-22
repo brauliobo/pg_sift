@@ -47,6 +47,7 @@
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/lane.h"
+#include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
@@ -176,10 +177,10 @@ layout_build_for(Relation rel, MemoryContext cxt, const char *paths)
 	l->exc = n;
 	defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_VAR,.attno = 0,.type = SIFT_COLT_BYTEA,.path = "exceptions"};
 	n++;
-	if (n > SIFT_COL_MAX_COLS)
+	if (n > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("a sift_table holds at most %d columns", SIFT_COL_MAX_COLS - 1),
+				 errmsg("a sift_table holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS) - 1),
 				 errdetail("Table \"%s\" has %d%s.", RelationGetRelationName(rel), n - 1 - npath, npath ? " and its declared paths hold the rest" : "")));
 	l->schema = sift_cschema_create(cxt, defs, n);
 	pfree(defs);
