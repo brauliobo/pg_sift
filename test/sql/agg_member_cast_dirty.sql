@@ -66,6 +66,11 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5980')) AS object_sa
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970')) AS array_same;
 -- several rows hold one: both plans raise, the one the scan reaches first may be another row's than the heap order's
 SELECT left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), false), 9) = left(runq(mq('e.key, count(*), avg(CAST(e.value AS float8))'), true), 9) AS whole_table_raises;
+-- two rows that raise different errors: each plan raises the one it reaches first, which is no property of the query (a sort by the group key, a hash
+-- aggregate and the order of the access path each reach the pairs in another order), so the plans may name different rows; none of them answers
+SELECT runq(q, false) = ANY (e) AND runq(q, true) = ANY (e) AS raises_one_of_them
+FROM (VALUES (mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 5990)'), ARRAY['ERR 22023 cannot cast jsonb string to type double precision', 'ERR 22023 cannot cast jsonb boolean to type double precision']),
+             (mq('e.key, avg(CAST(e.value AS float8))', 'id IN (5980, 5970)'), ARRAY['ERR 22023 cannot cast jsonb object to type double precision', 'ERR 22023 cannot cast jsonb array to type double precision'])) v(q, e);
 -- a row filtered out reaches nothing: by a leaf of its row, by the key of the member, by a join that drops it
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900')) AS row_filtered;
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$asp_i$$ AND id <> 5990 AND id <> 5980 AND id <> 5970')) AS member_filtered;
@@ -75,8 +80,23 @@ SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src 
 SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
 SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
 SELECT same(mq('sum(CASE WHEN e.key = $$p_total$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
+-- reads of the member the row read again cannot answer for keep the normal plan: the `->` and `->>` forms, an EXISTS over the members (alone and under
+-- an OR), a materialized CTE that reads them where no walk of the query sees, and a filter on the member of a key
+SELECT label, CASE WHEN pushed(q) THEN 'PUSHED' ELSE same(q) END AS refused
+FROM (VALUES ('arrow cast', 'SELECT t.src, sum((t.metrics -> $$asp_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
+             ('arrow text', 'SELECT t.src, sum((t.metrics ->> $$asp_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
+             ('exists', 'SELECT t.src, count(*) FROM m_t t WHERE id <= 100 AND EXISTS (SELECT 1 FROM jsonb_each(t.metrics) x WHERE CAST(x.value AS float8) > 100) GROUP BY t.src'),
+             ('exists under or', mq('e.key, avg(CAST(e.value AS float8))', 'id <= 100 OR EXISTS (SELECT 1 FROM jsonb_each(t.metrics) x WHERE CAST(x.value AS float8) > 100)')),
+             ('materialized cte', 'WITH x AS MATERIALIZED (SELECT t.id, e.key, e.value FROM m_t t JOIN LATERAL jsonb_each(t.metrics) e ON true) SELECT key, avg(CAST(value AS float8)) FROM x WHERE id <= 100 GROUP BY key'),
+             ('key filter', mq('e.key, avg(CAST(e.value AS float8))', 'id <= 100 AND CAST(jsonb_extract_path(t.metrics, $$asp_k$$) AS integer) > 1'))) v(label, q);
 -- the same cast also in an unconditional aggregate: the dirty member raises
 SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
+-- the member cast to two types: the error names the type of the cast that raises first, in the order the aggregates run, which the row read again does not know
+SELECT runq(mq('e.key, sum(CAST(e.value AS integer)), avg(CAST(e.value AS float8))', 'id = 100'), false) AS two_types_error;
+SELECT same(mq('e.key, sum(CAST(e.value AS integer)), avg(CAST(e.value AS float8))', 'id = 100')) AS two_types_integer_first;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'id = 100')) AS two_types_float_first;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'day < 500')) AS two_types_clean;
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'day < 500')) AS two_types_pushed;
 -- a conjunct that reads the leaf evaluates the cast before the aggregates: the plan stays
 SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct;
 SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;

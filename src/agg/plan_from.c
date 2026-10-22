@@ -721,19 +721,6 @@ unconditional_cast(Node *n, AggCtx *c)
 	return expression_tree_walker(n, unconditional_cast, c);
 }
 
-/* can leaf m, read only through the cast of a jsonb_each member's value to float8, be read again from the heap, so that a row with a value of another type raises where PostgreSQL's cast does? */
-static bool
-cast_recheck_ok(AggCtx *c, int m)
-{
-	Query	   *q = c->root->parse;
-
-	c->cast_want = FLOAT8OID;
-	/* a leaf of the index, not the member of one key (a virtual leaf): the source reads the rows with a bad value in any member again, and the error is the row's, not the key's */
-	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && leaf_of(c, m)->typid == FLOAT8OID &&
-		!c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
-		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c));
-}
-
 /* does a conjunct of the rows read the leaf, directly or in an expression of a combo? */
 static bool
 pred_reads_leaf(AggCtx *c, const SiftAggPred *p, int leaf)
@@ -759,7 +746,8 @@ typedef struct MemberCasts
 {
 	AggCtx	   *c;
 	Oid			to;				/* the type the value of the member is cast to */
-	bool		bad;			/* ... it is cast to two types, read bare, or read where the walk does not see */
+	bool		mixed;			/* ... it is cast to two types */
+	bool		bad;			/* ... or it is read bare, or where the walk does not see (a sub-select), or cast to two types */
 } MemberCasts;
 
 static bool
@@ -793,13 +781,32 @@ member_casts(Node *n, MemberCasts *w)
 		Oid			to = json_cast_target(((FuncExpr *) n)->funcid);
 
 		if (w->to != InvalidOid && w->to != to)
-			w->bad = true;
+			w->mixed = w->bad = true;
 		w->to = to;
 		return false;
 	}
 	if (is_member_value(n, w->c))
 		w->bad = true;
 	return expression_tree_walker(n, member_casts, w);
+}
+
+/*
+ * Can leaf m, read only through the cast of a jsonb_each member's value to float8, be read again from the heap, so that a row with a value of another
+ * type raises where PostgreSQL's cast does? The query casts the value to that one type: the error names the type of the cast that raises first, in
+ * the order the aggregates evaluate them, which the row read again does not know (the message of another cast would be float8's).
+ */
+static bool
+cast_recheck_ok(AggCtx *c, int m)
+{
+	Query	   *q = c->root->parse;
+	MemberCasts w = {c, InvalidOid, false, false};
+
+	c->cast_want = FLOAT8OID;
+	/* a leaf of the index, not the member of one key (a virtual leaf): the source reads the rows with a bad value in any member again, and the error is the row's, not the key's */
+	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && leaf_of(c, m)->typid == FLOAT8OID &&
+		!c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
+		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c)) &&
+		!member_casts((Node *) q, &w) && !w.mixed && w.to == FLOAT8OID;
 }
 
 /*
@@ -814,7 +821,7 @@ member_recheck(AggCtx *c, const SiftAggSpec *s, int j)
 	int			v = c->lay->nleaves - c->nvleaf + j,
 				src = vleaf_source(c, j);
 	Query	   *q = c->root->parse;
-	MemberCasts w = {c, InvalidOid, false};
+	MemberCasts w = {c, InvalidOid, false, false};
 
 	if (!sift_aggvleaf_member(&c->vleaf[j]) || src < 0 || c->func_kind != FK_EACH || c->func_key == NULL || c->vleaf[j].obj != c->func_obj ||
 		bms_is_member(src, c->used) || leaf_of(c, v)->typid != FLOAT8OID || c->search || !OidIsValid(c->indexoid) ||
