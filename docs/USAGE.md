@@ -611,8 +611,9 @@ the `pg_repack` call followed by the `VACUUM (ANALYZE)` the rewrite needs. `key 
 that is ordered now and saves about as much, or when over 10% of the rows change a day (the order is lost faster than a repack restores it). A rewrite restores the order at once: the planner and the scans read the
 zone maps of the rebuilt index. Run `VACUUM (ANALYZE) t` right after it: `CLUSTER`, `VACUUM FULL` and `pg_repack` leave the visibility map empty, and autovacuum does not
 come for it (a rewrite counts no inserts, so the insert threshold is not reached). A scan checks the heap for every row of a page that is not all-visible, and the planner prices that (`relallvisible`
-of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 heap pages and took 320 ms instead of 82 ms, and its cost was 12.5 million against 21,500 with the map set, so the normal plan won
-until the `VACUUM`. Switch it off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or one index with
+of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 heap pages and took 320 ms instead of 82 ms. The planner charges the pages of the units the zones keep: a clustered table
+whose scan costs 531 with the map set costs 1,559 without it for a tenth of the units, against 1,024 for the normal plan, which wins until the `VACUUM`; on a table of wide rows the scan of a
+filter that keeps a fifth of the units took 180 ms against 160 ms for the normal plan without the map, and 7.7 ms against 157 ms after the `VACUUM`. Switch it off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or one index with
 `ALTER INDEX ... SET (cluster_advice = off)`.
 
 Rewriting the table: `CLUSTER` and `VACUUM FULL` lock it exclusively and work for heap tables with every sift index and for a `sift_table`. `pg_repack` (online, `--order-by`, 1.5.3 tested on PostgreSQL 18) rebuilds the
