@@ -74,6 +74,7 @@ void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 void arms_init(AggExec *ex);
 void arms_flush(AggExec *ex);
 void arm_chunk(AggExec *ex, Tup *t);
+void spine_tail(AggExec *ex);
 
 /* spine.c */
 void spine_load(AggExec *ex);
