@@ -254,7 +254,7 @@ sift_table_ddl_check(PG_FUNCTION_ARGS)
 	RangeVar   *rv = NULL;
 
 	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
-		elog(ERROR, "not fired by the event trigger manager");
+		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED), errmsg("not fired by the event trigger manager")));
 	stmt = ((EventTriggerData *) fcinfo->context)->parsetree;
 	if (IsA(stmt, AlterTableStmt))
 	{
