@@ -30,6 +30,17 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 - Generated blocks (`bench:`, `coverage:` and `gen:` markers in README.md and docs/, `docs/COVERAGE.md`) are never edited by hand: change the data, the source or the generator.
 - Fix root causes; a bug gets a failing test first. Comments only for non-obvious code.
 
+## Tables in the docs
+
+GitHub scrolls a wide table sideways, which is unreadable on a phone. Every table of README.md and every generated table of docs/ stays within 6 columns, 100 characters a source row and 40 a cell
+(`scripts/gen-docs.py --check` fails otherwise; `--tables [--all]` lists the offenders). Renderers call `bench/steps/mdtable.py` (`table`, `details`), never a private `md_table`. To fit:
+
+- Put the unit in the header or the row label (`build s`, `size (MiB)`), not in each cell; round to 3 significant digits (`readme.absolute`).
+- Rows are the many things (metrics, queries, classes), columns the few (engines, versions). More than 5 engines: `mdtable.table` splits the value columns into several tables and repeats the first `keys` columns, so pass `keys=2` to keep a baseline engine in every part.
+- Short labels and a legend: `Q03` and `sift_col`, with a list under the table that says what they are. Code, SQL and long names go to the legend or a note, not into cells; prose (settings, coverage rows, how-to) is a list, not a table.
+- A comparison shows a compact ratio (`sift faster by`) next to the two values; the full table with every engine, error bar and absolute ms goes into `mdtable.details(...)` below it. Charts (`docs/img/*.svg`, `bench/steps/charts.py`) carry the headline when one exists.
+- Hand-written tables (the comparison tables of README.md) follow the same budget; run `scripts/gen-docs.py --tables` after editing one.
+
 ## On-disk formats
 
 Any change to what is stored needs a reader for the old and the new format, an upgrade test (`test/t/extension_lifecycle.sh`, `test/t/compat_2x_fixture.sh`)

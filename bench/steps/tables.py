@@ -42,6 +42,7 @@ Engine ids, order and labels: bench/engines.tsv.
 import collections, math, os, re, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mdtable import table as md_table  # noqa: E402  (steps/mdtable.py)
 from stats import number as num, sem  # noqa: E402  (steps/stats.py)
 
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
@@ -207,10 +208,6 @@ def ratio(a, b):
         return '%.2fx' % (float(a) / float(b))
     except (ValueError, ZeroDivisionError):
         return 'n/a'
-
-
-def md_table(head, body, left=1):
-    return ['| ' + ' | '.join(head) + ' |', '|' + '---|' * left + '---:|' * (len(head) - left)] + ['| ' + ' | '.join(r) + ' |' for r in body]
 
 
 def pm(r, digits=0):

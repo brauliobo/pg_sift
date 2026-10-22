@@ -98,13 +98,17 @@ validate() {
 # ---------- generation ----------
 # status of a row as the table shows it
 STATUS_AWK='
-	function md(s) { gsub(/\|/, "\\|", s); return s }
+	function esc(s,   n, a, i, out) {   # a * outside code spans would open an emphasis that runs over the rest of the line
+		n = split(s, a, "`")
+		for (i = 1; i <= n; i++) { if (i % 2) gsub(/\*/, "\\*", a[i]); out = out (i > 1 ? "`" : "") a[i] }
+		return out
+	}
 	function pend(f) { return f != "" && index(P, " " f " ") }
 	function status(st, cond, since) {
 		if (pend(since)) cond = (cond == "" ? "" : cond "; ") "in a branch, pending merge"
-		return st (cond == "" ? "" : " (" md(cond) ")")
+		return st (cond == "" ? "" : " (" esc(cond) ")")
 	}
-	function code(s) { return s == "" ? "" : "`" md(s) "`" }
+	function code(s) { return s == "" ? "" : "`" s "`" }
 	function proofs(p,   a, n, i, k, out) {
 		n = split(p, a, ",")
 		for (i = 1; i <= n; i++) { k = index(a[i], ":"); out = out (i > 1 ? ", " : "") substr(a[i], 1, k - 1) " `" substr(a[i], k + 1) "`" }
@@ -145,13 +149,13 @@ EOF
 		{ n[$4]++; total++; if (pend($12)) npend++; if ($10 ~ /^external:/) ext++; row[++r] = $0 }
 		END {
 			printf "%d rows: %d Yes, %d Partly, %d No, %d Error; every row has a sample query (%d run on a second cluster); %d pending merge.\n\n", total, n["Yes"], n["Partly"], n["No"], n["Error"], ext, npend
-			print "| Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |"
-			print "|---|---|---|---|---|---|---|"
 			for (i = 1; i <= r; i++) {
 				split(row[i], f, "\t")
-				notes = md(f[8]); if (f[9] != "") notes = notes (notes == "" ? "" : " ") "Proof: " proofs(f[9]) "."
-				printf "| %s | %s | %s | %s | %s | %s | %s |\n", f[1], md(f[2]), md(f[3]), status(f[4], f[5], f[12]), md(f[6]), code(f[7]), notes
+				if (!(f[2] in body)) areas[++na] = f[2]
+				notes = esc(f[8]); if (f[9] != "") notes = notes (notes == "" ? "" : " ") "Proof: " proofs(f[9]) "."
+				body[f[2]] = body[f[2]] sprintf("- **%s** %s: %s (%s).%s%s\n", f[1], esc(f[3]), status(f[4], f[5], f[12]), f[6], f[7] == "" ? "" : " " code(f[7]) ".", notes == "" ? "" : " " notes)
 			}
+			for (a = 1; a <= na; a++) printf "\n### %s\n\n%s", areas[a], body[areas[a]]
 		}' "$TSV"
 }
 
@@ -168,9 +172,7 @@ gen_block() {
 		}
 		END {
 			printf "[docs/COVERAGE.md](docs/COVERAGE.md) lists %d query shapes with a sample each (%d Yes, %d Partly, %d No, %d Error), checked on a test cluster by `scripts/coverage.sh --check`. The analytics shapes by family:\n\n", total, n["Yes"], n["Partly"], n["No"], n["Error"]
-			print "| query shape | covered | engine |"
-			print "|---|---|---|"
-			for (k = 1; k <= max; k++) if (k in name) printf "| %s | %s | %s |\n", name[k], (kinds[k] > 1 ? "Partly" : st[k]), eng[k]
+			for (k = 1; k <= max; k++) if (k in name) printf "- %s: %s (%s)\n", name[k], (kinds[k] > 1 ? "Partly" : st[k]), eng[k]
 		}' "$TSV"
 	echo; echo '<!-- coverage:end -->'
 }

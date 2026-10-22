@@ -2,14 +2,15 @@
 """Regenerate every generated part of README.md and docs/ from the code, the tests and the committed benchmark results.
 
     scripts/gen-docs.py            rewrite the generated blocks in place
-    scripts/gen-docs.py --check    fail (exit 1) when a block is stale; renders into a scratch copy, touches nothing, needs no server
+    scripts/gen-docs.py --check    fail (exit 1) when a block is stale or a generated table is over the width budget; renders into a scratch copy, touches nothing, needs no server
+    scripts/gen-docs.py --tables [--all]    list the tables of README.md and docs/ over the budget (--all: every table) with columns, longest row and cell
 
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
   <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py); a block whose
                                                           results file is missing or empty says it is not measured yet
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
-  <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the settings table (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
+  <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the list of settings (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
                                                           one setting, inline; tests: the test counts, inline
 """
 import argparse
@@ -22,6 +23,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, 'bench', 'steps'))
+import mdtable  # noqa: E402  (the width budget and the tables of a text)
 
 # the results file behind each bench block; a block with a missing file is not rendered, it says so
 RESULTS = {n: n + '.tsv' for n in ('sets', 'rollup', 'tablewrites', 'writepath', 'bm25size', 'leaftypes', 'fields', 'buildcost', 'gpu')}
@@ -153,12 +156,10 @@ def settings(root):
     return out
 
 
-def gucs_table(root):
-    esc = lambda s: s.replace('|', '\\|')
-    rows = ['| setting | default | range | set by | meaning |', '|---|---|---|---|---|']
-    for name, s in sorted(settings(root).items()):
-        rows.append('| `%s` | %s | %s | %s | %s |' % (name, esc(s['default']), esc(s['range']), s['context'], esc(s['desc'])))
-    return '\n'.join(rows)
+def gucs_list(root):
+    """one item per setting (a table cannot hold the descriptions): name, then default, range and who sets it in brackets, then the description"""
+    return '\n'.join('- `%s` (default %s; %s%s): %s' % (name, s['default'] or 'empty', s['range'] + '; ' if s['range'] else '', s['context'], s['desc'])
+                     for name, s in sorted(settings(root).items()))
 
 
 # ---- counts of the tree ----------------------------------------------------------------------------------------------------------------
@@ -183,7 +184,7 @@ def fill_gen_blocks(root):
 
     def text(name):
         if name == 'gucs':
-            cfg.setdefault('gucs', gucs_table(root))
+            cfg.setdefault('gucs', gucs_list(root))
             return '\n' + cfg['gucs'] + '\n'
         if name == 'tests':
             return tests_line(root)
@@ -232,6 +233,7 @@ def generate(root):
         run(*py, os.path.join(steps, 'store.py'), 'render', '--readme', 'README.md', '--benchmarks', 'docs/BENCHMARKS.md')
     run(*py, os.path.join(steps, 'extras.py'), 'render')
     run(*py, os.path.join(steps, 'charts.py'))
+    run(*py, os.path.join(steps, 'gap.py'), 'render', '--profile', 'docs/results/store-gap-1000000.json', '--stats', 'docs/results/store-stats-1000000.json')
     run('bash', os.path.join('scripts', 'coverage.sh'), '--gen')
     fill_missing_bench_blocks(root)
     fill_gen_blocks(root)
@@ -254,17 +256,37 @@ def check():
                     other = os.path.join(REPO, rel)
                     if not os.path.exists(other) or open(other, 'rb').read() != open(os.path.join(d, f), 'rb').read():
                         stale.append(rel)
+        wide = [m for f in docs_files(tmp) for m in mdtable.lint(read(f), os.path.relpath(f, tmp), generated_only=not f.endswith(os.sep + 'README.md'))]
     if stale:
         sys.exit('gen-docs: stale (a generated block no longer matches its source): %s\nrun scripts/gen-docs.py and commit the result' % ', '.join(sorted(stale)))
-    print('gen-docs: every generated block is current')
+    if wide:
+        sys.exit('gen-docs: tables over the budget of %d columns, %d characters a row, %d a cell (AGENTS.md, "Tables in the docs"): split, shorten or fold them; for a generated block change its renderer, not the output\n%s' % (
+            mdtable.MAX_COLS, mdtable.MAX_ROW, mdtable.MAX_CELL, '\n'.join(wide)))
+    print('gen-docs: every generated block is current and every generated table fits')
+
+
+def tables(everything):
+    n = wide = 0
+    for f in docs_files(REPO):
+        for line, cols, row, cell, gen, head in mdtable.survey(read(f)):
+            n += 1
+            over = cols > mdtable.MAX_COLS or row > mdtable.MAX_ROW or cell > mdtable.MAX_CELL
+            wide += over
+            if over or everything:
+                print('%-24s %5d %-4s columns %2d  row %4d  cell %3d  %s' % (os.path.relpath(f, REPO), line, 'gen' if gen else 'hand', cols, row, cell, head[:40]))
+    print('%d tables, %d over the budget' % (n, wide))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--check', action='store_true')
+    ap.add_argument('--tables', action='store_true')
+    ap.add_argument('--all', action='store_true')
     a = ap.parse_args()
     if a.check:
         check()
+    elif a.tables:
+        tables(a.all)
     else:
         generate(REPO)
 

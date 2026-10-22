@@ -22,6 +22,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import mdtable  # noqa: E402  (steps/mdtable.py: tables that fit a page)
 import tables  # noqa: E402  (steps/tables.py: the Markdown tables of a tier)
 
 BENCH = os.path.dirname(HERE)
@@ -169,15 +170,27 @@ def table(t):
     """the Markdown table of the README: queries per second of each engine and class (the fastest in bold), index size and build time"""
     classes = t.classes
     label = {'count': '`count(*)`'}
-    head = ['articles (queries/s)', 'index', 'build'] + [label.get(c, c) for c in classes]
+    head = ['articles (queries/s)', 'index MiB', 'build s'] + [label.get(c, c) for c in classes]
     best = {c: best_edge([t.qps(e, c) for e in t.articles]) for c in classes}
     body = []
     for e in t.articles:
         name = '**%s** (default)' % t.label(e) if e == 'sift' else t.label(e)
         size, build = t.num('articles', e, metric='index_mib'), t.num('articles', e, metric='build_s')
-        body.append([name, '%.0f MiB' % size if size is not None else 'NA', '%.1f s' % build if build is not None else 'NA']
+        body.append([name, '%.0f' % size if size is not None else 'NA', '%.1f' % build if build is not None else 'NA']
                     + [measured_cell(t.qps(e, c), best[c]) for c in classes])
     return tables.md_table(head, body)
+
+
+def headline(t):
+    """sift against the reference engine, one row per query class: the values of both and the ratio, 'faster by' (the other engines are in the tables of the fold)"""
+    ref, cls = tables.NAME[t.ref], {'count': '`count(*)`'}
+    body = [[cls.get(c, c), absolute(t.num('articles', 'sift', c, '-', 'qps')), absolute(t.num('articles', t.ref, c, '-', 'qps')), ratio_cell(t.qps('sift', c), t.qps(t.ref, c))] for c in t.classes]
+    out = mdtable.table(['articles', 'sift queries/s', ref + ' queries/s', 'sift faster by'], body)
+    if 'pg_search' in t.places:
+        classes = tables.place_classes(r for r in t.rows if r[:3] == ('places', t.tier, 'sift') and r[5] == 'p50_ms')
+        body = [[c, absolute(t.num('places', 'sift', c, 'top', 'p50_ms')), absolute(t.num('places', 'pg_search', c, 'top', 'p50_ms')), ratio_cell(t.p50('pg_search', c, 'top'), t.p50('sift', c, 'top'))] for c in classes]
+        out += [''] + mdtable.table(['places (top 20)', 'sift p50 ms', 'pg_search p50 ms', 'sift faster by'], body)
+    return out
 
 
 def places_table(t):
@@ -228,8 +241,8 @@ def benchmarks_block(t, timing):
     if s:
         out += ['- **Host:** measured %s on %s (%s threads), PostgreSQL %s.' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
     out += ['- **Cells:** queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
-            'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value.', '']
-    out += table(t) + [''] + places_table(t) + ['']
+            'the two tables compare sift with %s; the fold under them has every engine, the fastest of a column (all within one standard error of the best) in bold and a `±` as one standard error where it exceeds 10%% of the value.' % tables.NAME[t.ref], '']
+    out += headline(t) + [''] + mdtable.details('Every engine and query class', table(t) + [''] + places_table(t)) + ['']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
     out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).']

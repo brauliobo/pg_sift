@@ -111,20 +111,35 @@ Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh 
 
 Queries on the table of the online-store benchmark, with one sift_col index over the columns they read: `q7` `SELECT count(*) FROM orders WHERE amount > 100 AND created_at >= '2025-12-02'`; `q8` `SELECT count(*) FROM orders WHERE quantity >= 4 AND amount < 50`; `q9` `SELECT count(*), sum(amount), sum(quantity) FROM orders WHERE amount > 20 AND quantity >= 2`; `g1` `SELECT country, count(*), sum(amount) FROM orders WHERE quantity >= 2 GROUP BY country`; `g2` `SELECT category, count(*), sum(quantity) FROM orders WHERE amount > 100 GROUP BY category`; `g3` `SELECT date_trunc('month', created_at)::date, sum(amount) FROM orders WHERE quantity >= 2 GROUP BY 1`.
 
-| rows | query | CPU, first (ms) | CPU, median (ms) | device, first (ms) | device, median, resident (ms) | resident vs CPU |
-|---|---|---:|---:|---:|---:|---:|
-| 1,000,000 | `q7` | 2.19 | 1.27 | 5.18 | 0.36 | 3.55× |
-| 1,000,000 | `q8` | 1.88 | 0.70 | 4.36 | 0.35 | 2.03× |
-| 1,000,000 | `q9` | 4.68 | 3.62 | 4.28 | 0.39 | 9.25× |
-| 1,000,000 | `g1` | 4.83 | 3.65 | 4.62 | 0.40 | 9.07× |
-| 1,000,000 | `g2` | 3.54 | 2.55 | 4.24 | 0.52 | 4.93× |
-| 1,000,000 | `g3` | 4.96 | 4.15 | 4.85 | 0.66 | 6.28× |
-| 10,000,000 | `q7` | 19.2 | 10.4 | 26.6 | 1.96 | 5.30× |
-| 10,000,000 | `q8` | 13.5 | 8.31 | 18.0 | 2.30 | 3.62× |
-| 10,000,000 | `q9` | 28.1 | 24.6 | 16.2 | 1.71 | 14.4× |
-| 10,000,000 | `g1` | 41.2 | 32.4 | 17.5 | 1.46 | 22.3× |
-| 10,000,000 | `g2` | 25.8 | 18.9 | 18.4 | 2.01 | 9.40× |
-| 10,000,000 | `g3` | 30.2 | 26.6 | 18.0 | 2.06 | 12.9× |
+| rows | query | CPU, first (ms) | CPU, median (ms) | device, first (ms) |
+|---:|---|---:|---:|---:|
+| 1,000,000 | `q7` | 2.19 | 1.27 | 5.18 |
+| 1,000,000 | `q8` | 1.88 | 0.70 | 4.36 |
+| 1,000,000 | `q9` | 4.68 | 3.62 | 4.28 |
+| 1,000,000 | `g1` | 4.83 | 3.65 | 4.62 |
+| 1,000,000 | `g2` | 3.54 | 2.55 | 4.24 |
+| 1,000,000 | `g3` | 4.96 | 4.15 | 4.85 |
+| 10,000,000 | `q7` | 19.2 | 10.4 | 26.6 |
+| 10,000,000 | `q8` | 13.5 | 8.31 | 18.0 |
+| 10,000,000 | `q9` | 28.1 | 24.6 | 16.2 |
+| 10,000,000 | `g1` | 41.2 | 32.4 | 17.5 |
+| 10,000,000 | `g2` | 25.8 | 18.9 | 18.4 |
+| 10,000,000 | `g3` | 30.2 | 26.6 | 18.0 |
+
+| rows | query | device, median, resident (ms) | resident vs CPU |
+|---:|---|---:|---:|
+| 1,000,000 | `q7` | 0.36 | 3.55× |
+| 1,000,000 | `q8` | 0.35 | 2.03× |
+| 1,000,000 | `q9` | 0.39 | 9.25× |
+| 1,000,000 | `g1` | 0.40 | 9.07× |
+| 1,000,000 | `g2` | 0.52 | 4.93× |
+| 1,000,000 | `g3` | 0.66 | 6.28× |
+| 10,000,000 | `q7` | 1.96 | 5.30× |
+| 10,000,000 | `q8` | 2.30 | 3.62× |
+| 10,000,000 | `q9` | 1.71 | 14.4× |
+| 10,000,000 | `g1` | 1.46 | 22.3× |
+| 10,000,000 | `g2` | 2.01 | 9.40× |
+| 10,000,000 | `g3` | 2.06 | 12.9× |
 
 Reproduce: `bench/bench extras gpu` (a Vulkan device and `VULKAN=1`; results: [results/gpu.tsv](results/gpu.tsv)).
 <!-- bench:gpu:end -->

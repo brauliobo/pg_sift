@@ -19,7 +19,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import store  # noqa: E402  (the queries and their statements)
+import mdtable  # noqa: E402  (the Markdown tables)
+import store_lib  # noqa: E402  (the queries and their statements)
+import store_render  # noqa: E402  (the result tables)
 
 DB = 'gap'
 FLOOR = "SELECT country, count(*) FROM orders WHERE created_at > '2100-01-01' GROUP BY country"   # every unit pruned by its zone map: the cost of a SiftAgg that reads nothing
@@ -46,10 +48,10 @@ def psql_file(text, db=DB, args=()):
 
 
 def cmd_load(args):
-    sec = {n: store.sections(store.read(f'{n}.sql')) for n in ('pg', 'sift')}
+    sec = {n: store_lib.sections(store_lib.read(f'{n}.sql')) for n in ('pg', 'sift')}
     psql(f'DROP DATABASE IF EXISTS {DB} WITH (FORCE)', 'postgres')
     psql(f'CREATE DATABASE {DB}', 'postgres')
-    psql_file(store.read('gen.sql'), args=['-v', f'n={args.rows}'])
+    psql_file(store_lib.read('gen.sql'), args=['-v', f'n={args.rows}'])
     psql_file('CREATE SCHEMA plain; SET search_path = plain;\n' + sec['pg']['table'] + '\nINSERT INTO plain.orders SELECT * FROM public.orders_src;\n' + sec['pg']['indexes'])
     psql_file(sec['sift']['table'] + '\nINSERT INTO public.orders SELECT * FROM public.orders_src;\n' + sec['sift']['indexes'])
     psql_file('DROP TABLE orders_src; VACUUM (FREEZE, ANALYZE) public.orders; VACUUM (FREEZE, ANALYZE) plain.orders; CHECKPOINT')
@@ -169,7 +171,7 @@ def cmd_profile(args):
     out['floor'] = explain(FLOOR)
     out['floor_no_workers'] = explain(FLOOR, '-c max_parallel_workers_per_gather=0')
     log(f'floor: {out["floor"]["execution_ms"]:.2f} ms with workers, {out["floor_no_workers"]["execution_ms"]:.2f} ms without')
-    for q in store.load_queries(args.queries):
+    for q in store_lib.load_queries(args.queries):
         sql = q.statement('sift', n)
         r = dict(title=q.title, explain=explain(sql), explain_no_workers=explain(sql, '-c max_parallel_workers_per_gather=0'), planning_by_hook=hook_cost(q, n),
                  perf=perf_profile(sql, args.perf_runs))
@@ -194,48 +196,50 @@ def human(v):
 
 
 def top_symbols(perf, k=3):
-    return '<br>'.join(f'`{t["symbol"]}` {t["pct"]:.0f}%' for t in perf['top'][:k])
+    return ', '.join(f'`{t["symbol"]}` {t["pct"]:.0f}%' for t in perf['top'][:k])
 
 
 def planning_block(P, R, tier):
-    head = ['q', 'planning, warm backend', 'planning, first statement of a backend', 'parse + plan, no sift library', 'parse + plan, hook loaded (plain table)',
-            'parse + plan, `sift.enable_agg = off`', 'parse + plan, SiftAgg planned', 'planning / `sift_col` median']
+    head = ['q', 'warm', 'first', 'no library', 'hook', 'agg off', 'SiftAgg', 'warm / median']
     body = []
     for q, r in P['queries'].items():
         h = r['planning_by_hook']
         med = R.num(tier, 'sift', q, 'warm', 'latency_ms')
-        body.append([q, f'{r["explain"]["planning_ms"]:.2f}', f'{r["explain"]["planning_first_ms"]:.2f}', *(f'{h[k]:.3f}' for k in HOOK), f'{r["explain"]["planning_ms"] / med:.1%}' if med else 'n/a'])
-    return [f'#### {P["rows"]:,} orders (ms)', ''] + store.md_table(head, body) + ['']
+        body.append([f'Q{q}', f'{r["explain"]["planning_ms"]:.2f}', f'{r["explain"]["planning_first_ms"]:.2f}', *(f'{h[k]:.3f}' for k in HOOK), f'{r["explain"]["planning_ms"] / med:.1%}' if med else 'n/a'])
+    return [f'#### {P["rows"]:,} orders (ms)', '',
+            'Planning of the statement in a warm backend (`warm`) and as the first statement of a backend (`first`); parse + plan with no sift library, with the hook loaded on a plain table, '
+            'with `sift.enable_agg = off` and with `SiftAgg` planned; `warm / median` is the warm planning over the `sift_col` median.', ''] + mdtable.table(head, body) + ['']
 
 
 def profile_block(P, R, tier, S):
-    head = ['q', '`sift_col` median (bench)', 'EXPLAIN execution', 'without workers', 'workers launched', 'units (pruned)', 'rows scanned', 'groups', 'instructions per row',
-            'cycles per row', 'top symbols (one backend, no workers)']
+    head = ['q', 'median', 'EXPLAIN', 'no workers', 'workers', 'units (pruned)', 'rows scanned', 'groups', 'instr/row', 'cycles/row']
     body = []
     for q, r in P['queries'].items():
         a, e = r['explain']['siftagg'] or {}, r['explain']
         rows = a.get('Rows Scanned') or P['rows']
-        body.append([q, store.ms(R.num(tier, 'sift', q, 'warm', 'latency_ms')), f'{e["execution_ms"]:.2f}', f'{r["explain_no_workers"]["execution_ms"]:.2f}', str(a.get('Workers Launched', 'n/a')),
+        body.append([f'Q{q}', store_render.ms(R.num(tier, 'sift', q, 'warm', 'latency_ms')), f'{e["execution_ms"]:.2f}', f'{r["explain_no_workers"]["execution_ms"]:.2f}', str(a.get('Workers Launched', 'n/a')),
                      f'{a.get("Units", 0)} ({a.get("Units Pruned", 0)})' if a else 'n/a', f'{a["Rows Scanned"]:,}' if a else 'n/a', f'{a["Groups"]:,}' if a else 'n/a',
-                     f'{r["perf"]["instructions"] / rows:.1f}', f'{r["perf"]["cycles"] / rows:.1f}', top_symbols(r['perf'])])
+                     f'{r["perf"]["instructions"] / rows:.1f}', f'{r["perf"]["cycles"] / rows:.1f}'])
     f, f0 = P['floor'], P['floor_no_workers']
     out = [f'#### {P["rows"]:,} orders (ms)', '', f'A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes {f["execution_ms"]:.2f} ms with {f["siftagg"].get("Workers Launched", 0)} workers launched and '
-           f'{f0["execution_ms"]:.2f} ms without: that difference is the cost of starting the workers, and the second number is the executor start-up and finalization.', ''] + store.md_table(head, body, ['---:'] * 10 + ['---']) + ['']
+           f'{f0["execution_ms"]:.2f} ms without: that difference is the cost of starting the workers, and the second number is the executor start-up and finalization. '
+           'Columns: the `sift_col` median of the store benchmark, `EXPLAIN ANALYZE` execution time with and without workers (ms), workers launched, units read (and pruned), rows scanned, groups, instructions and cycles per row.', ''] + mdtable.table(head, body) + ['']
+    out += ['Top symbols of one backend without workers:', ''] + [f'- **Q{q}**: ' + top_symbols(r['perf']) for q, r in P['queries'].items()] + ['']
     if S:
-        head = ['q', 'ClickHouse rows read', 'bytes read', 'memory', 'peak threads', 'duration (query_log)', 'clickhouse-client --time', 'Elasticsearch `took`']
-        body = [[q, f'{c["median"]["read_rows"]:,.0f}', human(c['median']['read_bytes']), human(c['median']['memory_usage']), f'{c["median"]["peak_threads_usage"]:.0f}',
-                 f'{c["median"]["query_duration_ms"]:.0f} ms', f'{c["client_time_s"] * 1e3:.0f} ms', f'{S["es"][q]["took_ms"]:.0f} ms'] for q, c in S['ch'].items()]
-        out += ['What ClickHouse and Elasticsearch spend on the same questions (their own accounting):', ''] + store.md_table(head, body) + ['']
+        head = ['q', 'CH rows read', 'bytes read', 'memory', 'threads', 'CH ms', 'ES ms']
+        body = [[f'Q{q}', f'{c["median"]["read_rows"]:,.0f}', human(c['median']['read_bytes']), human(c['median']['memory_usage']), f'{c["median"]["peak_threads_usage"]:.0f}',
+                 f'{c["median"]["query_duration_ms"]:.0f}', f'{S["es"][q]["took_ms"]:.0f}'] for q, c in S['ch'].items()]
+        out += ['What ClickHouse (CH) and Elasticsearch (ES) spend on the same questions (their own accounting: rows, bytes and memory read by ClickHouse, its peak threads; the duration of the query log and the `took` of Elasticsearch, in ms):', ''] + mdtable.table(head, body) + ['']
     return out
 
 
 def cmd_render(args):
     import readme
-    R = store.Results(args.store)
+    R = store_render.Results(args.store)
     tiers = {R.meta['tiers'][t]['rows']: t for t in R.tiers}
     profiles = [P for P in (json.load(open(p)) for p in args.profile) if P['rows'] in tiers]   # a profile of a size the store results no longer hold is history, not rendered
     stats = {S['rows']: S for S in (json.load(open(p)) for p in args.stats)}
-    readme.replace_block(args.doc, 'gap-table', store.gap_table(R))
+    readme.replace_block(args.doc, 'gap-table', store_render.gap_table(R))
     readme.replace_block(args.doc, 'gap-planning', sum((planning_block(P, R, tiers[P['rows']]) for P in profiles), []))
     readme.replace_block(args.doc, 'gap-profile', sum((profile_block(P, R, tiers[P['rows']], stats.get(P['rows'])) for P in profiles), []))
     return 0

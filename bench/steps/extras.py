@@ -20,6 +20,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from mdtable import table  # noqa: E402
 from readme import replace_block as _replace_block  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -81,12 +82,6 @@ def ms(v):
     return 'n/a' if v is None else '%.2f' % v if v < 10 else '%.1f' % v if v < 100 else '%d' % round(v)
 
 
-def table(head, body, align=None):
-    align = align or ['---'] * len(head)
-    out = ['| ' + ' | '.join(head) + ' |', '|' + '|'.join(align) + '|']
-    return out + ['| ' + ' | '.join(r) + ' |' for r in body]
-
-
 def footer(meta):
     return ('Measured %s on %s, %s; host %s at the start and %s at the end.' % (
         meta.get('date', '?'), meta.get('cpu', '?'), meta.get('postgresql', '?'), meta.get('host_load_before', '?'), meta.get('host_load_after', '?')))
@@ -120,7 +115,7 @@ def cell(rows, arm, size):
 
 def sets_section(meta, rows):
     sizes = [s for s in SET_SIZES if get(rows, case=s)]   # the sizes of the results file: a published file may leave some out
-    body = [['`%s`' % a, d] + [cell(rows, a, s) for s in sizes] for a, d in SET_ARMS if get(rows, arm=a)]
+    body = [['`%s`' % a] + [cell(rows, a, s) for s in sizes] for a, d in SET_ARMS if get(rows, arm=a)]
     sift = rows[0]['version'] if rows else '?'
     lines = [
         '3,000,000 facts of 200,000 entities (facts per entity: zipf, p50 5, p90 20, p99 135, the largest about 85,000), 30 sources, 40 languages, 1.5%% soft-deleted; the set is the members '
@@ -129,7 +124,7 @@ def sets_section(meta, rows):
         '`SELECT src_id, count(*), avg(score) ... WHERE deleted_at IS NULL AND fact_date >= <12 months ago> AND entity_id <set> GROUP BY 1`, in milliseconds, planning included '
         '(lower is better); the plan the statement ran is in brackets. Build: pg_sift %s. %s %s' % (rows[0]['n'] if rows else '?', meta.get('build', sift), footer(meta), meta.get('method', '')),
         '',
-    ] + table(['arm', 'statement'] + ['%s ids' % s for s in sizes], body, ['---', '---'] + ['---:'] * len(sizes))
+    ] + table(['arm'] + ['%s ids' % s for s in sizes], body) + [''] + ['- `%s`: %s' % (a, d) for a, d in SET_ARMS if get(rows, arm=a)]
     types = ['int4', 'int8', 'text', 'date']
     tsizes = [s for s in ('1k', '5k') if s in sizes]
     trows = []
@@ -143,7 +138,7 @@ def sets_section(meta, rows):
     unsupported = [(r['case'], r['note']) for r in rows if r['arm'] == 'sift_col_key' and r['value'] == '0']
     lines += ['', 'The same statement with the key column of another type, the array as a parameter of a generic plan (`= ANY($1::T[])`, index and bitmap scans off above 2k) against the literal list on the normal plan '
               '(same rows, key mapped from the entity id):', '']
-    lines += table(['key type'] + ['array %s' % s for s in tsizes] + ['normal plan %s' % s for s in tsizes], trows, ['---'] + ['---:'] * (2 * len(tsizes)))
+    lines += table(['key type'] + ['array %s' % s for s in tsizes] + ['normal plan %s' % s for s in tsizes], trows)
     for t, note in unsupported:
         lines += ['', '`%s` is not supported by `sift_col` on this build (`%s`).' % (t, re.sub(r'^ERROR:\s*|\s*HINT.*$', '', note).strip())]
     lines += ['', 'Reproduce: `bench/bench sets` (data: `bench/sql/sets/gen.sql`, deterministic; results: [results/sets.tsv](results/sets.tsv)).']
@@ -192,10 +187,10 @@ def rollup_section(meta, rows):
         idx.append([k, mib(o), mib(d), pct(d, o), ms(c[1]), ms(c[0]), pct(c[0], c[1]), ms(w[1]), ms(w[0])])
     lines = intro(meta, rows, 'Documents of 3 to 6 string elements per array (bench/sql/jsonb/gen.sql). `normal` is the plan of PostgreSQL without sift, `scanned` the `sift_col` scan pushdown that '
                   'reads every unit (`sift.agg_preagg` off), `rollup` the answer from the rollups stored with the index; the three are separate arms of one statement, in milliseconds, lower is better.')
-    lines += table(['documents', 'query', 'normal', 'scanned', 'rollup', 'scanned vs normal', 'rollup vs scanned'], q, ['---', '---', '---:', '---:', '---:', '---:', '---:'])
+    lines += table(['documents', 'query', 'normal', 'scanned', 'rollup', 'scanned vs normal', 'rollup vs scanned'], q, 2)
     lines += ['', 'The cost of the rollups: the index with `rollup = \'off\'` against the default, `CREATE INDEX` on one backend (CPU ms of the backend) and with 2 workers (wall ms).', '']
     lines += table(['documents', 'index MiB, off', 'index MiB, default', 'index size', 'build CPU ms, off', 'build CPU ms, default', 'build CPU', 'wall ms, off, 2 workers', 'wall ms, default, 2 workers'],
-                   idx, ['---', '---:', '---:', '---:', '---:', '---:', '---:', '---:', '---:'])
+                   idx)
     return lines + ['', 'Reproduce: `bench/bench extras rollup` (results: [results/rollup.tsv](results/rollup.tsv)).']
 
 
@@ -213,7 +208,7 @@ def tablewrites_section(meta, rows):
         t0, t1 = (num(rows, version=v, case=c, arm='sift_table', metric='ms') for v in (old, new))
         body.append([c, ms(h), ms(t0), ms(t1), pct(t1, t0), '%.2f' % (t1 / h) if h and t1 is not None else 'n/a'])
     lines = intro(meta, rows, 'The same orders loaded into a heap table and into a `sift_table` (`bench/tbl.sh`), one client, milliseconds, lower is better; the heap column is the %s run.' % new)
-    lines += table(['operation', 'heap', 'sift_table %s' % old, 'sift_table %s' % new, '%s vs %s' % (new, old), 'sift_table / heap'], body, ['---', '---:', '---:', '---:', '---:', '---:'])
+    lines += table(['operation', 'heap', 'sift_table %s' % old, 'sift_table %s' % new, '%s vs %s' % (new, old), 'sift_table / heap'], body)
     rate = [num(rows, version=v, case='load rate', arm=a, metric='rows_per_s') for v, a in ((new, 'heap'), (old, 'sift_table'), (new, 'sift_table'))]
     size = {(v, a): (num(rows, version=v, case='size', arm=a, metric='table_mb'), num(rows, version=v, case='size', arm=a, metric='indexes_mb')) for v in (old, new) for a in ('heap', 'sift_table')}
     lines += ['', 'Load rate (rows per second, higher is better): heap %s, sift_table %s on %s, %s on %s. Size in MB, table / indexes: heap %s / %s; sift_table %s / %s on %s, %s / %s on %s.' % (
@@ -227,7 +222,7 @@ def tablewrites_section(meta, rows):
             if (r['case'], r['metric']) not in names:
                 names.append((r['case'], r['metric']))
         value = lambda v, c, m: 'n/a' if num(rows, version=v, case=c, metric=m) is None else '%g' % num(rows, version=v, case=c, metric=m)  # noqa: E731
-        lines += table(['case', 'measure', old, new], [[c, m, value(old, c, m), value(new, c, m)] for c, m in names], ['---', '---', '---:', '---:'])
+        lines += table(['case', 'measure', old, new], [[c, m, value(old, c, m), value(new, c, m)] for c, m in names], 2)
     return lines + ['', 'Reproduce: `bench/bench extras tablewrites` (results: [results/tablewrites.tsv](results/tablewrites.tsv)).']
 
 
@@ -242,8 +237,8 @@ def writepath_section(meta, rows):
         if k in seen:
             continue
         seen.append(k)
-        body.append([r['case'], '-' if r['arm'] == '-' else r['arm'], ', '.join('%s %s' % (m.replace('_', ' '), get(rows, case=k[0], arm=k[1], metric=m)['value']) for m in keys if get(rows, case=k[0], arm=k[1], metric=m))])
-    return intro(meta, rows, 'Single-row `INSERT` statements into a `sift_table` with a primary key, in one transaction (`bench/tbl-writepath.sh`, build %s).' % meta.get('build', '?')) + table(['mode', 'access method', 'measurements'], body) + [
+        body.append('- **%s**%s: %s' % (r['case'], '' if r['arm'] == '-' else ' (%s)' % r['arm'], ', '.join('%s %s' % (m.replace('_', ' '), get(rows, case=k[0], arm=k[1], metric=m)['value']) for m in keys if get(rows, case=k[0], arm=k[1], metric=m))))
+    return intro(meta, rows, 'Single-row `INSERT` statements into a `sift_table` with a primary key, in one transaction (`bench/tbl-writepath.sh`, build %s).' % meta.get('build', '?')) + [''] + body + [
         '', 'Reproduce: `bench/bench extras writepath` (results: [results/writepath.tsv](results/writepath.tsv)).']
 
 
@@ -260,10 +255,9 @@ def bm25size_section(meta, rows):
             size.append([c, label, mib(b[0]), mib(b[1]), pct(b[1], b[0])])
             cost.append([c, label, ms(cpu[0] / 1000 if cpu[0] else None), ms(cpu[1] / 1000 if cpu[1] else None), pct(cpu[1], cpu[0])] + [ms(x) for x in q])
     lines = intro(meta, rows, 'The size of the BM25 index on two corpora, %s against %s.' % (old, new))
-    lines += table(['corpus', 'index', 'MiB %s' % old, 'MiB %s' % new, 'change'], size, ['---', '---', '---:', '---:', '---:'])
+    lines += table(['corpus', 'index', 'MiB %s' % old, 'MiB %s' % new, 'change'], size, 2)
     lines += ['', 'Build (CPU seconds of one backend) and two queries (median ms, `a AND b` count and top 10 by BM25):', '']
-    lines += table(['corpus', 'index', 'build s %s' % old, 'build s %s' % new, 'change', 'count %s' % old, 'count %s' % new, 'top 10 %s' % old, 'top 10 %s' % new], cost,
-                   ['---', '---', '---:', '---:', '---:', '---:', '---:', '---:', '---:'])
+    lines += table(['corpus', 'index', 'build s %s' % old, 'build s %s' % new, 'change', 'count %s' % old, 'count %s' % new, 'top 10 %s' % old, 'top 10 %s' % new], cost, 2)
     return lines + ['', 'Reproduce: `bench/bench extras bm25size` (`scripts/bm25-size.sh` is the same measurement on the standard corpora; results: [results/bm25size.tsv](results/bm25size.tsv)).']
 
 
@@ -285,28 +279,28 @@ def leaftypes_section(meta, rows):
                 g = [num(rows, version=v, case=t, arm=a) for a in ('gt normal', 'gt siftagg', 'btw normal', 'btw siftagg')]
                 body.append([v, '`%s`' % t.split(':', 1)[1], t.split(':')[0], ms(g[0]), ms(g[1]), times(g[1], g[0]), ms(g[2]), ms(g[3]), times(g[3], g[2]), get(rows, version=v, case=t, arm='gt siftagg')['note']])
     lines = intro(meta, rows, 'Columns of every type hold the same values; one `sift_col` index per side (narrow: `numeric(18,2)`, `int8`; wide: `numeric(30,6)`, `numeric`, `money`, `interval`).')
-    lines += table(['build', 'index', 'MiB', 'CREATE INDEX CPU ms', 'wall ms'], idx, ['---', '---', '---:', '---:', '---:'])
+    lines += table(['build', 'index', 'MiB', 'CREATE INDEX CPU ms', 'wall ms'], idx, 2)
     lines += ['', 'A filter that keeps the top 10% (`>`) and one that keeps 1% (`BETWEEN`), `count(*)` and a sum: the normal plan against `Custom Scan (SiftAgg)` (ms, lower is better; the plan in the last column is the one of the `>` filter):', '']
-    lines += table(['build', 'type', 'path', '`>` normal', '`>` SiftAgg', 'speed-up', '`BETWEEN` normal', '`BETWEEN` SiftAgg', 'speed-up', 'plan'], body,
-                   ['---', '---', '---', '---:', '---:', '---:', '---:', '---:', '---:', '---'])
+    lines += table(['build', 'type', 'path', '`>` normal', '`>` SiftAgg', 'speed-up', '`BETWEEN` normal', '`BETWEEN` SiftAgg', 'speed-up', 'plan'], body, 3)
     return lines + ['', 'Reproduce: `bench/bench extras leaftypes` (results: [results/leaftypes.tsv](results/leaftypes.tsv)).']
 
 
 # ---- facets and fields ------------------------------------------------------------------------------------------------------------------
 
 def fields_section(meta, rows):
-    fac, arms = [], ['facet_counts', 'four GROUP BYs, SiftAgg', 'four GROUP BYs, normal plan']
+    fac, names, arms = [], [], ['facet_counts', 'four GROUP BYs, SiftAgg', 'four GROUP BYs, normal plan']
     for r in rows:
         if r['case'].startswith('facets: ') and r['arm'] == arms[0]:
             c = r['case']
             v = [num(rows, case=c, arm=a) for a in arms]
-            fac.append([c[8:], '%d' % float(r['note']) if r['note'] else '', ms(v[0]), ms(v[1]), ms(v[2]), times(v[0], v[2])])
+            names.append(c[8:])
+            fac.append(['S%d' % len(names), '%d' % float(r['note']) if r['note'] else '', ms(v[0]), ms(v[1]), ms(v[2]), times(v[0], v[2])])
     fl = [[r['arm'], ms(float(r['value']))] for r in rows if r['case'].startswith('fields: ')]
     sz = [[r['arm'].replace('orders_', ''), mib(float(r['value']))] for r in rows if r['case'] == 'index']
     lines = intro(meta, rows, 'Four facets of one search (top 10 categories, top 10 countries, two price buckets, the month) in one `sift.facet_counts` call against four `GROUP BY` statements, in milliseconds.')
-    lines += table(['search', 'matches', '`facet_counts`', 'four GROUP BYs, `SiftAgg`', 'four GROUP BYs, normal plan', '`facet_counts` vs normal plan'], fac, ['---', '---:', '---:', '---:', '---:', '---:'])
+    lines += table(['search', 'matches', '`facet_counts`', 'four GROUP BYs, `SiftAgg`', 'four GROUP BYs, normal plan', '`facet_counts` vs normal plan'], fac) + [''] + ['- **S%d** %s' % (i, n) for i, n in enumerate(names, 1)]
     lines += ['', 'Top 10 of a two-word search by BM25, one field against two fields with equal and with unequal weights (`sift.field_query`), median ms:', '']
-    lines += table(['query', 'ms'], fl, ['---', '---:']) + ['', 'Index sizes (MiB): ' + ', '.join('%s %s' % (a, b) for a, b in sz) + '.']
+    lines += table(['query', 'ms'], fl) + ['', 'Index sizes (MiB): ' + ', '.join('%s %s' % (a, b) for a, b in sz) + '.']
     return lines + ['', 'Reproduce: `bench/bench extras fields` (results: [results/fields.tsv](results/fields.tsv)).']
 
 
@@ -330,7 +324,7 @@ def buildcost_section(meta, rows):
             row.append('n/a' if r is None else '%s [%s, %s] %s' % (r['value'], r['min'], r['max'], r['note']))
         body.append(row)
     lines = intro(meta, rows, 'User-space instructions of the server processes per operation, %s as the baseline (millions of instructions per operation); the other columns are the ratio to it with the 95%% interval and the verdict. A ratio below 1 is fewer instructions.' % base)
-    return lines + table(['cell', '%s Minstr/op' % base] + rest, body, ['---', '---:'] + ['---:'] * len(rest)) + ['', 'Reproduce: `bench/bench extras buildcost` (results: [results/buildcost.tsv](results/buildcost.tsv)).']
+    return lines + table(['cell', '%s Minstr/op' % base] + rest, body) + ['', 'Reproduce: `bench/bench extras buildcost` (results: [results/buildcost.tsv](results/buildcost.tsv)).']
 
 
 def filter_rows(a):
@@ -378,7 +372,7 @@ def gpu_section(meta, rows):
         body.append(['{:,}'.format(int(r['rows'])), '`%s`' % r['query'], ms(float(r['first_ms'])), ms(c), ms(float(g['first_ms'])), ms(d), times(d, c)])
     lines = [meta.get('title', '').lstrip('# '), '',
              'Queries on the table of the online-store benchmark, with one sift_col index over the columns they read: ' + '; '.join('`%s` `%s`' % (k, v) for k, v in qs.items()) + '.', '']
-    lines += table(['rows', 'query', 'CPU, first (ms)', 'CPU, median (ms)', 'device, first (ms)', 'device, median, resident (ms)', 'resident vs CPU'], body, ['---', '---', '---:', '---:', '---:', '---:', '---:'])
+    lines += table(['rows', 'query', 'CPU, first (ms)', 'CPU, median (ms)', 'device, first (ms)', 'device, median, resident (ms)', 'resident vs CPU'], body, 2)
     return lines + ['', 'Reproduce: `bench/bench extras gpu` (a Vulkan device and `VULKAN=1`; results: [results/gpu.tsv](results/gpu.tsv)).']
 
 
