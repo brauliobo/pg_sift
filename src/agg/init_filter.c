@@ -343,9 +343,9 @@ recheck_init(AggExec *ex)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 		{
-			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i] == SRK_CAST_TESTED ? SRK_CAST : s->recheck[i], NULL, InvalidOid);
+			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i] == SRK_CAST_TESTED ? SRK_CAST : s->recheck[i] == SRK_IOCAST ? SRK_TEXT : s->recheck[i], NULL, InvalidOid);
 			ex->recheck = true;
-			ex->recheck_late |= s->recheck[i] == SRK_CAST;
+			ex->recheck_late |= s->recheck[i] == SRK_CAST || s->recheck[i] == SRK_IOCAST;
 			if (s->recheck[i] == SRK_RECORDSET)
 				for (int k = 0; k < s->npred; k++)
 					ex->recheck_after_late |= s->pred[k]->late && s->pred[k]->level == 0;
