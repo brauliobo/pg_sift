@@ -90,7 +90,8 @@ my @AMS = (
 		name => 'gin',
 		index => sub { "CREATE INDEX $_[1] ON $_[0] USING gin (to_tsvector('simple', body)) WITH (fastupdate = on)" },
 		maint => sub { "SELECT gin_clean_pending_list('$_[0]')" },
-		verify => sub { "SELECT gin_index_check('$_[0]')" },
+		# gin_index_check is amcheck 1.5 (PostgreSQL 18+); older servers compare the index with the reference alone
+		verify => sub { "DO \$\$ BEGIN IF current_setting('server_version_num')::int >= 180000 THEN PERFORM gin_index_check('$_[0]'); END IF; END \$\$" },
 		match => sub { "to_tsvector('simple', body) @@ to_tsquery('simple', '$_[0]')" },
 	},
 	{
