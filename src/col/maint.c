@@ -631,8 +631,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				pagg_units = 0;
 	int			nwbuf = 0;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
 	for (int i = 0; i < snap->nsegs; i++)

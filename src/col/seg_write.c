@@ -304,15 +304,15 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	if (!sift_cbatch_kinds_exact(b))
 	{
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9 and 10 promise complete kinds */
-		if ((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH) || w->set)
-			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", w->set ? SIFT_COL_FORMAT_SETS : w->format);
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH) || w->set),
+					   "sift_col: a unit without its kinds in a segment of column format %d", w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		/* a schema with a month dim has no leaf with kinds to lose: the minor stays */
 		if (w->format != SIFT_COL_FORMAT_MONTH)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
-	if (w->nsb > 0 && b->sb <= w->sbdir[w->nsb - 1].sb)
-		elog(ERROR, "sift_col: superblock %u added after %u", b->sb, w->sbdir[w->nsb - 1].sb);
+	SIFT_INVARIANT(w->nsb == 0 || b->sb > w->sbdir[w->nsb - 1].sb, "sift_col: superblock %u added after %u", b->sb,
+				   w->nsb > 0 ? w->sbdir[w->nsb - 1].sb : 0);
 	if (w->nsb == w->capsb)
 	{
 		w->capsb *= 2;
@@ -618,8 +618,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	int			n;
 	uint64		blocks;
 
-	if (w->nsb == 0)
-		elog(ERROR, "sift_col: a segment needs at least one unit");
+	SIFT_INVARIANT(w->nsb != 0, "sift_col: a segment needs at least one unit");
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
 	if (w->anysets)
 		w->format = Max(w->format, SIFT_COL_FORMAT_SETS);

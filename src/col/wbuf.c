@@ -253,7 +253,7 @@ write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPoin
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, HDRSIZE, limit, place ? fill_piece : NULL, &pa, &crossed);
 #ifdef SIFT_TESTING
 		if (sift_cwbuf_fail_grow > 0 && --sift_cwbuf_fail_grow == 0)
-			elog(ERROR, "sift_col write buffer: injected failure after a page link");
+			elog(ERROR, "sift_col write buffer: injected failure after a page link");	/* check-errors: allow */
 #endif
 		if (place)
 		{

@@ -88,7 +88,7 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 	{
 #ifdef SIFT_TESTING
 		if (sift_test_col_fail_sb == sb + 1)
-			elog(ERROR, "sift test: the participant of superblock %u fails", sb);
+			elog(ERROR, "sift test: the participant of superblock %u fails", sb);	/* check-errors: allow */
 #endif
 		reltuples += sift_colb_scan_sb(b, heap, info, snapshot, sb, sh->nblocks);
 	}

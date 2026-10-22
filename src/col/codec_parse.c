@@ -257,7 +257,8 @@ parse_wrap(const CcParse *ps, CcNode *nd)
 	need(ps->avail, len);
 	if (!sift_colz_available(nd->alg))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg)));
+						errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg),
+						errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
 	if (f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) ps->n * 9 + 4096 + 64)
 		CC_CORRUPT("wrapped length out of range");
 	buf = rd_alloc(ps->cx, (size_t) f1 + SIFT_COL_PAD);
@@ -314,7 +315,8 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 			break;
 		default:
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("column chunk uses encoding %d, which this build does not know", nd->tag)));
+							errmsg("column chunk uses encoding %d, which this build does not know", nd->tag),
+							errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
 	}
 	return nd;
 }
@@ -329,7 +331,8 @@ sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify)
 	if (len < SIFT_CC_HDRLEN + CC_NHDR + CC_TRAILER || (len & 7) || ((uintptr_t) blob & 7) || blob[0] != SIFT_CC_MAGIC)
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: bad header or misaligned blob")));
 	if (blob[1] != SIFT_CC_VERSION)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("column chunk has format version %d, this build reads %d", blob[1], SIFT_CC_VERSION)));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("column chunk has format version %d, this build reads %d", blob[1], SIFT_CC_VERSION),
+						errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
 	if (blob[2] > SIFT_CC_F8)
 		CC_CORRUPT("unknown value kind");
 	if (verify && sift_term_hash((const char *) blob, (int) (len - CC_TRAILER)) != get32(blob + len - CC_TRAILER))

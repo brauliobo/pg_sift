@@ -152,7 +152,8 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 	if (gd->parent != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col holds one level of arrays and objects: \"%s\" is nested in another", gd->name)));
+				 errmsg("sift_col holds one level of arrays and objects: \"%s\" is nested in another", gd->name),
+				 errhint("Declare the nested path as an astext or jsonb leaf, or keep the inner array in a table of its own.")));
 	l = add_leaf(at, LEAF_GROUP, -1, SIFT_COLK_GROUP, pstrdup(gd->name), -1, g);
 	l->def.store = SIFT_COLS_INT;
 	l->def.type = SIFT_COLT_INT8;
@@ -184,8 +185,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 		}
 	a->spec = sift_shred_spec_parse(paths);
 	spec = a->spec;
-	if (spec->ngroups < 1 || spec->groups[0].kind != SIFT_SHRED_ROOT)
-		elog(ERROR, "sift_col: the shredder spec has no root group");
+	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
 	for (int i = 1; i <= a->natts; i++)
 		a->attr[i].leaf = palloc0((spec->ncols + spec->ngroups * 2 + 1) * sizeof(ShredLeaf));
 	for (int c = 0; c < spec->ncols; c++)

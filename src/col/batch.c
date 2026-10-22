@@ -115,7 +115,8 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 		len = 0;
 	if ((uint64) start + len > (uint64) PG_INT32_MAX)
 		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col: the variable-length values of a unit exceed 2 GB")));
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col: the variable-length values of a unit exceed 2 GB"),
+				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	if (v->voff == NULL)
 	{
 		v->voff = MemoryContextAlloc(mcxt, sizeof(uint32));
@@ -138,12 +139,11 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 static void
 batch_row_begin(SiftColBatch *b, SiftKey key)
 {
-	if (sift_block_sb(sift_key_block(key)) != b->sb)
-		elog(ERROR, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key), (uint32) (key & 0xFFFF), b->sb);
-	if ((key & 0xFFFF) < 1 || (key & 0xFFFF) > MaxHeapTuplesPerPage)
-		elog(ERROR, "sift_col: row offset %u is not a heap offset", (uint32) (key & 0xFFFF));
-	if (b->nrows > 0 && key <= b->keys[b->nrows - 1])
-		elog(ERROR, "sift_col: rows must be added in ascending TID order");
+	SIFT_INVARIANT(sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
+				   (uint32) (key & 0xFFFF), b->sb);
+	SIFT_INVARIANT((key & 0xFFFF) >= 1 && (key & 0xFFFF) <= MaxHeapTuplesPerPage, "sift_col: row offset %u is not a heap offset",
+				   (uint32) (key & 0xFFFF));
+	SIFT_INVARIANT(b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
 	if (b->nrows == b->rowcap)
 	{
 		b->rowcap *= 2;
@@ -246,8 +246,7 @@ sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 
 			continue;
 		if (!v->isnull && !v->overflow)
 		{
-			if (v->v.i < 0 || v->v.i > PG_INT32_MAX)
-				elog(ERROR, "sift_col: array of %lld elements", (long long) v->v.i);
+			SIFT_INVARIANT(v->v.i >= 0 && v->v.i <= PG_INT32_MAX, "sift_col: array of %lld elements", (long long) v->v.i);
 			count = (uint32) v->v.i;
 		}
 		batch_group_end(b, id, count);
@@ -470,8 +469,7 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 	SiftKey    *keys = palloc(Max(v->nrows, 1) * sizeof(SiftKey));
 	UnitLeaf   *lf = palloc0(s->ncols * sizeof(UnitLeaf));
 
-	if (dst->schema->ncols != s->ncols || dst->sb != sb)
-		elog(ERROR, "sift_col: a unit is decoded into a batch of its own schema and superblock");
+	SIFT_INVARIANT(dst->schema->ncols == s->ncols && dst->sb == sb, "sift_col: a unit is decoded into a batch of its own schema and superblock");
 	sift_cunit_keys(v, sb, keys);
 	for (int col = 0; col < s->ncols; col++)
 	{

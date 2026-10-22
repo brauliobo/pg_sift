@@ -75,7 +75,8 @@ end_segment(ColBuild *b)
 	if (b->w == NULL)
 		return;
 	if (b->nsegs == b->maxsegs)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs)));
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	b->w = NULL;
 }
@@ -368,7 +369,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	IndexBuildResult *res = NULL;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
+						errhint("Index the underlying table of the view, or materialize it into a table.")));
 	/* the bitmap scan compares bytes, which is equality only under a deterministic collation (a query matches the index collation exactly) */
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 		if (index->rd_opcintype[i] == TEXTOID && OidIsValid(index->rd_indcollation[i]) && !get_collation_isdeterministic(index->rd_indcollation[i]))
