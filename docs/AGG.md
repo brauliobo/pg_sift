@@ -83,12 +83,12 @@ when the index is read, the rows nothing matched are tuples of NULL leaves that 
 `count(*)` 1, a `FILTER (WHERE o.id IS NULL)` is true). A `FULL JOIN` also keeps the tuples with no match, with NULL columns. The `ON` clause only decides
 the matches: a condition on the table's own columns, a NULL key and a duplicate key leave its rows unmatched or multiply the tuples, as in the normal plan.
 
-The normal plan stays when a `WHERE` conjunct over only the indexed table must be evaluated after preservation. The indexed table may be partitioned: the preserved table is read whole when the scan starts, whichever partitions are read.
+The normal plan stays when a `WHERE` conjunct over only the indexed table must be evaluated after preservation. The indexed table may be partitioned: the preserved table is read whole when the scan starts, whichever partitions are read. The preserved or looked-up table may be partitioned too (its plan is run once when the scan starts), and a `FULL JOIN` to a view or a sub-select with conditions keeps the rows they leave out out of the join; a `FULL JOIN` to a view on the left of the scanned table stays plain.
 A nullable indexed input may contain ordinary lookup joins and expand one JSON object or array before joining to the preserved side.
 Empty preserved buckets contribute one NULL fact input, including NULL lookup columns and expressions computed inside that input.
 The `ON` conjuncts of such a `LEFT JOIN` that read only the indexed table (and the rows it unnests) decide which of its rows can match, so they are conditions of the scan: an `EXISTS` over the elements of an array, written with a sub-select that PostgreSQL pulls up, or a `jsonb_path_exists`, runs there, and so does an aggregate filter on a test computed inside the nullable input. The test of an absent input (`CASE WHEN absent THEN NULL ELSE x END`) is read as `x` only when `x` is not true for the NULL leaves of the row an empty bucket contributes (comparisons, `IS NOT NULL`, `EXISTS`); `x IS NULL` keeps the normal plan.
 A scan with such a join runs without workers: one scan sees every row.
-Fixtures `ps_*`, rows J06 and J07 of the coverage table.
+Fixtures `ps_*` and `j_dim_partitioned*`, `j_full_*`, rows J06 and J07 of the coverage table.
 Fixtures `nf_*`, test `agg_nullable_filters`, rows J30 and J31.
 
 An `EXISTS` over the elements of an array may read a column of a joined table, or look each element up in a mapping table (`LEFT JOIN LATERAL (SELECT .. LIMIT 1) m ON true`, keyed by the element and a joined column) before it tests the result: the lookup is PostgreSQL's plan, run once for each distinct combination of the values it reads, and a row's answer is kept while its elements and the joined values repeat. `NOT EXISTS`, `EXISTS` inside an aggregate `FILTER` and an expression that can raise keep the normal plan. Fixtures `ee_*`, row J34 of the coverage table.

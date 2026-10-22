@@ -97,6 +97,9 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 
 	switch (e->rtekind)
 	{
+		case RTE_RELATION:
+			*what = e->relkind == RELKIND_PARTITIONED_TABLE ? "partitioned" : "filtered";
+			break;
 		case RTE_CTE:
 		{
 			PlannerInfo *owner = c->root;
@@ -181,11 +184,16 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	RangeTblEntry *e = rt_fetch(rti, c->root->parse->rtable);
 	JoinCtx    *jc = palloc0(sizeof(JoinCtx));
 	const char *what = NULL;
+	bool		filtered = false;
 
 	jc->rti = rti;
 	jc->j.child = -1;
 	jc->j.fslot = -1;
-	if (e->rtekind == RTE_RELATION)
+	/* the rows of a table of a FULL JOIN that a condition of its sub-select or view left out are no rows of the join: its plan reads them */
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		filtered |= lj->rti == rti && lj->kind == SJ_FULL && c->root->simple_rel_array[rti] != NULL &&
+			c->root->simple_rel_array[rti]->baserestrictinfo != NIL;
+	if (e->rtekind == RTE_RELATION && e->relkind != RELKIND_PARTITIONED_TABLE && !filtered)
 	{
 		if (e->relkind != RELKIND_RELATION)
 			return agg_refuse_f(TABLE_KIND, "the joined relation %s is not a plain table", get_rel_name(e->relid));
