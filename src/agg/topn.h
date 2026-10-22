@@ -28,11 +28,16 @@
 
 /* ---- planner ---- */
 
-/* Can the leaf be an ORDER BY key: an integer-like, date, timestamp, numeric (scaled integer) or float leaf, whose order is the type's */
+/*
+ * Can the leaf be an ORDER BY key: an integer-like, date, timestamp, numeric (scaled integer) or float leaf, whose order is the type's, or a
+ * text, varchar, uuid, bytea or inet leaf, whose entries of the dictionary are compared by the sort operator's own comparison function
+ * (the collation of a text key must be deterministic: the planner checks it)
+ */
 extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
 
 /*
- * The spec the plan carries (SiftAggSpec.topn): a List of the keys (an integer list: keys: leaf, descending, nulls first; out: the heap
+ * The spec the plan carries (SiftAggSpec.topn): a List of the keys (an integer list: keys: leaf, descending, nulls first, sort operator,
+ * btree comparison function (only a key of byte strings is compared by it) and collation; out: the heap
  * attribute of each column of the scan tuple), the LIMIT and the OFFSET (NULL: none) as the expressions of the query, int8 with no
  * Var, volatile function or sub-plan: constants, or parameters of the statement that the scan evaluates when it starts.
  * flags: TOPN_SKIP_OFFSET: the scan tuple is the output as it is (plain columns), so the Limit node above, which throws the first OFFSET rows
@@ -41,7 +46,7 @@ extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
  */
 #define TOPN_SKIP_OFFSET	1
 #define TOPN_SORT			2
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno, int flags, Node *count, Node *offset);
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, int nout, const int *attno, int flags, Node *count, Node *offset);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
