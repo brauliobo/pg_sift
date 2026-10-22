@@ -162,6 +162,7 @@ SELECT sift._test_cc_decode(set_byte(b, 40, get_byte(b, 40) # 255)) FROM good WH
 ERROR:  invalid column chunk: check word mismatch
 SELECT sift._test_cc_decode(set_byte(b, 1, 9)) FROM good WHERE name = 'narrow';
 ERROR:  column chunk has format version 9, this build reads 1
+HINT:  Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).
 SELECT sift._test_cc_decode(set_byte(b, 0, 0)) FROM good WHERE name = 'narrow';
 ERROR:  invalid column chunk: bad header or misaligned blob
 SELECT sift._test_cc_decode(substring(b from 1 for 16)) FROM good WHERE name = 'narrow';
@@ -170,6 +171,7 @@ SELECT sift._test_cc_decode(substring(b from 1 for length(b) - 8)) FROM good WHE
 ERROR:  invalid column chunk: check word mismatch
 SELECT sift._test_cc_decode(set_byte(b, 24, 99), false) FROM good WHERE name = 'narrow';
 ERROR:  column chunk uses encoding 99, which this build does not know
+HINT:  Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).
 SELECT sift._test_cc_decode(set_byte(b, 25, 40), false) FROM good WHERE name = 'narrow';
 ERROR:  invalid column chunk: bit width out of range
 SELECT sift._test_cc_decode(set_byte(b, 25, 0), false) FROM good WHERE name = 'narrow';

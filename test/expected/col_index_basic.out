@@ -38,6 +38,7 @@ ERROR:  the paths option names "other", which is not a jsonb column of the index
 HINT:  A path starts with the name of an indexed jsonb column.
 CREATE INDEX o_paths3 ON orders USING sift_col (payload) WITH (paths = 'payload.a[].b[].c int4');
 ERROR:  sift_col holds one level of arrays and objects: "payload.a[].b[]" is nested in another
+HINT:  Declare the nested path as an astext or jsonb leaf, or keep the inner array in a table of its own.
 CREATE INDEX o_limit ON orders USING sift_col (store_id) WITH (write_buffer_limit = 1);
 ERROR:  value 1 out of bounds for option "write_buffer_limit"
 DETAIL:  Valid values are between "64" and "1048576".
@@ -685,6 +686,7 @@ CREATE POLICY mine ON orders FOR SELECT USING (store_id > 0);
 SET ROLE col_reader;
 SELECT rows FROM sift._test_col_counters('o_col', '');
 ERROR:  sift_col indexes cannot be used on table "orders", which has row-level security
+HINT:  Run the statement as the table owner or as a role with BYPASSRLS; the normal plan applies the policies.
 RESET ROLE;
 SELECT rows > 0 AS owner_bypasses FROM sift._test_col_counters('o_col', '');
  owner_bypasses 

@@ -160,8 +160,10 @@ RESET hash_mem_multiplier;
 -- only a SELECT is planned
 SELECT * FROM sift.explain_why('DELETE FROM plain');
 ERROR:  sift.explain_why takes one SELECT statement
+HINT:  Pass the text of a single SELECT, without a second statement.
 SELECT * FROM sift.explain_why('SELECT 1; SELECT 2');
 ERROR:  sift.explain_why takes one SELECT statement
+HINT:  Pass the text of a single SELECT, without a second statement.
 -- an error while planning leaves no arm behind: the next query is reported as if it were the first
 SELECT * FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE 1 / 0 = 1 GROUP BY 1');
 ERROR:  division by zero
