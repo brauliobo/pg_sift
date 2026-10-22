@@ -60,8 +60,10 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 		{
 			lo = st->in_lo;
 			hi = st->in_hi;
-			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell */
-			if (!st->in_dense)
+			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell. A byte table longer than
+			 * ZONE_SET_MAX is left to its range: the values are sorted again at each begin of a range of units, about 1 us each, and a
+			 * set that long meets the zone of almost every unit */
+			if (!st->in_dense && (st->in_htab || st->in_nv <= ZONE_SET_MAX))
 				z->vals = set_values(st, &z->nvals);
 		}
 	}

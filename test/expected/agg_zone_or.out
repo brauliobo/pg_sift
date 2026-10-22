@@ -99,6 +99,20 @@ SELECT * FROM same($$owner_id IN (1, 12) OR owner_id = 6$$);
  SiftAgg read 12 pruned 25 |           3 |              0
 (1 row)
 
+-- an IN list with gaps travels with its zone test up to 256 members (the units of the owners between 1 and 12 are pruned); a longer one is tested by its range,
+-- since the members are sorted again at each begin of a range of units and a list that long meets the zone of almost every unit
+SELECT * FROM same(format('owner_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 120) g)));
+           plan           | result_rows | vs_normal_plan 
+--------------------------+-------------+----------------
+ SiftAgg read 8 pruned 29 |           2 |              0
+(1 row)
+
+SELECT * FROM same(format('owner_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 400) g)));
+           plan           | result_rows | vs_normal_plan 
+--------------------------+-------------+----------------
+ SiftAgg read 37 pruned 0 |           2 |              0
+(1 row)
+
 -- an AND of ORs, and an OR of ANDs of two leaves: every conjunct, every disjunct is tested on its own
 SELECT * FROM same($$(day < '2020-06-01' OR day > '2021-06-01') AND (owner_id = 1 OR owner_id = 12)$$);
            plan           | result_rows | vs_normal_plan 
