@@ -13,7 +13,7 @@
 #                                                       freezes and drops them
 #
 # Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
-# to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, or no testing build).
+# to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
 # the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
@@ -34,7 +34,7 @@ skip() { echo "SKIP $*" >&2; exit 77; }
 build() {
 	local rev dir major
 	major=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
-	((major >= 18)) || skip "PostgreSQL $major cannot hold two builds (no extension_control_path)"
+	((major == 18)) || skip "PostgreSQL $major: 17 cannot hold two builds (no extension_control_path) and the released libraries do not build on 19"
 	if [[ -n ${SIFT_OLD_SRC:-} ]]; then
 		rev=$(git -C "$SIFT_OLD_SRC" rev-parse --short HEAD 2>/dev/null || echo src)
 	else
