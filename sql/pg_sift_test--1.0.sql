@@ -305,3 +305,7 @@ CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 -- the record of a write buffer page of one row whose slot and record length are given: true when it is handed out, an error when it reaches past the page
 CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec' LANGUAGE C STRICT;
+
+-- the same for a record of inline_len bytes that ends `over` bytes past the end of the page's data (0: the largest record a page holds)
+CREATE FUNCTION sift._test_tbl_page_rec_end(inline_len int4, over int4) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec_end' LANGUAGE C STRICT;
