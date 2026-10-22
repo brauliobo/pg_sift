@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of the pg_sift README benchmark numbers, on a calm host only
+
+[Timer]
+OnCalendar=Sun 03:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

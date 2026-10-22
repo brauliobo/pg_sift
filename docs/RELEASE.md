@@ -66,5 +66,7 @@ the git build; when 20 opens, change the default `ref` of the action to `master`
 `scripts/pg19-build.sh /var/tmp/pg19 <commit>`, then `PATH=/var/tmp/pg19/bin:$PATH scripts/pgtest.sh install`.
 `scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
 the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18. `assert.yml`
-(assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks (`bench/bench final --docs`) are a separate step, not part of a release.
+(assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks are a separate step, not part of a release: `bench/bench refresh` measures the numbers of the README again (bench/README.md, "Keeping the numbers fresh"), and
+`scripts/check-bench-fresh.sh` (lint, and `release.sh`) fails when a generated block differs from `docs/results` and warns when the results are from another MAJOR.MINOR than `pg_sift.control`:
+a release that prints that warning has benchmark numbers of an older version in its README, so run `bench/bench refresh` first or say so in the notes.
 Job times and why the quick jobs have their size: [TEST-TIMES.md](TEST-TIMES.md).

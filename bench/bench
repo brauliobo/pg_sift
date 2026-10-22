@@ -23,6 +23,8 @@ Commands
              prints the tables (the report) at the end
   report     turn result directories into results.tsv (chart input), builds.tsv and tables.md
   charts     draw the SVG charts of docs/img from the committed docs/results/*.tsv (stdlib python, deterministic)
+  refresh    measure the README numbers again at this checkout and rewrite their blocks (`final --docs --stages "search store"`, resumable, under the host lock;
+             `--calm` for a timer, `--pr BASE` opens the pull request): `refresh [--stages LIST] [--calm [S]] [--pr BASE] [--dry-run]`; scripts/check-bench-fresh.sh proves the blocks
   readme     print the Benchmarks block of README.md and rewrite the generated blocks of README.md and docs/BENCHMARKS.md from the
              slim tier rows of docs/results/*.tsv (`--tier T` another tier; no measurement)
   all        setup, run and report in one go (the clean-checkout reproduction). With --docs it also runs the cold-cache tables (always
@@ -666,6 +668,7 @@ cmd=${1:-}
 shift || true
 case $cmd in
   -h|--help|help) usage; exit 0 ;;
+  refresh) exec "$STEPS/refresh.sh" "$@" ;;   # its own options, the rest goes to `final`
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
