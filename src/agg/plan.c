@@ -181,7 +181,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 				return agg_refuse_on(TABLE_KIND, "the table has row-level security and is read through a view");
 			if (c->relid == 0 && skip == 0)
 				c->relid = rti;
-			else if (part || c->joinless)
+			else if (c->joinless)
 				return agg_refuse(FROM_SHAPE);
 			else
 			{

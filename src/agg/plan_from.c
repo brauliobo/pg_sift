@@ -96,24 +96,32 @@ scan_preserved(JoinExpr *j, FromScan *f)
 {
 	bool		full = j->jointype == JOIN_FULL;
 	RangeTblRef *l = IsA(j->larg, RangeTblRef) ? (RangeTblRef *) j->larg : NULL,
-			   *r = IsA(j->rarg, RangeTblRef) ? (RangeTblRef *) j->rarg : NULL;
-	FromScan	right = {.ok = true};
+			   *r = right_table(j->rarg);
+	FromScan	right = {.ok = true},
+				left = {.ok = true};
 	LeftJoin   *lj;
 	Index		scanned,
 				dim;
 
-	if ((!full && j->jointype != JOIN_LEFT) || l == NULL || (full && r == NULL))
+	/* a FULL JOIN of a join of tables to a table: the join is the scanned side (its tables are joined to the first) */
+	if ((!full && j->jointype != JOIN_LEFT) || (full && r == NULL) || (l == NULL && (!full || f->flip)))
 		return false;
 	f->flippable = true;
 	if (!full && !f->flip)
 		return false;
+	if (l == NULL)
+	{
+		scan_from(j->larg, &left);
+		if (!left.ok || left.ojrels != NULL || left.rtis == NIL)
+			return false;
+	}
 	if (f->flip)
 	{
 		scan_from(j->rarg, &right);
 		if (!right.ok || right.ojrels != NULL || right.rtis == NIL)
 			return false;
 	}
-	scanned = f->flip ? linitial_int(right.rtis) : l->rtindex;
+	scanned = f->flip ? linitial_int(right.rtis) : l ? l->rtindex : linitial_int(left.rtis);
 	dim = f->flip ? l->rtindex : r->rtindex;
 	lj = palloc(sizeof(LeftJoin));
 	lj->kind = full ? SJ_FULL : SJ_RIGHT;
@@ -135,9 +143,9 @@ scan_preserved(JoinExpr *j, FromScan *f)
 		lj->quals = on;
 	}
 	/* Filter the nullable input before matching; these conditions never test its preserved NULL rows. */
-	f->scan_quals = list_concat(f->scan_quals, right.quals);
-	f->lefts = list_concat(f->lefts, right.lefts);
-	f->rtis = f->flip ? list_concat(f->rtis, right.rtis) : lappend_int(f->rtis, scanned);
+	f->scan_quals = list_concat(list_concat(f->scan_quals, right.quals), left.quals);
+	f->lefts = list_concat(list_concat(f->lefts, right.lefts), left.lefts);
+	f->rtis = f->flip ? list_concat(f->rtis, right.rtis) : l ? lappend_int(f->rtis, scanned) : list_concat(f->rtis, left.rtis);
 	f->rtis = lappend_int(f->rtis, dim);
 	f->lefts = lappend(f->lefts, lj);
 	f->ojrels = bms_add_member(f->ojrels, j->rtindex);
