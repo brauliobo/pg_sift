@@ -55,14 +55,14 @@ CREATE FUNCTION series_query() RETURNS text LANGUAGE sql AS $$
 	          LEFT JOIN LATERAL (SELECT mapped_cat, mapped_asp FROM maps WHERE maps.kind = r.kind AND maps.cat = o.src_cat AND maps.asp = o.src_asp AND NOT jsonb_exists(r.payload, 'mapped') LIMIT 1) m ON true) mo ON true
 	
 	GROUP BY r.id, r.parent_id, r.bucket_date, r.bucket_period),
-	g AS (SELECT coalesce(cat, 'overall') AS cat, asp, day, period, avg(score) AS value, CAST(sum(pos_count) AS int) AS pos_count, CAST(sum(neg_count) AS int) AS neg_count,
+	g AS (SELECT coalesce(cat, 'p_total') AS cat, asp, day, period, avg(score) AS value, CAST(sum(pos_count) AS int) AS pos_count, CAST(sum(neg_count) AS int) AS neg_count,
 	             coalesce(count(DISTINCT id), 0) AS items, count(DISTINCT parent_id) AS parents,
 	             json_build_object('value', 100 * (CAST(count(DISTINCT id) FILTER (WHERE score >= 8.0) AS float) / nullif(count(DISTINCT id), 0)),
 	                               'high', count(DISTINCT id) FILTER (WHERE score >= 8.0), 'low', count(DISTINCT id) FILTER (WHERE score <= 6.0)) AS split
 	      FROM (SELECT x.*, d.day, d.period AS period FROM all_dates d LEFT JOIN u x ON jsonb_build_array(x.bucket_period, x.bucket_date) = jsonb_build_array(d.period, d.day)) t
 	      GROUP BY GROUPING SETS ((cat, asp, day, period))),
 	t AS (SELECT g.*, lag(g.value) OVER w AS prev, lag(g.items) OVER w AS prev_n FROM g WINDOW w AS (PARTITION BY day, cat, asp ORDER BY period DESC))
-SELECT cat, asp, period, round(value::numeric, 6) AS value, pos_count, neg_count, items, parents, split::text, round(prev::numeric, 6) AS prev, prev_n FROM t WHERE period = 'cur' ORDER BY (cat = 'overall') DESC, cat, asp$q$
+SELECT cat, asp, period, round(value::numeric, 6) AS value, pos_count, neg_count, items, parents, split::text, round(prev::numeric, 6) AS prev, prev_n FROM t WHERE period = 'cur' ORDER BY (cat = 'p_total') DESC, cat, asp$q$
 $$;
 -- the nodes of the scan in the plan, and the rows against the normal plan
 CREATE FUNCTION scan_nodes(q text) RETURNS int LANGUAGE plpgsql AS $$

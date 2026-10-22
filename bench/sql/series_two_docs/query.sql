@@ -19,11 +19,11 @@ metrics AS (
   SELECT b.id, b.parent_id, b.bucket_period, b.bucket_date, coalesce(m.cat, split_part(r.key, '_', 1)) AS cat, coalesce(m.sub, nullif(split_part(r.key, '_', 2), '')) AS sub, r.value::float8 AS score
   FROM base b CROSS JOIN LATERAL jsonb_each(b.metrics) r LEFT JOIN maps m ON m.src = r.key),
 a AS (
-  SELECT coalesce(cat, 'overall') AS cat, sub, day, period, avg(score) AS value, count(DISTINCT id) AS n, count(DISTINCT parent_id) AS parents
+  SELECT coalesce(cat, 'p_total') AS cat, sub, day, period, avg(score) AS value, count(DISTINCT id) AS n, count(DISTINCT parent_id) AS parents
   FROM (SELECT x.*, d.day, d.period AS period FROM all_dates d LEFT JOIN parts x ON jsonb_build_array(x.bucket_period, x.bucket_date) = jsonb_build_array(d.period, d.day)) t
   GROUP BY GROUPING SETS ((cat, sub, day, period))),
 b AS (
-  SELECT coalesce(cat, 'overall') AS cat, sub, day, period, avg(score) AS value, count(DISTINCT id) AS n, count(DISTINCT parent_id) AS parents
+  SELECT coalesce(cat, 'p_total') AS cat, sub, day, period, avg(score) AS value, count(DISTINCT id) AS n, count(DISTINCT parent_id) AS parents
   FROM (SELECT x.*, d.day, d.period AS period FROM all_dates d LEFT JOIN metrics x ON jsonb_build_array(x.bucket_period, x.bucket_date) = jsonb_build_array(d.period, d.day)) t
   GROUP BY GROUPING SETS ((cat, sub, day, period))),
 g AS (
@@ -33,5 +33,5 @@ g AS (
 t AS (
   SELECT g.*, lag(g.value) OVER w AS prev, lag(g.n) OVER w AS prev_n, lag(g.a_value) OVER w AS prev_a, lag(g.b_value) OVER w AS prev_b
   FROM g WINDOW w AS (PARTITION BY day, cat, sub ORDER BY period DESC))
-SELECT * FROM t WHERE period = 'cur' ORDER BY (cat = 'overall') DESC, day, cat, sub
+SELECT * FROM t WHERE period = 'cur' ORDER BY (cat = 'p_total') DESC, day, cat, sub
 ;
