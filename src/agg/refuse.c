@@ -70,11 +70,15 @@ typedef struct ArmNote
 	double		normal;
 	double		spill;			/* of scan, what the cheapest path pays for the groups that outgrow the hash memory */
 	const char *spill_detail;
+	double		vet;			/* of scan, what the cheapest path pays to check the heap for the pages that are not all-visible */
+	double		vet_pct;
 } ArmNote;
 
 static ArmNote *arm;
 static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm_path */
 static const char *path_spill_detail;
+static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
+static double path_vet_pct;
 static List *done;
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
@@ -155,6 +159,15 @@ agg_arm_spill(double cost, double groups, double table)
 				 (double) get_hash_memory_limit() / 1024.0, cost) : NULL;
 }
 
+void
+agg_arm_vet(double cost, double pct)
+{
+	if (arm == NULL)
+		return;
+	path_vet = cost;
+	path_vet_pct = pct;
+}
+
 /* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */
 void
 agg_arm_path(Path *p)
@@ -178,6 +191,8 @@ agg_arm_path(Path *p)
 	{
 		arm->spill = path_spill;
 		arm->spill_detail = path_spill_detail;
+		arm->vet = path_vet;
+		arm->vet_pct = path_vet_pct;
 	}
 	arm->scan = Min(arm->scan, p->total_cost);
 	arm->cheaper |= !arm->has_best || compare_path_costs(p, &arm->best, TOTAL_COST) <= 0;
@@ -201,8 +216,13 @@ agg_arm_end(void)
 			/* the memory decided it when the scan, without the spill, is no dearer than the normal plan */
 			bool		memory = a->spill > 0 && a->has_best && a->scan - a->spill <= a->normal;
 
+			/* the visibility map decided it when the scan, without the heap check, is no dearer than the normal plan (a rewrite leaves the map empty) */
+			bool		vm = !memory && a->vet > 0 && a->has_best && a->scan - a->vet <= a->normal;
+
 			a->why = memory ? AGG_REFUSE_GROUP_MEMORY : AGG_REFUSE_COST;
 			a->detail = psprintf("%s%sthe scan costs %.2f, the normal plan %.2f", memory ? a->spill_detail : "", memory ? ": " : "", a->scan, a->normal);
+			if (vm)
+				a->detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scan: VACUUM (ANALYZE) the table", a->detail, a->vet_pct, a->vet);
 		}
 	}
 	else if (!a->candidate)

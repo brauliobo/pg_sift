@@ -1,0 +1,52 @@
+-- A rewrite (CLUSTER, VACUUM FULL, pg_repack) leaves the visibility map of the table empty: the scan checks the heap for every row it keeps, the planner
+-- prices that, and the normal plan wins until a VACUUM. sift.explain_why and sift.explain_refusals say so.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+-- rows in key order, seven to a page: a key range is a range of heap pages, and the btree answers the same range
+CREATE TABLE ordered (id int, k int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ordered SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX ordered_k ON ordered (k);
+CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v);
+CLUSTER ordered USING ordered_k;
+ANALYZE ordered;
+CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
+	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
+$$;
+-- empty map: refused for its cost, with the pages that are not all-visible and the way out
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 40 GROUP BY v');
+ used | slug |                                                                                          reason                                                                                          
+------+------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ f    | cost | the normal plan is estimated cheaper than the scan (the scan costs N, the normal plan N; N% of the heap pages are not all-visible, which adds N to the scan: VACUUM (ANALYZE) the table)
+(1 row)
+
+-- the share of the pages is the table's, not the query's
+SELECT used, slug, reason ~ '^the normal plan is estimated cheaper than the scan \(the scan costs [0-9.]+, the normal plan [0-9.]+; 100% of the heap pages' AS pages_100
+FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 40 GROUP BY v');
+ used | slug | pages_100 
+------+------+-----------
+ f    | cost | t
+(1 row)
+
+-- a scan that loses for another reason says nothing of the map: one key of a table the btree reads at once
+SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
+ used | slug | no_hint 
+------+------+---------
+ f    | cost | t
+(1 row)
+
+VACUUM ordered;
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 40 GROUP BY v');
+ used | slug | reason 
+------+------+--------
+ t    |      | 
+(1 row)
+
+SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
+ used | slug | no_hint 
+------+------+---------
+ f    | cost | t
+(1 row)
+
+DROP FUNCTION why(text);
+DROP TABLE ordered;
+DROP EXTENSION pg_sift;
