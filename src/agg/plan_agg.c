@@ -102,9 +102,12 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	RegProcedure lhs,
 				rhs;
 
-	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ)
+	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
 	expr = normalize_expr(c, expr);
+	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
+	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
+		return false;
 	k->typid = exprType(expr);
 	k->typmod = exprTypmod(expr);
 	k->collid = exprCollation(expr);

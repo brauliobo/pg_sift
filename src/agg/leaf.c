@@ -85,6 +85,11 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 
 	if (!get_op_hash_functions(eqop, &lhs, &rhs))
 	{
+		if (SIFT_EQ_BY_IMAGE(get_opcode(eqop)))
+		{
+			ot_init_image(t, typid);
+			return;
+		}
 		SIFT_INVARIANT(get_opcode(eqop) == F_CASH_EQ, "sift: no hash function for operator %u", eqop);
 		lhs = F_HASHINT8;		/* money has no hash operator class, and is its int64 */
 	}

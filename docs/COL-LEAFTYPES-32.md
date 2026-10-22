@@ -199,7 +199,7 @@ Money, time, enum and uuid have no ties.
 - `GROUP BY money` in PostgreSQL is sort-based (money has a btree opclass and no hash one); the pushdown hashes the cents (`hashint8`), the rows are the same
   and their order is a hash order, as any hash aggregate's.
 - More than 8 lane-tested conjuncts in one scan.
-- `GROUP BY` a `bit` or `varbit` column: PostgreSQL has no hash operator class for them and groups by sorting, and the executor groups by hashing, so the plan stays
+- `GROUP BY` or `SELECT DISTINCT` a `bit` or `varbit` column: PostgreSQL has no hash operator class for them and groups by sorting; the pushdown groups by the image of the value, which is the same for equal values (the padding bits are zero), so the lengths of a `varbit` stay apart. An expression of one keeps the plan
   (`count(DISTINCT)`, conjuncts and expressions over them are pushed; `GROUP BY length(vb)` is a key of an integer).
 - A `cidr` column that is a group key and is also read in a conjunct, a `FILTER` or an expression of the same query (`cd = '10.0.0.0/8'`, `host(cd)`): the operators of
   `cidr` are `inet`'s, so the query reads the leaf as `inet` and as `cidr`, and a leaf has one type in a combo. Keying on `cd::inet` (`GROUP BY cd::inet` is pushed)
