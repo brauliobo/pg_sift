@@ -1,5 +1,6 @@
 /*
- * Kernel throughput per level and a memory bandwidth reference. Single thread pinned to KT_CPU (default 2);
+ * Kernel throughput per level, plus the rejected bm25_accum designs and a
+ * memory bandwidth reference. Single thread pinned to KT_CPU (default 2);
  * see BENCH. Run under flock /tmp/sift-perf.lock. "bench col" runs the column kernels (bench_col.c) and "bench shred" the shredder
  * kernels against their composition from the shared slots (bench_shred.c) instead.
  *
@@ -15,6 +16,13 @@
 
 #define NPAGES		16
 
+int			alt_bm25_ymm(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
+						 const float4 *knorm, float4 w);
+int			alt_bm25_compress(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
+							  const float4 *knorm, float4 w, float4 *dense);
+int			alt_bm25_tfvar(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
+						   const float4 *knorm, float4 w, int var);
+
 typedef struct BenchBlock
 {
 	int			pop;
@@ -22,7 +30,8 @@ typedef struct BenchBlock
 	float4	   *kn,
 			   *sc,
 			   *other,
-			   *vals;
+			   *vals,
+			   *dense;
 	uint8	   *tf;
 	uint16	   *slot,
 			   *dl[NPAGES];
@@ -42,6 +51,7 @@ block_init(BenchBlock *b, int maxoff, double d)
 	b->sc = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4);
 	b->other = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4);
 	b->vals = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4);
+	b->dense = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4 + 64);
 	b->slot = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 2);
 	b->tf = kt_alloc(NPAGES * SIFT_KERN_SLOTS + SIFT_KERN_PAD);
 	memset(b->mask, 0, NPAGES * 64);
@@ -97,12 +107,39 @@ bench_block(const char *scen, int maxoff, double d)
 	}
 	if (nlevels == 3)
 	{
+		float4	   *s0 = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4),
+				   *s1 = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4),
+				   *orig = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4);
 		const SiftKernels *k = levels[2];
 
+		memcpy(orig, b.sc, NPAGES * SIFT_KERN_SLOTS * 4);
+		memcpy(s0, orig, NPAGES * SIFT_KERN_SLOTS * 4);
+		memcpy(s1, orig, NPAGES * SIFT_KERN_SLOTS * 4);
+		k->bm25_accum(s0, b.mask, NPAGES, b.tf, b.kn, 0.5f);
+		alt_bm25_ymm(s1, b.mask, NPAGES, b.tf, b.kn, 0.5f);
+		if (memcmp(s0, s1, NPAGES * SIFT_KERN_SLOTS * 4))
+			printf("alt ymm differs\n");
+		memcpy(s1, orig, NPAGES * SIFT_KERN_SLOTS * 4);
+		alt_bm25_compress(s1, b.mask, NPAGES, b.tf, b.kn, 0.5f, b.dense);
+		if (memcmp(s0, s1, NPAGES * SIFT_KERN_SLOTS * 4))
+			printf("alt compress differs\n");
+		for (int v = 0; v < 3; v++)
+		{
+			static const char *const vn[] = {"tf-expandb", "tf-expandd", "tf-pshufb"};
+
+			memcpy(s1, orig, NPAGES * SIFT_KERN_SLOTS * 4);
+			alt_bm25_tfvar(s1, b.mask, NPAGES, b.tf, b.kn, 0.5f, v);
+			if (memcmp(s0, s1, NPAGES * SIFT_KERN_SLOTS * 4))
+				printf("alt %s differs\n", vn[v]);
+			row("bm25_accum", scen, vn[v], BENCH(alt_bm25_tfvar(b.sc, b.mask, NPAGES, b.tf, b.kn, 0.5f, v)), b.pop, 13);
+		}
+		row("bm25_accum", scen, "alt-ymm", BENCH(alt_bm25_ymm(b.sc, b.mask, NPAGES, b.tf, b.kn, 0.5f)), b.pop, 13);
+		row("bm25_accum", scen, "alt-compress", BENCH(alt_bm25_compress(b.sc, b.mask, NPAGES, b.tf, b.kn, 0.5f, b.dense)), b.pop, 13);
 		row("bm25_accum", scen, "avx512-1pg", BENCH(
 			for (int p = 0, r = 0; p < NPAGES; p++)
 				r += k->bm25_accum(b.sc + p * SIFT_KERN_SLOTS, b.mask + p * 8, 1, b.tf + r, b.kn + p * SIFT_KERN_SLOTS, 0.5f)),
 			b.pop, 13);
+		free(s0), free(s1), free(orig);
 	}
 }
 
@@ -239,6 +276,8 @@ main(int argc, char **argv)
 	}
 	printf("%-12s %-22s %-12s %9s %8s %9s %9s\n", "kernel", "scenario", "level", "ns/call",
 		   "lanes", "Glanes/s", "L1 GB/s");
+	if (nlevels < 3)
+		printf("# AVX-512 rows (the rejected bm25_accum designs, avx512-1pg) not run: this host has no AVX-512\n");
 	if (argc > 1 && strcmp(argv[1], "col") == 0)
 	{
 		bench_col();
