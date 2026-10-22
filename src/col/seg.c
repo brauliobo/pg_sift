@@ -18,10 +18,19 @@
 #include "core/popcount.h"
 #include "core/cmp.h"
 
+#ifdef SIFT_TESTING
+uint64		sift_test_seg_flip_at = UINT64_MAX;
+uint8		sift_test_seg_flip_mask;
+#endif
+
 static void
 seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 {
 	char	   *p = dst;
+#ifdef SIFT_TESTING
+	uint64		off0 = off;
+	Size		len0 = len;
+#endif
 
 	/* in pieces of a page's payload: sift_sr_get copies across pages into scratch only when asked for a contiguous range */
 	while (len > 0)
@@ -37,6 +46,10 @@ seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 	}
 	/* a segment that stays open between calls keeps its page pinned, never locked: a lock holds off interrupts and parallel workers */
 	sift_sr_unlock(&seg->sr);
+#ifdef SIFT_TESTING
+	if (sift_test_seg_flip_at != UINT64_MAX && sift_test_seg_flip_at >= off0 && sift_test_seg_flip_at - off0 < len0)
+		((uint8 *) dst)[sift_test_seg_flip_at - off0] ^= sift_test_seg_flip_mask;
+#endif
 }
 
 static const SiftSectionRef *
@@ -586,6 +599,11 @@ pagg_header(SiftColSegment *seg)
 		if (ver > 2 && PAGG_SETS(h) &&
 			(PAGG_SETS(h) % 8 != 0 || PAGG_SETS_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_SETS(h), PAGG_SETS_BYTES(h), 0)))
 			corrupt(seg, "The small-set summaries (%llu bytes at %llu) lie outside the section.", ULL(PAGG_SETS_BYTES(h)), ULL(PAGG_SETS(h)));
+		if (ver > 3 && PAGG_SUPERDIR(h) &&
+			(PAGG_SUPERDIR(h) % 8 != 0 || !within(s->len - end, PAGG_SUPERDIR(h), PAGG_SUPER_BYTES(h), 0) || PAGG_SUPER_BYTES(h) < sizeof(SuperHeader)))
+			corrupt(seg, "The superunit block (%llu bytes at %llu) lies outside the section.", ULL(PAGG_SUPER_BYTES(h)), ULL(PAGG_SUPERDIR(h)));
+		if (ver > 3 && !PAGG_SUPERDIR(h) && PAGG_SUPER_BYTES(h))
+			corrupt(seg, "The superunit block has %llu bytes and no offset.", ULL(PAGG_SUPER_BYTES(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -628,7 +646,7 @@ sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a)
 
 /* The blob of unit u from the directory at dir_off (nsb + 1 offsets, then the blobs) of the sidecar; NULL when the unit has none */
 static const uint8 *
-unit_blob(SiftColSegment *seg, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len)
+unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len)
 {
 	uint64		at = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + dir_off,
 				b0,
@@ -639,9 +657,9 @@ unit_blob(SiftColSegment *seg, uint32 u, uint64 dir_off, uint64 bytes, uint64 **
 		return NULL;
 	if (*dir == NULL)
 	{
-		*dir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
-		seg_read(seg, at, (seg->nsb + 1) * sizeof(uint64), *dir);
-		for (uint32 i = 0; i < seg->nsb; i++)
+		*dir = MemoryContextAlloc(seg->mcxt, (n + 1) * sizeof(uint64));
+		seg_read(seg, at, (n + 1) * sizeof(uint64), *dir);
+		for (uint32 i = 0; i < n; i++)
 			if ((*dir)[i] > (*dir)[i + 1] || (*dir)[i + 1] > bytes)
 				corrupt(seg, "The cube directory is out of order at unit %u.", i);
 	}
@@ -654,7 +672,7 @@ unit_blob(SiftColSegment *seg, uint32 u, uint64 dir_off, uint64 bytes, uint64 **
 		*cap = Max(b1 - b0, 2 * *cap);
 		*buf = *buf ? repalloc(*buf, *cap) : MemoryContextAlloc(seg->mcxt, *cap);
 	}
-	seg_read(seg, at + (seg->nsb + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
+	seg_read(seg, at + (n + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
 	*len = b1 - b0;
 	return *buf;
 }
@@ -665,7 +683,7 @@ sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len)
 	SegPriv    *pv = PRIV(seg);
 	const PaggHeader *h = pagg_header(seg);
 
-	return unit_blob(seg, u, h->cubedir_off, h->cube_bytes, &pv->cubedir, &pv->cubebuf, &pv->cubecap, len);
+	return unit_blob(seg, seg->nsb, u, h->cubedir_off, h->cube_bytes, &pv->cubedir, &pv->cubebuf, &pv->cubecap, len);
 }
 
 const uint8 *
@@ -679,7 +697,7 @@ sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len)
 		*len = 0;
 		return NULL;
 	}
-	return unit_blob(seg, u, PAGG_ECUBEDIR(h), PAGG_ECUBE_BYTES(h), &pv->ecubedir, &pv->ecubebuf, &pv->ecubecap, len);
+	return unit_blob(seg, seg->nsb, u, PAGG_ECUBEDIR(h), PAGG_ECUBE_BYTES(h), &pv->ecubedir, &pv->ecubebuf, &pv->ecubecap, len);
 }
 
 const uint8 *
@@ -707,6 +725,136 @@ sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
 
 	return list < 0 ? sift_cseg_cube(seg, u, len) : sift_cseg_rollup(seg, u, list, len);
 }
+
+/* The superunit block's header, checked against the segment; NULL when the segment has none */
+static const SuperHeader *
+super_header(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (!pv->super_checked)
+	{
+		const PaggHeader *ph = pagg_header(seg);
+
+		if (ph->version > 3 && PAGG_SUPERDIR(ph))
+		{
+			SuperHeader *h = MemoryContextAlloc(seg->mcxt, sizeof(SuperHeader));
+			uint64		bytes = PAGG_SUPER_BYTES(ph),
+						need;
+			uint32		nleaf = 0;
+
+			seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(ph), sizeof(SuperHeader), h);
+			for (int c = 0; c < seg->schema->ncols; c++)
+				nleaf += super_leaf_ok(&seg->schema->cols[c]);
+			if (h->magic != SUPER_MAGIC || h->fan < SIFT_SUPER_MIN_FAN || h->fan > SIFT_SUPER_MAX_FAN || h->nsu != (seg->nsb + h->fan - 1) / h->fan ||
+				(h->nsu == 1 && h->fan != seg->nsb) || h->nleaf != nleaf)
+				corrupt(seg, "The superunit block starts with 0x%08x, groups of %u units, %u groups and %u leaves for %u units and %u leaves.", h->magic,
+						h->fan, h->nsu, h->nleaf, seg->nsb, nleaf);
+			need = sizeof(SuperHeader) + (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) nleaf * h->nsu * sizeof(SiftCSuperLeaf);
+			if (h->cubedir_off == 0 ? (h->cube_bytes != 0 || bytes != need) :
+				(h->cubedir_off != need || h->cube_bytes > bytes || bytes != need + (h->nsu + 1) * sizeof(uint64) + h->cube_bytes))
+				corrupt(seg, "The superunit block holds %llu bytes, its sections say %llu and a cube of %llu bytes at %llu.", ULL(bytes), ULL(need),
+						ULL(h->cube_bytes), ULL(h->cubedir_off));
+			pv->super = h;
+			pv->sleaf = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(SiftCSuperLeaf *));
+		}
+		pv->super_checked = true;
+	}
+	return pv->super;
+}
+
+uint32
+sift_cseg_super_fan(SiftColSegment *seg)
+{
+	const SuperHeader *h = super_header(seg);
+
+	return h ? h->fan : 0;
+}
+
+void
+sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm)
+{
+	const SuperHeader *h = super_header(seg);
+
+	if (h == NULL || k >= h->nsu || n > h->fan || (uint64) k * h->fan + n > seg->nsb)
+		corrupt(seg, "The page masks of superunit %u were asked for %u units.", k, n);
+	seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
+			 (uint64) k * h->fan * SIFT_PAGEMASK_WORDS * sizeof(uint64), (Size) n * SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
+}
+
+bool
+sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
+{
+	SegPriv    *pv = PRIV(seg);
+	const SuperHeader *h = super_header(seg);
+	const SiftCSuperLeaf *r;
+	int			slot = 0;
+
+	if (h == NULL || k >= h->nsu || !super_leaf_ok(&seg->schema->cols[col]))
+		return false;
+	if (pv->sleaf[col] == NULL)
+	{
+		SiftCSuperLeaf *blk = MemoryContextAlloc(seg->mcxt, (Size) h->nsu * sizeof(SiftCSuperLeaf));
+
+		for (int c = 0; c < col; c++)
+			slot += super_leaf_ok(&seg->schema->cols[c]);
+		seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(pv->pagg) + sizeof(SuperHeader) +
+				 (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) slot * h->nsu * sizeof(SiftCSuperLeaf),
+				 (Size) h->nsu * sizeof(SiftCSuperLeaf), blk);
+		for (uint32 i = 0; i < h->nsu; i++)
+		{
+			const SiftCSuperLeaf *l = &blk[i];
+
+			if ((l->flags & ~(SIFT_CAGG_SUMSQ_OVF | SIFT_SUPER_LEAF_OK)) || (l->zflags & ~SIFT_COLZ_CONST) ||
+				((l->flags & SIFT_SUPER_LEAF_OK) ? (l->nnull > l->nvals || (l->nnull < l->nvals && l->min > l->max) ||
+													((l->flags & SIFT_CAGG_SUMSQ_OVF) && (l->sumsq_lo || l->sumsq_hi)) ||
+													(seg->schema->cols[col].store == SIFT_COLS_STR && (l->sum_lo || l->sum_hi || l->sumsq_lo || l->sumsq_hi || l->flags != SIFT_SUPER_LEAF_OK))) :
+				 (l->flags || l->zflags || l->nvals || l->nnull || l->sum_lo || l->sum_hi)))
+				corrupt(seg, "The summary of leaf %d in superunit %u is malformed.", col, i);
+		}
+		pv->sleaf[col] = blk;
+	}
+	r = &pv->sleaf[col][k];
+	if (!(r->flags & SIFT_SUPER_LEAF_OK))
+		return false;
+	memset(a, 0, sizeof(*a));
+	a->nvals = r->nvals;
+	a->nnull = r->nnull;
+	a->min = r->min;
+	a->max = r->max;
+	a->zflags = r->zflags;
+	a->flags = r->flags & SIFT_CAGG_SUMSQ_OVF;
+	a->sum = (SiftCI128) (((unsigned __int128) r->sum_hi << 64) | r->sum_lo);
+	a->sumsq = (SiftCI128) (((unsigned __int128) r->sumsq_hi << 64) | r->sumsq_lo);
+	a->has_sums = seg->schema->cols[col].store == SIFT_COLS_INT;
+	return true;
+}
+
+const uint8 *
+sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const SuperHeader *h = super_header(seg);
+
+	*len = 0;
+	if (h == NULL || h->cubedir_off == 0 || k >= h->nsu)
+		return NULL;
+	return unit_blob(seg, h->nsu, k, PAGG_SUPERDIR(pv->pagg) + h->cubedir_off, h->cube_bytes, &pv->supdir, &pv->supbuf, &pv->supcap, len);
+}
+
+#ifdef SIFT_TESTING
+bool
+sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len)
+{
+	const PaggHeader *h = pagg_header(seg);
+
+	if (h->version < 4 || !PAGG_SUPERDIR(h))
+		return false;
+	*off = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(h);
+	*len = PAGG_SUPER_BYTES(h);
+	return true;
+}
+#endif
 
 uint64
 sift_cseg_set_bytes(SiftColSegment *seg)
@@ -785,7 +933,7 @@ sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 	SegPriv    *pv = PRIV(seg);
 
 	*len = 0;
-	return sl ? unit_blob(seg, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
+	return sl ? unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
 }
 
 #define SET_PROBE_KEYS	64				/* a LUT of more matches is tested through the summaries that list their keys, not probed key by key */

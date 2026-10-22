@@ -18,7 +18,8 @@
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_SUPER_MINOR	SIFT_COL_FORMAT_SUPER	/* the column format minor that adds the superunit summaries: directory version 4 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 #define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates */
 
 #define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
@@ -66,7 +67,7 @@ zone_block_size(const SiftColDef *def, uint32 nsb)
  * directory (u64 offset of each unit's blob, nsb + 1 entries) and the blobs. Offsets are from the start of the header.
  * Version 2 (column format minor 4) adds two entries after the offsets of the sums, the offset of the element directory and its blob bytes,
  * and after the cubes that directory (8-aligned) and the element blobs, laid out like the cubes.
- * Version 3 (column format minor 8) adds two more, the offset of the small-set summaries and their bytes (0: none): a SetsHeader, a SetsLeaf per
+ * Version 3 (column format minor 10) adds two more, the offset of the small-set summaries and their bytes (0: none): a SetsHeader, a SetsLeaf per
  * leaf that has them, then per leaf a directory of nsb + 1 offsets and the blobs, laid out like the cubes (offsets from the start of the header).
  */
 typedef struct PaggHeader
@@ -80,7 +81,7 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 #define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
@@ -106,6 +107,36 @@ typedef struct SetsLeaf
 } SetsLeaf;
 
 StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-set section is made of 16 and 24 byte records");
+
+/* Version 4 (column format minor 12) adds two more entries: the offset of the superunit block and its bytes (0: the segment has none) */
+#define PAGG_SUPERDIR(h)		((h)->lagg_off[(h)->ncols + 4])
+#define PAGG_SUPER_BYTES(h)		((h)->lagg_off[(h)->ncols + 5])
+
+/*
+ * The superunit block (docs/COL-PREAGG.md section 10): the units of the segment in groups of `fan` consecutive ones (the last group may be shorter,
+ * one unit has no summary). Offsets from the start of the block, all 8-aligned:
+ *     SuperHeader, the page mask of every unit (4 x u64 each, the pages of its superblock that hold rows), then for each INT leaf in id order the
+ *     SiftCSuperLeaf of every group (nsu x 64 bytes), then (cubedir_off, when any group has a merged cube) the directory of nsu + 1 offsets and the blobs.
+ */
+#define SUPER_MAGIC		0x53505543		/* "CUPS" */
+typedef struct SuperHeader
+{
+	uint32		magic;
+	uint32		fan;
+	uint32		nsu;					/* groups: ceil(nsb / fan) */
+	uint32		nleaf;					/* INT leaves of the schema */
+	uint64		cubedir_off;			/* 0: no group has a cube */
+	uint64		cube_bytes;
+} SuperHeader;
+
+StaticAssertDecl(sizeof(SuperHeader) == 32, "the superunit header is 32 bytes");
+
+/* The leaves a superunit block summarises: the integer leaves (with their exact sums) and the text leaves (counts only). Floats are left out: their sum depends on the order of the additions */
+static inline bool
+super_leaf_ok(const SiftColDef *def)
+{
+	return def->store == SIFT_COLS_INT || def->store == SIFT_COLS_STR;
+}
 
 /* One INT leaf's sums: sum_lo, sum_hi, sumsq_lo, sumsq_hi (u64 each), flags (u32), all over the units */
 static inline Size
@@ -139,6 +170,12 @@ typedef struct SegPriv
 	uint64	   *cubedir;		/* nsb + 1 */
 	uint8	   *cubebuf;
 	Size		cubecap;
+	const SuperHeader *super;	/* the superunit block's header, read on first use; NULL with super_checked: there is none */
+	bool		super_checked;
+	uint64	   *supdir;			/* nsu + 1 */
+	uint8	   *supbuf;
+	Size		supcap;
+	SiftCSuperLeaf **sleaf;		/* [ncols] the records of the INT leaf over the groups, read on first use */
 	uint64	   *ecubedir;		/* the same for the element blobs */
 	uint8	   *ecubebuf;
 	Size		ecubecap;

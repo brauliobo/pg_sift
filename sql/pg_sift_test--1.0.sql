@@ -222,6 +222,9 @@ CREATE FUNCTION sift._test_col_set_damage(index regclass, units int4, OUT blobs 
 										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_set_damage' LANGUAGE C STRICT;
 
+CREATE FUNCTION sift._test_col_super_damage(index regclass, OUT supers int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_super_damage' LANGUAGE C STRICT;
+
 -- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_shred_spec' LANGUAGE C STRICT;

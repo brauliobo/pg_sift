@@ -38,6 +38,7 @@ struct SiftColSegWriter
 	StringInfoData cube;		/* the cube blobs of all units */
 	uint64	   *ecubeoff;		/* the same for the element blobs (minor 4) */
 	StringInfoData ecube;
+	uint64	   *pmask;			/* [unit * SIFT_PAGEMASK_WORDS]: the pages of its superblock that hold the rows of the unit (superunits) */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
 	uint32		capsb;
@@ -104,6 +105,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
 	/* a sift_table has no index option for its pre-aggregates and writes this default (a sift_col index sets its own spec, which has calendar dims when it asks) */
 	if (format >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
@@ -184,6 +186,10 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			}
 		MemoryContextSwitchTo(old);
 	}
+	/* the superunit summaries are minor 12, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
+	w->pagg.super = spec->super >= SIFT_SUPER_MIN_FAN && w->setting >= SIFT_COL_FORMAT_SUPER ? Min(spec->super, SIFT_SUPER_MAX_FAN) : 0;
+	if (w->pagg.super)
+		w->format = SIFT_COL_FORMAT_SUPER;
 }
 
 /* The small-set summary of each leaf that asks for one, from the keys of the unit just encoded (in the segment's codes for a dictionary leaf; none for an inline one) */
@@ -333,6 +339,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		for (int c = 0; w->set && c < ncols; c++)
 			if (w->set[c].off)
 				w->set[c].off = repalloc_huge(w->set[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->pmask = repalloc_huge(w->pmask, (Size) w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 		w->vunit = repalloc_huge(w->vunit, w->capsb * sizeof(VersUnit));
 		memset(w->vunit + w->capsb / 2, 0, w->capsb / 2 * sizeof(VersUnit));
@@ -343,6 +350,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
+	memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
 	add_vers(w, b);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
@@ -462,6 +470,103 @@ write_sets(SiftColSegWriter *w, SetsLeaf *sl, int n)
 	pfree(sl);
 }
 
+/* The sums and the zone of a unit's INT leaf as the reader returns them (sift_cseg_agg) */
+static void
+unit_agg_of(const SiftCZone *z, const SiftCLeafAgg *la, SiftCAgg *a)
+{
+	memset(a, 0, sizeof(*a));
+	a->nvals = z->nvals;
+	a->nnull = z->nnull;
+	a->min = z->min;
+	a->max = z->max;
+	a->zflags = z->flags;
+	if (la)
+	{
+		a->sum = la->sum;
+		a->sumsq = la->sumsq;
+		a->flags = la->flags;
+	}
+	a->has_sums = la != NULL;
+}
+
+/* The superunit block (seg_int.h) of the units written so far, in out; false when the segment has none (not asked for, one unit) */
+static bool
+build_super(SiftColSegWriter *w, StringInfo out)
+{
+	int			ncols = w->schema->ncols;
+	uint32		nsb = w->nsb,
+				fan = Min(w->pagg.super, nsb),	/* one group of all the units is stored with that count: the group size is then not free to change unseen */
+				nsu = fan ? (nsb + fan - 1) / fan : 0;
+	SuperHeader h = {.magic = SUPER_MAGIC,.fan = fan,.nsu = nsu};
+	MemoryContext cx,
+				old;
+	SiftCAgg   *ua;
+	uint64	   *cdir;
+	StringInfoData cubes;
+
+	if (fan == 0 || nsb < 2)
+		return false;
+	for (int c = 0; c < ncols; c++)
+		h.nleaf += super_leaf_ok(&w->schema->cols[c]);
+	cx = AllocSetContextCreate(w->mcxt, "sift col superunits", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	ua = palloc(fan * sizeof(SiftCAgg));
+	cdir = palloc((nsu + 1) * sizeof(uint64));
+	initStringInfo(&cubes);
+	for (uint32 k = 0; k < nsu; k++)
+	{
+		uint32		n = Min(fan, nsb - k * fan);
+		const uint8 **blob = palloc(n * sizeof(uint8 *));
+		uint32	   *len = palloc(n * sizeof(uint32));
+		bool		anycube = false;
+		Size		before = cubes.len;
+
+		cdir[k] = cubes.len;
+		for (uint32 i = 0; i < n; i++)
+		{
+			uint32		u = k * fan + i;
+
+			blob[i] = (const uint8 *) w->cube.data + w->cubeoff[u];
+			len[i] = w->cubeoff[u + 1] - w->cubeoff[u];
+			anycube |= len[i] > 0;
+		}
+		if (n >= 2 && anycube && !sift_cpagg_super_cube(w->schema, blob, len, n, &cubes))
+			cubes.len = before;
+		pfree(blob);
+		pfree(len);
+	}
+	cdir[nsu] = cubes.len;
+	h.cubedir_off = cubes.len > 0 ? ALIGN8(sizeof(SuperHeader) + (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (Size) h.nleaf * nsu * sizeof(SiftCSuperLeaf)) : 0;
+	h.cube_bytes = cubes.len;
+	MemoryContextSwitchTo(old);
+	appendBinaryStringInfo(out, (const char *) &h, sizeof(h));
+	appendBinaryStringInfo(out, (const char *) w->pmask, (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+	for (int c = 0; c < ncols; c++)
+	{
+		if (!super_leaf_ok(&w->schema->cols[c]))
+			continue;
+		for (uint32 k = 0; k < nsu; k++)
+		{
+			uint32		n = Min(fan, nsb - k * fan);
+			bool		sums = w->schema->cols[c].store == SIFT_COLS_INT;
+			SiftCSuperLeaf sl;
+
+			for (uint32 i = 0; i < n; i++)
+				unit_agg_of(&w->zones[(Size) (k * fan + i) * ncols + c], sums ? &w->lagg[(Size) (k * fan + i) * ncols + c] : NULL, &ua[i]);
+			if (n < 2 || !sift_cpagg_super_leaf(ua, n, sums, &sl))
+				memset(&sl, 0, sizeof(sl));
+			appendBinaryStringInfo(out, (const char *) &sl, sizeof(sl));
+		}
+	}
+	if (h.cubedir_off)
+	{
+		appendBinaryStringInfo(out, (const char *) cdir, (Size) (nsu + 1) * sizeof(uint64));
+		appendBinaryStringInfo(out, cubes.data, cubes.len);
+	}
+	MemoryContextDelete(cx);
+	return true;
+}
+
 static void
 write_pagg(SiftColSegWriter *w)
 {
@@ -473,7 +578,11 @@ write_pagg(SiftColSegWriter *w)
 	PaggHeader *h = palloc0(hsz);
 	SetsLeaf   *sets = NULL;
 	int			nsets = 0;
+	StringInfoData super;
+	bool		has_super;
 
+	initStringInfo(&super);
+	has_super = ver > 3 && build_super(w, &super);
 	h->magic = PAGG_MAGIC;
 	h->version = ver;
 	h->ncols = ncols;
@@ -498,6 +607,11 @@ write_pagg(SiftColSegWriter *w)
 	}
 	if (ver > 2 && w->anysets)
 		sets = layout_sets(w, h, at, &nsets);
+	if (has_super)
+	{
+		PAGG_SUPERDIR(h) = sets ? PAGG_SETS(h) + PAGG_SETS_BYTES(h) : at;
+		PAGG_SUPER_BYTES(h) = super.len;
+	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
 	{
@@ -542,6 +656,12 @@ write_pagg(SiftColSegWriter *w)
 	}
 	if (sets)
 		write_sets(w, sets, nsets);
+	if (has_super)
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, super.data, super.len);
+	}
+	pfree(super.data);
 	pfree(h);
 }
 

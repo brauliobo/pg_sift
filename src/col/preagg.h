@@ -103,6 +103,7 @@ typedef struct SiftCPaggSpec
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that get a small-set summary in every unit (option set_columns, column format minor 8; col/setsum.h) */
 	uint16		set_limit;				/* up to this many distinct keys a unit keeps exactly, a filter beyond */
+	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;
@@ -188,6 +189,43 @@ extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
  */
 extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 							StringInfo out, StringInfo eout);
+
+/*
+ * Superunits (column format minor 12, docs/COL-PREAGG.md section 10): the units of a segment in groups of `fan` consecutive ones, each group with the
+ * merged exact sums of every INT leaf and the merged cube of the dims all its units hold. A float measure is left out of the merged cube (its sum
+ * depends on the order of the additions, which the units fix).
+ */
+#define SIFT_SUPER_MIN_FAN		2
+#define SIFT_SUPER_MAX_FAN		256
+#define SIFT_SUPER_LEAF_OK		0x2			/* in SiftCSuperLeaf.flags, above SIFT_CAGG_SUMSQ_OVF: the leaf is summarised for this group */
+
+/* One INT or text leaf of one group of units, 64 bytes as stored (a text leaf has no sums, and its min and max are bounds of the codes) */
+typedef struct SiftCSuperLeaf
+{
+	int64		min;					/* key domain, of the units that hold a value; 0 when none does */
+	int64		max;
+	uint32		nnull;
+	uint32		nvals;
+	uint64		sum_lo;
+	uint64		sum_hi;
+	uint64		sumsq_lo;				/* 0 with SIFT_CAGG_SUMSQ_OVF */
+	uint64		sumsq_hi;
+	uint32		flags;					/* SIFT_CAGG_SUMSQ_OVF | SIFT_SUPER_LEAF_OK; 0: the leaf has no summary in this group */
+	uint32		zflags;					/* SIFT_COLZ_CONST: one value in all the group */
+} SiftCSuperLeaf;
+
+StaticAssertDecl(sizeof(SiftCSuperLeaf) == 64, "a superunit leaf record is 64 bytes");
+
+/*
+ * The summary of the leaf over n units (their SiftCAgg); false when a unit flags an overflow value or inline text, has no sums while sums is set (an INT leaf has
+ * them, a text leaf only counts), or the values exceed 2^32
+ */
+extern bool sift_cpagg_super_leaf(const SiftCAgg *u, uint32 n, bool sums, SiftCSuperLeaf *out);
+/*
+ * The cube of n units (their blobs, length 0: none) merged by group key, appended to out in the format of a unit's cube; nothing is appended when no dim
+ * is in every unit with the same measures. false when a blob does not decode. Allocates in the current memory context, which the caller resets.
+ */
+extern bool sift_cpagg_super_cube(const SiftColSchema *s, const uint8 *const *blob, const uint32 *len, uint32 n, StringInfo out);
 
 /* A decoded cube. Group arrays are in ascending key order, the NULL group (when has_null) last with no key */
 typedef struct SiftCHistDim

@@ -534,9 +534,21 @@ process_unit(AggExec *ex)
 	unit_begin(ex);
 	if (nrow > 0 && ex->pa_on && preagg_unit(ex))
 	{
-		ex->n_pre_units++;
+		/* a superunit stands for its units: they count as the units they are */
+		ex->n_units += Max(u->nsu, 1) - 1;
+		ex->n_super += u->nsu > 0;
+		ex->n_pre_units += Max(u->nsu, 1);
 		ex->row_base += nrow;
 		CHECK_FOR_INTERRUPTS();
+		return;
+	}
+	if (u->nsu > 0)
+	{
+		/* its summary cannot answer here (a predicate that cuts through the group, a dim or a measure it lacks): the units of the group come one by one */
+		sift_colsrc_split(ex->src, u);
+		ex->n_units--;
+		if (ex->n_super == 0 && ++ex->n_split >= 4)
+			sift_colsrc_super(ex->src, false);
 		return;
 	}
 	ex->n_rows += nrow;
