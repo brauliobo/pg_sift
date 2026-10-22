@@ -136,7 +136,10 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 		int			k = 1 + sw->nmore;
 
 		if (n + k > SIFT_MAX_SEGMENTS)
-			elog(ERROR, "sift: the directory has no room for %d segments", k);
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("the directory has no room for the %d segments this merge wrote", k),
+					 errhint("Merge the segments first (sift.merge(), or sift.col_merge() for a sift_col index), or raise sift.col_auto_merge_partition_kb so that a rewrite cuts fewer partitions.")));
 		memmove(&dir->segs[at + k], &dir->segs[at], (n - at) * sizeof(SiftSegEntry));
 		for (int j = 0; j < k; j++)
 		{
