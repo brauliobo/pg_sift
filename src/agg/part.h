@@ -6,7 +6,7 @@
 
 #include "agg/colsrc.h"
 
-/* the partitions of a plan, at most: planning keeps the layout and statistics of each (about 40 kB) and the scan opens each it does not prune (about 2 kB and 40 us of CPU), so this is far above what the cost of opening leaves the scan a win */
+/* the partitions of a plan, at most: planning keeps the layout and statistics of each for the backend (a few kB) and the scan opens each it does not prune (about 2 kB and 40 us of CPU), so this is far above what the cost of opening leaves the scan a win */
 #define SIFT_AGG_MAX_PARTS		32768
 
 /*
@@ -44,7 +44,32 @@ extern void sift_aggpart_set_offsets(SiftSrcSource *src, const uint32 *off);
 /* Planner: do two layouts read the same leaves of the same columns (a column of a partition has the attribute number the caller translated to)? */
 extern bool sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b);
 
-/* Planner: the statistics of the sources together (tot starts zeroed) */
-extern void sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s, int nleaves);
+/* Planner: what the statistics of the sources together (tot starts zeroed) take of the statistics of one: its scalars and the entries of its leaves, packed (a SiftSrcStats is 15 kB) */
+typedef struct SiftPartStats
+{
+	double		nrows,
+				nunits,
+				bytes,
+				allvisible_frac,
+				exact_frac,
+				rows_miss;
+	int			nleaves;
+	struct
+	{
+		double		elems_per_row,
+					dim_miss,
+					mm_miss,
+					roll_miss,
+					ndistinct,
+					min,
+					max;
+		bool		ovf,
+					nokinds,
+					jnull;
+	}			leaf[FLEXIBLE_ARRAY_MEMBER];
+} SiftPartStats;
+
+extern SiftPartStats *sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves);
+extern void sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s);
 
 #endif							/* SIFT_AGGPART_H */

@@ -130,6 +130,49 @@ SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s F
 SELECT * FROM same_exec('EXECUTE pb_k(13)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 13');
 DEALLOCATE pb_k;
 DROP TABLE pb;
+-- what the planner and the scan keep of a partition (its index's layout, statistics and visibility, its bound) is read again when the table changes
+-- between two executions of one prepared statement: rows written, a partition attached, one detached, an index rebuilt, a bound moved
+CREATE TABLE pf (k int NOT NULL, g int, v int) PARTITION BY RANGE (k);
+CREATE TABLE pf_a PARTITION OF pf FOR VALUES FROM (0) TO (10) WITH (autovacuum_enabled = false);
+CREATE TABLE pf_b PARTITION OF pf FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
+CREATE TABLE pf_c (k int NOT NULL, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO pf SELECT i % 20, i % 3, i FROM generate_series(1, 600) i;
+INSERT INTO pf_c SELECT 20 + i % 10, i % 3, i FROM generate_series(1, 300) i;
+CREATE INDEX pf_col ON pf USING sift_col (k, g, v);
+CREATE INDEX pf_c_col ON pf_c USING sift_col (k, g, v);
+VACUUM (FREEZE, ANALYZE) pf, pf_c;
+PREPARE pf_q (int, int) AS SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= $1 AND k < $2 GROUP BY g;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+-- rows written: the visibility and the write buffers move
+UPDATE pf SET v = v + 1 WHERE k = 12;
+INSERT INTO pf SELECT 3 + i % 9, i % 3, i FROM generate_series(1, 50) i;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+VACUUM pf;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+-- a partition attached, then detached
+ALTER TABLE pf ATTACH PARTITION pf_c FOR VALUES FROM (20) TO (30);
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+ALTER TABLE pf DETACH PARTITION pf_c;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+ALTER TABLE pf ATTACH PARTITION pf_c FOR VALUES FROM (20) TO (30);
+-- the index of a partition rebuilt (a new file, the directory's versions start over), and its table emptied and filled again
+REINDEX INDEX pf_c_col;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+TRUNCATE pf_c;
+INSERT INTO pf_c SELECT 20 + i % 5, i % 3, i FROM generate_series(1, 40) i;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+-- a bound moved: the rows of pf_b below 15 now belong to the partition before it
+ALTER TABLE pf DETACH PARTITION pf_a;
+ALTER TABLE pf DETACH PARTITION pf_b;
+INSERT INTO pf_a SELECT * FROM pf_b WHERE k < 15;
+DELETE FROM pf_b WHERE k < 15;
+ALTER TABLE pf ATTACH PARTITION pf_a FOR VALUES FROM (0) TO (15);
+ALTER TABLE pf ATTACH PARTITION pf_b FOR VALUES FROM (15) TO (20);
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pf_q(12, 14)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 12 AND k < 14 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pf_q(16, 18)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 16 AND k < 18 GROUP BY g');
+DEALLOCATE pf_q;
+DROP TABLE pf, pf_c;
 SELECT * FROM same_exec('EXECUTE pt_param(3)', 'SELECT g, count(*) AS n FROM pt WHERE g = 3 GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_hash(7)', 'SELECT g, count(*) AS n FROM pt WHERE id = 7 GROUP BY g');
 RESET plan_cache_mode;
