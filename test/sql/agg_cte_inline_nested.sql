@@ -61,3 +61,6 @@ SELECT 'default' AS cte, * FROM plan_nodes(series_query(''));
 SELECT 'not materialized' AS cte, * FROM plan_nodes(series_query('NOT MATERIALIZED'));
 SELECT 'materialized' AS cte, * FROM plan_nodes(series_query('MATERIALIZED'));
 SELECT differences(series_query('')) AS default_differences, differences(series_query('NOT MATERIALIZED')) AS inline_differences;
+DROP TABLE dims, events;
+DROP FUNCTION differences(text), plan_nodes(text), series_query(text);
+DROP EXTENSION pg_sift;

@@ -78,3 +78,6 @@ SELECT differences(series_query('')) AS default_differences, differences(series_
                    0 |                  0
 (1 row)
 
+DROP TABLE dims, events;
+DROP FUNCTION differences(text), plan_nodes(text), series_query(text);
+DROP EXTENSION pg_sift;

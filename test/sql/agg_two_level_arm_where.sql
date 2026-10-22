@@ -139,3 +139,6 @@ BEGIN
 		NULL;
 	END LOOP;
 END $$;
+DROP TABLE events, lookup;
+DROP FUNCTION pushed(text), report(text,text,text), same(text,boolean,boolean), spined(text), unlike();
+DROP EXTENSION pg_sift;

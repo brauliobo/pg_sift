@@ -146,3 +146,4 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 DROP TABLE ds CASCADE;
 DROP FUNCTION ds_cmp(regclass, text, text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP TABLE ds_q;

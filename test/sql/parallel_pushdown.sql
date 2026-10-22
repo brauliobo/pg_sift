@@ -128,3 +128,5 @@ FROM unnest(ARRAY[1, 7, 50, 250, 500]) t, unnest(ARRAY[1, 10, 1000]) k GROUP BY 
 
 DROP TABLE pp;
 DROP EXTENSION pg_sift;
+DROP TABLE pp_modes;
+DROP FUNCTION pp_check(text,text), pp_count(text,text,text,text), pp_ids(text,text,text,text), pp_kind(text), pp_kinds(text,text), pp_plan(text), pp_set(text,text), pp_shape_ok(text), pp_top(text,text,integer,text,text);

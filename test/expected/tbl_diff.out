@@ -300,3 +300,4 @@ SELECT compare('truncate');
 
 DROP TABLE h, s;
 DROP EXTENSION pg_sift;
+DROP FUNCTION compare(text), twice(text);

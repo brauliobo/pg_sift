@@ -83,3 +83,4 @@ SELECT * FROM check_query($q$
 $q$);
 DROP FUNCTION check_query(text);
 DROP TABLE facts, dates;
+DROP EXTENSION pg_sift;

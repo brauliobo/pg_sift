@@ -64,3 +64,4 @@ CREATE INDEX CONCURRENTLY docs_bm25_c ON docs USING sift (body);
 SELECT agree('express');
 DROP TABLE docs;
 DROP EXTENSION pg_sift;
+DROP FUNCTION agree(text), idx_ids(text), seq_ids(text);
