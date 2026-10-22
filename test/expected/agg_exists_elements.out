@@ -18,7 +18,7 @@ SELECT i, i % 52, '2026-01-01'::date + (i % 9),
    WHEN i % 3 = 0 THEN '[{"category":"catg_l","val":"","dir_a":"up","score":8}]'::jsonb
    ELSE '[{"category":"catg_l","val":"","dir_a":"up","score":9},{"category":"catg_a","val":"x","dir_a":"down","score":3},{"category":"zzz","val":"","dir_a":"flat","score":null},{"category":"nul","val":null,"dir_a":"flat","score":1}]'::jsonb END)
    || CASE WHEN i % 5 = 0 THEN '{"flag_a":false}'::jsonb WHEN i % 11 = 0 THEN '{"flag_a":null}'::jsonb WHEN i % 13 = 0 THEN '{"flag_a":true}'::jsonb ELSE '{}'::jsonb END END,
- CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('mhead', i % 11, 'catg_j_catg_i', (i * 3) % 11) END,
+ CASE WHEN i % 17 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('m_total', i % 11, 'catg_j_catg_i', (i * 3) % 11) END,
  repeat('payload', 30)
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, document, metrics, jsonb_exists(document, 'flag_a'))

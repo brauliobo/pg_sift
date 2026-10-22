@@ -3,7 +3,7 @@
 -- expect: agg
 -- key: 1
 -- scenario: yes
-SELECT o.attributes['channel'] #>> '{}' AS channel, o.attributes ->> 'channel' AS plain, count(*) AS n, avg((o.metrics['mhead'])::float8) AS mhead
+SELECT o.attributes['channel'] #>> '{}' AS channel, o.attributes ->> 'channel' AS plain, count(*) AS n, avg((o.metrics['m_total'])::float8) AS m_total
 FROM orders o
-WHERE (o.metrics['mhead'])::float8 >= 2 AND o.deleted_at IS NULL
+WHERE (o.metrics['m_total'])::float8 >= 2 AND o.deleted_at IS NULL
 GROUP BY 1, 2 ORDER BY 1 NULLS FIRST

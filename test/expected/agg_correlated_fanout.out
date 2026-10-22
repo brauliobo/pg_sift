@@ -6,7 +6,7 @@ INSERT INTO dim_a SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN ARRAY[]::tex
  CASE WHEN i % 4 = 0 THEN 'north' ELSE 'south' END FROM generate_series(0, 49) i;
 CREATE TABLE facts (id int, dim_a_id int, amount float8, metrics jsonb, code text, payload text);
 INSERT INTO facts
-SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('mhead', i % 10), CASE WHEN i % 101 = 0 THEN 'none' ELSE (i % 10)::text END, repeat('payload', 50)
+SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('m_total', i % 10), CASE WHEN i % 101 = 0 THEN 'none' ELSE (i % 10)::text END, repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
@@ -128,7 +128,7 @@ $q$);
 -- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each). The outer-joined member keeps the normal plan before PostgreSQL 18 (columns: the plan is the pushed one from 18 on).
 SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_query($q$
  SELECT c.category, count(*) AS n
- FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+ FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
 $q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;

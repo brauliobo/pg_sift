@@ -18,7 +18,7 @@ CREATE TABLE orders (
     shipping_method text,
     payment_method text,
     attributes jsonb DEFAULT '{}'::jsonb,   -- object: locale, channel, device, normalized (true when the items carry canonical names)
-    metrics jsonb DEFAULT '{}'::jsonb,      -- object with dynamic keys and float values: {"overall": 4.5, "m_speed": 3.0, ...}
+    metrics jsonb DEFAULT '{}'::jsonb,      -- object with dynamic keys and float values: {"m_total": 4.5, "m_speed": 3.0, ...}
     items jsonb DEFAULT '[]'::jsonb,        -- array of objects: [{category, sku, kind, qty, price, discount}]
     notes jsonb DEFAULT '[]'::jsonb,        -- array of objects: [{type, author_kind, text}]
     created_at timestamp without time zone DEFAULT now(),

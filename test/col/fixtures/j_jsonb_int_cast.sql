@@ -3,7 +3,7 @@
 -- expect: agg
 -- key: 1
 -- scenario: yes
-SELECT (metrics -> 'mhead')::int AS score, count(*) AS orders, count(*) FILTER (WHERE (metrics -> 'quality')::bigint >= 4) AS good
+SELECT (metrics -> 'm_total')::int AS score, count(*) AS orders, count(*) FILTER (WHERE (metrics -> 'quality')::bigint >= 4) AS good
 FROM orders
-WHERE tenant_id < 120 AND deleted_at IS NULL AND CAST(jsonb_extract_path(metrics, 'mhead') AS integer) >= 3
+WHERE tenant_id < 120 AND deleted_at IS NULL AND CAST(jsonb_extract_path(metrics, 'm_total') AS integer) >= 3
 GROUP BY 1 ORDER BY 1

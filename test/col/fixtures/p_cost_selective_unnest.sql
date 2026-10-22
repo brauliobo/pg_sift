@@ -3,7 +3,7 @@
 -- expect: plain
 -- key: -
 SELECT CASE WHEN o.attributes->>'normalized' IS NOT NULL THEN i.category ELSE nullif(cm.derived_category, '') END AS category,
-       count(DISTINCT o.id) AS orders, sum(i.qty * (i.price - i.discount)) AS revenue, avg((o.metrics->>'mhead')::float8) AS mhead
+       count(DISTINCT o.id) AS orders, sum(i.qty * (i.price - i.discount)) AS revenue, avg((o.metrics->>'m_total')::float8) AS m_total
 FROM orders o
 CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8, discount float8)
 LEFT JOIN categories_map cm ON cm.category = i.category

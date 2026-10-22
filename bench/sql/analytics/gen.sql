@@ -7,7 +7,7 @@
 -- Prices are multiples of 0.25 and metrics multiples of 0.5, quantities are integers: every sum and average of them is exact in floating
 -- point, so no plan, order of summation or engine can move an order across the thresholds that the queries count by.
 -- Skews: store ~ u^2 over `stores`, source ~ u^2 over 30, 12 languages (u^2), 60 countries (u^2), dates 2022-01-01 .. 2025-10-31 (denser
--- towards the end), 0..8 items per order (mean 3.2), 1..6 metrics (always "overall"), 0..3 notes, 2% soft-deleted, 70% of the orders
+-- towards the end), 0..8 items per order (mean 3.2), 1..6 metrics (always "m_total"), 0..3 notes, 2% soft-deleted, 70% of the orders
 -- with normalized items (attributes.normalized = true; the other 30% carry lower case categories and upper case kinds that
 -- categories_map and kinds_map map).
 -- order_by is the physical order of the heap: empty = by id (insertion order), "ORDER BY p.tenant_id, p.placed_at, g.id" = clustered.
@@ -21,7 +21,7 @@ CREATE FUNCTION bench_u(bigint, int) RETURNS float8 LANGUAGE sql IMMUTABLE PARAL
 
 CREATE TEMP TABLE gen_k AS
 SELECT ARRAY['web','ios','android','pos','phone'] || ARRAY(SELECT 'marketplace_' || lpad(i::text, 2, '0') FROM generate_series(1, 25) i) AS sources,
-       ARRAY['mhead','m_speed','packaging','support','value','quality','size_fit','accuracy','returns_ease','checkout','communication','freshness'] AS mkeys,
+       ARRAY['m_total','m_speed','packaging','support','value','quality','size_fit','accuracy','returns_ease','checkout','communication','freshness'] AS mkeys,
        ARRAY['Apparel','Shoes','Electronics','Home','Beauty','Toys','Sports','Books','Grocery','Garden','Pet','Office','Auto','Jewelry','Baby'] AS cats,
        ARRAY['standard','express','pickup','digital','subscription','preorder','bundle','gift'] AS kinds,
        ARRAY['en','de','fr','es','it','pt','nl','ru','ja','zh','sv','pl'] AS langs,
@@ -42,7 +42,7 @@ SELECT g.id, p.tenant_id, p.customer_id, 'R' || lpad(g.id::text, 9, '0'), p.plac
        it.total, it.discount, k.shipping[1 + (hashint8extended(g.id, 14) & 3)::int], k.payment[1 + (hashint8extended(g.id, 15) & 3)::int],
        jsonb_build_object('locale', p.lang || '-' || p.cc, 'channel', p.channel, 'device', k.devices[1 + (hashint8extended(g.id, 16) & 3)::int])
          || CASE WHEN p.normalized THEN '{"normalized": true}'::jsonb ELSE '{}'::jsonb END,
-       -- metrics: nm keys of the 12, "overall" first, one number each
+       -- metrics: nm keys of the 12, "m_total" first, one number each
        (SELECT coalesce(jsonb_object_agg(k.mkeys[CASE WHEN i = 0 THEN 1 ELSE 2 + (p.ms + i) % 11 END],
                                          (round(2 + 8 * power(bench_u(g.id, 100 + i), 0.5)) / 2)::numeric(3,1)), '{}'::jsonb)
           FROM generate_series(0, p.nm - 1) i),

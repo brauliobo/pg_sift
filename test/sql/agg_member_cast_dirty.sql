@@ -37,7 +37,7 @@ CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
 CREATE TABLE m_t (id int PRIMARY KEY, src int, day int, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t
-SELECT i, 1 + i % 2, i / 10, jsonb_build_object('mhead', i % 11, 'catg_i', (i % 7) + 0.5, 'catg_k', i % 5)
+SELECT i, 1 + i % 2, i / 10, jsonb_build_object('m_total', i % 11, 'catg_i', (i % 7) + 0.5, 'catg_k', i % 5)
 FROM generate_series(1, 6000) i;
 UPDATE m_t SET src = 7, metrics = jsonb_set(metrics, '{catg_i}', '"9"') WHERE id = 100;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_i}', '"9"') WHERE id = 6000;
@@ -72,20 +72,20 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'e.key <> $$catg_i$$ AND i
 SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row;
 SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 GROUP BY e.key') AS join_drops_the_row_pushed;
 -- a cast that only a FILTER or a CASE evaluates is evaluated for the members it keeps: the dirty one raises nothing here, so the plan stays
-SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$mhead$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
-SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$mhead$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
-SELECT same(mq('sum(CASE WHEN e.key = $$mhead$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
+SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
+SELECT same(mq('sum(CASE WHEN e.key = $$m_total$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
 -- the same cast also in an unconditional aggregate: the dirty member raises
-SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$mhead$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$), count(CAST(e.value AS float8))', 'id = 5990', 't.src')) AS filter_and_plain;
 -- a conjunct that reads the leaf evaluates the cast before the aggregates: the plan stays
 SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct;
 SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;
 
 -- rows in the write buffer, updated and deleted ones, and after promotion
-INSERT INTO m_t VALUES (7001, 1, 10, '{"mhead": 3, "catg_i": 4}'), (7002, 1, 11, '{"mhead": "x"}');
+INSERT INTO m_t VALUES (7001, 1, 10, '{"m_total": 3, "catg_i": 4}'), (7002, 1, 11, '{"m_total": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_catg_a;
-UPDATE m_t SET metrics = '{"mhead": 1}' WHERE id = 7002;
+UPDATE m_t SET metrics = '{"m_total": 1}' WHERE id = 7002;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
 SELECT sift.col_promote('m_col') >= 0 AS promoted;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_promotion;

@@ -6,8 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, day date, metrics jsonb);
 INSERT INTO facts
 SELECT i, 1 + i % 40, date '2026-01-01' + i % 30,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN CASE WHEN current_setting('server_version_num')::int >= 180000 THEN '{"mhead": null}'::jsonb ELSE '{}' END WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
-                  WHEN 4 THEN NULL WHEN 5 THEN '{"mhead": 2.5}'::jsonb WHEN 6 THEN '{"mhead": -2.5}'::jsonb ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN CASE WHEN current_setting('server_version_num')::int >= 180000 THEN '{"m_total": null}'::jsonb ELSE '{}' END WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"m_total": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL WHEN 5 THEN '{"m_total": 2.5}'::jsonb WHEN 6 THEN '{"m_total": -2.5}'::jsonb ELSE jsonb_build_object('m_total', i % 10, 'other', i % 3) END
 FROM generate_series(1, 20000) i;
 CREATE TABLE dim_a (id int, kind text);
 INSERT INTO dim_a SELECT i, CASE WHEN i % 3 = 0 THEN 'a' ELSE 'b' END FROM generate_series(1, 40) i;
@@ -38,32 +38,32 @@ BEGIN
                       outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
 -- a filter: 6.5 and 2.5 round up, -2.5 down, the JSON null and the missing keys are no row
-SELECT * FROM check_query('filter 7', 'SELECT count(*) FROM facts WHERE CAST(metrics -> ''mhead'' AS integer) = 7');
-SELECT * FROM check_query('filter 3', 'SELECT count(*) FROM facts WHERE CAST(jsonb_extract_path(metrics, ''mhead'') AS integer) = 3');
-SELECT * FROM check_query('filter -3', 'SELECT count(*) FROM facts WHERE (metrics -> ''mhead'')::int = -3');
-SELECT * FROM check_query('bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''mhead'')::bigint >= 5');
+SELECT * FROM check_query('filter 7', 'SELECT count(*) FROM facts WHERE CAST(metrics -> ''m_total'' AS integer) = 7');
+SELECT * FROM check_query('filter 3', 'SELECT count(*) FROM facts WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS integer) = 3');
+SELECT * FROM check_query('filter -3', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::int = -3');
+SELECT * FROM check_query('bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::bigint >= 5');
 -- with a dimension that filters and a range of days: the cast is tested for the tuples the join keeps
 SELECT * FROM check_query('join', $q$
  SELECT e.kind, count(*) AS n, count(DISTINCT f.id) AS ids
  FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
- WHERE f.day >= '2026-01-05' AND CAST(f.metrics -> 'mhead' AS integer) = 3
+ WHERE f.day >= '2026-01-05' AND CAST(f.metrics -> 'm_total' AS integer) = 3
  GROUP BY 1
 $q$);
 -- a group key, an aggregate argument and an aggregate FILTER
-SELECT * FROM check_query('group key', 'SELECT (metrics -> ''mhead'')::int AS score, count(*) AS n FROM facts GROUP BY 1');
-SELECT * FROM check_query('aggregate', 'SELECT dim_a_id % 4 AS g, sum((metrics -> ''mhead'')::bigint) AS total FROM facts GROUP BY 1');
-SELECT * FROM check_query('filter clause', 'SELECT count(*) FILTER (WHERE (metrics -> ''mhead'')::int = 3) AS threes, count(*) AS n FROM facts');
+SELECT * FROM check_query('group key', 'SELECT (metrics -> ''m_total'')::int AS score, count(*) AS n FROM facts GROUP BY 1');
+SELECT * FROM check_query('aggregate', 'SELECT dim_a_id % 4 AS g, sum((metrics -> ''m_total'')::bigint) AS total FROM facts GROUP BY 1');
+SELECT * FROM check_query('filter clause', 'SELECT count(*) FILTER (WHERE (metrics -> ''m_total'')::int = 3) AS threes, count(*) AS n FROM facts');
 -- an out of range member raises PostgreSQL's error when a row reaches the cast, and no error when another condition keeps the row away
-INSERT INTO facts VALUES (20001, 1, '2026-02-01', '{"mhead": 3000000000}'), (20002, 2, '2026-02-02', '{"mhead": 1}');
+INSERT INTO facts VALUES (20001, 1, '2026-02-01', '{"m_total": 3000000000}'), (20002, 2, '2026-02-02', '{"m_total": 1}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('out of range', 'SELECT count(*) FROM facts WHERE (metrics -> ''mhead'')::int = 1');
-SELECT * FROM check_query('out of range, excluded', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''mhead'')::int = 1');
-SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''mhead'')::bigint = 3000000000');
+SELECT * FROM check_query('out of range', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::int = 1');
+SELECT * FROM check_query('out of range, excluded', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1');
+SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::bigint = 3000000000');
 -- a member that is no number is a value the leaf cannot hold: the normal plan raises PostgreSQL's error
-INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"mhead": "high"}');
+INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"m_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''mhead'')::int = 1', false);
-SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''mhead'')::int = 1', false);
+SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1', false);
+SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1', false);
 DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
 DROP TABLE facts, dim_a;
 DROP EXTENSION pg_sift;

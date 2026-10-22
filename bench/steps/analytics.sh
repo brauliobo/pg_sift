@@ -147,7 +147,7 @@ ensure_ch() {
   [[ $(cat "$CH_DIR/stamp" 2>/dev/null) != "$(stamp)" ]] || { log "clickhouse tables are up to date"; return 0; }
   log "loading ClickHouse"
   ch_client --multiquery <"$SQLD/ch.sql"
-  ch_copy items_tuned "SELECT tenant_id, customer_id, source, placed_at, order_id, idx, country_code, lang, channel, normalized::int, category, sku, kind, qty, price, discount, mhead, (deleted_at IS NOT NULL)::int FROM pg_items ORDER BY tenant_id, placed_at, order_id, idx"
+  ch_copy items_tuned "SELECT tenant_id, customer_id, source, placed_at, order_id, idx, country_code, lang, channel, normalized::int, category, sku, kind, qty, price, discount, m_total, (deleted_at IS NOT NULL)::int FROM pg_items ORDER BY tenant_id, placed_at, order_id, idx"
   ch_copy metrics_tuned "SELECT tenant_id, customer_id, source, placed_at, order_id, country_code, lang, metric_key, value, (deleted_at IS NOT NULL)::int FROM pg_metrics ORDER BY tenant_id, placed_at, order_id"
   ch_copy metrics_map "SELECT source, metric_key, coalesce(derived_metric, ''), coalesce(mapped_aspect, '') FROM metrics_map"
   ch_copy categories_map "SELECT category, derived_category FROM categories_map"

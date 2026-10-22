@@ -4,8 +4,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"mhead": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"mhead": 6.5, "other": 9}'::jsonb
-                  WHEN 4 THEN NULL ELSE jsonb_build_object('mhead', i % 10, 'other', i % 3) END,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"m_total": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"m_total": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL ELSE jsonb_build_object('m_total', i % 10, 'other', i % 3) END,
        CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"type_a"}]'::jsonb ELSE '[{"type":"type_c"},{"type":"type_a"}]'::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, tags_a) WITH (paths = 'metrics.* float8, tags_a[]{type text}');
@@ -33,7 +33,7 @@ BEGIN
 END $$;
 SELECT * FROM check_query('left join, on', $q$
  SELECT count(*) AS n, count(r.key) AS dim_b, count(DISTINCT f.id) AS ids
- FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+ FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
 $q$);
 SELECT * FROM check_query('left join, true', $q$
  SELECT r.key, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON true GROUP BY 1
@@ -43,7 +43,7 @@ SELECT * FROM check_query('left join, array', $q$
  FROM facts f LEFT JOIN LATERAL jsonb_array_elements(f.tags_a) e ON e->>'type' = 'type_a'
 $q$);
 SELECT * FROM check_query('inner join, on', $q$
- SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'mhead'
+ SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
 $q$);
 DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
 DROP TABLE facts;

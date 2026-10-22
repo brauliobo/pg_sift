@@ -3,7 +3,7 @@
 -- expect: any
 -- key: -
 -- scenario: yes
-SELECT attributes->>'channel' AS channel, attributes->>'normalized' AS normalized, count(*) AS n, avg((metrics->>'mhead')::float8) AS mhead
+SELECT attributes->>'channel' AS channel, attributes->>'normalized' AS normalized, count(*) AS n, avg((metrics->>'m_total')::float8) AS m_total
 FROM orders
 WHERE deleted_at IS NULL
 GROUP BY 1, 2

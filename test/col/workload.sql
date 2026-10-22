@@ -23,10 +23,10 @@ CREATE OR REPLACE FUNCTION coldiff.wl_value(id bigint, draw int, seed int) RETUR
 				WHEN x < 0.10 THEN to_jsonb(d < 5) WHEN x < 0.20 THEN to_jsonb(d::int) ELSE to_jsonb(d::float8) END
 	FROM (SELECT coldiff.u(id, draw, seed) AS x, round((coldiff.u(id, draw + 500, seed) * 10)::numeric, 1) AS d) v $$;
 
--- the metrics object: the keys overall (95%), catg_j, catg_b, catg_e, value and a key no mapping knows (10%)
+-- the metrics object: the keys m_total (95%), catg_j, catg_b, catg_e, value and a key no mapping knows (10%)
 CREATE OR REPLACE FUNCTION coldiff.wl_metrics(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_object_agg(k, coldiff.wl_value(id, 100 + n::int, seed)) FILTER (WHERE coldiff.u(id, 90 + n::int, seed) < p), '{}')
-	FROM unnest(ARRAY['mhead', 'catg_j', 'catg_b', 'catg_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
+	FROM unnest(ARRAY['m_total', 'catg_j', 'catg_b', 'catg_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
 
 CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'type_a', 'type_b'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')

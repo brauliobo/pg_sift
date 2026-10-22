@@ -3,8 +3,8 @@
 -- expect: agg
 -- key: -
 -- scenario: yes
-SELECT o.source, count(*) AS n, count(*) FILTER (WHERE (o.metrics->>'quality')::float8 >= 3) AS good, avg((o.metrics->>'mhead')::float8) AS mhead,
+SELECT o.source, count(*) AS n, count(*) FILTER (WHERE (o.metrics->>'quality')::float8 >= 3) AS good, avg((o.metrics->>'m_total')::float8) AS m_total,
        max((o.metrics->>'value')::float8) AS best
 FROM orders o
-WHERE o.tenant_id < 120 AND o.deleted_at IS NULL AND (o.metrics->>'mhead')::float8 IS NOT NULL
+WHERE o.tenant_id < 120 AND o.deleted_at IS NULL AND (o.metrics->>'m_total')::float8 IS NOT NULL
 GROUP BY 1 ORDER BY 1

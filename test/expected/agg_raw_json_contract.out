@@ -3,10 +3,10 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, document jsonb, metrics jsonb);
 INSERT INTO events VALUES
- (1, '{"entries":[{"value":6.5}]}', '{"mhead":7}'),
- (2, '{"entries":[{"value":"1e1"}]}', '{"mhead":"7"}'),
- (3, '{"entries":[{"value":"+6.5"}]}', '{"mhead":true}'),
- (4, '{"entries":[{"value":" 6.5 "}]}', '{"mhead":null}'),
+ (1, '{"entries":[{"value":6.5}]}', '{"m_total":7}'),
+ (2, '{"entries":[{"value":"1e1"}]}', '{"m_total":"7"}'),
+ (3, '{"entries":[{"value":"+6.5"}]}', '{"m_total":true}'),
+ (4, '{"entries":[{"value":" 6.5 "}]}', '{"m_total":null}'),
  (5, '{"entries":[{"value":".5"}]}', '{}'),
  (6, '{"entries":[{"value":"5."}]}', '{}'),
  (7, '{"entries":[{"value":"NaN"}]}', '{}'),
