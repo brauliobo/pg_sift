@@ -340,6 +340,9 @@ recheck_init(AggExec *ex)
 			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i], NULL, InvalidOid);
 			ex->recheck = true;
 			ex->recheck_late |= s->recheck[i] == SRK_CAST;
+			if (s->recheck[i] == SRK_RECORDSET)
+				for (int k = 0; k < s->npred; k++)
+					ex->recheck_after_late |= s->pred[k]->late && s->pred[k]->level == 0;
 		}
 	/* the members of one key read through a cast: the value column of their object is read again for the member of the key only */
 	for (int j = 0; j < s->nvleaf; j++)
