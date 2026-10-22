@@ -155,6 +155,15 @@ jobs:
         if: ${{ matrix.pg == 17 }}
         run: echo "SIFT_SUDO=sudo env PATH=$PATH" >> "$GITHUB_ENV"
 
+      # the older releases the compatibility tests build (tags do not move; about 70 CPU seconds each); PostgreSQL 17 cannot hold two builds, and the
+      # git build of the server changes with every run
+      - name: Cache the older releases
+        if: ${{ matrix.pg != 17 && !matrix.git }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/old-lib/*/root
+          key: old-lib-${{ runner.os }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/old_lib_refusal.sh') }}
+
       - name: Build
         run: |
           pg_config --version
