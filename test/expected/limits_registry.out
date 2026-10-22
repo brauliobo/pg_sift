@@ -8,7 +8,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  arms                | SIFT_AGG_MAX_ARMS               |          4 | t         | f
  boost               | SIFT_MAX_BOOST                  |      10000 | t         | f
  col_leaves          | SIFT_COL_MAX_COLS               |        128 | t         | t
- combo_entries       | -                               |   16777216 | t         | f
+ combo_entries       | COMBO_MAX_ENTRIES               |   16777216 | t         | t
  combo_leaves        | SIFT_AGG_MAX_CLEAVES            |          8 | t         | f
  combos              | SIFT_AGG_MAX_COMBOS             |         16 | t         | f
  cube_dims           | SIFT_PAGG_MAX_DIMS              |         16 | t         | f

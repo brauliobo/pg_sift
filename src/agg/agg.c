@@ -1174,6 +1174,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
+	if (c->n_combo_trim > 0)
+		ExplainPropertyInteger("Combo Caches Restarted", NULL, c->n_combo_trim, es);
 	ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc->rows_vetted, es);
 	ExplainPropertyInteger("Heap Pages", NULL, cc->heap_pages, es);
 	if (c->recheck)

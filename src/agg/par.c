@@ -272,6 +272,7 @@ typedef struct WorkerDone
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_dense;
+	int64		n_combo_trim;
 	int64		n_matches;
 	int64		n_skipped;
 	SiftSrcCounters cc;
@@ -407,6 +408,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
 	done.n_dense = ex->n_dense;
+	done.n_combo_trim = ex->n_combo_trim;
 	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
@@ -533,6 +535,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		ex->n_dense += d->n_dense;
+		ex->n_combo_trim += d->n_combo_trim;
 		if (ex->topn)
 			sift_topn_add_skipped(ex->topn, d->n_skipped);
 		par->matches += d->n_matches;

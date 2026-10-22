@@ -254,6 +254,7 @@ typedef struct AggExec
 	int64		n_rows;			/* of the others */
 	int64		n_tuples;
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
+	int64		n_combo_trim;	/* times the combo caches started again at the entry limit (combo_trim) */
 	int64		n_groups;
 	const SiftAggBackend *be;	/* the backend that answers units of the scan besides the kernels below, and its state (agg/back.h) */
 	void	   *be_state;
