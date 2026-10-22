@@ -681,7 +681,8 @@ preagg_rollup(AggExec *ex)
 			   *gid;
 	uint64	   *keep,
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
-	int			nkept = 0;
+	int			nkept = 0,
+				qlevel = s->group >= 0;
 
 	ex->pa_miss = true;
 	if (!rollup_cheaper(ex))
@@ -726,11 +727,12 @@ preagg_rollup(AggExec *ex)
 	if (s->npred > 0 || has_filter(s))
 		rollup_bind(ex, &r);
 	keep = NULL;
+	/* the conjuncts of a scan of the elements that are the rows' are zone comparisons the unit lies inside (preagg_zones); those of the rows' rollup all test dims */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 1)
-			keep = pred_pass(ex, s->pred[i], 1, r.ntuples, keep);
+		if (s->pred[i]->level == qlevel)
+			keep = pred_pass(ex, s->pred[i], qlevel, r.ntuples, keep);
 	for (int ai = 0; ai < s->naggs; ai++)
-		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, 1, r.ntuples, NULL) : NULL;
+		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, qlevel, r.ntuples, NULL) : NULL;
 	for (int d = 0; d < ex->pa.ndims; d++)
 		ex->uvec_ok[ex->pa.rdim[d]] = false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
@@ -805,10 +807,18 @@ preagg_arith(AggExec *ex)
 bool
 preagg_unit(AggExec *ex)
 {
-	if (ex->pa.list >= 0 && rollup_skip(ex))
+	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
 		return false;
 	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_arith(ex))
 		return false;
+	/* the rollup of the rows tests the comparisons on its tuples, so the unit need not lie inside them; a unit without it waits for a merge, nothing is asked for */
+	if (ex->pa.rows)
+	{
+		if (preagg_rollup(ex))
+			return true;
+		ex->n_rollup_miss += ex->pa_miss;
+		return false;
+	}
 	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
 	{
 		bool		ok;
@@ -846,7 +856,7 @@ preagg_init(AggExec *ex)
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
-	if (ex->pa_on && ex->pa.list >= 0)
+	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);
 		sift_aggspec_unit_costs(ex->spec, ex->lay, &ex->pa_elem_cost, &ex->pa_tuple_cost);
@@ -859,7 +869,8 @@ preagg_init(AggExec *ex)
 
 		if (!st->ready)
 			eval_operand(ex, p, st);
-		if (ex->pa_on && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
+		/* the tuples of the rollup of the rows test the comparison themselves, whatever interval it gives the zones */
+		if (ex->pa_on && !ex->pa.rows && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
 		{
 			/* the groups of the dim's histogram test an IN list with gaps, which gives the zones no interval: the sums cannot answer */
 			if (!st->cnull && p->leaf == ex->pa.hdim)

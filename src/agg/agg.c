@@ -939,6 +939,19 @@ agg_rescan(CustomScanState *node)
 		sift_topn_rewind(ex->topn);
 }
 
+/* the name EXPLAIN gives a leaf of a rollup: the field of a list's element, or the column of the table that a leaf of the rows' rollup reads */
+static const char *
+pa_leaf_name(AggExec *ex, int leaf)
+{
+	const SiftSrcLeaf *lf = &ex->lay->leaf[leaf];
+	AttrNumber	att;
+
+	if (!ex->pa.rows || ex->index == NULL || lf->attno < 1 || lf->attno > ex->index->rd_index->indnatts)
+		return lf->name;
+	att = ex->index->rd_index->indkey.values[lf->attno - 1];
+	return att > 0 ? get_attname(ex->lay->heapoid, att, false) : lf->name;
+}
+
 /* the dims and measures of the rollup that answers the scan */
 static void
 explain_pa_leaves(AggExec *ex, ExplainState *es)
@@ -949,9 +962,9 @@ explain_pa_leaves(AggExec *ex, ExplainState *es)
 	initStringInfo(&d);
 	initStringInfo(&m);
 	for (int i = 0; i < ex->pa.ndims; i++)
-		appendStringInfo(&d, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rdim[i]].name);
+		appendStringInfo(&d, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rdim[i]));
 	for (int i = 0; i < ex->pa.nmeas; i++)
-		appendStringInfo(&m, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rmeas[i]].name);
+		appendStringInfo(&m, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rmeas[i]));
 	if (d.len > 0)
 		ExplainPropertyText("Pre-aggregate Dims", d.data, es);
 	if (m.len > 0)
@@ -1110,8 +1123,10 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	if (!c->pa_on)
 		return;
 	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
-	if (ex->pa.list < 0)
+	if (!PA_ROLLUP(ex->pa))
 		return;
+	if (ex->pa.rows)
+		ExplainPropertyText("Pre-aggregate Rollup", "rows", es);
 	explain_pa_leaves(ex, es);
 	ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
 	if (c->n_rollup_cost > 0)

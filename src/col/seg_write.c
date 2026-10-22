@@ -35,7 +35,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
-	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max */
+	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 8 a unit the rollup of its rows */
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -136,6 +136,17 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 		w->format = SIFT_COL_FORMAT_MINMAX;
 	else if (w->format == SIFT_COL_FORMAT_MONTH)
 		w->format = sift_col_write_minor(w->schema, w->setting, true);	/* the month dims came with the default spec this one replaces */
+	/* the rollup of the rows is minor 9: under a lower setting the segment is written as before, without it (the entry is -1, the first of the sorted rollups) */
+	if (w->pagg.nrollups > 0 && w->pagg.rollup[0].list < 0)
+	{
+		if (w->setting >= SIFT_COL_FORMAT_ROWS)
+			w->format = SIFT_COL_FORMAT_ROWS;
+		else
+		{
+			w->pagg.nrollups--;
+			memmove(w->pagg.rollup, w->pagg.rollup + 1, w->pagg.nrollups * sizeof(SiftCPaggRollup));
+		}
+	}
 }
 
 /*
@@ -234,9 +245,9 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 
 	if (!sift_cbatch_kinds_exact(b))
 	{
-		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7 promises complete kinds */
-		if (w->pagg.minmax)
-			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", SIFT_COL_FORMAT_MINMAX);
+		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7 and 9 promise complete kinds */
+		if (w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH)
+			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", w->format);
 		/* a schema with a month dim has no leaf with kinds to lose: the minor stays */
 		if (w->format != SIFT_COL_FORMAT_MONTH)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);

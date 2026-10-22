@@ -106,8 +106,18 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r))
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r) || r->list != list)
 		corrupt_cube(seg, u);
+	if (list < 0)
+	{
+		/* the tuples of the rollup of the rows hold every row of the unit once */
+		uint64		rows = 0;
+
+		for (uint32 t = 0; t < r->ntuples; t++)
+			rows += r->count[t];
+		if (rows != unit->nrows)
+			corrupt_cube(seg, u);
+	}
 	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
 	for (int j = 0; j < r->ndims; j++)
 		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
