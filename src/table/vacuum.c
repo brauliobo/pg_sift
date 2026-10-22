@@ -498,7 +498,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
 
-bool		sift_tbl_auto_defrag = false;
+bool		sift_tbl_auto_defrag = true;
 int			sift_tbl_auto_defrag_free_pct = 25;
 int			sift_tbl_auto_defrag_delay = 10;
 int			sift_tbl_auto_defrag_budget = 128;
