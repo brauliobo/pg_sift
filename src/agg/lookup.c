@@ -285,9 +285,11 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	bool		dead = false;
 	size_t		kb;
 
+	if (m->kcx)
+		m->kcx->ecxt_scantuple = slot;
 	for (int k = 0; k < m->nkey; k++)
 	{
-		kv[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
+		kv[k] = m->kx[k] ? ExecEvalExprSwitchContext(m->kx[k], m->kcx, &knull[k]) : slot_getattr(slot, j->keyatt[k], &knull[k]);
 		dead |= knull[k] && !m->knull[k];
 	}
 	if (dead && !m->keep)
@@ -310,6 +312,8 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 		else
 			m->kid[kb + k] = kd_int(&m->kd[k], sift_aggspec_operand_int(j->keytype[k], kv[k]), m->cxt);
 	}
+	if (m->kcx)
+		ResetExprContext(m->kcx);
 	for (int c = 0; c < m->ncol; c++)
 	{
 		MapCol	   *mc = &m->mcol[c];
@@ -880,6 +884,15 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, own != NULL, kept.cx);
+	/* the key expressions live for the load, not in the context a cache keeps */
+	MemoryContextSwitchTo(old);
+	for (int k = 0; k < j->nkey; k++)
+		if (j->tkey[k])
+		{
+			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
+			m->kx[k] = ExecInitExpr((Expr *) j->tkey[k], NULL);
+		}
+	MemoryContextSwitchTo(kept.cx);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
@@ -930,6 +943,12 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		MemoryContextDelete(ord.cx);
 	}
 	map_index_rows(m);
+	if (m->kcx)
+	{
+		FreeExprContext(m->kcx, true);
+		m->kcx = NULL;
+		memset(m->kx, 0, sizeof(m->kx));
+	}
 	if (firstcx)
 		FreeExprContext(firstcx, true);
 	MemoryContextSwitchTo(old);
@@ -1005,7 +1024,7 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
-		appendStringInfo(&k, "%d/%u/%d ", j->keyatt[i], j->keytype[i], j->keynull[i]);
+		appendStringInfo(&k, "%d/%u/%d/%s ", j->keyatt[i], j->keytype[i], j->keynull[i], j->tkey[i] ? nodeToString(j->tkey[i]) : "");
 	if (cols || own)
 	{
 		appendStringInfo(&k, "|%d|", j->ncol);

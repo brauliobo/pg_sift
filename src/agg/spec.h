@@ -420,6 +420,7 @@ typedef struct SiftAggJoin
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];
 	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo; -1: the key is keyexpr */
+	Node	   *tkey[SIFT_AGG_MAX_JKEYS];		/* the key is this expression of the joined table's columns (a cast, keyatt 0) evaluated for each row loaded; NULL: the column keyatt */
 	Node	   *keyexpr[SIFT_AGG_MAX_JKEYS];	/* an expression of the combo's leaves (Params), evaluated per distinct tuple of their values */
 	bool		keynull[SIFT_AGG_MAX_JKEYS];	/* NULL equals NULL (an element of a jsonb array): a NULL key finds the rows whose key is NULL */
 	bool		scoped;			/* resolved for the elements of an array by a SAP_ELEM_EXISTS, not by a stage of the tuples; always a correlated child (params) */

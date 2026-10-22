@@ -375,7 +375,10 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 			record_deps(root, s->combo[i].slot[k].expr);
 	for (int i = 0; i < s->njoin; i++)
 		for (int k = 0; k < s->join[i].nkey; k++)
+		{
 			record_deps(root, s->join[i].keyexpr[k]);
+			record_deps(root, s->join[i].tkey[k]);
+		}
 	for (int a = 0; a < s->narms; a++)
 	{
 		for (int i = 0; i < s->arm[a].nfilter; i++)
