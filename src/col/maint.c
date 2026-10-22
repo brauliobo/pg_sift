@@ -24,7 +24,6 @@
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "tcop/tcopprot.h"
-#include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
@@ -32,7 +31,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-#include "utils/wait_event.h"
 
 #include "col/am.h"
 #include "col/seg.h"
@@ -500,44 +498,6 @@ sift_col_maint_worker_main(Datum main_arg)
 	CommitTransactionCommand();
 }
 
-/* Client backends of this database that are running a statement */
-static int
-active_backends(void)
-{
-	int			n = 0;
-
-	pgstat_clear_backend_activity_snapshot();
-	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
-	{
-		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
-
-		n += s->st_backendType == B_BACKEND && s->st_databaseid == MyDatabaseId && s->st_state == STATE_RUNNING;
-	}
-	return n;
-}
-
-/*
- * sift.col_auto_merge_max_active: waits, with no transaction (and so no snapshot that holds back the horizon), until at most that many client backends
- * of the database are running a statement: looks again after sift.maintenance_naptime, then twice as late each time, 8 times. False: it stayed busy,
- * and the next VACUUM asks again.
- */
-static bool
-wait_quiet(void)
-{
-	long		delay = sift_maintenance_naptime;
-
-	for (int tries = 0; sift_col_auto_merge_max_active > 0 && active_backends() > sift_col_auto_merge_max_active; tries++)
-	{
-		if (tries == 8)
-			return false;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-		delay *= 2;
-	}
-	return true;
-}
-
 /* The rewrite VACUUM asked for: the rule is judged again (the index may have changed since), and a held maintenance lock leaves it for the next VACUUM */
 void
 sift_col_rewrite_worker_main(Datum main_arg)
@@ -546,7 +506,8 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	Relation	index;
 
-	if (!wait_quiet())
+	/* sift.col_auto_merge_max_active; False: it stayed busy, and the next VACUUM asks again */
+	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active))
 		return;
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
