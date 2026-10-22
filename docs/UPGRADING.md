@@ -121,6 +121,14 @@ A standby that stays on the older release needs the same: its primary writes the
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 
+## Known issue of 3.2.0 and 3.2.1: a role cannot drop anything
+
+In 3.2.0 and 3.2.1 the event trigger function `sift.table_paths_drop()` is not `SECURITY DEFINER`, so a `DROP` by a role that is neither a superuser nor the owner of the extension fails with `permission denied for schema sift` (any table, index or schema, also one without pg_sift). `ALTER EXTENSION pg_sift UPDATE` to 3.3 fixes it. Until then, run once in each database with the extension, as a superuser (and again after a restore from a dump, which creates the extension from the 3.2 script):
+
+```sql
+ALTER FUNCTION sift.table_paths_drop() SECURITY DEFINER SET search_path = pg_catalog, pg_temp;
+```
+
 ## What is tested
 
 | What | Test |

@@ -179,6 +179,12 @@ CREATE FUNCTION sift.table_space(tbl regclass,
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_table_space' LANGUAGE C STRICT VOLATILE;
 
+-- 3.2.0 and 3.2.1 ran the trigger that clears the paths of a dropped table as the dropping role, which has no access to sift.table_paths: every DROP
+-- (a table, an index, a schema) by a role other than the extension's owner and superusers failed with "permission denied for schema sift", and
+-- sift.table_set_paths failed for the owner of a table. Both run as the extension's owner now (the check of the table's owner is the session's role).
+ALTER FUNCTION sift.table_paths_drop() SECURITY DEFINER SET search_path = pg_catalog, pg_temp;
+ALTER FUNCTION sift.table_set_paths(regclass, name, text) SECURITY DEFINER SET search_path = pg_catalog, pg_temp;
+
 -- A column added to a sift_table past the 127 it holds (or a column of declared paths renamed or retyped into the excess) fails the ALTER
 -- TABLE, as CREATE TABLE does, instead of the next write.
 CREATE FUNCTION sift.table_ddl_check() RETURNS event_trigger

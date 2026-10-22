@@ -634,9 +634,11 @@ SELECT pg_catalog.pg_extension_config_dump('sift.table_paths', '');
 CREATE FUNCTION sift.table_paths_check(tbl regclass, col name, spec text) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_table_paths_check' LANGUAGE C VOLATILE;
 
--- Declares the paths of column col of the sift_table tbl; an empty or NULL spec removes the declaration.
+-- Declares the paths of column col of the sift_table tbl; an empty or NULL spec removes the declaration. The check above requires the owner of
+-- the table (the session's role, which SECURITY DEFINER does not change), and the function writes the table as the extension's owner: a role
+-- has no privilege on sift.table_paths.
 CREATE FUNCTION sift.table_set_paths(tbl regclass, col name, spec text) RETURNS void
-	LANGUAGE plpgsql VOLATILE AS $fn$
+	LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
 BEGIN
 	PERFORM sift.table_paths_check(tbl, col, spec);
 	IF coalesce(spec, '') = '' THEN
@@ -647,9 +649,10 @@ BEGIN
 END
 $fn$;
 
--- The declaration goes with the table.
+-- The declaration goes with the table. The trigger fires for every DROP of every role, so it runs as the extension's owner, who owns
+-- sift.table_paths: as the dropping role it failed with "permission denied for schema sift" (3.2.0, 3.2.1).
 CREATE FUNCTION sift.table_paths_drop() RETURNS event_trigger
-	LANGUAGE plpgsql AS $fn$
+	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
 BEGIN
 	DELETE FROM sift.table_paths p USING pg_event_trigger_dropped_objects() d
 		WHERE d.classid = 'pg_class'::regclass AND d.objsubid = 0 AND p.relid = d.objid;
