@@ -30,11 +30,8 @@ DECLARE
 	mnr int;
 	lo int;
 	hi int;
-	unfrozen bool;
 	need text;
-	st text;
 	adv text;
-	
 BEGIN
 	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
 		RAISE EXCEPTION 'target must be a release such as 3.1, not "%"', target;
@@ -69,12 +66,11 @@ BEGIN
 		END IF;
 		BEGIN
 			EXECUTE 'SELECT major, minor FROM sift.index_format($1)' INTO maj, mnr USING r.relid;
-			lo := NULL; hi := NULL; unfrozen := false;
+			lo := NULL; hi := NULL;
 			IF r.amname = 'sift_col' THEN
 				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.col_segments(r.relid) s;
 			ELSIF r.amname = 'sift_table' THEN
-				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int), coalesce(bool_or((to_jsonb(s)->>'unfrozen')::bool), false)
-				INTO lo, hi, unfrozen FROM sift.table_segments(r.relid) s;
+				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.table_segments(r.relid) s;
 			END IF;
 		EXCEPTION
 			WHEN undefined_function THEN

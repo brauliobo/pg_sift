@@ -614,4 +614,4 @@ its own docker container.
   ordinary plan.
 - Fields: weights are set at query time over the sections of one key; no BM25F, no analyzer per field, phrases and regular expressions are not
   scoped to a field, no highlight per field ([FIELDS-FACETS.md](FIELDS-FACETS.md)).
-- pg_upgrade is tested within one major version only. `pg_sift_test` (built with `SIFT_TESTING=1`) is for the test suite only.
+- pg_upgrade to a newer PostgreSQL major keeps the files as they are ([UPGRADING.md](UPGRADING.md), tested from the previous major when both are installed). `pg_sift_test` (built with `SIFT_TESTING=1`) is for the test suite only.
