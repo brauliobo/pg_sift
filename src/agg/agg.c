@@ -274,13 +274,15 @@ unmatched_tail(AggExec *ex)
 void
 run_scan(AggExec *ex)
 {
-	bool		ordered = sift_aggspec_ordered(ex->spec),
+	bool		ordered,
 				none;
 
 	ex->null_input = false;
 	ex->started = true;
 	ex->glist = NULL;
 	engine_open(ex, ex->snap, ex->params);
+	/* after engine_open: a correlated child read as a lookup table (join_first_rows) has no parameters, which the lanes of a scan with float sums ask of the spec */
+	ordered = sift_aggspec_ordered(ex->spec);
 	scan_buffers(ex);
 	none = join_none(ex);
 	if (!backend_begin(ex) && !none)

@@ -4,13 +4,13 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- a LATERAL child can only run as a nested loop: without one the scan is the plan, with the child or its table as lookup
 SET enable_nestloop = off;
-CREATE TABLE facts (id int, a int, b int, k text, v text, t text, amount int);
+CREATE TABLE facts (id int, a int, b int, k text, v text, t text, amount int, w float8);
 INSERT INTO facts
-SELECT i, i % 200, i % 101, 'k' || (i % 200), 'v' || (i % 101), 't' || ((i % 200) % 7), i % 1000 FROM generate_series(1, 20000) i;
+SELECT i, i % 200, i % 101, 'k' || (i % 200), 'v' || (i % 101), 't' || ((i % 200) % 7), i % 1000, i % 1000 + 0.25 * (i % 4) FROM generate_series(1, 20000) i;
 -- NULL keys, and keys the tables do not have
 INSERT INTO facts VALUES (20001, NULL, 1, 'k1', 'v1', 't1', 1), (20002, 1, NULL, 'k1', NULL, 't1', 2), (20003, 500, 1, 'zz', 'v1', 't1', 3),
  (20004, 1, 500, 'k1', 'zz', 'zz', 4), (20005, NULL, NULL, NULL, NULL, NULL, 5);
-CREATE INDEX facts_col ON facts USING sift_col (id, a, b, k, v, t, amount);
+CREATE INDEX facts_col ON facts USING sift_col (id, a, b, k, v, t, amount, w);
 CREATE TABLE dims (a int, b int, label text, score int);
 INSERT INTO dims SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 199) x, generate_series(0, 100) y;
 CREATE UNIQUE INDEX dims_key ON dims (a, b);
@@ -72,6 +72,13 @@ SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims3 x WHERE x.a = f.a AND x.b = f.b AND x.t = f.t LIMIT 1) d ON true GROUP BY 1
 $q$);
+-- every kind of aggregate over the facts, grouped by a column of the lookup row: the float sums are merged in the order of the scan's lanes,
+-- which a scan decides from the spec with the lookup table, not the child run per input
+SELECT agg, r.* FROM unnest(ARRAY['count(*)', 'count(f.w)', 'count(DISTINCT f.w)', 'sum(f.amount)', 'avg(f.amount)', 'sum(f.w)', 'avg(f.w)', 'min(f.w)', 'max(f.w)',
+ 'sum(f.w) FILTER (WHERE f.amount > 500)', 'sum(f.w), avg(d.score), count(d.label)']) agg,
+ LATERAL check_first(format($q$
+ SELECT d.score / 100 AS g, %s FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1
+$q$, agg)) r;
 -- the rows the lookups return
 SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1 ORDER BY 1;
