@@ -146,8 +146,9 @@ UNION ALL SELECT 'dense id', * FROM ss_split('SELECT count(*) FROM ss WHERE id =
 
 -- the planner prices the skipped units: a point lookup is planned cheaper with the summaries than without them (a shape the pre-aggregates cannot answer, so the
 -- scan is priced), an IN list of 50 values, which keeps every unit, gets no credit, and the plans give the same rows
-ANALYZE ss;
-ANALYZE ss_b;
+-- VACUUM first: the cost counts the pages marked all-visible, which PostgreSQL 19 sets while a query reads a table, and ss has been read more than ss_b
+VACUUM (ANALYZE) ss;
+VACUUM (ANALYZE) ss_b;
 CREATE FUNCTION ss_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
