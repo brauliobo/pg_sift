@@ -502,13 +502,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 			continue;
 		acc->n[og]++;
 		if (o->kind == SAA_O_SUM_I64)
-		{
-			if (pg_add_s64_overflow(acc->i[og], iv, &acc->i[og]))
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
-						 errhint("Set sift.enable_agg to off for this query.")));
-		}
+			acc->w[og] += iv;
 		else
 		{
 			acc->d[og] += dv;
