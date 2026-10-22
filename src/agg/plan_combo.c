@@ -191,7 +191,29 @@ combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
 	return p;
 }
 
-/* The table column m and the other side e of the equality q when m belongs to the join jc and a key is free; lt and rt are the operator's input types */
+static bool may_raise_walker(Node *n, AggCtx *c);
+
+/*
+ * Is n a key of the joined table that is computed from its columns, as `timestamp_col::date = leaf`? An immutable expression of the columns of
+ * the table alone that cannot raise, of an integer or date type, is evaluated for each row loaded and hashed like a column; a table that is a plan
+ * (its rows are the columns the path outputs) and a text key keep the filter.
+ */
+static bool
+table_key_expr(AggCtx *c, JoinCtx *jc, Node *n)
+{
+	Bitmapset  *vars;
+
+	if (IsA(n, Var) || jc->cpath != NULL || (type_class(exprType(n)) != TC_INT && type_class(exprType(n)) != TC_DATE) ||
+		contain_mutable_functions(n) || contain_subplans(n) || contain_agg_clause(n) || contain_window_function(n))
+		return false;
+	vars = pull_varnos(c->root, n);
+	return bms_membership(vars) == BMS_SINGLETON && bms_is_member(jc->rti, vars) && !may_raise_walker(n, c);
+}
+
+/*
+ * The expression m of the joined table and the other side e of the equality q when m belongs to the join jc (a column, or table_key_expr)
+ * and a key is free; lt and rt are the operator's input types
+ */
 static OpExpr *
 join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid *rt)
 {
@@ -205,12 +227,12 @@ join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid 
 		return NULL;
 	l = strip_relabel(linitial(op->args));
 	r = strip_relabel(lsecond(op->args));
-	if (join_of_var(c, l) == jc)
+	if (join_of_var(c, l) == jc || table_key_expr(c, jc, l))
 	{
 		*m = l;
 		*e = r;
 	}
-	else if (join_of_var(c, r) == jc)
+	else if (join_of_var(c, r) == jc || table_key_expr(c, jc, r))
 	{
 		*m = r;
 		*e = l;
@@ -220,15 +242,23 @@ join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid 
 	return op;
 }
 
-/* the column m of the joined table is the next key of the join (nullsafe: a NULL equals a NULL) */
+/* the column (or computed key) m of the joined table is the next key of the join (nullsafe: a NULL equals a NULL) */
 static void
-join_key(JoinCtx *jc, Var *m, bool nullsafe)
+join_key(JoinCtx *jc, Node *m, bool nullsafe)
 {
 	SiftAggJoin *j = &jc->j;
 
-	join_var(jc, m);
-	j->keyatt[j->nkey] = m->varattno;
-	j->keytype[j->nkey] = m->vartype;
+	if (IsA(m, Var))
+	{
+		join_var(jc, (Var *) m);
+		j->keyatt[j->nkey] = ((Var *) m)->varattno;
+	}
+	else
+	{
+		j->keyatt[j->nkey] = 0;
+		j->tkey[j->nkey] = m;
+	}
+	j->keytype[j->nkey] = exprType(m);
 	j->keynull[j->nkey] = nullsafe;
 }
 
@@ -253,7 +283,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 	if (bms_is_member(jc->rti, pull_varnos(c->root, e)) || (leaf = match_leaf(c, e)) < 0)
 		return false;
 	lf = leaf_of(c, leaf);
-	mt = ((Var *) m)->vartype;
+	mt = exprType(m);
 	tc = type_class(lt);
 	if (lf->kind != SCL_SCALAR || lf->lossy)
 		return false;
@@ -266,7 +296,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 	else if ((lf->vtype != SCV_I32 && lf->typid != INT8OID) || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
-	join_key(jc, (Var *) m, nullsafe);
+	join_key(jc, m, nullsafe);
 	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->typid, -1, lf->vtype == SCV_CODE ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
 		return false;
 	use_leaf(c, leaf);
@@ -369,6 +399,9 @@ func_may_raise(Oid fid, List *args)
 		case F_NUMERIC_INT2:
 		case F_NUMERIC_INT4:
 		case F_NUMERIC_INT8:
+		case F_INT8_INT4:
+		case F_INT8_INT2:
+		case F_DATE_TIMESTAMP:
 			return false;
 		case F_ROUND_NUMERIC_INT4:
 		case F_TRUNC_NUMERIC_INT4:
@@ -460,7 +493,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 
 	if ((op = join_equality(c, jc, q, &m, &e, &lt, &rt)) == NULL)
 		return false;
-	mt = ((Var *) m)->vartype;
+	mt = exprType(m);
 	et = exprType(e);
 	tc = type_class(lt);
 	if (bms_is_member(jc->rti, pull_varnos(c->root, e)) || contain_volatile_functions(e))
@@ -484,7 +517,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 	foreach_ptr(Var, v, w.vars)
 		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
 			return false;
-	join_key(jc, (Var *) m, nullsafe);
+	join_key(jc, m, nullsafe);
 	j->keypos[j->nkey] = -1;
 	jc->kexpr[j->nkey] = e;
 	j->nkey++;

@@ -266,6 +266,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, (int) j->keytype[k]);
 			put_int(p, j->keypos[k]);
 			put_node(p, j->keyexpr[k]);
+			put_node(p, j->tkey[k]);
 			put_int(p, j->keynull[k]);
 		}
 		put_int(p, j->ncol);
@@ -672,6 +673,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->keytype[k] = (Oid) get_int(u);
 			j->keypos[k] = get_int(u);
 			j->keyexpr[k] = get_node(u);
+			j->tkey[k] = get_node(u);
 			j->keynull[k] = get_int(u);
 		}
 		j->ncol = get_int(u);
