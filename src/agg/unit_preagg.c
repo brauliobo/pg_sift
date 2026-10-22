@@ -82,7 +82,10 @@
 static int
 pa_leaf(const SiftAggAgg *a)
 {
-	return a->kind == SAA_COUNT_STAR ? -1 : a->num.n ? a->num.step[0].leaf : a->leaf;
+	sift_i128	mul,
+				add;
+
+	return a->kind == SAA_COUNT_STAR ? -1 : a->num.n ? sift_aggnum_linear(&a->num, &mul, &add) : a->leaf;
 }
 
 /* v into the state of aggregate ai in group g, as the rows it stands for would have been added */
@@ -108,7 +111,13 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 			break;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
-			acc->w[g] += v->sum;
+			{
+				sift_i128	mul,
+							add;
+
+				sift_aggnum_linear(&a->num, &mul, &add);
+				acc->w[g] += mul * v->sum + add * v->nn;
+			}
 			acc->n[g] += v->nn;
 			break;
 		case SAA_SUM_F64:
@@ -714,12 +723,44 @@ preagg_rechecked(AggExec *ex)
 	return false;
 }
 
+/*
+ * The aggregates that add `leaf * mul + add` of an int8 leaf (PostgreSQL raises for a result outside int8) can take the unit's sums only when its zone
+ * puts every result inside int8: a unit that may hold a value that raises is scanned, and the scan raises.
+ */
+static bool
+preagg_arith(AggExec *ex)
+{
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		const SiftAggAgg *a = &ex->spec->agg[ai];
+		sift_i128	mul,
+					add,
+					lo,
+					hi;
+		SiftSrcUnitAgg ua;
+
+		if (a->num.n < 2)
+			continue;
+		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, sift_aggnum_linear(&a->num, &mul, &add), &ua))
+			return false;
+		if (ua.nnull == ua.nvals)
+			continue;
+		if (!ua.has_minmax)
+			return false;
+		lo = Min(mul * ua.min, mul * ua.max) + add;
+		hi = Max(mul * ua.min, mul * ua.max) + add;
+		if (lo < PG_INT64_MIN || hi > PG_INT64_MAX)
+			return false;
+	}
+	return true;
+}
+
 bool
 preagg_unit(AggExec *ex)
 {
 	if (ex->pa.list >= 0 && rollup_skip(ex))
 		return false;
-	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex))
+	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_arith(ex))
 		return false;
 	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
 	{
