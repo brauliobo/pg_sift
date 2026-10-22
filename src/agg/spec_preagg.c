@@ -17,8 +17,6 @@
 
 #include "agg/spec.h"
 
-/* ---------- pre-aggregates ---------- */
-
 /* a leaf that a unit's pre-aggregates describe: a scalar, not lossy, of the rows (group -1) or of the elements of the array leaf group */
 static bool
 plain_leaf(const SiftSrcLayout *lay, int nbase, int group, int leaf)

@@ -17,10 +17,6 @@
 
 PG_FUNCTION_INFO_V1(sift_test_col_enc_roundtrip);
 
-/* ---------------------------------------------------------------------------
- * Round
- * ------------------------------------------------------------------------- */
-
 static void
 run_round(TCtx *t, uint32 nrows)
 {
@@ -80,10 +76,6 @@ sift_test_col_enc_roundtrip(PG_FUNCTION_ARGS)
 	values[2] = Int64GetDatum(t.encodings);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
-
-/* ---------------------------------------------------------------------------
- * Size report: the unit record of a full superblock (256 dense pages of 291 rows) for typical shapes
- * ------------------------------------------------------------------------- */
 
 #define SIZE_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)
 

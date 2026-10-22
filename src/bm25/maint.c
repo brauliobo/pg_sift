@@ -67,8 +67,6 @@ int64		sift_maint_wait_max_us = 0;
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
 StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
 
-/* ---------- locking and directory helpers ---------- */
-
 static bool
 maint_lock_mode(Relation index, bool wait, LOCKMODE mode)
 {
@@ -108,8 +106,6 @@ wait_claim(Relation index, uint64 gen)
 	unclaim(index, gen);
 	wait_done(start);
 }
-
-/* ---------- switching segments in the directory ---------- */
 
 void
 sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
@@ -201,8 +197,6 @@ in_backoff(const SiftMetaPageData *meta)
 	return (meta->flags & SIFT_META_FAILURES_MASK) != 0 &&
 		GetCurrentTimestamp() - meta->maint_requested_at < backoff_ms(meta) * INT64CONST(1000);
 }
-
-/* ---------- the steps of an index kind: the control flow shared by BM25 and sift_col ---------- */
 
 static bool make_room_locked(const SiftMaintOps *ops, Relation index);
 
@@ -337,8 +331,6 @@ sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 	pfree(snap);
 }
 
-/* ---------- VACUUM ---------- */
-
 IndexBulkDeleteResult *
 sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback,
 					 void *callback_state)
@@ -419,8 +411,6 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	return stats;
 }
 
-/* ---------- SQL ---------- */
-
 Relation
 sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 {
@@ -497,8 +487,6 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 	maint_unlock_mode(index, ops->step_lock);
 	return n;
 }
-
-/* ---------- BM25 ---------- */
 
 static bool
 is_sift(Relation index)
@@ -583,8 +571,6 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	return sift_mops_vacuumcleanup(&bm25_ops, info, stats);
 }
-
-/* ---------- asynchronous maintenance ---------- */
 
 static void
 stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
@@ -703,8 +689,6 @@ sift_maint_worker_main(Datum main_arg)
 		CHECK_FOR_INTERRUPTS();
 	}
 }
-
-/* ---------- SQL ---------- */
 
 Datum
 sift_promote(PG_FUNCTION_ARGS)

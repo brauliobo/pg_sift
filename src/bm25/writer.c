@@ -57,8 +57,6 @@ sw_pad4(SiftStreamWriter *sw)
 	sift_sw_write(sw, "\0\0\0", ALIGN4(sift_sw_tell(sw)) - sift_sw_tell(sw));
 }
 
-/* ---------- writer ---------- */
-
 SiftSegmentWriter *
 sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions)
 {

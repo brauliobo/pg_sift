@@ -105,8 +105,6 @@ extern SiftShredSpec *sift_shred_spec_parse(const char *text);
 extern const char *sift_shred_spec_deparse(const SiftShredSpec *spec);
 extern const char *sift_shred_type_name(SiftShredType t);
 
-/* ---------- the output ---------- */
-
 typedef union SiftShredVal
 {
 	int64		i;				/* bool, int2, int4, int8 */
@@ -153,8 +151,6 @@ typedef struct SiftShredLimits
 	uint32		max_bytes;		/* text bytes per document */
 	uint32		max_keys;		/* distinct wildcard keys of the dictionary */
 } SiftShredLimits;
-
-/* ---------- the shredder ---------- */
 
 typedef enum SiftShredKey
 {

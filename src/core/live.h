@@ -57,8 +57,6 @@ extern void sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out
  */
 extern void sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd);
 
-/* ---------- format 2: rows of live offsets (core/page.h SiftLive2HeaderData) ---------- */
-
 /*
  * Writes the LIVE run of a new segment of format 2, all docs live and no SB dirty: reg[nsb + 1] are the region starts and the end
  * (reg[nsb] bytes long), rows the spool file holding the regions, nslots the terms with a slot (their counters are zero)

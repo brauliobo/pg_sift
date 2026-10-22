@@ -21,8 +21,6 @@
 
 #include "col/am.h"
 
-/* ---------- type tags ---------- */
-
 /* The storage class of a type the table AM holds as one leaf of a single lane (the index adds the wide types in sift_col_att_leaves) */
 bool
 sift_col_leaf_store(Oid typid, SiftColStore *store)
@@ -106,8 +104,6 @@ sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
 	return type_of_tag(def->type);
 }
-
-/* ---------- the leaves of an attribute ---------- */
 
 /*
  * numeric(p, s) has three forms: p <= 18 and 0 <= s <= 18 a scaled int64 (one INT leaf, the 3.1 form, and the one sift_table keeps); p <= 38 and
@@ -229,8 +225,6 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs)
 	return 0;
 }
 
-/* ---------- numeric ---------- */
-
 /* 10^scale as a numeric, for the lifetime of the backend */
 static Datum
 numeric_pow10(int scale)
@@ -326,8 +320,6 @@ sift_col_image_numeric(const uint8 *img, uint32 len, int32 dscale)
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 
-/* ---------- interval ---------- */
-
 void
 sift_col_interval_lanes(const Interval *iv, int64 *hi, int64 *lo, int64 *md)
 {
@@ -346,8 +338,6 @@ sift_col_lanes_interval(int64 hi, int64 lo, int64 md)
 	sift_col_interval_raw(sift_col_wide_join(hi, lo), md, &iv->time, &iv->day, &iv->month);
 	return iv;
 }
-
-/* ---------- datum to values ---------- */
 
 /* Every lane of one datum: v[0 .. max(lanes, 1)) are the values of the head and of the leaves after it */
 void

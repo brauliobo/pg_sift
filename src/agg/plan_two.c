@@ -63,8 +63,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- two level: an outer aggregate over aggregates grouped by row ---------- */
-
 #define AGG_MAX_ARMS	4
 
 typedef struct CteSub

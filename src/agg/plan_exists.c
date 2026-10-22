@@ -16,8 +16,6 @@
 
 #include "agg/plan_exists_int.h"
 
-/* ---------- existential predicates: some element of one array passes (SAP_ANY_ELEM) ---------- */
-
 /*
  * The element predicate is compiled with the array in scope as the query's group (so its leaves are element leaves of that array,
  * not a second unnest) and with its own set of leaves; whatever it changes but the counters is undone.

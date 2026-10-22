@@ -37,8 +37,6 @@ extern uint32 sift_lane_npages(const SiftWbufHeaderData *hdr);
 extern Buffer sift_lane_read_locked(Relation index, BlockNumber blk, int mode);
 extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbufHeaderData *hdr);
 
-/* ---------- segments ---------- */
-
 /*
  * The active segment's header block, generation and lane tails, creating the segment when there is none (make_room: called when the
  * directory is full; false when nothing can be merged). format is the owner's directory format for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
@@ -58,8 +56,6 @@ extern void sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry);
 extern void sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry);
 /* Directory edit that opens a fresh active segment: the segment `sealed` (0 for none) becomes SEALED, fresh is added */
 extern void sift_lane_swap_active(SiftDirectoryData *dir, uint64 sealed, const SiftSegEntry *fresh);
-
-/* ---------- appending ---------- */
 
 /*
  * Exclusively locks the tail of a lane of segment gen (tail[] as last seen), trying the lanes after MyProcNumber % SIFT_LANES without
@@ -106,8 +102,6 @@ extern void sift_page_edit_begin(SiftPageEdit *e, Buffer buf, Size headlen);
 /* A region of the page that the change writes besides the head and the appended bytes (a slot of the page), logged as it is */
 extern void sift_page_edit_extra(SiftPageEdit *e, Size off, Size len);
 extern void sift_page_edit_end(Relation index, SiftPageEdit *e, int n);
-
-/* ---------- walking ---------- */
 
 /* Copies a data page out under a share lock, so decoding holds no buffer */
 extern void sift_lane_copy_page(Relation index, const SiftSegEntry *e, BlockNumber blk, Page dst, Size hdrsize);

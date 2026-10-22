@@ -221,8 +221,6 @@ sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *
 	*def = a->attr[attno].leaf[i].def;
 }
 
-/* ---------- rows ---------- */
-
 static void
 set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, SiftShredType type, uint32 i)
 {

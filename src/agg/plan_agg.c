@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- keys and aggregates ---------- */
-
 SlotReq *
 slot_req(AggCtx *c, int combo, int slot)
 {

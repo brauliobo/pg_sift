@@ -58,8 +58,6 @@ unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
 	return true;
 }
 
-/* ---------- unit helpers ---------- */
-
 /* Is the STR leaf stored inline in this unit (known from the zones, without reading the chunk) */
 bool
 unit_inline(ColUnit *cu, int col)
@@ -173,8 +171,6 @@ unit_group(ColUnit *cu, int group)
 	}
 	return g;
 }
-
-/* ---------- zones ---------- */
 
 void
 sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)

@@ -99,8 +99,6 @@ test_phase_gate(int phase)
 #define TEST_PHASE_GATE(phase)	((void) 0)
 #endif
 
-/* ---------- ambuild ---------- */
-
 typedef struct PageDoc
 {
 	ItemPointerData tid;
@@ -622,8 +620,6 @@ build_scan(BuildState *bs, Relation heap, IndexInfo *info, TableScanDesc scan, b
 	progress_docs(bs, true);
 	return reltuples;
 }
-
-/* ---------- parallel ambuild ---------- */
 
 /*
  * Every participant scans its share of a parallel heap scan (ascending keys,

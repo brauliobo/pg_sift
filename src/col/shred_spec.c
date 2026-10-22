@@ -8,10 +8,6 @@
 #include "bm25/analyze.h"
 #include "col/shred_int.h"
 
-/* ======================================================================== */
-/* the spec parser */
-/* ======================================================================== */
-
 #define SPEC_ERROR(code, loc, ...) \
 	ereport(ERROR, (errcode(code), errmsg("sift shred paths: %s at position %d", psprintf(__VA_ARGS__), (loc))))
 #define SPEC_SYNTAX(loc, ...)	SPEC_ERROR(ERRCODE_SYNTAX_ERROR, loc, __VA_ARGS__)

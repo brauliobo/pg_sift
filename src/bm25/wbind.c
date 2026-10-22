@@ -12,8 +12,6 @@
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
 
-/* ---------- write buffers ---------- */
-
 /*
  * Write buffers are not indexed by term: their docs are matched one by
  * one against the relaxed tree (pages whose bloom rules the tree out are
@@ -261,8 +259,6 @@ bind_wbuf(SiftPlan *p)
 	p->wbuf_sum_dl = sum_dl - dead_dl;
 	bind_stats(p, p->wbuf_ndocs, p->wbuf_sum_dl);
 }
-
-/* ---------- parallel bind ---------- */
 
 void *
 sift_plan_export(const SiftPlan *p, Size *len)

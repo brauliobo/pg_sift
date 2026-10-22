@@ -33,8 +33,6 @@
 #define NMODES 4
 #define PAD SIFT_KERN_PAD
 
-/* ---------- mode 0 and 1: the term blob ---------- */
-
 static uint64
 mix(uint64 h, uint64 v)
 {
@@ -126,8 +124,6 @@ checked_run(void *a)
 	(void) cnt;
 }
 
-/* ---------- mode 2: a term record ---------- */
-
 static void
 exercise_cursor(SiftPostingCursor *pc, Job *j, uint32 df)
 {
@@ -210,8 +206,6 @@ term_run(void *a)
 	}
 }
 
-/* ---------- mode 3: a DOCMAP chunk ---------- */
-
 static void
 chunk_run(void *a)
 {
@@ -284,8 +278,6 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	(void) nl;
 	return 0;
 }
-
-/* ---------- the seed corpus ---------- */
 
 static void
 emit(const char *dir, const char *name, int mode, uint32 arg, const void *head, size_t hlen, const void *p, size_t len)

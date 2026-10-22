@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- expressions of one leaf ---------- */
-
 typedef struct LeafWalk
 {
 	AggCtx	   *c;
@@ -606,8 +604,6 @@ bucket_key_secs(AggCtx *c, int leaf, Node *expr)
 		return 0;
 	return bucket_step(c, expr);
 }
-
-/* ---------- numeric expressions ---------- */
 
 /* digits an integer or numeric(p, s) column may hold: from the type modifier of its reference, else what the storage holds */
 int

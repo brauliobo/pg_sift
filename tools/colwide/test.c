@@ -40,8 +40,6 @@ rnd(void)
 		} \
 	} while (0)
 
-/* ---------- reference: decimal texts as digit strings ---------- */
-
 typedef struct Dec
 {
 	int			kind;			/* -2 -Infinity, -1 finite negative, 0 zero, 1 finite positive, 2 Infinity, 3 NaN */
@@ -120,8 +118,6 @@ ref_cmp(const char *x, const char *y)
 		return mag_cmp(&a, &b);
 	return 0;
 }
-
-/* ---------- generators ---------- */
 
 static char
 digit(int bias)
@@ -204,8 +200,6 @@ rescale(const char *in, char *out, int extra)
 			out[n++] = '0';
 	out[n] = 0;
 }
-
-/* ---------- 128-bit lanes and decimal text ---------- */
 
 static sift_w128
 rand_w128(void)
@@ -344,8 +338,6 @@ test_text_range(long n)
 	}
 }
 
-/* ---------- interval ---------- */
-
 static void
 test_interval(long n)
 {
@@ -375,8 +367,6 @@ test_interval(long n)
 		CHECK(t2 == time && d2 == day && m2 == month, "raw triple (%lld, %d, %d) -> (%lld, %d, %d)", (long long) time, day, month, (long long) t2, d2, m2);
 	}
 }
-
-/* ---------- images ---------- */
 
 static char tbuf[SIFT_NIMG_TEXT_MAX + 16];
 

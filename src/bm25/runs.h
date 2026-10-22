@@ -101,8 +101,6 @@ extern SiftRun *sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref,
 extern void sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen,
 							const SiftScoreRef *ref, SiftSegEntry *entry);
 
-/* ---------- for the parallel build, which keeps its runs in a fileset and merges them as it spills ---------- */
-
 /* Where the runs a build participant writes go: temporary files, or a fileset the leader reads */
 typedef struct RunHome
 {

@@ -16,8 +16,6 @@
 #include "core/live.h"
 #include "core/cmp.h"
 
-/* ---------- reader ---------- */
-
 static void
 seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 {
@@ -784,8 +782,6 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 	return units;
 }
 
-/* ---------- liveness ---------- */
-
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
 bool
@@ -830,8 +826,6 @@ sift_cseg_live_rows(SiftColSegment *seg)
 	return seg->hdr->ndocs - sift_live_ndead(&PRIV(seg)->live);
 }
 
-
-/* ---------- versions of the rows ---------- */
 
 /* A group of 3.0.1: one transaction's one command wrote every row (entry.reserved = xid, header sum_dl = cid) */
 static bool

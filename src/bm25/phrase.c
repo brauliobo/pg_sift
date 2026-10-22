@@ -12,8 +12,6 @@
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
 
-/* ---------- phrase positions ---------- */
-
 PosCtx *
 posctx_create(SiftPlan *p)
 {

@@ -185,8 +185,6 @@ sift_col_init(void)
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
 }
 
-/* ---------- options ---------- */
-
 static bytea *
 col_amoptions(Datum reloptions, bool validate)
 {
@@ -602,8 +600,6 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 	sift_col_make_row_rc(r, tid, values, isnull, row, mcxt, NULL);
 }
 
-/* ---------- aminsert ---------- */
-
 bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
@@ -619,8 +615,6 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 		sift_col_maint_after_seal(index);
 	return false;
 }
-
-/* ---------- the rest of the AM ---------- */
 
 static bool
 col_amvalidate(Oid opclassoid)

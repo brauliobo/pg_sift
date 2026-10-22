@@ -288,8 +288,6 @@ call_selectivity(SupportRequestSelectivity *req)
 	return vardata.rel ? (Node *) req : NULL;
 }
 
-/* ---------- planner support: sift.match / sift.match_idx ---------- */
-
 static Node *
 strip_relabel(Node *expr)
 {
@@ -449,8 +447,6 @@ sift_version(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(SIFT_MODULE_VERSION));
 }
 
-/* ---------- sift.score / sift.max_score ---------- */
-
 static Datum
 scan_only(const char *name)
 {
@@ -472,8 +468,6 @@ sift_max_score(PG_FUNCTION_ARGS)
 {
 	return scan_only("max_score");
 }
-
-/* ---------- sift.highlight ---------- */
 
 /* Does the token match a positive leaf of n? */
 static bool

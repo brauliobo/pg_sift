@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- count(DISTINCT) sets ---------- */
-
 #define DSET_PAIR(g, v)		(UINT64CONST(1) << 63 | (uint64) (g) << 32 | (uint32) (v))
 
 static uint64
@@ -142,8 +140,6 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 		s->cnt[h] = 1;
 	return true;
 }
-
-/* ---------- count(DISTINCT x) of a 32 bit value: bitmaps, a bounded set, a sort ---------- */
 
 Dist *
 dist_new(AggExec *ex, bool sgn)

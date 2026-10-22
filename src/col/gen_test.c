@@ -11,10 +11,6 @@
 #include "col/enc.h"
 #include "col/enc_test_int.h"
 
-/* ---------------------------------------------------------------------------
- * Random schemas, rows and batches
- * ------------------------------------------------------------------------- */
-
 static const char *const scalar_paths[] = {"tenant_id", "status", "total", "discount", "channel", "region", "note", "units"};
 static const char *const item_paths[] = {"items[].category", "items[].sku", "items[].kind", "items[].qty", "items[].price"};
 
@@ -298,10 +294,6 @@ batch_of(const Case *c, const SiftColRow *rows, uint32 n)
 		sift_cbatch_add(b, &rows[i]);
 	return b;
 }
-
-/* ---------------------------------------------------------------------------
- * Reference values of a leaf and the naive evaluation of predicates
- * ------------------------------------------------------------------------- */
 
 /* The values of leaf col over the rows: one per row, or the elements of the rows for a child (a group yields its counts) */
 Ref

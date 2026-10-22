@@ -191,8 +191,6 @@ extern void sift_seg_refresh_dead(SiftSegment *seg);
 extern int64 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
 
-/* ---------- inspection (sift.segments, sift.verify, tests) ---------- */
-
 #define SIFT_DF_CLASSES 9
 
 typedef struct SiftDfClassStats
