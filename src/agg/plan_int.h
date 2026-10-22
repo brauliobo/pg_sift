@@ -40,6 +40,7 @@ typedef struct JoinCtx
 	PlannerInfo *subroot;		/* the query level its native plan was made in */
 	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
 	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
+	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
 } JoinCtx;
 
 typedef struct SlotReq
@@ -223,6 +224,7 @@ typedef struct LeftJoin
 	Index		rti;			/* the right side, a table */
 	List	   *quals;			/* its ON clause */
 	SiftJoinKind kind;
+	Relids		tree;			/* a semi or anti join to a tree of joined tables: the relids of the join PostgreSQL planned for it; rti is its one table the ON clause reads */
 } LeftJoin;
 
 typedef struct FromScan
@@ -237,6 +239,7 @@ typedef struct FromScan
 	int			skip;			/* the tables of the FROM list passed over before the scanned one: they are joined to it (inner joins only) */
 	int			ntables;		/* the tables the FROM list has */
 	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
+	Bitmapset  *hidden;			/* the tables of the trees on the right of semi and anti joins besides the one the join reads: their plan is the child's */
 } FromScan;
 
 /* Aggrefs of the output, each once; false if a column is used outside the keys and aggregates */

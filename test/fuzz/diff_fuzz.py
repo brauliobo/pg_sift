@@ -417,7 +417,7 @@ def render_twolevel(p):
 
 
 # ---------- lookups of one table: several, with different conditions, in every join kind (the planner can merge them) ----------
-FORMS = ['exists', 'exists', 'notexists', 'in', 'notin', 'inner', 'inner', 'left', 'scalar', 'uncorr']
+FORMS = ['exists', 'exists', 'notexists', 'in', 'notin', 'inner', 'inner', 'left', 'scalar', 'uncorr', 'intree', 'existstree', 'notexiststree', 'lefttree']
 
 
 def lk_cond(r, a):
@@ -428,7 +428,10 @@ def lk_cond(r, a):
 
 def lookup(r, n, forms=FORMS):
     a = f'i{n}'
-    return dict(form=r.choice(forms), cond=lk_cond(r, a), key=r.choice(['e.parent_id'] * 5 + ['e.grp', 'e.a % 600']), a=a, v=r.randrange(8))
+    form = r.choice(forms)
+    # a key set the scan reads once may be empty before it reads a row: the rows then never reach a filter that raises an error in the plan without the scan
+    cond = r.choice([f"{a}.kind <> 'k{r.randrange(5)}'", f'{a}.grp > {r.randrange(3)}', f'{a}.id < {r.randrange(300, 600)}']) if form.endswith('tree') else lk_cond(r, a)
+    return dict(form=form, cond=cond, key=r.choice(['e.parent_id'] * 5 + ['e.grp', 'e.a % 600']), a=a, v=r.randrange(8))
 
 
 def lk_sql(l):
@@ -442,6 +445,15 @@ def lk_sql(l):
         return '', f'{k} IN (SELECT {a}.id FROM items {a} WHERE {c})'
     if f == 'notin':
         return '', f'{k} NOT IN (SELECT {a}.id FROM items {a} WHERE {c})'
+    if f == 'intree':
+        return '', f'{k} IN (SELECT {a}.id FROM items {a} JOIN dims2 {a}d ON {a}d.id = {a}.grp WHERE {c})'
+    if f == 'existstree':
+        return '', f'EXISTS (SELECT 1 FROM items {a} JOIN dims2 {a}d ON {a}d.id = {a}.grp WHERE {a}.id = {k} AND {c})'
+    if f == 'notexiststree':
+        return '', f'NOT EXISTS (SELECT 1 FROM items {a} JOIN dims2 {a}d ON {a}d.id = {a}.grp WHERE {a}.id = {k} AND {c} AND {a}d.w > 20)'
+    if f == 'lefttree':
+        return '', (f'{k} IN (SELECT {a}.id FROM items {a} WHERE {c} AND {a}.id IN (SELECT coalesce({a}x.id, {a}y.id) FROM items {a}x '
+                    f'LEFT JOIN dims2 {a}y ON {a}y.id = {a}x.grp AND {a}y.w > 30 WHERE {a}x.id % 3 <> 1))')
     if f == 'inner':
         return f'JOIN items {a} ON {a}.id = {k} AND {c}', ''
     if f == 'left':

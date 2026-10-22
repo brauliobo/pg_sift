@@ -177,6 +177,36 @@ nullable_filters(AggCtx *c, FromScan *fs, List *quals, Index dim)
 	return rest;
 }
 
+/*
+ * The right side of a semi or anti join that is a tree of joined tables (IN (SELECT .. FROM a LEFT JOIN b ..)): PostgreSQL's plan of the join it
+ * made of the tree, read once when the scan starts, gives the keys. It must not read the rows of the query's other tables.
+ */
+static bool
+add_tree_join(AggCtx *c, LeftJoin *lj, JoinCtx *jc)
+{
+	RelOptInfo *rel = find_join_rel(c->root, lj->tree);
+	Path	   *best = NULL;
+
+	if (rel == NULL)
+		return agg_refuse_on(JOIN_CHILD, "PostgreSQL did not plan the tables on the right of the semi or anti join as a join of their own");
+	if (!bms_is_empty(rel->lateral_relids) || contain_volatile_functions((Node *) c->root->parse->jointree))
+		return agg_refuse_on(JOIN_CHILD, "the tables on the right of the semi or anti join read the query's other tables, or call a volatile function");
+	foreach_ptr(Path, p, rel->pathlist)
+		if (p->param_info == NULL && !p->parallel_aware && p->parallel_workers == 0 && !IsA(p, GatherPath) && !IsA(p, GatherMergePath) &&
+			(best == NULL || p->total_cost < best->total_cost))
+			best = p;
+	if (best == NULL)
+		return agg_refuse_on(JOIN_CHILD, "the tables on the right of the semi or anti join have no plan the scan can run once");
+	if (!agg_lookup_fits(best->rows, best->pathtarget->width))
+		return agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "the keys of the semi or anti join are estimated at %.0f rows of width %d", best->rows, best->pathtarget->width);
+	jc->cpath = best;
+	jc->tree = true;
+	jc->j.child = 0;
+	foreach_ptr(JoinCtx, o, c->joins)
+		jc->j.child += o->cpath != NULL && o->j.params == NIL;
+	return true;
+}
+
 /* a table or plan in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
 bool
 add_join(AggCtx *c, FromScan *fs, Index rti)
@@ -185,6 +215,7 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	JoinCtx    *jc = palloc0(sizeof(JoinCtx));
 	const char *what = NULL;
 	bool		filtered = false;
+	LeftJoin   *tree = NULL;
 
 	jc->rti = rti;
 	jc->j.child = -1;
@@ -193,7 +224,16 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		filtered |= lj->rti == rti && lj->kind == SJ_FULL && c->root->simple_rel_array[rti] != NULL &&
 			c->root->simple_rel_array[rti]->baserestrictinfo != NIL;
-	if (e->rtekind == RTE_RELATION && e->relkind != RELKIND_PARTITIONED_TABLE && !filtered)
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		if (lj->rti == rti && lj->tree != NULL)
+			tree = lj;
+	if (tree != NULL)
+	{
+		if (!add_tree_join(c, tree, jc))
+			return agg_refuse(JOIN_CHILD);
+		what = "join";
+	}
+	else if (e->rtekind == RTE_RELATION && e->relkind != RELKIND_PARTITIONED_TABLE && !filtered)
 	{
 		if (e->relkind != RELKIND_RELATION)
 			return agg_refuse_f(TABLE_KIND, "the joined relation %s is not a plain table", get_rel_name(e->relid));
@@ -849,7 +889,18 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 		{
 			Var		   *own = copyObject(v);
 
-			own->varnullingrels = NULL;
+			/* the plan of a tree of joins outputs the columns as the join above its outer joins sees them */
+			if (jc->tree)
+			{
+				own = NULL;
+				foreach_ptr(Expr, x, jc->cpath->pathtarget->exprs)
+					if (IsA(x, Var) && ((Var *) x)->varno == v->varno && ((Var *) x)->varattno == v->varattno)
+						own = copyObject((Var *) x);
+				if (own == NULL)
+					return agg_refuse_on(JOIN_CHILD, "a column of the keys' join is not an output of its plan");
+			}
+			else
+				own->varnullingrels = NULL;
 			add_column_to_pathtarget(t, (Expr *) own, 0);
 		}
 		set_pathtarget_cost_width(c->root, t);

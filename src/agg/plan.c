@@ -134,13 +134,14 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
-	Bitmapset  *allrtis = NULL;
+	Bitmapset  *allrtis;
 	List	   *live_rtis = NIL,
 			   *joined = NIL;
 	int			nin = 0,
 				skip = fs->skip;
 
 	scan_from((Node *) parse->jointree, fs);
+	allrtis = bms_copy(fs->hidden);
 	if (!fs->ok)
 		return agg_refuse_on(FROM_SHAPE, "the FROM tree has a join other than the inner, left, semi, anti or preserved joins of tables the scan reads");
 	/*
@@ -229,7 +230,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if (rt_fetch(m, parse->rtable)->rtekind != RTE_JOIN)
 			{
 				if (!bms_is_member(m, allrtis))
-					return agg_refuse_on(FROM_SHAPE, "the aggregate reads a table the FROM tree does not name");
+					return agg_refuse_f(FROM_SHAPE, "the aggregate reads the table %s, which the FROM tree does not name", rt_fetch(m, parse->rtable)->eref->aliasname);
 				nin++;
 			}
 		if (nin + list_length(c->joins) < list_length(fs->rtis))

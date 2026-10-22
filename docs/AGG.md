@@ -75,6 +75,12 @@ entry of the old state goes when the key is kept again. The entries together tak
 dropped from the directory stays until the backends that read it are done. A crash restart discards the registry and the segments. A backend that loads while others load the same table
 (a cold start) loads for itself, each one. Test `agg_lookup_shared`, isolation spec `agg_lookup_shared`, TAP test `018_lookup_shared`.
 
+The right side of a semi or anti join can be a tree of joined tables (`IN (SELECT .. FROM a JOIN b ..)`, `EXISTS (SELECT 1 FROM a JOIN b ON .. WHERE a.k = o.k)`, or the `coalesce` of a LEFT JOIN
+that PostgreSQL makes of `p.id IN (SELECT k FROM (SELECT coalesce(a.k, b.k) AS k FROM a LEFT JOIN b ..) t)`). The tree is the join PostgreSQL planned for those tables; the scan runs its cheapest
+serial plan once when it starts, as a sub-select's, and looks the keys up. The condition on the scan's side reads one table of the tree (the key); the conditions of the ON clause on the tree's own
+columns are already in its plan. A tree that reads the query's other tables, has a parameterized or parallel plan only, or has more keys than `sift.agg_lookup_max_kb` allows, and a key that is an
+expression of two tables of the tree straight under the scan (`o.k IN (SELECT coalesce(a.k, b.k) FROM a LEFT JOIN b ..)`; `from_shape`), keep the normal plan. Test `agg_semi_tree`, fixtures `j_semi_tree*`.
+
 ## Outer joins that keep the other table
 
 A `RIGHT JOIN` or `FULL JOIN` to a table, and a `LEFT JOIN` whose right side is the indexed table, aggregate over the table that keeps its rows (`EXPLAIN`
