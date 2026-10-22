@@ -154,7 +154,7 @@ sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_tbl_cube_damage);
 
-/* sift_test_cube_damage (col/test.c) of the cube blob of the first units of the column segments of the table; with_month: blobs that hold a month dim */
+/* sift_test_cube_damage (col/test.c) of the cube blob of the first units of the column segments of the table; with_calendar: blobs that hold a calendar dim */
 Datum
 sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 {
@@ -192,12 +192,64 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 	table_close(rel, AccessShareLock);
 	v[0] = Int64GetDatum(r.blobs);
 	v[1] = Int64GetDatum(r.intact);
-	v[2] = Int64GetDatum(r.month);
+	v[2] = Int64GetDatum(r.calendar);
 	v[3] = Int64GetDatum(r.cut);
 	v[4] = Int64GetDatum(r.cut_accepted);
 	v[5] = Int64GetDatum(r.damaged);
 	v[6] = Int64GetDatum(r.accepted);
 	v[7] = Int64GetDatum(r.unsound);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_cal_grains);
+
+/* The calendar dims of the cubes of the column segments of the table: how many are of cells of a day, a month and a year, and the cubes that hold none */
+Datum
+sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cal grains", ALLOCSET_DEFAULT_SIZES);
+	int64		n[4] = {0};
+	TupleDesc	tupdesc;
+	Datum		v[4];
+	bool		nulls[4] = {false};
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		const SiftSegEntry *e = &st->dir.segs[i];
+		SiftColSegment *seg;
+
+		if (e->kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_cube(seg, u, &len);
+			SiftCHist	h;
+			bool		any = false;
+
+			MemoryContextReset(cx);
+			if (blob == NULL || !sift_cpagg_decode(seg->schema, blob, len, cx, &h))
+				continue;
+			for (int d = 0; d < h.ndims; d++)
+				if (h.dim[d].leaf >= SIFT_PAGG_CAL)
+				{
+					n[h.dim[d].leaf / SIFT_PAGG_CAL - 1]++;
+					any = true;
+				}
+			n[3] += !any;
+		}
+		sift_cseg_close(seg);
+	}
+	table_close(rel, AccessShareLock);
+	for (int k = 0; k < 4; k++)
+		v[k] = Int64GetDatum(n[k]);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 

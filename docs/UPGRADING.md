@@ -117,7 +117,7 @@ A standby that stays on the older release needs the same: its primary writes the
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |
-| column format 7 (`cube_minmax`), 8 (the month of a timestamp in the cube of a `sift_table`), 9 (`rollup_dims`), 10 (`set_columns`) | 3.3 |
+| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`) | 3.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

@@ -105,13 +105,13 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
-	/* a sift_table has no index option for its pre-aggregates and writes this default (every sift_col index sets its own spec, which has no month dim) */
-	if (format >= SIFT_COL_FORMAT_MONTH && !schema->kinds)
+	/* a sift_table has no index option for its pre-aggregates and writes this default (a sift_col index sets its own spec, which has calendar dims when it asks) */
+	if (format >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
 	{
-		sift_cpagg_spec_months(schema, &w->pagg);
+		sift_cpagg_spec_calendar(schema, &w->pagg);
 		for (int d = 0; d < w->pagg.ndims; d++)
-			if (w->pagg.dim[d].month)
-				w->format = SIFT_COL_FORMAT_MONTH;
+			if (w->pagg.dim[d].cal)
+				w->format = SIFT_COL_FORMAT_CALENDAR;
 	}
 	initStringInfo(&w->cube);
 	initStringInfo(&w->ecube);
@@ -146,8 +146,18 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
 	if (w->pagg.minmax)
 		w->format = SIFT_COL_FORMAT_MINMAX;
-	else if (w->format == SIFT_COL_FORMAT_MONTH)
-		w->format = sift_col_write_minor(w->schema, w->setting, true);	/* the month dims came with the default spec this one replaces */
+	else if (w->format == SIFT_COL_FORMAT_CALENDAR)
+		w->format = sift_col_write_minor(w->schema, w->setting, true);	/* the calendar dims came with the default spec this one replaces */
+	/* an index that names calendar columns (calendar_columns): minor 8, where the setting allows it; under a lower one the segment is written as before, without them */
+	w->pagg.ndims = 0;
+	for (int d = 0; d < spec->ndims; d++)
+	{
+		if (spec->dim[d].cal && w->setting < SIFT_COL_FORMAT_CALENDAR)
+			continue;
+		w->pagg.dim[w->pagg.ndims++] = spec->dim[d];
+		if (spec->dim[d].cal)
+			w->format = Max(w->format, SIFT_COL_FORMAT_CALENDAR);
+	}
 	/* the rollup of the rows is minor 9: under a lower setting the segment is written as before, without it (the entry is -1, the first of the sorted rollups) */
 	if (w->pagg.nrollups > 0 && w->pagg.rollup[0].list < 0)
 	{
@@ -304,10 +314,10 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	if (!sift_cbatch_kinds_exact(b))
 	{
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9 and 10 promise complete kinds */
-		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH) || w->set),
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set),
 					   "sift_col: a unit without its kinds in a segment of column format %d", w->set ? SIFT_COL_FORMAT_SETS : w->format);
-		/* a schema with a month dim has no leaf with kinds to lose: the minor stays */
-		if (w->format != SIFT_COL_FORMAT_MONTH)
+		/* a schema with a calendar dim has no leaf with kinds to lose: the minor stays */
+		if (w->format != SIFT_COL_FORMAT_CALENDAR)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);

@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((66 + $(wc -w <<<"$DBS")))
+plan $((69 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -228,13 +228,19 @@ if (( PG_MAJOR >= 18 )); then
 	check "the index with minor 3 and minor 7 segments verifies and answers min and max as the heap" test "$(q life upg "SELECT sift.col_verify('colm_col', true)" \
 		"SET sift.enable_agg = on" "$MMQ" | tail -n 1)" == "$MMOFF"
 	# a sift_table with a timestamp column written as minor 3 takes the writes of the default setting (the month of the column is a dim of the cube): the units written before scan, the others answer, the results are the plain plan's
-	q life upg "SET sift.col_format_minor = 3" "CREATE TABLE tblm (id int, ts timestamp, v numeric(10,2)) USING sift_table" \
-		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0 FROM generate_series(1, 30000) g" "VACUUM tblm" >/dev/null
-	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0 FROM generate_series(30001, 60000) g" "VACUUM tblm" >/dev/null
+	q life upg "SET sift.col_format_minor = 3" "CREATE TABLE tblm (id int, ts timestamp, v numeric(10,2), d date, tz timestamptz) USING sift_table" \
+		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(1, 30000) g" "VACUUM tblm" >/dev/null
+	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(30001, 60000) g" "VACUUM tblm" >/dev/null
 	MONQ="SELECT string_agg(m || ':' || n || ':' || s, ',' ORDER BY m) FROM (SELECT date_trunc('month', ts)::date m, count(*) n, sum(v) s FROM tblm GROUP BY 1) g"
 	MONOFF=$(q life upg "SET sift.enable_agg = off" "$MONQ" | tail -n 1)
+	CALQ="SELECT string_agg(y || ':' || n || ':' || s, ',' ORDER BY y) FROM (SELECT extract(isoyear FROM d) y, count(*) n, sum(v) s FROM tblm WHERE d >= '2020-03-01' AND d < '2025-03-01' GROUP BY 1) g"
+	CALOFF=$(q life upg "SET sift.enable_agg = off" "$CALQ" | tail -n 1)
+	TZQ="SELECT string_agg(m || ':' || n, ',' ORDER BY m) FROM (SELECT date_trunc('quarter', tz AT TIME ZONE 'UTC')::date m, count(*) n FROM tblm WHERE tz >= '2021-01-01+00' GROUP BY 1) g"
+	TZOFF=$(q life upg "SET sift.enable_agg = off" "$TZQ" | tail -n 1)
 	check "a sift_table with minor 3 and minor 8 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.table_segments('tblm') WHERE kind = 'columns'")" == 3,8
 	check "the sift_table with minor 3 and minor 8 segments answers the months as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the ISO years of a date range as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" | tail -n 1)" == "$CALOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the UTC quarters of a timestamptz as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$TZQ" | tail -n 1)" == "$TZOFF"
 	# minor 9 segments (the rollup of the rows; opt-in) join an index of minor 3 and minor 7 segments: the units written before scan, the others answer, the results are the heap's
 	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
 		"SET sift.col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v)" "RESET sift.col_format_minor" \
@@ -276,6 +282,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "the mixed column index survives the crash" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	check "the sift_table with minor 3 and minor 8 segments answers the months as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the date range and the UTC quarters as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" "$TZQ" | tail -n 2 | tr '\n' '|')" == "$CALOFF|$TZOFF|"
 	q life upg "SELECT sift.merge('docs_idx', true)" >/dev/null
 	check "a merge rewrites the mixed index in format 3 (verified, results equal to a scan)" \
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
