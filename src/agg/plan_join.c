@@ -71,7 +71,7 @@ unsupported_clause(AggCtx *c, Node *n)
 }
 
 /* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
-static bool
+bool
 reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
 {
 	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
@@ -685,6 +685,8 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 		if (jc->cpath != NULL && jc->j.params == NIL && !own_level)
 			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
 	}
+	if (c->spine != NULL)
+		cp->custom_paths = lappend(cp->custom_paths, c->spine);
 	add_path(output_rel, &cp->path);
 }
 

@@ -89,6 +89,7 @@ typedef struct AggExec
 	int			jcombo[SIFT_AGG_MAX_JOINS];
 	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
+	SpineSt    *spine;			/* the rows of the arms' spine (SiftAggSpec.spine) */
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
@@ -278,6 +279,7 @@ extern int		sift_agg_combo_cache;
 void run_scan(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
+Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);
 Datum agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull);
 void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
@@ -401,7 +403,7 @@ key_lf(AggExec *ex, int j)
 {
 	const SiftAggKey *k = &ex->spec->key[j];
 
-	return k->kind == SAK_COMBO || k->kind == SAK_SET || k->kind == SAK_NUM ? NULL : &ex->lay->leaf[k->leaf];
+	return k->kind == SAK_COMBO || k->kind == SAK_SET || k->kind == SAK_NUM || k->kind == SAK_SPINE ? NULL : &ex->lay->leaf[k->leaf];
 }
 
 #endif							/* SIFT_AGG_AGG_INT_H */

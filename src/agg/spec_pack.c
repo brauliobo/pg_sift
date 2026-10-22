@@ -205,6 +205,31 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		for (int j = 0; j < a->ncol; j++)
 			put_int(p, a->colsrc[j]);
 	}
+	put_int(p, s->spine != NULL);
+	if (s->spine == NULL)
+		return;
+	put_int(p, s->spine->child);
+	put_int(p, s->spine->ncol);
+	put_int(p, s->spine->npair);
+	for (int i = 0; i < s->spine->npair; i++)
+	{
+		const struct SiftAggSpinePair *q = &s->spine->pair[i];
+
+		put_int(p, q->col);
+		put_node(p, q->konst);
+		put_int(p, q->nullsafe);
+		put_int(p, (int) q->typid);
+		put_int(p, (int) q->collid);
+		put_int(p, (int) q->eqop);
+		for (int k = 0; k < s->narms; k++)
+			put_int(p, q->key[k]);
+	}
+	put_int(p, s->spine->nout);
+	for (int i = 0; i < s->spine->nout; i++)
+	{
+		put_int(p, s->spine->outcol[i]);
+		put_int(p, s->spine->outkey[i]);
+	}
 }
 
 static void
@@ -582,6 +607,31 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
 		for (int j = 0; j < a->ncol; j++)
 			a->colsrc[j] = get_int(u);
+	}
+	if (!get_int(u))
+		return;
+	s->spine = palloc0(sizeof(SiftAggSpine));
+	s->spine->child = get_int(u);
+	s->spine->ncol = get_int(u);
+	s->spine->npair = get_int(u);
+	for (int i = 0; i < s->spine->npair; i++)
+	{
+		struct SiftAggSpinePair *q = &s->spine->pair[i];
+
+		q->col = get_int(u);
+		q->konst = get_node(u);
+		q->nullsafe = get_int(u);
+		q->typid = (Oid) get_int(u);
+		q->collid = (Oid) get_int(u);
+		q->eqop = (Oid) get_int(u);
+		for (int k = 0; k < s->narms; k++)
+			q->key[k] = get_int(u);
+	}
+	s->spine->nout = get_int(u);
+	for (int i = 0; i < s->spine->nout; i++)
+	{
+		s->spine->outcol[i] = get_int(u);
+		s->spine->outkey[i] = get_int(u);
 	}
 }
 

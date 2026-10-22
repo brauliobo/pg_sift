@@ -855,6 +855,10 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
 		return;
 	}
+	/* a join of a spine and the arms of a two level aggregate; any other join is the single level's */
+	if (!parse->hasWindowFuncs && sift_agg_two_level_on && list_length(parse->jointree->fromlist) == 1 &&
+		(IsA(linitial(parse->jointree->fromlist), JoinExpr) || IsA(linitial(parse->jointree->fromlist), FromExpr)))
+		sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
 	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
 	sift_agg_rows_paths(root, input_rel, output_rel, extra);
 }
