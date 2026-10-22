@@ -1113,38 +1113,51 @@ run_key(RunWalk *w, uint32 row, int64 *v)
 		run_corrupt(w, "has a NULL row among those with a value");
 }
 
-/* The group of the run's positions [from, to): equal keys, the rows ascending; those that pass go to the candidates. rank: the group's rank, which must come after the group before */
-static void
-run_take(RunWalk *w, uint32 from, uint32 to, Rank rank)
+/* A group of equal first keys, rank, begins: false when the first pass took it. The ranks must come in order */
+static bool
+run_open(RunWalk *w, Rank rank)
 {
-	SiftTopN   *t = w->t;
-	uint32		prev = 0;
-
 	if (w->have && !rank_after(rank, w->prev))
 		run_corrupt(w, "is not in the order of its keys");
 	w->prev = rank;
 	w->have = true;
-	if (w->resumed && rank_after(w->resume, rank))
-		return;
-	for (uint32 pos = from; pos < to; pos++)
-	{
-		uint32		row = run_at(w, pos, false);
+	return !(w->resumed && rank_after(w->resume, rank));
+}
 
-		if (pos > from && row <= prev)
-			run_corrupt(w, "has the rows of equal keys out of order");
-		prev = row;
-		if (!(w->rmask[row >> 6] >> (row & 63) & 1))
-			continue;
-		t->cand[w->nc++] = row;
-		/* tied rows after the n-th come after it by TID: with one sort key they are not in the result */
-		if (++w->passing >= t->limit && t->nkey == 1)
-			break;
+/* The group ends; its rows that pass are t->cand[g0, nc), backwards when the walk was. With one sort key the tied rows after the n-th come after it by TID and are not in the result */
+static void
+run_close(RunWalk *w, int g0, Rank rank, bool back)
+{
+	SiftTopN   *t = w->t;
+
+	for (int a = g0, b = w->nc - 1; back && a < b; a++, b--)
+	{
+		uint32		x = t->cand[a];
+
+		t->cand[a] = t->cand[b];
+		t->cand[b] = x;
 	}
+	if (t->nkey == 1)
+		w->nc = Min(w->nc, g0 + t->limit - w->passing);
+	w->passing += w->nc - g0;
 	if (w->passing >= t->limit && (!w->barred || rank_after(w->bar, rank)))
 	{
 		w->bar = rank;
 		w->barred = true;
 	}
+}
+
+/* Whether the rows of the group at hand reach the n-th, so that the rest of an ascending group is out */
+static bool
+run_full(const RunWalk *w, int g0)
+{
+	return w->t->nkey == 1 && w->passing + w->nc - g0 >= w->t->limit;
+}
+
+static inline bool
+run_pass(const RunWalk *w, uint32 row)
+{
+	return w->rmask[row >> 6] >> (row & 63) & 1;
 }
 
 static bool
@@ -1169,63 +1182,78 @@ static void
 run_nulls(RunWalk *w, uint32 nvals, uint32 nnull)
 {
 	Rank		r = rank_of(&w->t->key[0], true, 0);
+	int			g0 = w->nc;
+	uint32		prev = 0;
 
-	if (nnull > 0 && !run_stop(w, r))
-		run_take(w, nvals, nvals + nnull, r);
+	if (nnull == 0 || run_stop(w, r) || !run_open(w, r))
+		return;
+	for (uint32 pos = nvals; pos < nvals + nnull; pos++)
+	{
+		uint32		row = run_at(w, pos, false);
+
+		if (pos > nvals && row <= prev)
+			run_corrupt(w, "has the rows of equal keys out of order");
+		prev = row;
+		if (!run_pass(w, row))
+			continue;
+		w->t->cand[w->nc++] = row;
+		if (run_full(w, g0))
+			break;
+	}
+	run_close(w, g0, r, false);
 }
 
-/* The groups of equal keys of the rows with a value, best first, until one cannot be in the result */
+/*
+ * The rows with a value, best group first, until a group cannot be in the result. A row is tested against the mask before its key is read, so the
+ * keys of the rows that do not pass (zero in a vector read for the rows that pass only) are never looked at; a group is the rows that pass with an
+ * equal key. The run holds equal keys by row ascending: a descending walk meets them backwards and puts them right at the end of the group.
+ */
 static void
 run_values(RunWalk *w, uint32 nvals)
 {
 	const TopKey *k0 = &w->t->key[0];
+	bool		desc = k0->desc,
+				open = false,
+				skip = false;
+	int			g0 = 0;
+	int64		gv = 0;
+	uint32		prev = 0;
+	Rank		r = {0};
 
-	if (!k0->desc)
+	for (uint32 i = 0; i < nvals; i++)
 	{
-		for (uint32 pos = 0, q; pos < nvals; pos = q)
-		{
-			int64		v;
-			Rank		r;
-
-			run_key(w, run_at(w, pos, false), &v);
-			r = rank_of(k0, false, v);
-			if (run_stop(w, r))
-				return;
-			if (run_cut(w, r))
-				return;
-			for (q = pos + 1; q < nvals; q++)
-			{
-				int64		v2;
-
-				run_key(w, run_at(w, q, false), &v2);
-				if (v2 != v)
-					break;
-			}
-			run_take(w, pos, q, r);
-		}
-		return;
-	}
-	for (uint32 pos = nvals, s; pos > 0; pos = s)
-	{
+		uint32		row = run_at(w, desc ? nvals - 1 - i : i, desc);
 		int64		v;
-		Rank		r;
 
-		run_key(w, run_at(w, pos - 1, true), &v);
-		r = rank_of(k0, false, v);
-		if (run_stop(w, r))
-			return;
-		if (run_cut(w, r))
-			return;
-		for (s = pos - 1; s > 0; s--)
+		if (!run_pass(w, row))
+			continue;
+		run_key(w, row, &v);
+		if (open && v == gv)
 		{
-			int64		v2;
-
-			run_key(w, run_at(w, s - 1, true), &v2);
-			if (v2 != v)
-				break;
+			if (desc ? row >= prev : row <= prev)
+				run_corrupt(w, "has the rows of equal keys out of order");
 		}
-		run_take(w, s, pos, r);
+		else
+		{
+			if (open && !skip)
+				run_close(w, g0, r, desc);
+			r = rank_of(k0, false, v);
+			if (run_stop(w, r) || run_cut(w, r))
+				return;
+			open = true;
+			skip = !run_open(w, r);
+			g0 = w->nc;
+			gv = v;
+		}
+		prev = row;
+		if (skip)
+			continue;
+		w->t->cand[w->nc++] = row;
+		if (!desc && run_full(w, g0))
+			break;
 	}
+	if (open && !skip)
+		run_close(w, g0, r, desc);
 }
 
 /*
@@ -1452,7 +1480,7 @@ sift_topn_revisit_next(SiftTopN *t, uint32 *sb)
  * the n-th).
  */
 void
-sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, bool whole, const uint64 *rmask, int nrow)
+sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
 {
 	const TopKey *k0 = &t->key[0];
 	Rank		bar = {0, 0},
@@ -1474,14 +1502,12 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		unit_blob(t, src, unit, key0, rmask, nrow);
 		return;
 	}
-	/* the walk reads the key of rows the filters dropped, which a leaf read for the few rows that pass does not hold */
 	if (t->revisit)
 	{
-		if (whole)
-			(void) run_unit(t, src, unit, key0, rmask, nrow);
+		(void) run_unit(t, src, unit, key0, rmask, nrow);
 		return;
 	}
-	if (whole && run_unit(t, src, unit, key0, rmask, nrow))
+	if (run_unit(t, src, unit, key0, rmask, nrow))
 		return;
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;

@@ -470,14 +470,15 @@ do not fall from one row to the next, so the run is the rows in order (a column 
 is the chunk's; a float's `-0` and `+0` are one key, as PostgreSQL compares them; ties sort by ordinal, which is the order of the heap TIDs of the unit, so the
 order of a run is the order the executor breaks a tie in. A unit has no blob when it has fewer than two rows.
 
-Reader (`agg/topn.c`, `run_unit`): a top-N scan whose first key is a leaf with a run and whose key vector is whole (no filter left a part of the rows) and
-whose unit has at least `2 * (limit + 1)` rows passing, walks the run from the best end by groups of equal keys, stops when the rank of a group is strictly after
+Reader (`agg/topn.c`, `run_unit`): a top-N scan whose first key is a leaf with a run and whose unit has at least `2 * (limit + 1)` rows passing, walks the run
+from the best end by groups of equal keys, stops when the rank of a group is strictly after
 the bar (the n-th best of the heap, the shared bar of the workers, or the n-th row of the unit itself), tests the NULL group and the overflowed rows one by one,
-and hands the candidates, in row order, to the same heap as before, so the rows and their ties are those of the linear scan. A descending order walks the
+and hands the candidates, in row order, to the same heap as before, so the rows and their ties are those of the linear scan. A row is tested against the rows that pass before its key is read, so a filter that leaves few rows (the key
+is then decoded for those rows only) or a start such as `k > $last` is walked the same way: a group is the rows that pass with an equal key. A descending order walks the
 groups backwards and takes the rows of each ascending. On a serial walk the first pass gives each unit at most about `2 * limit / units` rows (never fewer than 2),
 and a unit that stopped before it could prove the bar is read again, resumed at the rank where it stopped, in the order of those ranks and only while the bar can
-still be beaten. A unit of a write buffer, a unit with rows to be tested again by the heap, one read in another numbering (compacted or kept rows), a wide leaf
-and a unit with a filtered key vector are scanned as before. The decoder refuses unknown kinds, widths, flag bits, counts that do not fit the unit and an ordinal that
+still be beaten. A unit of a write buffer, a unit with rows to be tested again by the heap, one read in another numbering (compacted or kept rows) and a wide leaf
+are scanned as before. The decoder refuses unknown kinds, widths, flag bits, counts that do not fit the unit and an ordinal that
 is no row of it; the walk checks the order of the keys, that equal keys have ordinals ascending and that no row is listed twice; `sift.col_verify` recomputes the
 run from the chunk and compares the bytes, and the kinds a record lists with those of its units. Deletes and updates leave the run as it was (a deleted row is
 skipped when the walk meets it), so it is sound until the unit is rewritten; promotion, merge and REINDEX write it from the option.
@@ -488,7 +489,7 @@ that knows only minor 12 refuses the new segments with the REINDEX hint. `sift.t
 EXPLAIN ANALYZE of SiftAgg shows `Units Read By Sorted Run`, and `sift.upgrade_commands()` lists an index with the option and older units as a gain from `REINDEX`.
 The planner does not price the runs: the cost of a top-N scan is what it was, and the runs only lower the time it takes. Code: `col/runs.[ch]`, `col/seg.c`
 (`sift_cseg_run`), `col/seg_write.c` (`add_runs`), `col/scan_unit.c` (`sift_col_run_info`), `agg/topn.c` (`run_unit`). Tests: `col_sorted_run` (minors, options, 240
-shapes three ways, the pass that reads units again, write buffer, DML, VACUUM, promotion, merge, workers, corrupt runs decoded and in the stream, verify, an index that
+shapes three ways, 160 more under filters of 2%, 10% and 50% and a start after a value of the key, also after DML and merge, the pass that reads units again, write buffer, DML, VACUUM, promotion, merge, workers, corrupt runs decoded and in the stream, verify, an index that
 takes the option later), the minor 13 steps of the TAPs `extension_lifecycle`, `compat_matrix`, `compat_31_column`, `upgrade_check` and `col_crash_matrix`.
 
 Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of 55, so the two runs of each cell differ by up to a factor of three; median of 15 warm runs, `docs/results/col-sorted-run.tsv`):
@@ -501,11 +502,27 @@ Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of 55, so the t
 | 1 000 | 0.34 to 0.37 | 6.5 to 8.9 | 1.9 to 4.9 |
 | 10 000 | 2.6 to 5.4 | 29 to 32 | 23 to 27 |
 
-The same on a `numeric(10,2)` column with no btree (the normal plan sorts the table in 115 to 185 ms for n = 1 000): 7.8 to 13.6 ms without the runs, 5.5 to 6.4 with them. A
-`WHERE` that removes rows (`amount < 0.1`, 10% of them) leaves the key vector sparse, so the scan does not take the run and reads what it read before (15 to 17 ms at n = 1 000;
-the btree needs 5 to 7 ms there). So the runs cut a top-N scan by two to four times at n up to a few thousand and leave the scan five to fourteen times slower than a btree at
+The same on a `numeric(10,2)` column with no btree (the normal plan sorts the table in 115 to 185 ms for n = 1 000): 7.8 to 13.6 ms without the runs, 5.5 to 6.4 with them. So the runs cut a top-N scan by two to four times at n up to a few thousand and leave the scan five to fourteen times slower than a btree at
 n = 1 000: what remains is the unit itself, about 8 to 20 microseconds a unit of the 230 (opening it, its liveness, the first rows of its order) plus the heap fetch of the rows.
 The gap to a btree closes only with a structure that is read in the order of the key across the segment, not unit by unit.
+
+Under a `WHERE` or a start after a value of the key, the walk reads the key of the rows that pass only. Measured (2026-10-22, PostgreSQL 18.6, a host at load 5 to 9, `docs/results/col-sorted-run-filter.tsv`):
+1 000 000 rows as above, `order_columns = 'k, val'`, `SELECT id, k FROM items WHERE .. ORDER BY k LIMIT n`, the library before and after this walk swapped between 4 rounds of 15 warm runs (median of the rounds):
+
+| filter | n | before (ms) | after (ms) | btree (ms) |
+|---|---|---|---|---|
+| none | 1 000 | 0.94 | 0.96 | 0.10 |
+| 50% of the rows | 1 000 | 1.19 | 1.18 | 0.25 |
+| 10% of the rows | 100 | 1.50 | 1.32 | 0.09 |
+| 10% of the rows | 1 000 | 2.53 | 2.16 | 1.16 |
+| 1% of the rows | 1 000 | 1.44 | 1.58 | 114.7 |
+| `k > 500000` (half the rows) | 100 | 5.18 | 1.96 | 0.01 |
+| `k > 500000` (half the rows) | 1 000 | 5.71 | 2.54 | 0.12 |
+| `k > 990000` (1% of the rows) | 1 000 | 1.40 | 1.43 | 0.11 |
+
+A scan with a 10% filter, which read no run before, gains 12 to 15%; a start in the middle of the key range, which read the key of every row below it, takes 2.2 to 2.6 times less. Where nothing was
+skipped (no filter, 50%, a late start) the time is the same within the noise; a filter of 1% of the rows is 0.01 ms slower at n = 100 and 9% slower at n = 1 000 (1.44 to 1.58 ms), which the four rounds do not tell from noise. The scan still decodes the filter's leaf and walks past the rows below a start; it does not search the run for the
+first key of a range, and what is left at n = 1 000 is the heap fetch of the rows. At 200 000 rows and n = 1 000 (8 rounds) the same walk takes 8 to 42% less for no filter, 50%, 10%, 5% and the start.
 
 Index size at 1 000 000 rows: 2 bytes a row for each leaf whose rows do not ascend with the column (`int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`, `float4`, `float8` alike:
 2 001 320 bytes each), 1 320 bytes for a leaf that does (`id`, a timestamp loaded in order). An index of 10 columns, 8 of them unordered, grows from 31 875 072 to 48 070 656 bytes (+50.8%).

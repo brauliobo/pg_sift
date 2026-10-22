@@ -100,10 +100,9 @@ extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
 /*
- * The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows (whole: of every row of the unit, not only those
- * of rmask); the others are read for the few rows that need them
+ * The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows (read for the rows of rmask at least); the others are read for the few rows that need them
  */
-extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, bool whole, const uint64 *rmask, int nrow);
+extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
 
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
