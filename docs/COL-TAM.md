@@ -409,7 +409,7 @@ lock only if they are free (`busy` in the result otherwise), the file's lock as 
 refuses a read-only transaction, a standby and a role without `MAINTAIN`. It writes only what VACUUM writes (liveness pages, directory switches, free list, truncation: same crash points).
 
 *Background pass* (`sift.table_auto_defrag`, off by default for 3.2, needs `sift.async_maintenance`). A backend asks for a worker, `sift_maint_request_worker` as for the indexes (at most one request per
-`sift.maintenance_naptime` of a table, backing off after failures; one worker of a table at a time), when (1) the tombstone entries are at least `sift.table_auto_defrag_dead_pct` percent (20, the autovacuum scale factor) of the rows of the column
+`sift.maintenance_naptime` of a table, backing off after failures; one worker of a table at a time), when (1) the tombstone entries are at least `sift.table_auto_defrag_dead_pct` percent (5; autovacuum starts at 20) of the rows of the column
 segments and have grown by half of that since this backend asked last (the exact percent of a segment is known once its bits are cleared; only tombstones older than every snapshot count, so a long transaction that holds the horizon makes the pass wait instead of reading the table to remove nothing), or (2) the free blocks of the file are at least
 `sift.table_auto_defrag_free_pct` percent of it, worth the exclusive lock by VACUUM's rule (1000 blocks or a 16th of the file) and grown by a 32nd of it since the last request. The backends that look are those that
 close a write buffer (every `sift.table_write_buffer_limit` of writes, where the inline promotion runs; not inside a VACUUM) and, at most once per `sift.maintenance_naptime` each, those that delete, update, lock or
