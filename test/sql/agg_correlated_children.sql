@@ -21,22 +21,7 @@ CREATE TABLE lookup_values (kind text, bucket text, label text);
 INSERT INTO lookup_values VALUES ('a', 'x', 'first'), ('a', 'x', 'second'), ('a', 'x', 'third'), ('b', 'x', 'other');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE lookup_values;
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM
-    ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
-  END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
 -- Correlation itself uses the existing native LIMIT path, including duplicate candidates.
 SELECT * FROM check_query($q$
  SELECT coalesce(m.label, o.bucket) AS bucket, count(*) AS n, avg(o.value) AS value

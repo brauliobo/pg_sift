@@ -21,7 +21,7 @@
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas|pg19-build)\.|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
-^test/agg_(helpers|preagg_helpers|preagg_units)\.sql$	^installcheck-(agg_|col_)|{ci}
+^test/agg_(helpers|preagg_helpers|preagg_units|check_query|check_pushed)\.sql$	^installcheck-(agg_|col_)|{ci}
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
