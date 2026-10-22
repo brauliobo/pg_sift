@@ -65,8 +65,8 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	pfree(ln.data);
 }
 
-uint32
-sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **off, char **bytes)
+void
+sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 **off, char **bytes)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift string list", ALLOCSET_SMALL_SIZES);
 	uint32		n,
@@ -87,7 +87,7 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **of
 	n = get32(blob + 4);
 	ll = get32(blob + 8);
 	total = get32(blob + 12);
-	if (n > SIFT_CC_MAXROWS || (ll & 7) || (uint64) ll + 16 + 8 > len || total > (uint64) 1 << 31)
+	if (n != want || n > SIFT_CC_MAXROWS || (ll & 7) || (uint64) ll + 16 + 8 > len || total > (uint64) 1 << 31)
 		CC_CORRUPT("bad string list sizes");
 	nd = parse_node(cx, SIFT_CC_INT, blob + 16, ll, n, 0, &u);
 	if (u != ll)
@@ -98,6 +98,8 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **of
 	pos += 8;
 	if ((uint64) pos + CC_RUP8(clen) != len)
 		CC_CORRUPT("string list length does not match");
+	if (form == 0 && clen != total)
+		CC_CORRUPT("raw string bytes length does not match");
 	lens = palloc(sizeof(uint32) * CC_CAP32(n));
 	nd_u32(nd, 0, lens);
 	o = MemoryContextAlloc(mcxt, sizeof(uint32) * (n + 1));
@@ -113,11 +115,7 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **of
 	if (sum != total)
 		CC_CORRUPT("string lengths do not add up");
 	if (form == 0)
-	{
-		if (clen != total)
-			CC_CORRUPT("raw string bytes length does not match");
 		memcpy(b, blob + pos, total);
-	}
 	else
 	{
 		if (!sift_colz_available((int) form))
@@ -131,7 +129,6 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **of
 	*bytes = b;
 	pfree(lens);
 	MemoryContextDelete(cx);
-	return n;
 }
 
 /*
