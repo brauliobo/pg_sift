@@ -84,5 +84,15 @@ is($node->safe_psql('postgres', 'SELECT count(*) FROM w'), $rows, 'the same rows
 is($node->safe_psql('postgres', $wrong), 0, 'and the same bytes, now in column groups');
 is($node->safe_psql('postgres', 'SELECT count(*) > 1 FROM sift.table_segments($$w$$)'), 't', 'several segments were involved');
 
+# The first writer writes the metapage and then the directory, two blocks one after the other, and a session that looks in between finds a
+# file of one block (the state is made here by cutting the file after a clean stop): that is a table not laid out yet, not an error.
+$node->safe_psql('postgres', 'CREATE TABLE h (id int) USING sift_table');
+$node->safe_psql('postgres', 'INSERT INTO h VALUES (1)');
+my $hfile = $node->data_dir . '/' . $node->safe_psql('postgres', "SELECT pg_relation_filepath('h')");
+$node->stop;
+truncate($hfile, 8192) or die "truncate $hfile: $!";
+$node->start;
+is($node->safe_psql('postgres', 'SELECT count(*) FROM h'), 0, 'a table whose file holds only the metapage reads as empty');
+
 $node->stop;
 done_testing();
