@@ -105,6 +105,7 @@ typedef struct SiftColOptions
 	int			rollup_dims;	/* offset of the "rollup_dims" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			set_columns;	/* offset of the "set_columns" string (the leaves that get a small-set summary in every unit, docs/COL.md 2.13), 0 = none */
+	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			set_limit;		/* up to this many distinct keys a unit keeps exactly, else a bloom filter (0 = the default) */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
 	bool		dict_lookup;	/* a dictionary of many strings is stored to be searched in place (column format minor 14) */
@@ -127,6 +128,7 @@ extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_set_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */

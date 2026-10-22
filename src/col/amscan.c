@@ -12,9 +12,12 @@
 #include "access/relation.h"
 #include "access/relscan.h"
 #include "access/skey.h"
+#include "access/tableam.h"
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "catalog/pg_type.h"
+#include "executor/tuptable.h"
+#include "utils/datum.h"
 #include "mb/pg_wchar.h"
 #include "pgstat.h"
 #include "nodes/nodeFuncs.h"
@@ -65,6 +68,8 @@ typedef struct ColScanOpaque
 	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
 	bool	   *nulls;
 	IndexTuple	itup;
+	IndexFetchTableData *fetch;	/* the heap, for a string the index could not keep (an overflow value) */
+	TupleTableSlot *slot;
 } ColScanOpaque;
 
 IndexScanDesc
@@ -81,8 +86,20 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 }
 
 static void
+col_fetch_end(ColScanOpaque *so)
+{
+	if (so->slot)
+		ExecDropSingleTupleTableSlot(so->slot);
+	if (so->fetch)
+		table_index_fetch_end(so->fetch);
+	so->slot = NULL;
+	so->fetch = NULL;
+}
+
+static void
 col_scan_end(ColScanOpaque *so)
 {
+	col_fetch_end(so);
 	if (so->src)
 		sift_col_close(so->src);
 	MemoryContextReset(so->cxt);
@@ -109,6 +126,7 @@ sift_col_amendscan(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 
+	col_fetch_end(so);
 	if (so->src)
 		sift_col_close(so->src);
 	if (so->heap)
@@ -550,10 +568,18 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 /* ---- tuple by tuple: an index scan and an index-only scan, in the order of the units (no order to give) ---- */
 
 /*
- * Can the leaf of attribute attno give its value back: the integer-like and float leaves. The executor asks for every returnable column of the index
- * whether the query needs it or not, and the text and uuid leaves would load the dictionary of the segment (a million strings: 10 to 30 ms) to
- * return a value nobody reads; a query that needs one of them reads the heap.
+ * Can the leaf of attribute attno give its value back: the integer-like and float leaves, and the text, varchar and uuid columns the option
+ * return_columns names. The executor asks for every returnable column of the index whether the query needs it or not, so a string column is
+ * read, one string at a time out of the dictionary of the segment, for every row returned: the option leaves the choice to the index.
  */
+bool
+sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json)
+{
+	Oid			t = TupleDescAttr(desc, a - 1)->atttypid;
+
+	return !json && nleaves == 1 && (t == TEXTOID || t == VARCHAROID || t == UUIDOID);
+}
+
 bool
 sift_col_amcanreturn(Relation index, int attno)
 {
@@ -576,9 +602,29 @@ sift_col_amcanreturn(Relation index, int attno)
 			return true;
 		case SIFT_COLT_NUMERIC:
 			return d->store == SIFT_COLS_INT;
+		case SIFT_COLT_TEXT:
+		case SIFT_COLT_UUID:
+			return r->ret[attno] && d->store == SIFT_COLS_STR;
 		default:
 			return false;
 	}
+}
+
+static Datum
+str_datum(const SiftColDef *d, const SiftColVec *v, uint32 k)
+{
+	const char *s = v->vbytes + v->voff[k];
+	uint32		len = (uint32) (v->voff[k + 1] - v->voff[k]);
+
+	if (d->type == SIFT_COLT_UUID)
+	{
+		pg_uuid_t  *u = palloc(UUID_LEN);
+
+		SIFT_INVARIANT(len == UUID_LEN, "sift_col: the uuid of a dictionary holds %u bytes", len);
+		memcpy(u, s, UUID_LEN);
+		return UUIDPGetDatum(u);
+	}
+	return PointerGetDatum(cstring_to_text_with_len(s, len));
 }
 
 static Datum
@@ -609,6 +655,40 @@ vec_datum(const SiftColDef *d, const SiftColVec *v, uint32 k)
 	}
 }
 
+/*
+ * A string the index could not keep (the strings of a leaf in a unit passed SIFT_COL_UNIT_MAX_BYTES, so the value is stored as overflow and read from
+ * the heap), read from the heap: the version of the row's chain that the snapshot sees, whose indexed columns are those of the entry. None visible:
+ * NULL, and the executor drops the tuple as it would after any index scan.
+ */
+static Datum
+heap_str(IndexScanDesc scan, ColScanOpaque *so, int attno, ItemPointer tid, bool *isnull)
+{
+	bool		call_again = false,
+				all_dead = false;
+	Form_pg_attribute att = TupleDescAttr(scan->xs_itupdesc, attno - 1);
+	AttrNumber	hattr = scan->indexRelation->rd_index->indkey.values[attno - 1];
+	Datum		v;
+
+	if (so->fetch == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(so->cxt);
+
+		so->fetch = table_index_fetch_begin(so->heap);
+		so->slot = table_slot_create(so->heap, NULL);
+		MemoryContextSwitchTo(old);
+	}
+	if (!table_index_fetch_tuple(so->fetch, tid, scan->xs_snapshot, so->slot, &call_again, &all_dead))
+	{
+		*isnull = true;
+		return (Datum) 0;
+	}
+	v = slot_getattr(so->slot, hattr, isnull);
+	if (!*isnull)
+		v = datumCopy(v, att->attbyval, att->attlen);
+	ExecClearTuple(so->slot);
+	return v;
+}
+
 /* The rows of the next unit that passes the predicates, with the values of the returnable columns when the executor wants index tuples */
 static bool
 col_fill_batch(IndexScanDesc scan)
@@ -634,17 +714,29 @@ col_fill_batch(IndexScanDesc scan)
 		for (int a = 1; a <= so->natts; a++)
 		{
 			SiftColVec	vec;
+			bool		isstr;
 
 			if (!sift_col_amcanreturn(scan->indexRelation, a))
 				continue;
-			sift_col_read(&unit, so->first[a], &sel, &vec);
+			isstr = so->defs[so->first[a]].store == SIFT_COLS_STR;
+			if (isstr)
+				sift_col_read_text(&unit, so->first[a], &sel, &vec);
+			else
+				sift_col_read(&unit, so->first[a], &sel, &vec);
 			for (uint32 k = 0; k < so->n; k++)
 			{
 				bool		isnull = vec.nulls && (vec.nulls[k >> 6] >> (k & 63) & 1),
 							ovf = vec.ovf && (vec.ovf[k >> 6] >> (k & 63) & 1);
 
 				so->nulls[k * so->natts + a - 1] = isnull && !ovf;
-				if (ovf)
+				if (ovf && isstr)
+				{
+					bool		hnull;
+
+					so->vals[k * so->natts + a - 1] = heap_str(scan, so, a, &so->tids[k], &hnull);
+					so->nulls[k * so->natts + a - 1] = hnull;
+				}
+				else if (ovf)
 				{
 					/* the only value a returnable column cannot hold is the NaN of a numeric(p <= 18, s), stored as a NULL with the overflow flag */
 					SIFT_INVARIANT(so->defs[so->first[a]].type == SIFT_COLT_NUMERIC,
@@ -652,7 +744,7 @@ col_fill_batch(IndexScanDesc scan)
 					so->vals[k * so->natts + a - 1] = DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 				}
 				else if (!isnull)
-					so->vals[k * so->natts + a - 1] = vec_datum(&so->defs[so->first[a]], &vec, k);
+					so->vals[k * so->natts + a - 1] = isstr ? str_datum(&so->defs[so->first[a]], &vec, k) : vec_datum(&so->defs[so->first[a]], &vec, k);
 			}
 		}
 	}
