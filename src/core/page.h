@@ -52,7 +52,12 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SiftPageGetUsed(page)	((uint32) (((PageHeader) (page))->pd_lower - SIFT_PAGE_DATA_OFFSET))
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
-/* Metapage (block 0) */
+/*
+ * Metapage (block 0). The failure note at its end needs no format minor: a build that does not know it keeps the page as it is (pd_lower
+ * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
+ */
+#define SIFT_MAINT_ERRMSG_LEN	192
+
 typedef struct SiftMetaPageData
 {
 	uint32		magic;
@@ -68,9 +73,15 @@ typedef struct SiftMetaPageData
 	BlockNumber freelist_head;	/* SIFT_PT_FREELIST chain or InvalidBlockNumber */
 	BlockNumber high_water;		/* blocks allocated: the file ends here, truncation lowers it (P7) */
 	TimestampTz maint_requested_at; /* async maintenance dedup */
+	/* The note on the last failed background step (sift.workers). Pages written before it end at maint_failed_at: store.c reads them with the note zero */
+	TimestampTz maint_failed_at;	/* 0: no note */
+	uint32		maint_errcode;		/* the SQLSTATE, packed by MAKE_SQLSTATE */
+	char		maint_errmsg[SIFT_MAINT_ERRMSG_LEN];	/* NUL-terminated, cut to fit */
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
+/* The bytes of a metapage of a build without the note */
+#define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
 
 /* Segment directory (block 1) */
 typedef enum SiftSegKind

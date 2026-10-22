@@ -20,9 +20,12 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/generic_xlog.h"
 #include "access/relation.h"
 #include "funcapi.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
+#include "utils/timestamp.h"
 
 #include "bm25/maint.h"
 #include "core/store.h"
@@ -40,6 +43,7 @@ PG_FUNCTION_INFO_V1(sift_test_truncate);
 PG_FUNCTION_INFO_V1(sift_test_space);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
+PG_FUNCTION_INFO_V1(sift_test_meta_note);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
@@ -634,6 +638,46 @@ sift_test_maint_failures(PG_FUNCTION_ARGS)
 	sift_dir_read(index, &snap);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT32(snap.meta.flags & SIFT_META_FAILURES_MASK);
+}
+
+/*
+ * sift._test_meta_note(index, mode): the metapage as a build without the failure note wrote it ('old': pd_lower stops short of the note) or
+ * with a note of bytes no build wrote ('junk': every byte 0xFF, one failure in a row), for the readers of sift.workers
+ */
+Datum
+sift_test_meta_note(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	char	   *mode = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	Buffer		buf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
+	GenericXLogState *state;
+	Page		page;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(index);
+	page = GenericXLogRegisterBuffer(state, buf, 0);
+	if (strcmp(mode, "old") == 0)
+	{
+		SiftMetaPageData *meta = (SiftMetaPageData *) SiftPageGetData(page);
+
+		memset(SiftPageGetData(page) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+		SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
+		/* one failure counted by such a build, which kept no note */
+		meta->flags = (meta->flags & ~SIFT_META_FAILURES_MASK) | 1;
+		meta->maint_requested_at = GetCurrentTimestamp();
+	}
+	else if (strcmp(mode, "junk") == 0)
+	{
+		memset(SiftPageGetData(page) + SIFT_META_BASE_SIZE, 0xFF, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+		((SiftMetaPageData *) SiftPageGetData(page))->flags = (((SiftMetaPageData *) SiftPageGetData(page))->flags & ~SIFT_META_FAILURES_MASK) | 1;
+		SiftPageSetUsed(page, sizeof(SiftMetaPageData));
+	}
+	else
+		elog(ERROR, "sift test: unknown mode \"%s\"", mode);
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 /* The longest time this backend waited for the maintenance of others since the last call, in microseconds */
