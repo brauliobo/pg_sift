@@ -89,7 +89,8 @@ if [[ $MODE == affected ]]; then
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
-		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col'; fi
+		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate$'
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate$'; fi
 	done
 	case $OUT in
 		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication; do echo "gh:$f $(flag $f)"; done ;;
@@ -239,6 +240,8 @@ if [[ $MODE == full ]]; then
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 20000
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
+	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; a timing that loses only warns (hosted runners are noisy)
+	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job fuzz fuzz 1 "$S/fuzz.sh"
 	flavor_job hardened hardened "$S/hardened.sh"
@@ -277,6 +280,7 @@ else
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
+	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
 	job coverage coverage 1 "$S/coverage.sh" --check
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
