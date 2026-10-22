@@ -28,7 +28,7 @@
 #include "table/store_int.h"
 
 int			sift_tbl_write_buffer_limit = 4096;	/* kB */
-bool		sift_tbl_wide_rows = false;	/* a row that does not fit a write buffer goes to tail pages (format 11) instead of being refused */
+bool		sift_tbl_wide_rows = true;	/* a row that does not fit a write buffer goes to tail pages (format 11) instead of being refused */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */

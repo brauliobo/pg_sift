@@ -85,8 +85,8 @@ sift_tbl_define_gucs(void)
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_wide_rows",
 							 "Accepts a row of a sift_table that does not fit one write buffer (up to PostgreSQL's 1 GB), in pages beyond the buffer's table (format 11).",
-							 "Off: such a row is refused. On: the write buffer that takes it is marked format 11, which a build that does not know it cannot write to; rows that fit keep the layout of earlier versions.",
-							 &sift_tbl_wide_rows, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "Off: such a row is refused. On (the default): the write buffer that takes it is marked format 11, which a build that does not know it cannot write to; rows that fit keep the layout of earlier versions.",
+							 &sift_tbl_wide_rows, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_inline_promote",
 							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
 							 NULL, &sift_tbl_inline_promote, true,
