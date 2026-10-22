@@ -178,7 +178,7 @@ topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 }
 
 /* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */
-static void
+void
 leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows)
 {
 	const SiftSrcLeaf *l = &ex->lay->leaf[leaf];
@@ -197,6 +197,27 @@ leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows)
 
 			(*rows)[r >> 6] |= UINT64CONST(1) << (r & 63);
 		}
+}
+
+/* *rows gets the rows of the unit whose member of the key of vleaf j holds a value the index cannot store: a value of another key is no one's concern */
+static void
+member_overflow_rows(AggExec *ex, int j, uint64 **rows)
+{
+	int			val = ex->vl[j].val;
+	const SiftSrcVec *v;
+	const uint32 *offs,
+			   *par;
+	uint64	   *eq;
+
+	if (!sift_colsrc_overflow(ex->src, &ex->unit, val) || !(v = get_vec(ex, val))->ovf)
+		return;
+	eq = member_elems(ex, j, &offs);
+	par = group_parent(ex, ex->lay->leaf[val].parent);
+	if (!*rows)
+		*rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
+	for (int64 e = 0; e < v->n; e++)
+		if (sift_colsrc_bit(v->ovf, e) && sift_colsrc_bit(eq, e))
+			(*rows)[par[e] >> 6] |= UINT64CONST(1) << (par[e] & 63);
 }
 
 /* does the source read leaf again, so that the member of one key of it (a leaf after the source's) is read from the rows it gives? */
@@ -222,9 +243,18 @@ overflow_rows(AggExec *ex, bool rechecked)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->leaves[i] < ex->nbase && (s->recheck[i] != SRK_NONE) == rechecked)
 			leaf_overflow_rows(ex, s->leaves[i], &rows);
-	for (int j = 0; j < s->nvleaf && !rechecked; j++)
-		if (!s->vleaf[j].types && (s->vleaf[j].count || !leaf_rechecked(s, ex->vl[j].val)))
-			leaf_overflow_rows(ex, s->vleaf[j].count ? s->vleaf[j].obj : ex->vl[j].val, &rows);
+	for (int j = 0; j < s->nvleaf; j++)
+	{
+		if (s->vleaf[j].types)
+			continue;
+		if (s->vleaf[j].count)
+		{
+			if (!rechecked)
+				leaf_overflow_rows(ex, s->vleaf[j].obj, &rows);
+		}
+		else if ((s->vleaf[j].recheck != SRK_NONE) == rechecked && (rechecked || !leaf_rechecked(s, ex->vl[j].val)))
+			member_overflow_rows(ex, j, &rows);
+	}
 	return rows;
 }
 

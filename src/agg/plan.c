@@ -442,6 +442,22 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *o
 	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
 }
 
+/* is leaf m the value column of an object whose members the spec reads only by key, all of them read again from the heap (member_recheck_ok)? */
+static bool
+member_source(AggCtx *c, const SiftAggSpec *s, int m)
+{
+	bool		found = false;
+
+	for (int j = 0; j < s->nvleaf; j++)
+		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && vleaf_source(c, j) == m)
+		{
+			if (s->vleaf[j].recheck == SRK_NONE)
+				return false;
+			found = true;
+		}
+	return found;
+}
+
 /*
  * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when a row of its snapshot has one
  * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. Unless the source reads the rows again as SQL reads
@@ -464,7 +480,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && vleaf_source(c, j) >= 0)
 			leaves = bms_add_member(leaves, vleaf_source(c, j));
 	while ((m = bms_next_member(leaves, m)) >= 0)
-		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE)
+		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE && !member_source(c, s, m))
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m))));
 			return true;

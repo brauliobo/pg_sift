@@ -359,6 +359,7 @@ compile_exists(AggCtx *c, SubPlan *sp)
 {
 	ExistsArg	x = {0};
 	Query	   *q = exists_query(c, sp, &x.rti, &x.quals);
+	SiftAggPred *p;
 	int			grp;
 
 	if (q == NULL)
@@ -370,7 +371,19 @@ compile_exists(AggCtx *c, SubPlan *sp)
 		return NULL;
 	x.params = outer_params(c, sp);
 	grp = group_leaf_of(c, outer_mutator(linitial(((FuncExpr *) x.f->funcexpr)->args), sp), func_leaf_kind(x.kind));
-	return grp < 0 ? NULL : any_elem(c, grp, build_exists, &x);
+	if (grp < 0 || (p = any_elem(c, grp, build_exists, &x)) == NULL)
+		return NULL;
+	/* the call reads every column of every element, whatever its conditions test, and raises for a value its type does not take */
+	if (x.kind == FK_RECORDSET)
+	{
+		RecFunc    *rf = palloc(sizeof(RecFunc));
+
+		rf->grp = grp;
+		rf->f = x.f;
+		c->rec_funcs = lappend(c->rec_funcs, rf);
+		p->pass_poison = true;
+	}
+	return p;
 }
 
 /* ---- EXISTS over the elements with a lookup, or a column of a joined table: a test of the joined tuples (SAP_ELEM_EXISTS) ---- */

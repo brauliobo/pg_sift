@@ -154,9 +154,26 @@ convert(SiftShred *sh, SiftShredRecheck *rc, int col, const char *text)
 	}
 }
 
-/* the error of a cast of a jsonb value that is no number: its type is named as jsonb_float8 names it */
+void
+sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid cast)
+{
+	/* the context the recheck was made in, not rc->mcxt, which the source resets for every batch of rows */
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(rc->col));
+	SiftRecheckMember *m;
+
+	rc->mem = rc->mem ? repalloc(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember)) : palloc((rc->nmem + 1) * sizeof(SiftRecheckMember));
+	m = &rc->mem[rc->nmem++];
+	m->col = col;
+	m->key = pstrdup(key);
+	m->keylen = strlen(key);
+	m->cast = cast;
+	rc->col[col] = SRC_MEMBER;
+	MemoryContextSwitchTo(old);
+}
+
+/* the error of a cast of a jsonb value that is no number: its type is named as jsonb_float8, jsonb_int4 and jsonb_int8 name it */
 static void
-cast_error(SiftShredRecheck *rc, const JsonbValue *v)
+cast_error(SiftShredRecheck *rc, const JsonbValue *v, Oid to)
 {
 	const char *type = v->type == jbvString ? "string" : v->type == jbvBool ? "boolean" : v->type == jbvNull ? "null" :
 		JsonContainerIsArray(v->val.binary.data) ? "array" : "object";
@@ -164,7 +181,7 @@ cast_error(SiftShredRecheck *rc, const JsonbValue *v)
 	MemoryContext old = MemoryContextSwitchTo(rc->mcxt);
 
 	esc.details_wanted = true;
-	errsave((Node *) &esc, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("cannot cast jsonb %s to type %s", type, "double precision")));
+	errsave((Node *) &esc, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("cannot cast jsonb %s to type %s", type, to == INT4OID ? "integer" : to == INT8OID ? "bigint" : "double precision")));
 	keep_error(rc, esc.error_data);
 	MemoryContextSwitchTo(old);
 }
@@ -181,7 +198,20 @@ recheck_leaf(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc, int col)
 			return convert(sh, rc, col, value_text(v));
 		/* a JSON null casts to NULL from PostgreSQL 18, and raises before */
 		if (v->type != jbvNull || PG_VERSION_NUM < 180000)
-			cast_error(rc, v);
+			cast_error(rc, v, FLOAT8OID);
+		return false;
+	}
+	if (rc->col[col] == SRC_MEMBER)
+	{
+		for (int i = 0; i < rc->nmem; i++)
+			if (rc->mem[i].col == col && rc->mem[i].keylen == rc->keylen && memcmp(rc->mem[i].key, rc->key, rc->keylen) == 0)
+			{
+				if (v->type == jbvNumeric)
+					return convert(sh, rc, col, value_text(v));
+				if (v->type != jbvNull || PG_VERSION_NUM < 180000)
+					cast_error(rc, v, rc->mem[i].cast);
+				return false;
+			}
 		return false;
 	}
 	if (rc->col[col] != SRC_TEXTIO || v->type == jbvNull)
