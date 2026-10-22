@@ -575,6 +575,37 @@ bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx
 	}
 }
 
+/* the tuples of key ki whose value is NULL, as a bitmap in ex->knul (one pass without branches); false: none */
+static bool
+key_nulls(AggExec *ex, int ki, const uint8 *isnull, const uint32 *idx, int nsel)
+{
+	uint64	   *nul = ex->knul + (Size) ki * (VECW + PADW);
+	uint64		any = 0;
+
+	for (int w = 0; w * 64 < nsel; w++)
+	{
+		const int	lim = Min(64, nsel - w * 64);
+		uint64		b = 0;
+
+		for (int j = 0; j < lim; j++)
+			b |= (uint64) (isnull[idx[w * 64 + j]] != 0) << j;
+		nul[w] = b;
+		any |= b;
+	}
+	return any != 0;
+}
+
+/* vals[i] = x for the tuples key_nulls found */
+static void
+key_nulls_set(AggExec *ex, int ki, int nsel, uint32 *vals, uint32 x)
+{
+	const uint64 *nul = ex->knul + (Size) ki * (VECW + PADW);
+
+	for (int w = 0; w * 64 < nsel; w++)
+		for (uint64 b = nul[w]; b; b &= b - 1)
+			vals[w * 64 + pg_rightmost_one_pos64(b)] = x;
+}
+
 /*
  * The key of the selected rows of a timestamp key: the range table of bucket numbers (map and base, as an integer key's), or the
  * ids themselves (*map_out stays NULL) when an infinity or a wide range is among the rows.
@@ -614,10 +645,8 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 	old = MemoryContextSwitchTo(ex->tcxt);
 	rt_cover(&k->rt, mn, mx, key_range_fill, &f);
 	MemoryContextSwitchTo(old);
-	if (v->isnull)
-		for (int i = 0; i < nsel; i++)
-			if (v->isnull[idx[i]])
-				vals_out[i] = (uint32) k->rt.lo;
+	if (v->isnull && key_nulls(ex, ki, v->isnull, idx, nsel))
+		key_nulls_set(ex, ki, nsel, vals_out, (uint32) k->rt.lo);
 	*map_out = (uint32 *) k->rt.tab;
 	*base_out = k->rt.lo;
 }
@@ -717,10 +746,8 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		DictSlot   *s = dict_slot(ex, v->dict);
 		uint32	   *map = dict_kmap(ex, s, v->dict, ki);
 
-		if (v->isnull)
-			for (int i = 0; i < nsel; i++)
-				if (v->isnull[idx[i]])
-					vals_out[i] = v->dict->n;
+		if (v->isnull && key_nulls(ex, ki, v->isnull, idx, nsel))
+			key_nulls_set(ex, ki, nsel, vals_out, v->dict->n);
 		*map_out = map;
 		*base_out = 0;
 	}
@@ -728,18 +755,16 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	{
 		int32		mn = 0,
 					mx = 0;
-		int			nw = (nsel + 63) / 64;
+		bool		nulls = v->isnull && key_nulls(ex, ki, v->isnull, idx, nsel),
+					any;
 
 		/* the range of the non-null values */
-		fill_ones(ex->tmpm, nsel);
-		if (v->isnull)
+		if (nulls)
 		{
-			for (int i = 0; i < nsel; i++)
-				ex->nb[i] = v->isnull[idx[i]];
-			sift_colk_nonzero(ex->nb, nsel, ex->tmpm2);
-			sift_colk->bits_andnot(ex->tmpm, ex->tmpm2, nw);
+			fill_ones(ex->tmpm, nsel);
+			sift_colk->bits_andnot(ex->tmpm, ex->knul + (Size) ki * (VECW + PADW), (nsel + 63) / 64);
 		}
-		bool		any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) vals_out, ex->tmpm, nsel);
+		any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) vals_out, nulls ? ex->tmpm : NULL, nsel);
 
 		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
@@ -749,10 +774,8 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 			*base_out = 0;
 			return;
 		}
-		if (v->isnull)
-			for (int i = 0; i < nsel; i++)
-				if (v->isnull[idx[i]])
-					vals_out[i] = (uint32) k->rt.lo;
+		if (nulls)
+			key_nulls_set(ex, ki, nsel, vals_out, (uint32) k->rt.lo);
 		*map_out = (uint32 *) k->rt.tab;
 		*base_out = k->rt.lo;
 	}
@@ -778,19 +801,21 @@ key_null_id(AggExec *ex, int ki)
 
 /* ids of the key for the tuples whose value was NULL are 0 (or the id of expr(NULL)): fixes gid after the kernels */
 static void
-key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *vals, uint32 *gid, uint32 mult, uint32 *ids)
+key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *vals, uint32 *gid, uint32 mult, uint32 *ids)
 {
 	SiftAggKey *sk = &ex->spec->key[ki];
 	KeyState   *k = &ex->ks[ki];
 	const SiftSrcVec *v = get_vec(ex, sk->leaf);
+	const uint64 *nul = ex->knul + (Size) ki * (VECW + PADW);
 	uint32		nullid;
 
 	if (v->isnull == NULL || ex->lay->leaf[sk->leaf].vtype == SCV_CODE)
 		return;
 	nullid = key_null_id(ex, ki);
-	for (int i = 0; i < nsel; i++)
-		if (v->isnull[idx[i]])
+	for (int w = 0; w * 64 < nsel; w++)
+		for (uint64 b = nul[w]; b; b &= b - 1)
 		{
+			int			i = w * 64 + pg_rightmost_one_pos64(b);
 			uint32		cur = ((uint32 *) k->rt.tab)[(int32) vals[i] - k->rt.lo];
 
 			if (gid)
@@ -825,7 +850,7 @@ compute_kids(AggExec *ex, int nsel, uint32 *kid)
 		else
 		{
 			sift_aggk->gid_i32(out, (const int32 *) vals, bases[j], maps[j], nsel, 1);
-			key_null_fix(ex, j, nsel, idx, vals, NULL, 1, out);
+			key_null_fix(ex, j, nsel, vals, NULL, 1, out);
 		}
 	}
 }
@@ -866,11 +891,8 @@ compute_gids(AggExec *ex, int nsel)
 			memset(ex->gid, 0, nsel * sizeof(uint32));
 			for (int j = 0; j < nk; j++)
 			{
-				const uint32 *idx = NULL;
 				const SiftSrcLeaf *lf = key_lf(ex, j);
 
-				if (lf)
-					gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 				if (maps[j] == NULL)
 					for (int i = 0; i < nsel; i++)
 						ex->gid[i] += vals[j][i] * ex->ks[j].mult;
@@ -879,7 +901,7 @@ compute_gids(AggExec *ex, int nsel)
 				else
 				{
 					sift_aggk->gid_i32(ex->gid, (const int32 *) vals[j], bases[j], maps[j], nsel, ex->ks[j].mult);
-					key_null_fix(ex, j, nsel, idx, vals[j], ex->gid, ex->ks[j].mult, NULL);
+					key_null_fix(ex, j, nsel, vals[j], ex->gid, ex->ks[j].mult, NULL);
 				}
 			}
 			return;
