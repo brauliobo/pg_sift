@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 3.2.1 - 2026-10-22
+
 - Added: bench: `bench/bench duckdb` measures pg_duckdb (the official release image, DuckDB reading the heap and a Parquet file it writes) against pg_sift and PostgreSQL on the store benchmark's orders and ten questions, in two containers with equal limits, warm and cold; the questions pg_duckdb cannot run are reported as not supported (`docs/results/duckdb.tsv`, the `duckdb` block of docs/BENCHMARKS.md and README.md).
 - Fixed: pg_sift: a set filter (`col = ANY($1)`, `col IN (..)`) of thousands of ids was slower in 3.2.0 than in 3.1.0 (3M facts, 100,000 ids: generic plan 10 to 125 ms, literal list 121 to 238 ms; 10,000 ids 5 to 15 ms). 3.2.0 sent the sorted members of every `IN` list with gaps along with its zone test, and the column scan rebuilt that test (copy, sort) at each range of units it began; a list of more than 256 members meets the zone of nearly every unit and is tested by its range again, as in 3.1 (a list of widely spread keys in the hash table keeps its members). Same data, host and run (7 runs, median): 100,000 ids generic plan / custom plan / literal list 9.8 / 110 / 123 ms, 10,000 ids 4.5 / 14 / 16 ms; `IN (SELECT ..)` of 100,000 members 141 to 27 ms. Test `agg_zone_or`.
 - Fixed: pg_sift: a column segment written under `sift.col_format_minor = 4` or 5 (the setting for readers of 3.1) carried the zone flag of a JSON null that only 3.2 knows, so `sift.col_verify` of pg_sift 3.1 reported such an index as corrupt (its answers were right); the flag is now written from minor 6 on. Test `col_zone_jnull`.
