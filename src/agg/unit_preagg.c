@@ -708,6 +708,9 @@ preagg_rechecked(AggExec *ex)
 	for (int i = 0; ex->recheck && i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE && sift_colsrc_overflow(ex->src, &ex->unit, s->leaves[i]))
 			return true;
+	for (int j = 0; ex->recheck && j < s->nvleaf; j++)
+		if (s->vleaf[j].recheck != SRK_NONE && sift_colsrc_overflow(ex->src, &ex->unit, ex->vl[j].val))
+			return true;
 	return false;
 }
 
