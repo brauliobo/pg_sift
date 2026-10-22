@@ -19,6 +19,7 @@
 
 #include "col/am.h"
 #include "col/build.h"
+#include "col/shred.h"
 #include "core/limits.h"
 #include "core/ops.h"
 #include "core/cmp.h"
