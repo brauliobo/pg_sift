@@ -235,7 +235,7 @@ sift_table_maintain(PG_FUNCTION_ARGS)
 			ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
 		if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
 			aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
-		sift_tbl_maintain(rel, &r);
+		sift_tbl_maintain(rel, false, true, &r);
 		table_close(rel, NoLock);
 	}
 	else

@@ -2,6 +2,7 @@
 -- maintained keeps every row and answer, drops the dead rows from its segments and gives the space back like the table that is vacuumed,
 -- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
 CREATE EXTENSION pg_sift;
+SET sift.table_auto_defrag = off;
 CREATE TABLE mt (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE mv (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE mn (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);

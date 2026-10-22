@@ -1,0 +1,130 @@
+# sift_table maintenance without VACUUM: the backend that closes a write buffer asks a worker for a pass when the tombstones or the free
+# blocks cross the thresholds and not below them, not with the setting off, and the pass keeps every row; the same pass is crash safe at the
+# boundaries of the space step.
+use strict;
+use warnings FATAL => 'all';
+use FindBin;
+use lib $FindBin::RealBin;
+use SiftTest;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+
+my $node = sift_node('autodefrag');
+$node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_auto_defrag = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nsift.table_auto_defrag_delay = 0\nmax_parallel_maintenance_workers = 0");
+$node->start;
+install_sift($node);
+plan skip_all => 'space crash injection needs the testing build' unless $node->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
+$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+
+my $rows = knob('SIFT_ROWS', 60000, 30000);
+my $worker = qr/table maintenance worker finished/;
+my $digest = 'SET sift.enable_agg = off; SELECT count(*) || $$:$$ || sum(id) || $$:$$ || sum(v) || $$:$$ || sum(length(t)) FROM %s';
+
+sub fill
+{
+	my ($tbl) = @_;
+	$node->safe_psql('postgres', "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false)");
+	$node->safe_psql('postgres', "INSERT INTO $tbl SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, $rows) g");
+	# settled into column segments, the tombstone log empty: the thresholds are about what the churn adds
+	$node->safe_psql('postgres', "VACUUM $tbl");
+	# the VACUUM closes a buffer too and may have asked for a pass; a request inside the naptime of that one is not made
+	sleep 1;
+}
+# rows written again so that write buffers fill and close (the point where the backend looks)
+sub churn_writes
+{
+	my ($tbl, $settings, $from) = @_;
+	$node->safe_psql('postgres', "$settings; INSERT INTO $tbl SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series($from, $from + $rows) g");
+}
+sub fired
+{
+	my ($offset) = @_;
+	return $node->wait_for_log($worker, $offset);
+}
+sub quiet_for
+{
+	my ($offset, $seconds) = @_;
+	sleep $seconds;
+	return slurp_file($node->logfile, $offset) !~ $worker;
+}
+
+subtest 'below the thresholds nothing is asked for' => sub {
+	fill('a');
+	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 10 = 0');	# 10% of the rows, the default threshold is 30
+	my $offset = -s $node->logfile;
+	my $before = $node->safe_psql('postgres', sprintf($digest, 'a'));
+	churn_writes('a', 'SET sift.table_auto_defrag = on', $rows + 1);
+	ok(quiet_for($offset, 3), 'no worker started');
+	is($node->safe_psql('postgres', "SELECT sum(dead_rows) FROM sift.table_segments('a') WHERE kind = 'columns'"), '0', 'no bit cleared');
+};
+
+subtest 'with the setting off nothing is asked for above them' => sub {
+	fill('b');
+	$node->safe_psql('postgres', 'DELETE FROM b WHERE id % 10 < 4');	# 40%
+	my $offset = -s $node->logfile;
+	churn_writes('b', 'SET sift.table_auto_defrag = off', $rows + 1);
+	ok(quiet_for($offset, 3), 'no worker started');
+};
+
+subtest 'above the thresholds a worker rewrites the segments and keeps every row' => sub {
+	fill('c');
+	my $blocks = $node->safe_psql('postgres', "SELECT relation_blocks FROM sift.table_space('c')");
+	$node->safe_psql('postgres', 'DELETE FROM c WHERE id % 10 < 4');
+	my $offset = -s $node->logfile;
+	churn_writes('c', 'SET sift.table_auto_defrag = on', $rows + 1);
+	my $after_writes = $node->safe_psql('postgres', sprintf($digest, 'c'));
+	ok(fired($offset), 'a worker started and finished');
+	# the rows deleted are gone from the segments the worker rewrote; what the writer added is not touched
+	ok($node->poll_query_until('postgres', "SELECT sum(rows) FILTER (WHERE kind = 'columns') <= (SELECT count(*) FROM c) FROM sift.table_segments('c')"), 'the segments no longer hold more rows than are live');
+	is($node->safe_psql('postgres', sprintf($digest, 'c')), $after_writes, 'the same rows and sums');
+	my $cleared = $node->safe_psql('postgres', "SELECT count(*) FROM c WHERE id % 10 < 4 AND id <= $rows");
+	is($cleared, '0', 'the deleted rows stay deleted');
+	# VACUUM after it still finishes the job for the indexes and the log
+	$node->safe_psql('postgres', 'VACUUM c');
+	is($node->safe_psql('postgres', sprintf($digest, 'c')), $after_writes, 'the same rows after VACUUM');
+};
+
+subtest 'a reader holding the table makes the worker give up the tail without waiting' => sub {
+	fill('d');
+	$node->safe_psql('postgres', 'DELETE FROM d WHERE id % 10 < 4');
+	my $bg = $node->background_psql('postgres');
+	$bg->query_safe('BEGIN; SET sift.enable_agg = off; DECLARE cur CURSOR FOR SELECT * FROM d; FETCH 1 FROM cur');
+	my $blocks = $node->safe_psql('postgres', "SELECT relation_blocks FROM sift.table_space('d')");
+	my $res = $node->safe_psql('postgres', "SET statement_timeout = '5s'; SELECT busy FROM sift.table_maintain('d')");
+	is($res, 'f', 'the call returned while the cursor was open');
+	$bg->query_safe('COMMIT');
+	$bg->quit;
+};
+
+# A crash at each boundary of the space step leaves the old or the new directory
+sub crash_fixture
+{
+	$node->safe_psql('postgres', "DROP TABLE IF EXISTS s; CREATE TABLE s (id int, v bigint, body text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)");
+	$node->safe_psql('postgres', "INSERT INTO s SELECT g, g * 3, repeat(md5(g::text), CASE WHEN g % 400 = 0 THEN 300 ELSE 1 END) FROM generate_series(1, 60000) g");
+	$node->safe_psql('postgres', 'UPDATE s SET v = v + 1 WHERE id % 10 = 0; DELETE FROM s WHERE id % 20 = 1');
+	$node->safe_psql('postgres', 'VACUUM s');
+	$node->safe_psql('postgres', 'ALTER TABLE s RESET (vacuum_truncate)');
+}
+for my $phase (1 .. 3)
+{
+	subtest "crash phase $phase of the space step of a pass" => sub {
+		crash_fixture();
+		my $expected = $node->safe_psql('postgres', 'SET sift.enable_agg = off; SELECT count(*), sum(id), sum(v), sum(length(body)) FROM s');
+		my $offset = -s $node->logfile;
+		system("$ENV{SIFT_REPO}/scripts/leakcheck.sh", 'expect', 1, 'terminated by signal 9');
+		my ($out, $err) = ('', '');
+		my $rc = $node->psql('postgres', "SET sift.test_space_crash = $phase; SELECT sift.table_maintain('s')", stdout => \$out, stderr => \$err);
+		ok($rc != 0, 'the injected boundary killed the pass');
+		ok($node->log_contains(qr/sift test: space crash phase $phase/, $offset), 'the requested boundary was reached');
+		$node->wait_for_log(qr/database system is ready to accept connections/, $offset);
+		is($node->safe_psql('postgres', 'SET sift.enable_agg = off; SELECT count(*), sum(id), sum(v), sum(length(body)) FROM s'), $expected, 'all rows and overflow values survived');
+		is($node->safe_psql('postgres', "SELECT sift._test_check('s') >= 0"), 't', 'every referenced and free extent has one owner');
+		$node->safe_psql('postgres', "SELECT sift.table_maintain('s')");
+		is($node->safe_psql('postgres', "SELECT sift._test_check('s')"), '0', 'the next pass also reclaimed any crash orphans');
+		is($node->safe_psql('postgres', 'SET sift.enable_agg = off; SELECT count(*), sum(id), sum(v), sum(length(body)) FROM s'), $expected, 'same rows after it');
+	};
+}
+
+$node->stop;
+done_testing();
