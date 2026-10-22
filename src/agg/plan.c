@@ -139,7 +139,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 
 	scan_from((Node *) parse->jointree, fs);
 	if (!fs->ok)
-		return false;
+		return agg_refuse(FROM_SHAPE);
 	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
 	foreach_int(rti, fs->rtis)
 		if (root->simple_rel_array[rti] != NULL)
@@ -159,11 +159,11 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 
 			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
 				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
-				return false;
+				return agg_refuse(TABLE_KIND);
 			if (c->relid == 0)
 				c->relid = rti;
 			else if (part || c->joinless)
-				return false;
+				return agg_refuse(FROM_SHAPE);
 			else
 				joined = lappend_int(joined, rti);
 		}
@@ -176,56 +176,56 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
 			foreach_ptr(LeftJoin, lj, fs->lefts)
 				if (lj->rti == rti && (c->func_key = left_each_key(lj, rti, c->func_kind)) == NULL)
-					return false;
+					return agg_refuse(OUTER_JOIN);
 		}
 		else if (input_rel == NULL || c->joinless ||
 				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
-			return false;
+			return agg_refuse(FROM_SHAPE);
 		else
 			joined = lappend_int(joined, rti);
 	}
 	if (c->relid == 0)
-		return false;
+		return agg_refuse(FROM_SHAPE);
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)
-			return false;
+			return agg_refuse(OUTER_JOIN);
 	c->rel = root->simple_rel_array[c->relid];
 	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
 	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
 	if (c->rel == NULL || !find_source(c, &ii))
-		return false;
+		return agg_refuse(NO_SOURCE);
 	c->nsiblings = list_length(joined) + (c->func_rti != 0);
 	foreach_int(rti, joined)
 		if (!add_join(c, fs, rti))
-			return false;
+			return agg_refuse(JOIN_CHILD);
 	if (input_rel != NULL)
 	{
 		if (!bms_is_member(c->relid, input_rel->relids))
-			return false;
+			return agg_refuse(FROM_SHAPE);
 		for (int m = -1; (m = bms_next_member(input_rel->relids, m)) >= 0;)
 			if (rt_fetch(m, parse->rtable)->rtekind != RTE_JOIN)
 			{
 				if (!bms_is_member(m, allrtis))
-					return false;
+					return agg_refuse(FROM_SHAPE);
 				nin++;
 			}
 		if (nin + list_length(c->joins) < list_length(fs->rtis))
-			return false;
+			return agg_refuse(FROM_SHAPE);
 	}
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
 	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
-		return false;
+		return agg_refuse(OUTER_JOIN);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind) && jc != llast(c->joins))
-			return false;
+			return agg_refuse(OUTER_JOIN);
 	build_attexprs(c);
 	if (c->func_rti)
 	{
 		int			leaf = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
 
 		if (leaf < 0)
-			return false;
+			return agg_refuse(UNNEST_LEAF);
 		if (c->func_key)
 			c->func_obj = leaf;
 		else
@@ -304,7 +304,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	StringInfoData txt;
 
 	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
-		return false;
+		return agg_refuse(JOIN_CONDITION);
 	quals = list_concat(quals, scan_quals);
 	s->pred = palloc(Max(list_length(quals), 1) * sizeof(SiftAggPred *));
 	s->post = palloc(Max(list_length(quals) + list_length(joined) + list_length(scan_post), 1) * sizeof(SiftAggPred *));
@@ -321,7 +321,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		if (p == NULL)
 			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return agg_refuse(WHERE);
 		if (p->level > 1)
 			s->post[s->npost++] = p;
 		else
@@ -333,7 +333,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return agg_refuse(WHERE);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
@@ -343,7 +343,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return agg_refuse(WHERE);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
@@ -480,6 +480,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE && !member_source(c, s, m))
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m))));
+			agg_refused_on(DIRTY_UNITS, leaf_name(c, m));
 			return true;
 		}
 	return false;
@@ -658,7 +659,14 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 {
 	int			nworkers;
 
-	if (!spec_finish(c, s, root, input_rel, keys) || !first_fits(s) || !child_paths(c, s))
+	if (!spec_finish(c, s, root, input_rel, keys))
+		return;
+	if (!first_fits(s))
+	{
+		agg_refused(FIRST_MEMORY);
+		return;
+	}
+	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
@@ -763,7 +771,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 
 	/* keys */
 	if (list_length(groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
+	{
+		agg_refused(TOO_MANY_KEYS);
 		return;
+	}
 	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, groupClause)
 	{
@@ -773,7 +784,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		if (IsA(e, Const) && parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause))
 			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
+		{
+			agg_refused(GROUP_KEY);
 			return;
+		}
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
 		ow.keys = lappend(ow.keys, e);
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
@@ -786,7 +800,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	if (parse->hasDistinctOn)
 	{
 		if (!distinct_on_more(c, parse, &more) || !first_aggs(c, target, ow.keys, more, &firsts))
+		{
+			agg_refused(DISTINCT_ON);
 			return;
+		}
 		ow.aggs = firsts;
 	}
 	else
@@ -798,7 +815,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	if (gextra && gextra->havingQual)
 		out_walker((Node *) gextra->havingQual, &ow);
 	if (ow.bad)
+	{
+		agg_refused(OUTPUT_EXPR);
 		return;
+	}
 	s->agg = palloc0(Max(list_length(ow.aggs), 1) * sizeof(SiftAggAgg));
 	foreach_ptr(Node, a, ow.aggs)
 	{
@@ -806,7 +826,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 
 		if (!(IsA(a, GroupingFunc) ? compile_grouping(parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
 			  compile_agg(c, (Aggref *) a, &s->agg[s->naggs], s->naggs)))
+		{
+			agg_refused(AGGREGATE);
 			return;
+		}
 		if (first)
 		{
 			first_mode(&s->agg[s->naggs], list_length(more), lead);
@@ -829,17 +852,31 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 
 	if (stage == UPPERREL_ORDERED)
 	{
+		agg_arm_begin("topn", false);
 		topn_paths(root, input_rel, output_rel);
+		agg_arm_end();
 		return;
 	}
 	if (!sift_enable_agg || parse->commandType != CMD_SELECT || parse->hasTargetSRFs || root->rowMarks != NIL || parse->hasRecursive)
+	{
+		if (stage == UPPERREL_GROUP_AGG && parse->commandType == CMD_SELECT)
+		{
+			agg_arm_begin("single", true);
+			agg_refuse_note(sift_enable_agg ? AGG_REFUSE_QUERY_KIND : AGG_REFUSE_DISABLED, NULL);
+			agg_arm_end();
+		}
 		return;
+	}
 	/* SELECT DISTINCT of a plain scan is a group-by with no aggregate; over a grouped or windowed query it is not the scan's */
 	if (stage == UPPERREL_DISTINCT)
 	{
 		if (parse->distinctClause != NIL && root->upper_targets[UPPERREL_DISTINCT] != NULL &&
 			!(parse->hasAggs || parse->groupClause || parse->groupingSets || parse->hasWindowFuncs || parse->havingQual))
+		{
+			agg_arm_begin("distinct", true);
 			group_paths(root, input_rel, output_rel, root->upper_targets[UPPERREL_DISTINCT], NULL, parse->distinctClause);
+			agg_arm_end();
+		}
 		return;
 	}
 	if (stage != UPPERREL_GROUP_AGG || parse->hasDistinctOn || !(parse->hasAggs || parse->groupClause || parse->groupingSets))
@@ -850,15 +887,27 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
 	{
 		if (!parse->hasWindowFuncs && sift_agg_two_level_on)
+		{
+			agg_arm_begin("two_level", false);
 			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+			agg_arm_end();
+		}
 		return;
 	}
 	/* a join of a spine and the arms of a two level aggregate; any other join is the single level's */
 	if (!parse->hasWindowFuncs && sift_agg_two_level_on && list_length(parse->jointree->fromlist) == 1 &&
 		(IsA(linitial(parse->jointree->fromlist), JoinExpr) || IsA(linitial(parse->jointree->fromlist), FromExpr)))
+	{
+		agg_arm_begin("two_level", false);
 		sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+		agg_arm_end();
+	}
+	agg_arm_begin("single", true);
 	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
+	agg_arm_end();
+	agg_arm_begin("rows", false);
 	sift_agg_rows_paths(root, input_rel, output_rel, extra);
+	agg_arm_end();
 }
 
 static bool
@@ -876,7 +925,9 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 {
 	int			outer_pick = agg_index_pick,
 				outer_usable = agg_index_usable;
+	AggStage	st;
 
+	agg_stage_begin(&st, root->query_level);
 	agg_index_usable = 0;
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
@@ -884,6 +935,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		if (has_agg_path(output_rel) || agg_index_pick + 1 >= agg_index_usable)
 			break;
 	}
+	agg_stage_end(&st);
 	agg_index_pick = outer_pick;
 	agg_index_usable = outer_usable;
 }

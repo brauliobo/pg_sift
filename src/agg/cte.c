@@ -24,6 +24,7 @@
 
 #include "agg/agg.h"
 #include "agg/colsrc.h"
+#include "agg/refuse.h"
 
 /*
  * The inline plan must cost this many times less on top of the unnest factor that agg_cost charges its scans (the plain plan is
@@ -193,6 +194,7 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	Query	   *inline_parse;
 	PlannedStmt *plain,
 			   *inlined;
+	const char *outer_variant;
 
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
@@ -201,12 +203,20 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	shared_cte_walker((Node *) inline_parse, &(bool) {true});
 	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
 		standard_planner(SIFT_PLANNER_ARGS(parse));
+	outer_variant = agg_variant_push("inline");
 	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
 		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
+	agg_variant = outer_variant;
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
 	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plan_cost_without_unread_ctes(plain) &&
 		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
+	{
+		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
 		return inlined;
+	}
+	if (sift_explain_refusals && (uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
+				   psprintf("inline costs %.2f, the shared CTE %.2f", inlined->planTree->total_cost, plan_cost_without_unread_ctes(plain)), false);
 	return plain;
 }
 

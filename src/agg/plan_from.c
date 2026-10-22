@@ -488,7 +488,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 
 	*ixout = NULL;
 	if (rte->relkind == RELKIND_PARTITIONED_TABLE)
-		return part_source(c);
+		return part_source(c) || agg_refuse(PARTITION_SOURCE);
 	if (sift_colsrc_is_table(get_rel_relam(rte->relid)))
 	{
 		rel = table_open(rte->relid, NoLock);
