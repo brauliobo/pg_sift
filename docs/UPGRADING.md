@@ -110,7 +110,7 @@ Every `blocker` row says how to write what that release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 13, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 14, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it |
 | `sift_table` | with `sift.col_format_minor` set, `ALTER TABLE t SET ACCESS METHOD heap` and back to `sift_table` rewrites it in that format |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
@@ -134,7 +134,7 @@ An existing index or table keeps what it holds; the new default applies to the u
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |
-| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`) | 3.3 |
+| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`), 14 (a string dictionary of 1,024 strings or more, stored for a lookup in place) | 3.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

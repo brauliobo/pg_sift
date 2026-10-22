@@ -150,13 +150,14 @@ ctest_lut_finish(SiftCTest *t, uint64 *lut, uint32 ncodes)
 static void
 ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 {
-	uint64	   *lut;
+	uint64	   *lut = NULL;
 	int64	   *codes = NULL;
 	uint32		nfound = 0;
 
 	SIFT_INVARIANT(dict != NULL, "sift_col: a test on a text column needs its dictionary");
 	t->pred = p;
-	lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
+	if (p->op != SIFT_COLOP_EQ && p->op != SIFT_COLOP_NE)
+		lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
 	switch (p->op)
 	{
 		case SIFT_COLOP_EQ:
@@ -179,13 +180,21 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 			}
 			if (t->kind == SIFT_CT_SET || t->kind == SIFT_CT_NSET)
 			{
-				/* several codes: the same answer as a LUT over the dictionary */
-				SiftCTest	set = *t;
+				/* several codes: the same answer as a LUT over the dictionary (the members, or all the others) */
+				bool		negate = t->kind == SIFT_CT_NSET;
 
 				memset(t, 0, sizeof(*t));
-				for (uint32 c = 0; c < dict->n; c++)
-					if (set_has(&set, c) != (set.kind == SIFT_CT_NSET))
-						lut[c >> 6] |= UINT64CONST(1) << (c & 63);
+				if (negate)
+				{
+					memset(lut, 0xff, dict->n / 64 * sizeof(uint64));
+					if (dict->n % 64)
+						lut[dict->n / 64] = (UINT64CONST(1) << (dict->n % 64)) - 1;
+				}
+				for (uint32 i = 0; i < nfound; i++)
+					if (negate)
+						lut[codes[i] >> 6] &= ~(UINT64CONST(1) << (codes[i] & 63));
+					else
+						lut[codes[i] >> 6] |= UINT64CONST(1) << (codes[i] & 63);
 				ctest_lut_finish(t, lut, dict->n);
 			}
 			return;

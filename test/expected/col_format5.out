@@ -20,7 +20,7 @@ END $$;
 SET sift.col_format_minor = 5;
 ERROR:  invalid value for parameter "sift.col_format_minor": 5
 DETAIL:  Column format minor 5 is written for wide leaves only, whatever the setting.
-HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12 or 13.
+HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13 or 14.
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
 	   CASE WHEN i % 11 = 0 THEN 'NaN' ELSE i / 3.0 END FROM generate_series(1, 30000) i;
@@ -60,7 +60,7 @@ CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n) WITH (cube_
 SELECT fmt('g_all');
  fmt 
 -----
- 5
+ 14
 (1 row)
 
 SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('g_all')) = fmt('g_all') AS hook_agrees;
@@ -90,9 +90,9 @@ SELECT sift.col_promote('g_narrow');
 (1 row)
 
 SELECT fmt('g_all'), fmt('g_narrow');
- fmt | fmt 
------+-----
- 5,5 | 3,4
+ fmt  | fmt 
+------+-----
+ 14,5 | 3,4
 (1 row)
 
 SELECT sift.col_merge('g_all', true);
@@ -104,7 +104,7 @@ SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
  fmt 
 -----
- 5
+ 14
 (1 row)
 
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true);
@@ -138,7 +138,7 @@ REINDEX INDEX g_all;
 SELECT fmt('g_all');
  fmt 
 -----
- 5
+ 14
 (1 row)
 
 SELECT sift.col_verify('g_all', true);
