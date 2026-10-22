@@ -6,8 +6,7 @@
 Prints the Benchmarks block of README.md and rewrites, in place, the blocks between these marker lines (a file without them is left alone,
 with an error):
 
-  README.md           <!-- bench:summary:begin --> ... <!-- bench:summary:end -->   the two bullets that quote the ratios and the sizes
-                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the table, the bullets, the charts of ## Benchmarks
+                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the articles table, the bullets, the charts of the Search benchmark (the places table is in docs/BENCHMARKS.md)
   docs/BENCHMARKS.md  <!-- bench:slim:begin -->   ... <!-- bench:slim:end -->      the tier's tables (the Markdown of steps/tables.py)
 
 Nothing in a block is typed by hand: every number is a row of bench/results (tables.py writes the corpus size, the seconds of the phases and
@@ -180,14 +179,6 @@ def table(t):
     return tables.md_table(head, body)
 
 
-def places_table(t):
-    """the p50 latency in ms of the top-20 workload of each engine and query class (the fastest in bold)"""
-    classes = tables.place_classes(r for r in t.rows if r[:3] == ('places', t.tier, 'sift') and r[5] == 'p50_ms')
-    best = {c: best_edge([t.p50(e, c, 'top') for e in t.places], higher=False) for c in classes}
-    body = [[('**%s**' % t.label(e)) if e == 'sift' else t.label(e)] + [measured_cell(t.p50(e, c, 'top'), best[c], higher=False) for c in classes] for e in t.places]
-    return tables.md_table(['places (p50 ms, top 20)'] + classes, body)
-
-
 def places_bullet(t):
     """sift against pg_search (and Elasticsearch) on the places: the range of the top-20 p50 over the classes, and the cells where sift is ahead"""
     p50 = [r for r in t.rows if r[:2] == ('places', t.tier) and r[5] == 'p50_ms']
@@ -221,15 +212,15 @@ def benchmarks_block(t, timing):
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
     budget, details = tables.cpus_parts(s.get('quota', ''))
     out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client): the slim tier of the suite, the default of `bench/bench all`.' % (articles, places), '',
-           '- **Scope:** the engines, query classes and workloads of the full tier on a smaller corpus; cells stop at a 5% relative standard error (at most 1 s).',
+           '- **Scope:** every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus; cells stop at a 5% relative standard error (at most 1 s).',
            '- **Method:** same data, queries and clients for every engine, one engine at a time, median of %s interleaved rounds.' % ('2-%d' % rounds if rounds > 2 else '2'),
            '- **CPUs:** ' + budget + (':' if details else '.')]
     out += ['  - ' + d for d in details]
     if s:
         out += ['- **Host:** measured %s on %s (%s threads), PostgreSQL %s.' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
-    out += ['- **Cells:** queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
-            'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value.', '']
-    out += table(t) + [''] + places_table(t) + ['']
+    out += ['- **Cells:** queries per second (higher is better); '
+            'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value. The places are in the chart below and in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#places).', '']
+    out += table(t) + ['']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
     out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).']
@@ -239,24 +230,8 @@ def benchmarks_block(t, timing):
     out += ['Reproduce:', '',
             '- `bench/bench all` (see [bench/README.md](bench/README.md)): %s of builds and measurements for the slim tier, %s with the cold-cache tables of `--docs`.' % (timing[0], timing[1]),
             '- `bench/bench all --docs` rewrites this section from a new session.',
-            '- `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour); its last numbers are kept in [docs/BENCHMARKS.md] as history.',
+            '- `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour) and writes its own results; they are not published here.',
             '- `bench/bench regress --run` compares this checkout with an earlier release and exits non-zero on a regression.']
-    return out
-
-
-def summary_block(t):
-    out = []
-    ratios = [r for r in (ratio(t.qps('sift', c), t.qps(t.ref, c))[0] for c in t.classes if t.ref != 'sift') if r is not None]
-    n = format(t.corpus('articles'), ',')
-    if ratios:
-        lo, hi = min(ratios), max(ratios)
-        out.append('- **Fast:** %s on %s Wikipedia articles ([benchmarks](#benchmarks)).' % (
-            'ahead of ParadeDB pg_search on every query class we measured, %s to %s' % (x(lo), x(hi)) if lo >= 1 else
-            '%s to %s the throughput of ParadeDB pg_search across the query classes' % (x(lo), x(hi)), n))
-    sift, ps, nop = t.num('articles', 'sift', metric='index_mib'), t.num('articles', 'pg_search', metric='index_mib'), t.num('articles', 'sift_nopos', metric='index_mib')
-    if sift and ps:
-        out.append('- **Small:** %.0f MiB for those articles with phrase support, %s pg_search%s.' % (
-            sift, '%s smaller than' % x(ps / sift) if sift < ps else '%s the size of' % x(sift / ps), '; %.0f MiB without word positions' % nop if nop else ''))
     return out
 
 
@@ -269,42 +244,6 @@ def replace_block(path, name, lines):
     new = text[:m.start(2)] + '\n'.join(lines).rstrip('\n') + '\n' + text[m.start(3):]
     if new != text:
         open(path, 'w').write(new)
-
-
-def fidelity(rows, t, other='full'):
-    """the tier against another one that has rows (the last full session): the ratio of each engine to the reference side by side, so the
-    classes where the small corpus changes the picture are visible; a cell is marked * when the two ratios differ by more than 2 times"""
-    f = Tier(rows, other)
-    if not f.articles:
-        return []
-    out = ['### %s against %s' % (t.tier.capitalize(), other), '',
-           'Throughput of each engine relative to %s, %s tier / %s tier (the last session of %s is kept below as history), and p50 latency of the top-20 workload relative to sift. '
-           '`*` marks a pair that differs by more than 2 times; what it does not show is the noise of either session (their standard errors are in the tables).' % (
-               tables.NAME[t.ref], t.tier, other, other), '']
-    classes = [c for c in t.classes if c in f.classes]
-    cells, flagged = 0, []
-
-    def pair(a, b):
-        nonlocal cells
-        if a is None or b is None:
-            return 'n/a'
-        cells += 1
-        mark = '*' if not 0.5 <= a / b <= 2 else ''
-        if mark:
-            flagged.append((a, b))
-        return '%s / %s%s' % (x(a), x(b), mark)
-
-    body = [[tables.NAME[e]] + [pair(ratio(t.qps(e, c), t.qps(t.ref, c))[0], ratio(f.qps(e, c), f.qps(t.ref, c))[0]) for c in classes]
-            for e in t.articles if e != t.ref and e in f.articles]
-    out += tables.md_table(['articles'] + classes, body) + ['']
-    pclasses = [c for c in tables.place_classes(r for r in rows if r[:3] == ('places', t.tier, 'sift') and r[5] == 'p50_ms') if any(r[:4] == ('places', other, 'sift', c) for r in rows)]
-    if pclasses:
-        body = [[tables.NAME[e]] + [pair(ratio(t.p50(e, c, 'top'), t.p50('sift', c, 'top'))[0], ratio(f.p50(e, c, 'top'), f.p50('sift', c, 'top'))[0]) for c in pclasses]
-                for e in t.places if e != 'sift' and e in f.places]
-        out += tables.md_table(['places'] + pclasses, body) + ['']
-    if cells:
-        out += ['%d of the %d pairs differ by more than 2 times.' % (len(flagged), cells), '']
-    return out
 
 
 def slim_section(t, rows):
@@ -327,7 +266,7 @@ def slim_section(t, rows):
         out += [''] + md(rows, t.tier) + ['']
         if any(r[:2] == (dataset, t.tier + '-cold') for r in rows):
             out += ['#### Cold cache', ''] + tables.md_cold(rows, dataset, t.tier + '-cold') + ['']
-    return out + fidelity(rows, t)
+    return out
 
 
 def main():
@@ -345,7 +284,6 @@ def main():
     block = benchmarks_block(t, timing)
     print('\n'.join(block))
     replace_block(a.readme, 'readme', block)
-    replace_block(a.readme, 'summary', summary_block(t))
     replace_block(a.benchmarks, 'slim', slim_section(t, rows))
 
 
