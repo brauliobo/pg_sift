@@ -103,6 +103,24 @@ SHOW sift.table_dead_rewrite_pct;
 
 SET sift.table_dead_rewrite_pct = 0;
 ERROR:  0 is outside the valid range for parameter "sift.table_dead_rewrite_pct" (1 .. 100)
+-- one VACUUM merges until nothing is left to merge: 40 groups, each 40 percent dead, none above the threshold after it
+CREATE TABLE d2 (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
+\set ECHO none
+DELETE FROM d2 WHERE id % 10 < 4;
+VACUUM d2;
+SELECT count(*) FILTER (WHERE dead_rows * 100 > rows * 30) AS over_threshold, sum(rows - dead_rows) AS live FROM sift.table_segments('d2') WHERE kind = 'columns';
+ over_threshold | live  
+----------------+-------
+              0 | 24000
+(1 row)
+
+SELECT count(*), sum(id) FROM d2;
+ count |    sum    
+-------+-----------
+ 24000 | 480036000
+(1 row)
+
+DROP TABLE d2;
 DROP VIEW dseg, dstat;
 DROP TABLE d;
 DROP EXTENSION pg_sift;

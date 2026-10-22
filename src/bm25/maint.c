@@ -27,6 +27,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_status.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -614,6 +615,40 @@ sift_maint_request_worker(Relation index, const char *function)
 		return false;
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_request,.arg = &now,.extra = InvalidBuffer});
 	return sift_maint_register_worker(index, function);
+}
+
+bool
+sift_maint_busy(int max_active)
+{
+	int			n = 0;
+
+	if (max_active <= 0)
+		return false;
+	pgstat_clear_backend_activity_snapshot();
+	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
+	{
+		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
+
+		n += s->st_backendType == B_BACKEND && s->st_databaseid == MyDatabaseId && s->st_state == STATE_RUNNING;
+	}
+	return n > max_active;
+}
+
+bool
+sift_maint_wait_quiet(int max_active)
+{
+	long		delay = sift_maintenance_naptime;
+
+	for (int tries = 0; sift_maint_busy(max_active); tries++)
+	{
+		if (tries == 8)
+			return false;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		delay *= 2;
+	}
+	return true;
 }
 
 Oid

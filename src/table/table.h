@@ -51,7 +51,10 @@
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage
 #define SIFT_TBL_MAX_WBUF_PAGES 1024
 #define SIFT_TBL_VBLOCKS_SB		SIFT_SB_PAGES
-#define SIFT_TBL_TOMB_LOCK_BLKNO 3	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them */
+#define SIFT_TBL_TOMB_LOCK_BLKNO 4	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them. Not SIFT_WORKER_LOCK_BLKNO: a worker holds that one for a whole pass, and every delete would wait for it */
+StaticAssertDecl(SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_ACTIVE_LOCK_BLKNO &&
+				 SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_MAINT_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_DIRECTORY_BLKNO,
+				 "the lock targets of a relation are distinct");
 #define SIFT_TBL_ROW_MAX_INLINE	(BLCKSZ / 2)	/* a row above this goes to overflow pages */
 
 /* The next vblock to hand out: the field a table has no other use for (col-core: SIFT_COL_META_NEXT_VBLOCK) */
@@ -586,6 +589,7 @@ extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 
 /* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone, the most dead first */
 extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
+extern PGDLLIMPORT bool sift_tbl_coalesce;
 
 /*
  * Space maintenance without VACUUM (table/vacuum.c, docs/COL-TAM.md section 7): sift_tbl_maintain is VACUUM's work on the column segments
@@ -607,7 +611,6 @@ extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTbl
 /* Asks for the pass when the table is worth it; at most once per sift.maintenance_naptime of a backend. Called where rows are deleted and read as well as where a write buffer closes: a table of small writes may close none */
 extern void sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st);
 extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_tbl_maint_clear_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_tbl_settle_worker_main(Datum main_arg);
 /* sift.table_async_promote: a writer that closed a write buffer asks the worker to settle it instead of doing it; false when it has to settle itself */
 extern bool sift_tbl_settle_async(Relation rel, SiftTblRel *st);
@@ -617,6 +620,9 @@ extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_dead_pct;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_max_active;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_wal_rate;
+extern PGDLLIMPORT bool sift_tbl_auto_defrag_coalesce;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_indexes;
 
 #endif							/* SIFT_TABLE_H */

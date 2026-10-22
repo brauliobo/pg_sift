@@ -124,6 +124,17 @@ sift_tbl_define_gucs(void)
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",
 							&sift_tbl_auto_defrag_budget, 128, 0, 1048576, PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_max_active",
+							"Client backends of the database running a statement above which the background pass of a sift_table waits for a quieter moment.",
+							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all, and between the merges of a pass; a later request asks again. 0: never waits.",
+							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_wal_rate",
+							"Kilobytes of WAL per second the background pass of a sift_table may write on average.",
+							"After a step that put it ahead of that rate the worker sleeps until the rate is met. A rewritten segment makes every backend that reads it load its dictionaries again, so the rate also bounds how often that happens. 0: no limit.",
+							&sift_tbl_auto_defrag_wal_rate, 0, 0, INT_MAX, PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_auto_defrag_coalesce",
+							 "The background pass of a sift_table merges the small column groups next to the ones it rewrites into one group.",
+							 NULL, &sift_tbl_auto_defrag_coalesce, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag_indexes",
 							 "The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included.",
 							 "Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM.",

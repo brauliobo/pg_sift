@@ -42,6 +42,17 @@ SELECT * FROM dstat;
 SHOW sift.table_dead_rewrite_pct;
 SET sift.table_dead_rewrite_pct = 0;
 
+-- one VACUUM merges until nothing is left to merge: 40 groups, each 40 percent dead, none above the threshold after it
+CREATE TABLE d2 (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
+\set ECHO none
+SELECT s FROM generate_series(0, 39) i, unnest(ARRAY[format('INSERT INTO d2 SELECT %s + g, ''v'' || g FROM generate_series(1, 1000) g', i * 1000), 'VACUUM d2']) WITH ORDINALITY AS u(s, n) ORDER BY i, n \gexec
+\set ECHO all
+DELETE FROM d2 WHERE id % 10 < 4;
+VACUUM d2;
+SELECT count(*) FILTER (WHERE dead_rows * 100 > rows * 30) AS over_threshold, sum(rows - dead_rows) AS live FROM sift.table_segments('d2') WHERE kind = 'columns';
+SELECT count(*), sum(id) FROM d2;
+DROP TABLE d2;
+
 DROP VIEW dseg, dstat;
 DROP TABLE d;
 DROP EXTENSION pg_sift;
