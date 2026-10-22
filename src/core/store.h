@@ -348,7 +348,8 @@ sift_extlist_add(SiftExtentList *l, BlockNumber blk)
 	if (l->n == l->max)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift segment stream needs more than %d extents", l->max)));
+				 errmsg("sift segment stream needs more than %d extents", l->max),
+				 errhint("Run sift.merge() on the index so that the segment is rewritten contiguously, or REINDEX it if this repeats.")));
 	if (l->n == l->cap)
 	{
 		l->cap *= 2;
