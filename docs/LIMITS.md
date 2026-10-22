@@ -21,7 +21,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `combos` | value combinations per scan | 16 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
-| `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` |  |
+| `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` | yes |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |
 | `lookup_kb` | estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine | 262,144 (256 MiB) | kB | normal plan (slug join_child, spine_rows) | `sift.agg_lookup_max_kb` | `agg/plan.c` |  |
 | `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
@@ -33,8 +33,8 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
 | `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |
 | `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |
-| `arms` | UNION ALL arms of a fused or two-level scan | 4 | arms | not fused |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` |  |
-| `virtual_leaves` | virtual leaves (expressions) per scan | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` |  |
+| `arms` | UNION ALL arms of a fused or two-level scan | 16 | arms | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` | yes |
+| `virtual_leaves` | virtual leaves (expressions) per scan | 16 | leaves | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` | yes |
 | `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_LEAVES` |  |
 | `scan_filters` | filters of a scan that skip units | 64 | filters | the others do not skip units |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_FILTERS` |  |
 | `wide_conjuncts` | conjuncts on wide leaves per scan | 8 | conjuncts | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_WIDE` |  |
@@ -42,7 +42,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `generic_args` | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | 100 | arguments | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GARGS` |  |
 | `float_ops` | operations of one float8 aggregate argument | 16 | operations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VX` |  |
 | `combo_leaves` | leaves one value combination reads | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_CLEAVES` |  |
-| `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` |  |
+| `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` | yes |
 | `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/col_int.h` `COL_MAX_STR_PRUNE` |  |
 | `filter_set` | values of an IN set sent as a zone filter | 8 | values | a larger set is not used as a zone filter |  | `agg/init_filter.c` `FILTER_MAX_SET` |  |
 

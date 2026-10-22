@@ -181,8 +181,8 @@ sets_fit(const SiftRowsSpec *s)
 			continue;
 		for (int k = 0; k < s->naggs; k++)
 			n += s->agg[k].kind == SRA_DISTINCT && s->agg[k].argcol == s->agg[i].argcol;
-		if (n > SIFT_ROWS_MAX_SHARED)
-			return agg_refuse_limit(ROWS_SHAPE, rows_shared, SIFT_ROWS_MAX_SHARED, "more count(DISTINCT) aggregates of one column (%d) than one pass shares", n);
+		if (n > sift_limit(rows_shared, SIFT_ROWS_MAX_SHARED))
+			return agg_refuse_limit(ROWS_SHAPE, rows_shared, sift_limit(rows_shared, SIFT_ROWS_MAX_SHARED), "more count(DISTINCT) aggregates of one column (%d) than one pass shares", n);
 	}
 	return true;
 }
