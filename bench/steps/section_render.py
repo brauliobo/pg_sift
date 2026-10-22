@@ -16,7 +16,8 @@ COLORS = {'pg': '#D55E00', 'sift': '#0072B2', 'sift_maint': '#56B4E9', 'sift_tab
 CHANGES = [('update 1%', 'update 1% of the rows'), ('update 10%', 'update 10% of the rows'), ('delete 5%', 'delete 5% of the rows')]
 STATES = [('baseline', 'fresh table'), ('after churn', 'right after the changes'), ('after maintenance', 'after VACUUM')]
 # why a cell loses, one line each; a sentence is printed only for a cell that loses in the results
-CAUSE = {'bulk': 'a changed row also marks its unit of the column index dirty, which a PostgreSQL heap has no equivalent of',
+CAUSE = {'visible': 'the next query finds the unit of the changed row dirty and checks its rows against the heap',
+         'bulk': 'a changed row also marks its unit of the column index dirty, which a PostgreSQL heap has no equivalent of',
          'reads': 'until VACUUM (or a merge) a unit with a changed row is not answered from its pre-aggregates and its rows are checked against the heap'}
 
 
@@ -119,17 +120,17 @@ def losses(S):
         if a and b and b > 10 * a:
             slow.append(f'{NAMES[e]} {ms(b)} ms ({b / a:.0f}x its fresh {ms(a)} ms; {ms(c)} ms after VACUUM)')
     if slow:
-        out.append(f'the monthly revenue read at {big:,} orders right after the changes: ' + ', '.join(slow) + (f', PostgreSQL {ms(pg)} ms' if pg else '') + f'; {CAUSE["reads"]}.')
+        out.append(f'the monthly revenue read at {big:,} orders right after the changes is much slower than on the fresh table: ' + ', '.join(slow) + (f', PostgreSQL {ms(pg)} ms' if pg else '') + f'; {CAUSE["reads"]}.')
     vis = {e: S.med(big, e, '-', 'commit', 'visible_ms') for e in ('pg', 'sift', 'sift_table')}
     if all(vis.values()) and max(vis['sift'], vis['sift_table']) > 2 * vis['pg']:
-        out.append(f'a single-row change is seen by the next query after {ms(vis["sift"])} ms on `sift_col` and {ms(vis["sift_table"])} ms on `sift_table`, PostgreSQL {ms(vis["pg"])} ms.')
+        out.append(f'a single-row change is seen by the next query after {ms(vis["sift"])} ms on `sift_col` and {ms(vis["sift_table"])} ms on `sift_table`, PostgreSQL {ms(vis["pg"])} ms; {CAUSE["visible"]}.')
     return out
 
 
 def readme_block(S):
     out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](docs/img/updates-reads.svg)', '']
     ls = losses(S)
-    out += ['**Where pg_sift loses**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL.']
+    out += ['**What is slower, and why**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL, and no read is slowed more than tenfold by the changes.']
     out += ['']
     out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).']
     return out
@@ -145,7 +146,7 @@ def chart(S):
     big = S.sizes[-1]
     charts.ENGINES.update({e: (NAMES[e].replace('`', ''), COLORS[e]) for e in S.lanes})
     series = [(e, [S.med(big, e, '03', v, 'latency_ms') for v, _ in STATES]) for e in S.lanes]
-    cap = f'{big:,} orders, one connection, p50 of 15 runs; pg_sift {S.run0["servers"].get("sift_sift", "?")}, {S.meta["date"]}'
+    cap = f'{big:,} orders, one connection, p50 of {S.run0["probes"]} runs; pg_sift {S.run0["servers"].get("sift_sift", "?")}, {S.meta["date"]}'
     return charts.grouped('The monthly revenue read around a churn', 'p50 milliseconds, logarithmic axis, lower is better', [(name, '') for _, name in STATES], series, ms, 'p50 latency (ms)', cap, log=True)
 
 

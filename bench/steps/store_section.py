@@ -79,7 +79,8 @@ def window(eid, rows, args, name, script, read=None):
         if not lat:
             raise RuntimeError(f'{name}: pgbench ran no transaction: {out.strip()[-300:]}')
         rows.add(eid, name, 'steady', 'tps', 'transactions/s', value=round(len(lat) / args.churn_seconds, 1))
-        rows.add(eid, name, 'steady', 'rows_s', 'rows/s', value=round(len(lat) * (1000 if name == 'append' else 1) / args.churn_seconds))
+        if name == 'append':
+            rows.add(eid, name, 'steady', 'rows_s', 'rows/s', value=round(len(lat) * 1000 / args.churn_seconds))
         rows.add(eid, name, 'steady', 'p99_ms', 'ms', value=round(percentile(lat, 99), 2))
         rows.add(eid, name, 'steady', 'wal_bytes_per_tx', 'bytes', value=round(wal / len(lat)))
         rows.add(eid, name, 'steady', 'window_s', 's', value=round(secs, 1))
