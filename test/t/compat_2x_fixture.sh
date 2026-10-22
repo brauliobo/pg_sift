@@ -90,11 +90,6 @@ vacuumed() {
 	[[ $(sql fx "SELECT ndocs || ':' || dirty || ':' || dead_docs FROM sift.segments('docs_idx') WHERE kind = 'immutable' ORDER BY ndocs") == $'1400:true:140\n1500:true:300' ]] &&
 		formats_match '^[12](,[12])*/[12]$' && verify && agree
 }
-# the segments listed, as the prefix of the lines of sift.segments
-segments_are() {
-	local s
-	for s in "$@"; do grep -q -F "$s" "$(dir fx)/segments.txt" || { diag "no segment $s in $(tr '\n' ' ' <"$(dir fx)/segments.txt")"; return 1; }; done
-}
 # a promotion seals the 2.x write buffer together with the new rows into a segment of this build
 promoted() {
 	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && formats_match '^[12](,[12])*(,3)+/3$' && verify && agree
