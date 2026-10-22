@@ -218,6 +218,12 @@ sift_colsrc_overflow_raise(SiftSrcSource *src, const SiftSrcUnit *unit, const ui
 		src->prov->overflow_raise(src->impl, unit, rows);
 }
 
+uint64 *
+sift_colsrc_recheck_rows(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->recheck_rows ? src->prov->recheck_rows(src->impl, unit) : NULL;
+}
+
 void
 sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf)
 {

@@ -97,8 +97,9 @@ recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
 }
 
 /*
- * Called by `live` for the stored unit the source is at: the rows that hold such a value and are live leave `bits`, their TIDs wait for the next
- * call of col_next. Once per unit: the flagged rows are kept, a second call only takes them out of its bits again.
+ * Called by `live` for the stored unit the source is at: the rows that hold such a value and are live leave `bits` and become the candidates
+ * (k->cand, which the executor may narrow, col_recheck_rows), read again from the heap by the next call of col_next (recheck_pending).
+ * Once per unit: the flagged rows are kept, a second call only takes them out of its bits again.
  */
 void
 recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
@@ -114,6 +115,7 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		k->taken = false;
 		k->nrow = nrow;
 		k->flag = k->flag ? repalloc(k->flag, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
+		k->cand = k->cand ? repalloc(k->cand, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
 			if (col_overflow(src, NULL, k->leaf[i]))
@@ -124,33 +126,52 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		if (!any)
 			return;
 	}
-	for (uint32 w = 0; w < nw; w++)
-		if (k->flag[w] & bits[w])
-		{
-			if (!k->taken)
-			{
-				uint32		m = 0;
-				uint32	   *ords;
+	if (!k->taken)
+	{
+		uint64		any = 0;
 
-				for (uint32 v = 0; v < nw; v++)
-					m += pg_popcount64(k->flag[v] & bits[v]);
-				ords = palloc(m * sizeof(uint32));
-				m = 0;
-				for (uint32 v = 0; v < nw; v++)
-					for (uint64 b = k->flag[v] & bits[v]; b; b &= b - 1)
-						ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
-				k->tid = k->tid ? repalloc(k->tid, m * sizeof(ItemPointerData)) : MemoryContextAlloc(src->cxt, m * sizeof(ItemPointerData));
-				sift_col_row_tids(&src->unit, ords, m, k->tid);
-				pfree(ords);
-				k->npend = m;
-				k->sb = src->unit.sb;
-				k->taken = true;
-				k->nunits++;
-			}
-			break;
-		}
+		for (uint32 w = 0; w < nw; w++)
+			any |= k->cand[w] = k->flag[w] & bits[w];
+		k->taken = any != 0;
+	}
 	for (uint32 w = 0; w < nw; w++)
 		bits[w] &= ~k->flag[w];
+}
+
+uint64 *
+col_recheck_rows(void *impl, const SiftSrcUnit *unit)
+{
+	ColSource  *src = impl;
+
+	/* the rows of a match set are renumbered: the executor does not test them */
+	return src->rck && src->rck->taken && !src->sel.keep ? src->rck->cand : NULL;
+}
+
+/* the TIDs of the candidates the executor left, to be the rows of the next unit; false: none is left */
+bool
+recheck_pending(ColSource *src)
+{
+	ColRecheck *k = src->rck;
+	uint32		nw = SIFT_COL_NWORDS(k->nrow),
+				m = 0;
+	uint32	   *ords;
+
+	for (uint32 v = 0; v < nw; v++)
+		m += pg_popcount64(k->cand[v]);
+	if (m == 0)
+		return false;
+	ords = palloc(m * sizeof(uint32));
+	m = 0;
+	for (uint32 v = 0; v < nw; v++)
+		for (uint64 b = k->cand[v]; b; b &= b - 1)
+			ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
+	k->tid = k->tid ? repalloc(k->tid, m * sizeof(ItemPointerData)) : MemoryContextAlloc(src->cxt, m * sizeof(ItemPointerData));
+	sift_col_row_tids(&src->unit, ords, m, k->tid);
+	pfree(ords);
+	k->npend = m;
+	k->sb = src->unit.sb;
+	k->nunits++;
+	return true;
 }
 
 /* the tuple the TID names for the snapshot (the version an index scan would find, following a HOT chain), in k->slot; false: no version is visible */

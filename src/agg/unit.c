@@ -306,27 +306,53 @@ unit_begin(AggExec *ex)
 	ex->n_units++;
 }
 
-/* The rows the source's filters left, narrowed by the row level conjuncts the source did not apply */
+/*
+ * A row the source will read again from the heap (cand) stays unless a conjunct rejects it for a value the stored unit holds: a row that holds no
+ * value of the conjunct's leaf (it cannot store it) is not tested by it. The conjuncts of other shapes leave the row to the heap.
+ */
 static void
-unit_conjuncts(AggExec *ex, uint64 *rmask, int nrow)
+cand_conjunct(AggExec *ex, uint64 *cand, SiftAggPred *p, const uint64 *pass, int nrw)
+{
+	uint64	   *ovf = NULL;
+
+	if ((p->kind != SAP_CMP && p->kind != SAP_IN && p->kind != SAP_NULL) || p->leaf >= ex->nbase)
+		return;
+	leaf_overflow_rows(ex, p->leaf, &ovf);
+	for (int w = 0; w < nrw; w++)
+		cand[w] &= pass[w] | (ovf ? ovf[w] : 0);
+}
+
+/* The rows the source's filters left, narrowed by the row level conjuncts the source did not apply; cand: the rows the source reads again, narrowed the same way */
+static void
+unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 {
 	SiftAggSpec *s = ex->spec;
 	SiftSrcUnit *u = &ex->unit;
 	int			nrw = (nrow + 63) / 64;
 
-	/* a few rows left: the leaves are decoded for them only */
-	if ((ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
+	/* a few rows left: the leaves are decoded for them only (not with rows to read again: they are tested on whole leaves, and a selected read of an overflowed slot is an error) */
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
 		ex->rsel = rmask;
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
 	{
-		SiftSrcStrTest *str = ex->ps[s->pred[i]->id].str;
+		SiftAggPred *p = s->pred[i];
+		SiftSrcStrTest *str = ex->ps[p->id].str;
 
-		if (s->pred[i]->level == 0 && !s->pred[i]->late && !(ex->pushed && ex->pushed[i]) && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
-			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
+		if (p->level != 0 || p->late || (ex->pushed && ex->pushed[i]))
+			continue;
+		if (str && sift_colsrc_filter_str(ex->src, u, str, rmask))
+		{
+			if (cand)
+				sift_colsrc_filter_str(ex->src, u, str, cand);
+			continue;
+		}
+		sift_colk->bits_and(rmask, row_bitmap(ex, p), nrw);
+		if (cand)
+			cand_conjunct(ex, cand, p, row_bitmap(ex, p), nrw);
 	}
 	ex->qlevel = s->group >= 0;
-	if (ex->recheck && !ex->recheck_late)
+	if (ex->recheck && !ex->recheck_late && sift_colk->bits_count(rmask, nrw) > 0)
 		check_overflow(ex, rmask, true);
 }
 
@@ -427,7 +453,8 @@ process_unit(AggExec *ex)
 {
 	SiftSrcUnit *u = &ex->unit;
 	int			nrow = u->nrow;
-	uint64	   *rmask;
+	uint64	   *rmask,
+			   *cand;
 
 	unit_begin(ex);
 	if (nrow > 0 && ex->pa_on && preagg_unit(ex))
@@ -452,13 +479,19 @@ process_unit(AggExec *ex)
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
 	check_overflow(ex, rmask, false);
+	cand = ex->recheck ? sift_colsrc_recheck_rows(ex->src, u) : NULL;
+	/* a row the source will read again is tested by the filters on the columns of the stored unit, as the rows that stay; the type tests leave it to the heap */
+	if (cand && ((ex->nwide > 0 && !wide_filters(ex, cand)) || (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, cand))))
+		cand = NULL;
 	if ((ex->ntype > 0 && !type_filters(ex, rmask)) || (ex->nwide > 0 && !wide_filters(ex, rmask)) ||
 		(ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask)))
 	{
+		if (cand)
+			unit_conjuncts(ex, rmask, cand, nrow);
 		ex->row_base += nrow;
 		return;
 	}
-	unit_conjuncts(ex, rmask, nrow);
+	unit_conjuncts(ex, rmask, cand, nrow);
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);
 	else
