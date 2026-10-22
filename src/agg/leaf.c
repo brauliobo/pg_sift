@@ -85,8 +85,7 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 
 	if (!get_op_hash_functions(eqop, &lhs, &rhs))
 	{
-		if (get_opcode(eqop) != F_CASH_EQ)
-			elog(ERROR, "sift: no hash function for operator %u", eqop);
+		SIFT_INVARIANT(get_opcode(eqop) == F_CASH_EQ, "sift: no hash function for operator %u", eqop);
 		lhs = F_HASHINT8;		/* money has no hash operator class, and is its int64 */
 	}
 	fmgr_info(lhs, &t->hashfn);
@@ -252,7 +251,7 @@ leaf_datum(Oid typid, int64 iv)
 		default:
 			if (type_is_enum(typid))
 				return ObjectIdGetDatum((Oid) iv);
-			elog(ERROR, "sift: unexpected integer leaf type %u", typid);
+			SIFT_INVARIANT(false, "sift: unexpected integer leaf type %u", typid);
 	}
 	return (Datum) 0;
 }
@@ -608,6 +607,7 @@ num_div(SiftAggNxOp op, sift_i128 v, sift_i128 d)
 static void
 nan_cast_error(int bytes)
 {
+	/* check-errors: allow (the heap raises it, with this SQLSTATE and without a hint) */
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("cannot convert NaN to %s", bytes == 2 ? "smallint" : bytes == 4 ? "integer" : "bigint")));

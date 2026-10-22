@@ -299,8 +299,7 @@ gen_fns(Oid agg, GenFns *f)
 	Form_pg_aggregate ag;
 	bool		volatile_fn;
 
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for aggregate %u", agg);
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", agg);
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
 	volatile_fn = func_volatile(ag->aggtransfn) == PROVOLATILE_VOLATILE ||
 		(OidIsValid(ag->aggfinalfn) && func_volatile(ag->aggfinalfn) == PROVOLATILE_VOLATILE);

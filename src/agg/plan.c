@@ -709,7 +709,7 @@ key_of_ref(Query *parse, int ref)
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 		if (sgc->tleSortGroupRef == ref)
 			return foreach_current_index(sgc);
-	elog(ERROR, "sift: grouping column %d not found", ref);
+	SIFT_INVARIANT(false, "sift: grouping column %d not found", ref);
 }
 
 /* GROUPING(columns): the keys of its arguments; the executor makes its bitmask of the set of each group */

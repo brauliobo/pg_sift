@@ -331,8 +331,7 @@ run_scan(AggExec *ex)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
 	osa_finish_all(ex->gtab);
 	gen_flush(ex->gtab);
-	if (ex->lanes && ex->next_lane != SIFT_AGG_LANES)
-		elog(ERROR, "sift: a lane of the aggregate scan is missing");
+	SIFT_INVARIANT(!ex->lanes || ex->next_lane == SIFT_AGG_LANES, "sift: a lane of the aggregate scan is missing");
 	final_checks(ex->gtab, ex->n_tuples);
 }
 

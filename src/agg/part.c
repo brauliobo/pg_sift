@@ -107,7 +107,8 @@ check_access(Relation parent)
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(parent))));
+				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(parent)),
+				 errhint("Run the statement as the table owner or as a role with BYPASSRLS; the normal plan applies the policies.")));
 }
 
 static const SiftSrcProvider part_provider;
@@ -139,8 +140,8 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	PartSource *ps = MemoryContextAllocZero(mcxt, sizeof(PartSource));
 	SiftSrcSource *out = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
-	if (n <= 0 || n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
-		elog(ERROR, "sift: %d partitions in a scan, from 1 to %d", n, (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS));
+	SIFT_INVARIANT(n > 0 && n <= sift_limit(partitions, SIFT_AGG_MAX_PARTS), "sift: %d partitions in a scan, from 1 to %d", n,
+				   (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS));
 	check_access(parent);
 	ps->n = n;
 	ps->snapshot = snapshot;
@@ -203,7 +204,8 @@ count_sbs(PartSource *ps)
 			total += sift_colsrc_nsb(ps->src[i]);
 	}
 	if (total > PG_UINT32_MAX)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number")));
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number"),
+						errhint("Filter on the partition key so that the scan reads fewer partitions, or set sift.enable_agg to off for this query.")));
 	ps->off[ps->n] = (uint32) total;
 	ps->have_off = true;
 }

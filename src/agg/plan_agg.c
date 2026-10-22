@@ -339,8 +339,7 @@ minmax_kind(Aggref *a, Oid argtype)
 				opcintype;
 	SortStrategy strategy;
 
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for aggregate %u", a->aggfnoid);
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", a->aggfnoid);
 	sortop = ((Form_pg_aggregate) GETSTRUCT(tup))->aggsortop;
 	ReleaseSysCache(tup);
 	if (!OidIsValid(sortop) || !get_ordering_op_properties(sortop, &opfamily, &opcintype, &strategy) ||
