@@ -668,6 +668,11 @@ extern bool sift_col_vet(const SiftColUnit *unit, SiftColSel *sel);
  * is NULL). The vectors live in the source's arena until the next read of the same leaf or sift_col_next.
  */
 extern void sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec);
+/*
+ * A top-level STR leaf as strings (VAR: voff, vbytes; a NULL slot is empty): for few rows of a segment whose dictionary is stored plain and
+ * not at hand, each string is read in place and the dictionary is not loaded.
+ */
+extern void sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec);
 /* The same for the rows idx[0..m) (ascending ordinals) a caller keeps: it saves the positions of the selection, which every leaf read would compute again */
 extern void sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec);
 

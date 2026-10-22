@@ -171,7 +171,7 @@ typedef struct ZoneArrays
 
 #define DICT_PARSE_AFTER	32	/* tests of a dictionary searched in the stream, over the queries of a backend, before it is parsed and cached */
 
-/* A dictionary of the form that is searched in place (DICT_LOOKUP): where its parts lie in the stream */
+/* A dictionary stored plain or for a lookup (DICT_PLAIN, DICT_LOOKUP): where its parts lie in the stream */
 typedef struct DictLook
 {
 	SiftCDictLook look;
@@ -183,6 +183,8 @@ typedef struct DictLook
 	uint64		offs_at;		/* stream offsets: u32 off[n + 1] (fixed 0), the strings, u32 code[n] in byte order */
 	uint64		bytes_at;
 	uint64		perm_at;
+	bool		searchable;		/* form 2: find and match read the stream */
+	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;

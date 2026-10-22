@@ -114,14 +114,18 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 		case SIFT_COLS_STR:
 			{
 				uint32	   *codes = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
-				SiftColDict *d = MemoryContextAlloc(arena, sizeof(SiftColDict));
 
 				for (uint32 k = 0; k < m; k++)
 					codes[k] = (uint32) keys[k];
-				sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
-				sift_ccodes_below(codes, m, d->n + 1);
 				vec->codes = codes;
-				vec->dict = d;
+				if (!cu->codes_only)
+				{
+					SiftColDict *d = MemoryContextAlloc(arena, sizeof(SiftColDict));
+
+					sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
+					sift_ccodes_below(codes, m, d->n + 1);
+					vec->dict = d;
+				}
 				break;
 			}
 		case SIFT_COLS_VAR:
@@ -238,6 +242,50 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 		return;
 	}
 	sift_col_read_idx(unit, col, idx, m, vec);
+}
+
+void
+sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
+{
+	ColUnit    *cu = unit->priv;
+	uint32		m = sel ? sel->count : cu->v.nrows;
+	bool		lazy = cu->seg != NULL && !unit_inline(cu, col) && sift_cseg_dict_lazy(cu->seg, col, m);
+	SiftColVec	c;
+	uint64	   *vo = MemoryContextAllocZero(cu->src->arena, ((Size) m + 1) * sizeof(uint64));
+	StringInfoData sb;
+	MemoryContext old;
+	char		buf[SIFT_COL_DICT_MAX_ENTRY];
+
+	cu->codes_only = lazy;
+	sift_col_read(unit, col, sel, &c);
+	cu->codes_only = false;
+	old = MemoryContextSwitchTo(cu->src->arena);
+	initStringInfo(&sb);
+	for (uint32 k = 0; k < m; k++)
+	{
+		const char *s = "";
+		uint32		len = 0;
+
+		if (!(c.nulls && (c.nulls[k >> 6] >> (k & 63) & 1)))
+		{
+			if (lazy)
+				s = sift_cseg_dict_get(cu->seg, col, c.codes[k], &len, buf);
+			else
+			{
+				s = SIFT_COL_DICT_STR(c.dict, c.codes[k]);
+				len = SIFT_COL_DICT_LEN(c.dict, c.codes[k]);
+			}
+		}
+		appendBinaryStringInfo(&sb, s, len);
+		vo[k + 1] = sb.len;
+	}
+	MemoryContextSwitchTo(old);
+	*vec = c;
+	vec->store = SIFT_COLS_VAR;
+	vec->codes = NULL;
+	vec->dict = NULL;
+	vec->voff = vo;
+	vec->vbytes = sb.data;
 }
 
 uint32
