@@ -4,6 +4,13 @@
  * `LEFT JOIN LATERAL (SELECT cols FROM t WHERE t.a = x AND t.b = y LIMIT 1) ON true` has no ORDER BY: the row it returns is the first one its
  * plan meets. With a unique index on the columns it compared there is no other row, whatever the plan (index, bitmap or sequential scan), so the
  * rows of t hashed by key give the same answer as running the child for every distinct input, without a search of the index for each.
+ * A key the table repeats is not read this way: without an ORDER BY the row is the first one the child's plan meets, and the index and the heap
+ * disagree on it once a row was updated in place (the index keeps the old position, the heap order the new one), so no reading of the table
+ * can tell which the child returns (test agg_first_row_lookup, table pick).
+ *
+ * An ORDER BY on columns a unique index holds with the key (NOT NULL, so that nothing ties) puts the key's rows in one order, whatever the plan:
+ * the table is loaded whole and the first row of each key by that order is the one in the chains.
+ *
  * A condition of the child on the row (a comparison with a constant, a null test) is tested when the table is loaded: the key's row is either
  * the one the child returns or none. The planner has found the form and priced both ways (SiftAggFirst); the executor decides again from the
  * catalog, so a plan made before a unique index was dropped runs its child.

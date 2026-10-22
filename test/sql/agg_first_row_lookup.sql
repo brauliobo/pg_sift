@@ -53,8 +53,13 @@ CREATE INDEX vers_dup_key ON vers_dup (a, b, ts);
 CREATE TABLE dims_label (label text, score int);
 INSERT INTO dims_label SELECT label, score FROM dims;
 CREATE UNIQUE INDEX dims_label_key ON dims_label (label);
+-- a key two rows hold, one updated in place: the index finds the new version first, a heap scan the other row
+CREATE TABLE pick (a int, label text) WITH (fillfactor = 50);
+INSERT INTO pick VALUES (7, 'first'), (7, 'second');
+CREATE INDEX pick_a ON pick (a);
+UPDATE pick SET label = 'first, updated' WHERE label = 'first';
 VACUUM (FREEZE, ANALYZE) facts;
-ANALYZE dims_label, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
+ANALYZE pick, dims_label, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
 -- whether the query is pushed to the scan, the rows it differs by from the plan without it, and the tables the scan read as first-row lookups
 CREATE FUNCTION check_first(q text) RETURNS TABLE (pushed bool, differences bigint, lookups int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -155,6 +160,16 @@ SELECT * FROM check_first($q$
  FROM facts f LEFT JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true
  LEFT JOIN LATERAL (SELECT score FROM dims_label WHERE dims_label.label = d.label LIMIT 1) e ON true GROUP BY 1
 $q$);
+-- the rows a plan finds first for a key that is repeated depend on the plan (here the index and the heap disagree): the lookup table cannot
+-- tell which the child returns, so the child runs
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM pick WHERE pick.a = f.a LIMIT 1) d ON true GROUP BY 1
+$q$);
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM pick WHERE pick.a = f.a ORDER BY label LIMIT 1) d ON true GROUP BY 1
+$q$);
 -- the rows the lookups return
 SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1 ORDER BY 1;
@@ -241,5 +256,5 @@ SELECT * FROM explain_first($q$
 $q$);
 DROP FUNCTION explain_first(text);
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, dims_label;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, pick, dims_label;
 DROP EXTENSION pg_sift;
