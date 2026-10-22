@@ -94,7 +94,7 @@ def cmd_section(args):
     rows, ref = Rows(args.tier), {}
     args.threads = effective(args)
     lanes = [e for e in SECTION_LANES if e in args.engines]
-    gate('section', lanes)
+    gate('section', [])   # no lane has its database yet: each is dropped and loaded below
     read = load_queries(['03'])[0]
     try:
         for eid in lanes:
