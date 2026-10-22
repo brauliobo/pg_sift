@@ -64,6 +64,9 @@ because both revisions would build the same extension. Aggregate sources select 
 (PR: 8,192) and adds phrase-count and high-cardinality group workloads, for 18 cases.
 This is a representative warm workload, not exhaustive feature or size coverage.
 
+The workflow's budget is the whole job: 300 s for the acceptance run, 1800 s for the nightly tier. Exit 2
+(inconclusive) is a warning annotation there, not a failed run, except in the acceptance run.
+
 Before measuring, the driver compares baseline/head results and checks required
 structured plan paths independently on both revisions. It records topology
 changes as diagnostics without rejecting valid planner changes.
