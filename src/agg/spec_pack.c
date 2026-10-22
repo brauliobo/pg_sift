@@ -264,6 +264,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, j->first.ncol);
 			for (int k = 0; k < j->first.ncol; k++)
 				put_int(p, j->first.col[k]);
+			put_node(p, (Node *) j->first.qual);
 		}
 		put_str(p, j->desc);
 	}
@@ -633,6 +634,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->first.ncol = get_int(u);
 			for (int k = 0; k < j->first.ncol; k++)
 				j->first.col[k] = get_int(u);
+			j->first.qual = (List *) get_node(u);
 		}
 		j->desc = get_str(u);
 	}

@@ -1,5 +1,5 @@
 -- A correlated LIMIT 1 lookup of a table by a unique key is read by the scan as a lookup table (its rows hashed by key); the rows are those
--- of PostgreSQL's plan of it. A key the table can repeat, a condition or an order in the child, or a key that is not an equality keep the child.
+-- of PostgreSQL's plan of it. A key the table can repeat, an order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- a LATERAL child can only run as a nested loop: without one the scan is the plan, with the child or its table as lookup
@@ -128,7 +128,74 @@ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS la
    |    5 |        |        0
 (11 rows)
 
--- a key some rows repeat, a unique index on other columns, a condition, an order, an offset, a column that is not the table's, a key that is an
+-- a condition on the row: the key's row when it passes, none when it does not (a comparison with a constant, a null test, AND/OR/NOT, a column of
+-- the key, a column the child does not return, a condition no row passes)
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b AND (dims.score < 50 OR NOT dims.b >= 3) AND dims.label IS NOT NULL LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims3 x WHERE x.a = f.a AND x.b = f.b AND x.t = f.t AND x.a > 20 AND x.label <> 'l5_5' LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score < 0 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- a condition that can raise an error (the row with a = 250 divides by zero, the facts never ask for it) or that is not a comparison with a constant
+-- (a list, the outer row) stays with the child
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims_wide x WHERE x.a = f.a AND x.b = f.b AND x.score / (x.a - 250) < 1 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score IN (3, 10, 400) LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > f.amount LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+-- a key some rows repeat, a unique index on other columns, an order, an offset, a column that is not the table's, a key that is an
 -- expression of the outer row (the child compares a parameter): the child runs
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
@@ -151,15 +218,6 @@ $q$);
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims_id WHERE dims_id.a = f.a AND dims_id.b = f.b LIMIT 1) d ON true GROUP BY 1
-$q$);
- pushed | differences | lookups 
---------+-------------+---------
- t      |           0 |       0
-(1 row)
-
-SELECT * FROM check_first($q$
- SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
- FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1) d ON true GROUP BY 1
 $q$);
  pushed | differences | lookups 
 --------+-------------+---------

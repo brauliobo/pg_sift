@@ -365,9 +365,41 @@ first_key_ok(OpExpr *op, Var *v, Oid et)
 }
 
 /*
+ * Can the lookup table test the condition on every row it loads, where the child tests it on the key's row only? Only a comparison of columns
+ * of the table with constants and a null test: they cannot raise an error, so a row nobody asks for does not raise one the child never meets.
+ */
+static bool
+first_filter_bad(Node *n, void *context)
+{
+	Oid			lt,
+				rt;
+
+	if (n == NULL)
+		return false;
+	switch (nodeTag(n))
+	{
+		case T_Var:
+			return ((Var *) n)->varno != 1 || ((Var *) n)->varlevelsup != 0 || ((Var *) n)->varattno <= 0;
+		case T_Const:
+		case T_RelabelType:
+		case T_BoolExpr:
+		case T_NullTest:
+			break;
+		case T_OpExpr:
+			if (builtin_cmp(((OpExpr *) n)->opno, &lt, &rt) < 0 || (type_class(lt) == TC_NONE && lt != TEXTOID) || (type_class(rt) == TC_NONE && rt != TEXTOID))
+				return true;
+			break;
+		default:
+			return true;
+	}
+	return expression_tree_walker(n, first_filter_bad, context);
+}
+
+/*
  * `SELECT columns FROM table WHERE column = parameter [AND ...] LIMIT 1` over a table that holds each key once (a unique index on columns
  * among those compared) returns the key's row, whatever plan it has: the scan can read the table as a lookup table (agg/first.c). Anything
- * else the query does (a condition, an order, a second table, an offset, a row lock) leaves the child as it is.
+ * else the query does (an order, a second table, an offset, a row lock, a condition that is not a comparison with a constant or a null test)
+ * leaves the child as it is.
  */
 static void
 first_lookup(AggCtx *c, JoinCtx *jc)
@@ -395,8 +427,6 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || brel->tuples > sift_agg_lookup_max_rows)
 		return;
 	conj = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
-	if (list_length(conj) > SIFT_AGG_MAX_JKEYS)
-		return;
 	foreach_ptr(Node, qual, conj)
 	{
 		OpExpr	   *op = (OpExpr *) qual;
@@ -406,7 +436,12 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		Param	   *p;
 		int			pos = -1;
 
-		if (!IsA(qual, OpExpr) || list_length(op->args) != 2)
+		if (!first_filter_bad(qual, NULL))
+		{
+			f->qual = lappend(f->qual, qual);
+			continue;
+		}
+		if (!IsA(qual, OpExpr) || list_length(op->args) != 2 || f->nkey == SIFT_AGG_MAX_JKEYS)
 			return;
 		l = strip_relabel(linitial(op->args));
 		r = strip_relabel(lsecond(op->args));
