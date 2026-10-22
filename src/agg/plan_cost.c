@@ -37,6 +37,7 @@
 #include "optimizer/planner.h"
 #include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
+#include "executor/nodeHash.h"
 #include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
@@ -106,6 +107,9 @@
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
 #define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
+#define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
+#define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
+#define AGG_DIST_CHUNK_BYTES	512.0
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
@@ -1228,12 +1232,36 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost += k->load_cost;
 }
 
+/*
+ * The chunks of the bitmap sets of a count(DISTINCT) of a leaf: a group's values fall in chunks of AGG_DIST_CHUNK_BITS bits of the value
+ * range (nd values wide), and a chunk is allocated and zeroed when a value first touches it. Only while the chunks fit the set's memory:
+ * past it the sets move to a hash set, whose pair costs between 0.1 and 2 us with the column and the size of the set (not priced: 0).
+ */
+static double
+distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
+{
+	double		groups = Max(Min(k->rows_out, k->agg_rows), 1.0),
+				nd = a->leaf >= 0 ? c->stats.ndistinct[a->leaf] : 0,
+				chunks,
+				touched;
+
+	if (nd <= 0)
+		return 0;
+	chunks = Max(ceil(nd / AGG_DIST_CHUNK_BITS), 1.0);
+	touched = Min(groups * chunks * -expm1(-k->agg_rows / groups / chunks), k->agg_rows);
+	return touched * AGG_DIST_CHUNK_BYTES > (double) get_hash_memory_limit() ? 0 : touched;
+}
+
 /* The aggregates, combos, keys and predicates of every tuple, less what the plain path saves, plus the bytes read */
 static void
 cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
+	double		chunks = 0;
+
 	for (int i = 0; i < s->naggs; i++)
 	{
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+			chunks += distinct_chunks(c, &s->agg[i], k);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_ROW;
 		k->scan_cost += k->agg_rows * (num_cost(&s->agg[i].num) + direct_agg_cost(&s->agg[i])) + k->rows * pred_num_cost(s->agg[i].filter);
@@ -1250,6 +1278,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost = Max(k->scan_cost - plain_credit(c, s, k->agg_rows), k->scan_cost * 0.1);
 	/* after the credit, which prices what the normal plan under-estimates: the rows read again from the heap are work it does not do */
 	k->scan_cost += recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
+	k->scan_cost += chunks * AGG_DIST_CHUNK;
 	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
 }
 
