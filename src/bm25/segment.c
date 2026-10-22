@@ -27,10 +27,13 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->mcxt = mcxt;
 	seg->fmt = Max(entry->format, SIFT_SEGFMT_RANKBITS);
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
-		elog(ERROR, "sift: segment %llu is not immutable", ULL(entry->gen));
+		SIFT_SEG_CORRUPT(index, entry->gen, "The segment is not immutable.");
 	if (entry->format > SIFT_FORMAT_MINOR)
-		elog(ERROR, "sift: segment %llu has format %u, this build reads up to %u", ULL(entry->gen), entry->format,
-			 SIFT_FORMAT_MINOR);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("sift index \"%s\" has a segment of format %u, this build reads up to %u",
+						RelationGetRelationName(index), entry->format, SIFT_FORMAT_MINOR),
+				 errhint("Install on every node that reads the index the pg_sift release that wrote it, or a later one; REINDEX rewrites it with this build.")));
 	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->sum_dl != entry->sum_dl ||
@@ -306,7 +309,7 @@ loaded(SiftSegment *seg, const SiftDocChunk *dc)
 		int64		i = sb_search(dm, dc->sb);
 
 		if (i == dm->nsb || dm->dir[i].sb != dc->sb)
-			elog(ERROR, "sift: SB %u has no docs in segment %llu", dc->sb, ULL(seg->entry.gen));
+			SIFT_SEG_CORRUPT(seg->index, seg->entry.gen, "Superblock %u has no docs.", dc->sb);
 		load_sb(seg, dm, i);
 	}
 	return dm;

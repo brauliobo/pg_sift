@@ -197,8 +197,7 @@ pool_alloc(SiftInvBuf *b, uint32 size)
 
 	if ((b->pool_next >> POOL_SHIFT) >= b->nblocks || (b->pool_next & (POOL_BLOCK - 1)) + size > POOL_BLOCK)
 	{
-		if (b->nblocks == pool_max())
-			elog(ERROR, "sift: inverted buffer pool exhausted");
+		SIFT_INVARIANT(b->nblocks != pool_max(), "sift: inverted buffer pool exhausted");
 		b->blocks[b->nblocks++] = MemoryContextAlloc(b->mcxt, POOL_BLOCK);
 		b->pool_next = (b->nblocks - 1) << POOL_SHIFT;
 	}
@@ -352,8 +351,8 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 	SiftKey		key = sift_key_from_tid(tid);
 	uint32		ord = b->ndocs;
 
-	if ((ord > 0 && key <= DOC_KEY(b->docs[ord - 1])) || (nterms == 0) != (dl == 0))
-		elog(ERROR, "sift: inverted buffer docs must have ascending keys and dl > 0 iff terms");
+	SIFT_INVARIANT(!(ord > 0 && key <= DOC_KEY(b->docs[ord - 1])) && (nterms == 0) == (dl == 0),
+				   "sift: inverted buffer docs must have ascending keys and dl > 0 iff terms");
 	if (ord == b->maxdocs)
 	{
 		b->maxdocs *= 2;
@@ -391,8 +390,8 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 			slice_put(b, t, terms[i].tf);
 		if (t->df == 0)
 			t->haspos = b->positions && terms[i].pos != NULL;
-		else if (t->haspos != (b->positions && terms[i].pos != NULL))
-			elog(ERROR, "sift: the postings of a term must all have positions or none");
+		else
+			SIFT_INVARIANT(t->haspos == (b->positions && terms[i].pos != NULL), "sift: the postings of a term must all have positions or none");
 		if (t->haspos)
 			for (uint32 k = 0; k < terms[i].poslen; k++)
 				slice_put(b, t, terms[i].pos[k]);

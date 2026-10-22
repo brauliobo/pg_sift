@@ -235,8 +235,8 @@ keyed_score(SiftScanState *ss, KeyRow **rows, int64 nrows)
 	}
 	sift_rank_end(ss->rank);
 	ss->rank = NULL;
-	if (nscored != nrows)
-		elog(ERROR, "sift: the ranker scored " INT64_FORMAT " of the " INT64_FORMAT " matches the keys kept", nscored, nrows);
+	SIFT_INVARIANT(nscored == nrows, "sift: the ranker scored " INT64_FORMAT " of the " INT64_FORMAT " matches the keys kept", nscored,
+				   nrows);
 }
 
 static int

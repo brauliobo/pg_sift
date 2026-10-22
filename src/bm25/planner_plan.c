@@ -48,7 +48,7 @@ rel_index(RelOptInfo *rel, Oid indexoid)
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->indexoid == indexoid)
 			return ii;
-	elog(ERROR, "sift: index %u is not an index of the planned relation", indexoid);
+	SIFT_INVARIANT(false, "sift: index %u is not an index of the planned relation", indexoid);
 	return NULL;
 }
 

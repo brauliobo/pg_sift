@@ -200,8 +200,7 @@ progress_docs(BuildState *bs, bool all)
 static SiftSegEntry *
 next_entry(BuildState *bs, uint64 *gen)
 {
-	if (bs->nsegs == SIFT_MAX_SEGMENTS)
-		elog(ERROR, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
+	SIFT_INVARIANT(bs->nsegs < SIFT_MAX_SEGMENTS, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
 	*gen = bs->nsegs + 1;
 	return &bs->segs[bs->nsegs++];
 }
@@ -399,10 +398,8 @@ end_segment(BuildState *bs)
 	 */
 	while (count_groups(bs->runs, bs->nruns, &lim) > room)
 	{
-		if (lim.df > PG_INT64_MAX / 2)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index), SIFT_MAX_SEGMENTS)));
+		SIFT_INVARIANT(lim.df <= PG_INT64_MAX / 2, "sift: index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index),
+					   SIFT_MAX_SEGMENTS);
 		lim.df *= 2;
 	}
 	while (first < bs->nruns)
@@ -799,7 +796,8 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (heap->rd_tableam != GetHeapamTableAmRoutine() && !sift_tbl_is_table(heap))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift indexes require a heap or sift_table table")));
+				 errmsg("sift indexes require a heap or sift_table table"),
+				 errhint("Index the underlying table of the view, or materialize it into a table.")));
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
 	{
 		SiftAnalyzerConfig cfg;

@@ -307,8 +307,7 @@ import_wbuf(SiftPlan *p, const SharedBind *h)
 {
 	const char *at = (const char *) (h + 1);
 
-	if (h->nleaves != p->nleaves)
-		elog(ERROR, "sift: parallel participants bound different queries");
+	SIFT_INVARIANT(h->nleaves == p->nleaves, "sift: parallel participants bound different queries");
 	p->wbuf_ndocs = h->wbuf_ndocs;
 	p->wbuf_sum_dl = h->wbuf_sum_dl;
 	p->nmhit = h->nmhit;
