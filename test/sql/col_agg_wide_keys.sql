@@ -128,6 +128,15 @@ SELECT chk($$SELECT n38 AS k, count(*) AS c FROM wa WHERE id < 0 GROUP BY n38$$)
        chk($$SELECT sum(n38) AS s, min(iv) AS a, count(DISTINCT img) AS c FROM wa WHERE id < 0$$) AS empty_aggs,
        chk($$SELECT iv AS k, count(*) AS c FROM wa WHERE id BETWEEN 5000 AND 7000 GROUP BY iv$$) AS window_,
        chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s FROM wa WHERE iv > interval '1 day' AND n38 IS NOT NULL GROUP BY grp$$) AS conjunct_and_agg;
+-- a few rows left of the unit (a conjunct of the source keeps 1%, or none): the dictionary of a wide leaf is made for those rows
+SELECT chk($$SELECT n38 AS k, count(*) AS c, sum(n19) AS s FROM wa WHERE qty = 14 GROUP BY n38$$) AS few_n38_key,
+       chk($$SELECT img AS k, count(*) AS c, min(img) AS a FROM wa WHERE qty = 41 GROUP BY img$$) AS few_image_key,
+       chk($$SELECT iv AS k, count(*) AS c, max(iv) AS a FROM wa WHERE qty = 7 GROUP BY iv$$) AS few_interval_key,
+       chk($$SELECT m AS k, count(*) AS c FROM wa WHERE qty = 53 GROUP BY m$$) AS few_money_key,
+       chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s, avg(n19) AS a, min(img) AS b, max(iv) AS d FROM wa WHERE qty = 17 GROUP BY grp$$) AS few_aggs,
+       chk($$SELECT count(DISTINCT n38) AS a, count(DISTINCT iv) AS b, sum(img) AS c FROM wa WHERE qty IN (3, 90)$$) AS few_distinct,
+       chk($$SELECT n38 AS k, count(*) AS c FROM wa WHERE qty = 5 AND n38 > 1 GROUP BY n38$$) AS few_wide_conjunct,
+       chk($$SELECT n38 AS k, sum(n19) AS s, min(iv) AS a FROM wa WHERE qty = -1 GROUP BY n38$$) AS few_none;
 
 -- parameters: a generic plan
 PREPARE p_k(numeric) AS SELECT iv AS k, count(*) AS c, sum(n38) AS s FROM wa WHERE n38 > $1 OR img = $1 GROUP BY iv;
