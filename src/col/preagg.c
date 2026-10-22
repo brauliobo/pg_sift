@@ -12,7 +12,8 @@
  *     flag, for an INT measure the smallest value of each group that has one (nn > 0) and then the largest, as zigzag keys
  *
  * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its rollup) as varints, then the rollups in that
- * order. Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
+ * order; the rollup of the rows of the unit (minor 8) is listed as the leaf ncols and has top-level leaves for dims and measures.
+ * Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
  *     per dim: u8 anynull, (anynull: a bitmap of the tuples that have a NULL there, bit i of byte i / 8), then for the tuples with a value
  *     the key as the zigzag difference to the previous one (the tuples are in ascending order of their keys, dim 0 first, a NULL after the values),
  *     counts[ntuples] (elements of the tuple),
@@ -767,7 +768,8 @@ cmp_i16(const void *a, const void *b)
 }
 
 /*
- * Builds the rollup of one list over the unit. fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
+ * Builds the rollup of one list over the unit (of the rows of the unit when ru->list is -1: the dims are top-level leaves and the cap is a 10th of
+ * the rows, at most SIFT_PAGG_ROWS_CELLS). fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
  * the check of a stored one); else the dims go from the most distinct values down until the tuples are at most a 32nd of the elements, and
  * the blob fits room (limited: the budget of the list). false when no rollup fits or the list cannot be used.
  */
@@ -784,16 +786,17 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 				mhs = 16;
 	int64	   *hk;
 	uint8	   *hu;
-	bool		done = false;
+	bool		done = false,
+				rows = ru->list < 0;
 	StringInfoData tmp;
 
-	if (!col_usable(&cols[ru->list], nrows) || (limited && room == 0))
+	if ((!rows && !col_usable(&cols[ru->list], nrows)) || (limited && room == 0))
 		return false;
 	for (int j = 0; j < ru->ndims; j++)
 	{
 		const SiftCPaggCol *c = &cols[ru->dim[j]];
 
-		if (!c->ready || has_ovf(c) || (nc > 0 && c->n != n))
+		if (!c->ready || has_ovf(c) || (nc > 0 && c->n != n) || (rows && c->n != nrows))
 			continue;
 		n = c->n;
 		cand[nc++] = j;
@@ -801,7 +804,7 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 	if (n == 0 || nc == 0)
 		return false;
 	b.n = n;
-	b.cap = fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
+	b.cap = rows ? Min((uint32) SIFT_PAGG_ROWS_CELLS, Max((uint32) SIFT_PAGG_ROLLUP_MIN, nrows / SIFT_PAGG_ROWS_RATIO)) : fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
 	while (mhs < 2 * (b.cap + 2))
 		mhs *= 2;
 	hk = palloc(mhs * sizeof(int64));
@@ -903,11 +906,11 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 
 	for (int i = 0; i < spec->nrollups; i++)
 	{
+		bool		rows = spec->rollup[i].list < 0;
+
 		initStringInfo(&body[nl]);
-		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed, limited, room, &body[nl]))
-		{
+		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed || rows, limited && !rows, room, &body[nl]))
 			list[nl++] = spec->rollup[i].list;
-		}
 		else
 			pfree(body[nl].data);
 	}
@@ -916,7 +919,7 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 	appendStringInfoChar(out, (char) nl);
 	for (int i = 0; i < nl; i++)
 	{
-		put_u(out, list[i]);
+		put_u(out, list[i] < 0 ? s->ncols : list[i]);	/* the rows of the unit: the number of leaves, which no list is */
 		put_u(out, body[i].len);
 	}
 	for (int i = 0; i < nl; i++)

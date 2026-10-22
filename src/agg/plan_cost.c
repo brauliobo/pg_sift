@@ -856,14 +856,15 @@ preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double row
 				elems,
 				ecost,
 				tcost;
+	SiftAggPaShape shape;
 
-	if (s->group < 0)
+	if (s->group < 0 && (!sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !shape.rows))
 		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP;
 	for (int r = 0; r < c->pa.nrollups; r++)
 		if (c->pa.rollup[r].list == s->group)
 			for (int d = 0; d < c->pa.rollup[r].ndims; d++)
 				tuples *= Max(c->stats.ndistinct[c->pa.rollup[r].dim[d]], 2.0);
-	elems = rows / units * elems_of(c, s->group);
+	elems = rows / units * (s->group >= 0 ? elems_of(c, s->group) : 1.0);
 	sift_aggspec_unit_costs(s, c->lay, &ecost, &tcost);
 	return Min(Min(tuples, 4096.0) * tcost * sift_agg_rollup_cost, elems * ecost) / SIFT_AGG_INSTR_PER_OP;
 }
@@ -883,7 +884,9 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 	for (int i = 0; i < s->naggs; i++)
 		minmax |= s->agg[i].kind == SAA_MIN || s->agg[i].kind == SAA_MAX;
 	dim = shape.dim >= 0 ? shape.dim : shape.hdim;
-	if (shape.list >= 0)
+	if (shape.rows)
+		miss = c->stats.rows_miss;
+	else if (shape.list >= 0)
 		miss = c->stats.roll_miss[shape.list];
 	else if (dim >= 0)
 		miss = minmax ? c->stats.mm_miss[dim] : c->stats.dim_miss[dim];

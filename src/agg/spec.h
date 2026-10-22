@@ -573,11 +573,15 @@ typedef struct SiftAggPaShape
 	bool		month;				/* dim >= 0: the cube's month dim of that timestamp leaf, not the leaf's own dim */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
+	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
 	int			rdim[SIFT_SRC_MAX_RDIMS];
 	int			nmeas;				/* ... and as measures */
 	int			rmeas[SIFT_SRC_MAX_MEAS];
 } SiftAggPaShape;
+
+/* the shape is answered from a rollup (of a list's elements or of the rows), not from histograms or sums */
+#define PA_ROLLUP(pa) ((pa).list >= 0 || (pa).rows)
 
 /*
  * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, agg/colsrc.h SiftSrcUnitAgg)? A scan of one source without joins, combos
@@ -588,6 +592,8 @@ typedef struct SiftAggPaShape
  * Over the elements of a list (an array of objects or scalars, a map): any number of group keys, conjuncts and count(leaf) over the dims of its
  * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
  * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
+ * Over the rows, when that fails (two or more keys, a key and a conjunct on another column) and the index has the rollup of its rows (reloption
+ * rollup_dims): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
  */
 /* a SAK_LUT key of a timestamp leaf whose expression is the same all month (date_trunc('month', ts)::date, extract(year FROM ts), ...): the month dim of the cube answers it */
 extern bool sift_aggkey_month(const SiftAggKey *k);

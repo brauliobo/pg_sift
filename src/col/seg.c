@@ -713,9 +713,13 @@ sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting,
 			return true;
 	for (int r = 0; setting >= PAGG_ECUBE_MINOR && r < spec->nrollups; r++)
 	{
-		bool		fits = spec->rfixed || seg->entry.format < PAGG_ECUBE_MINOR;
+		bool		rows = spec->rollup[r].list < 0;
+		bool		fits = spec->rfixed || rows || seg->entry.format < PAGG_ECUBE_MINOR;
 
-		for (int d = 0; spec->rfixed && d < spec->rollup[r].ndims; d++)
+		/* the rollup of the rows is minor 8, written only where the kinds of the rows are known (as for the min and max) */
+		if (rows && (setting < SIFT_COL_FORMAT_ROWS || !sift_cseg_kinds_exact(seg)))
+			continue;
+		for (int d = 0; (spec->rfixed || rows) && d < spec->rollup[r].ndims; d++)
 			fits = fits && leaf_fits(seg, spec->rollup[r].dim[d], SIFT_PAGG_ROLLUP_TUPLES);
 		if (c->roll[r] == 0 && fits)
 			return true;
