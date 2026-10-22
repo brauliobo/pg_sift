@@ -194,8 +194,8 @@ On the 1,000,000-order table, after the read tests, each system changes its rows
 | single-row change: seen by the next query (ms after the acknowledgement) | **0.14** | 7.24 | 15.5 | 1,003 | 5.81 | 3,253 | 20 |
 | revenue per month while 0 rows/s are updated: p50 (ms) | 164 | 23.2 | 51.8 | **5.73** | 6.26 | n/a | 23.4 |
 | revenue per month while 10,000 rows/s are updated: p50 (ms) | 161 | 22.8 | 57.2 | **8.54** | 28.9 | n/a | 75 |
-| size on disk after the changes, against before | 1.11x | 1.17x | 1.56x | 1.23x | 1.03x | **0.96x** | 1.09x |
-| size after VACUUM / merge / OPTIMIZE, against before | 1.11x | 1.06x | 1.03x | 1.23x | **0.98x** | **0.96x** | 1.03x |
+| size on disk after the changes, against before | 1.11x | 1.17x | 1.55x | 1.21x | 1.03x | **0.96x** | 1.09x |
+| size after VACUUM / merge / OPTIMIZE, against before | 1.11x | 1.06x | 1.11x | 1.21x | **0.98x** | **0.96x** | 1.03x |
 
 **Takeaway:** Updating 10% of the rows, in rows per second: pg_sift `sift_col` 132,270, pg_sift `sift_table` 94,546, PostgreSQL 85,470, Elasticsearch 28,395, ClickHouse, lightweight UPDATE 19,657, ClickHouse, ReplacingMergeTree + FINAL 15,606, ClickHouse, ALTER UPDATE 13,248.
 
