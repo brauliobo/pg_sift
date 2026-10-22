@@ -39,6 +39,8 @@ typedef struct PredState
 	uint32		memo_row;		/* SAP_ELEM_EXISTS (valid while rowmask_ok): the answer for this row of the unit and these lookup rows */
 	uint32		memo_ref[SIFT_AGG_MAX_CLEAVES];
 	bool		memo_res;
+	uint64	   *poison;			/* SAP_ELEM_EXISTS with pass_poison (valid while poison_ok): the rows of the unit whose list SQL cannot read */
+	bool		poison_ok;
 } PredState;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
