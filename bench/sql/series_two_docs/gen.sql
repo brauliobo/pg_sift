@@ -5,7 +5,7 @@ DROP TABLE IF EXISTS events, dims, maps CASCADE;
 CREATE TABLE dims (id int PRIMARY KEY, kind text NOT NULL);
 INSERT INTO dims SELECT g, 'cat_' || chr(97 + g % 4) FROM generate_series(1, 50) g;
 CREATE TABLE maps (src text, cat text, sub text);
-INSERT INTO maps VALUES ('mhead', 'cat_a', NULL), ('catg_a', 'cat_b', 'catg_a'), ('catg_b_x', 'cat_c', 'catg_b'), ('catg_b_y', 'cat_c', 'catg_b');
+INSERT INTO maps VALUES ('m_total', 'cat_a', NULL), ('catg_a', 'cat_b', 'catg_a'), ('catg_b_x', 'cat_c', 'catg_b'), ('catg_b_y', 'cat_c', 'catg_b');
 CREATE TABLE events (
   id int PRIMARY KEY,
   parent_id int NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE events (
 INSERT INTO events
 SELECT g, 1 + g % 50, current_date - (g * 7919 % 700), NULL,
        CASE WHEN g % 20 = 0 THEN '{}'::jsonb
-            ELSE jsonb_build_object('mhead', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1, 'catg_b_y', (g * 7 % 10) + 1) END,
+            ELSE jsonb_build_object('m_total', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1, 'catg_b_y', (g * 7 % 10) + 1) END,
        CASE WHEN g % 13 = 0 THEN NULL
             ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || chr(97 + (g + j) % 4), 'sub', CASE WHEN j % 2 = 0 THEN 'catg_' || chr(97 + j % 3) END,
                                                                                     'dir_a', CASE (g + j) % 3 WHEN 0 THEN 'pos' WHEN 1 THEN 'neg' ELSE 'neu' END, 'score', (g * j) % 10))

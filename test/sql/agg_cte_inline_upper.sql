@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, metrics jsonb NOT NULL, payload jsonb);
 INSERT INTO events
-SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), jsonb_build_object('mhead', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1),
+SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), jsonb_build_object('m_total', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1),
        CASE WHEN g % 13 = 0 THEN NULL
             ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || chr(97 + (g + j) % 4), 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 3) j)) END
 FROM generate_series(1, 30000) g;
@@ -27,10 +27,10 @@ CREATE FUNCTION series_query(cte text) RETURNS text LANGUAGE sql AS $$
 	            GROUP BY b.id, b.parent_id, b.bucket_period, b.bucket_date, o.cat),
 	  metrics AS (SELECT b.id, b.parent_id, b.bucket_period, b.bucket_date, split_part(r.key, '_', 1) AS cat, r.value::float8 AS score
 	              FROM base b CROSS JOIN LATERAL jsonb_each(b.metrics) r),
-	  a AS (SELECT coalesce(cat, 'mhead') AS cat, day, period, avg(score) AS value, count(DISTINCT id) AS n
+	  a AS (SELECT coalesce(cat, 'm_total') AS cat, day, period, avg(score) AS value, count(DISTINCT id) AS n
 	        FROM (SELECT x.*, d.day, d.period AS period FROM all_dates d LEFT JOIN parts x ON jsonb_build_array(x.bucket_period, x.bucket_date) = jsonb_build_array(d.period, d.day)) t
 	        GROUP BY GROUPING SETS ((cat, day, period))),
-	  b AS (SELECT coalesce(cat, 'mhead') AS cat, day, period, avg(score) AS value, count(DISTINCT id) AS n
+	  b AS (SELECT coalesce(cat, 'm_total') AS cat, day, period, avg(score) AS value, count(DISTINCT id) AS n
 	        FROM (SELECT x.*, d.day, d.period AS period FROM all_dates d LEFT JOIN metrics x ON jsonb_build_array(x.bucket_period, x.bucket_date) = jsonb_build_array(d.period, d.day)) t
 	        GROUP BY GROUPING SETS ((cat, day, period))),
 	  g AS (SELECT coalesce(a.cat, b.cat) AS cat, coalesce(a.day, b.day) AS day, coalesce(a.period, b.period) AS period, coalesce(a.value, b.value) AS value,
