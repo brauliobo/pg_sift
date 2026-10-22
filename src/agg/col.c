@@ -308,7 +308,11 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS);
+
+	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
+	sift_col_unpin(src->cs);
+	return src;
 }
 
 static void
@@ -319,6 +323,16 @@ col_close(void *impl)
 	if (src->rck)
 		recheck_close(src->rck);
 	sift_col_close(src->cs);
+}
+
+static void
+col_unpin(void *impl)
+{
+	ColSource  *src = impl;
+
+	if (src->rck)
+		recheck_unpin(src->rck);
+	sift_col_unpin(src->cs);
 }
 
 static const SiftSrcLayout *
@@ -636,6 +650,7 @@ static const SiftSrcProvider col_provider = {
 	.open = col_open,
 	.open_part = col_open_part,
 	.close = col_close,
+	.unpin = col_unpin,
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,
 	.begin = col_begin,

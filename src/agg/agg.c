@@ -642,6 +642,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 
 	ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
 		sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
+	if (ex->partoff)
+		sift_aggpart_set_offsets(ex->src, ex->partoff);
 	ex->lay = sift_colsrc_source_layout(ex->src);
 	extend_layout(ex);
 	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));

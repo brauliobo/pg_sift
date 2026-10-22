@@ -110,6 +110,7 @@ extern bool col_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
 extern void col_set_recheck(void *impl, int leaf, int mode);
 extern void col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 extern void recheck_close(ColRecheck *k);
+extern void recheck_unpin(ColRecheck *k);
 extern void recheck_collect(ColSource *src, uint32 nrow, uint64 *bits);
 extern bool recheck_next(ColSource *src, SiftSrcUnit *unit);
 extern void col_prune_str(void *impl, const SiftSrcStrTest *t, int nt);

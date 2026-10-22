@@ -327,9 +327,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
+	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
 	engine_open(ex, snap, RestoreParamList(&params));
-	if (ex->spec->nparts > 0)
-		sift_aggpart_set_offsets(ex->src, sh->partoff);
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	scan_buffers(ex);

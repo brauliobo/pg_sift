@@ -115,6 +115,13 @@ sift_colsrc_close(SiftSrcSource *src)
 	src->prov->close(src->impl);
 }
 
+void
+sift_colsrc_unpin(SiftSrcSource *src)
+{
+	if (src->prov->unpin)
+		src->prov->unpin(src->impl);
+}
+
 const SiftSrcLayout *
 sift_colsrc_source_layout(const SiftSrcSource *src)
 {

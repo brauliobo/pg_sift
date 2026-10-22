@@ -430,6 +430,8 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 	void		(*close) (void *impl);
+	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
+	void		(*unpin) (void *impl);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
@@ -571,6 +573,7 @@ extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot s
 extern bool sift_colsrc_can_part(Oid indexrelam);
 extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 extern void sift_colsrc_close(SiftSrcSource *src);
+extern void sift_colsrc_unpin(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
 
 /* Superblocks of the heap now: the morsels of a parallel scan are ranges of [0, nsb) */

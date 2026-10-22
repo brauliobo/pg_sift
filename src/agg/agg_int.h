@@ -236,6 +236,7 @@ typedef struct AggExec
 	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */
 	/* counters */
 	int64		n_units;
+	const uint32 *partoff;		/* a parallel worker of a partitioned table: the leader's first superblock of each partition (sift_aggpart_set_offsets) */
 	int			parts_pruned;	/* the partitions of a partitioned table that its conditions refuted when the scan started (part_prune_init) */
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
 	int64		n_rollup_miss;	/* exact units scanned for lack of their rollup, and of them those a refresh was queued for */
