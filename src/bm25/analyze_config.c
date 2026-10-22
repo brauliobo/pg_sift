@@ -49,7 +49,8 @@ sift_analyze_validate_fields(const char *names)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("a sift index has at most %d fields of at most %d bytes of names", SIFT_MAX_FIELDS,
-						SIFT_FIELDS_BYTES - 1)));
+						SIFT_FIELDS_BYTES - 1),
+				 errhint("Index fewer sections, or give them shorter names; sift.field_query weighs the ones that remain.")));
 }
 
 static void

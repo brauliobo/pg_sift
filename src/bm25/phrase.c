@@ -154,8 +154,7 @@ phrase_group(PhraseCur *pc, const sift_grp *g)
 		SiftPostingCursor *tc = pc->ic->leafpc[ph->leaf[i]][0];
 		const sift_cur *cur = sift_post_cursor(tc);
 
-		if (cur->state != 1 || cur->g.gid != g->gid)
-			elog(ERROR, "sift: a phrase term is not positioned at superblock %u", g->gid);
+		SIFT_INVARIANT(cur->state == 1 && cur->g.gid == g->gid, "sift: a phrase term is not positioned at superblock %u", g->gid);
 		posctx_group(ctx, ph->leaf[i], tc, &cur->g);
 	}
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)

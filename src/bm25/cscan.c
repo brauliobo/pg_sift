@@ -65,7 +65,7 @@ init_cols(SiftScanState *ss, CustomScan *cs)
 		else if (sift_is_score_expr(e, cs->scan.scanrelid, &is_max))
 			ss->col[i].kind = is_max ? COL_MAX_SCORE : COL_SCORE;
 		else
-			elog(ERROR, "sift: unexpected scan tuple column");
+			SIFT_INVARIANT(false, "sift: unexpected scan tuple column");
 		i++;
 	}
 }

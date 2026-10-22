@@ -165,14 +165,13 @@ postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint
 	}
 	if (w->n == 0)
 		w->haspos = pos != NULL;
-	else if (w->haspos != (pos != NULL))
-		elog(ERROR, "sift: postings of a term must all have positions or none");
+	else
+		SIFT_INVARIANT(w->haspos == (pos != NULL), "sift: postings of a term must all have positions or none");
 	for (int i = 0; i < n; i++)
 	{
-		if ((w->n > 0 || i > 0) && keys[i] <= (i > 0 ? keys[i - 1] : w->keys[w->n - 1]))
-			elog(ERROR, "sift: postings of a term must arrive in ascending key order");
-		if (tf[i] == 0)
-			elog(ERROR, "sift: posting with tf 0");
+		SIFT_INVARIANT(!((w->n > 0 || i > 0) && keys[i] <= (i > 0 ? keys[i - 1] : w->keys[w->n - 1])),
+					   "sift: postings of a term must arrive in ascending key order");
+		SIFT_INVARIANT(tf[i] != 0, "sift: posting with tf 0");
 		w->bound[w->n + i] = bound_of(w, tf[i], dl[i]);
 		if (staged && w->n + i > 0 && SIFT_GID(keys[i]) != SIFT_GID(i > 0 ? keys[i - 1] : w->keys[w->n - 1]))
 			w->open_start = w->n + i;
@@ -279,6 +278,15 @@ fill_groups(SiftPostingWriter *w, SiftGroupScore *gs, uint8 *rows)
 		rows += group_score(w, i, w->n, &j, &nib, &esc, &gs[g], rows) ? SIFT_BLKS_PER_SB : 0;
 }
 
+static void
+blob_too_big(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: postings of one term exceed 4 GB"),
+			 errhint("Partition the table so that each index holds fewer documents with the term.")));
+}
+
 /*
  * Encodes the term's postings into w->out, filling info but for post_off;
  * returns the term blob, NULL for an inline term (which has none).
@@ -297,8 +305,7 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 				posoff = 0;
 	uint8	   *out;
 
-	if (n == 0)
-		elog(ERROR, "sift: term without postings");
+	SIFT_INVARIANT(n != 0, "sift: term without postings");
 	memset(info, 0, sizeof(SiftTermInfo));
 	info->df = n;
 	for (uint32 i = 0; i < n; i++)
@@ -347,12 +354,9 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 		info->pos_len = total - posoff;
 	}
 	if (total > SIFT_BLOB_MAX)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: postings of one term exceed 4 GB")));
+		blob_too_big();
 	out = out_buf(w, total);
-	if (sift_encode(w->keys, NULL, NULL, n, &opts, out) != clen)
-		elog(ERROR, "sift: codec size mismatch");
+	SIFT_INVARIANT(sift_encode(w->keys, NULL, NULL, n, &opts, out) == clen, "sift: codec size mismatch");
 	if (side)
 	{
 		uint8	   *p = out + ALIGN4(clen);
@@ -380,14 +384,6 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 	info->post_len = total;
 	info->codec_len = clen;
 	return out;
-}
-
-static void
-blob_too_big(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-			 errmsg("sift: postings of one term exceed 4 GB")));
 }
 
 /* The containers of the GROUPED terms may be PACKED (segment format 3) */
@@ -467,8 +463,7 @@ spool_group(SiftPostingWriter *w, uint32 i, uint32 j)
 	uint32		plen;
 
 	/* the term of one group: 8 bytes, ng, key, poff[2], base[2], and then the container */
-	if (sift_encode(w->keys + i, NULL, NULL, j - i, &opts, blob) != size)
-		elog(ERROR, "sift: codec size mismatch");
+	SIFT_INVARIANT(sift_encode(w->keys + i, NULL, NULL, j - i, &opts, blob) == size, "sift: codec size mismatch");
 	memcpy(&plen, blob + 20, sizeof(plen));
 	if (sp->ng == sp->maxg)
 	{

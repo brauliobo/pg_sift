@@ -176,8 +176,7 @@ iter_phrase_groups(SiftMatchIter *it, int s, uint32 gid)
 		SiftPostingCursor *pc = it->curs[s].leafpc[p->pleaf[k]][0];
 		const sift_cur *c = sift_post_cursor(pc);
 
-		if (c->state != 1 || c->g.gid != gid)
-			elog(ERROR, "sift: a phrase term is not positioned at superblock %u", gid);
+		SIFT_INVARIANT(c->state == 1 && c->g.gid == gid, "sift: a phrase term is not positioned at superblock %u", gid);
 		posctx_group(it->pos, p->pleaf[k], pc, &c->g);
 	}
 }

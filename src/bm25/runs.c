@@ -129,8 +129,7 @@ io_byte(RunIO *io)
 	{
 		io->len = BufFileRead(io->file, io->buf, io->cap);
 		io->pos = 0;
-		if (io->len == 0)
-			elog(ERROR, "sift: unexpected end of a build run");
+		SIFT_INVARIANT(io->len != 0, "sift: unexpected end of a build run");
 	}
 	return io->buf[io->pos++];
 }
@@ -157,14 +156,12 @@ reader_next_term(RunReader *rd)
 	rd->len = io_get_varint(&rd->io);
 	if (rd->len == 0)
 		return;
-	if (rd->len > SIFT_MAX_TERM_BYTES)
-		elog(ERROR, "sift: corrupt build run (term of %d bytes)", rd->len);
+	SIFT_INVARIANT(rd->len <= SIFT_MAX_TERM_BYTES, "sift: corrupt build run (term of %d bytes)", rd->len);
 	for (int i = 0; i < rd->len; i++)
 		rd->term[i] = io_byte(&rd->io);
 	rd->df = io_get_varint(&rd->io);
 	rd->thaspos = io_get_varint(&rd->io);
-	if (rd->thaspos && !rd->haspos)
-		elog(ERROR, "sift: corrupt build run (positions in a run without)");
+	SIFT_INVARIANT(!rd->thaspos || rd->haspos, "sift: corrupt build run (positions in a run without)");
 }
 
 static int
@@ -448,8 +445,7 @@ open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint64 *nd
 		rd[i].io.file = run_open(runs[i]);
 		rd[i].io.cap = reader_buf(budget, nruns);
 		rd[i].io.buf = palloc(rd[i].io.cap);
-		if (BufFileSeek(rd[i].io.file, 0, 0, SEEK_SET) != 0)
-			elog(ERROR, "sift: could not rewind a build run");
+		SIFT_INVARIANT(BufFileSeek(rd[i].io.file, 0, 0, SEEK_SET) == 0, "sift: could not rewind a build run");
 		rd[i].dleft = io_get_varint(&rd[i].io);
 		rd[i].haspos = io_get_varint(&rd[i].io);
 		*ndocs += rd[i].dleft;
@@ -673,8 +669,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	io_varint(&ds.io, ndocs);
 	io_varint(&ds.io, (seg->entry.flags & SIFT_SEG_POSITIONS) != 0);
 	sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &ds);
-	if (ds.ndocs != 0)
-		elog(ERROR, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
+	SIFT_INVARIANT(ds.ndocs == 0, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
 	io_varint(&ds.io, 0);
 	io_flush(&ds.io);
 	pfree(ds.io.buf);
