@@ -378,10 +378,12 @@ CREATE TABLE other (id int, c text);
 CREATE INDEX other_c ON other USING sift (c) WITH (analyzer = keyword);
 SELECT * FROM sift.facets('d_body', 'other_c', 'common');
 ERROR:  indexes "d_body" and "other_c" are on different tables
+HINT:  Create the keyword index on the table of the main index.
 CREATE INDEX d_part ON d USING sift (cat) WITH (analyzer = keyword) WHERE id < 100;
 SELECT * FROM sift.facets('d_body', 'd_part', 'common');
 ERROR:  index "d_part" is a partial index
 DETAIL:  Rows outside its predicate would be counted as having no value.
+HINT:  Create the keyword index without a predicate and filter in the query.
 DROP INDEX d_part;
 DROP TABLE other;
 -- a value longer than a term is indexed as its start and a hash of all of it: its facet is that term, and no other value's
@@ -416,6 +418,7 @@ CREATE POLICY fac_p ON d FOR SELECT USING (id % 2 = 0);
 SET ROLE fac_user;
 SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 1);
 ERROR:  sift.facets does not support tables with row-level security
+HINT:  Use sift.facet_counts, which has no such limit.
 RESET ROLE;
 DROP POLICY fac_p ON d;
 ALTER TABLE d DISABLE ROW LEVEL SECURITY;
