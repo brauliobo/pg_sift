@@ -192,7 +192,10 @@ null_unit(AggExec *ex)
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < ex->spec->npreds_total; i++)
+	{
 		ex->ps[i].rowmask_ok = false;
+		ex->ps[i].poison_ok = false;
+	}
 	for (int leaf = 0; leaf < ex->lay->nleaves; leaf++)
 		ex->uvec[leaf] = (SiftSrcVec) {null_data, null_flags, &null_dict, 1, NULL};
 	memset(ex->uvec_ok, true, ex->lay->nleaves * sizeof(bool));

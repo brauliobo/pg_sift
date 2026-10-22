@@ -241,7 +241,7 @@ overflow_rows(AggExec *ex, bool rechecked)
 	uint64	   *rows = NULL;
 
 	for (int i = 0; i < s->nleaves; i++)
-		if (s->leaves[i] < ex->nbase && (s->recheck[i] != SRK_NONE) == rechecked)
+		if (s->leaves[i] < ex->nbase && s->recheck[i] != SRK_RECORDSET_LAZY && (s->recheck[i] != SRK_NONE) == rechecked)
 			leaf_overflow_rows(ex, s->leaves[i], &rows);
 	for (int j = 0; j < s->nvleaf; j++)
 	{
@@ -332,7 +332,10 @@ unit_begin(AggExec *ex)
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < s->npreds_total; i++)
+	{
 		ex->ps[i].rowmask_ok = false;
+		ex->ps[i].poison_ok = false;
+	}
 	ex->n_units++;
 }
 
