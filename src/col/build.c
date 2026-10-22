@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 
 #include "col/build.h"
+#include "core/limits.h"
 #include "core/ops.h"
 #include "core/cmp.h"
 
@@ -363,6 +364,35 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	return res;
 }
 
+/*
+ * The keys of a wildcard path (m.*) past the dictionary of the shredder (SIFT_SHRED_DEFAULT_KEYS per index) leave the key and its values as
+ * overflow, and a query that reads the leaf keeps the normal plan: the units that hold one are counted from the zones of the finished segments.
+ */
+static void
+notice_key_overflow(Relation index)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	const SiftColLeafStats *ls = NULL;
+
+	for (int c = 0; c < d->ncols; c++)
+	{
+		const SiftColDef *def = &d->cols[c];
+		size_t		n = def->path ? strlen(def->path) : 0;
+
+		if (def->parent < 0 || n <= 4 || strcmp(def->path + n - 4, "#key") != 0)
+			continue;
+		if (ls == NULL)
+			ls = sift_col_leaf_stats(index);
+		if (ls[c].novf > 0)
+			ereport(NOTICE,
+					(errmsg("sift_col index \"%s\": the keys of %.*s passed the %d keys the index keeps in %.0f of %.0f units (%.1f%%)",
+							RelationGetRelationName(index), (int) (n - 4), def->path, (int) sift_limit(shred_keys, SIFT_SHRED_DEFAULT_KEYS),
+							ls[c].novf, ls[c].nunits, 100.0 * ls[c].novf / Max(ls[c].nunits, 1)),
+					 errdetail("The keys and values past the limit are read from the heap, and a query that reads the leaf keeps the normal plan."),
+					 errhint("Declare the keys that queries read by name in the paths option instead of a wildcard, or keep the map out of the index.")));
+	}
+}
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -394,7 +424,10 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #endif
 	if (info->ii_ParallelWorkers > 0)
 		res = sift_colp_build(heap, index, info);
-	return res ? res : serial_build(heap, index, info);
+	if (res == NULL)
+		res = serial_build(heap, index, info);
+	notice_key_overflow(index);
+	return res;
 }
 
 void

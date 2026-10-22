@@ -58,7 +58,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  set_keys_max        | SIFT_CSET_LIMIT_MAX             |       1024 | t         | f
  shred_groups        | SIFT_SHRED_MAX_GROUPS           |         64 | t         | f
  shred_key_bytes     | SIFT_SHRED_MAX_KEY_BYTES        |        255 | t         | f
- shred_keys          | SIFT_SHRED_DEFAULT_KEYS         |      65536 | t         | f
+ shred_keys          | SIFT_SHRED_DEFAULT_KEYS         |      65536 | t         | t
  shred_leaves        | SIFT_SHRED_MAX_COLS             |        256 | t         | f
  shred_spec_bytes    | SIFT_SHRED_MAX_SPEC_BYTES       |      65536 | t         | f
  shred_steps         | SIFT_SHRED_MAX_STEPS            |         16 | t         | f

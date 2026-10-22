@@ -74,7 +74,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `shred_steps` | steps of one jsonb path | 16 | steps | ERROR at CREATE INDEX |  | `col/shred.h` `SIFT_SHRED_MAX_STEPS` |  |
 | `shred_text` | one text value of a jsonb leaf | 1,048,576 (1 MiB) | bytes | the value is OVERFLOW (read from the heap) |  | `col/shred.h` `SIFT_SHRED_MAX_TEXT` |  |
 | `shred_key_bytes` | a key of a jsonb wildcard object | 255 | bytes | the value is OVERFLOW (read from the heap) |  | `col/shred.h` `SIFT_SHRED_MAX_KEY_BYTES` |  |
-| `shred_keys` | distinct keys of a jsonb wildcard object per segment | 65,536 | keys | the value is OVERFLOW (read from the heap) |  | `col/shred.h` `SIFT_SHRED_DEFAULT_KEYS` |  |
+| `shred_keys` | distinct keys of a jsonb wildcard object per segment | 65,536 | keys | the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE) |  | `col/shred.h` `SIFT_SHRED_DEFAULT_KEYS` | yes |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 
