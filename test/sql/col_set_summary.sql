@@ -285,4 +285,4 @@ SELECT (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SE
 
 DROP TABLE sa, ss, ss_b, ss_q, sr CASCADE;
 DROP FUNCTION ss_rows(text, bool), ss_units(text), ss_check(text, text), ss_cost(text), ss_by_set(text);
-DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
