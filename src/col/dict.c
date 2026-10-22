@@ -3,8 +3,11 @@
  */
 #include "core/host.h"
 
+#include "port/pg_bswap.h"
+
 #include "col/enc.h"
 #include "col/enc_int.h"
+#include "core/cmp.h"
 #include "core/limits.h"
 
 /* ---------------------------------------------------------------------------
@@ -58,7 +61,7 @@ cdict_ready(SiftCDict *d)
 		return;
 	if (d->slots)
 		pfree(d->slots);
-	d->nslots = pg_nextpower2_32(Max(DICT_MINCAP, d->n + 1) * 4);
+	d->nslots = pg_nextpower2_32(Max(DICT_MINCAP, d->n + 1) * 2);
 	d->slots = MemoryContextAllocZero(d->mcxt, d->nslots * sizeof(uint32));
 	for (uint32 c = 0; c < d->n; c++)
 		*cdict_probe(d, d->bytes + d->off[c], cdict_len(d, c)) = c + 1;
@@ -101,13 +104,194 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 	return d->n++;
 }
 
+/*
+ * A dictionary read for a scan is searched entry by entry until it has been asked DICT_HASH_AFTER times: the table (about 16 bytes a code) and the
+ * sorted order (4) cost as much as a few dozen such searches, and the first query of a backend, or of a dictionary too large to be kept
+ * (col/dictcache.c), would pay them for one use. A dictionary of the write path has its table from the first intern.
+ */
+#define DICT_HASH_AFTER		8
+#define DICT_SORT_AFTER		16
+#define DICT_SORT_MIN		1024
+
 int64
 sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 {
 	if (d->n == 0)
 		return -1;
+	if (d->slots == NULL && d->finds++ < DICT_HASH_AFTER)
+	{
+		for (uint32 c = 0; c < d->n; c++)
+			if (cdict_len(d, c) == len && memcmp(d->bytes + d->off[c], s, len) == 0)
+				return c;
+		return -1;
+	}
 	cdict_ready(d);
 	return (int64) *cdict_probe(d, s, len) - 1;
+}
+
+/* Bytewise order of dictionary values (the C collation) */
+static int
+str_cmp(const char *a, uint32 alen, const char *b, uint32 blen)
+{
+	int			r = memcmp(a, b, Min(alen, blen));
+
+	return r != 0 ? r : (alen > blen) - (alen < blen);
+}
+
+bool
+sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c)
+{
+	switch (op)
+	{
+		case SIFT_COLOP_LT:
+			return str_cmp(s, len, c->v.s, c->len) < 0;
+		case SIFT_COLOP_LE:
+			return str_cmp(s, len, c->v.s, c->len) <= 0;
+		case SIFT_COLOP_GT:
+			return str_cmp(s, len, c->v.s, c->len) > 0;
+		case SIFT_COLOP_GE:
+			return str_cmp(s, len, c->v.s, c->len) >= 0;
+		default:					/* PREFIX */
+			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
+	}
+}
+
+typedef struct SortEnt
+{
+	uint64		key;			/* the first 8 bytes, zero padded, most significant first: byte order of the keys is byte order of the strings up to a tie */
+	uint32		code;
+} SortEnt;
+
+static int
+sort_ent_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftCDict *d = arg;
+	uint32		x = ((const SortEnt *) a)->code,
+				y = ((const SortEnt *) b)->code;
+
+	return str_cmp(d->bytes + d->off[x], cdict_len(d, x), d->bytes + d->off[y], cdict_len(d, y));
+}
+
+/* d->sorted: a radix sort on the first 8 bytes of every string, then the entries that tie on them by their whole strings */
+static void
+cdict_sort(SiftCDict *d)
+{
+	SortEnt    *a = palloc(d->n * sizeof(SortEnt)),
+			   *b = palloc(d->n * sizeof(SortEnt));
+
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		uint64		k = 0;
+
+		memcpy(&k, d->bytes + d->off[c], Min(cdict_len(d, c), sizeof(k)));
+		a[c].key = pg_bswap64(k);
+		a[c].code = c;
+	}
+	for (int pass = 0; pass < 8; pass++)
+	{
+		uint32		count[256] = {0},
+					at = 0;
+		int			shift = pass * 8;
+
+		for (uint32 i = 0; i < d->n; i++)
+			count[(a[i].key >> shift) & 255]++;
+		if (count[(a[0].key >> shift) & 255] == d->n)
+			continue;
+		for (int v = 0; v < 256; v++)
+		{
+			uint32		c = count[v];
+
+			count[v] = at;
+			at += c;
+		}
+		for (uint32 i = 0; i < d->n; i++)
+			b[count[(a[i].key >> shift) & 255]++] = a[i];
+		{
+			SortEnt    *t = a;
+
+			a = b;
+			b = t;
+		}
+	}
+	for (uint32 i = 0, j; i < d->n; i = j)
+	{
+		for (j = i + 1; j < d->n && a[j].key == a[i].key; j++)
+			;
+		if (j - i > 1)
+			qsort_arg(a + i, j - i, sizeof(SortEnt), sort_ent_cmp, d);
+	}
+	d->sorted = MemoryContextAlloc(d->mcxt, (Size) d->n * sizeof(uint32));
+	for (uint32 i = 0; i < d->n; i++)
+		d->sorted[i] = a[i].code;
+	pfree(a);
+	pfree(b);
+}
+
+/* The first position of the sorted order whose string is not below c (after: not at or below it) */
+static uint32
+sorted_bound(const SiftCDict *d, const SiftColValue *c, bool after)
+{
+	uint32		lo = 0,
+				hi = d->n;
+
+	SIFT_BISECT(uint32, m, lo, hi,
+				after ? str_cmp(SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c->v.s, c->len) <= 0
+				: str_cmp(SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c->v.s, c->len) < 0);
+	return lo;
+}
+
+uint32
+sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut)
+{
+	uint32		count = 0,
+				from,
+				to;
+
+	if (d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
+		cdict_sort(d);
+	if (d->sorted == NULL)
+	{
+		for (uint32 k = 0; k < d->n; k++)
+			if (op == SIFT_COLOP_PREFIX ? cdict_len(d, k) >= c->len && memcmp(SIFT_COL_DICT_STR(d, k), c->v.s, c->len) == 0
+				: sift_cstr_matches(op, SIFT_COL_DICT_STR(d, k), cdict_len(d, k), c))
+			{
+				lut[k >> 6] |= UINT64CONST(1) << (k & 63);
+				count++;
+			}
+		return count;
+	}
+	switch (op)
+	{
+		case SIFT_COLOP_LT:
+			from = 0;
+			to = sorted_bound(d, c, false);
+			break;
+		case SIFT_COLOP_LE:
+			from = 0;
+			to = sorted_bound(d, c, true);
+			break;
+		case SIFT_COLOP_GT:
+			from = sorted_bound(d, c, true);
+			to = d->n;
+			break;
+		case SIFT_COLOP_GE:
+			from = sorted_bound(d, c, false);
+			to = d->n;
+			break;
+		default:					/* PREFIX: the strings that start with c are the run that begins where c would be inserted */
+			{
+				uint32		lo = sorted_bound(d, c, false);
+
+				from = lo;
+				to = d->n;
+				SIFT_BISECT(uint32, m, lo, to,
+							sift_cstr_matches(SIFT_COLOP_PREFIX, SIFT_COL_DICT_STR(d, d->sorted[m]), cdict_len(d, d->sorted[m]), c));
+			}
+			break;
+	}
+	for (uint32 i = from; i < to; i++)
+		lut[d->sorted[i] >> 6] |= UINT64CONST(1) << (d->sorted[i] & 63);
+	return to - from;
 }
 
 const char *

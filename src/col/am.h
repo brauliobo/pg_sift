@@ -172,7 +172,6 @@ extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
 extern PGDLLIMPORT bool sift_test_col_rel_inval;	/* sift.test_col_rel_inval: the build and the recheck invalidate the index's relcache entry at every tuple (sift_col_test_inval) */
 extern void sift_col_test_inval(Relation index);	/* does so when it is on, after it overwrote the cached state the entry held */
-extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 #ifdef SIFT_TESTING
 typedef struct SiftCDictCacheStats
 {

@@ -13,14 +13,14 @@ SELECT count(*) > 0 AS has_segment FROM sift.col_segments('dc_idx'::regclass) WH
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 SELECT bytes AS one FROM sift._test_col_dict_cache(true) \gset
-SELECT set_config('sift.test_col_dict_cache', ((:one * 5.5 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
+SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 5.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
 SELECT sum(rows) AS rows FROM generate_series(1, 5) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
 SELECT loads = 5 AS parsed, bytes <= :one * 5.5 AS within_the_limit FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
 SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
@@ -41,11 +41,11 @@ SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 SELECT loads = 0 AS none_parsed, hits > 0 AS found FROM sift._test_col_dict_cache(true);
 
 -- a cache too small to keep a dictionary parses it every time, with the same answers
-SET sift.test_col_dict_cache = 1;
+SET sift.test_limits = 'dict_cache_kb=1';
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
 SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 
 DROP TABLE dc;
 
@@ -66,14 +66,14 @@ CREATE TEMP TABLE lc_off AS :q;
 RESET sift.enable_agg;
 SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE lc_second EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_second)) d) AS differences;
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
-SET sift.test_col_dict_cache = 1;
+SET sift.test_limits = 'dict_cache_kb=1';
 REINDEX INDEX lc_idx;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 CREATE TEMP TABLE lc_small AS :q;
 CREATE TEMP TABLE lc_small2 AS :q;
 SELECT hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
 SELECT (SELECT count(*) FROM ((TABLE lc_small2 EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_small2)) d) AS differences;
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 DROP TABLE lc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
