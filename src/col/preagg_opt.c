@@ -652,7 +652,14 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 const char *
 sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+	if (opt == NULL || rest_blank(opt))
+	{
+		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (minor 8 has no kinds) */
+		if (!spec->off && !spec->fixed && !s->kinds)
+			sift_cpagg_spec_calendar(s, spec);
+		return NULL;
+	}
+	return parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
 }
 
 const char *

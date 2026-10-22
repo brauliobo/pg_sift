@@ -121,7 +121,7 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_old;
 
 -- groups of 4 units; no option; groups of 2; groups of 256 (more than the units: one group); an index built under minor 7, which has no block
 CREATE INDEX su_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
-CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 2, cube_minmax = false);
 CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 256, cube_minmax = false);
 SET sift.col_format_minor = 7;

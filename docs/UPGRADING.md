@@ -125,6 +125,9 @@ An existing index or table keeps what it holds; the new default applies to the u
 | `sift_col` option `cube_minmax` | off | on | `GROUP BY` with `min`/`max` of an integer 5.5 -> 0.34 ms; index +0.17% | `WITH (cube_minmax = false)` |
 | `sift_col` option `superunit` | 0 | 16 | whole-table aggregates 4 to 7 times faster; index +1.0% | `WITH (superunit = 0)` |
 | `sift.table_auto_defrag` (server setting, with `sift.async_maintenance`, on in 3.2 too) | off | on | four clients of an update, insert and delete mix on 200,000 rows: 7,536 against 5,092 transactions a second, range read p99 16.8 against 34.2 ms; a table that only appends starts no pass | `sift.table_auto_defrag = off` |
+| `sift_col` option `calendar_columns` | none | all date, timestamp and timestamptz columns | `date_trunc` / `extract` group-bys of a date 3.7 to 4.5 times faster; index +1.8% for two columns | `WITH (calendar_columns = 'off')` |
+| `sift.table_wide_rows` | off | on | a row over the write buffer is accepted (up to 1 GB) instead of refused; no cost for rows that fit | `SET sift.table_wide_rows = off` |
+| `sift.table_bulk_groups` | off | on | `COPY` of 200,000 rows: CPU -25%, WAL 44 -> 1 MB | `SET sift.table_bulk_groups = off` |
 
 ## 5. First release that reads each format
 
