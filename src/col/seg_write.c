@@ -369,6 +369,12 @@ sift_colw_rows(const SiftColSegWriter *w)
 	return w->rows;
 }
 
+uint64
+sift_colw_bytes(const SiftColSegWriter *w)
+{
+	return sift_sw_tell(w->sw);
+}
+
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {

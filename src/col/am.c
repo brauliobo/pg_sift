@@ -169,6 +169,16 @@ sift_col_init(void)
 							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
 							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
+							"Size of the segments the automatic rewrite of a sift_col index writes, which then rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
+							"A step rewrites the partition with most dirty units (over sift.col_auto_merge_dirty_pct of its own), or the overlays the promotions left over the partitions, "
+							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
+							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole.",
+							&sift_col_auto_merge_partition_kb, 0, 0, MAX_KILOBYTES, PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
+							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
+							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
+							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written: 12, 10, 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
