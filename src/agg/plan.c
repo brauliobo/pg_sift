@@ -78,7 +78,7 @@
  * The leaf of the index that a leaf after the source's takes its values from: the value column of a member of an object, the array whose length it
  * is; -1 for the type of a path (the tags of its leaf say it, whatever the leaf holds). Whatever that leaf cannot store is read as NULL.
  */
-static int
+int
 vleaf_source(AggCtx *c, int j)
 {
 	const SiftAggVLeaf *v = &c->vleaf[j];

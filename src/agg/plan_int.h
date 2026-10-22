@@ -322,6 +322,7 @@ extern int group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind);
 extern bool find_source(AggCtx *c, IndexOptInfo **ixout);
 extern void build_attexprs(AggCtx *c);
 extern void finish_leaves(AggCtx *c, SiftAggSpec *s);
+extern int	vleaf_source(AggCtx *c, int j);
 extern SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 
 extern SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **target);
