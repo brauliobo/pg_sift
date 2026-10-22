@@ -105,6 +105,7 @@
 #define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again (measured at 100,000 items of 3 parts, docs/COL-DIRTY-UNITS.md) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
+#define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves (docs/COL.md 2.9) */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
@@ -1078,6 +1079,32 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 }
 
 /* The rows read and tested, the zones kept and the units opened */
+/*
+ * The dictionary entries a wide leaf builds for each row read, in operators: a unit has its own dictionary, so a column of 50,000 values read in
+ * units of 10,000 rows builds about 9,500 entries a unit, not a fifth of its rows.
+ */
+static double
+wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	double		units = c->stats.nunits > 0 ? c->stats.nunits : k->units,
+				nd = Max(leaf_distinct_frac(c, leaf, k->rows) * k->rows, 1.0),
+				per_unit = k->rows / units,
+				entries = nd * -expm1(-per_unit / nd);
+	int32		typmod = e && IsA(e, Var) ? ((Var *) e)->vartypmod : -1;
+	bool		image = false;
+
+	if (lf->wtypid == NUMERICOID)
+	{
+		int			precision = ((typmod - VARHDRSZ) >> 16) & 0xffff,
+					scale = (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
+
+		image = typmod < 0 || precision > 38 || scale < 0 || scale > 38;
+	}
+	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? AGG_WIDE_IMAGE : AGG_WIDE_ENTRY);
+}
+
 static void
 cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
@@ -1101,7 +1128,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
-			k->scan_cost += k->rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], k->rows));
+			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s->leaves[i], k));
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;
