@@ -864,6 +864,7 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 	if (c->par)
 	{
 		cc->units_pruned += c->par->cc.units_pruned;
+		cc->units_set_pruned += c->par->cc.units_set_pruned;
 		cc->rows_vetted += c->par->cc.rows_vetted;
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
@@ -1139,6 +1140,8 @@ static void
 explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 {
 	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
+	if (cc->units_set_pruned > 0)
+		ExplainPropertyInteger("Units Pruned By Set Summary", NULL, cc->units_set_pruned, es);
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);

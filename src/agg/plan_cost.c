@@ -67,6 +67,7 @@
  * one to three keys and aggregates), and the elements per row of an array whose statistics are missing.
  */
 #define AGG_SCAN_LEAF		0.7		/* a leaf read (decode, null flags) */
+#define AGG_SET_USEFUL		0.85	/* the share of the units a leaf's small-set summaries must keep at most, for the cost to count the units they skip */
 #define AGG_SPARSE_MAX		0.125	/* the share of the rows a unit keeps up to which its leaves are decoded at the kept rows only */
 #define AGG_SPARSE_LEAF		1.5		/* a leaf read at the kept rows costs this many times the share of the rows it reads (the positions are gathered) */
 #define AGG_FILTER_VALUE	0.5		/* a predicate on a value */
@@ -747,6 +748,42 @@ pred_zone_kept(AggCtx *c, const SiftAggPred *p)
 }
 
 /*
+ * The share of the units the small-set summaries of the leaves the conjuncts test leave (col/setsum.h): an equality or IN on the share s of the leaf's
+ * distinct values (p->sel for an integer leaf, nvals / ndistinct for a text one) keeps a unit that holds n of them with the probability
+ * 1 - (1 - n / distinct) ^ (s * distinct), about 1 - exp(-s * n); a unit without a summary stays. A summary that keeps nearly every unit is not counted:
+ * the scan reads it for nothing then, as for a leaf that has none.
+ */
+static double
+set_kept(AggCtx *c, SiftAggSpec *s)
+{
+	double		kept = 1.0;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+		SiftSrcStrTest st;
+		double		share;
+
+		if (p->kind == SAP_LUT && sift_aggspec_str_test(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && (st.op == SSTR_EQ || st.op == SSTR_IN) &&
+			c->stats.ndistinct[p->leaf] > 0)
+			share = st.nvals / c->stats.ndistinct[p->leaf];
+		else if ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0))
+			share = Min(Max(p->sel, 0.0), 1.0);
+		else
+			continue;
+		if (c->stats.set_cover[p->leaf] > 0)
+		{
+			double		cover = c->stats.set_cover[p->leaf],
+						held = 1.0 - exp(-share * c->stats.set_keys[p->leaf]);
+
+			if (held < AGG_SET_USEFUL)
+				kept = Min(kept, 1.0 - cover + cover * held);
+		}
+	}
+	return kept;
+}
+
+/*
  * The share of the units the zone tests leave: the comparisons (their selectivity is also the fraction of the leaf's range they keep) and
  * the ORs of them, the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
  */
@@ -757,6 +794,7 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 	List	   *rest;
 
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
+	kept = Min(kept, set_kept(c, s));
 	foreach_ptr(SiftAggPred, p, rest)
 		kept = Min(kept, p->kind == SAP_TID ? p->sel : pred_zone_kept(c, p));
 	return kept;

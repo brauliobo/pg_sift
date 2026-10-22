@@ -219,6 +219,11 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
 		}
+		if (ls[i].set_units > 0)
+		{
+			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
+			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
+		}
 		st->ndistinct[i] = nonnull;
 		if (def->store == SIFT_COLS_STR && !ls[i].inl)
 			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);

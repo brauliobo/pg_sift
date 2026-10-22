@@ -50,6 +50,7 @@ extern int	sift_test_col_refresh_sleep_armed;
 extern void sift_col_validate_preagg(const char *value);
 extern void sift_col_validate_rollup(const char *value);
 extern void sift_col_validate_rollup_dims(const char *value);
+extern void sift_col_validate_set_columns(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */

@@ -321,9 +321,21 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 	t->pred = p;
 }
 
-static void
-prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep)
+/* The units a begin reads, [ulo, uhi), and the bits of those that a small-set summary cleared (docs/COL.md 2.13) */
+typedef struct PruneRange
 {
+	uint32		ulo;
+	uint32		uhi;
+	uint64	   *setcut;
+} PruneRange;
+
+static void
+prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr)
+{
+	int64	   *lo = palloc(Max(npreds, 1) * 2 * sizeof(int64)),
+			   *hi = lo + Max(npreds, 1);
+	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
+
 	for (int i = 0; i < npreds; i++)
 	{
 		const SiftColDef *def = &seg->schema->cols[preds[i].col];
@@ -338,24 +350,48 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			seg_test(src, seg, def, &preds[i], &t);
 		else
 			make_test(src, def, NULL, &preds[i], &t);
-		sift_cseg_prune(seg, preds[i].col, &t, keep);
+		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+		range[i] = t.kind == SIFT_CT_RANGE;
+		lo[i] = t.lo;
+		hi[i] = t.hi;
 	}
+	/* the ranges on one leaf together: BETWEEN is two tests, each too wide for a small set to answer alone */
+	for (int i = 0; i < npreds; i++)
+	{
+		SiftCTest	t = {.kind = SIFT_CT_RANGE,.lo = lo[i],.hi = hi[i]};
+		int			n = 1;
+
+		if (!range[i])
+			continue;
+		for (int j = i + 1; j < npreds; j++)
+			if (range[j] && preds[j].col == preds[i].col)
+			{
+				t.lo = Max(t.lo, lo[j]);
+				t.hi = Min(t.hi, hi[j]);
+				range[j] = false;
+				n++;
+			}
+		if (n > 1 && t.lo <= t.hi)
+			sift_cseg_prune_sets(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+	}
+	pfree(lo);
+	pfree(range);
 }
 
 /* keep narrowed to the units z may match: a kid of an OR narrows a copy, and the units any copy keeps are the ones kept */
 static void
-prune_zone(SiftColSource *src, SiftColSegment *seg, const SiftColPrune *z, uint64 *keep)
+prune_zone(SiftColSource *src, SiftColSegment *seg, const SiftColPrune *z, uint64 *keep, const PruneRange *pr)
 {
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb);
 	uint64	   *any = z->any ? palloc0(nw * sizeof(uint64)) : NULL;
 	uint64	   *kid = z->any ? palloc(nw * sizeof(uint64)) : keep;
 
-	prune_preds(src, seg, z->preds, z->npreds, keep);
+	prune_preds(src, seg, z->preds, z->npreds, keep, pr);
 	for (int i = 0; i < z->nkids; i++)
 	{
 		if (z->any)
 			memcpy(kid, keep, nw * sizeof(uint64));
-		prune_zone(src, seg, &z->kids[i], kid);
+		prune_zone(src, seg, &z->kids[i], kid, pr);
 		for (uint32 w = 0; any && w < nw; w++)
 			any[w] |= kid[w];
 	}
@@ -367,15 +403,21 @@ static void
 prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
 	SiftColSegment *seg = c->seg;
+	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi),
+	palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64))};
 
 	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 i = 0; i < seg->nsb; i++)
 		sift_col_bit_set(c->keep, i);
-	prune_preds(src, seg, preds, npreds, c->keep);
+	prune_preds(src, seg, preds, npreds, c->keep, &pr);
 	for (int i = 0; i < nzones; i++)
-		prune_zone(src, seg, &zones[i], c->keep);
-	c->cur = sift_cseg_find_unit(seg, sb_lo);
-	c->end = sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi);
+		prune_zone(src, seg, &zones[i], c->keep, &pr);
+	c->cur = pr.ulo;
+	c->end = pr.uhi;
+	/* the units the summaries cleared that no other test keeps (an OR's other arm may) */
+	for (uint32 u = c->cur; u < c->end; u++)
+		src->cnt.units_set += sift_col_bit_test(pr.setcut, u) && !sift_col_bit_test(c->keep, u);
+	pfree(pr.setcut);
 }
 
 void

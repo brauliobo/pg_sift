@@ -109,6 +109,8 @@ typedef struct SiftSrcStats
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
+	double		set_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units that hold a small-set summary of the leaf (0: none do) */
+	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
 	const SiftSrcZones *zones;	/* the zones of a sample of the units (NULL: the source has none to show, zone_span is the whole of it) */
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */
@@ -417,6 +419,7 @@ typedef struct SiftSrcCounters
 {
 	int64		units;			/* units returned */
 	int64		units_pruned;	/* skipped by the zone tests */
+	int64		units_set_pruned;	/* of those, the ones only a small-set summary skipped */
 	int64		rows;			/* rows of the units returned */
 	int64		bytes;			/* bytes decoded */
 	int64		rows_vetted;	/* rows checked against the heap */

@@ -329,6 +329,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 
 	c->units = cc->units;
 	c->units_pruned = cc->units_pruned + ((const ColSource *) impl)->sel.units_skipped;
+	c->units_set_pruned = cc->units_set;
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;

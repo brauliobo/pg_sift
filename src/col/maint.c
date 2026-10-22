@@ -88,7 +88,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	{
 		int			format = sift_col_format_minor;
 
-		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6 or 7 */
+		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6, 7 or 8 */
 		for (int i = 0; i < nb; i++)
 			if (!sift_cbatch_kinds_exact(batches[i]))
 				format = Min(format, SIFT_COL_FORMAT_TAGS);

@@ -66,6 +66,13 @@ sift.async_maintenance = off'
 	check "$ref rewritten null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
 	check "$ref rewritten astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
 	if [[ $ref == v3.1.0 ]]; then
+		# the small-set summary (minor 10, opt-in): under the setting 4 the new library writes what 3.1 reads, under the default the 3.1 library refuses it
+		SETQ="SELECT count(*) || ':' || sum(id) FROM setlow WHERE k = 2919"
+		sql legacy "CREATE TABLE setlow AS SELECT i AS id, i * 7919 % 5000 AS k FROM generate_series(1, 3000) i" "CREATE TABLE sethigh AS TABLE setlow" \
+			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (set_columns = 'k')" "RESET sift.col_format_minor" \
+			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (set_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
+		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
+		check 'the setting 4 writes no summary and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:8
 		node_stop legacy
 		use_root "$oldroot"
 		node_start legacy || bail 'cannot restart 3.1'
@@ -74,6 +81,9 @@ sift.async_maintenance = off'
 		check '3.1 refuses a minor 6 index with a format error and REINDEX hint' test "$(grep -c 'format 1.6\|REINDEX' <<<"$err")" -ge 2
 		err=$(sql legacy "SELECT count(*) FROM oldtbl" 2>&1)
 		check '3.1 refuses minor 6 table groups' grep -q 'format 1.6' <<<"$err"
+		check '3.1 reads an index written with set_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
+		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('sethigh_idx', false)" 2>&1)
+		check '3.1 refuses a minor 10 index with a format error and REINDEX hint' test "$(grep -c 'format 1.10\|REINDEX' <<<"$err")" -ge 2
 	fi
 	node_stop legacy
 	ROOT=$newroot

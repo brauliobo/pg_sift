@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 9; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the month of a timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2)
+## 2. Format (format major 1, col minor 10; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the month of a timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the small-set summary of section 2.13)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:
@@ -46,7 +46,7 @@ of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8 or 9; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index with the reloption `set_columns`, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
   as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -406,6 +406,51 @@ detoasted varlena image of an array, range, multirange, `inet`, `cidr`, `bit` or
 such a leaf is format minor 5; a `sift_table` stores these types by size and is not affected. SiftAgg reads them through the dictionaries of
 `docs/COL-LEAFTYPES-32.md` 8.
 
+### 2.13 Small-set summary of a leaf in a unit (column format minor 10, 3.3; opt-in)
+
+For a key spread over every unit the zone (a minimum and a maximum) is the whole range and prunes nothing, and a scan then decodes the key chunk of every unit to
+find the one that holds the key. The reloption `set_columns = 'a, b'` (default none; the names of plain integer or text leaves, as `preagg` names them) makes every unit
+written afterwards keep, for those leaves, the set of its distinct keys: exactly while there are at most `set_limit` (default 32, 2 to 1024) of them, else as a
+bloom filter of 10 bits a key. `ALTER INDEX .. SET (set_columns = ..)` applies to the units written afterwards (promotion, merge, REINDEX); the others have none.
+
+Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 3 in a segment of minor 10 and ends with the offset and the bytes of the
+summaries. The section is a header `{u32 'COLT', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}` (kinds: bit 0 some unit has an exact set, bit 1 a filter; a hint that lets a wide range skip a leaf of filters) per leaf (ascending) and per leaf
+a directory of `nsb + 1` u64 offsets and the blobs, laid out like the cubes. The blob of a unit and a leaf, little endian: `u8 kind, u8 aux, u16 0, u32 n, u64 v`, then
+`kind 1` (exact): `v` is the smallest key, `aux` the bytes (1, 2, 4, 8) of each of the `n` offsets from it, strictly ascending, the first 0; `kind 2` (bloom): `aux` is
+the probes k (1 to 16), `v` the bits (a multiple of 8, 64 or more, below 2^32, at least `n`) and `v / 8` bytes follow; probe `j` of key `x` is bit
+`((u32) (h1 + j * h2) * v) >> 32` with `h = mix(x)` (the 64-bit finalizer of MurmurHash3), `h1` its low and `h2` its high half with the low bit set. Keys are those of the
+chunk, in the segment's dictionary codes for a text leaf; NULL slots and overflow slots are left out. A unit has no blob when it has fewer than two distinct keys or when they
+fill the range from the smallest to the largest (the zone says as much), nor when its text is inline or the leaf is not one the option can name.
+
+Readers: `sift_cseg_prune` clears a unit when no key of the test can be in its summary: an equality or a range with a small span in a filter, any range or IN list in an exact set,
+a LUT of text codes through the few codes it matches (or, in an exact set, through the members). The units with overflow values and inline strings are left to their own rule. A
+summary is only ever a superset of the live keys (deletes and updates leave their keys in it until the unit is rewritten), so pruning by it is sound; rows of write buffers have none
+and are always read. The decoder refuses unknown flag bits, kinds, widths and probe counts, a count that does not fit the blob, an unsorted set, a filter with no bit; `sift.col_verify`
+recomputes the summary from the chunk (an exact set holds exactly its keys, a filter their bits and none else). A segment is minor 10 only when some unit got a summary, under
+`sift.col_format_minor = 10` and (as for minor 7) a schema without jsonb paths or one whose kinds are known; promotion, merge and REINDEX write it from the option, every other write
+writes what it wrote before, so a 3.3 library at a lower setting and an index without the option are read by 3.2 and 3.1. `sift.col_sections` lists the bytes as `sets`, EXPLAIN ANALYZE of
+SiftAgg counts `Units Pruned By Set Summary` (inside `Units Pruned`), and the planner keeps the share of the units that have summaries and their mean distinct keys per leaf
+(`SiftColLeafStats.set_*`): an equality or IN keeps `1 - c + c * (1 - exp(-s * n))` of the units (`c` the cover, `s` the share of the leaf's values the test names, `n` the keys of a unit), and counts for nothing when
+the second term is above 0.85. Code: `col/setsum.[ch]`, `col/seg.c` (`sift_cseg_prune_sets`, `col/scan.c` the begin of a scan), `col/seg_write.c` (`add_sets`). Tests: `col_set_summary` (minors, options, 21 shapes three ways, DML, VACUUM, promotion,
+merge, corrupt summaries, verify), the minor 10 step of the TAP `extension_lifecycle`.
+
+Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of about 13, median of 3 warm runs, `docs/results/col-set-summary.tsv`): 200 000 rows of `(id, kind, parent_id, uq, val, pad)`
+with a 1 500 byte `pad` (157 units), `set_columns = 'kind, parent_id, uq'` against zones only; `parent_id` is random with 20 rows a key, `kind` has 60 values in runs of 700 rows, `uq` is near-unique.
+
+| Shape | Units read, zones only | with the summary | ms, zones only | ms, with the summary |
+|---|---|---|---|---|
+| `uq = k` | 157 | 1 | 1.07 | 0.23 |
+| `parent_id = k` | 157 | 19 | 0.85 | 0.38 |
+| `parent_id IN (5 keys)` | 157 | 79 | 1.09 | 0.95 |
+| `parent_id IN (50 keys)` | 157 | 157 | 1.16 | 1.00 |
+| `parent_id BETWEEN 100 AND 103` | 157 | 67 | 1.18 | 0.59 |
+| `kind = 7` | 57 | 7 | 0.42 | 0.25 |
+| `kind IN (5 values)` | 148 | 33 | 0.98 | 0.48 |
+
+The index grows from 1 859 584 to 2 359 296 bytes (+26.9%; the `sets` section is 496 496 bytes, 2.5 bytes a row for the three leaves). With a 100 byte `pad` (16 units) the same shapes
+skip 1 to 15 of the 16 units and the index grows by 26.4% of a smaller base; at 25 000 rows (20 units) a key of `parent_id` skips 9 of 20. A list of 50 keys names a key in every unit, so the
+planner counts no gain from it and the summary only costs its bytes. The gain is in units not decoded, so it grows with the number of units and with the width of the rows.
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -467,7 +512,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
-  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, minor 7 (3.3: min and max in the cube, opt-in per index) minor 8 (3.3: the month dims of a `sift_table`) and minor 9 (3.3: the rollup of the rows, opt-in per index, default) by all of them, `sift.col_format_minor` is 3, 4, 6, 7, 8 or 9 (default 9; 5 is the wide leaves' and is not a setting; 7 changes no byte of an index without `cube_minmax`, 8 none of a `sift_col` index or a table without a timestamp column, and 9 none of an index without `rollup_dims`, so a 3.2 library reads those under the default and every `sift_table` under 7 or less; under 8 or less `rollup_dims` is ignored) and keeps writing the minor it says: segments
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, minor 7 (3.3: min and max in the cube, opt-in per index) minor 8 (3.3: the month dims of a `sift_table`) minor 9 (3.3: the rollup of the rows, opt-in per index, default) and minor 10 (3.3: small-set summaries, opt-in per index) by all of them, `sift.col_format_minor` is 3, 4, 6, 7, 8, 9 or 10 (default 10; 5 is the wide leaves' and is not a setting; 7 changes no byte of an index without `cube_minmax`, 8 none of a `sift_col` index or a table without a timestamp column, 9 none of an index without `rollup_dims`, and 10 none of an index without `set_columns`, so a 3.2 library reads those under the default and every `sift_table` under 7 or less; under 8 or less `rollup_dims` is ignored, under 9 or less `set_columns`) and keeps writing the minor it says: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
