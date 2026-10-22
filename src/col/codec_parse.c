@@ -356,6 +356,18 @@ sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify)
 	return c;
 }
 
+/*
+ * sift_cc_open of a blob that must hold nrows values. The count is compared before the open, which allocates per declared row: a few
+ * bytes can declare SIFT_CC_MAXROWS (a RLE of 16M runs of one, a dictionary of 16M entries).
+ */
+SiftCc *
+sift_cc_open_rows(MemoryContext mcxt, const uint8 *blob, Size len, bool verify, uint32 nrows)
+{
+	if (len >= SIFT_CC_HDRLEN && get32(blob + 4) != nrows)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the blob has %u values, the chunk %u", get32(blob + 4), nrows)));
+	return sift_cc_open(mcxt, blob, len, verify);
+}
+
 void
 sift_cc_close(SiftCc *c)
 {
