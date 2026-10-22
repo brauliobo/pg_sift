@@ -581,6 +581,10 @@ extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTbl
 extern void sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st);
 extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_tbl_maint_clear_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_tbl_settle_worker_main(Datum main_arg);
+/* sift.table_async_promote: a writer that closed a write buffer asks the worker to settle it instead of doing it; false when it has to settle itself */
+extern bool sift_tbl_settle_async(Relation rel, SiftTblRel *st);
+extern PGDLLIMPORT bool sift_tbl_async_promote;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;

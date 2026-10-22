@@ -48,6 +48,7 @@
 #include "core/ops.h"
 #include "bm25/maint.h"
 #include "table/table.h"
+#include "table/seg_int.h"
 #include "core/cmp.h"
 
 #define MAX_MERGE_STEPS	16
@@ -662,12 +663,19 @@ background_vacuum(Relation rel, SiftTblMaintain *r)
 #define DEFRAG_TRIES		20
 #define DEFRAG_IDLE_TRIES	3
 
+typedef enum WorkerPass
+{
+	PASS_SPACE,					/* the pass without the indexes, a whole VACUUM when the dead rows ask for it */
+	PASS_CLEAR,					/* a whole VACUUM */
+	PASS_SETTLE					/* what a writer does when it closes a write buffer (sift.table_async_promote) */
+} WorkerPass;
+
 /*
  * One pass in a transaction of its own, holding no snapshot, as the table VACUUM runs: the table and the worker lock only if free. A whole
  * VACUUM when the dead rows cross the threshold (and sift.table_auto_defrag_indexes), else the pass without the indexes.
  */
 static bool
-worker_pass(Oid relid, bool clear, SiftTblMaintain *r)
+worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 {
 	Relation	rel;
 	bool		ran = false;
@@ -681,7 +689,12 @@ worker_pass(Oid relid, bool clear, SiftTblMaintain *r)
 			SiftTblRel *st = sift_tbl_rel(rel);
 
 			sift_tbl_refresh(rel, st);
-			if (clear || dead_wanted(rel, st, 0))
+			if (pass == PASS_SETTLE)
+			{
+				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
+				r->blocks_after = RelationGetNumberOfBlocks(rel);
+			}
+			else if (pass == PASS_CLEAR || dead_wanted(rel, st, 0))
 			{
 				if (sift_tbl_auto_defrag_indexes)
 					background_vacuum(rel, r);
@@ -704,7 +717,7 @@ worker_pass(Oid relid, bool clear, SiftTblMaintain *r)
  * worker stays a few seconds and passes again until two passes in a row find nothing to do.
  */
 static void
-maint_worker(Datum main_arg, bool clear)
+maint_worker(Datum main_arg, WorkerPass first)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
@@ -712,7 +725,7 @@ maint_worker(Datum main_arg, bool clear)
 	SiftTblMaintain r;
 	int			idle = 0;
 
-	if (!worker_pass(relid, clear, &r))
+	if (!worker_pass(relid, first, &r))
 		return;
 	for (int i = 0; i < DEFRAG_TRIES && idle < DEFRAG_IDLE_TRIES; i++)
 	{
@@ -721,7 +734,7 @@ maint_worker(Datum main_arg, bool clear)
 		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Max(sift_maintenance_naptime / 4, 100), PG_WAIT_EXTENSION);
 		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
-		if (!worker_pass(relid, false, &r))
+		if (!worker_pass(relid, first == PASS_SETTLE ? PASS_SETTLE : PASS_SPACE, &r))
 			break;
 		idle = (r.promoted + r.merged > 0 || r.blocks_after < before) ? 0 : idle + 1;
 	}
@@ -741,13 +754,31 @@ maint_worker(Datum main_arg, bool clear)
 void
 sift_tbl_maint_worker_main(Datum main_arg)
 {
-	maint_worker(main_arg, false);
+	maint_worker(main_arg, PASS_SPACE);
 }
 
 void
 sift_tbl_maint_clear_worker_main(Datum main_arg)
 {
-	maint_worker(main_arg, true);
+	maint_worker(main_arg, PASS_CLEAR);
+}
+
+void
+sift_tbl_settle_worker_main(Datum main_arg)
+{
+	maint_worker(main_arg, PASS_SETTLE);
+}
+
+bool		sift_tbl_async_promote = false;
+
+bool
+sift_tbl_settle_async(Relation rel, SiftTblRel *st)
+{
+	/* under pressure the writer settles itself: it never depends on the worker to stay inside the directory */
+	if (!sift_tbl_async_promote || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
+		return false;
+	(void) sift_maint_request_worker(rel, "sift_tbl_settle_worker_main");
+	return true;
 }
 
 typedef struct CopyState
