@@ -17,6 +17,7 @@ extern PGDLLIMPORT bool sift_agg_join_filter;
 extern PGDLLIMPORT bool sift_enable_topn;
 extern PGDLLIMPORT bool sift_topn_walk;
 extern PGDLLIMPORT int sift_agg_param_set_size;
+extern PGDLLIMPORT bool sift_agg_key_skew;
 extern PGDLLIMPORT int sift_agg_lookup_max_rows;
 
 /* Hooks and GUCs; from _PG_init */

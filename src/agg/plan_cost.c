@@ -95,6 +95,7 @@
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
+#define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows the source reads again from the heap when a leaf the scan rechecks is flagged (the index does not count them) */
@@ -624,12 +625,49 @@ lookup_counted(AggCtx *c, JoinCtx *jc)
 }
 
 /*
+ * How many times more rows the key of a row owns than the mean: nd * sum(freq^2) over the values of the column, the frequencies of its
+ * most common values by PostgreSQL's statistics and the rest of the rows spread evenly. 1 for a flat column or one without statistics.
+ * The mean is what PostgreSQL prices a probe of the key with, and the keys a query passes are the ones with rows to look at.
+ */
+static double
+column_skew(AggCtx *c, Var *v)
+{
+	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid), Int16GetDatum(v->varattno), BoolGetDatum(false));
+	AttStatsSlot sslot;
+	double		nd,
+				left,
+				sq = 0;
+
+	if (!HeapTupleIsValid(tup))
+		return 1.0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
+	nd = nd > 0 ? nd : -nd * c->rel->tuples;
+	left = 1.0 - ((Form_pg_statistic) GETSTRUCT(tup))->stanullfrac;
+	if (nd >= 1 && get_attstatsslot(&sslot, tup, STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		for (int i = 0; i < sslot.nnumbers; i++)
+		{
+			sq += (double) sslot.numbers[i] * sslot.numbers[i];
+			left -= sslot.numbers[i];
+		}
+		if (left > 0 && nd > sslot.nnumbers)
+			sq += left * left / (nd - sslot.nnumbers);
+		free_attstatsslot(&sslot);
+	}
+	else
+		nd = 0;
+	ReleaseSysCache(tup);
+	return Max(nd * sq, 1.0);
+}
+
+/*
  * How many times more keys than PostgreSQL expects the scope lists of the query hold, for the normal plan's price. A lookup join on a
  * column of the scanned table (a list of ids, the rows of a sub-select) is counted by PostgreSQL from its own rows, and those are a
  * default guess (a row or two) when the filters of the lookup read a jsonb path, an expression or the output of a plan: the normal plan
  * is then priced for a handful of keys, though the lists the queries pass hold a good share of the table's distinct values. The keys
  * are taken as the geometric mean of the rows PostgreSQL expects and the distinct values of the scanned column (as child_rows does for
- * the rows of a set-returning function). A lookup PostgreSQL has statistics for keeps its estimate.
+ * the rows of a set-returning function). A lookup PostgreSQL has statistics for keeps its estimate of the keys, and the rows of each are priced
+ * by the skew of the column (column_skew, sift.agg_key_skew).
  */
 double
 lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
@@ -644,21 +682,32 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 		const SiftAggJoin *j = &s->join[cb->join];
 		double		keys = lookup_rows(c, jc),
 					nd = 0;
+		Var		   *key = NULL;
 
 		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
-			continue;
-		if (lookup_counted(c, jc))
 			continue;
 		for (int k = 0; k < j->nkey; k++)
 		{
 			int			leaf = j->keypos[k] < 0 ? -1 : cb->leaf[j->keypos[k]];
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+			double		d;
 
-			if (lf != NULL && lf->kind == SCL_SCALAR && lf->parent < 0 && e != NULL && IsA(e, Var))
-				nd = Max(nd, column_distinct(c, (Var *) e));
+			if (lf != NULL && lf->kind == SCL_SCALAR && lf->parent < 0 && e != NULL && IsA(e, Var) && (d = column_distinct(c, (Var *) e)) > nd)
+			{
+				key = (Var *) e;
+				nd = d;
+			}
 		}
-		if (nd > keys)
+		if (key == NULL)
+			continue;
+		/* a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's */
+		if (lookup_counted(c, jc))
+		{
+			if (sift_agg_key_skew)
+				f *= sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
+		}
+		else if (nd > keys)
 			f *= sqrt(nd / keys);
 	}
 	/* the normal plan reads no more than the rows the table's own filters keep, whatever the keys */
