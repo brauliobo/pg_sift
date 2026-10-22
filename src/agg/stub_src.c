@@ -36,10 +36,6 @@
 #include "core/visibility.h"
 #include "agg/stub_src_int.h"
 
-/* ---------------------------------------------------------------------------
- * The source
- * ------------------------------------------------------------------------- */
-
 typedef struct StubSource StubSource;
 
 struct StubSource
@@ -426,10 +422,6 @@ stub_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	page_flush(src, pr, bits);
 	pfree(pr);
 }
-
-/* ---------------------------------------------------------------------------
- * Statistics: pg_class and a sample of two superblocks (a lenient source: a value that cannot be read is NULL)
- * ------------------------------------------------------------------------- */
 
 /* What the sample of two units says; the numbers that follow pg_class are not part of it, they are taken at every call */
 typedef struct StubSample

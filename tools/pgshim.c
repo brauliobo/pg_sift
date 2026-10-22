@@ -16,8 +16,6 @@
 
 MemoryContext CurrentMemoryContext = (MemoryContext) 1;
 
-/* ---------- allocation: one malloc per chunk, all linked so that a statement's memory is freed together ---------- */
-
 typedef struct Chunk
 {
 	struct Chunk *prev,
@@ -199,8 +197,6 @@ MemoryContextReset(MemoryContext c)
 {
 }
 
-/* ---------- StringInfo ---------- */
-
 void
 initStringInfo(StringInfo s)
 {
@@ -263,8 +259,6 @@ appendStringInfo(StringInfo s, const char *fmt,...)
 	va_end(ap);
 	appendStringInfoString(s, buf);
 }
-
-/* ---------- errors ---------- */
 
 static jmp_buf try_jmp;
 static bool armed;
@@ -371,8 +365,6 @@ ExceptionalCondition(const char *conditionName, const char *fileName, int lineNu
 	abort();
 }
 #endif
-
-/* ---------- the database and its indexes ---------- */
 
 int			pgshim_encoding = PG_UTF8;
 

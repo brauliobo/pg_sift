@@ -16,8 +16,6 @@ const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
 	"1", "2", "3-15", "16-127", "128-1K", "1K-8K", "8K-64K", "64K-512K", "512K+"
 };
 
-/* ---------- inspection ---------- */
-
 typedef struct Walk
 {
 	SiftSegment *seg;

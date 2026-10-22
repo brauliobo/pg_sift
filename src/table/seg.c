@@ -49,8 +49,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- the column layout of a table ---------- */
-
 static SiftColStore
 att_store(Form_pg_attribute att, uint8 *scale)
 {
@@ -236,8 +234,6 @@ sift_tbl_layout_check(Relation rel)
 	(void) layout_build(rel, cx);
 	MemoryContextDelete(cx);
 }
-
-/* ---------- values: datum <-> leaf ---------- */
 
 static int64
 int_key(int attlen, Datum d)
@@ -447,8 +443,6 @@ row_in(const SiftTblLayout *l, TupleDesc desc, ItemPointer tid, const Datum *val
 	}
 }
 
-/* ---------- reading: the column source of every schema the table's segments were written for ---------- */
-
 SiftColSchema *
 schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 {
@@ -473,8 +467,6 @@ schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	c->ent[c->n++] = (SchemaEnt) {e->gen, schema};
 	return schema;
 }
-
-/* ---------- sift.table_set_paths ---------- */
 
 PG_FUNCTION_INFO_V1(sift_table_paths_check);
 

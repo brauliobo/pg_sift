@@ -9,10 +9,6 @@
 #include "col/enc.h"
 #include "col/enc_test_int.h"
 
-/* ---------------------------------------------------------------------------
- * Comparing rows
- * ------------------------------------------------------------------------- */
-
 /* Two stored values are equal: the same NULL/overflow state, the same key (floats: the bits, but every NaN is one value) or bytes */
 static bool
 value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)

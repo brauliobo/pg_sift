@@ -35,8 +35,6 @@ range_any(const uint64 *bits, uint32 lo, uint32 hi)
 	return false;
 }
 
-/* ---------- filters ---------- */
-
 /* Narrows sel (one bit per value of the chunk: rows, or the elements of a group) by the predicate; rows that overflowed stay, accumulated into *ovf when given */
 static bool
 chunk_filter(ColUnit *cu, const SiftColPred *p, SiftColSel *sel, uint64 *ovf)
@@ -405,8 +403,6 @@ sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColS
 	memcpy(sel->bits, out, sel->nwords * sizeof(uint64));
 	return sift_col_sel_count(sel) > 0;
 }
-
-/* ---------- MVCC ---------- */
 
 #ifdef SIFT_TESTING
 /* Testing (sift.test_col_paranoid): what the heap holds at the TID of a row that the all-visible shortcut would have counted */

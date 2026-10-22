@@ -259,8 +259,6 @@ parse_value(Parser *p, bool deliver)
 	}
 }
 
-/* ---------- the document, checked ---------- */
-
 static void
 check_doc(const SiftShredSpec *spec, SiftShred *sh)
 {
@@ -430,8 +428,6 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	pgshim_reset();
 	return 0;
 }
-
-/* ---------- the seed corpus ---------- */
 
 static const char *const seeds[][2] = {
 	{"a.b int4, a.c int4, d int4, e.f int4", "{\"a\":{\"b\":1},\"d\":null,\"e\":\"x\"}"},

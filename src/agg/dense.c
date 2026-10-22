@@ -10,8 +10,6 @@
 #include "col/kern.h"
 #include "agg/dense_int.h"
 
-/* ---------- dense chunks ---------- */
-
 /*
  * A chunk whose aggregates are counts, sums and averages of one leaf each, grouped by dictionary leaves or not at all, is aggregated
  * from its bitmap: no list of tuples and no gather by position. An aggregate takes the bits that pass its FILTER and have a value,

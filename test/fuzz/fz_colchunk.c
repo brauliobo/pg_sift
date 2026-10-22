@@ -79,8 +79,6 @@ setup(void)
 	pgshim_keep();
 }
 
-/* ---------- one decoder run, per mode ---------- */
-
 typedef struct Job
 {
 	uint8	   *p;
@@ -405,8 +403,6 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	fz_use_level(SIFT_SIMD_SCALAR);
 	return 0;
 }
-
-/* ---------- the seed corpus ---------- */
 
 static void
 emit(const char *dir, const char *name, int mode, uint32 arg, const void *p, size_t len)

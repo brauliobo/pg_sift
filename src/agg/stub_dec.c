@@ -26,10 +26,6 @@
 
 #include "agg/stub_src_int.h"
 
-/* ---------------------------------------------------------------------------
- * Dictionaries: codes in first-seen order, open addressing over the values
- * ------------------------------------------------------------------------- */
-
 typedef struct StubDict
 {
 	MemoryContext cxt;

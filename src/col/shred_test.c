@@ -26,16 +26,12 @@ PG_FUNCTION_INFO_V1(sift_test_shred_kern_rate);
 
 static const char *const state_names[] = {"absent", "null", "value", "overflow"};
 
-/* ---------- the spec ---------- */
-
 /* The canonical form of a spec (errors of the parser); the fingerprint is the second column of sift._test_shred_summary's first row */
 Datum
 sift_test_shred_spec(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_TEXT_P(cstring_to_text(sift_shred_spec_deparse(sift_shred_spec_parse(text_to_cstring(PG_GETARG_TEXT_PP(0))))));
 }
-
-/* ---------- the output as rows ---------- */
 
 static void
 render_value(StringInfo out, const SiftShred *sh, const SiftShredColDef *cd, const SiftShredVal *v)
@@ -155,8 +151,6 @@ sift_test_shred(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* ---------- throughput and column summaries (through the kernels) ---------- */
-
 typedef struct CountCache
 {
 	char	   *spec_text;
@@ -259,8 +253,6 @@ sift_test_shred_summary(PG_FUNCTION_ARGS)
 	sift_shred_free(sh);
 	return (Datum) 0;
 }
-
-/* ---------- kernels: scalar is the specification ---------- */
 
 #define KN_MAX	1200
 

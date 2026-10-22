@@ -147,8 +147,6 @@ sift_col_pagg_spec(Relation index, SiftCPaggSpec *spec)
 	*spec = sift_col_rel(index)->pagg;
 }
 
-/* ---------- SQL: sift.col_unit_agg, sift.col_unit_hist (debug and test hooks) ---------- */
-
 /* The leaf with this attribute name or shredder path; a list of scalars or a map and its element leaf share a path: scalar takes the element leaf */
 static int
 find_leaf(Relation index, const char *name, bool scalar)

@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- small helpers ---------- */
-
 SiftSrcLeaf *
 leaf_of(AggCtx *c, int id)
 {
@@ -206,8 +204,6 @@ paths_equal(List *a, List *b)
 			return false;
 	return true;
 }
-
-/* ---------- leaf references ---------- */
 
 /* the attribute whose index (table) expression is e, 0 if none */
 int

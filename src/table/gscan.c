@@ -569,8 +569,6 @@ sift_tbl_gscan_tuple(SiftTblGroupScan *g)
 	return row_tuple(g, g->ord[g->i - 1], &g->tids[g->i - 1]);
 }
 
-/* ---------- the rows of one vblock ---------- */
-
 /* The TIDs of every unit of superblock sb (ascending, one array per unit) */
 static void
 cache_superblock(SiftTblGroupScan *g, uint32 sb)

@@ -445,8 +445,6 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
 
-/* ---------- space maintenance without VACUUM ---------- */
-
 bool		sift_tbl_auto_defrag = false;
 int			sift_tbl_auto_defrag_free_pct = 25;
 int			sift_tbl_auto_defrag_delay = 10;
@@ -752,8 +750,6 @@ sift_tbl_maint_clear_worker_main(Datum main_arg)
 	maint_worker(main_arg, true);
 }
 
-/* ---------- rewrite: VACUUM FULL, CLUSTER ---------- */
-
 typedef struct CopyState
 {
 	SiftTblRel *st;
@@ -879,8 +875,6 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();
 }
-
-/* ---------- CREATE INDEX CONCURRENTLY: second pass ---------- */
 
 void
 sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *indexInfo, Snapshot snapshot,

@@ -77,8 +77,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- distinct output values of a key ---------- */
-
 void
 ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 {
@@ -176,8 +174,6 @@ ot_id(OutTable *t, Datum d)
 		ot_rehash(t);
 	return t->n;
 }
-
-/* ---------- tables over a range of integer values ---------- */
 
 void
 rt_init(RangeTab *r, int esize)
@@ -281,8 +277,6 @@ text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len)
 	return InputFunctionCall(&f, pnstrdup(bytes, len), ioparam, typmod);
 }
 
-/* ---------- evaluation of the single input expressions ---------- */
-
 static Datum
 eval_with(AggExec *ex, ExprState *e, Datum in, bool in_null, bool *isnull)
 {
@@ -301,8 +295,6 @@ eval_bool(AggExec *ex, ExprState *e, Datum in, bool in_null)
 	ResetExprContext(ex->lutcx);
 	return res;
 }
-
-/* ---------- dictionaries ---------- */
 
 DictSlot *
 dict_slot(AggExec *ex, const SiftSrcDict *d)
@@ -385,8 +377,6 @@ dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki)
 	s->kmap[ki] = map;
 	return map;
 }
-
-/* ---------- unit data ---------- */
 
 static uint32
 dict_code(const SiftSrcDict *d, const char *key)
@@ -541,8 +531,6 @@ elem_offs(AggExec *ex, int leaf)
 	}
 	return ex->gofs[leaf];
 }
-
-/* ---------- numbers ---------- */
 
 void
 idmap_init(IdMap *m)

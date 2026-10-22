@@ -149,8 +149,6 @@ typedef struct GpuScan
 } GpuScan;
 
 
-/* ---------- the device of the backend ---------- */
-
 static void
 gpu_interrupt(void)
 {
@@ -220,8 +218,6 @@ gpu_device(const SiftSrcStats *st)
 	}
 	return gpu.vk;
 }
-
-/* ---------- the shape of the query ---------- */
 
 static bool
 gpu_plain_leaf(const SiftAggScan *sc, int leaf)
@@ -360,8 +356,6 @@ gpu_shape(const SiftAggScan *sc, GpuShape *sh, const char **why)
 		}
 	return true;
 }
-
-/* ---------- the scan ---------- */
 
 /* Does this scan run on the device? Decided before any worker is launched: a scan that uses the device is the leader's alone */
 static void *
