@@ -11,6 +11,7 @@
 #   scripts/check-neutral.sh --selftest   every list entry is flagged, the allowlist, a neutral text and the repository pass
 #
 # Exit 1 with the file and line, the commit or the pull request part of every hit (the word itself is not printed).
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

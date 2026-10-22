@@ -4,6 +4,7 @@
 #   mb_start             installs and starts the cluster of every build; LABELS lists them in order
 #   pg LABEL ARGS...     scripts/pgtest.sh of that build's cluster (SIFT_TESTING of the build: $MB_TESTING, default the production flavor)
 #   q LABEL SQL...       one psql session, one -c per statement
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 PORT0=${SIFT_PORT:-56150}
 declare -A DIR TMP PORT
 LABELS=()

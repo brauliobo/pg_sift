@@ -12,6 +12,7 @@
 #
 # The connection comes from the usual PGHOST, PGPORT and PGUSER. Exit 0 when nothing blocks, 1 when a database has a blocker (or a warning with
 # --strict), 2 when a database could not be checked.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)

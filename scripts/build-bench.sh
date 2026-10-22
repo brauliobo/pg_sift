@@ -16,6 +16,7 @@
 # The same documents for the same --rows, whatever the build. A failed build shows its error. Every build waits for a quiet host
 # first (scripts/quiet.sh); a row with builds that ran anyway after SIFT_QUIET_TIMEOUT ends in NOISY.
 # Ports SIFT_PORT (default 56150) and up. The clusters and their directories are removed at the end.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 export LC_ALL=C
 

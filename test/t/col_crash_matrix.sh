@@ -7,6 +7,7 @@
 # run). After the restart (wal_consistency_checking = generic: crash recovery compares every page it rebuilds with the page the primary wrote) the
 # indexes verify (heapallindexed), the store checks pass, the answers through the indexes equal the plain plan and what the table held before, and
 # the operation, run again, completes and leaves it the same. SIFT_CRASHMX_ITERS caps the number of crashes (default 60, 20 quick: the first and the last update of every operation).
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 
 ITERS=$(knob SIFT_CRASHMX_ITERS 60 20)
