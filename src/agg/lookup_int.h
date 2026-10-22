@@ -5,6 +5,7 @@
 #define SIFT_AGG_LOOKUP_INT_H
 
 #include "access/xlogdefs.h"
+#include "portability/instr_time.h"
 #include "storage/relfilelocator.h"
 
 #include "agg/agg_fwd_int.h"
