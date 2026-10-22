@@ -230,6 +230,10 @@ CREATE FUNCTION sift.table_ddl_check() RETURNS event_trigger
 
 CREATE EVENT TRIGGER sift_table_ddl_check ON ddl_command_end WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION sift.table_ddl_check();
 
+-- pg_repack copies a table into a heap table and swaps the files: its trigger repack.repack_trigger is refused on a sift_table, which CLUSTER or
+-- VACUUM FULL rewrite.
+CREATE EVENT TRIGGER sift_table_repack_guard ON ddl_command_start WHEN TAG IN ('CREATE TRIGGER') EXECUTE FUNCTION sift.table_ddl_check();
+
 
 -- Maintenance state of an index: segments and sealed write buffers waiting for promotion, running (a promotion, merge, VACUUM or verify holds
 -- the maintenance lock; NULL on a standby) and, when its last background step failed, the number of failures in a row, when, the earliest the
