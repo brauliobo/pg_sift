@@ -64,7 +64,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  shred_steps         | SIFT_SHRED_MAX_STEPS            |         16 | t         | f
  shred_text          | SIFT_SHRED_MAX_TEXT             |    1048576 | t         | f
  spine_rows          | SPINE_MAX_ROWS                  |      10000 | t         | f
- string_bytes        | SIFT_COL_MAX_VALUE              | 1073741823 | t         | f
+ string_bytes        | SIFT_COL_MAX_VALUE              | 1073741823 | t         | t
  table_vblocks       | -                               | 4294967294 | t         | f
  term_bytes          | SIFT_MAX_TERM_BYTES             |        255 | t         | f
  term_tf             | SIFT_MAX_TF                     |        255 | t         | f
