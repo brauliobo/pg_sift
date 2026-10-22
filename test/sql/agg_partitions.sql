@@ -252,9 +252,85 @@ ALTER TABLE pl DETACH PARTITION pl_n;
 SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_z'' GROUP BY k');
 RESET plan_cache_mode;
 
+-- a table split by hash: the remainders of the values a parameter, a stable function or a list leaves the key decide the partitions read (the key's
+-- hash function and each partition's modulus and remainder, as PostgreSQL computes them when the statement starts)
+CREATE TABLE ph (id int, k int, v int) PARTITION BY HASH (k);
+SELECT format('CREATE TABLE ph_%s PARTITION OF ph FOR VALUES WITH (MODULUS 8, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 7) i \gexec
+INSERT INTO ph SELECT i, CASE WHEN i % 40 = 0 THEN NULL ELSE i % 300 END, i % 100 FROM generate_series(1, 4000) i;
+CREATE INDEX ph_col ON ph USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) ph;
+-- two key columns (a remainder needs both), and a key that is an expression
+CREATE TABLE phm (a int, b text, v int) PARTITION BY HASH (a, b);
+SELECT format('CREATE TABLE phm_%s PARTITION OF phm FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
+INSERT INTO phm SELECT i % 50, 'cat_' || chr(97 + i % 6), i % 100 FROM generate_series(1, 3000) i;
+CREATE INDEX phm_col ON phm USING sift_col (a, b, v);
+VACUUM (FREEZE, ANALYZE) phm;
+CREATE TABLE phx (k int, v int) PARTITION BY HASH ((k + 1));
+SELECT format('CREATE TABLE phx_%s PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
+INSERT INTO phx SELECT i % 200, i % 100 FROM generate_series(1, 2000) i;
+CREATE INDEX phx_col ON phx USING sift_col (k, v);
+VACUUM (FREEZE, ANALYZE) phx;
+SET plan_cache_mode = force_generic_plan;
+PREPARE ph_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1;
+PREPARE ph_ks (int[]) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY ($1);
+PREPARE ph_big (bigint) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1;
+PREPARE ph_gt (int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k > $1;
+PREPARE ph_and (int, int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1 AND v < $2;
+PREPARE phm_ab (int, text) AS SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = $1 AND b = $2;
+PREPARE phm_a (int) AS SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = $1;
+PREPARE phm_abs (int[], text) AS SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = ANY ($1) AND b = $2;
+PREPARE phx_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k = $1;
+PREPARE phx_e (int) AS SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k + 1 = $1;
+SELECT plan_of('EXECUTE ph_k(7)') AS equality, plan_of('EXECUTE ph_ks(ARRAY[7, 8])') AS any_list, plan_of('EXECUTE ph_big(7)') AS other_type,
+       plan_of('EXECUTE ph_gt(7)') AS range_test, plan_of('EXECUTE ph_and(7, 50)') AS with_filter, plan_of('EXECUTE phx_e(8)') AS expression_key;
+-- a value, a list (duplicates, a NULL element, none, a NULL array), a NULL value, a value no row has, the rows whose key is NULL
+SELECT * FROM same_exec('EXECUTE ph_k(7)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
+SELECT * FROM same_exec('EXECUTE ph_k(299)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 299');
+SELECT * FROM same_exec('EXECUTE ph_k(100000)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 100000');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_k(NULL)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = NULL');
+SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8, 7])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8, 7])');
+SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, NULL, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, NULL, 12])');
+SELECT * FROM same_exec('EXECUTE ph_ks(''{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}'')', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (''{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}''::int[])');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_ks(''{}'')', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (''{}''::int[])');
+SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_ks(NULL)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (NULL::int[])');
+SELECT * FROM same_exec('EXECUTE ph_and(7, 50)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7 AND v < 50');
+SELECT * FROM same('SELECT count(*) AS n FROM ph WHERE k IS NULL');
+-- a stable function decides when the statement starts
+SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7 + (current_date - current_date)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
+SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7 + (current_date - current_date), 8, 9)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7, 8, 9)');
+-- two key columns: both are needed for a remainder
+SELECT plan_of('EXECUTE phm_ab(3, ''cat_b'')') AS both, plan_of('EXECUTE phm_a(3)') AS one, plan_of('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')') AS list_and_value;
+SELECT * FROM same_exec('EXECUTE phm_ab(3, ''cat_b'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = 3 AND b = ''cat_b''');
+SELECT * FROM same_exec('EXECUTE phm_ab(3, ''cat_z'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = 3 AND b = ''cat_z''');
+SELECT * FROM same_exec('EXECUTE phm_a(3)', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = 3');
+SELECT * FROM same_exec('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = ANY (ARRAY[3, 4, 5]) AND b = ''cat_b''');
+-- a key that is an expression is PostgreSQL's to prune; a condition on the plain column reads every partition
+SELECT * FROM same_exec('EXECUTE phx_k(7)', 'SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k = 7');
+SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE phx_e(8)', 'SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k + 1 = 8');
+-- another operator or another type of the operand keeps the normal plan (which prunes as PostgreSQL does)
+SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_gt(290)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k > 290');
+SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_big(7)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
+-- a hash level under a range level, beside the default partition: both decide
+PREPARE pt_dh (date, int) AS SELECT g, count(*) AS n FROM pt WHERE d >= $1 AND d < DATE '2024-10-01' AND id = $2 GROUP BY g;
+SELECT plan_of('EXECUTE pt_dh(DATE ''2024-07-02'', 31)');
+SELECT * FROM same_exec('EXECUTE pt_dh(DATE ''2024-07-02'', 31)', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-07-02'' AND d < DATE ''2024-10-01'' AND id = 31 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pt_dh(DATE ''2024-07-02'', 32)', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-07-02'' AND d < DATE ''2024-10-01'' AND id = 32 GROUP BY g');
+-- the workers take the superblocks of the partitions the leader kept
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT plan_of('EXECUTE ph_ks(ARRAY[7, 8])');
+SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8])');
+SELECT * FROM same_exec('EXECUTE ph_k(7)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
+SET max_parallel_workers_per_gather = 0;
+-- rows moved to other partitions and deleted, then the same
+UPDATE ph SET k = k + 1 WHERE id % 5 = 0;
+DELETE FROM ph WHERE id % 11 = 0;
+SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8])');
+RESET plan_cache_mode;
+
 DROP FUNCTION same_exec(text, text);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP FUNCTION pt_fill(int, int);
-DROP TABLE pt, pn, pt_n, pt_q, pl, pl_n, ih_a, ih;
+DROP TABLE pt, pn, pt_n, pt_q, pl, pl_n, ih_a, ih, ph, phm, phx;
 DROP EXTENSION pg_sift;

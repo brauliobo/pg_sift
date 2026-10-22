@@ -1,6 +1,6 @@
--- trap: a generic plan prunes the hash remainders of a branch by a parameter, which a partition bound cannot refute: the normal plan stays
+-- a generic plan prunes the hash remainders of a branch by a parameter: the scan computes the remainder of the value when it starts and drops the partitions that cannot hold it
 -- shape: prepared
--- expect: plain
+-- expect: agg
 -- key: -
 -- guc: plan_cache_mode = force_generic_plan
 -- prepare: (integer)
