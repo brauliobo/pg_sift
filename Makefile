@@ -100,13 +100,16 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
 	scripts/tap.sh
 difftest fuzz soak:
 	scripts/$@.sh
+# docs/LIMITS.md from the registry in src/core/limits.h (scripts/gen-limits.sh --check proves it)
+limits:
+	scripts/gen-limits.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:

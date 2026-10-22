@@ -29,28 +29,150 @@
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
 	  "leaf partitions per SiftAgg scan", "normal plan (slug partition_source)", "-", 0) \
+	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part.c", 4096, "combinations", \
+	  "value combinations a hash partition is tested with for pruning", "the partition is kept (not pruned)", "-", 0) \
+	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
+	  "keys times partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 0) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan", "-", 0) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \
 	  "value combinations per scan", "normal plan", "-", 0) \
 	X(combo_entries, "-", "agg/combo.c", 16777216, "entries", \
 	  "distinct input tuples of one value-combination cache", "ERROR 54000 mid-query", "-", 0) \
+	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec.h", SIFT_AGG_MAX_JKEYS, "columns", \
+	  "equality columns of a lookup join", "normal plan", "-", 0) \
+	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec.h", SIFT_AGG_MAX_JCOLS, "columns", \
+	  "columns of the joined table that expressions read", "normal plan", "-", 0) \
+	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec.h", SIFT_AGG_MAX_JIDX, "equalities", \
+	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
+	X(lookup_rows, "-", "agg/agg.c", 1000000, "rows", \
+	  "estimated rows of a lookup table", "normal plan (slug join_child)", "sift.agg_lookup_max_rows", 0) \
+	X(lookup_shared_bytes, "SHARE_MAX", "agg/par.c", 1073741824, "bytes", \
+	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
+	X(lookup_shared_slots, "LOOKSHM_SLOTS", "agg/lookshm.c", 64, "tables", \
+	  "lookup tables shared through DSM at one time", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
+	X(spine_rows, "SPINE_MAX_ROWS", "agg/plan_two.c", 10000, "rows", \
+	  "rows of a spine joined to the arms of a two-level scan", "normal plan (slug spine_rows)", "-", 0) \
 	X(topn_rows, "SIFT_TOPN_MAX_ROWS", "agg/topn.h", SIFT_TOPN_MAX_ROWS, "rows", \
 	  "LIMIT + OFFSET of a top-N scan", "normal plan (slug topn_shape)", "-", 0) \
 	X(topn_keys, "SIFT_TOPN_MAX_KEYS", "agg/topn.h", SIFT_TOPN_MAX_KEYS, "columns", \
 	  "ORDER BY columns of a top-N scan", "normal plan (slug topn_shape)", "-", 0) \
-	X(spine_rows, "SPINE_MAX_ROWS", "agg/plan_two.c", 10000, "rows", \
-	  "rows of a spine joined to the arms of a two-level scan", "normal plan (slug spine_rows)", "-", 0) \
-	X(unit_bytes, "-", "col/batch.c", 2147483647, "bytes", \
-	  "variable-length bytes of the rows of one column unit", "ERROR 54000 at build or merge", "-", 0) \
+	X(first_keys, "FIRST_MAX_KEYS", "agg/plan_order.c", 4, "columns", \
+	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
+	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec.h", SIFT_AGG_MAX_FORD, "columns", \
+	  "ORDER BY columns of a first-row lookup child", "normal plan", "-", 0) \
+	X(first_out_cols, "SIFT_AGG_MAX_FOUT", "agg/spec.h", SIFT_AGG_MAX_FOUT, "columns", \
+	  "output columns of a first-row lookup child that map to the table", "normal plan", "-", 0) \
+	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec.h", SIFT_AGG_MAX_KEYS, "keys", \
+	  "group keys (grouping sets count with their keys)", "normal plan (slug too_many_keys)", "-", 0) \
+	X(num_in_list, "AGG_MAX_NUM_IN", "agg/plan_pred.c", 64, "constants", \
+	  "constants of a numeric IN list", "the conjunct is not pushed into the scan", "-", 0) \
+	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec.h", SIFT_AGG_MAX_ARMS, "arms", \
+	  "UNION ALL arms of a fused or two-level scan", "not fused", "-", 0) \
+	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec.h", SIFT_AGG_MAX_VLEAVES, "leaves", \
+	  "virtual leaves (expressions) per scan", "normal plan", "-", 0) \
+	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "agg/colsrc.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
+	  "leaves of the layout of one scan", "normal plan", "-", 0) \
+	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "agg/colsrc.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
+	  "filters of a scan that skip units", "the others do not skip units", "-", 0) \
+	X(wide_conjuncts, "SIFT_AGG_MAX_WIDE", "agg/spec.h", SIFT_AGG_MAX_WIDE, "conjuncts", \
+	  "conjuncts on wide leaves per scan", "normal plan", "-", 0) \
+	X(generic_leaves, "SIFT_AGG_MAX_GLEAVES", "agg/spec.h", SIFT_AGG_MAX_GLEAVES, "leaves", \
+	  "leaves one argument of a generic aggregate reads", "normal plan", "-", 0) \
+	X(generic_args, "SIFT_AGG_MAX_GARGS", "agg/spec.h", SIFT_AGG_MAX_GARGS, "arguments", \
+	  "arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS)", "normal plan", "-", 0) \
+	X(float_ops, "SIFT_AGG_MAX_VX", "agg/spec.h", SIFT_AGG_MAX_VX, "operations", \
+	  "operations of one float8 aggregate argument", "normal plan", "-", 0) \
+	X(combo_leaves, "SIFT_AGG_MAX_CLEAVES", "agg/spec.h", SIFT_AGG_MAX_CLEAVES, "leaves", \
+	  "leaves one value combination reads", "normal plan", "-", 0) \
+	X(rows_shared, "SIFT_ROWS_MAX_SHARED", "agg/rows.h", SIFT_ROWS_MAX_SHARED, "aggregates", \
+	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan", "-", 0) \
+	X(text_prune, "COL_MAX_STR_PRUNE", "agg/col_int.h", COL_MAX_STR_PRUNE, "conditions", \
+	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
+	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
+	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
+	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
+	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX or CREATE TABLE rejected", "-", 0) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 0) \
+	X(unit_bytes, "-", "col/batch.c", 2147483647, "bytes", \
+	  "variable-length bytes of the rows of one column unit", "ERROR 54000 at build or merge", "-", 0) \
+	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/col.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
+	  "rows of one column unit (256 heap pages)", "a new unit starts", "-", 0) \
+	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/col.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \
+	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
+	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/col.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
+	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
+	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
+	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
+	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
+	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
+	X(cube_dims, "SIFT_PAGG_MAX_DIMS", "col/preagg.h", SIFT_PAGG_MAX_DIMS, "dimensions", \
+	  "dimensions of the cube of an index", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
+	X(rollup_dims, "SIFT_PAGG_MAX_RDIMS", "col/preagg.h", SIFT_PAGG_MAX_RDIMS, "dimensions", \
+	  "dimensions of one rollup", "option rejected at CREATE or ALTER INDEX", "rollup option", 0) \
+	X(rollups, "SIFT_PAGG_MAX_ROLLUPS", "col/preagg.h", SIFT_PAGG_MAX_ROLLUPS, "rollups", \
+	  "rollups of one index", "option rejected at CREATE or ALTER INDEX", "rollup option", 0) \
+	X(cube_measures, "SIFT_PAGG_MAX_MEAS", "col/preagg.h", SIFT_PAGG_MAX_MEAS, "measures", \
+	  "measures of a cube or rollup", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
+	X(cube_groups, "SIFT_PAGG_DEF_GROUPS", "col/preagg.h", SIFT_PAGG_DEF_GROUPS, "groups", \
+	  "groups of a default cube dimension in one unit", "the unit has no histogram for the dimension (it is scanned)", "-", 0) \
+	X(month_groups, "SIFT_PAGG_MONTH_GROUPS", "col/preagg.h", SIFT_PAGG_MONTH_GROUPS, "groups", \
+	  "groups of a month dimension in one unit", "the unit has no histogram for the dimension (it is scanned)", "-", 0) \
+	X(explicit_groups, "SIFT_PAGG_CUBE_GROUPS", "col/preagg.h", SIFT_PAGG_CUBE_GROUPS, "groups", \
+	  "groups of a dimension of an explicit cube(...) in one unit", "the unit has no histogram for the dimension (it is scanned)", "cube option", 0) \
+	X(rollup_tuples, "SIFT_PAGG_ROLLUP_TUPLES", "col/preagg.h", SIFT_PAGG_ROLLUP_TUPLES, "tuples", \
+	  "tuples of an explicit rollup in one unit", "the unit has no rollup (it is scanned)", "rollup option", 0) \
+	X(set_keys, "SIFT_CSET_LIMIT", "col/setsum.h", SIFT_CSET_LIMIT, "keys", \
+	  "distinct keys of a set column a unit keeps exactly (default)", "no pruning by the set", "set_limit option", 0) \
+	X(set_keys_max, "SIFT_CSET_LIMIT_MAX", "col/setsum.h", SIFT_CSET_LIMIT_MAX, "keys", \
+	  "largest value of the set_limit option", "option rejected at CREATE or ALTER INDEX", "set_limit option", 0) \
+	X(shred_spec_bytes, "SIFT_SHRED_MAX_SPEC_BYTES", "col/shred.h", SIFT_SHRED_MAX_SPEC_BYTES, "bytes", \
+	  "size of a jsonb shredding spec", "ERROR at CREATE INDEX", "-", 0) \
+	X(shred_leaves, "SIFT_SHRED_MAX_COLS", "col/shred.h", SIFT_SHRED_MAX_COLS, "leaves", \
+	  "leaves of one jsonb shredding spec", "ERROR at CREATE INDEX", "-", 0) \
+	X(shred_groups, "SIFT_SHRED_MAX_GROUPS", "col/shred.h", SIFT_SHRED_MAX_GROUPS, "groups", \
+	  "arrays and wildcards of one jsonb shredding spec", "ERROR at CREATE INDEX", "-", 0) \
+	X(shred_steps, "SIFT_SHRED_MAX_STEPS", "col/shred.h", SIFT_SHRED_MAX_STEPS, "steps", \
+	  "steps of one jsonb path", "ERROR at CREATE INDEX", "-", 0) \
+	X(shred_text, "SIFT_SHRED_MAX_TEXT", "col/shred.h", SIFT_SHRED_MAX_TEXT, "bytes", \
+	  "one text value of a jsonb leaf", "the value is OVERFLOW (read from the heap)", "-", 0) \
+	X(shred_key_bytes, "SIFT_SHRED_MAX_KEY_BYTES", "col/shred.h", SIFT_SHRED_MAX_KEY_BYTES, "bytes", \
+	  "a key of a jsonb wildcard object", "the value is OVERFLOW (read from the heap)", "-", 0) \
+	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
+	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap)", "-", 0) \
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of an index or sift_table", "writers merge, then ERROR 54000", "-", 0) \
+	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
+	  "a BM25 token", "the token is truncated", "-", 0) \
+	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \
+	  "term frequency in one document", "saturated", "-", 0) \
+	X(doc_length, "SIFT_MAX_DL", "core/sift.h", SIFT_MAX_DL, "tokens", \
+	  "length of one document", "saturated", "-", 0) \
+	X(fields, "SIFT_MAX_FIELDS", "core/sift.h", SIFT_MAX_FIELDS, "fields", \
+	  "fields of a BM25 index", "CREATE INDEX rejected", "fields option", 0) \
+	X(prefix_index, "SIFT_MAX_PREFIX_INDEX", "core/sift.h", SIFT_MAX_PREFIX_INDEX, "characters", \
+	  "prefix_index option", "option rejected at CREATE INDEX", "prefix_index option", 0) \
+	X(write_buffer_kb, "SIFT_DEFAULT_WRITE_BUFFER_LIMIT", "core/sift.h", SIFT_DEFAULT_WRITE_BUFFER_LIMIT, "kB", \
+	  "default write buffer; a sift_table row must fit it", "ERROR 54000 for a larger sift_table row", "write_buffer_limit option", 0) \
+	X(tx_write_buffers, "-", "table/table.h", 126, "buffers", \
+	  "write buffers of one multi-command transaction on a sift_table", "ERROR 54000", "-", 0) \
 	X(query_bytes, "SIFT_QUERY_MAX_BYTES", "bm25/query.h", SIFT_QUERY_MAX_BYTES, "bytes", \
 	  "length of a search query", "ERROR 54000", "-", 1) \
+	X(query_leaves, "SIFT_MAX_LEAVES", "core/sift.h", SIFT_MAX_LEAVES, "terms", \
+	  "terms of a search query", "ERROR 54000", "-", 0) \
+	X(query_depth, "SIFT_MAX_DEPTH", "core/sift.h", SIFT_MAX_DEPTH, "levels", \
+	  "nesting of a search query", "ERROR 54000", "-", 0) \
 	X(phrase_terms, "SIFT_MAX_PHRASE", "core/sift.h", SIFT_MAX_PHRASE, "terms", \
-	  "terms of one phrase", "ERROR 54000", "-", 1)
+	  "terms of one phrase", "ERROR 54000", "-", 1) \
+	X(boost, "SIFT_MAX_BOOST", "bm25/query.h", SIFT_MAX_BOOST, "factor", \
+	  "combined boost of a query term", "ERROR 54000", "-", 0) \
+	X(regex_bytes, "SIFT_MAX_REGEX_BYTES", "bm25/query.h", SIFT_MAX_REGEX_BYTES, "bytes", \
+	  "a regular expression of a query", "ERROR 54000", "-", 0) \
+	X(any_list_rows, "ANY_LIST_MAX_ROWS", "bm25/planner_path.c", 100000, "rows", \
+	  "rows a query list (= ANY(array)) may match in one scan", "normal plan", "-", 0) \
+	X(maint_backoff_ms, "BACKOFF_MAX_MS", "bm25/maint.c", 3600000, "ms", \
+	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0)
 
 typedef enum SiftLimitId
 {
