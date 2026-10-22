@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="500" viewBox="0 0 880 500" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">pg_duckdb against PostgreSQL and pg_sift</title>
+<desc id="d">Factor over PostgreSQL for pg_sift and the two pg_duckdb modes, warm and cold.</desc>
+<rect x="0.5" y="0.5" width="879" height="499" rx="6" fill="#0d1117" stroke="#30363d"/>
+<text x="20" y="30" font-size="16" text-anchor="start" fill="#e6edf3" font-weight="bold">pg_duckdb, PostgreSQL and pg_sift on the same ten questions</text>
+<text x="20" y="48" font-size="12" text-anchor="start" fill="#9198a1">median time of PostgreSQL divided by the system's, in this run's own PostgreSQL; blue: faster, orange: slower</text>
+<text x="314" y="68" font-size="12" text-anchor="middle" fill="#e6edf3" font-weight="bold">warm</text>
+<circle cx="210" cy="88" r="4.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"></circle>
+<text x="220" y="92" font-size="10" text-anchor="start" fill="#e6edf3">sift_col</text>
+<polygon points="286,82.6 291.4,92.5 280.6,92.5" fill="#d95926" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="296" y="92" font-size="10" text-anchor="start" fill="#e6edf3">duck heap</text>
+<polygon points="362,93.4 367.4,83.5 356.6,83.5" fill="#d95926" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="372" y="92" font-size="10" text-anchor="start" fill="#e6edf3">duck Parquet</text>
+<rect x="201" y="101" width="74" height="26" fill="#21262d" rx="3"><title>01 point_lookup: pg_sift sift_col 0.90× PostgreSQL</title></rect>
+<text x="238" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.90×</text>
+<rect x="277" y="101" width="74" height="26" fill="#d95926" rx="3"><title>01 point_lookup: pg_duckdb heap 0.01× PostgreSQL</title></rect>
+<text x="314" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.01×</text>
+<rect x="353" y="101" width="74" height="26" fill="#d95926" rx="3"><title>01 point_lookup: pg_duckdb Parquet 0.01× PostgreSQL</title></rect>
+<text x="390" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.01×</text>
+<rect x="201" y="129" width="74" height="26" fill="#3987e5" rx="3"><title>02 orders_per_country: pg_sift sift_col 118× PostgreSQL</title></rect>
+<text x="238" y="146" font-size="12" text-anchor="middle" fill="#ffffff">118×</text>
+<rect x="277" y="129" width="74" height="26" fill="#58352b" rx="3"><title>02 orders_per_country: pg_duckdb heap 0.52× PostgreSQL</title></rect>
+<text x="314" y="146" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.52×</text>
+<rect x="353" y="129" width="74" height="26" fill="#30619d" rx="3"><title>02 orders_per_country: pg_duckdb Parquet 11× PostgreSQL</title></rect>
+<text x="390" y="146" font-size="12" text-anchor="middle" fill="#ffffff">11×</text>
+<rect x="201" y="157" width="74" height="26" fill="#3987e5" rx="3"><title>03 revenue_per_month: pg_sift sift_col 614× PostgreSQL</title></rect>
+<text x="238" y="174" font-size="12" text-anchor="middle" fill="#ffffff">614×</text>
+<rect x="277" y="157" width="74" height="26" fill="#2a4b73" rx="3"><title>03 revenue_per_month: pg_duckdb heap 3.1× PostgreSQL</title></rect>
+<text x="314" y="174" font-size="12" text-anchor="middle" fill="#ffffff">3.1×</text>
+<rect x="353" y="157" width="74" height="26" fill="#3166a7" rx="3"><title>03 revenue_per_month: pg_duckdb Parquet 15× PostgreSQL</title></rect>
+<text x="390" y="174" font-size="12" text-anchor="middle" fill="#ffffff">15×</text>
+<rect x="201" y="185" width="74" height="26" fill="#3987e5" rx="3"><title>04 top_categories: pg_sift sift_col 175× PostgreSQL</title></rect>
+<text x="238" y="202" font-size="12" text-anchor="middle" fill="#ffffff">175×</text>
+<rect x="277" y="185" width="74" height="26" fill="#52342b" rx="3"><title>04 top_categories: pg_duckdb heap 0.62× PostgreSQL</title></rect>
+<text x="314" y="202" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.62×</text>
+<rect x="353" y="185" width="74" height="26" fill="#2f5f99" rx="3"><title>04 top_categories: pg_duckdb Parquet 10× PostgreSQL</title></rect>
+<text x="390" y="202" font-size="12" text-anchor="middle" fill="#ffffff">10×</text>
+<rect x="201" y="213" width="74" height="26" fill="#3063a1" rx="3"><title>05 average_shipped_order: pg_sift sift_col 12× PostgreSQL</title></rect>
+<text x="238" y="230" font-size="12" text-anchor="middle" fill="#ffffff">12×</text>
+<rect x="277" y="213" width="74" height="26" fill="#5a362b" rx="3"><title>05 average_shipped_order: pg_duckdb heap 0.48× PostgreSQL</title></rect>
+<text x="314" y="230" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.48×</text>
+<rect x="353" y="213" width="74" height="26" fill="#273f5d" rx="3"><title>05 average_shipped_order: pg_duckdb Parquet 1.6× PostgreSQL</title></rect>
+<text x="390" y="230" font-size="12" text-anchor="middle" fill="#ffffff">1.6×</text>
+<rect x="201" y="241" width="74" height="26" fill="#367bcf" rx="3"><title>06 customers_per_month: pg_sift sift_col 51× PostgreSQL</title></rect>
+<text x="238" y="258" font-size="12" text-anchor="middle" fill="#ffffff">51×</text>
+<rect x="277" y="241" width="74" height="26" fill="#2b4e78" rx="3"><title>06 customers_per_month: pg_duckdb heap 3.6× PostgreSQL</title></rect>
+<text x="314" y="258" font-size="12" text-anchor="middle" fill="#ffffff">3.6×</text>
+<rect x="353" y="241" width="74" height="26" fill="#2e5b91" rx="3"><title>06 customers_per_month: pg_duckdb Parquet 7.8× PostgreSQL</title></rect>
+<text x="390" y="258" font-size="12" text-anchor="middle" fill="#ffffff">7.8×</text>
+<rect x="201" y="269" width="74" height="26" fill="#3166a6" rx="3"><title>07 big_recent_orders: pg_sift sift_col 15× PostgreSQL</title></rect>
+<text x="238" y="286" font-size="12" text-anchor="middle" fill="#ffffff">15×</text>
+<rect x="277" y="269" width="74" height="26" fill="#5f372b" rx="3"><title>07 big_recent_orders: pg_duckdb heap 0.42× PostgreSQL</title></rect>
+<text x="314" y="286" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.42×</text>
+<rect x="353" y="269" width="74" height="26" fill="#284466" rx="3"><title>07 big_recent_orders: pg_duckdb Parquet 2.1× PostgreSQL</title></rect>
+<text x="390" y="286" font-size="12" text-anchor="middle" fill="#ffffff">2.1×</text>
+<rect x="201" y="297" width="74" height="26" fill="#3577c7" rx="3"><title>08 search_count: pg_sift sift_col 40× PostgreSQL</title></rect>
+<text x="238" y="314" font-size="12" text-anchor="middle" fill="#ffffff">40×</text>
+<rect x="277" y="297" width="74" height="26" fill="#b95027" rx="3"><title>08 search_count: pg_duckdb heap 0.03× PostgreSQL</title></rect>
+<text x="314" y="314" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.03×</text>
+<rect x="353" y="297" width="74" height="26" fill="#7e4029" rx="3"><title>08 search_count: pg_duckdb Parquet 0.16× PostgreSQL</title></rect>
+<text x="390" y="314" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.16×</text>
+<rect x="201" y="325" width="74" height="26" fill="#2c5485" rx="3"><title>09 search_facets: pg_sift sift_col 5.3× PostgreSQL</title></rect>
+<text x="238" y="342" font-size="12" text-anchor="middle" fill="#ffffff">5.3×</text>
+<rect x="277" y="325" width="74" height="26" fill="#ad4d28" rx="3"><title>09 search_facets: pg_duckdb heap 0.04× PostgreSQL</title></rect>
+<text x="314" y="342" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.04×</text>
+<rect x="353" y="325" width="74" height="26" fill="#723c2a" rx="3"><title>09 search_facets: pg_duckdb Parquet 0.23× PostgreSQL</title></rect>
+<text x="390" y="342" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.23×</text>
+<rect x="201" y="353" width="74" height="26" fill="#3578c8" rx="3"><title>10 search_newest: pg_sift sift_col 41× PostgreSQL</title></rect>
+<text x="238" y="370" font-size="12" text-anchor="middle" fill="#ffffff">41×</text>
+<rect x="277" y="353" width="74" height="26" fill="#64392a" rx="3"><title>10 search_newest: pg_duckdb heap 0.35× PostgreSQL</title></rect>
+<text x="314" y="370" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.35×</text>
+<rect x="353" y="353" width="74" height="26" fill="#273e5b" rx="3"><title>10 search_newest: pg_duckdb Parquet 1.5× PostgreSQL</title></rect>
+<text x="390" y="370" font-size="12" text-anchor="middle" fill="#ffffff">1.5×</text>
+<text x="566" y="68" font-size="12" text-anchor="middle" fill="#e6edf3" font-weight="bold">cold (new session, buffers emptied)</text>
+<circle cx="462" cy="88" r="4.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"></circle>
+<text x="472" y="92" font-size="10" text-anchor="start" fill="#e6edf3">sift_col</text>
+<polygon points="538,82.6 543.4,92.5 532.6,92.5" fill="#d95926" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="548" y="92" font-size="10" text-anchor="start" fill="#e6edf3">duck heap</text>
+<polygon points="614,93.4 619.4,83.5 608.6,83.5" fill="#d95926" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="624" y="92" font-size="10" text-anchor="start" fill="#e6edf3">duck Parquet</text>
+<rect x="453" y="101" width="74" height="26" fill="#6b3b2a" rx="3"><title>01 point_lookup: pg_sift sift_col 0.29× PostgreSQL</title></rect>
+<text x="490" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.29×</text>
+<rect x="529" y="101" width="74" height="26" fill="#b14e28" rx="3"><title>01 point_lookup: pg_duckdb heap 0.03× PostgreSQL</title></rect>
+<text x="566" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.03×</text>
+<rect x="605" y="101" width="74" height="26" fill="#b44f27" rx="3"><title>01 point_lookup: pg_duckdb Parquet 0.03× PostgreSQL</title></rect>
+<text x="642" y="118" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.03×</text>
+<rect x="453" y="129" width="74" height="26" fill="#2e5c94" rx="3"><title>02 orders_per_country: pg_sift sift_col 8.3× PostgreSQL</title></rect>
+<text x="490" y="146" font-size="12" text-anchor="middle" fill="#ffffff">8.3×</text>
+<rect x="529" y="129" width="74" height="26" fill="#55352b" rx="3"><title>02 orders_per_country: pg_duckdb heap 0.55× PostgreSQL</title></rect>
+<text x="566" y="146" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.55×</text>
+<rect x="605" y="129" width="74" height="26" fill="#29476c" rx="3"><title>02 orders_per_country: pg_duckdb Parquet 2.5× PostgreSQL</title></rect>
+<text x="642" y="146" font-size="12" text-anchor="middle" fill="#ffffff">2.5×</text>
+<rect x="453" y="157" width="74" height="26" fill="#377fd6" rx="3"><title>03 revenue_per_month: pg_sift sift_col 62× PostgreSQL</title></rect>
+<text x="490" y="174" font-size="12" text-anchor="middle" fill="#ffffff">62×</text>
+<rect x="529" y="157" width="74" height="26" fill="#2a4a71" rx="3"><title>03 revenue_per_month: pg_duckdb heap 2.9× PostgreSQL</title></rect>
+<text x="566" y="174" font-size="12" text-anchor="middle" fill="#ffffff">2.9×</text>
+<rect x="605" y="157" width="74" height="26" fill="#2f5d96" rx="3"><title>03 revenue_per_month: pg_duckdb Parquet 9.0× PostgreSQL</title></rect>
+<text x="642" y="174" font-size="12" text-anchor="middle" fill="#ffffff">9.0×</text>
+<rect x="453" y="185" width="74" height="26" fill="#3166a6" rx="3"><title>04 top_categories: pg_sift sift_col 15× PostgreSQL</title></rect>
+<text x="490" y="202" font-size="12" text-anchor="middle" fill="#ffffff">15×</text>
+<rect x="529" y="185" width="74" height="26" fill="#4c322b" rx="3"><title>04 top_categories: pg_duckdb heap 0.73× PostgreSQL</title></rect>
+<text x="566" y="202" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.73×</text>
+<rect x="605" y="185" width="74" height="26" fill="#2b4d77" rx="3"><title>04 top_categories: pg_duckdb Parquet 3.5× PostgreSQL</title></rect>
+<text x="642" y="202" font-size="12" text-anchor="middle" fill="#ffffff">3.5×</text>
+<rect x="453" y="213" width="74" height="26" fill="#2a4970" rx="3"><title>05 average_shipped_order: pg_sift sift_col 2.8× PostgreSQL</title></rect>
+<text x="490" y="230" font-size="12" text-anchor="middle" fill="#ffffff">2.8×</text>
+<rect x="529" y="213" width="74" height="26" fill="#52332b" rx="3"><title>05 average_shipped_order: pg_duckdb heap 0.62× PostgreSQL</title></rect>
+<text x="566" y="230" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.62×</text>
+<rect x="605" y="213" width="74" height="26" fill="#263c57" rx="3"><title>05 average_shipped_order: pg_duckdb Parquet 1.3× PostgreSQL</title></rect>
+<text x="642" y="230" font-size="12" text-anchor="middle" fill="#ffffff">1.3×</text>
+<rect x="453" y="241" width="74" height="26" fill="#336eb6" rx="3"><title>06 customers_per_month: pg_sift sift_col 24× PostgreSQL</title></rect>
+<text x="490" y="258" font-size="12" text-anchor="middle" fill="#ffffff">24×</text>
+<rect x="529" y="241" width="74" height="26" fill="#2a4b74" rx="3"><title>06 customers_per_month: pg_duckdb heap 3.1× PostgreSQL</title></rect>
+<text x="566" y="258" font-size="12" text-anchor="middle" fill="#ffffff">3.1×</text>
+<rect x="605" y="241" width="74" height="26" fill="#2c5485" rx="3"><title>06 customers_per_month: pg_duckdb Parquet 5.4× PostgreSQL</title></rect>
+<text x="642" y="258" font-size="12" text-anchor="middle" fill="#ffffff">5.4×</text>
+<rect x="453" y="269" width="74" height="26" fill="#2a4a71" rx="3"><title>07 big_recent_orders: pg_sift sift_col 2.9× PostgreSQL</title></rect>
+<text x="490" y="286" font-size="12" text-anchor="middle" fill="#ffffff">2.9×</text>
+<rect x="529" y="269" width="74" height="26" fill="#58352b" rx="3"><title>07 big_recent_orders: pg_duckdb heap 0.52× PostgreSQL</title></rect>
+<text x="566" y="286" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.52×</text>
+<rect x="605" y="269" width="74" height="26" fill="#263b55" rx="3"><title>07 big_recent_orders: pg_duckdb Parquet 1.2× PostgreSQL</title></rect>
+<text x="642" y="286" font-size="12" text-anchor="middle" fill="#ffffff">1.2×</text>
+<rect x="453" y="297" width="74" height="26" fill="#2d5688" rx="3"><title>08 search_count: pg_sift sift_col 5.8× PostgreSQL</title></rect>
+<text x="490" y="314" font-size="12" text-anchor="middle" fill="#ffffff">5.8×</text>
+<rect x="529" y="297" width="74" height="26" fill="#a64b28" rx="3"><title>08 search_count: pg_duckdb heap 0.05× PostgreSQL</title></rect>
+<text x="566" y="314" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.05×</text>
+<rect x="605" y="297" width="74" height="26" fill="#713c2a" rx="3"><title>08 search_count: pg_duckdb Parquet 0.24× PostgreSQL</title></rect>
+<text x="642" y="314" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.24×</text>
+<rect x="453" y="325" width="74" height="26" fill="#294568" rx="3"><title>09 search_facets: pg_sift sift_col 2.2× PostgreSQL</title></rect>
+<text x="490" y="342" font-size="12" text-anchor="middle" fill="#ffffff">2.2×</text>
+<rect x="529" y="325" width="74" height="26" fill="#984728" rx="3"><title>09 search_facets: pg_duckdb heap 0.07× PostgreSQL</title></rect>
+<text x="566" y="342" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.07×</text>
+<rect x="605" y="325" width="74" height="26" fill="#64392a" rx="3"><title>09 search_facets: pg_duckdb Parquet 0.36× PostgreSQL</title></rect>
+<text x="642" y="342" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.36×</text>
+<rect x="453" y="353" width="74" height="26" fill="#2b4e79" rx="3"><title>10 search_newest: pg_sift sift_col 3.6× PostgreSQL</title></rect>
+<text x="490" y="370" font-size="12" text-anchor="middle" fill="#ffffff">3.6×</text>
+<rect x="529" y="353" width="74" height="26" fill="#59362b" rx="3"><title>10 search_newest: pg_duckdb heap 0.49× PostgreSQL</title></rect>
+<text x="566" y="370" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.49×</text>
+<rect x="605" y="353" width="74" height="26" fill="#27405f" rx="3"><title>10 search_newest: pg_duckdb Parquet 1.7× PostgreSQL</title></rect>
+<text x="642" y="370" font-size="12" text-anchor="middle" fill="#ffffff">1.7×</text>
+<text x="22" y="118" font-size="12" text-anchor="start" fill="#e6edf3">Q01 point lookup</text>
+<text x="22" y="146" font-size="12" text-anchor="start" fill="#e6edf3">Q02 orders per country</text>
+<text x="22" y="174" font-size="12" text-anchor="start" fill="#e6edf3">Q03 revenue per month</text>
+<text x="22" y="202" font-size="12" text-anchor="start" fill="#e6edf3">Q04 top categories</text>
+<text x="22" y="230" font-size="12" text-anchor="start" fill="#e6edf3">Q05 average shipped order</text>
+<text x="22" y="258" font-size="12" text-anchor="start" fill="#e6edf3">Q06 customers per month</text>
+<text x="22" y="286" font-size="12" text-anchor="start" fill="#e6edf3">Q07 big recent orders</text>
+<text x="22" y="314" font-size="12" text-anchor="start" fill="#e6edf3">Q08 search count</text>
+<text x="22" y="342" font-size="12" text-anchor="start" fill="#e6edf3">Q09 search facets</text>
+<text x="22" y="370" font-size="12" text-anchor="start" fill="#e6edf3">Q10 search newest</text>
+<rect x="20" y="389" width="44" height="14" fill="#d95926" rx="2"/>
+<text x="42" y="422" font-size="10" text-anchor="middle" fill="#9198a1">0.01×</text>
+<rect x="66" y="389" width="44" height="14" fill="#8e4429" rx="2"/>
+<text x="88" y="422" font-size="10" text-anchor="middle" fill="#9198a1">0.10×</text>
+<rect x="112" y="389" width="44" height="14" fill="#59352b" rx="2"/>
+<text x="134" y="422" font-size="10" text-anchor="middle" fill="#9198a1">0.50×</text>
+<rect x="158" y="389" width="44" height="14" fill="#21262d" rx="2"/>
+<text x="180" y="422" font-size="10" text-anchor="middle" fill="#9198a1">1.0×</text>
+<rect x="204" y="389" width="44" height="14" fill="#284365" rx="2"/>
+<text x="226" y="422" font-size="10" text-anchor="middle" fill="#9198a1">2.0×</text>
+<rect x="250" y="389" width="44" height="14" fill="#2f5f9a" rx="2"/>
+<text x="272" y="422" font-size="10" text-anchor="middle" fill="#9198a1">10×</text>
+<rect x="296" y="389" width="44" height="14" fill="#3987e5" rx="2"/>
+<text x="318" y="422" font-size="10" text-anchor="middle" fill="#9198a1">100×</text>
+<text x="350" y="400" font-size="11" text-anchor="start" fill="#9198a1">orange: slower, blue: faster than the baseline</text>
+<text x="350" y="416" font-size="11" text-anchor="start" fill="#9198a1">gray: within 15%</text>
+<text x="20" y="446" font-size="11" text-anchor="start" fill="#9198a1">Data: docs/results/duckdb.tsv, 2026-10-22. Host: AMD Ryzen 7 9700X, 16 threads, 188 GB RAM. pg_duckdb 1.1.1 next to PostgreSQL, one</text>
+<text x="20" y="462" font-size="11" text-anchor="start" fill="#9198a1">container each, same CPU quota.</text>
+<text x="20" y="478" font-size="11" text-anchor="start" fill="#9198a1">Its own run (psql timing, median of 3): not comparable with the other charts; n/a: pg_duckdb cannot run the statement.</text>
+</svg>

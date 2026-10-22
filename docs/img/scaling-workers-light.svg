@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="292" viewBox="0 0 880 292" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Aggregates by number of parallel workers, 1,000,000 orders</title>
+<desc id="d">median milliseconds, logarithmic axes; max_parallel_workers_per_gather = N</desc>
+<rect x="0.5" y="0.5" width="879" height="291" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="30" font-size="16" text-anchor="start" fill="#1f2328" font-weight="bold">Aggregates by number of parallel workers, 1,000,000 orders</text>
+<text x="20" y="48" font-size="12" text-anchor="start" fill="#59636e">median milliseconds, logarithmic axes; max_parallel_workers_per_gather = N</text>
+<rect x="20.5" y="65.5" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"></rect>
+<text x="36" y="74" font-size="12" text-anchor="start" fill="#1f2328">PostgreSQL</text>
+<circle cx="124.2" cy="70" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="135.2" y="74" font-size="12" text-anchor="start" fill="#1f2328">pg_sift sift_col</text>
+<text x="24" y="98" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">Q01 point lookup</text>
+<line x1="54" y1="198" x2="230" y2="198" stroke="#e3e7eb" stroke-width="1"/>
+<text x="50" y="201" font-size="9" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="54" y1="154" x2="230" y2="154" stroke="#e3e7eb" stroke-width="1"/>
+<text x="50" y="157" font-size="9" text-anchor="end" fill="#59636e">1</text>
+<line x1="54" y1="110" x2="230" y2="110" stroke="#e3e7eb" stroke-width="1"/>
+<text x="50" y="113" font-size="9" text-anchor="end" fill="#59636e">10</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="54,151 54,152.7 161.3,152.2 224,154.2"/>
+<rect x="50.5" y="147.5" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: PostgreSQL 1.17 ms at 1</title></rect>
+<rect x="50.5" y="149.2" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: PostgreSQL 1.07 ms at 1</title></rect>
+<rect x="157.8" y="148.7" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: PostgreSQL 1.1 ms at 2</title></rect>
+<rect x="220.5" y="150.7" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: PostgreSQL 0.99 ms at 3</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="54,149.9 54,150.8 161.3,151 224,152"/>
+<circle cx="54" cy="149.9" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_col 1.24 ms at 1</title></circle>
+<circle cx="54" cy="150.8" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_col 1.18 ms at 1</title></circle>
+<circle cx="161.3" cy="151" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_col 1.17 ms at 2</title></circle>
+<circle cx="224" cy="152" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_col 1.11 ms at 3</title></circle>
+<text x="54" y="212" font-size="9" text-anchor="middle" fill="#59636e">1</text>
+<text x="161.3" y="212" font-size="9" text-anchor="middle" fill="#59636e">2</text>
+<text x="224" y="212" font-size="9" text-anchor="middle" fill="#59636e">3</text>
+<text x="234" y="98" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">Q03 revenue per month</text>
+<line x1="264" y1="198" x2="440" y2="198" stroke="#e3e7eb" stroke-width="1"/>
+<text x="260" y="201" font-size="9" text-anchor="end" fill="#59636e">10</text>
+<line x1="264" y1="154" x2="440" y2="154" stroke="#e3e7eb" stroke-width="1"/>
+<text x="260" y="157" font-size="9" text-anchor="end" fill="#59636e">100</text>
+<line x1="264" y1="110" x2="440" y2="110" stroke="#e3e7eb" stroke-width="1"/>
+<text x="260" y="113" font-size="9" text-anchor="end" fill="#59636e">1,000</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="264,149 264,160.4 371.3,167.1 434,172.5"/>
+<rect x="260.5" y="145.5" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: PostgreSQL 130 ms at 1</title></rect>
+<rect x="260.5" y="156.9" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: PostgreSQL 71.5 ms at 1</title></rect>
+<rect x="367.8" y="163.6" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: PostgreSQL 50.3 ms at 2</title></rect>
+<rect x="430.5" y="169" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: PostgreSQL 38 ms at 3</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="264,180.9 264,180.8 371.3,181.3 434,181.4"/>
+<circle cx="264" cy="180.9" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_col 24.5 ms at 1</title></circle>
+<circle cx="264" cy="180.8" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_col 24.5 ms at 1</title></circle>
+<circle cx="371.3" cy="181.3" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_col 24 ms at 2</title></circle>
+<circle cx="434" cy="181.4" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_col 23.8 ms at 3</title></circle>
+<text x="264" y="212" font-size="9" text-anchor="middle" fill="#59636e">1</text>
+<text x="371.3" y="212" font-size="9" text-anchor="middle" fill="#59636e">2</text>
+<text x="434" y="212" font-size="9" text-anchor="middle" fill="#59636e">3</text>
+<text x="444" y="98" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">Q04 top categories</text>
+<line x1="474" y1="198" x2="650" y2="198" stroke="#e3e7eb" stroke-width="1"/>
+<text x="470" y="201" font-size="9" text-anchor="end" fill="#59636e">10</text>
+<line x1="474" y1="110" x2="650" y2="110" stroke="#e3e7eb" stroke-width="1"/>
+<text x="470" y="113" font-size="9" text-anchor="end" fill="#59636e">100</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="474,111.5 474,132.4 581.3,146.3 644,155.7"/>
+<rect x="470.5" y="108" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: PostgreSQL 96.2 ms at 1</title></rect>
+<rect x="470.5" y="128.9" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: PostgreSQL 55.6 ms at 1</title></rect>
+<rect x="577.8" y="142.8" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: PostgreSQL 38.7 ms at 2</title></rect>
+<rect x="640.5" y="152.2" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: PostgreSQL 30.3 ms at 3</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="474,163.8 474,163.5 581.3,164.4 644,165.7"/>
+<circle cx="474" cy="163.8" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_col 24.5 ms at 1</title></circle>
+<circle cx="474" cy="163.5" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_col 24.7 ms at 1</title></circle>
+<circle cx="581.3" cy="164.4" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_col 24.1 ms at 2</title></circle>
+<circle cx="644" cy="165.7" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_col 23.3 ms at 3</title></circle>
+<text x="474" y="212" font-size="9" text-anchor="middle" fill="#59636e">1</text>
+<text x="581.3" y="212" font-size="9" text-anchor="middle" fill="#59636e">2</text>
+<text x="644" y="212" font-size="9" text-anchor="middle" fill="#59636e">3</text>
+<text x="654" y="98" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">Q06 customers per month</text>
+<line x1="684" y1="198" x2="860" y2="198" stroke="#e3e7eb" stroke-width="1"/>
+<text x="680" y="201" font-size="9" text-anchor="end" fill="#59636e">10</text>
+<line x1="684" y1="154" x2="860" y2="154" stroke="#e3e7eb" stroke-width="1"/>
+<text x="680" y="157" font-size="9" text-anchor="end" fill="#59636e">100</text>
+<line x1="684" y1="110" x2="860" y2="110" stroke="#e3e7eb" stroke-width="1"/>
+<text x="680" y="113" font-size="9" text-anchor="end" fill="#59636e">1,000</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="684,130.4 684,130.3 791.3,130.4 854,130.6"/>
+<rect x="680.5" y="126.9" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: PostgreSQL 344 ms at 1</title></rect>
+<rect x="680.5" y="126.8" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: PostgreSQL 345 ms at 1</title></rect>
+<rect x="787.8" y="126.9" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: PostgreSQL 344 ms at 2</title></rect>
+<rect x="850.5" y="127.1" width="7" height="7" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: PostgreSQL 340 ms at 3</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="684,179.9 684,178.6 791.3,180.4 854,180.8"/>
+<circle cx="684" cy="179.9" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_col 25.8 ms at 1</title></circle>
+<circle cx="684" cy="178.6" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_col 27.6 ms at 1</title></circle>
+<circle cx="791.3" cy="180.4" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_col 25.1 ms at 2</title></circle>
+<circle cx="854" cy="180.8" r="3.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_col 24.6 ms at 3</title></circle>
+<text x="684" y="212" font-size="9" text-anchor="middle" fill="#59636e">1</text>
+<text x="791.3" y="212" font-size="9" text-anchor="middle" fill="#59636e">2</text>
+<text x="854" y="212" font-size="9" text-anchor="middle" fill="#59636e">3</text>
+<text x="20" y="238" font-size="11" text-anchor="start" fill="#59636e">Data: docs/results/scaling.tsv, 2026-10-22. Host: AMD Ryzen 7 9700X, PostgreSQL 18.6, pg_sift 3.2.</text>
+<text x="20" y="254" font-size="11" text-anchor="start" fill="#59636e">psql \timing of one statement, planning included, one client, 7 timed runs after one untimed, cells interleaved in random order; jit</text>
+<text x="20" y="270" font-size="11" text-anchor="start" fill="#59636e">off; partitions: 2 workers</text>
+</svg>
