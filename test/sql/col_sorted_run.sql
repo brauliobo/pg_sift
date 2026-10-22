@@ -87,18 +87,19 @@ BEGIN
 END $$;
 
 -- one query three ways: the rows (with the key and the id as the order, so that the rows are the same) and, for the key alone, its values
-CREATE FUNCTION sr_check(tab text, cols text[], lims int[], OUT n int, OUT shape text, OUT same bool, OUT runs int) RETURNS SETOF record LANGUAGE plpgsql AS $$
+CREATE FUNCTION sr_check(tab text, cols text[], lims int[], flts text[] DEFAULT ARRAY['', 'WHERE id % 7 = 3'], OUT n int, OUT shape text, OUT same bool, OUT runs int) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE
-	col text; dir text; nl text; lim int; flt text; q text; qk text; a text; b text; c text; ak text; bk text; ck text; i int := 0;
+	col text; dir text; nl text; lim int; flt text; f text; q text; qk text; a text; b text; c text; ak text; bk text; ck text; i int := 0;
 BEGIN
 	FOREACH col IN ARRAY cols LOOP
 	FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
 	FOREACH nl IN ARRAY ARRAY['NULLS FIRST', 'NULLS LAST'] LOOP
 	FOREACH lim IN ARRAY lims LOOP
-	FOREACH flt IN ARRAY ARRAY['', 'WHERE id % 7 = 3'] LOOP
+	FOREACH flt IN ARRAY flts LOOP
 		i := i + 1;
-		q := format('SELECT id, %1$s FROM %2$s %3$s ORDER BY %1$s %4$s %5$s, id LIMIT %6$s%7$s', col, tab, flt, dir, nl, lim, CASE WHEN lim = 300 THEN ' OFFSET 25' ELSE '' END);
-		qk := format('SELECT %1$s FROM %2$s %3$s ORDER BY %1$s %4$s %5$s LIMIT %6$s', col, tab, flt, dir, nl, lim);
+		f := replace(replace(flt, 'COL', col), 'TAB', tab);
+		q := format('SELECT id, %1$s FROM %2$s %3$s ORDER BY %1$s %4$s %5$s, id LIMIT %6$s%7$s', col, tab, f, dir, nl, lim, CASE WHEN lim = 300 THEN ' OFFSET 25' ELSE '' END);
+		qk := format('SELECT %1$s FROM %2$s %3$s ORDER BY %1$s %4$s %5$s LIMIT %6$s', col, tab, f, dir, nl, lim);
 		PERFORM sr_mode('plain'); a := sr_rows(q); ak := sr_rows(qk);
 		PERFORM sr_mode('norun'); b := sr_rows(q); bk := sr_rows(qk);
 		PERFORM sr_mode('runs'); c := sr_rows(q); ck := sr_rows(qk);
@@ -141,6 +142,14 @@ CREATE FUNCTION sr_small(tab text) RETURNS TABLE (queries bigint, same bigint, r
 	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'c', 'sk'], ARRAY[1, 300])
 $$;
 
+-- filters that leave 2%, 10% and 50% of the rows (a unit reads the key of the rows that pass only when they are few) and a start after a value of the key
+-- itself (keyset paging): the run is walked over the rows that do not pass
+CREATE FUNCTION sr_filt(tab text, cols text[], lims int[]) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same)
+	FROM sr_check(tab, cols, lims, ARRAY['WHERE id % 50 = 3', 'WHERE id % 10 = 4', 'WHERE id % 2 = 0', 'WHERE COL > (SELECT COL FROM TAB ORDER BY COL, id OFFSET 12000 LIMIT 1)'])
+$$;
+SELECT * FROM sr_filt('sr', ARRAY['k', 'kn', 't'], ARRAY[20, 300]);
+
 -- rows in the write buffer have no run and are read whatever the runs say; deletes and updates leave the rows of a run that are not live, and the new
 -- version of an updated row is in the buffer; VACUUM, promotion and merge write the runs again
 INSERT INTO sr SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 2 = 0 THEN NULL ELSE g % 3 END, timestamptz '2023-06-01' + g * interval '1 second',
@@ -150,6 +159,7 @@ UPDATE sr SET k = 2, kn = NULL, t = NULL, f = 'NaN' WHERE id % 1000 = 5;
 UPDATE sr SET k = 1000 + k WHERE id % 1000 = 6;
 DELETE FROM sr WHERE id % 7 = 0;
 SELECT * FROM sr_small('sr');
+SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
 VACUUM (freeze, index_cleanup on, disable_page_skipping) sr;
 SELECT * FROM sr_small('sr');
 SELECT sift.col_promote('sr_on') >= 0 AS promoted;
@@ -161,6 +171,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) sr;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sr_on');
 SELECT sift.col_verify('sr_on', true);
 SELECT * FROM sr_small('sr');
+SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
 
 -- with workers: the rows are the plain plan's
 SET parallel_setup_cost = 0;
@@ -227,5 +238,5 @@ SELECT sift.col_verify('sa_idx', true);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
 
 DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f CASCADE;
-DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[]), sr_small(text);
+DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
