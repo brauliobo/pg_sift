@@ -12,9 +12,11 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "mb/pg_wchar.h"
 #include "utils/rel.h"
 
 #include "core/lane.h"
+#include "core/limits.h"
 
 void
 sift_lane_init_page(Page page, Size hdrsize)
@@ -129,14 +131,20 @@ swap_active(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *ar
 	sift_lane_swap_active(dir, a->sealed, &a->fresh);
 }
 
-static void
-check_room(Relation index, const SiftDirSnapshot *snap)
+/* The directory entries a write may fill: the page holds SIFT_MAX_SEGMENTS, sift.test_limits lowers it in a test build */
+#define DIR_CAP()	((int) sift_limit(max_segments, SIFT_MAX_SEGMENTS))
+
+/* What the last failed maintenance step said (the note of sift.workers), NULL if there is none or it is not text of the database encoding */
+static const char *
+last_failure(const SiftDirSnapshot *snap)
 {
-	if (snap->nsegs >= SIFT_MAX_SEGMENTS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index \"%s\" has %d segments", RelationGetRelationName(index), snap->nsegs),
-				 errhint("Run sift.merge() on the index.")));
+	static char msg[SIFT_MAINT_ERRMSG_LEN];
+
+	if ((snap->meta.flags & SIFT_META_FAILURES_MASK) == 0 || snap->meta.maint_failed_at == 0)
+		return NULL;
+	memcpy(msg, snap->meta.maint_errmsg, sizeof(msg));
+	msg[sizeof(msg) - 1] = '\0';
+	return pg_verifymbstr(msg, strlen(msg), true) && msg[0] ? msg : NULL;
 }
 
 /* Creates the active segment unless another backend did meanwhile; false when the directory is full */
@@ -148,7 +156,7 @@ create_active(Relation index, Size hdrsize, uint16 format)
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(index, snap);
-	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < SIFT_MAX_SEGMENTS))
+	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < DIR_CAP()))
 	{
 		SwapArg		arg = {0};
 
@@ -222,13 +230,22 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 l
 		sift_lane_read_header(index, act, &hdr);
 		if (force ? has_records(index, act) : sift_lane_npages(&hdr) >= limit)
 		{
-			if (force || snap->nsegs < SIFT_MAX_SEGMENTS)
+			if (snap->nsegs < DIR_CAP())
 			{
-				check_room(index, snap);
 				sealed = *act;
 				arg.sealed = act->gen;
 				arg.fresh = new_segment(index, hdrsize, format);
 				sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
+			}
+			else if (force)
+			{
+				/* no entry is free for the buffer that would follow: this one stays open and takes the writes, as it does when the size alone asks for a seal */
+				const char *why = last_failure(snap);
+
+				ereport(NOTICE,
+						(errmsg("sift index \"%s\" has %d segments: its write buffer stays open", RelationGetRelationName(index), snap->nsegs),
+						 why ? errdetail("The last maintenance step failed: %s", why) : 0,
+						 errhint("Run sift.merge() on the index; sift.workers shows what the background did.")));
 			}
 		}
 	}
@@ -258,12 +275,18 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
 			break;
 		if (!create_active(index, hdrsize, format) && !make_room(index))
+		{
+			const char *why;
+
+			sift_dir_read(index, snap);
+			why = last_failure(snap);
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift index \"%s\" has %d segments that cannot be merged", RelationGetRelationName(index),
-							SIFT_MAX_SEGMENTS),
+					 errmsg("sift index \"%s\" has %d segments that cannot be merged", RelationGetRelationName(index), snap->nsegs),
+					 why ? errdetail("The last maintenance step failed: %s", why) :
 					 errdetail("A merge only takes segments whose rows every running transaction can see."),
-					 errhint("End the long-running transactions, run VACUUM, then run sift.merge() on the index.")));
+					 errhint("End the long-running transactions, run VACUUM, then run sift.merge() on the index; sift.workers shows what the background did.")));
+		}
 	}
 	sift_lane_read_header(index, act, &hdr);
 	*gen = act->gen;

@@ -38,6 +38,7 @@
 #include "bm25/am.h"
 #include "bm25/build.h"
 #include "core/lane.h"
+#include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
@@ -52,17 +53,18 @@
 int			sift_test_merge_max_kb = 0;
 int			sift_test_merge_sleep_ms = 0;
 int			sift_test_room_segments = 0;
-#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : ROOM_SEGMENTS)
+#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_MAX_SEGMENTS) - ROOM_SPARE)
 /* longest wait of an inserter for the maintenance of others (sift._test_maint_wait_us) */
 int64		sift_maint_wait_max_us = 0;
 #define wait_started()		GetCurrentTimestamp()
 #define wait_done(start)	(sift_maint_wait_max_us = Max(sift_maint_wait_max_us, GetCurrentTimestamp() - (start)))
 #else
-#define room_segments()		ROOM_SEGMENTS
+#define room_segments()		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
 #define wait_started()		((TimestampTz) 0)
 #define wait_done(start)	((void) (start))
 #endif
-#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
+#define ROOM_SPARE			16		/* directory entries below the limit from which inserters merge */
+#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
 #define SELF_PROMOTE_SEALED	4		/* sealed segments from which an inserter promotes them itself */
 /* Whatever merge_fanin is, the policy merges (from SIFT_MERGE_ENTRIES entries) before inserters have to make room, and a merge fits a directory */
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
