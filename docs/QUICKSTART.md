@@ -96,7 +96,7 @@ disk format, so they are yours to turn on ([USAGE.md](USAGE.md#maintenance-and-o
 | `sift.table_async_promote`, `sift.table_bulk_groups` | off | write-path variants of `sift_table` |
 | `sift.explain_refusals` | off | report why a query kept the normal plan |
 | `sift.agg_lookup_shared_kb` | 0 | shared memory that lets backends reuse the lookup tables a `SiftAgg` join loaded |
-| `sift.col_format_minor` | the newest the library writes (`SHOW` it) | lower it to write the formats an older release reads, before a downgrade (SUPPORT.md) |
+| `sift.col_format_minor` | the newest the library writes (`SHOW` it) | lower it to write the formats an older release reads, before a downgrade ([SUPPORT.md](SUPPORT.md#format-minors-and-the-downgrade-rule)) |
 
 `ALTER SYSTEM` or `ALTER DATABASE ... SET` make a setting stick; `sift.enable_agg = off` is the way back to plain PostgreSQL at any time.
 

@@ -21,7 +21,7 @@ The argument is a tag of the official image (`18`, `18-trixie`, `17`, `19rc1`): 
 already uses. `IMAGE_REPO=registry.example.com/team/pg_sift` renames the repository.
 
 - The data directory of the PostgreSQL 18 image is under `/var/lib/postgresql`, the one of 17 under `/var/lib/postgresql/data`: mount the volume accordingly.
-- The initialization script runs only on an empty data directory. For an existing one: start the new image on it and run `ALTER EXTENSION pg_sift UPDATE` in each database (SUPPORT.md).
+- The initialization script runs only on an empty data directory. For an existing one: start the new image on it and run `ALTER EXTENSION pg_sift UPDATE` in each database ([SUPPORT.md](SUPPORT.md#upgrade-paths)).
 - Built and run on x86-64. The Makefile adds no x86-only flags on other CPUs, but an arm64 image has not been built or tested.
 - No settings are changed. Pass the usual ones as arguments (`-c shared_buffers=1GB`).
 

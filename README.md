@@ -19,7 +19,7 @@ server, no separate analytics database, no `shared_preload_libraries`. The searc
 
 Supports PostgreSQL 17, 18 and 19 on Linux and macOS (19 tested on its release candidate). Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
 
-Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container image recipes (PostgreSQL 17 and 18, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: docs/SUPPORT.md.
+Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container image recipes (PostgreSQL 17 and 18, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: [docs/SUPPORT.md](docs/SUPPORT.md).
 
 ### Install with Homebrew
 
