@@ -11,11 +11,16 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
+#include "access/stratnum.h"
 #include "access/table.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "partitioning/partbounds.h"
 #include "utils/acl.h"
+#include "utils/array.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
@@ -219,27 +224,221 @@ qual_vars_mutator(Node *n, QualVars *qv)
 	return (Node *) v;
 }
 
+/* `col = value` or `col = ANY (array)`: the column, the operand and the operator, whatever the operand is (the planner asks it too) */
+bool
+sift_aggpart_key_clause(Node *cl, Var **var, Node **operand, Oid *opno, Oid *collid, bool *any)
+{
+	List	   *args;
+	Node	   *l,
+			   *r;
+
+	if (IsA(cl, OpExpr))
+	{
+		OpExpr	   *op = (OpExpr *) cl;
+
+		args = op->args;
+		*opno = op->opno;
+		*collid = op->inputcollid;
+		*any = false;
+	}
+	else if (IsA(cl, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) cl)->useOr)
+	{
+		ScalarArrayOpExpr *op = (ScalarArrayOpExpr *) cl;
+
+		args = op->args;
+		*opno = op->opno;
+		*collid = op->inputcollid;
+		*any = true;
+	}
+	else
+		return false;
+	if (list_length(args) != 2)
+		return false;
+	l = linitial(args);
+	r = lsecond(args);
+	if (!*any && IsA(r, Var) && !IsA(l, Var))
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+	}
+	if (!IsA(l, Var) || ((Var *) l)->varlevelsup != 0 || contain_var_clause(r))
+		return false;
+	*var = (Var *) l;
+	*operand = r;
+	return true;
+}
+
+/* the values a condition leaves a column of the partitioned table (a NULL matches nothing: n can be 0) */
+typedef struct KeyVals
+{
+	AttrNumber	attno;
+	Oid			typid;
+	Oid			opno;			/* the operator of the condition and its collation: a hash partitioning takes it only if it is the equality of its operator family */
+	Oid			collid;
+	int			n;
+	Datum	   *val;
+} KeyVals;
+
+static KeyVals *
+key_vals(Node *cl)
+{
+	Var		   *v;
+	Node	   *operand;
+	Oid			opno,
+				collid;
+	bool		any;
+	Const	   *c;
+	KeyVals    *kv;
+
+	if (!sift_aggpart_key_clause(cl, &v, &operand, &opno, &collid, &any) || !IsA(operand, Const))
+		return NULL;
+	c = (Const *) operand;
+	kv = palloc0(sizeof(KeyVals));
+	kv->attno = v->varattno;
+	kv->typid = v->vartype;
+	kv->opno = opno;
+	kv->collid = collid;
+	if (c->constisnull)
+		return kv;
+	if (!any)
+	{
+		if (c->consttype != v->vartype)
+			return NULL;
+		kv->val = palloc(sizeof(Datum));
+		kv->val[0] = c->constvalue;
+		kv->n = 1;
+	}
+	else
+	{
+		Oid			et = get_element_type(c->consttype);
+		int16		len;
+		bool		byval;
+		char		align;
+		Datum	   *elems;
+		bool	   *nulls;
+		int			nelems;
+
+		if (et != v->vartype)
+			return NULL;
+		get_typlenbyvalalign(et, &len, &byval, &align);
+		deconstruct_array(DatumGetArrayTypeP(c->constvalue), et, len, byval, align, &elems, &nulls, &nelems);
+		kv->val = palloc(Max(nelems, 1) * sizeof(Datum));
+		for (int i = 0; i < nelems; i++)
+			if (!nulls[i])
+				kv->val[kv->n++] = elems[i];
+	}
+	return kv;
+}
+
+#define HASH_MAX_COMBOS		4096	/* the combinations of values a hash partition is tested with: a larger product keeps the partition */
+
+/*
+ * Can a row whose key columns take the values of the sets (KeyVals of the conditions) be in the partition of the hash level f
+ * (satisfies_hash_partition(table, modulus, remainder, columns ..))? The remainder of each combination of values is computed as PostgreSQL
+ * computes it for a row, with the support function of the level's partition key. A column without a set, or too many combinations: yes.
+ */
+static bool
+hash_may_hold(FuncExpr *f, List *sets)
+{
+	Relation	level = relation_open(DatumGetObjectId(((Const *) linitial(f->args))->constvalue), AccessShareLock);
+	PartitionKey key = RelationGetPartitionKey(level);
+	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue),
+				remainder = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
+	KeyVals    *kv[PARTITION_MAX_KEYS] = {NULL};
+	int			idx[PARTITION_MAX_KEYS] = {0};
+	Datum		values[PARTITION_MAX_KEYS];
+	bool		isnull[PARTITION_MAX_KEYS] = {false};
+	uint64		combos = 1;
+	bool		known = true,
+				may;
+
+	for (int j = 0; j < key->partnatts; j++)
+	{
+		Node	   *a = list_nth(f->args, 3 + j);
+
+		if (IsA(a, Var))
+			foreach_ptr(KeyVals, s, sets)
+				if (s->attno == ((Var *) a)->varattno && s->typid == key->parttypid[j] && s->collid == key->partcollation[j] &&
+					get_op_opfamily_strategy(s->opno, key->partopfamily[j]) == HTEqualStrategyNumber && (kv[j] == NULL || s->n < kv[j]->n))
+					kv[j] = s;
+		if (kv[j] == NULL)
+			known = false;
+		else if (kv[j]->n == 0)
+		{
+			relation_close(level, NoLock);
+			return false;
+		}
+		else
+			combos *= kv[j]->n;
+	}
+	if (!known || combos > HASH_MAX_COMBOS)
+	{
+		relation_close(level, NoLock);
+		return true;
+	}
+	may = false;
+	for (;;)
+	{
+		int			j;
+
+		for (j = 0; j < key->partnatts; j++)
+			values[j] = kv[j]->val[idx[j]];
+		if (compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus == remainder)
+		{
+			may = true;
+			break;
+		}
+		for (j = 0; j < key->partnatts && ++idx[j] == kv[j]->n; j++)
+			idx[j] = 0;
+		if (j == key->partnatts)
+			break;
+	}
+	relation_close(level, NoLock);
+	return may;
+}
+
+/* is the partition out of reach of the rows the sets of values describe: one of its hash levels has no remainder for them? */
+static bool
+hash_refuted(List *bound, List *sets)
+{
+	foreach_ptr(Node, q, bound)
+		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == F_SATISFIES_HASH_PARTITION && !hash_may_hold((FuncExpr *) q, sets))
+			return true;
+	return false;
+}
+
 /*
  * The partitions whose bounds the conditions refute (they hold the partitioned table's columns, with varno 1 and constants for the operands the
  * query evaluated when it started) are not read: they have no superblocks. Before the first sift_colsrc_nsb. PostgreSQL's own test of a
- * partition against the conditions, so a partition it cannot refute (a default partition, a hash remainder) stays. Returns how many are dropped.
+ * partition against the conditions, so a partition it cannot refute (a default partition) stays; the remainder of a hash partition is tested
+ * with the values an equality or `= ANY` leaves the key columns. Returns how many are dropped.
  */
 int
 sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds)
 {
 	PartSource *ps = src->impl;
+	List	   *sets = NIL;
 	int			dropped = 0;
 
 	Assert(!ps->have_off);
 	if (conds == NIL)
 		return 0;
+	foreach_ptr(Node, cl, conds)
+	{
+		KeyVals    *kv = key_vals(cl);
+
+		if (kv)
+			sets = lappend(sets, kv);
+	}
 	ps->skip = palloc0(ps->n * sizeof(bool));
 	for (int i = 0; i < ps->n; i++)
 	{
 		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
 		List	   *bound = (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
 
-		if (qv.ok && bound != NIL && predicate_refuted_by(bound, conds, false))
+		if (qv.ok && bound != NIL && (predicate_refuted_by(bound, conds, false) || hash_refuted(bound, sets)))
 		{
 			ps->skip[i] = true;
 			dropped++;
