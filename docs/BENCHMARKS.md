@@ -433,6 +433,8 @@ Measured on the 1,000,000-order table of the section above, 2026-10-22T14:12:03Z
 
 Steps, in order: update 1% of the rows (`id % 100 = 0`: status becomes `refunded`, amount drops by 1), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`), 10 single-row changes timed until a query sees them (status `probe`, seen by `count(*) WHERE status = 'probe'`), the revenue-per-month query timed for 10 s under 0, 1,000 and 10,000 updated rows per second (a second connection sends batches of 100 rows, `amount = amount + 1`, ids drawn from the live rows), then a maintenance step per system. After each of the first three steps the state (rows and sum of the amount per status) is compared with PostgreSQL's; the run stops on a difference. Rows per second is the rows of the step over the wall time until the last statement was acknowledged.
 
+The size rows (split as in the load table; the table and each index are read in that run only) are from a second run of the same steps, 2026-10-22T16:51:55Z, pressure cpu=4.63%/5.22% io=0.31%/0.33% (some avg10/avg60) (NOISY: updates sift_table: 0.33 cores of other work above the 2.91 of the idle host, updates es: 2.08 cores of other work above the 2.91 of the idle host, updates ch: 0.43 cores of other work above the 2.91 of the idle host, updates ch_mut: 0.52 cores of other work above the 2.91 of the idle host, updates ch_rmt: 0.55 cores of other work above the 2.91 of the idle host) at the start; every other row is from the run above.
+
 | 1,000,000 orders | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse, lightweight UPDATE | ClickHouse, ALTER UPDATE | ClickHouse, ReplacingMergeTree + FINAL |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | update 1% of the rows (rows/s, higher is better) | 33,797 | 31,235 | **65,887** | 8,683 | 18,239 | 1,540 | 20,375 |
@@ -446,9 +448,15 @@ Steps, in order: update 1% of the rows (`id % 100 = 0`: status becomes `refunded
 | rows/s the update load actually reached (asked 1,000) | 1,005 | 1,009 | 1,007 | 1,008 | 1,003 | n/a | 863 |
 | revenue per month while 10,000 rows/s are updated: p50 / p95 (ms) | 161 / 174 | 22.8 / 36 | 57.2 / 63.3 | **8.54 / 29.1** | 28.9 / 71.6 | n/a | 75 / 89.9 |
 | rows/s the update load actually reached (asked 10,000) | 10,006 | 10,003 | 9,316 | 7,849 | 1,192 | n/a | 893 |
-| size before | 159 MiB | 143 MiB | 42 MiB | 111 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
-| size after the changes | 176 MiB | 168 MiB | 66 MiB | 137 MiB | 39 MiB | **36 MiB** | 41 MiB |
-| size after VACUUM / merge / OPTIMIZE | 176 MiB | 152 MiB | 44 MiB | 137 MiB | **37 MiB** | **36 MiB** | 39 MiB |
+| size before: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size before: index or columnar data | 34.6 MiB (6.8 + 21.3 + 6.5) | **18.7 MiB (+ heap 124.2, same as PostgreSQL)** | 21.0 MiB (13.2 + 7.8) | 112.3 MiB | 37.6 MiB | 37.6 MiB | 37.5 MiB |
+| size before, total | 159 MiB | 143 MiB | 42 MiB | 112 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
+| size after the changes: heap and primary key | 134.1 MiB | 134.1 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size after the changes: index or columnar data | 41.7 MiB (8.0 + 21.9 + 11.8) | **33.8 MiB (+ heap 134.1, same as PostgreSQL)** | 41.9 MiB (29.3 + 12.6) | 136.1 MiB | 38.7 MiB | 36.1 MiB | 40.9 MiB |
+| size after the changes, total | 176 MiB | 168 MiB | 66 MiB (3 free) | 136 MiB | 39 MiB | **36 MiB** | 41 MiB |
+| size after VACUUM / merge / OPTIMIZE: heap and primary key | 134.1 MiB | 134.1 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size after VACUUM / merge / OPTIMIZE: index or columnar data | 41.7 MiB (8.0 + 21.9 + 11.8) | **17.4 MiB (+ heap 134.1, same as PostgreSQL)** | 25.7 MiB (13.4 + 12.3) | 136.1 MiB | 36.9 MiB | 36.1 MiB | 38.6 MiB |
+| size after VACUUM / merge / OPTIMIZE, total | 176 MiB | 151 MiB | 47 MiB | 136 MiB | **37 MiB** | **36 MiB** | 39 MiB |
 
 The three reads, before the changes, after them (before maintenance) and after the maintenance step (milliseconds, median of the runs):
 

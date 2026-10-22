@@ -189,13 +189,19 @@ On the 1,000,000-order table, after the read tests, each system changes its rows
 | revenue per month while 0 rows/s are updated: p50 (ms) | 164 | 23.2 | 51.8 | **5.73** | 6.26 | n/a | 23.4 |
 | revenue per month while 1,000 rows/s are updated: p50 (ms) | 162 | 25.3 | 55 | **7.79** | 26.5 | n/a | 78.6 |
 | revenue per month while 10,000 rows/s are updated: p50 (ms) | 161 | 22.8 | 57.2 | **8.54** | 28.9 | n/a | 75 |
-| size before | 159 MiB | 143 MiB | 42 MiB | 111 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
-| size after the changes | 176 MiB | 168 MiB | 66 MiB | 137 MiB | 39 MiB | **36 MiB** | 41 MiB |
-| size after VACUUM / merge / OPTIMIZE | 176 MiB | 152 MiB | 44 MiB | 137 MiB | **37 MiB** | **36 MiB** | 39 MiB |
+| size before: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size before: index or columnar data | 34.6 MiB (6.8 + 21.3 + 6.5) | **18.7 MiB (+ heap 124.2, same as PostgreSQL)** | 21.0 MiB (13.2 + 7.8) | 112.3 MiB | 37.6 MiB | 37.6 MiB | 37.5 MiB |
+| size before, total | 159 MiB | 143 MiB | 42 MiB | 112 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
+| size after the changes: heap and primary key | 134.1 MiB | 134.1 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size after the changes: index or columnar data | 41.7 MiB (8.0 + 21.9 + 11.8) | **33.8 MiB (+ heap 134.1, same as PostgreSQL)** | 41.9 MiB (29.3 + 12.6) | 136.1 MiB | 38.7 MiB | 36.1 MiB | 40.9 MiB |
+| size after the changes, total | 176 MiB | 168 MiB | 66 MiB (3 free) | 136 MiB | 39 MiB | **36 MiB** | 41 MiB |
+| size after VACUUM / merge / OPTIMIZE: heap and primary key | 134.1 MiB | 134.1 MiB | 21.4 MiB | n/a | n/a | n/a | n/a |
+| size after VACUUM / merge / OPTIMIZE: index or columnar data | 41.7 MiB (8.0 + 21.9 + 11.8) | **17.4 MiB (+ heap 134.1, same as PostgreSQL)** | 25.7 MiB (13.4 + 12.3) | 136.1 MiB | 36.9 MiB | 36.1 MiB | 38.6 MiB |
+| size after VACUUM / merge / OPTIMIZE, total | 176 MiB | 151 MiB | 47 MiB | 136 MiB | **37 MiB** | **36 MiB** | 39 MiB |
 
 - Updating 10% of the rows, in rows per second: pg_sift `sift_col` 132,270, pg_sift `sift_table` 94,546, PostgreSQL 85,470, Elasticsearch 28,395, ClickHouse, lightweight UPDATE 19,657, ClickHouse, ReplacingMergeTree + FINAL 15,606, ClickHouse, ALTER UPDATE 13,248.
 - Read-after-write (median of the single-row changes): Elasticsearch showed a change to a query 1,003 ms after the acknowledgement with the default refresh; a ClickHouse `ALTER UPDATE` 3,253 ms after it returned; PostgreSQL and pg_sift 0.14-15.5 ms.
-- Size after the changes against before: PostgreSQL 1.11x, pg_sift `sift_col` 1.17x, pg_sift `sift_table` 1.56x, Elasticsearch 1.23x, ClickHouse, lightweight UPDATE 1.03x, ClickHouse, ALTER UPDATE 0.96x, ClickHouse, ReplacingMergeTree + FINAL 1.09x (after the maintenance step: PostgreSQL 1.11x, pg_sift `sift_col` 1.06x, pg_sift `sift_table` 1.03x, Elasticsearch 1.23x, ClickHouse, lightweight UPDATE 0.98x, ClickHouse, ALTER UPDATE 0.96x, ClickHouse, ReplacingMergeTree + FINAL 1.03x).
+- Size after the changes against before: PostgreSQL 1.11x, pg_sift `sift_col` 1.17x, pg_sift `sift_table` 1.55x, Elasticsearch 1.21x, ClickHouse, lightweight UPDATE 1.03x, ClickHouse, ALTER UPDATE 0.96x, ClickHouse, ReplacingMergeTree + FINAL 1.09x (after the maintenance step: PostgreSQL 1.11x, pg_sift `sift_col` 1.06x, pg_sift `sift_table` 1.11x, Elasticsearch 1.21x, ClickHouse, lightweight UPDATE 0.98x, ClickHouse, ALTER UPDATE 0.96x, ClickHouse, ReplacingMergeTree + FINAL 1.03x).
 - **Where pg_sift loses:** deleting 5% of the rows: PostgreSQL 1.2x faster than pg_sift `sift_col` (274,923 against 238,846 rows/s).
 - Method, the update path of each system and why, the first-run and latency spread tables, and the official pages: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).
 <!-- bench:store-updates:end -->
