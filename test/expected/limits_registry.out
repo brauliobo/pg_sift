@@ -7,7 +7,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  any_list_rows       | ANY_LIST_MAX_ROWS               |     100000 | t         | f
  arms                | SIFT_AGG_MAX_ARMS               |          4 | t         | f
  boost               | SIFT_MAX_BOOST                  |      10000 | t         | f
- col_leaves          | SIFT_COL_MAX_COLS               |        128 | t         | f
+ col_leaves          | SIFT_COL_MAX_COLS               |        128 | t         | t
  combo_entries       | -                               |   16777216 | t         | f
  combo_leaves        | SIFT_AGG_MAX_CLEAVES            |          8 | t         | f
  combos              | SIFT_AGG_MAX_COMBOS             |         16 | t         | f
@@ -65,12 +65,12 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  shred_text          | SIFT_SHRED_MAX_TEXT             |    1048576 | t         | f
  spine_rows          | SPINE_MAX_ROWS                  |      10000 | t         | f
  string_bytes        | SIFT_COL_MAX_VALUE              | 1073741823 | t         | f
+ table_vblocks       | -                               | 4294967294 | t         | f
  term_bytes          | SIFT_MAX_TERM_BYTES             |        255 | t         | f
  term_tf             | SIFT_MAX_TF                     |        255 | t         | f
  text_prune          | COL_MAX_STR_PRUNE               |         16 | t         | f
  topn_keys           | SIFT_TOPN_MAX_KEYS              |          4 | t         | f
  topn_rows           | SIFT_TOPN_MAX_ROWS              |     100000 | t         | f
- tx_write_buffers    | -                               |        126 | t         | f
  unit_bytes          | -                               | 2147483647 | t         | f
  unit_rows           | SIFT_COL_UNIT_MAX_ROWS          |      74496 | t         | f
  virtual_leaves      | SIFT_AGG_MAX_VLEAVES            |          8 | t         | f

@@ -51,7 +51,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
-| `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX or CREATE TABLE rejected |  | `col/col.h` `SIFT_COL_MAX_COLS` |  |
+| `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected |  | `col/col.h` `SIFT_COL_MAX_COLS` | yes |
 | `string_bytes` | one string value of a column leaf | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 at build or merge |  | `col/col.h` `SIFT_COL_MAX_VALUE` |  |
 | `unit_bytes` | variable-length bytes of the rows of one column unit | 2,147,483,647 (~2 GiB) | bytes | ERROR 54000 at build or merge |  | `col/batch.c` |  |
 | `unit_rows` | rows of one column unit (256 heap pages) | 74,496 | rows | a new unit starts |  | `col/col.h` `SIFT_COL_UNIT_MAX_ROWS` |  |
@@ -101,5 +101,5 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
-| `tx_write_buffers` | write buffers of one multi-command transaction on a sift_table | 126 | buffers | ERROR 54000 |  | `table/table.h` |  |
+| `table_vblocks` | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | 4,294,967,294 | blocks | ERROR 54000, VACUUM FULL renumbers them |  | `table/wbuf.c` |  |
 

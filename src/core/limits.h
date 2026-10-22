@@ -92,7 +92,7 @@
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
 	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
-	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX or CREATE TABLE rejected", "-", 0) \
+	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 0) \
 	X(unit_bytes, "-", "col/batch.c", 2147483647, "bytes", \
@@ -155,8 +155,8 @@
 	  "prefix_index option", "option rejected at CREATE INDEX", "prefix_index option", 0) \
 	X(write_buffer_kb, "SIFT_DEFAULT_WRITE_BUFFER_LIMIT", "core/sift.h", SIFT_DEFAULT_WRITE_BUFFER_LIMIT, "kB", \
 	  "default write buffer; a sift_table row must fit it", "ERROR 54000 for a larger sift_table row", "write_buffer_limit option", 0) \
-	X(tx_write_buffers, "-", "table/table.h", 126, "buffers", \
-	  "write buffers of one multi-command transaction on a sift_table", "ERROR 54000", "-", 0) \
+	X(table_vblocks, "-", "table/wbuf.c", 4294967294, "blocks", \
+	  "virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left)", "ERROR 54000, VACUUM FULL renumbers them", "-", 0) \
 	X(query_bytes, "SIFT_QUERY_MAX_BYTES", "bm25/query.h", SIFT_QUERY_MAX_BYTES, "bytes", \
 	  "length of a search query", "ERROR 54000", "-", 1) \
 	X(query_leaves, "SIFT_MAX_LEAVES", "core/sift.h", SIFT_MAX_LEAVES, "terms", \
