@@ -899,7 +899,7 @@ list_read_by_tuple_tests(const SiftAggSpec *s, int grp)
 	return found;
 }
 
-/* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns or is applied after the others (it may drop a row that the error would reach first) */
+/* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns (it may drop a row that the error would reach first) */
 SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
@@ -926,7 +926,7 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 			list = bms_add_member(list, i);
 	/* an EXISTS over the list passes the row that raises: the other conjuncts decide whether it reaches the error */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 0 && (s->pred[i]->late || (pred_reads_any(s->pred[i], list) && !(s->pred[i]->pass_poison && s->pred[i]->leaf == grp))))
+		if (s->pred[i]->level == 0 && pred_reads_any(s->pred[i], list) && !(s->pred[i]->pass_poison && s->pred[i]->leaf == grp))
 			return SRK_NONE;
 	if (m == grp && grp != c->group && list_read_by_tuple_tests(s, grp))
 		return SRK_RECORDSET_LAZY;
