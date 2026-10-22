@@ -29,13 +29,13 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on 45491326 (2026-10-22) against v3.2.1.
+them (the nightly job `coverage-pct` verifies the file), measured on 5c50a2fc (2026-10-22) against v3.2.1.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 45491326 |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 5c50a2fc |
 |---|---|---|---|---|
 | **all** | 295 | 4 | 56.7% | 82.8% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
@@ -56,10 +56,10 @@ Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design),
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 45491326 |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 5c50a2fc |
 |---|---|---|---|---|
-| **all** | 516 | 34 | 87.3% | 94.2% |
-| DISTINCT | 32 | 0 | 90.6% | 90.6% |
+| **all** | 516 | 34 | 87.3% | 94.6% |
+| DISTINCT | 32 | 0 | 90.6% | 96.9% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
 | aggregate DISTINCT | 34 | 0 | 100.0% | 100.0% |
@@ -75,7 +75,7 @@ Tests: script `coverage`.
 | table kind | 34 | 0 | 76.5% | 100.0% |
 | volatile function | 24 | 24 | -% | -% |
 
-Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 3, `join_condition` 4, `outer_join` 3, `volatile` 24 (by design).
+Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 1, `join_condition` 4, `outer_join` 3, `volatile` 24 (by design).
 
 238 rows: 178 Yes, 23 Partly, 27 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
@@ -133,7 +133,7 @@ Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `dist
 | T26 | Types | A boolean tree (OR, NOT, CASE, FILTER), a key, an aggregate or an expression of numeric(p > 18), unconstrained numeric, money or interval | Yes | sift_col | `SELECT m, count(*) FILTER (WHERE n38 > 5 OR iv > interval '1 day'), sum(n38) FROM t GROUP BY m` | Tested on PostgreSQL's own functions and compared with the normal plan by every fixture; a key or an aggregate over such a column runs serial, and the planner keeps the normal plan for a column with a distinct value per row. Proof: fixture `w_wide_group_numeric`, fixture `w_wide_minmax`, fixture `w_wide_sum`, fixture `w_tree_filter`, fixture `w_tree_case`, fixture `w_tree_exact`, test `col_agg_wide_keys`. |
 | T15 | Types | enum | Yes | sift_col | `SELECT e, count(*) FROM t GROUP BY e` | The OID of the value is stored and the order is the catalog's when the query runs, so a value added with ALTER TYPE ... ADD VALUE BEFORE/AFTER after the index was built compares right. Proof: fixture `m_enum_key`, fixture `m_enum_cmp`, fixture `m_enum_in`, test `col_agg_types32`. |
 | T16 | Types | arrays (int[], text[], numeric[]), ranges and multiranges | Yes | sift_col, sift_table | `SELECT ia, count(*) FROM t GROUP BY ia` | Stored as the image of the value; equality and every operator are PostgreSQL's (@>, &&, <@ ...). jsonb arrays of objects are the other array form (next rows). Proof: fixture `m_array`, fixture `m_array_ops`, fixture `m_array_numeric`, fixture `m_range`, fixture `m_range_ops`, test `col_agg_types32`. |
-| T33 | Types | inet, cidr, macaddr, macaddr8, timetz, bit, varbit | Yes | sift_col | `SELECT ip, count(*) FROM t GROUP BY ip` | Stored as the image of the value; keys, count(DISTINCT), conjuncts (= <> < > <<= >>= &&), min and max (inet, cidr and timetz have them) and expressions (host, family, masklen) are PostgreSQL's own functions on the value, so '10.0.0.1/24' and '10.0.0.1/32', or '12:00+01' and '11:00+00', are told apart as PostgreSQL does. bit and varbit have no hash operator class (PostgreSQL groups them by sorting), so a GROUP BY on one keeps the normal plan. A cidr key that the same query also reads as inet keeps it too. Proof: fixture `n_net_inet_key`, fixture `n_net_inet_cmp`, fixture `n_net_inet_minmax`, fixture `n_net_cidr_key`, fixture `n_net_mac`, fixture `n_net_timetz`, fixture `n_net_bit`, fixture `n_net_bit_key`, test `col_agg_types33`. |
+| T33 | Types | inet, cidr, macaddr, macaddr8, timetz, bit, varbit | Yes | sift_col | `SELECT ip, count(*) FROM t GROUP BY ip` | Stored as the image of the value; keys, count(DISTINCT), conjuncts (= <> < > <<= >>= &&), min and max (inet, cidr and timetz have them) and expressions (host, family, masklen) are PostgreSQL's own functions on the value, so '10.0.0.1/24' and '10.0.0.1/32', or '12:00+01' and '11:00+00', are told apart as PostgreSQL does. bit and varbit have no hash operator class (PostgreSQL groups them by sorting): a GROUP BY or DISTINCT on a column of one groups by the image of the value (equal values have equal images), an expression of one keeps the normal plan. A cidr key that the same query also reads as inet keeps it too. Proof: fixture `n_net_inet_key`, fixture `n_net_inet_cmp`, fixture `n_net_inet_minmax`, fixture `n_net_cidr_key`, fixture `n_net_mac`, fixture `n_net_timetz`, fixture `n_net_bit`, fixture `n_net_bit_key`, fixture `n_net_bit_distinct`, fixture `n_net_bit_distinct_both`, test `col_agg_types33`. |
 | T17 | Types | jsonb members declared in the paths option, typed (->>, ->, #>> and casts) | Yes | sift_col, sift_table | `SELECT attributes->>'channel', count(*) FROM orders GROUP BY 1` | Declare each path with a type: WITH (paths = 'attributes->channel text, metrics.* float8, ...'). A member of another type than declared is stored as an overflow: a recordset column reads it again from the heap (T37), any other read keeps the normal plan. Proof: fixture `f_scalar_paths`, fixture `s3_metric_key`. |
 | T18 | Types | jsonb member that is not declared in the paths option | No (the index does not hold it) | sift_col | `SELECT attributes->>'device', count(*) FROM orders GROUP BY 1` | Add it to paths and REINDEX. Proof: script `coverage`. |
 | T19 | Types | jsonb array of objects through jsonb_to_recordset, jsonb_array_elements (one level) | Yes | sift_col, sift_table | `SELECT i.category, count(*), sum(i.qty) FROM orders o, jsonb_to_recordset(o.items) i(category text, qty int) GROUP BY 1` | One lateral unnest per query; elements of one row keep the same-element semantics in filters. Proof: fixture `s2_item_category_counts`, fixture `s7_exists_same_element`. |
