@@ -87,17 +87,21 @@ SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' ORDER BY sift.sc
 The policy's quals run on every row the ranker offers before any qual of the query (the order PostgreSQL gives a sequential scan, so a
 function or an expression of the query that raises for a row is never evaluated on a hidden one), the ranker is asked for more rows until
 `k` pass the policy, and no hidden row is ever returned. Policies that call functions or read other tables work. `EXPLAIN` does not
-estimate the matches from the index and `EXPLAIN ANALYZE` does not print its counters (`Candidates`, `Superblocks`, `Heap Checks`, ...), as
-those count the hidden rows; the plan's estimates are the same whatever the hidden rows hold. Without a ranking (`WHERE body @@> ...` with
+estimate the matches from the index (on a partition or an inheritance child either) and `EXPLAIN ANALYZE` does not print its counters
+(`Candidates`, `Superblocks`, `Heap Checks`, ...), as those count the hidden rows; the plan's estimates are the same whatever the hidden
+rows hold. `BUFFERS`, `pg_statio_*` and the time still show the pages the scan read, which grow with the hidden rows the ranker offered
+before `k` visible ones passed (a sequential scan under a policy shows its hidden rows in `Rows Removed by Filter` the same way). Without a ranking (`WHERE body @@> ...` with
 no score), `count(*)`, `sift.facets` and the column index behave as before: a sequential scan, no pushdown. `sift.max_score()` stays an
 error (it is the best score of all the matches, hidden ones included). A table owner and a role with `BYPASSRLS` are not under the policy
 and score as always; `FORCE ROW LEVEL SECURITY` puts the owner under it.
 
 **The caveat, in full.** The score of a visible row is computed from the statistics of the whole index. It is the score the table owner
 sees for the same row, and it depends on the hidden rows: a term that the hidden rows repeat has a lower weight, and a row's score changes
-when a hidden row is added. No hidden row is returned and none is counted in a result, but a role that can write the documents it searches
-(or knows when others change) could read the numbers as information about the corpus: its size, how common a term is in all of it, and
-whether a wildcard expands past `sift.max_expansions`. Time is a side channel as for any query. Enable the setting for roles whose
+when a hidden row is added. No hidden row is returned and none is counted in a result, but the numbers are information about the corpus,
+readable from the scores of rows the role sees (a row of known length and term counts fixes the weight of each term of the query, and so
+the number of documents that hold it in the whole index): the number of documents, their average length, how common a term is in all of
+them, and whether a wildcard expands past `sift.max_expansions`. A role that can insert documents can probe any word it chooses. Time and
+the pages read (`BUFFERS`, `pg_statio_*`) are side channels as for any query. Enable the setting for roles whose
 tenants may see that much (a shared corpus with per-user visibility), not for tenants whose documents must be unobservable by each other;
 for those, index each tenant's rows separately (a partition per tenant, a sift index on each) or leave the setting off. Because the
 setting is read when the query is planned, a prepared statement planned with it on keeps its plan for the session.
