@@ -23,6 +23,8 @@ Commands
              prints the tables (the report) at the end
   report     turn result directories into results.tsv (chart input), builds.tsv and tables.md
   charts     draw the SVG charts of docs/img from the committed docs/results/*.tsv (stdlib python, deterministic)
+  refresh    measure the README numbers again at this checkout and rewrite their blocks (`final --docs --stages "search store"`, resumable, under the host lock;
+             `--calm` for a timer, `--pr BASE` opens the pull request): `refresh [--stages LIST] [--calm [S]] [--pr BASE] [--dry-run]`; scripts/check-bench-fresh.sh proves the blocks
   readme     print the Benchmarks block of README.md and rewrite the generated blocks of README.md and docs/BENCHMARKS.md from the
              slim tier rows of docs/results/*.tsv (`--tier T` another tier; no measurement)
   all        setup, run and report in one go (the clean-checkout reproduction). With --docs it also runs the cold-cache tables (always
@@ -551,7 +553,7 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
 
 cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
   local sub=${rest[0]:-all}
-  case $sub in all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
+  case $sub in all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
     engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
   fi
@@ -562,7 +564,7 @@ cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh;
          S_LOAD_SEC=$s_load_sec S_PROBES=$s_probes
   for c in S_SIZES S_CPUS S_CPUS_LIST S_MEMORY S_RUNS S_WARMUPS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME S_RESTARTS S_CHECK S_RATES S_UPDATE_PATHS S_PARALLEL S_REMEASURE_ALL S_REMEASURE \
            S_NO_CACHE S_CACHE_DIR S_CACHE_MAX_AGE S_MAX_RERUN S_LOAD_SEC S_PROBES; do [[ -n ${!c:-} ]] || unset "$c"; done
-  case $sub in all|plan|setup|run|cold|updates|interference|stats) new_out; export OUT ;; esac
+  case $sub in all|plan|setup|run|cold|updates|section|interference|stats) new_out; export OUT ;; esac
   "$STEPS/store.sh" "$sub" "${rest[@]:1}" ${ix[@]+"${ix[@]}"}
 }
 
@@ -666,6 +668,7 @@ cmd=${1:-}
 shift || true
 case $cmd in
   -h|--help|help) usage; exit 0 ;;
+  refresh) exec "$STEPS/refresh.sh" "$@" ;;   # its own options, the rest goes to `final`
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options

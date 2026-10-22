@@ -229,65 +229,65 @@ The five servers start different numbers of threads on their own (PostgreSQL and
 
 #### 3 CPUs per container (PostgreSQL, pg_sift and Citus: a leader and 2 parallel workers; Elasticsearch: `node.processors` 3; ClickHouse: `max_threads` 3)
 
-Seeded data (sha256 `15a2ee51cb6bfc61`), measured 2026-10-20T01:40:15Z, pressure cpu=0.10%/1.55% io=4.54%/4.08% (some avg10/avg60) at the start of the runs (the host is shared). Median of 5 warm runs, minimum and maximum in parentheses, milliseconds; the fastest of a row and anything within 5% of it in bold.
+Seeded data (sha256 `15a2ee51cb6bfc61`), measured 2026-10-22T20:40:35Z, pressure cpu=0.53%/2.54% io=0.00%/0.01% (some avg10/avg60) at the start of the runs (the host is shared). Median of 5 warm runs, minimum and maximum in parentheses, milliseconds; the fastest of a row and anything within 5% of it in bold.
 
 | question | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse | Citus columnar |
 |---|---:|---:|---:|---:|---:|---:|
-| Find one order by its id | 0.238 (0.211-0.254) | 0.212 (0.197-0.247) | **0.158 (0.145-0.202)** | 1.49 (1.23-1.72) | 2.95 (2.85-3.15) | 1.79 (1.71-1.91) |
-| How many orders per country | 22.7 (21.4-24.3) | 0.815 (0.722-0.823) | **0.641 (0.609-0.773)** | 5.82 (5.26-6.12) | 4.62 (4.48-17.5) | 72.5 (71.4-74.5) |
-| Revenue per month | 197 (187-199) | **0.797 (0.79-0.835)** | 4.81 (4.73-5.46) | 9.78 (9.38-15.1) | 16.6 (6.65-21.3) | 121 (120-124) |
-| The 10 categories with the most revenue | 41.3 (41-42) | 0.852 (0.811-0.882) | **0.717 (0.661-0.833)** | 9.93 (9.27-12.1) | 6.05 (5.41-6.54) | 101 (97.8-102) |
-| Average value of the shipped orders of one country in one year | 10.5 (10.4-11.3) | **1.96 (1.89-2.03)** | 3.53 (3.46-3.64) | 3.82 (3.74-4.02) | 5.88 (5.51-6.58) | 62.6 (62.4-64.9) |
-| How many different customers ordered each month | 217 (207-260) | **5.21 (5.1-5.45)** | 6.73 (6.41-7.34) | 35.9 (35.2-39.8) | 9.89 (9.71-10.4) | 466 (434-494) |
-| How many orders over $100 in the last 30 days | 12.2 (12.1-13) | **1.46 (1.38-1.65)** | 1.8 (1.66-1.81) | 3.49 (3.23-8.46) | 3.36 (3.25-3.79) | 39.6 (39.2-40) |
-| Search "wireless headphones": how many orders match | 7.42 (7.34-10.1) | **0.613 (0.566-0.675)** | 1.08 (1.05-1.19) | 3.18 (3.08-4.59) | 3.28 (2.98-5.71) | 865 (858-891) |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category | 7.9 (7.69-8.07) | 1.94 (1.93-2.2) | **1.61 (1.57-1.73)** | 4.68 (4.31-5.56) | 10.1 (9.55-11) | 398 (395-409) |
-| Search "wireless headphones", shipped orders: the 10 newest | 65.6 (65-67) | 4.6 (4.55-4.64) | **2.65 (2.54-2.9)** | 6.32 (5.8-6.97) | 7.47 (7.19-8.68) | 525 (517-536) |
+| Find one order by its id | 0.269 (0.234-0.283) | 0.215 (0.208-0.31) | **0.158 (0.143-0.212)** | 1.75 (1.69-2.16) | 3.3 (3.13-3.43) | 1.85 (1.85-1.92) |
+| How many orders per country | 21.7 (20.6-21.9) | **0.534 (0.496-0.59)** | 0.59 (0.565-0.723) | 5.15 (4.98-5.94) | 4.86 (4.43-16) | 71.4 (70.8-73.2) |
+| Revenue per month | 172 (165-175) | **0.537 (0.526-0.571)** | 0.724 (0.689-0.784) | 9.1 (8.93-9.95) | 6.22 (6.04-7.84) | 119 (119-120) |
+| The 10 categories with the most revenue | 39.9 (38.6-40.4) | **0.553 (0.534-0.608)** | 0.665 (0.621-0.691) | 9.47 (9.1-12.4) | 5.31 (5.07-5.38) | 99.8 (96.5-101) |
+| Average value of the shipped orders of one country in one year | 9.81 (9.6-10.5) | **1.75 (1.68-1.84)** | 3.26 (3.18-3.42) | 4.21 (3.94-8.49) | 5.49 (5.27-25.8) | 61.9 (61.4-63.3) |
+| How many different customers ordered each month | 201 (188-227) | **5.23 (5.03-5.51)** | 6.38 (6.07-7.09) | 35.6 (34.8-38.4) | 9.54 (9.28-10.9) | 433 (401-466) |
+| How many orders over $100 in the last 30 days | 11.6 (11.4-12.6) | **1.42 (1.34-1.51)** | 1.63 (1.57-1.82) | 3.43 (3.28-7.7) | 3.48 (3.42-3.73) | 40.1 (38.7-40.5) |
+| Search "wireless headphones": how many orders match | 7.15 (7-7.58) | **0.617 (0.563-0.657)** | 1.06 (1.03-1.1) | 3.33 (3.19-4.6) | 3.18 (3.09-3.55) | 859 (852-866) |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category | 7.56 (7.44-8.04) | 1.95 (1.85-2.03) | **1.67 (1.66-1.68)** | 4.54 (4.36-5.29) | 11.1 (9.71-13.7) | 403 (398-409) |
+| Search "wireless headphones", shipped orders: the 10 newest | 64 (62.5-67.9) | 4.61 (4.53-4.73) | **2.98 (2.76-3.44)** | 5.25 (5.15-5.83) | 7.96 (7.4-9.47) | 536 (525-539) |
 
 Elasticsearch with the shard request cache on (the same request repeated is answered from the cache; the numbers above are with it off):
 
 | question | Elasticsearch | Elasticsearch, request cache on |
 |---|---:|---:|
-| Find one order by its id | 1.49 (1.23-1.72) | **1.16 (1-1.55)** |
-| How many orders per country | 5.82 (5.26-6.12) | **2.95 (2.58-4.23)** |
-| Revenue per month | 9.78 (9.38-15.1) | **3.04 (2.65-3.9)** |
-| The 10 categories with the most revenue | 9.93 (9.27-12.1) | **3.91 (3.33-4.22)** |
-| Average value of the shipped orders of one country in one year | 3.82 (3.74-4.02) | **2.09 (2.02-3.67)** |
-| How many different customers ordered each month | 35.9 (35.2-39.8) | **28.2 (27.8-33.9)** |
-| How many orders over $100 in the last 30 days | 3.49 (3.23-8.46) | **2.12 (1.89-3.4)** |
-| Search "wireless headphones": how many orders match | 3.18 (3.08-4.59) | **2.43 (1.58-3.24)** |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category | 4.68 (4.31-5.56) | **2.39 (2.29-4.02)** |
-| Search "wireless headphones", shipped orders: the 10 newest | 6.32 (5.8-6.97) | **3.51 (3.37-5.55)** |
+| Find one order by its id | 1.75 (1.69-2.16) | **1.19 (1.05-1.48)** |
+| How many orders per country | 5.15 (4.98-5.94) | **2.41 (2.22-2.83)** |
+| Revenue per month | 9.1 (8.93-9.95) | **2.42 (2.37-2.76)** |
+| The 10 categories with the most revenue | 9.47 (9.1-12.4) | **2.76 (2.68-2.97)** |
+| Average value of the shipped orders of one country in one year | 4.21 (3.94-8.49) | **2.39 (2.07-3.2)** |
+| How many different customers ordered each month | 35.6 (34.8-38.4) | **28.4 (27.4-29)** |
+| How many orders over $100 in the last 30 days | 3.43 (3.28-7.7) | **1.87 (1.67-1.92)** |
+| Search "wireless headphones": how many orders match | 3.33 (3.19-4.6) | **1.85 (1.65-1.96)** |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category | 4.54 (4.36-5.29) | **2.36 (2.01-3.53)** |
+| Search "wireless headphones", shipped orders: the 10 newest | 5.25 (5.15-5.83) | **3.2 (2.78-3.55)** |
 
 First run after the server's memory was emptied (one restart of each server, then before every run: PostgreSQL and Citus every shared buffer, ClickHouse its mark, uncompressed-block, primary-key and index caches, Elasticsearch: a restart of the container, because emptying its memory was not as cold; every run on a new connection; the operating system's page cache is not dropped, which needs root, as after a restart): median of 2 runs, minimum and maximum in parentheses.
 
 | question | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse | Citus columnar |
 |---|---:|---:|---:|---:|---:|---:|
-| Find one order by its id | **1.63 (0.888-2.36)** | 2.64 (1.35-3.93) | 8.63 (5.83-11.4) | 35.1 (16.6-53.6) | 9.78 (4.13-15.4) | 4.68 (3.24-6.12) |
-| How many orders per country | 25.6 (22.5-28.8) | **3.3 (2.8-3.8)** | **3.26 (2.78-3.75)** | 115 (107-122) | 9.86 (4.31-15.4) | 72.9 (72.8-72.9) |
-| Revenue per month | 218 (209-227) | **2.99 (2.97-3.01)** | 9.98 (9.57-10.4) | 175 (166-184) | 6.19 (5.93-6.46) | 143 (139-146) |
-| The 10 categories with the most revenue | 54.4 (51.8-57.1) | **3.06 (2.95-3.17)** | **3.08 (3.02-3.14)** | 280 (268-292) | 14.6 (6.16-23.1) | 108 (107-108) |
-| Average value of the shipped orders of one country in one year | 21.3 (20.9-21.7) | 7.22 (7.12-7.32) | 8.55 (8.45-8.66) | 136 (111-161) | **5.37 (5.37-5.37)** | 76.8 (76.6-76.9) |
-| How many different customers ordered each month | 238 (228-248) | **7.99 (7.86-8.12)** | 8.64 (8.27-9) | 442 (384-501) | 11.7 (10.7-12.7) | 484 (482-486) |
-| How many orders over $100 in the last 30 days | 21.7 (21-22.5) | 5.9 (5.79-6.02) | 6.49 (6.47-6.52) | 111 (101-121) | **3.21 (3.19-3.24)** | 50.1 (50-50.2) |
-| Search "wireless headphones": how many orders match | 15.7 (14.6-16.8) | **2.67 (1.84-3.49)** | 3.54 (3.27-3.82) | 142 (124-161) | 4.5 (2.68-6.33) | 894 (891-896) |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category | 15.1 (15-15.1) | **5.66 (5.64-5.67)** | 6.2 (5.53-6.88) | 260 (206-314) | 17.4 (11.8-23) | 422 (422-423) |
-| Search "wireless headphones", shipped orders: the 10 newest | 89.1 (86.3-91.9) | 62.5 (23.6-102) | 14.4 (11.8-17) | 218 (167-270) | **10.4 (9.01-11.7)** | 548 (547-549) |
+| Find one order by its id | **1.44 (0.996-1.88)** | 1.96 (1.65-2.26) | 9.07 (6.58-11.6) | 53.7 (53.1-54.3) | 8.57 (3.79-13.4) | 4.95 (4.41-5.49) |
+| How many orders per country | 24.8 (21.8-27.7) | **2.41 (2.25-2.58)** | 3.75 (3.08-4.42) | 113 (109-116) | 9.64 (4.38-14.9) | 75.2 (74.7-75.8) |
+| Revenue per month | 194 (167-222) | **2.16 (2.1-2.22)** | 3.84 (3.8-3.88) | 235 (216-255) | 6.72 (6.42-7.02) | 131 (130-132) |
+| The 10 categories with the most revenue | 40.2 (40-40.5) | **2.15 (2.13-2.16)** | 3.41 (3.07-3.74) | 243 (233-254) | 14.2 (5.56-22.9) | 109 (108-110) |
+| Average value of the shipped orders of one country in one year | 19 (18.1-20) | 7.33 (6.95-7.7) | 9.78 (9.36-10.2) | 192 (148-236) | **5.45 (5.44-5.46)** | 74 (73.7-74.3) |
+| How many different customers ordered each month | 247 (194-300) | **7.96 (7.95-7.97)** | 8.7 (8.39-9.01) | 469 (420-517) | 10.1 (9.88-10.3) | 447 (433-462) |
+| How many orders over $100 in the last 30 days | 19.4 (18.7-20.1) | 6.42 (5.77-7.07) | 6.45 (6.39-6.5) | 158 (92.3-224) | **2.97 (2.96-2.98)** | 49.7 (49.4-50) |
+| Search "wireless headphones": how many orders match | 14.1 (13.7-14.4) | **2.98 (2.74-3.23)** | 3.88 (3.45-4.31) | 121 (119-123) | 4.26 (2.73-5.79) | 873 (873-874) |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category | 13.8 (13.5-14.2) | **6.17 (5.87-6.46)** | **6.11 (5.89-6.34)** | 204 (155-252) | 19.7 (15.2-24.2) | 413 (410-416) |
+| Search "wireless headphones", shipped orders: the 10 newest | 85.7 (84.9-86.6) | 61.2 (23.4-98.9) | **12.1 (12-12.2)** | 218 (169-266) | **11.6 (11.2-12)** | 540 (534-546) |
 
 Load time (from the same CSV file, one client) and size:
 
 | phase | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse | Citus columnar |
 |---|---:|---:|---:|---:|---:|---:|
-| data | 0.7 s | 0.9 s | 2.2 s | 9.1 s | 0.6 s | 0.9 s |
-| indexes | 1.5 s | 0.7 s | 0.3 s | n/a | n/a | 0.2 s |
-| vacuum, analyze | 0.2 s | 0.3 s | 1.6 s | n/a | n/a | 0.2 s |
-| merge to one segment | n/a | n/a | n/a | 2.4 s | 0.2 s | n/a |
-| **total** | 2.4 s | 1.9 s | 4.1 s | 12 s | 0.8 s | 1.3 s |
+| data | 0.7 s | 0.7 s | 1.1 s | 8.0 s | 0.6 s | 1.0 s |
+| indexes | 1.3 s | 0.5 s | 0.3 s | n/a | n/a | 0.2 s |
+| vacuum, analyze | 0.2 s | 0.2 s | 1.7 s | n/a | n/a | 0.2 s |
+| merge to one segment | n/a | n/a | n/a | 2.9 s | 0.2 s | n/a |
+| **total** | 2.2 s | 1.4 s | 3.1 s | 11 s | 0.8 s | 1.4 s |
 | size: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | n/a | n/a | 21.4 MiB |
-| size: index or columnar data (without heap and primary key) | 34.6 MiB (6.8 + 21.3 + 6.5) | **18.8 MiB (10.9 + 7.9)** | 21.0 MiB (13.2 + 7.8) | 111.7 MiB | 37.6 MiB | 24.7 MiB |
-| size on disk, total (free blocks inside the file in parentheses) | 159 MiB | 143 MiB | 193 MiB (150 free, 42 live) | 112 MiB | **38 MiB** | 46 MiB |
+| size: index or columnar data (without heap and primary key) | 34.6 MiB (6.8 + 21.3 + 6.5) | **18.9 MiB (11.0 + 7.9)** | 25.1 MiB (17.3 + 7.8) | 111.4 MiB | 37.6 MiB | 24.7 MiB |
+| size on disk, total (free blocks inside the file in parentheses) | 159 MiB | 143 MiB | 46 MiB | 111 MiB | **38 MiB** | 46 MiB |
 
-- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; 34.6 MiB); `sift_col` the column index and the BM25 title index (10.9 + 7.9 MiB); `sift_table` the live bytes of its columns plus the title index (13.2 + 7.8 MiB); Elasticsearch the index; ClickHouse the table with its text index; Citus the columnar table. pg_sift `sift_table`, Elasticsearch, ClickHouse and Citus columnar store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. Like for like, the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema (`system.columns`, measured on 2026-10-18; per column in [Size against ClickHouse](#size-against-clickhouse-1000000-orders)).
+- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; 34.6 MiB); `sift_col` the column index and the BM25 title index (11.0 + 7.9 MiB); `sift_table` the live bytes of its columns plus the title index (17.3 + 7.8 MiB); Elasticsearch the index; ClickHouse the table with its text index; Citus the columnar table. pg_sift `sift_table`, Elasticsearch, ClickHouse and Citus columnar store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. Like for like, the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema (`system.columns`, measured on 2026-10-18; per column in [Size against ClickHouse](#size-against-clickhouse-1000000-orders)).
 
 Indexes of the PostgreSQL layouts:
 
@@ -302,6 +302,11 @@ Indexes of the PostgreSQL layouts:
 | pg_sift `sift_col` | orders_title | 8 MiB |
 | pg_sift `sift_table` | orders_pkey | 21 MiB |
 | pg_sift `sift_table` | orders_title | 8 MiB |
+| pg_sift `sift_col`, maintenance on | orders_col | 11 MiB |
+| pg_sift `sift_col`, maintenance on | orders_pkey | 21 MiB |
+| pg_sift `sift_col`, maintenance on | orders_title | 8 MiB |
+| pg_sift `sift_table`, maintenance on | orders_pkey | 21 MiB |
+| pg_sift `sift_table`, maintenance on | orders_title | 8 MiB |
 | Citus columnar | orders_pkey | 21 MiB |
 
 Scan nodes of the PostgreSQL plans (`EXPLAIN`):
@@ -328,7 +333,7 @@ Scan nodes of the PostgreSQL plans (`EXPLAIN`):
 |---|---:|---:|---:|---:|
 | 1,000,000 orders, 3 CPUs | 3 | 2 (2) | 3 (3) | 3, 3 (5 / 3) |
 
-- PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) (the same image for both layouts, pg_sift 3.1 (the build under test), linked with `liblz4.so.1 libzstd.so.1`, `compression` unset on the index = `auto`, `sift.table_compression` '' (unset)): effective_cache_size=6GB, jit=off, shared_buffers=2GB, work_mem=64MB; `max_parallel_workers_per_gather` N - 1 (a leader and N - 1 workers are N processes; `max_parallel_maintenance_workers` the same), `max_worker_processes` 16 and `max_parallel_workers` 16 (far above the budget), `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, the same flags for both containers.
+- PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) (the same image for both layouts, pg_sift 3.3 (the build under test), linked with `liblz4.so.1 libzstd.so.1`, `compression` unset on the index = `auto`, `sift.table_compression` '' (unset)): effective_cache_size=6GB, jit=off, shared_buffers=2GB, work_mem=64MB; `max_parallel_workers_per_gather` N - 1 (a leader and N - 1 workers are N processes; `max_parallel_maintenance_workers` the same), `max_worker_processes` 16 and `max_parallel_workers` 16 (far above the budget), `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, the same flags for both containers.
 - Citus 14.2-1 (image `citusdata/citus:14.2.0`, PostgreSQL 18.4): one node, no workers added, `citus` preloaded as the image ships it and only the `columnar` access method of `citus_columnar` used; the table `USING columnar` with the default settings (chunk_group_row_limit=10000, stripe_row_limit=150000, compression=zstd, compression_level=3), a primary key and no other index (columnar tables take btree and hash indexes only: no GIN for the search, no `UPDATE` or `DELETE`, so it is not in the update tables). The same server flags as the other PostgreSQL containers: effective_cache_size=6GB, jit=off, shared_buffers=2GB, work_mem=64MB; `max_parallel_workers_per_gather` N - 1, and the planner planned 0 workers for `count(*)` on the table.
 - Elasticsearch 9.5.5 (Lucene 10.5.1): one node, 3 shards (one per CPU of the budget of the load: a shard is searched by one thread, so with one shard a search uses one core whatever `node.processors` says; the shard count is a choice of this harness, see docs/BENCHMARKS.md), no replica, JVM heap `-Xms4g -Xmx4g`, `node.processors` and `-XX:ActiveProcessorCount` set to N, security and machine learning off; `scaled_float` (factor 100) for the amount, `keyword` for country, category and status, `date` for the time, `text` for the title; each shard merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.
 - ClickHouse 26.9.19.9: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; `max_threads`, `max_insert_threads`, `max_final_threads` and `background_pool_size` set to N; optimized to one part per partition after the load.
@@ -338,16 +343,22 @@ Scan nodes of the PostgreSQL plans (`EXPLAIN`):
 
 ## Updates and deletes
 
+<!-- bench:updates:begin (generated by `bench/bench store`; do not edit by hand) -->
+Not measured at this build yet: `bench/bench refresh --stages updates` writes this block, the one in the README and `docs/img/updates-reads.svg`.
+<!-- bench:updates:end -->
+
 Elasticsearch and ClickHouse are said to be weak at changing rows, so the same orders table is changed in each of them (and in PostgreSQL and pg_sift) and the cost is measured: bulk updates and deletes, how soon a change is seen, what a query costs while rows are being updated, and what the changes do to the size on disk.
 
 <!-- bench:store-updates:begin (generated by `bench/bench store`; do not edit by hand) -->
-Measured on the 1,000,000-order table of the section above, 2026-10-20T02:02:06Z, pressure cpu=0.55%/2.90% io=0.00%/1.38% (some avg10/avg60) at the start, after the read tests (the data is changed from here on). Same containers, same limits. Each system changes rows through the path its documentation recommends for the job:
+Measured on the 1,000,000-order table of the section above, 2026-10-22T21:02:37Z, pressure cpu=5.31%/4.80% io=0.27%/0.08% (some avg10/avg60) (NOISY: updates sift: 0.37 cores of other work above the 2.66 of the idle host, updates ch: 1.00 cores of other work above the 2.66 of the idle host) at the start, after the read tests (the data is changed from here on). Same containers, same limits. Each system changes rows through the path its documentation recommends for the job:
 
 | system | how the rows are changed |
 |---|---|
 | PostgreSQL | `UPDATE` / `DELETE` ... `WHERE id IN (...)`, 1,000 ids per statement |
 | pg_sift `sift_col` | the same statements; the heap is updated, the `sift_col` index follows |
+| pg_sift `sift_col`, maintenance on | the same, in a database with `sift.col_auto_merge = on` |
 | pg_sift `sift_table` | the same statements on the column-format table |
+| pg_sift `sift_table`, maintenance on | the same, in a database with `sift.table_auto_defrag = on` |
 | Elasticsearch | `_bulk` `update` (script) and `delete` actions, 1,000 per request, default refresh |
 | ClickHouse, lightweight UPDATE | `UPDATE` / `DELETE FROM` ... `WHERE id IN (...)` (patch parts), 1,000 ids per statement |
 | ClickHouse, ALTER UPDATE | one `ALTER TABLE ... UPDATE` / `DELETE` with the predicate of the rows, `mutations_sync = 1` |
@@ -355,37 +366,40 @@ Measured on the 1,000,000-order table of the section above, 2026-10-20T02:02:06Z
 
 Steps, in order: update 1% of the rows (`id % 100 = 0`: status becomes `refunded`, amount drops by 1), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`), 10 single-row changes timed until a query sees them (status `probe`, seen by `count(*) WHERE status = 'probe'`), the revenue-per-month query timed for 10 s under 0, 1,000 and 10,000 updated rows per second (a second connection sends batches of 100 rows, `amount = amount + 1`, ids drawn from the live rows), then a maintenance step per system. After each of the first three steps the state (rows and sum of the amount per status) is compared with PostgreSQL's; the run stops on a difference. Rows per second is the rows of the step over the wall time until the last statement was acknowledged.
 
-| 1,000,000 orders | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse, lightweight UPDATE | ClickHouse, ALTER UPDATE | ClickHouse, ReplacingMergeTree + FINAL |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| update 1% of the rows (rows/s, higher is better) | 27,421 | 32,206 | **62,397** | 8,862 | 17,455 | 1,342 | 22,876 |
-| update 10% of the rows (rows/s) | 83,372 | **127,676** | 82,102 | 23,905 | 22,372 | 13,315 | 19,608 |
-| delete 5% of the rows (rows/s) | **520,644** | 435,423 | 163,192 | 77,471 | 147 | 7,214 | 16,240 |
-| single-row change: acknowledged after (ms) | **0.314** | 0.379 | 0.582 | 4.81 | 4.23 | 2.43 | 7.54 |
-| single-row change: seen by the next query (ms after the acknowledgement) | **0.128** | 7.43 | 14.8 | 1,002 | 7.09 | 2,156 | 24.1 |
-| same with `refresh=wait_for`: acknowledged after (ms) |  |  |  | 1,010 (then 1.22) |  |  |  |
-| revenue per month while 0 rows/s are updated: p50 / p95 (ms) | 170 / 212 | 31 / 33.3 | 53.6 / 68.2 | **6.41 / 11.9** | 7.23 / 8.68 | n/a | 26.2 / 31.4 |
-| revenue per month while 1,000 rows/s are updated: p50 / p95 (ms) | 169 / 192 | 34 / 36.7 | 53.2 / 57.4 | **7.11 / 15.9** | 28.9 / 71.6 | n/a | 77.8 / 89.2 |
-| rows/s the update load actually reached (asked 1,000) | 1,007 | 1,007 | 1,006 | 1,008 | 1,004 | n/a | 982 |
-| revenue per month while 10,000 rows/s are updated: p50 / p95 (ms) | 167 / 197 | 34.6 / 44.4 | 53.4 / 62.4 | **8.17 / 34.8** | 27.3 / 71.8 | n/a | 73.2 / 86.6 |
-| rows/s the update load actually reached (asked 10,000) | 10,002 | 10,006 | 9,966 | 8,669 | 1,346 | n/a | 1,123 |
-| size before | 159 MiB | 143 MiB | 193 MiB (150 free) | 112 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
-| size after the changes | 176 MiB | 168 MiB | 198 MiB (134 free) | 138 MiB | 39 MiB | **36 MiB** | 41 MiB |
-| size after VACUUM / merge / OPTIMIZE | 176 MiB | 176 MiB | 56 MiB (8 free) | 138 MiB | **37 MiB** | **36 MiB** | 39 MiB |
+| 1,000,000 orders | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_col`, maintenance on | pg_sift `sift_table` | pg_sift `sift_table`, maintenance on | Elasticsearch | ClickHouse, lightweight UPDATE | ClickHouse, ALTER UPDATE | ClickHouse, ReplacingMergeTree + FINAL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| update 1% of the rows (rows/s, higher is better) | 32,417 | 33,177 | 33,254 | **77,535** | **79,452** | 9,757 | 17,460 | 1,375 | 16,961 |
+| update 10% of the rows (rows/s) | 88,281 | **157,905** | **161,457** | 132,845 | 129,980 | 28,188 | 20,695 | 22,486 | 15,818 |
+| delete 5% of the rows (rows/s) | 391,367 | **427,667** | **413,764** | 314,464 | 289,045 | 62,316 | 149 | 7,005 | 12,681 |
+| single-row change: acknowledged after (ms) | **0.354** | 0.453 | 0.378 | 0.51 | 0.499 | 3.71 | 3.68 | 3.35 | 6.42 |
+| single-row change: seen by the next query (ms after the acknowledgement) | **0.173** | 7.88 | 7.76 | 16.6 | 16.5 | 1,006 | 5.98 | 2,566 | 18.5 |
+| same with `refresh=wait_for`: acknowledged after (ms) |  |  |  |  |  | 1,008 (then 1.19) |  |  |  |
+| revenue per month while 0 rows/s are updated: p50 / p95 (ms) | 160 / 177 | 33.1 / 49.1 | 32.6 / 34.2 | 52.9 / 53.9 | 52.7 / 53.8 | 6.7 / 21.3 | **6 / 7.43** | n/a | 21.4 / 24.7 |
+| revenue per month while 1,000 rows/s are updated: p50 / p95 (ms) | 160 / 177 | 34.6 / 48.3 | 34.8 / 36.4 | 57.7 / 78.9 | 56.9 / 59.1 | **6.8 / 18.3** | 23 / 57.8 | n/a | 78.9 / 92.2 |
+| rows/s the update load actually reached (asked 1,000) | 1,007 | 1,007 | 1,008 | 1,007 | 1,008 | 1,009 | 1,005 | n/a | 889 |
+| revenue per month while 10,000 rows/s are updated: p50 / p95 (ms) | 162 / 173 | 35.4 / 47.5 | 35.4 / 46.5 | 45.3 / 69.2 | 43.1 / 61.2 | **7.69 / 36.9** | 47 / 76.8 | n/a | 76.6 / 90.2 |
+| rows/s the update load actually reached (asked 10,000) | 10,004 | 10,004 | 10,002 | 9,979 | 10,001 | 10,004 | 1,173 | n/a | 959 |
+| revenue per month, fresh table: p50 (ms) | 162 | 0.203 | **0.183** | 0.356 | 0.436 | 19.2 | 5.16 | 5.83 | 6.17 |
+| revenue per month, after the changes: p50 (ms) | 166 | 35.8 | 35.5 | 55 | 36.7 | 10.4 | 23.4 | **5.18** | 30.9 |
+| revenue per month, after VACUUM / merge / OPTIMIZE: p50 (ms) | 160 | 0.655 | **0.122** | 0.527 | 4.62 | 8.11 | 5.78 | 4.84 | 6.15 |
+| size before | 159 MiB | 143 MiB | 143 MiB | 46 MiB | 46 MiB | 111 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
+| size after the changes | 176 MiB | 168 MiB | 168 MiB | 73 MiB (5 free) | 64 MiB (1 free) | 138 MiB | 39 MiB | **36 MiB** | 41 MiB |
+| size after VACUUM / merge / OPTIMIZE | 176 MiB | 152 MiB | 165 MiB | 48 MiB | 56 MiB (1 free) | 138 MiB | **37 MiB** | **36 MiB** | 39 MiB |
 
 The three reads, before the changes, after them (before maintenance) and after the maintenance step (milliseconds, median of the runs):
 
-| query | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse, lightweight UPDATE | ClickHouse, ALTER UPDATE | ClickHouse, ReplacingMergeTree + FINAL |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Revenue per month, baseline | 179 | **0.301** | 4.32 | 15.3 | 5.64 | 4.94 | 5.74 |
-| Revenue per month, after churn | 164 | 35.6 | 54.2 | 14.6 | 18.4 | **4.71** | 26 |
-| Revenue per month, after maintenance | 175 | 13.2 | **4.03** | 10.4 | 4.88 | 4.81 | 8.44 |
-| Average value of the shipped orders of one country in one year, baseline | 9.27 | **0.989** | 3.04 | 4.31 | 3.88 | 4.24 | 2.62 |
-| Average value of the shipped orders of one country in one year, after churn | 7.35 | 25.4 | 18.9 | **2.96** | 7.27 | 3.6 | 6.74 |
-| Average value of the shipped orders of one country in one year, after maintenance | 7.04 | 7.14 | 2.62 | **0.932** | 3.59 | 3.89 | 2.96 |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category, baseline | 6 | **1.11** | 1.33 | 4.57 | 8.36 | 9.5 | 6.05 |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category, after churn | 7.28 | 12.4 | 14.3 | **3.75** | 45.9 | 12.4 | 27.5 |
-| Search "wireless headphones", shipped orders of $50 or more: orders per category, after maintenance | 5.54 | 7.79 | 1.57 | **0.847** | 9.96 | 10.1 | 9.18 |
-| time of the maintenance step | 0.5 s | 0.5 s | 1.0 s | 9.4 s | 0.3 s | 0.2 s | 0.4 s |
+| query | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_col`, maintenance on | pg_sift `sift_table` | pg_sift `sift_table`, maintenance on | Elasticsearch | ClickHouse, lightweight UPDATE | ClickHouse, ALTER UPDATE | ClickHouse, ReplacingMergeTree + FINAL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Revenue per month, baseline | 162 | 0.203 | **0.183** | 0.356 | 0.436 | 19.2 | 5.16 | 5.83 | 6.17 |
+| Revenue per month, after churn | 166 | 35.8 | 35.5 | 55 | 36.7 | 10.4 | 23.4 | **5.18** | 30.9 |
+| Revenue per month, after maintenance | 160 | 0.655 | **0.122** | 0.527 | 4.62 | 8.11 | 5.78 | 4.84 | 6.15 |
+| Average value of the shipped orders of one country in one year, baseline | 8.01 | **0.866** | 1.17 | 2.53 | 3.09 | 5.1 | 3.79 | 4.46 | 2.5 |
+| Average value of the shipped orders of one country in one year, after churn | 7.72 | 13 | 13.4 | 31.6 | 15.1 | **1.72** | 8.89 | 3.69 | 8.72 |
+| Average value of the shipped orders of one country in one year, after maintenance | 7.45 | 1.61 | 0.935 | 2.68 | 3.94 | **0.811** | 4.06 | 3.9 | 2.58 |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category, baseline | 5.79 | **0.983** | 1.05 | **1** | 1.13 | 3.91 | 9.07 | 9.11 | 6.79 |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category, after churn | 6.57 | 11.2 | 11.1 | 28.9 | 12.4 | **1.69** | 56.4 | 10.6 | 33.5 |
+| Search "wireless headphones", shipped orders of $50 or more: orders per category, after maintenance | 5.73 | 2.61 | 1.3 | 1.54 | 2.5 | **0.954** | 10.9 | 14.2 | 7.19 |
+| time of the maintenance step | 0.4 s | 0.8 s | 0.9 s | 1.0 s | 0.5 s | 7.8 s | 0.3 s | 0.2 s | 0.5 s |
 
 Where each system's recommended path comes from:
 

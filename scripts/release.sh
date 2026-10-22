@@ -73,6 +73,9 @@ preflight() {
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep -q '^- ' || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
+	# the benchmark numbers: blocks that differ from docs/results stop a release, results of an older MAJOR.MINOR are a warning (bench/bench refresh, docs/RELEASE.md)
+	local fresh; fresh=$("$R/scripts/check-bench-fresh.sh" 2>&1) || soft "the benchmark blocks of README.md differ from docs/results: $fresh"
+	grep '^warning:' <<<"$fresh" | while read -r f; do log "$f"; done || true
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")

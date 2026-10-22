@@ -219,7 +219,8 @@ def benchmarks_block(t, timing):
            '- **CPUs:** ' + budget + (':' if details else '.')]
     out += ['  - ' + d for d in details]
     if s:
-        out += ['- **Host:** measured %s on %s (%s threads), PostgreSQL %s.' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
+        at = ' at pg_sift %s (%s)' % (s['version'], s['sift'][:7]) if s.get('version') and s.get('sift') else ''
+        out += ['- **Host:** measured%s %s on %s (%s threads), PostgreSQL %s.' % (at, s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
     out += ['- **Cells:** queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
             'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value.', '']
     out += table(t) + [''] + places_table(t) + ['']
