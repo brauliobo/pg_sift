@@ -409,7 +409,7 @@ such a leaf is format minor 5; a `sift_table` stores these types by size and is 
 ### 2.13 Small-set summary of a leaf in a unit (column format minor 10, 3.3; opt-in)
 
 For a key spread over every unit the zone (a minimum and a maximum) is the whole range and prunes nothing, and a scan then decodes the key chunk of every unit to
-find the one that holds the key. The reloption `set_columns = 'a, b'` (default none; the names of plain integer or text leaves, as `preagg` names them) makes every unit
+find the one that holds the key. The reloption `set_columns = 'a, b'` (default none; the names of plain integer or text leaves, as `preagg` names them, and uuid leaves) makes every unit
 written afterwards keep, for those leaves, the set of its distinct keys: exactly while there are at most `set_limit` (default 32, 2 to 1024) of them, else as a
 bloom filter of 10 bits a key. `ALTER INDEX .. SET (set_columns = ..)` applies to the units written afterwards (promotion, merge, REINDEX); the others have none. `CREATE INDEX` and `REINDEX` tell with a NOTICE when 10% of the units or more hold more than `set_limit` keys of a leaf (a bloom filter, not its keys), and the `set_limit` that makes them exact; the same NOTICE names a `cube(..)` dim that has no histogram in that share of the units.
 

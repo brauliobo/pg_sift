@@ -283,6 +283,39 @@ SELECT :'plain' = :'heap' AS equality_matches_heap;
 SELECT (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM sr GROUP BY a, b) g) =
        (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM (SELECT a, b FROM sr OFFSET 0) x GROUP BY a, b) g) AS group_matches;
 
+-- a uuid takes a set as a text does (its keys are the codes of its dictionary): units skipped for an absent or a scattered value, the heap's rows, verify
+CREATE TABLE su (id int, u uuid, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE su ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su SELECT g, CASE WHEN g % 53 = 0 THEN NULL ELSE md5(((hashint4(g) & 2147483647) % 5000)::text)::uuid END, g % 1000, repeat('x', 1500) FROM generate_series(1, 30000) g;
+CREATE TABLE su_b (LIKE su) WITH (autovacuum_enabled = off);
+ALTER TABLE su_b ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su_b SELECT * FROM su;
+CREATE INDEX su_on ON su USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, set_columns = 'u');
+CREATE INDEX su_off ON su_b USING sift_col (id, u, val) WITH (write_buffer_limit = 4096);
+VACUUM ANALYZE su;
+VACUUM ANALYZE su_b;
+SELECT sift.col_verify('su_on', true);
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('su_on');
+SELECT u AS u1 FROM su WHERE id = 5000 \gset
+CREATE TABLE su_q (n int, shape text, q text);
+INSERT INTO su_q VALUES
+	(1, 'point',            'SELECT count(*), sum(val) FROM %s WHERE u = ' || quote_literal(:'u1') || '::uuid'),
+	(2, 'absent',           'SELECT count(*), sum(val) FROM %s WHERE u = ''00000000-0000-0000-0000-000000000001'''),
+	(3, 'IN of 3',          'SELECT count(*), sum(val) FROM %s WHERE u IN (' || quote_literal(:'u1') || ', ''00000000-0000-0000-0000-000000000001'', ''ffffffff-ffff-ffff-ffff-ffffffffffff'')'),
+	(4, 'NULL test',        'SELECT count(*) FROM %s WHERE u IS NULL'),
+	(5, 'not equal',        'SELECT count(*) FROM %s WHERE u <> ' || quote_literal(:'u1') || '::uuid'),
+	(6, 'grouped',          'SELECT mod(val, 3), count(*) FROM %s WHERE u = ' || quote_literal(:'u1') || '::uuid GROUP BY 1');
+SELECT n, shape, ss_rows(format(q, 'su'), true) = ss_rows(format(q, 'su_b'), true) AND ss_rows(format(q, 'su'), true) = ss_rows(format(q, 'su'), false) AND
+       ss_rows(format(q, 'su'), true) NOT LIKE 'ERROR%' AS same
+FROM su_q ORDER BY n;
+-- the units an index scan skips: the set of the uuid clears units whose zone (codes in first-seen order) spans the key, the twin without a set does not
+SELECT shape, c.rows, w.rows AS rows_without, c.units AS units_read, w.units AS units_read_without
+FROM (VALUES ('point', '1:eq:' || :'u1'),
+             ('IN of 3', '1:in:' || :'u1' || '|00000000-0000-0000-0000-000000000001|ffffffff-ffff-ffff-ffff-ffffffffffff'),
+             ('absent', '1:eq:00000000-0000-0000-0000-000000000001')) q(shape, preds),
+     LATERAL sift._test_col_counters('su_on', q.preds) c, LATERAL sift._test_col_counters('su_off', q.preds) w ORDER BY 1;
+DROP TABLE su, su_b, su_q;
+
 DROP TABLE sa, ss, ss_b, ss_q, sr CASCADE;
 DROP FUNCTION ss_rows(text, bool), ss_units(text), ss_check(text, text), ss_cost(text), ss_by_set(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

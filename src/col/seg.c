@@ -722,7 +722,7 @@ set_leaf(SiftColSegment *seg, int col)
 			const SetsLeaf *r = &rec[i];
 			uint64		rel = r->dir_off - PAGG_SETS(h);
 
-			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM)) || !sift_cpagg_dim_ok(seg->schema, &seg->schema->cols[r->leaf]))
+			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM)) || !sift_cset_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
 				corrupt(seg, "The small-set record %u names leaf %u, which cannot have one.", i, r->leaf);
 			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
 				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
