@@ -17,7 +17,7 @@ server, no separate analytics database, no `shared_preload_libraries`. The searc
 
 ## Install
 
-Supports PostgreSQL 17, 18 and 19 on Linux and macOS (19 tested on its release candidate). Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
+Supports PostgreSQL 17, 18 and 19 on Linux (19 tested on its release candidate) and PostgreSQL 17 and 18 on macOS arm64. Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
 
 Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container image recipes (PostgreSQL 17 and 18, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: [docs/SUPPORT.md](docs/SUPPORT.md).
 
@@ -31,7 +31,8 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The HEAD-only formula builds `main` and supports macOS arm64. Tested on Apple Silicon with PostgreSQL 17.11 and 18.6.
+The HEAD-only formula builds `main` and supports macOS arm64. CI builds it and runs `brew test` (a BM25 smoke, an extension upgrade and a `sift_col` aggregate) on macOS arm64 with PostgreSQL 17 and 18; earlier it was tried by hand on Apple Silicon with 17.11 and 18.6.
+`make check` also needs bash 4 or newer (`brew install bash`); the stock macOS bash 3.2 stops with a message. CI runs a few of its regression tests on macOS; the rest of the suite runs on Linux.
 With your PostgreSQL server running, connect as a superuser:
 
 ```sh
