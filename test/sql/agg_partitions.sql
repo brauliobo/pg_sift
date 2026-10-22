@@ -424,6 +424,22 @@ DELETE FROM ph_keys;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
 INSERT INTO ph_keys SELECT i FROM generate_series(0, 299) i;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+-- the remainders of a hash level are computed once for all its partitions: a few keys read a few of the 8 partitions, and a level with more
+-- combinations of values than the limit (lowered to 2) reads every partition, with the same rows; so do keys beyond the exact test of the
+-- range and list bounds (keys times partitions, lowered to 2): the range of the keys prunes alone
+DELETE FROM ph_keys;
+INSERT INTO ph_keys VALUES (1), (2), (3);
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+SET sift.test_limits = 'hash_part_combos=2';
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+RESET sift.test_limits;
+CREATE TABLE pt_days2 (d date);
+INSERT INTO pt_days2 VALUES ('2024-02-02'), ('2024-11-08');
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
+SET sift.test_limits = 'part_key_tests=2';
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
+RESET sift.test_limits;
+DROP TABLE pt_days2;
 -- off: the join key filter off reads every partition, with the rows of the normal plan
 SET sift.agg_join_filter = off;
 SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');

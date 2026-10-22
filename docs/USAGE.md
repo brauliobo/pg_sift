@@ -450,6 +450,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `table_kind` | single, distinct, topn | the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table |
 | `no_source` | single, distinct, topn | no sift_col index or sift_table covers the table |
 | `partition_source` | single, distinct | a partition has no column index the plan can use, or the partitions do not share a layout |
+| `partition_count` | single, distinct | the table has more partitions left by PostgreSQL's pruning than a scan reads (32,768); the detail has the count |
 | `join_child` | single, distinct | a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child |
 | `outer_join` | single, distinct | an outer join of the scanned table keeps rows the scan cannot reproduce |
 | `unnest_leaf` | single, distinct | the array or object a lateral function unnests is not a leaf of the column index |

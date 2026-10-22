@@ -6,8 +6,8 @@
 
 #include "agg/colsrc.h"
 
-/* the partitions of a plan, at most: planning keeps the layout and statistics of each (about 40 kB), as the scan opens, one after the other, those the statement does not prune */
-#define SIFT_AGG_MAX_PARTS		4096
+/* the partitions of a plan, at most: planning keeps the layout and statistics of each (about 40 kB) and the scan opens each it does not prune (about 2 kB and 40 us of CPU), so this is far above what the cost of opening leaves the scan a win */
+#define SIFT_AGG_MAX_PARTS		32768
 
 /*
  * The source of the n partitions heaps[i] with their column indexes indexes[i] (all of one provider, with the same layout: the planner proved it).
