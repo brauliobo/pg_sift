@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: `scripts/check-bench-cases.sh` (lint, `scripts/ci.sh`, the CI workflow): fails when a CHANGELOG line a change adds under Unreleased claims a measured speed that no case of `bench/cases.tsv` names (`--strict`: every line, listing what nobody measured), when a case feeds no README/BENCHMARKS block or has no rows in `docs/results/cases.tsv`, or when an entry of `scripts/bench-cases.allow` has no reason; `--selftest` proves it fails on each gap.
 - Changed: `CREATE INDEX`, `REINDEX` and `sift.col_refresh` of a `sift_col` index tell, as they did for a cube dim over its cap or a set summary that is a bloom filter, the options that wrote nothing in a share of the units: a `set_columns` leaf whose keys are one value or fill their range, a `key_presence` leaf whose bitmap would take over 3% of the unit, a `rollup_dims` rollup with more cells than a unit may keep, and the date columns that `calendar_columns` (default `all`) leaves out because the cube holds at most 16 dimensions.
 
 - Added: the generated block "What got faster in 3.3" in README.md and docs/BENCHMARKS.md (`bench/steps/cases_render.py`, from `docs/results/cases.tsv`): for each case of `bench/cases.tsv` PostgreSQL, pg_sift, the other engines and variants, the speed-up and the plan used, the cases where pg_sift is slower or ties named in the takeaway, and the headline cases in Performance highlights.
