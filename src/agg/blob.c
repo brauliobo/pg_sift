@@ -623,7 +623,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				gen_state_merge(g, g->gst[ai], acc, t, &ba->gcur);
 				break;
 			default:
-				elog(ERROR, "sift: aggregate kind %d has no partial table", a->kind);
+				SIFT_INVARIANT(false, "sift: aggregate kind %d has no partial table", a->kind);
 		}
 	}
 }
@@ -731,8 +731,7 @@ blob_merge(AggExec *g, const char *p)
 	BlobAgg    *ba = palloc0(Max(s->naggs, 1) * sizeof(BlobAgg));
 	bool		grow = false;
 
-	if (h->magic != BLOB_MAGIC)
-		elog(ERROR, "sift: bad partial aggregate");
+	SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad partial aggregate");
 	for (int j = 0; j < s->nkeys; j++)
 	{
 		xid[j] = merge_key_table(g, j, &p);

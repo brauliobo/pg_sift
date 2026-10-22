@@ -438,8 +438,8 @@ osa_finish(AggExec *ex, int owner)
 			for (int ai = 0; cur != UINT32_MAX && ai < s->naggs; ai++)
 				if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
 					ex->oval[ai][cur] = osa_result(&s->agg[ai], &pick[ai]);
-			if (cur != UINT32_MAX && pos != nrows[cur])
-				elog(ERROR, "sift: ordered-set values of a group are %lld, expected %lld", (long long) pos, (long long) nrows[cur]);
+			SIFT_INVARIANT(cur == UINT32_MAX || pos == nrows[cur], "sift: ordered-set values of a group are %lld, expected %lld", (long long) pos,
+						   (long long) (cur == UINT32_MAX ? 0 : nrows[cur]));
 			if (!more)
 				break;
 			cur = r.sid;

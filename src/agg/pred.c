@@ -314,7 +314,7 @@ eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 			sift_aggk->cmp_f64(out, (const double *) v->data + start, n, op, st->cd);
 			break;
 		default:
-			elog(ERROR, "sift: comparison on a dictionary leaf");
+			SIFT_INVARIANT(false, "sift: comparison on a dictionary leaf");
 	}
 	if (v->ovf && lf->typid == NUMERICOID)
 		set_rows(v->ovf + start / 64, n, st->nan_res, out);
@@ -758,6 +758,6 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_TYPE:
 		case SAP_WIDE:
 		case SAP_ELEM_EXISTS:
-			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
+			SIFT_INVARIANT(false, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
 	}
 }

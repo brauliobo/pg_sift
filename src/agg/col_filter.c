@@ -59,7 +59,8 @@ str_op(SiftSrcStrOp op)
 		case SSTR_PREFIX:
 			return SIFT_COLOP_PREFIX;
 	}
-	elog(ERROR, "sift: unknown text test %d", (int) op);
+	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
+	pg_unreachable();
 }
 
 /* a text test as a column predicate over the constants in vals (room for t->nvals) */
@@ -117,8 +118,7 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 {
 	ColSource  *src = impl;
 
-	if (nt > COL_MAX_WIDE)
-		elog(ERROR, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
+	SIFT_INVARIANT(nt <= COL_MAX_WIDE, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
 	src->wtest = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColWTest));
 	for (int i = 0; i < nt; i++)
 		sift_colw_test(sift_col_def(src->cs, t[i].leaf), t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);

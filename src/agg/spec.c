@@ -76,7 +76,7 @@ sift_aggspec_operand_int(Oid t, Datum d)
 		case BOOLOID:
 			return DatumGetBool(d);
 		default:
-			elog(ERROR, "sift: unexpected operand type %u", t);
+			SIFT_INVARIANT(false, "sift: unexpected operand type %u", t);
 	}
 	return 0;
 }
