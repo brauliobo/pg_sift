@@ -59,8 +59,6 @@ sift_span_fail(const char *what, size_t need, size_t have)
 extern void sift_span_fail(const char *what, size_t need, size_t have) SIFT_SPAN_NORETURN;
 #endif
 
-/* ---------- making spans ---------- */
-
 /* A NULL pointer is an empty span whatever n says: every read then fails closed (and no pointer arithmetic is done on NULL) */
 static const uint8_t sift_span_nil_[1];
 
@@ -96,8 +94,6 @@ sift_span_is_aligned(SiftSpan s, size_t align)
 {
 	return ((uintptr_t) s.ptr & (align - 1)) == 0;
 }
-
-/* ---------- narrowing: try_ forms return false and leave *out alone ---------- */
 
 /* bytes [off, off + n) of s; the comparison cannot wrap */
 static inline bool
@@ -143,8 +139,6 @@ sift_span_try_take(SiftSpan *s, size_t n, SiftSpan *out)
 	return true;
 }
 
-/* ---------- little endian loads at an offset (the span is not changed) ---------- */
-
 static inline bool
 sift_span_try_u8_at(SiftSpan s, size_t off, uint8_t *v)
 {
@@ -187,8 +181,6 @@ sift_span_try_u64le_at(SiftSpan s, size_t off, uint64_t *v)
 	*v = (uint64_t) sift_span_ld32le_(s.ptr + off) | (uint64_t) sift_span_ld32le_(s.ptr + off + 4) << 32;
 	return true;
 }
-
-/* ---------- little endian reads that consume ---------- */
 
 static inline bool
 sift_span_try_read_u8(SiftSpan *s, uint8_t *v)
@@ -268,8 +260,6 @@ sift_span_try_read_bytes(SiftSpan *s, void *dst, size_t n)
 	s->len -= n;
 	return true;
 }
-
-/* ---------- the same operations, failing through sift_span_fail() ---------- */
 
 #define SIFT_SPAN_CHECKED(what, need, have, expr) \
 	do { if (SIFT_SPAN_UNLIKELY(!(expr))) sift_span_fail((what), (need), (have)); } while (0)

@@ -97,10 +97,6 @@ clear_bit_range(uint64 *bits, uint32 lo, uint32 hi)
 		bits[lo >> 6] &= ~(UINT64CONST(1) << (lo & 63));
 }
 
-/* ---------- visibility ---------- */
-
-/* ---------- a unit ---------- */
-
 /* the element count of the unit and the offsets of its rows; the owner of every element is made when something reads it (unit_parent) */
 static void
 build_parents(AggExec *ex)

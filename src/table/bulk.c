@@ -42,8 +42,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- a rewrite (VACUUM FULL, CLUSTER): the new table written as column segments, without row-format pages ---------- */
-
 struct SiftTblBulk
 {
 	SealWriter	sw;

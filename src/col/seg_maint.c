@@ -10,8 +10,6 @@
 #include "col/ver.h"
 #include "core/live.h"
 
-/* ---------- decoding for rewrites and verification ---------- */
-
 void
 sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
 {
@@ -168,8 +166,6 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 	return removed;
 }
 
-/* ---------- VACUUM ---------- */
-
 int64
 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {
@@ -218,8 +214,6 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 	stats->tuples_removed += removed;
 	return removed;
 }
-
-/* ---------- verification ---------- */
 
 static bool
 zone_equal(const SiftColDef *def, const SiftCZone *a, const SiftCZone *b)

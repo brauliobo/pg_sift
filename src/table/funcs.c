@@ -44,8 +44,6 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-/* ---------- sift.table_segments ---------- */
-
 PG_FUNCTION_INFO_V1(sift_table_segments);
 PG_FUNCTION_INFO_V1(sift_table_space);
 

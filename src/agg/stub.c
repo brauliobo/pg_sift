@@ -57,10 +57,6 @@ typedef struct StubOptions
 static relopt_kind stub_relopt_kind;
 static Oid	stub_am_oid = InvalidOid;
 
-/* ---------------------------------------------------------------------------
- * The `paths` grammar
- * ------------------------------------------------------------------------- */
-
 typedef struct StubItem
 {
 	SiftSrcLeafKind kind;
@@ -265,10 +261,6 @@ validate_paths(const char *value)
 		(void) parse_paths(value);
 }
 
-/* ---------------------------------------------------------------------------
- * The layout of an index
- * ------------------------------------------------------------------------- */
-
 static SiftSrcVecType
 vtype_of(Oid typid, bool *known)
 {
@@ -437,10 +429,6 @@ sift_aggstub_layout(Relation index)
 	return lay;
 }
 
-/* ---------------------------------------------------------------------------
- * The access method
- * ------------------------------------------------------------------------- */
-
 typedef struct StubBuild
 {
 	const StubLayout *lay;
@@ -574,10 +562,6 @@ sift_aggstub_handler(PG_FUNCTION_ARGS)
 	am->amendscan = stub_amendscan;
 	PG_RETURN_POINTER(am);
 }
-
-/* ---------------------------------------------------------------------------
- * The source's entry points that need only the definition
- * ------------------------------------------------------------------------- */
 
 static void
 am_oid_invalidate(Datum arg, int cacheid, uint32 hashvalue)

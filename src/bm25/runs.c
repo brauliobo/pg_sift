@@ -114,8 +114,6 @@ typedef struct RunReader
 	Size		prcap;
 } RunReader;
 
-/* ---------- runs ---------- */
-
 void
 io_flush(RunIO *io)
 {
@@ -600,8 +598,6 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
 }
-
-/* ---------- runs of segments (merge input) ---------- */
 
 typedef struct DumpState
 {

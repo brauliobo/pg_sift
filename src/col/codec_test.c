@@ -29,8 +29,6 @@ PG_FUNCTION_INFO_V1(sift_test_cc_digest);
 PG_FUNCTION_INFO_V1(sift_test_cc_equiv);
 PG_FUNCTION_INFO_V1(sift_test_cc_corrupt);
 
-/* ---------- SQL level ---------- */
-
 static SiftCcPolicy
 policy_of(text *spec)
 {
@@ -180,8 +178,6 @@ sift_test_cc_unkey(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_FLOAT8(sift_col_f8_from_key(PG_GETARG_INT64(0)));
 }
-
-/* ---------- random chunks ---------- */
 
 typedef pg_prng_state CcgRng;
 
@@ -375,8 +371,6 @@ sift_test_cc_equiv(PG_FUNCTION_ARGS)
 	sift_colk = saved_col;
 	PG_RETURN_INT64((int64) (mismatches + bad));
 }
-
-/* ---------- damaged blobs ---------- */
 
 static void
 try_blob(const uint8 *blob, Size len, bool verify, uint64 *raised, uint64 *decoded)

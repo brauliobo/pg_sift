@@ -7,10 +7,6 @@
 #include "col/compress.h"
 #include "core/popcount.h"
 
-/* ======================================================================== */
-/* string lists and bit vectors                                             */
-/* ======================================================================== */
-
 #define CC_STRS_MAGIC	0xC6
 #define CC_BITS_MAGIC	0xC7
 

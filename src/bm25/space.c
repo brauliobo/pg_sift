@@ -40,8 +40,6 @@
 #define TRUNCATE_MIN_BLOCKS	1000
 #define TRUNCATE_FRACTION	16
 
-/* ---------- orphan sweep ---------- */
-
 static SiftExtent *
 bitmap_extents(Bitmapset *set, int *n)
 {
@@ -88,8 +86,6 @@ sift_maint_orphan_sweep(Relation index)
 	return freed;
 }
 
-/* ---------- truncation ---------- */
-
 /*
  * Gives the free blocks at the end of the file back to the operating system, like VACUUM does for a
  * heap: when they are worth an exclusive lock, and only if AccessExclusiveLock on the index is free
@@ -120,8 +116,6 @@ sift_maint_truncate(Relation index, int elevel)
 		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages", RelationGetRelationName(index),
 								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
 }
-
-/* ---------- space: the end of the file moved down, then cut ---------- */
 
 /* A coarse candidate screen only; sift_store_relocate plans exact extent reservations with the allocator before accepting a move. */
 #define SPACE_MIN_RUN		16

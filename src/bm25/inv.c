@@ -88,8 +88,6 @@ typedef struct PosChunk
 	uint32		plen[64];		/* CHUNK */
 } PosChunk;
 
-/* ---------- inverted buffer ---------- */
-
 static void
 inv_init(SiftInvBuf *b)
 {

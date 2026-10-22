@@ -8,10 +8,6 @@
 
 #include "agg/colsrc.h"
 
-/* ---------------------------------------------------------------------------
- * Decoding the leaves of a unit
- * ------------------------------------------------------------------------- */
-
 typedef struct StubVecSlot
 {
 	SiftSrcVec	vec;

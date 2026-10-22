@@ -57,8 +57,6 @@ limit_pages(Relation index)
 	return Max(2 * SIFT_LANES, (uint64) sift_col_options(index)->write_buffer_limit * 1024 / BLCKSZ);
 }
 
-/* ---------- records ---------- */
-
 /* The records of a page copy: the cursor and the checked record at it */
 typedef struct PageCursor
 {
@@ -177,8 +175,6 @@ encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, u
 	}
 	return ovf;
 }
-
-/* ---------- pages ---------- */
 
 static void
 put_piece(Page page, const ItemPointerData *tid, bool cont, const char *payload, Size len)
@@ -381,8 +377,6 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	return crossed;
 }
 
-/* ---------- sealing ---------- */
-
 static uint64
 count_rows(Relation index, const SiftSegEntry *entry, bool first_only)
 {
@@ -421,8 +415,6 @@ sift_cwbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 {
 	sift_lane_flag_sealed(index, entry);
 }
-
-/* ---------- reading ---------- */
 
 struct SiftCWbufReader
 {
@@ -713,8 +705,6 @@ sift_cwbuf_next(SiftCWbufReader *r, SiftColRow *row, bool *deleted)
 	return true;
 }
 
-/* ---------- batches ---------- */
-
 /* A live record kept for sorting: its payload is at off in the arena */
 typedef struct Held
 {
@@ -787,8 +777,6 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 	return out;
 }
 
-/* ---------- VACUUM ---------- */
-
 static int
 collect_rows(void *arg, Page page, Size *offs, ItemPointerData *tids)
 {
@@ -828,8 +816,6 @@ sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSc
 	pfree(page);
 	return removed;
 }
-
-/* ---------- pages, summary, verification ---------- */
 
 SiftExtent *
 sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n)

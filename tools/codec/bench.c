@@ -31,8 +31,6 @@ static uint64_t rnd(void)
 static corpus C;
 static sift_tid *T;   /* scratch tids of one term */
 
-/* ---------------- sizes ---------------- */
-
 enum { R_AUTO, R_LIST, R_GROUPED, R_BITMAP, R_ARRAY, R_TIN512, R_EF, R_TFNIB, R_TFL1, R_P1K, R_P8K, R_P64K, R_BND, NREP };
 static const char *rep_name[NREP] = { "auto", "list", "grouped", "bitmap", "array", "tin512", "ef-docid", "tf-nib", "tf-L1",
 				      "pol1K", "pol8K", "pol64K", "bnd8K" };
@@ -178,8 +176,6 @@ static void list_alts(void)
 	printf("\n");
 	free(key);
 }
-
-/* ---------------- operations ---------------- */
 
 enum { Q_HH, Q_HM, Q_MM, Q_HR, Q_H3, NQ };
 static const char *q_name[NQ] = { "hi&hi", "hi&mid", "mid&mid", "hi&rare", "hi&hi&mid" };
@@ -419,8 +415,6 @@ static void ops(double secs)
 			}
 		}
 }
-
-/* ---------------- ranking ---------------- */
 
 #define K1 1.2f
 #define BB 0.75f
@@ -668,8 +662,6 @@ static void rank_bench(double secs)
 	}
 }
 
-/* ---------------- facets ---------------- */
-
 /* facets.tsv: blk, off, src_id, country_code; counts per value for term queries */
 static void facet_bench(const char *dir, double secs)
 {
@@ -775,8 +767,6 @@ static void facet_bench(const char *dir, double secs)
 	}
 	(void)secs;
 }
-
-/* ---------------- canonical 512-bit offset masks vs packed w-byte bitmaps ---------------- */
 
 typedef struct { uint32_t ng, *gid; uint8_t **chunk; } chunked;
 

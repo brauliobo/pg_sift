@@ -35,8 +35,6 @@
 #include "core/store.h"
 #include "core/store_int.h"
 
-/* ---------- free list ---------- */
-
 static SiftFreeListData *
 check_freelist(Relation index, Buffer buf, BlockNumber hwm)
 {

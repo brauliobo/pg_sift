@@ -29,8 +29,6 @@
 #include "core/visibility.h"
 #include "table/scan_int.h"
 
-/* ---------- ANALYZE ---------- */
-
 /*
  * The ReadStream only says how many blocks the relation is worth (the buffers are released unread, the number of calls is what the
  * sampler counts); the block space of the table is its P physical blocks: the first ones stand for the write buffer pages, the rest for
@@ -211,8 +209,6 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 	}
 	return false;
 }
-
-/* ---------- CREATE INDEX ---------- */
 
 /*
  * How a version counts for an index build: the rules of heapam_index_build_range_scan. Writers are excluded by the lock of a
