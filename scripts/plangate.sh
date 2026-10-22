@@ -57,20 +57,24 @@ if [[ -n $UPDATE ]]; then
 	log "updated test/plan/shapes.sql"
 fi
 
-sql -q -P footer=off <<-'SQL'
+# the expected plans and cost bands are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
+hard=true
+(( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
+sql -q -P footer=off <<-SQL
 	SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
 		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict,
-		   CASE WHEN cardinality(problems) > 0 THEN 'FAIL' END AS check
+		   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' END AS check
 	FROM plangate.results ORDER BY name
 SQL
-sql -qAt <<-'SQL'
-	SELECT 'FAIL ' || name || ': ' || p FROM plangate.results, unnest(problems) p ORDER BY name LIMIT 40;
+sql -qAt <<-SQL
+	SELECT CASE WHEN $hard THEN 'FAIL ' ELSE 'WARN ' END || name || ': ' || p FROM plangate.results, unnest(problems) p ORDER BY name LIMIT 40;
 	SELECT format('plangate: %s shapes, %s on the scan, %s wins, %s ties, %s loses, %s missed wins, %s failures',
 		count(*), count(*) FILTER (WHERE chosen = 'scan'), count(*) FILTER (WHERE verdict = 'win'), count(*) FILTER (WHERE verdict = 'tie'),
-		count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'), count(*) FILTER (WHERE cardinality(problems) > 0))
+		count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'),
+		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)))
 	FROM plangate.results;
 SQL
-bad=$(sql -qAt -c "SELECT count(*) FILTER (WHERE cardinality(problems) > 0) + CASE WHEN ${WARN:-0} = 1 THEN 0 ELSE count(*) FILTER (WHERE verdict = 'lose') END FROM plangate.results")
+bad=$(sql -qAt -c "SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)) + CASE WHEN ${WARN:-0} = 1 THEN 0 ELSE count(*) FILTER (WHERE verdict = 'lose') END FROM plangate.results")
 total=$(sql -qAt -c "SELECT count(*) FROM plangate.results")
 (( total > 0 )) || { log "FAIL: no shape ran"; exit 1; }
 if [[ -n $WARN ]]; then sql -qAt -c "SELECT 'WARN ' || name || ': the scan is slower than native (' || round(scan_ms::numeric, 1) || ' ms against ' || round(native_ms::numeric, 1) || ')' FROM plangate.results WHERE verdict = 'lose' ORDER BY name"; fi

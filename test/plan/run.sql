@@ -74,10 +74,10 @@ BEGIN
 
 	IF plan = 'new' THEN problems := problems || format('plan: no expectation yet (chosen %s; scripts/plangate.sh --update records it)', chosen);
 	ELSIF plan <> 'either' AND plan <> chosen THEN problems := problems || format('plan: chosen %s, expected %s', chosen, plan); END IF;
-	IF plan = 'scan' AND ratio IS NULL THEN problems := problems || 'plan: the scan path does not exist'; END IF;
+	IF plan = 'scan' AND ratio IS NULL THEN problems := problems || 'plan: the scan path does not exist'::text; END IF;
 	IF ratio IS NOT NULL AND coalesce(band[1], '-') = '-' THEN problems := problems || format('ratio: %s has no band', round(ratio::numeric, 3));
 	ELSIF ratio IS NOT NULL AND NOT ratio BETWEEN band[1]::float8 AND band[2]::float8 THEN problems := problems || format('ratio: %s outside %s %s', round(ratio::numeric, 3), band[1], band[2]);
-	ELSIF ratio IS NULL AND coalesce(band[1], '-') <> '-' THEN problems := problems || 'ratio: the scan path does not exist';
+	ELSIF ratio IS NULL AND coalesce(band[1], '-') <> '-' THEN problems := problems || 'ratio: the scan path does not exist'::text;
 	END IF;
 	IF native_ms IS NOT NULL THEN
 		verdict := CASE WHEN scan_ms IS NULL THEN 'tie'
