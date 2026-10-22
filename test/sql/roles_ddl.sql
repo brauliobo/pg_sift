@@ -233,7 +233,7 @@ DROP TABLE rrd.conc;
 RESET SESSION AUTHORIZATION;
 
 DROP SCHEMA rrd, rrd2 CASCADE;
-DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_roles_drop(text);
+DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
 DROP OWNED BY rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none;
 DROP ROLE rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none;
 DROP EXTENSION pg_sift;

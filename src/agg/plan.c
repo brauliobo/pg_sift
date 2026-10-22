@@ -61,6 +61,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
+#include "utils/rls.h"
 #include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
@@ -168,6 +169,13 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
 				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
 				return agg_refuse(TABLE_KIND);
+			/*
+			 * A table with row-level security read through a view of an owner the policies do not apply to: PostgreSQL adds no condition, and the scan,
+			 * which checks row-level security for the invoking role, would refuse the query the normal plan answers.
+			 */
+			if (e->relkind == RELKIND_RELATION && e->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(parse->rteperminfos, e)->checkAsUser) &&
+				check_enable_rls(e->relid, InvalidOid, true) == RLS_ENABLED)
+				return agg_refuse_on(TABLE_KIND, "the table has row-level security and is read through a view");
 			if (c->relid == 0)
 				c->relid = rti;
 			else if (part || c->joinless)

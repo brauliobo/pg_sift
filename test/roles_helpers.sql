@@ -8,6 +8,8 @@
 --   ERROR: message        the statement failed
 -- rr_matrix(roles, calls) runs every statement of calls (one per line, as for rr_run) as each of the roles, and groups the roles that got the same
 -- result: one row per statement and result, with the roles that got it in the order they are listed.
+-- rr_pushdown_diff(roles, calls) runs the statements with sift.enable_agg off and on and returns the ones that got different results (none: the pushdown
+-- changes nothing a role can do); the statements must not be EXPLAINs.
 -- Blank lines and lines that start with "--" are skipped; "role" may be postgres, the superuser that runs the test. A statement that cannot run in a
 -- function (VACUUM, CREATE INDEX CONCURRENTLY, COPY STDIN/STDOUT) is written in the test file under SET SESSION AUTHORIZATION.
 SET client_min_messages = warning;
@@ -61,11 +63,26 @@ BEGIN
 	END LOOP;
 END $$;
 
+CREATE FUNCTION rr_script(roles text[], calls text) RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(ro || ' | ' || c, E'\n' ORDER BY ci, ri)
+	FROM unnest(string_to_array(calls, E'\n')) WITH ORDINALITY c(c, ci)
+		CROSS JOIN unnest(roles) WITH ORDINALITY ro(ro, ri)
+	WHERE btrim(c) <> '' AND btrim(c) NOT LIKE '--%'
+$$;
+
 CREATE FUNCTION rr_matrix(roles text[], calls text) RETURNS TABLE(stmt text, result text, by_role text) LANGUAGE sql AS $$
 	SELECT r.stmt, r.result, string_agg(r.role, ', ' ORDER BY r.n)
-	FROM rr_run((SELECT string_agg(ro || ' | ' || c, E'\n' ORDER BY ci, ri)
-				 FROM unnest(string_to_array(calls, E'\n')) WITH ORDINALITY c(c, ci)
-					 CROSS JOIN unnest(roles) WITH ORDINALITY ro(ro, ri)
-				 WHERE btrim(c) <> '' AND btrim(c) NOT LIKE '--%')) r
+	FROM rr_run(rr_script(roles, calls)) r
 	GROUP BY r.stmt, r.result ORDER BY min(r.n)
 $$;
+
+CREATE FUNCTION rr_pushdown_diff(roles text[], calls text) RETURNS TABLE(role text, stmt text, plain text, pushed text) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', false);
+	CREATE TEMP TABLE rr_plain AS SELECT * FROM rr_run(rr_script(roles, calls));
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	CREATE TEMP TABLE rr_pushed AS SELECT * FROM rr_run(rr_script(roles, calls));
+	RETURN QUERY SELECT a.role, a.stmt, a.result, b.result FROM rr_plain a JOIN rr_pushed b USING (n) WHERE a.result IS DISTINCT FROM b.result ORDER BY n;
+	DROP TABLE rr_plain, rr_pushed;
+	PERFORM set_config('sift.enable_agg', 'on', false);
+END $$;
