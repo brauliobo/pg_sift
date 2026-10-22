@@ -31,6 +31,17 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT count(*), sum(id) FROM cap_cmds;
-DROP TABLE cap, cap_one, cap_cmds;
+-- sift.table_backpressure is 0 (off) or a percent above 50 of the directory, from which a writer waits for the maintenance lock and merges
+-- before it opens another write buffer: loads that need no wait give the same rows
+SET sift.table_backpressure = 40;
+SET sift.table_backpressure = 75;
+CREATE TABLE cap_bp (id int, v text) USING sift_table;
+CALL load_cap('cap_bp', 60);
+INSERT INTO cap_bp SELECT g, repeat('x', 1000) || g FROM generate_series(132001, 264000) g;
+SELECT count(*), sum(id) FROM cap_bp;
+SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('cap_bp');
+SELECT count(*) AS wrong FROM cap_bp WHERE v <> repeat('x', 1000) || id;
+RESET sift.table_backpressure;
+DROP TABLE cap, cap_one, cap_cmds, cap_bp;
 DROP PROCEDURE load_cap;
 DROP EXTENSION pg_sift;
