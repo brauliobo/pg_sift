@@ -218,6 +218,8 @@ check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 	SiftKey		last = sift_key_from_tid((ItemPointer) &rows[n - 1].tid);
 	int			str = -1;
 
+	/* an assert build stops at the invariants these rows break (SIFT_INVARIANT is an Assert there), so it cannot see them refused */
+#ifndef USE_ASSERT_CHECKING
 	CHECK(t, ERRCODE_OF(sift_cbatch_add(b, &row)) == ERRCODE_INTERNAL_ERROR, "a repeated TID was accepted");
 	row = rows[0];
 	CHECK(t, n < 2 || ERRCODE_OF(sift_cbatch_add(b, &row)) == ERRCODE_INTERNAL_ERROR, "a TID out of order was accepted");
@@ -227,6 +229,7 @@ check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 	row.tid.ip_posid = 0;
 	CHECK(t, ERRCODE_OF(sift_cbatch_add(b, &row)) == ERRCODE_INTERNAL_ERROR, "offset 0 was accepted");
 	CHECK(t, b->nrows == n, "refused rows were counted");
+#endif
 
 	for (int col = 0; col < c->schema->ncols && str < 0; col++)
 		if (c->schema->cols[col].store == SIFT_COLS_STR && c->schema->cols[col].parent < 0)
