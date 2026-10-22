@@ -24,35 +24,35 @@
 <polygon points="438.1,117.2 444,123 438.1,128.8 432.3,123" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>PostgreSQL after maintenance: 1.11× the size before (176 MiB against 159 MiB)</title></polygon>
 <text x="450.1" y="121" font-size="11" text-anchor="start" fill="#59636e">1.11× → 1.11×</text>
 <text x="20" y="155" font-size="12" text-anchor="start" fill="#1f2328">pg_sift sift_col</text>
-<line x1="406.8" y1="151" x2="483.7" y2="151" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
-<circle cx="483.7" cy="145" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_col after churn: 1.17× the size before (168 MiB against 143 MiB)</title></circle>
-<polygon points="406.8,151.2 412.7,157 406.8,162.8 401,157" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_col after maintenance: 1.06× the size before (152 MiB against 143 MiB)</title></polygon>
-<text x="495.7" y="155" font-size="11" text-anchor="start" fill="#59636e">1.17× → 1.06×</text>
+<line x1="405.9" y1="151" x2="484.1" y2="151" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="484.1" cy="145" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_col after churn: 1.17× the size before (168 MiB against 143 MiB)</title></circle>
+<polygon points="405.9,151.2 411.7,157 405.9,162.8 400,157" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_col after maintenance: 1.06× the size before (151 MiB against 143 MiB)</title></polygon>
+<text x="496.1" y="155" font-size="11" text-anchor="start" fill="#59636e">1.17× → 1.06×</text>
 <text x="20" y="189" font-size="12" text-anchor="start" fill="#1f2328">pg_sift sift_table</text>
-<line x1="387.9" y1="185" x2="748.3" y2="185" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
-<circle cx="748.3" cy="179" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_table after churn: 1.56× the size before (66 MiB against 42 MiB)</title></circle>
-<polygon points="387.9,185.2 393.7,191 387.9,196.8 382,191" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_table after maintenance: 1.03× the size before (44 MiB against 42 MiB)</title></polygon>
-<text x="760.3" y="189" font-size="11" text-anchor="start" fill="#59636e">1.56× → 1.03×</text>
+<line x1="438.9" y1="185" x2="738.7" y2="185" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="738.7" cy="179" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_table after churn: 1.55× the size before (66 MiB against 42 MiB)</title></circle>
+<polygon points="438.9,185.2 444.8,191 438.9,196.8 433.1,191" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>pg_sift sift_table after maintenance: 1.11× the size before (47 MiB against 42 MiB)</title></polygon>
+<text x="750.7" y="189" font-size="11" text-anchor="start" fill="#59636e">1.55× → 1.11×</text>
 <text x="20" y="223" font-size="12" text-anchor="start" fill="#1f2328">Elasticsearch</text>
-<line x1="519.6" y1="219" x2="519.6" y2="219" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
-<circle cx="519.6" cy="213" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Elasticsearch after churn: 1.23× the size before (137 MiB against 111 MiB)</title></circle>
-<polygon points="519.6,219.2 525.5,225 519.6,230.8 513.8,225" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Elasticsearch after maintenance: 1.23× the size before (137 MiB against 111 MiB)</title></polygon>
-<text x="531.6" y="223" font-size="11" text-anchor="start" fill="#59636e">1.23× → 1.23×</text>
+<line x1="509.2" y1="219" x2="509.2" y2="219" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="509.2" cy="213" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Elasticsearch after churn: 1.21× the size before (136 MiB against 112 MiB)</title></circle>
+<polygon points="509.2,219.2 515,225 509.2,230.8 503.3,225" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Elasticsearch after maintenance: 1.21× the size before (136 MiB against 112 MiB)</title></polygon>
+<text x="521.2" y="223" font-size="11" text-anchor="start" fill="#59636e">1.21× → 1.21×</text>
 <text x="20" y="257" font-size="12" text-anchor="start" fill="#1f2328">ClickHouse, lightweight UPDATE</text>
-<line x1="352.9" y1="253" x2="383.6" y2="253" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
-<circle cx="383.6" cy="247" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, lightweight UPDATE after churn: 1.03× the size before (39 MiB against 38 MiB)</title></circle>
+<line x1="352.9" y1="253" x2="385.4" y2="253" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="385.4" cy="247" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, lightweight UPDATE after churn: 1.03× the size before (39 MiB against 38 MiB)</title></circle>
 <polygon points="352.9,253.2 358.8,259 352.9,264.9 347.1,259" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, lightweight UPDATE after maintenance: 0.98× the size before (37 MiB against 38 MiB)</title></polygon>
-<text x="395.6" y="257" font-size="11" text-anchor="start" fill="#59636e">1.03× → 0.98×</text>
+<text x="397.4" y="257" font-size="11" text-anchor="start" fill="#59636e">1.03× → 0.98×</text>
 <text x="20" y="291" font-size="12" text-anchor="start" fill="#1f2328">ClickHouse, ALTER UPDATE</text>
 <line x1="338.5" y1="287" x2="338.5" y2="287" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
 <circle cx="338.5" cy="281" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ALTER UPDATE after churn: 0.96× the size before (36 MiB against 38 MiB)</title></circle>
 <polygon points="338.5,287.1 344.4,293 338.5,298.9 332.7,293" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ALTER UPDATE after maintenance: 0.96× the size before (36 MiB against 38 MiB)</title></polygon>
 <text x="350.5" y="291" font-size="11" text-anchor="start" fill="#59636e">0.96× → 0.96×</text>
 <text x="20" y="325" font-size="12" text-anchor="start" fill="#1f2328">ClickHouse, ReplacingMergeTree</text>
-<line x1="387.2" y1="321" x2="428.8" y2="321" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
-<circle cx="428.8" cy="315" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ReplacingMergeTree after churn: 1.09× the size before (41 MiB against 38 MiB)</title></circle>
-<polygon points="387.2,321.1 393.1,327 387.2,332.9 381.4,327" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ReplacingMergeTree after maintenance: 1.03× the size before (39 MiB against 38 MiB)</title></polygon>
-<text x="440.8" y="325" font-size="11" text-anchor="start" fill="#59636e">1.09× → 1.03×</text>
+<line x1="385.4" y1="321" x2="427" y2="321" stroke="#59636e" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="427" cy="315" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ReplacingMergeTree after churn: 1.09× the size before (41 MiB against 38 MiB)</title></circle>
+<polygon points="385.4,321.1 391.3,327 385.4,332.9 379.6,327" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ClickHouse, ReplacingMergeTree after maintenance: 1.03× the size before (39 MiB against 38 MiB)</title></polygon>
+<text x="439" y="325" font-size="11" text-anchor="start" fill="#59636e">1.09× → 1.03×</text>
 <text x="20" y="354" font-size="11" text-anchor="start" fill="#59636e">Data: docs/results/store.json, 2026-10-22. Host: AMD Ryzen 7 9700X, 16 threads, 8g per server.</text>
 <text x="20" y="370" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 18.6, pg_sift 3.2, Elasticsearch 9.5.5, ClickHouse 26.9.19.9, Citus 14.2-1. Sizes are the files on disk after each step; the</text>
 <text x="20" y="386" font-size="11" text-anchor="start" fill="#59636e">two numbers beside a row are the ratios after the changes and after maintenance.</text>
