@@ -393,6 +393,49 @@ A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/cte.c`)
 
 What the planner refuses among the joins, the per-order form and a few jsonb tests, each once with the reason. The traps with a fixture (`t_not_in_subquery_correlated`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
 
+Every refusal has a slug, `sift.explain_refusals` and `sift.explain_why` name it, and `sift.stats()` counts it (`refused.<slug>`, and `limit.<id>` for a refusal by a fixed limit of [LIMITS.md](LIMITS.md)). The table is generated from `src/agg/refuse.h`; a `limit` is a query with more of something than the scan holds, `semantic` a shape the scan does not prove.
+
+<!-- refusals:start -->
+| slug | class | the query kept the normal plan because |
+|---|---|---|
+| `other` | semantic | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded |
+| `disabled` | semantic | sift.enable_agg is off |
+| `query_kind` | semantic | the query has a set-returning function in the select list, row locks or a recursive CTE |
+| `from_shape` | semantic | the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads |
+| `table_kind` | semantic | the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table |
+| `no_source` | semantic | no sift_col index or sift_table covers the table |
+| `partition_source` | semantic | a partition has no column index the plan can use, or the partitions do not share a layout |
+| `partition_count` | limit | the table has more partitions left by PostgreSQL's pruning than a scan reads |
+| `join_child` | semantic | a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child |
+| `outer_join` | semantic | an outer join of the scanned table keeps rows the scan cannot reproduce |
+| `unnest_leaf` | semantic | the array or object a lateral function unnests is not a leaf of the column index |
+| `where` | semantic | a condition of the WHERE or ON clause is not one the scan can test |
+| `join_condition` | semantic | a join condition is not an equality or filter the scan can look up |
+| `group_key` | semantic | a group key is not a leaf, or an expression of one, that the scan reads |
+| `too_many_keys` | limit | the query groups by more columns than the scan holds |
+| `error_parity` | semantic | the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read) |
+| `output_expr` | semantic | the select list or HAVING reads something besides group keys and the aggregates the scan computes |
+| `aggregate` | semantic | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes |
+| `distinct_on` | semantic | DISTINCT ON has no total order for the row it keeps |
+| `grouping_sets` | semantic | the arm does not group by grouping sets |
+| `dirty_units` | semantic | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
+| `first_memory` | limit | the first rows of the groups would not fit in the memory of a hash aggregate |
+| `group_memory` | limit | the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill |
+| `lateral_limit` | semantic | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
+| `two_arms` | semantic | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
+| `two_keys` | semantic | a key of the two level aggregate is not one every arm groups by |
+| `two_aggs` | semantic | an aggregate over the arms is not one the two level scan computes |
+| `spine_shape` | semantic | the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms |
+| `shape_width` | limit | the query has more joined tables, value combinations, leaves, arms or columns than the scan holds: the detail names the limit and its value |
+| `spine_rows` | limit | the rows of the spine are estimated above sift.agg_lookup_max_kb |
+| `rows_shape` | semantic | the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group |
+| `topn_shape` | semantic | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests |
+| `cost` | semantic | the normal plan is estimated cheaper than the scan |
+| `cte_cost` | semantic | the shared CTE plan is estimated cheaper than the plan with the CTE inlined |
+<!-- refusals:end -->
+
+The shapes with a fixture:
+
 | Shape | Reason |
 |---|---|
 | `FULL JOIN` to a table | the unmatched rows of the table would be output rows with no source row; the scan only emits tuples of source rows |

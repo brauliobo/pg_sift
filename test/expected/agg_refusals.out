@@ -29,6 +29,10 @@ CREATE TABLE facts (id int, metrics jsonb);
 INSERT INTO facts SELECT i, jsonb_build_object('m_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
 INSERT INTO facts VALUES (5001, '{"m_total": "abc"}');
 CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+-- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
+CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
+INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
+CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
@@ -67,6 +71,7 @@ INSERT INTO shapes VALUES
  ('group key', 'single', 'SELECT random(), count(*) FROM events GROUP BY 1'),
  ('too many keys', 'single', repeated(40)),
  ('output', 'single', 'SELECT id, kind, count(*) FROM events GROUP BY id'),
+ ('error parity', 'single', 'SELECT sum((doc->>''m'')::float8) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') FROM guarded'),
  ('aggregate', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
  ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''m_total'''),
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
@@ -104,6 +109,7 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  group key           | single     | f    | group_key
  too many keys       | single     | f    | too_many_keys
  output              | single     | f    | output_expr
+ error parity        | single     | f    | error_parity
  aggregate           | single     | f    | aggregate
  dirty cast          | single     | f    | dirty_units
  distinct            | distinct   | t    | 
@@ -124,7 +130,7 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  rows                | rows       | f    | rows_shape
  rows grouping sets  | rows       | f    | grouping_sets
  shared cte          | cte_inline | f    | cte_cost
-(34 rows)
+(35 rows)
 
 -- a spine of 12,001 rows is used; one above the memory of the lookups is refused
 SET sift.agg_lookup_max_kb = 512;
@@ -234,7 +240,7 @@ SET client_min_messages = error;
 SELECT count(*) AS shapes, count(*) FILTER (WHERE plan_of(q, false) <> plan_of(q, true)) AS plans_that_differ FROM shapes;
  shapes | plans_that_differ 
 --------+-------------------
-     34 |                 0
+     35 |                 0
 (1 row)
 
 SHOW sift.explain_refusals;
@@ -244,6 +250,6 @@ SHOW sift.explain_refusals;
 (1 row)
 
 RESET client_min_messages;
-DROP TABLE shapes, events, dims, plain, parted, ticks, facts;
+DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift;
