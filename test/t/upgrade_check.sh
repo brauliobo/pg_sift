@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 35
+plan 36
 node_init uc 21
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
@@ -28,6 +28,8 @@ q clean "CREATE EXTENSION pg_sift" \
 	"CREATE INDEX facts_cube ON facts USING sift_col (id, g, n) WITH (cube_minmax = true)" \
 	"CREATE TABLE tbl (id int, g int, n int) USING sift_table" \
 	"INSERT INTO tbl SELECT g, g % 9, g % 100 FROM generate_series(1, 3000) g" "VACUUM tbl" \
+	"CREATE TABLE months (id int, at timestamp) USING sift_table" \
+	"INSERT INTO months SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM months" \
 	"CREATE TABLE unwritten (id int) USING sift_table" >/dev/null || bail "setup failed"
 objects=$(q clean "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname LIKE 'sift%' AND c.relkind IN ('i', 'r')")
 procs=$(q clean "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace")
@@ -55,6 +57,7 @@ check "to 3.1: the cube option (format 7) is a blocker" test -n "$(row "$out" bl
 out=$(uc --to 3.2 clean)
 check "to 3.2: the wide leaf is ok and the cube option is a blocker with the setting 6" grep -q -E '^blocker +facts_cube .*sift\.col_format_minor = 6 and REINDEX INDEX facts_cube' <<<"$out" &&
 	test -z "$(row "$out" blocker facts_wide)"
+check "to 3.2: the month of a timestamp in a sift_table (format 8) is a blocker with the setting 6" grep -q -E '^blocker +months .*sift\.col_format_minor = 6, then ALTER TABLE months' <<<"$out"
 check "to 3.3: nothing blocks" test "$(uc --to 3.3 clean | grep -c '^blocker')" == 0
 check "a release that is not major.minor is refused" test "$(uc --to three clean 2>&1 | grep -c 'target must be a release')" == 1
 
