@@ -1,0 +1,220 @@
+-- ORDER BY a text, varchar, uuid, bytea or inet column LIMIT n: the keys are the entries of the unit's dictionary, compared by the sort operator's own
+-- comparison (the collation of the query for text). Every query runs twice, the plain plan as the reference (sift.enable_agg off) and the pushed one,
+-- and the rows are compared in order: asc and desc, NULLs first and last, ties, empty and long strings, multi-byte characters, a locale collation,
+-- the heap, the sort of every row (a deep page, a heap of keys wider than work_mem, a spilling tuplesort), workers, rows in the write buffer.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+CREATE TABLE tx (id int PRIMARY KEY, g int, s text, v varchar(12), u uuid, b bytea, ip inet, w text);
+INSERT INTO tx
+SELECT i, i % 7,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 23 = 0 THEN ''
+		ELSE (ARRAY['Zed','apple','Apple','banana','éclair','Ärger','b','B','a b','a-b','z','10','9','ß','ss','日本','é日','_x','  '])[1 + i % 19] || (i % 211) END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE 'v' || (i % 53) END,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE md5((i % 400)::text)::uuid END,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN '\x'::bytea WHEN i % 31 = 0 THEN '\x00'::bytea ELSE decode(md5((i % 300)::text), 'hex') END,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE ('10.' || (i % 5) || '.' || (i % 31) || '.1/' || (8 + i % 20))::inet END,
+	repeat(chr(97 + i % 5), 300 + i % 200) || i
+FROM generate_series(1, 30000) i;
+CREATE INDEX tx_col ON tx USING sift_col (id, g, s, v, u, b, ip, w);
+VACUUM (ANALYZE) tx;
+CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
+CREATE FUNCTION tx_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tx_a, tx_b;
+	PERFORM tx_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tx_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM tx_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE tx_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tx_a EXCEPT ALL SELECT pos, r FROM tx_b) UNION ALL (SELECT pos, r FROM tx_b EXCEPT ALL SELECT pos, r FROM tx_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ ', sorted' THEN '+sorted' ELSE '' END || ' ' || (SELECT count(*) FROM tx_b);
+END $$;
+-- a collation of the C library or ICU other than C, when the build has one (strcoll orders case and accents)
+CREATE FUNCTION tx_coll() RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+CREATE TABLE tx_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO tx_q VALUES
+	('text_asc',        $q$SELECT id, s FROM tx ORDER BY s, id LIMIT 25$q$),
+	('text_desc',       $q$SELECT id, s FROM tx ORDER BY s DESC, id LIMIT 25$q$),
+	('text_nulls_first',$q$SELECT id, s FROM tx ORDER BY s NULLS FIRST, id LIMIT 25$q$),
+	('text_nulls_last', $q$SELECT id, s FROM tx ORDER BY s DESC NULLS LAST, id DESC LIMIT 25$q$),
+	('text_offset',     $q$SELECT id, s FROM tx ORDER BY s, id LIMIT 20 OFFSET 700$q$),
+	('text_filter',     $q$SELECT id, s FROM tx WHERE g IN (1, 3) AND id > 5000 ORDER BY s DESC, id LIMIT 30$q$),
+	('text_ties',       $q$SELECT id, g, s FROM tx ORDER BY g, s, id LIMIT 40 OFFSET 11$q$),
+	('text_c',          $q$SELECT id, s FROM tx ORDER BY s COLLATE "C", id LIMIT 25$q$),
+	('text_c_desc',     $q$SELECT id, s FROM tx ORDER BY s COLLATE "C" DESC, id LIMIT 25$q$),
+	('text_locale',     format($q$SELECT id, s FROM tx ORDER BY s COLLATE %I, id LIMIT 25 OFFSET 3$q$, tx_coll())),
+	('text_locale_desc',format($q$SELECT id, s FROM tx ORDER BY s COLLATE %I DESC NULLS FIRST, id LIMIT 25$q$, tx_coll())),
+	('varchar',         $q$SELECT id, v FROM tx ORDER BY v, s DESC, id LIMIT 30$q$),
+	('long_strings',    $q$SELECT id, w FROM tx ORDER BY w DESC, id LIMIT 12 OFFSET 40$q$),
+	('uuid_asc',        $q$SELECT id, u FROM tx ORDER BY u, id LIMIT 25$q$),
+	('uuid_desc',       $q$SELECT id, u FROM tx ORDER BY u DESC NULLS FIRST, id LIMIT 25$q$),
+	('bytea_asc',       $q$SELECT id, b FROM tx ORDER BY b, id LIMIT 25$q$),
+	('bytea_desc',      $q$SELECT id, b FROM tx ORDER BY b DESC NULLS LAST, id LIMIT 25$q$),
+	('inet_asc',        $q$SELECT id, ip FROM tx ORDER BY ip, id LIMIT 25$q$),
+	('inet_desc',       $q$SELECT id, ip FROM tx ORDER BY ip DESC NULLS FIRST, id LIMIT 25$q$),
+	('mixed_keys',      $q$SELECT id, u, b, ip FROM tx ORDER BY u DESC, b, ip, id LIMIT 30$q$),
+	('int_then_text',   $q$SELECT id, g, s FROM tx ORDER BY g DESC, s, id LIMIT 30$q$),
+	('five_keys',       $q$SELECT id FROM tx ORDER BY g, s, v, u, b, id LIMIT 30$q$),
+	('deep_page',       $q$SELECT id, s FROM tx ORDER BY s DESC, id LIMIT 20 OFFSET 20000$q$),
+	('all_rows',        $q$SELECT id, u FROM tx ORDER BY u, id LIMIT 200000$q$),
+	('past_the_heap',   $q$SELECT id, s FROM tx ORDER BY s, id LIMIT 100001$q$);
+SELECT tag, tx_check(q) FROM tx_q ORDER BY tag COLLATE "C";
+NOTICE:  table "tx_a" does not exist, skipping
+NOTICE:  table "tx_b" does not exist, skipping
+       tag        |        tx_check        
+------------------+------------------------
+ all_rows         | same+topn+sorted 30000
+ bytea_asc        | same+topn 25
+ bytea_desc       | same+topn 25
+ deep_page        | same+topn 20
+ five_keys        | same+topn+sorted 30
+ inet_asc         | same+topn 25
+ inet_desc        | same+topn 25
+ int_then_text    | same+topn 30
+ long_strings     | same+topn 12
+ mixed_keys       | same+topn 30
+ past_the_heap    | same+topn+sorted 30000
+ text_asc         | same+topn 25
+ text_c           | same+topn 25
+ text_c_desc      | same+topn 25
+ text_desc        | same+topn 25
+ text_filter      | same+topn 30
+ text_locale      | same+topn 25
+ text_locale_desc | same+topn 25
+ text_nulls_first | same+topn 25
+ text_nulls_last  | same+topn 25
+ text_offset      | same+topn 20
+ text_ties        | same+topn 40
+ uuid_asc         | same+topn 25
+ uuid_desc        | same+topn 25
+ varchar          | same+topn 30
+(25 rows)
+
+-- workers: each keeps a heap of the strings it saw and sends them with their bytes; the leader merges them
+SELECT tag, tx_check(q, 2) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'text_locale', 'uuid_asc', 'bytea_desc', 'inet_desc', 'mixed_keys', 'int_then_text') ORDER BY tag COLLATE "C";
+      tag      |   tx_check   
+---------------+--------------
+ bytea_desc    | same+topn 25
+ inet_desc     | same+topn 25
+ int_then_text | same+topn 30
+ mixed_keys    | same+topn 30
+ text_asc      | same+topn 25
+ text_desc     | same+topn 25
+ text_locale   | same+topn 25
+ uuid_asc      | same+topn 25
+(8 rows)
+
+-- a heap whose keys are wider than work_mem sorts instead (the strings of w are 300 bytes and more), and the rows past work_mem go to a tuplesort that spills
+SET work_mem = '64kB';
+SELECT tx_check($q$SELECT id, w FROM tx ORDER BY w, id LIMIT 3000$q$) AS wide_keys,
+	   tx_check($q$SELECT id, s FROM tx ORDER BY s DESC, id LIMIT 20 OFFSET 20000$q$) AS spilled_deep,
+	   tx_check($q$SELECT id, u, b FROM tx ORDER BY u, b DESC, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
+       wide_keys       |    spilled_deep     |  spilled_two_keys   
+-----------------------+---------------------+---------------------
+ same+topn+sorted 3000 | same+topn+sorted 20 | same+topn+sorted 30
+(1 row)
+
+RESET work_mem;
+-- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
+INSERT INTO tx SELECT 30000 + i, i % 7, CASE WHEN i % 5 = 0 THEN NULL ELSE '!' || i || 'zz' END, 'w' || i, md5('new' || i)::uuid, decode(md5('n' || i), 'hex'), ('192.168.' || i % 8 || '.' || i % 200)::inet, 'new' || i
+FROM generate_series(1, 700) i;
+UPDATE tx SET s = 'Aaa' || id, b = NULL, ip = '1.2.3.4'::inet WHERE id % 97 = 0;
+DELETE FROM tx WHERE id % 89 = 0;
+SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'text_nulls_first', 'text_c', 'text_locale', 'uuid_asc', 'bytea_asc', 'bytea_desc', 'inet_asc', 'mixed_keys', 'deep_page') ORDER BY tag COLLATE "C";
+       tag        |   tx_check   
+------------------+--------------
+ bytea_asc        | same+topn 25
+ bytea_desc       | same+topn 25
+ deep_page        | same+topn 20
+ inet_asc         | same+topn 25
+ mixed_keys       | same+topn 30
+ text_asc         | same+topn 25
+ text_c           | same+topn 25
+ text_desc        | same+topn 25
+ text_locale      | same+topn 25
+ text_nulls_first | same+topn 25
+ uuid_asc         | same+topn 25
+(11 rows)
+
+SELECT tag, tx_check(q, 2) FROM tx_q WHERE tag IN ('text_asc', 'uuid_desc', 'inet_asc') ORDER BY tag COLLATE "C";
+    tag    |   tx_check   
+-----------+--------------
+ inet_asc  | same+topn 25
+ text_asc  | same+topn 25
+ uuid_desc | same+topn 25
+(3 rows)
+
+VACUUM tx;
+SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'uuid_asc', 'bytea_desc', 'inet_desc') ORDER BY tag COLLATE "C";
+    tag     |   tx_check   
+------------+--------------
+ bytea_desc | same+topn 25
+ inet_desc  | same+topn 25
+ text_asc   | same+topn 25
+ text_desc  | same+topn 25
+ uuid_asc   | same+topn 25
+(5 rows)
+
+-- named refusals: a collation that is not deterministic (equal strings differ as bytes, in the plan's order), char(n), name, cidr, text_pattern_ops
+CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false);
+CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
+INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
+CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
+ANALYZE tr;
+SET sift.enable_agg = on;
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
+SELECT k, w.used, w.slug, w.reason ~ 'nondeterministic collation' AS named
+FROM (VALUES ('nondeterministic', $q$SELECT id, p FROM tr ORDER BY p COLLATE tx_nd, id LIMIT 5$q$),
+			 ('char(n)', $q$SELECT id, c FROM tr ORDER BY c, id LIMIT 5$q$),
+			 ('name', $q$SELECT id, nm FROM tr ORDER BY nm, id LIMIT 5$q$),
+			 ('cidr', $q$SELECT id, cd FROM tr ORDER BY cd, id LIMIT 5$q$),
+			 ('text_pattern_ops', $q$SELECT id, p FROM tr ORDER BY p USING ~<~, id LIMIT 5$q$),
+			 ('deterministic', $q$SELECT id, p FROM tr ORDER BY p, id LIMIT 5$q$)) q(k, q),
+	 LATERAL sift.explain_why(q.q) w
+ORDER BY k COLLATE "C";
+        k         | used |    slug    | named 
+------------------+------+------------+-------
+ char(n)          | f    | topn_shape | f
+ cidr             | f    | topn_shape | f
+ deterministic    | t    |            | 
+ name             | f    | topn_shape | f
+ nondeterministic | f    | topn_shape | t
+ text_pattern_ops | f    | topn_shape | f
+(6 rows)
+
+SELECT tx_check($q$SELECT id, p FROM tr ORDER BY p COLLATE tx_nd, id LIMIT 5$q$);
+ tx_check 
+----------
+ same 5
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+-- strings the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the plan that would read the key leaves the query to the normal plan
+CREATE TABLE tv (id int PRIMARY KEY, w text);
+INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tv_col ON tv USING sift_col (id, w);
+NOTICE:  sift_col: the strings of leaf 1 (attribute 2) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+RESET sift.test_limits;
+ANALYZE tv;
+SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS overflow_key;
+ overflow_key 
+--------------
+ same 10
+(1 row)
+
