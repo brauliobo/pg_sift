@@ -8,24 +8,29 @@
 #include <math.h>
 
 #include "access/genam.h"
+#include "access/itup.h"
 #include "access/relation.h"
 #include "access/relscan.h"
 #include "access/skey.h"
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "catalog/pg_type.h"
+#include "mb/pg_wchar.h"
+#include "pgstat.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/uuid.h"
 
 #include "col/am.h"
+#include "col/pg.h"
 
 /* the cost of the filter of one value of an integer or dictionary column, in operator costs (measured: docs/COL-SCAN.md) */
 #define COL_SCAN_ROW_COST	0.35
@@ -34,10 +39,31 @@
 
 bool		sift_enable_col_scan = false;
 
+/*
+ * One scan of the index, as a bitmap (amgetbitmap) or tuple by tuple (amgettuple): the source, the predicates of the keys and, for amgettuple, the rows of
+ * the unit being returned. Everything but the heap relation lives in cxt, which a rescan resets.
+ */
 typedef struct ColScanOpaque
 {
 	MemoryContext cxt;
+	MemoryContext batch;		/* the values of the unit being returned */
 	Relation	heap;
+	SiftColSource *src;
+	SiftColPred *preds;
+	int			npreds;
+	bool		started;
+	bool		unsat;			/* a key no row can satisfy */
+	bool		recheck;
+	int		   *first;			/* first[attno]: the leaf of attribute attno */
+	int			natts;
+	SiftColDef *defs;
+	uint32		n,				/* the rows of the unit */
+				pos,
+				cap;
+	ItemPointerData *tids;
+	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
+	bool	   *nulls;
+	IndexTuple	itup;
 } ColScanOpaque;
 
 IndexScanDesc
@@ -47,13 +73,32 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 	ColScanOpaque *so = palloc0(sizeof(ColScanOpaque));
 
 	so->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col scan", ALLOCSET_DEFAULT_SIZES);
+	so->batch = AllocSetContextCreate(so->cxt, "sift_col scan batch", ALLOCSET_DEFAULT_SIZES);
 	scan->opaque = so;
+	scan->xs_itupdesc = RelationGetDescr(index);
 	return scan;
+}
+
+static void
+col_scan_end(ColScanOpaque *so)
+{
+	if (so->src)
+		sift_col_close(so->src);
+	MemoryContextReset(so->cxt);
+	so->batch = AllocSetContextCreate(so->cxt, "sift_col scan batch", ALLOCSET_DEFAULT_SIZES);
+	so->src = NULL;
+	so->started = so->unsat = so->recheck = false;
+	so->n = so->pos = so->cap = 0;
+	so->tids = NULL;
+	so->vals = NULL;
+	so->nulls = NULL;
+	so->itup = NULL;
 }
 
 void
 sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
 {
+	col_scan_end(scan->opaque);
 	if (keys && scan->numberOfKeys > 0)
 		memcpy(scan->keyData, keys, scan->numberOfKeys * sizeof(ScanKeyData));
 }
@@ -63,14 +108,25 @@ sift_col_amendscan(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 
+	if (so->src)
+		sift_col_close(so->src);
 	if (so->heap)
 		table_close(so->heap, NoLock);
 	MemoryContextDelete(so->cxt);
 }
 
-/* The constant of a key as a predicate value of the leaf: the key's own type is an integer, date, timestamp, text or uuid */
+/* What the keys of one scan need to know besides the keys */
+typedef struct ColKeys
+{
+	const SiftColDef *defs;		/* the leaves of the index */
+	const int  *first;			/* first[attno]: the leaf of attribute attno */
+	TupleDesc	idesc;
+	bool		recheck;		/* a key replaced by IS NOT NULL because the leaf cannot test its constant exactly: the heap scan applies the clause */
+} ColKeys;
+
+/* The constant of a key as a predicate value of the leaf: the key's own type is an integer, date, timestamp, boolean, float, text, char(n) or uuid (numeric: numeric_preds) */
 static void
-key_value(Oid argtype, Datum d, SiftColValue *v)
+key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v)
 {
 	*v = (SiftColValue) {.tag = SIFT_COLTAG_UNKNOWN};
 	switch (argtype)
@@ -87,12 +143,45 @@ key_value(Oid argtype, Datum d, SiftColValue *v)
 		case TIMESTAMPTZOID:
 			v->v.i = DatumGetInt64(d);
 			break;
+		case BOOLOID:
+			v->v.i = DatumGetBool(d);
+			break;
+		case FLOAT4OID:
+			v->v.f = DatumGetFloat4(d);
+			break;
+		case FLOAT8OID:
+			v->v.f = DatumGetFloat8(d);
+			break;
 		case TEXTOID:
 			{
 				struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
 
 				v->v.s = VARDATA_ANY(t);
 				v->len = VARSIZE_ANY_EXHDR(t);
+			}
+			break;
+		case BPCHAROID:
+			{
+				/* the leaf holds the value padded with blanks to its length in characters; trailing blanks of the constant are not part of its value */
+				struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+				const char *s = VARDATA_ANY(t);
+				int			len = VARSIZE_ANY_EXHDR(t),
+							pad;
+
+				while (len > 0 && s[len - 1] == ' ')
+					len--;
+				pad = typmod - VARHDRSZ - pg_mbstrlen_with_len(s, len);
+				if (pad > 0)
+				{
+					char	   *buf = palloc(len + pad);
+
+					memcpy(buf, s, len);
+					memset(buf + len, ' ', pad);
+					s = buf;
+					len += pad;
+				}
+				v->v.s = s;
+				v->len = len;
 			}
 			break;
 		case UUIDOID:
@@ -104,7 +193,20 @@ key_value(Oid argtype, Datum d, SiftColValue *v)
 	}
 }
 
-/* The strategies of the operator classes: btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) */
+/* A key the leaf cannot test exactly (a NaN, a numeric out of the range of the leaf): IS NOT NULL keeps every row it could match and the heap scan decides */
+static void
+key_any(SiftColPred *p, ColKeys *k)
+{
+	p->op = SIFT_COLOP_NOTNULL;
+	p->nvals = 0;
+	p->vals = NULL;
+	k->recheck = true;
+}
+
+/* The strategies of the operator classes: btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@) */
+#define COL_STRAT_LIKE			7
+#define COL_STRAT_STARTS_WITH	8
+
 static SiftColOp
 strategy_op(StrategyNumber s)
 {
@@ -125,23 +227,167 @@ strategy_op(StrategyNumber s)
 	return 0;
 }
 
+/*
+ * LIKE and ^@ on a text leaf: the literal prefix of the pattern (up to its first % or _, a backslash escapes) is a byte prefix test of the leaf, which is exact for
+ * 'prefix%', '=' for a pattern with no wildcard and a superset for any other pattern (the heap scan applies the pattern then). A pattern with no prefix, one that ends in
+ * a backslash (an error to LIKE) and, in an encoding where a wildcard byte can be part of a character, any pattern: IS NOT NULL and a recheck.
+ */
+static void
+like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with)
+{
+	const char *pat = v->v.s;
+	int			len = v->len,
+				n = 0,
+				i = 0;
+	char	   *buf = palloc(len + 1);
+
+	if (!starts_with && GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() > 1)
+	{
+		key_any(p, k);
+		return;
+	}
+	while (i < len)
+	{
+		if (!starts_with && pat[i] == '\\')
+		{
+			if (i + 1 >= len)
+			{
+				key_any(p, k);
+				return;
+			}
+			buf[n++] = pat[i + 1];
+			i += 2;
+			continue;
+		}
+		if (!starts_with && (pat[i] == '%' || pat[i] == '_'))
+			break;
+		buf[n++] = pat[i++];
+	}
+	if (n == 0)
+	{
+		key_any(p, k);
+		return;
+	}
+	v->v.s = buf;
+	v->len = n;
+	p->op = !starts_with && i == len ? SIFT_COLOP_EQ : SIFT_COLOP_PREFIX;
+	p->nvals = 1;
+	p->vals = v;
+	if (!starts_with && i < len && !(pat[i] == '%' && i == len - 1))
+		k->recheck = true;
+}
+
+static bool
+key_is_float(Oid t)
+{
+	return t == FLOAT4OID || t == FLOAT8OID;
+}
+
+/*
+ * A numeric(p <= 18, s) leaf holds the number times 10^s: the constants are scaled as sift_col_numeric_key says, so that the keys that satisfy
+ * the predicate are exactly those of the key range. false: no value can satisfy the key. A constant the leaf cannot hold (NaN, or too large to scale) and an
+ * array with an operator other than = fall back to IS NOT NULL.
+ */
+static bool
+numeric_preds(const SiftColDef *def, ScanKey key, SiftColPred *p, ColKeys *k)
+{
+	StrategyNumber st = key->sk_strategy;
+
+	if (key->sk_flags & SK_SEARCHARRAY)
+	{
+		ArrayType  *arr = DatumGetArrayTypeP(key->sk_argument);
+		int16		len;
+		bool		byval;
+		char		align;
+		Datum	   *el;
+		bool	   *nl;
+		int			n,
+					m = 0;
+		SiftColValue *vals;
+
+		if (st != BTEqualStrategyNumber)
+		{
+			key_any(p, k);
+			return true;
+		}
+		get_typlenbyvalalign(NUMERICOID, &len, &byval, &align);
+		deconstruct_array(arr, NUMERICOID, len, byval, align, &el, &nl, &n);
+		vals = palloc(Max(n, 1) * sizeof(SiftColValue));
+		for (int j = 0; j < n; j++)
+		{
+			int64		lo;
+
+			if (nl[j])
+				continue;
+			if (!sift_col_numeric_key_fits(def->scale, el[j]))
+			{
+				key_any(p, k);
+				return true;
+			}
+			lo = sift_col_numeric_key(def->scale, el[j], SIFT_COL_ROUND_DOWN);
+			if (lo != sift_col_numeric_key(def->scale, el[j], SIFT_COL_ROUND_UP))
+				continue;
+			vals[m] = (SiftColValue) {.tag = SIFT_COLTAG_UNKNOWN};
+			vals[m++].v.i = lo;
+		}
+		if (m == 0)
+			return false;
+		p->op = SIFT_COLOP_IN;
+		p->nvals = m;
+		p->vals = vals;
+		return true;
+	}
+	if (!sift_col_numeric_key_fits(def->scale, key->sk_argument))
+	{
+		key_any(p, k);
+		return true;
+	}
+	{
+		SiftColValue *v = palloc(sizeof(SiftColValue));
+		int64		down = sift_col_numeric_key(def->scale, key->sk_argument, SIFT_COL_ROUND_DOWN),
+					up = sift_col_numeric_key(def->scale, key->sk_argument, SIFT_COL_ROUND_UP);
+
+		*v = (SiftColValue) {.tag = SIFT_COLTAG_UNKNOWN};
+		/* x > c is key > floor(c), x >= c is key >= ceil(c), x < c is key < ceil(c), x <= c is key <= floor(c); x = c needs a constant of at most s digits */
+		if (st == BTEqualStrategyNumber && down != up)
+			return false;
+		v->v.i = (st == BTGreaterStrategyNumber || st == BTLessEqualStrategyNumber || st == BTEqualStrategyNumber) ? down : up;
+		p->op = strategy_op(st);
+		p->nvals = 1;
+		p->vals = v;
+	}
+	return true;
+}
+
 /* The predicates of the keys; false when one cannot be satisfied (an operator is strict: a NULL operand matches nothing) */
 static bool
-scan_preds(IndexScanDesc scan, const int *first, SiftColPred *preds)
+scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 {
 	for (int i = 0; i < scan->numberOfKeys; i++)
 	{
 		ScanKey		key = &scan->keyData[i];
-		int			leaf = first[key->sk_attno];
+		int			leaf = k->first[key->sk_attno];
+		Form_pg_attribute att = TupleDescAttr(k->idesc, key->sk_attno - 1);
+		Oid			argtype = OidIsValid(key->sk_subtype) ? key->sk_subtype : att->atttypid;
 		SiftColPred *p = &preds[i];
 
 		*p = (SiftColPred) {.col = leaf};
+		/* a NaN is stored as a NULL with the overflow flag, and a row with an overflow flag is a candidate of every test of the leaf: the heap scan decides */
+		if (k->defs[leaf].type == SIFT_COLT_NUMERIC)
+			k->recheck = true;
 		if (key->sk_flags & SK_SEARCHNULL)
 			p->op = SIFT_COLOP_ISNULL;
 		else if (key->sk_flags & SK_SEARCHNOTNULL)
 			p->op = SIFT_COLOP_NOTNULL;
 		else if (key->sk_flags & SK_ISNULL)
 			return false;
+		else if (k->defs[leaf].type == SIFT_COLT_NUMERIC)
+		{
+			if (!numeric_preds(&k->defs[leaf], key, p, k))
+				return false;
+		}
+		else if ((key->sk_flags & SK_SEARCHARRAY) && key->sk_strategy > BTGreaterStrategyNumber)
+			key_any(p, k);
 		else if (key->sk_flags & SK_SEARCHARRAY)
 		{
 			ArrayType  *arr = DatumGetArrayTypeP(key->sk_argument);
@@ -153,6 +399,7 @@ scan_preds(IndexScanDesc scan, const int *first, SiftColPred *preds)
 			bool	   *nl;
 			int			n,
 						m = 0;
+			bool		nan = false;
 			SiftColValue *vals;
 
 			get_typlenbyvalalign(elemtype, &len, &byval, &align);
@@ -160,17 +407,32 @@ scan_preds(IndexScanDesc scan, const int *first, SiftColPred *preds)
 			vals = palloc(Max(n, 1) * sizeof(SiftColValue));
 			for (int j = 0; j < n; j++)
 				if (!nl[j])
-					key_value(elemtype, el[j], &vals[m++]);
+				{
+					key_value(elemtype, att->atttypmod, el[j], &vals[m]);
+					nan |= key_is_float(elemtype) && isnan(vals[m].v.f);
+					m++;
+				}
 			if (m == 0)
 				return false;
-			/* x < ANY (a) is x < max(a) and x > ANY (a) is x > min(a); the order of the integer-like keys is the order of v.i (the only keys with order operators) */
+			if (nan)
+			{
+				key_any(p, k);
+				continue;
+			}
+			/* x < ANY (a) is x < max(a) and x > ANY (a) is x > min(a); only the integer-like, float and boolean keys have order operators */
 			if (key->sk_strategy != BTEqualStrategyNumber)
 			{
 				int			best = 0;
+				bool		up = key->sk_strategy == BTLessStrategyNumber || key->sk_strategy == BTLessEqualStrategyNumber;
 
 				for (int j = 1; j < m; j++)
-					if (key->sk_strategy == BTLessStrategyNumber || key->sk_strategy == BTLessEqualStrategyNumber ? vals[j].v.i > vals[best].v.i : vals[j].v.i < vals[best].v.i)
+				{
+					bool		more = key_is_float(elemtype) ? vals[j].v.f > vals[best].v.f : vals[j].v.i > vals[best].v.i;
+					bool		less = key_is_float(elemtype) ? vals[j].v.f < vals[best].v.f : vals[j].v.i < vals[best].v.i;
+
+					if (up ? more : less)
 						best = j;
+				}
 				vals[0] = vals[best];
 				m = 1;
 				p->op = strategy_op(key->sk_strategy);
@@ -184,8 +446,17 @@ scan_preds(IndexScanDesc scan, const int *first, SiftColPred *preds)
 		{
 			SiftColValue *v = palloc(sizeof(SiftColValue));
 
-			key_value(OidIsValid(key->sk_subtype) ? key->sk_subtype : TupleDescAttr(RelationGetDescr(scan->indexRelation), key->sk_attno - 1)->atttypid,
-					  key->sk_argument, v);
+			key_value(argtype, att->atttypmod, key->sk_argument, v);
+			if (key_is_float(argtype) && isnan(v->v.f))
+			{
+				key_any(p, k);
+				continue;
+			}
+			if (key->sk_strategy == COL_STRAT_LIKE || key->sk_strategy == COL_STRAT_STARTS_WITH)
+			{
+				like_pred(k, p, v, key->sk_strategy == COL_STRAT_STARTS_WITH);
+				continue;
+			}
 			p->op = strategy_op(key->sk_strategy);
 			p->nvals = 1;
 			p->vals = v;
@@ -194,51 +465,222 @@ scan_preds(IndexScanDesc scan, const int *first, SiftColPred *preds)
 	return true;
 }
 
+/* Opens the source and makes the predicates of the keys; the executor checked the privileges and the row security of the table, and the planner only offers operators it knows leak nothing */
+static void
+col_scan_begin(IndexScanDesc scan)
+{
+	ColScanOpaque *so = scan->opaque;
+	MemoryContext old = MemoryContextSwitchTo(so->cxt);
+	SiftColRel *r = sift_col_rel(scan->indexRelation);
+	ColKeys		keys;
+
+	so->first = palloc((r->natts + 1) * sizeof(int));
+	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
+	so->natts = r->natts;
+	so->defs = palloc(r->meta.ncols * sizeof(SiftColDef));
+	memcpy(so->defs, r->meta.cols, r->meta.ncols * sizeof(SiftColDef));
+	so->preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
+	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
+	if (so->heap == NULL)
+		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
+	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS);
+	if (scan_preds(scan, &keys, so->preds))
+	{
+		so->npreds = scan->numberOfKeys;
+		sift_col_begin(so->src, so->preds, so->npreds, 0, PG_UINT32_MAX);
+	}
+	else
+		so->unsat = true;
+	so->recheck = keys.recheck;
+	so->started = true;
+	MemoryContextSwitchTo(old);
+	/* pg_stat_*_indexes.idx_scan and the Index Searches of EXPLAIN (the access method counts them) */
+	pgstat_count_index_scan(scan->indexRelation);
+#if PG_VERSION_NUM >= 180000
+	if (scan->instrument)
+		scan->instrument->nsearches++;
+#endif
+}
+
+/* The next unit with a row that passes the predicates, and those rows */
+static bool
+col_scan_unit(ColScanOpaque *so, SiftColUnit *unit, SiftColSel *sel)
+{
+	if (so->unsat)
+		return false;
+	while (sift_col_next(so->src, unit))
+	{
+		CHECK_FOR_INTERRUPTS();
+		sift_col_sel_all(unit, sel);
+		if (!sift_col_filter(unit, so->preds, so->npreds, sel) || sift_col_sel_count(sel) == 0)
+			continue;
+		return true;
+	}
+	return false;
+}
+
 int64
 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	ColScanOpaque *so = scan->opaque;
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
-	SiftColRel *r = sift_col_rel(scan->indexRelation);
-	int		   *first = palloc((r->natts + 1) * sizeof(int));
-	SiftColPred *preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
-	SiftColSource *src;
 	SiftColUnit unit;
-	ItemPointerData *tids = NULL;
-	uint32		tcap = 0;
+	SiftColSel	sel;
 	int64		ntids = 0;
 
-	memcpy(first, r->first, (r->natts + 1) * sizeof(int));
-	if (so->heap == NULL)
-		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
-	/* the executor checked the privileges and the row security of the table, and the planner only offers operators it knows leak nothing */
-	src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS);
-	if (scan_preds(scan, first, preds))
+	col_scan_begin(scan);
+	while (col_scan_unit(so, &unit, &sel))
 	{
-		sift_col_begin(src, preds, scan->numberOfKeys, 0, PG_UINT32_MAX);
-		while (sift_col_next(src, &unit))
+		if (sel.count > so->cap)
 		{
-			SiftColSel	sel;
+			so->cap = Max(sel.count, 2 * so->cap);
+			so->tids = so->tids ? repalloc(so->tids, so->cap * sizeof(ItemPointerData)) : palloc(so->cap * sizeof(ItemPointerData));
+		}
+		sift_col_tids(&unit, &sel, so->tids);
+		/* the stored values are the heap's (HOT keeps the indexed columns), and a row the snapshot cannot see is dropped by the heap scan: no recheck but for a key the leaf cannot test */
+		tbm_add_tuples(tbm, so->tids, sel.count, so->recheck);
+		ntids += sel.count;
+	}
+	MemoryContextSwitchTo(old);
+	col_scan_end(so);
+	return ntids;
+}
 
-			CHECK_FOR_INTERRUPTS();
-			sift_col_sel_all(&unit, &sel);
-			if (!sift_col_filter(&unit, preds, scan->numberOfKeys, &sel) || sift_col_sel_count(&sel) == 0)
+/* ---- tuple by tuple: an index scan and an index-only scan, in the order of the units (no order to give) ---- */
+
+/*
+ * Can the leaf of attribute attno give its value back: the integer-like and float leaves. The executor asks for every returnable column of the index
+ * whether the query needs it or not, and the text and uuid leaves would load the dictionary of the segment (a million strings: 10 to 30 ms) to
+ * return a value nobody reads; a query that needs one of them reads the heap.
+ */
+bool
+sift_col_amcanreturn(Relation index, int attno)
+{
+	SiftColRel *r = sift_col_rel(index);
+	const SiftColDef *d = &r->meta.cols[r->first[attno]];
+
+	if (r->nleaves[attno] != 1 || r->name[attno] || index->rd_opcintype[attno - 1] == ANYELEMENTOID || (d->path && d->path[0]) || (d->flags & SIFT_COLD_LOSSY))
+		return false;
+	switch (d->type)
+	{
+		case SIFT_COLT_INT2:
+		case SIFT_COLT_INT4:
+		case SIFT_COLT_INT8:
+		case SIFT_COLT_BOOL:
+		case SIFT_COLT_DATE:
+		case SIFT_COLT_TIMESTAMP:
+		case SIFT_COLT_TIMESTAMPTZ:
+		case SIFT_COLT_FLOAT4:
+		case SIFT_COLT_FLOAT8:
+			return true;
+		case SIFT_COLT_NUMERIC:
+			return d->store == SIFT_COLS_INT;
+		default:
+			return false;
+	}
+}
+
+static Datum
+vec_datum(const SiftColDef *d, const SiftColVec *v, uint32 k)
+{
+	switch (d->type)
+	{
+		case SIFT_COLT_INT2:
+			return Int16GetDatum((int16) v->i[k]);
+		case SIFT_COLT_INT4:
+		case SIFT_COLT_DATE:
+			return Int32GetDatum((int32) v->i[k]);
+		case SIFT_COLT_INT8:
+		case SIFT_COLT_TIMESTAMP:
+		case SIFT_COLT_TIMESTAMPTZ:
+			return Int64GetDatum(v->i[k]);
+		case SIFT_COLT_BOOL:
+			return BoolGetDatum(v->i[k] != 0);
+		case SIFT_COLT_FLOAT4:
+			return Float4GetDatum((float4) v->f[k]);
+		case SIFT_COLT_FLOAT8:
+			return Float8GetDatum(v->f[k]);
+		case SIFT_COLT_NUMERIC:
+			return sift_col_key_numeric(d->scale, v->i[k]);
+		default:
+			elog(ERROR, "sift_col: no value of type %d to return", d->type);
+			return (Datum) 0;
+	}
+}
+
+/* The rows of the next unit that passes the predicates, with the values of the returnable columns when the executor wants index tuples */
+static bool
+col_fill_batch(IndexScanDesc scan)
+{
+	ColScanOpaque *so = scan->opaque;
+	SiftColUnit unit;
+	SiftColSel	sel;
+	MemoryContext old;
+
+	if (!col_scan_unit(so, &unit, &sel))
+		return false;
+	MemoryContextReset(so->batch);
+	old = MemoryContextSwitchTo(so->batch);
+	so->n = sel.count;
+	so->pos = 0;
+	so->tids = palloc(so->n * sizeof(ItemPointerData));
+	sift_col_tids(&unit, &sel, so->tids);
+	if (scan->xs_want_itup)
+	{
+		so->vals = palloc0(so->n * so->natts * sizeof(Datum));
+		so->nulls = palloc(so->n * so->natts * sizeof(bool));
+		memset(so->nulls, true, so->n * so->natts * sizeof(bool));
+		for (int a = 1; a <= so->natts; a++)
+		{
+			SiftColVec	vec;
+
+			if (!sift_col_amcanreturn(scan->indexRelation, a))
 				continue;
-			if (sel.count > tcap)
+			sift_col_read(&unit, so->first[a], &sel, &vec);
+			for (uint32 k = 0; k < so->n; k++)
 			{
-				tcap = Max(sel.count, 2 * tcap);
-				tids = tids ? repalloc(tids, tcap * sizeof(ItemPointerData)) : palloc(tcap * sizeof(ItemPointerData));
+				bool		isnull = vec.nulls && (vec.nulls[k >> 6] >> (k & 63) & 1),
+							ovf = vec.ovf && (vec.ovf[k >> 6] >> (k & 63) & 1);
+
+				so->nulls[k * so->natts + a - 1] = isnull && !ovf;
+				if (ovf)
+				{
+					/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN, stored as a NULL with the overflow flag */
+					if (so->defs[so->first[a]].type != SIFT_COLT_NUMERIC)
+						elog(ERROR, "sift_col: a value of column %d overflowed the index and cannot be returned from it", a);
+					so->vals[k * so->natts + a - 1] = DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+				}
+				else if (!isnull)
+					so->vals[k * so->natts + a - 1] = vec_datum(&so->defs[so->first[a]], &vec, k);
 			}
-			sift_col_tids(&unit, &sel, tids);
-			/* no recheck: the stored values are the heap's (HOT keeps the indexed columns), and a row the snapshot cannot see is dropped by the heap scan */
-			tbm_add_tuples(tbm, tids, sel.count, false);
-			ntids += sel.count;
 		}
 	}
-	sift_col_close(src);
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(so->cxt);
-	return ntids;
+	return true;
+}
+
+bool
+sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	ColScanOpaque *so = scan->opaque;
+
+	if (!so->started)
+		col_scan_begin(scan);
+	while (so->pos >= so->n)
+		if (!col_fill_batch(scan))
+			return false;
+	scan->xs_heaptid = so->tids[so->pos];
+	scan->xs_recheck = so->recheck;
+	if (scan->xs_want_itup)
+	{
+		if (so->itup)
+			pfree(so->itup);
+		so->itup = index_form_tuple(scan->xs_itupdesc, so->vals + so->pos * so->natts, so->nulls + so->pos * so->natts);
+		so->itup->t_tid = scan->xs_heaptid;
+		scan->xs_itup = so->itup;
+	}
+	so->pos++;
+	return true;
 }
 
 /* ---- the cost ---- */
@@ -383,6 +825,44 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	return (double) left / z->n;
 }
 
+/*
+ * The share of the units the small-set summaries of the columns an equality or an IN list tests leave, as SiftAgg counts it
+ * (plan_cost.c set_kept): a test on the share s of a leaf's distinct values (the clause's selectivity) keeps a unit that holds n keys of it with the
+ * probability 1 - exp(-s * n); a unit without a summary stays, and a summary that keeps nearly every unit is not counted.
+ */
+#define COL_SCAN_SET_USEFUL	0.85
+
+static double
+sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
+{
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	SiftColRel *r = sift_col_rel(irel);
+	IndexOptInfo *index = path->indexinfo;
+	double		kept = 1.0;
+
+	foreach_node(IndexClause, ic, path->indexclauses)
+	{
+		const SiftColLeafStats *l = &ls[r->first[ic->indexcol + 1]];
+
+		if (l->set_units <= 0 || l->set_sampled <= 0)
+			continue;
+		foreach_node(RestrictInfo, ri, ic->indexquals)
+		{
+			Oid			opno = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->opno :
+				IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->opno : InvalidOid;
+			double		cover = l->set_units / l->set_sampled,
+						held;
+
+			if (!OidIsValid(opno) || get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) != BTEqualStrategyNumber)
+				continue;
+			held = 1.0 - exp(-clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * l->set_keys / l->set_units);
+			if (held < COL_SCAN_SET_USEFUL)
+				kept = Min(kept, 1.0 - cover + cover * held);
+		}
+	}
+	return kept;
+}
+
 void
 sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
 						Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
@@ -397,7 +877,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 
 	genericcostestimate(root, path, loop_count, &costs);
 	irel = index_open(index->indexoid, AccessShareLock);
-	kept = zones_kept(root, path, irel);
+	kept = Min(zones_kept(root, path, irel), sets_kept(root, path, irel));
 	index_close(irel, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
 	cand_rows = kept * index->rel->tuples;
@@ -430,7 +910,7 @@ col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *
 		return;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->relam == sift_col_am_oid())
-			ii->amhasgetbitmap = false;
+			ii->amhasgetbitmap = ii->amhasgettuple = false;
 }
 
 void

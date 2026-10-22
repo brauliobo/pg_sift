@@ -93,7 +93,7 @@ CREATE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fi
 -- Operator classes that let the planner use a sift_col index as a bitmap index scan (docs/COL-SCAN.md; sift.enable_col_scan, off by
 -- default). Opt-in per column: CREATE INDEX ON t USING sift_col (id sift.col_int4_ops, ts sift.col_timestamptz_ops). The stored index
 -- is the one of sift.col_ops. Strategies are btree's: 1 <, 2 <=, 3 =, 4 >=, 5 >; text and uuid keep the equality only (their order is
--- the collation's, not the dictionary's).
+-- the collation's, not the dictionary's), text adds 7 LIKE and 8 ^@ (a literal prefix); bpchar is char(n) only, numeric numeric(p <= 18, s) only (CREATE INDEX refuses the others).
 DO $$
 DECLARE
 	t text;
@@ -121,14 +121,33 @@ BEGIN
 			EXECUTE format('ALTER OPERATOR FAMILY sift.col_integer_ops USING sift_col ADD %s', list);
 		END LOOP;
 	END LOOP;
-	FOREACH t IN ARRAY ARRAY['date', 'timestamp', 'timestamptz'] LOOP
+	CREATE OPERATOR FAMILY sift.col_float_ops USING sift_col;
+	FOREACH t IN ARRAY ARRAY['float4', 'float8'] LOOP
+		list := '';
+		FOR n IN 1..5 LOOP
+			list := list || format('%sOPERATOR %s pg_catalog.%s (%s, %s)', CASE WHEN n > 1 THEN ', ' ELSE '' END, n, ops[n], t, t);
+		END LOOP;
+		EXECUTE format('CREATE OPERATOR CLASS sift.col_%s_ops FOR TYPE %s USING sift_col FAMILY sift.col_float_ops AS %s', t, t, list);
+	END LOOP;
+	FOREACH t IN ARRAY ARRAY['float4', 'float8'] LOOP
+		FOREACH u IN ARRAY ARRAY['float4', 'float8'] LOOP
+			CONTINUE WHEN t = u;
+			list := '';
+			FOR n IN 1..5 LOOP
+				list := list || format('%sOPERATOR %s pg_catalog.%s (%s, %s)', CASE WHEN n > 1 THEN ', ' ELSE '' END, n, ops[n], t, u);
+			END LOOP;
+			EXECUTE format('ALTER OPERATOR FAMILY sift.col_float_ops USING sift_col ADD %s', list);
+		END LOOP;
+	END LOOP;
+	FOREACH t IN ARRAY ARRAY['date', 'timestamp', 'timestamptz', 'bool', 'numeric'] LOOP
 		list := '';
 		FOR n IN 1..5 LOOP
 			list := list || format('%sOPERATOR %s pg_catalog.%s (%s, %s)', CASE WHEN n > 1 THEN ', ' ELSE '' END, n, ops[n], t, t);
 		END LOOP;
 		EXECUTE format('CREATE OPERATOR CLASS sift.col_%s_ops FOR TYPE %s USING sift_col AS %s', t, t, list);
 	END LOOP;
-	FOREACH t IN ARRAY ARRAY['text', 'uuid'] LOOP
+	EXECUTE 'CREATE OPERATOR CLASS sift.col_text_ops FOR TYPE text USING sift_col AS OPERATOR 3 pg_catalog.= (text, text), OPERATOR 7 pg_catalog.~~ (text, text), OPERATOR 8 pg_catalog.^@ (text, text)';
+	FOREACH t IN ARRAY ARRAY['bpchar', 'uuid'] LOOP
 		EXECUTE format('CREATE OPERATOR CLASS sift.col_%s_ops FOR TYPE %s USING sift_col AS OPERATOR 3 pg_catalog.= (%s, %s)', t, t, t, t);
 	END LOOP;
 END

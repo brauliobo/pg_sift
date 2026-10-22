@@ -86,6 +86,8 @@ typedef enum SiftColRound
 	SIFT_COL_ROUND_UP
 } SiftColRound;
 extern int64 sift_col_numeric_key(int scale, Datum value, SiftColRound round);
+/* A finite constant whose scaled value is below 10^18, which every numeric(p <= 18, s) leaf stays under (so sift_col_numeric_key cannot overflow) */
+extern bool sift_col_numeric_key_fits(int scale, Datum value);
 extern Datum sift_col_key_numeric(int scale, int64 key);
 
 /*
@@ -121,6 +123,8 @@ extern void sift_col_scan_init(void);
 extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
 extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
 extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern bool sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir);
+extern bool sift_col_amcanreturn(Relation index, int attno);
 extern void sift_col_amendscan(IndexScanDesc scan);
 extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
 									Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages);

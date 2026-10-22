@@ -257,6 +257,17 @@ numeric_scaled(int scale, Datum value, SiftColRound round)
 	return DirectFunctionCall2(numeric_round, scaled, Int32GetDatum(0));
 }
 
+bool
+sift_col_numeric_key_fits(int scale, Datum value)
+{
+	Numeric		n = DatumGetNumeric(value);
+
+	if (numeric_is_nan(n) || numeric_is_inf(n))
+		return false;
+	return DatumGetInt32(DirectFunctionCall2(numeric_cmp, DirectFunctionCall1(numeric_abs, DirectFunctionCall2(numeric_mul, value, numeric_pow10(scale))),
+											 numeric_pow10(SIFT_COL_MAX_SCALE))) < 0;
+}
+
 int64
 sift_col_numeric_key(int scale, Datum value, SiftColRound round)
 {
