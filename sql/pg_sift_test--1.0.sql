@@ -301,6 +301,10 @@ CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrow
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;
 
+-- Table module (src/table/load.c): why the bulk load of a sift_table keeps the write buffers (NULL: it qualifies)
+CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_bulk_refusal' LANGUAGE C;
+
 -- Table module (src/table/funcs.c): takes the maintenance lock of a sift_table until the transaction ends
 CREATE FUNCTION sift._test_tbl_hold_maint(tbl regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_hold_maint' LANGUAGE C STRICT;

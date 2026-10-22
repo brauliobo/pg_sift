@@ -46,14 +46,20 @@ typedef struct SiftTblChange
 static bool rmgr_registered;
 
 bool
-sift_tbl_check_publication(Relation rel)
+sift_tbl_published(Relation rel)
 {
 	PublicationDesc pd;
 
 	if (!XLogLogicalInfoActive() || !RelationIsPermanent(rel))
 		return false;
 	RelationBuildPublicationDesc(rel, &pd);
-	if (!pd.pubactions.pubinsert && !pd.pubactions.pubupdate && !pd.pubactions.pubdelete)
+	return pd.pubactions.pubinsert || pd.pubactions.pubupdate || pd.pubactions.pubdelete;
+}
+
+bool
+sift_tbl_check_publication(Relation rel)
+{
+	if (!sift_tbl_published(rel))
 		return false;
 	if (!rmgr_registered)
 		ereport(ERROR,
