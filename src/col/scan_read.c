@@ -406,9 +406,21 @@ sift_col_unit_ref(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 void
 sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids)
 {
-	const SiftKey *keys = unit_keys(unit->priv);
+	ColUnit    *cu = unit->priv;
+	const SiftKey *keys;
 	uint32		k = 0;
 
+	/* a point lookup selects a row or two of thousands: only the pages that hold them are decoded */
+	if (cu->keys == NULL && sel->count <= sel->n / 64)
+	{
+		uint32	   *ords = palloc(Max(sel->count, 1) * sizeof(uint32));
+
+		FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { ords[k++] = r; });
+		sift_col_row_tids(unit, ords, k, tids);
+		pfree(ords);
+		return;
+	}
+	keys = unit_keys(cu);
 	FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { sift_key_to_tid(keys[r], &tids[k++]); });
 }
 
