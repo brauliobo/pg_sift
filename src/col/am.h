@@ -36,6 +36,7 @@ typedef struct SiftColRel
  * Writes no page; false when the request was not taken (switched off, a standby). The GUC sift.col_rollup_on_demand.
  */
 extern bool sift_col_rollup_on_demand;
+extern bool sift_cluster_advice;
 extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, set_limit) that leaves 10% of the units or more without a histogram or the keys of a set; after a build and a refresh */

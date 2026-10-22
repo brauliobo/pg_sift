@@ -99,6 +99,83 @@ SELECT leaf, path, units, zoned_units, verdict FROM sift.col_clustering('empty_c
     0 | id   |     0 |             | 
 (1 row)
 
-DROP TABLE ev, empty_t;
+-- sift.cluster_advice: which order of the table would let the scans skip the most units, and when it is not worth it
+-- ev: the leaves that are ordered now (id, day, blk) pay for the sort by rnd; evs: only scattered leaves; evo: ordered, small
+CREATE TABLE evs (id int PRIMARY KEY, grp int, rnd int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evs SELECT i, abs(hashint4(i)) % 300, abs(hashint4(i + 7)) % 100000, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX evs_col ON evs USING sift_col (grp, rnd);
+CREATE TABLE evo (id int, day date, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evo SELECT i, date '2020-01-01' + i / 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX evo_col ON evo USING sift_col (id, day);
+VACUUM (FREEZE, ANALYZE) evs, evo;
+SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
+FROM sift.cluster_advice('ev', 10000);
+ tbl | key | now | after |     verdict     |       why        | has_command 
+-----+-----+-----+-------+-----------------+------------------+-------------
+ ev  | rnd |  34 |     1 | not recommended | competing leaves | f
+(1 row)
+
+SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ' reads', 1) AS why, command
+FROM sift.cluster_advice('evs_col', 10000);
+ tbl | key | now | after |   verdict   |             why             |                    command                    
+-----+-----+-----+-------+-------------+-----------------------------+-----------------------------------------------
+ evs | grp |  34 |     1 | recommended | an equality or range on grp | pg_repack --table=public.evs --order-by='grp'
+(1 row)
+
+SELECT tbl, key, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('evo', 10000);
+ tbl | key |     verdict     |       why       
+-----+-----+-----------------+-----------------
+ evo | day | not recommended | already ordered
+(1 row)
+
+SELECT tbl, key, verdict, split_part(reason, ' ', 1) AS why FROM sift.cluster_advice('evs');
+ tbl | key |     verdict     |  why   
+-----+-----+-----------------+--------
+ evs | grp | not recommended | small:
+(1 row)
+
+-- the two switches
+SET sift.cluster_advice = off;
+SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+ tbl | key |     verdict     |                     reason                      
+-----+-----+-----------------+-------------------------------------------------
+ evs |     | not recommended | switched off by the setting sift.cluster_advice
+(1 row)
+
+RESET sift.cluster_advice;
+ALTER INDEX evs_col SET (cluster_advice = off);
+SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+ tbl | key |     verdict     |                         reason                         
+-----+-----+-----------------+--------------------------------------------------------
+ evs |     | not recommended | switched off by the option cluster_advice of the index
+(1 row)
+
+SELECT tbl, verdict FROM sift.cluster_advice('ev', 10000);
+ tbl |     verdict     
+-----+-----------------
+ ev  | not recommended
+(1 row)
+
+ALTER INDEX evs_col RESET (cluster_advice);
+SELECT tbl, verdict FROM sift.cluster_advice('evs', 10000);
+ tbl |   verdict   
+-----+-------------
+ evs | recommended
+(1 row)
+
+-- an index without a sealed unit has nothing to say, an index of another kind has no row
+SELECT tbl, verdict, reason FROM sift.cluster_advice('empty_t');
+   tbl   |     verdict     |              reason              
+---------+-----------------+----------------------------------
+ empty_t | not recommended | the index has no sealed unit yet
+(1 row)
+
+SELECT count(*) AS rows FROM sift.cluster_advice('ev_bm25');
+ rows 
+------
+    0
+(1 row)
+
+DROP TABLE ev, empty_t, evs, evo;
 DROP FUNCTION units_read(text), predicted(text, int[]);
 DROP EXTENSION pg_sift;

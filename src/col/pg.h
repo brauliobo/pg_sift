@@ -110,6 +110,7 @@ typedef struct SiftColOptions
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
 	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
+	bool		cluster_advice;	/* sift.cluster_advice() may recommend an order for the table (advice only, not part of the format) */
 } SiftColOptions;
 
 /* A unit with a dead row answers from its rows, not from its pre-aggregates: a lone segment is rewritten once a tenth of its rows is dead */
