@@ -332,3 +332,259 @@ iso_pp_run
 1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
+
+starting permutation: s1join s2attach s1join
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1rr s2attach s1join s1end s1join
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3000
+(1 row)
+
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2attach s1rr s2detach s1join s1end s1join
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3500
+(1 row)
+
+step s2detach: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n; <waiting ...>
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s2detach: <... completed>
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2attach s1rr s2detachc s1join s1end s1join
+step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3500
+(1 row)
+
+step s2detachc: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n CONCURRENTLY; <waiting ...>
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s2detachc: <... completed>
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2begin s2move s1join s2commit s1join
+step s2begin: BEGIN;
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2begin s2move s1join s2abort s1join
+step s2begin: BEGIN;
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1rr s2move s1join s1end s1join
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+ 3000
+(1 row)
+
+step s2move: UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s1join: SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1hjoin s2hdetach s1hjoin s2hattach s1hjoin
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2hdetach: ALTER TABLE iso_ph DETACH PARTITION iso_ph_3;
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2hattach: ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1hrr s2hdetachc s1hjoin s1end s1hjoin s2hattach s1hjoin
+step s1hrr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ph;
+count
+-----
+ 3000
+(1 row)
+
+step s2hdetachc: ALTER TABLE iso_ph DETACH PARTITION iso_ph_3 CONCURRENTLY; <waiting ...>
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s2hdetachc: <... completed>
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2hattach: ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s2begin s2hmove s1hjoin s2commit s1hjoin
+step s2begin: BEGIN;
+step s2hmove: UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0;
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1hrr s2hmove s1hjoin s1end s1hjoin
+step s1hrr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ph;
+count
+-----
+ 3000
+(1 row)
+
+step s2hmove: UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0;
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
+step s1end: COMMIT;
+step s1hjoin: SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k');
+iso_pp_run                                                            
+----------------------------------------------------------------------
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+(1 row)
+
