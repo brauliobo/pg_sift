@@ -518,6 +518,19 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 	}
 }
 
+/* the group of a tuple of key ids */
+static uint32
+ids_gid(AggExec *ex, const uint32 *ids)
+{
+	uint32		gid = 0;
+
+	if (ex->hash)
+		return hash_group(ex, ids);
+	for (int j = 0; j < ex->spec->nkeys; j++)
+		gid += ids[j] * ex->ks[j].mult;
+	return gid;
+}
+
 /*
  * The group that cell g of arm k belongs to (in grouping set `set`): the outer keys the arm (and the set) have, and the set's number.
  * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps. sid: the ids of the spine row the cell is
@@ -528,8 +541,7 @@ cell_outer_gid(AggExec *ex, int k, uint32 g, int set, const uint32 *sid)
 {
 	SiftAggSpec *s = ex->spec;
 	uint32		mask = s->arm[k].keymask,
-				ids[SIFT_AGG_MAX_KEYS] = {0},
-				gid = 0;
+				ids[SIFT_AGG_MAX_KEYS] = {0};
 
 	if (s->nsets)
 	{
@@ -541,11 +553,7 @@ cell_outer_gid(AggExec *ex, int k, uint32 g, int set, const uint32 *sid)
 			ids[j] = cell_key(ex, k, g, j);
 	for (int o = 0; sid && o < s->spine->nout; o++)
 		ids[s->spine->outkey[o]] = sid[o];
-	if (ex->hash)
-		return hash_group(ex, ids);
-	for (int j = 0; j < s->nkeys; j++)
-		gid += ids[j] * ex->ks[j].mult;
-	return gid;
+	return ids_gid(ex, ids);
 }
 
 /* The cell (arm k, group g) of the row `row` joins the spine rows its keys equal: it is a cell of the group of each. */
@@ -615,6 +623,35 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	{
 		ex->seen[ex->setg[set]]++;
 		cell_into(ex, k, g, ex->setg[set], row);
+	}
+}
+
+/*
+ * A row of the preserved spine that no cell joined is a row of NULL arm columns: it makes a group of its own (or joins the group of those
+ * values), and what the aggregates see of it is count(*) = 1 where they have no FILTER, and NULLs.
+ */
+void
+spine_tail(AggExec *ex)
+{
+	const SiftAggSpine *sa = ex->spec->spine;
+	SpineSt    *sp = ex->spine;
+
+	for (uint32 r = 0; sa->left && r < sp->nrow; r++)
+	{
+		uint32		ids[SIFT_AGG_MAX_KEYS] = {0},
+					og;
+
+		if (sp->hit[r])
+			continue;
+		for (int o = 0; o < sa->nout; o++)
+			ids[sa->outkey[o]] = sp->oid[(Size) r * sa->nout + o];
+		og = ids_gid(ex, ids);
+		if (ex->hash && ex->ngroups > ex->gcap)
+			groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+		ex->seen[og]++;
+		for (int oi = 0; oi < ex->spec->naggs; oi++)
+			if (ex->spec->agg[oi].kind == SAA_O_COUNT_STAR && ex->spec->agg[oi].ncond == 0)
+				ex->acc[oi].n[og]++;
 	}
 }
 

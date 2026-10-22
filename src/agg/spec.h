@@ -332,10 +332,11 @@ typedef struct SiftAggArm
 /*
  * The spine of a two level aggregate: the rows of a small plan (a VALUES list, a series, a table of buckets) that the arms are joined to
  * by equality of their keys. A cell is repeated for each spine row its join keys equal; the spine columns the outer query groups by are
- * keys of the scan (SAK_SPINE) that the spine rows give.
+ * keys of the scan (SAK_SPINE) that the spine rows give. A row of a preserved spine that no cell joins is a row of NULL arm columns.
  */
 typedef struct SiftAggSpine
 {
+	bool		left;			/* the spine is the preserved side of a LEFT JOIN: a row no cell joined is a group of its own */
 	int			child;			/* the plan of the rows: custom_plans[child] */
 	int			ncol;			/* its output columns */
 	int			npair;			/* the equalities of the join */

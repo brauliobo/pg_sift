@@ -305,6 +305,8 @@ run_scan(AggExec *ex)
 	backend_finish(ex);
 	unmatched_tail(ex);
 	arms_flush(ex);
+	if (ex->spec->spine)
+		spine_tail(ex);
 	if (ex->par)
 		par_finish(ex);
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
