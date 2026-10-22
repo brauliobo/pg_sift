@@ -22,44 +22,69 @@
 #include "agg/spec.h"
 #include "agg/plan_int.h"
 
-/* does the plan read a Custom Scan (SiftAgg)? Only a query the pushdown already reaches gets this node */
-static bool
-reads_siftagg(Path *p)
+/* the Custom Scans (SiftAgg) a plan reads, in *arms; only a query the pushdown already reaches gets this node */
+static void
+siftagg_arms(Path *p, List **arms)
 {
 	check_stack_depth();
 	switch (nodeTag(p))
 	{
 		case T_CustomPath:
 			if (((CustomPath *) p)->methods == &agg_path_methods)
-				return true;
-			foreach_ptr(Path, c, ((CustomPath *) p)->custom_paths)
-				if (reads_siftagg(c))
-					return true;
-			return false;
+				*arms = lappend(*arms, p);
+			else
+				foreach_ptr(Path, c, ((CustomPath *) p)->custom_paths)
+					siftagg_arms(c, arms);
+			break;
 		case T_NestPath:
 		case T_MergePath:
 		case T_HashPath:
-			return reads_siftagg(((JoinPath *) p)->outerjoinpath) || reads_siftagg(((JoinPath *) p)->innerjoinpath);
+			siftagg_arms(((JoinPath *) p)->outerjoinpath, arms);
+			siftagg_arms(((JoinPath *) p)->innerjoinpath, arms);
+			break;
 		case T_AppendPath:
 			foreach_ptr(Path, c, ((AppendPath *) p)->subpaths)
-				if (reads_siftagg(c))
-					return true;
-			return false;
+				siftagg_arms(c, arms);
+			break;
 		case T_GatherPath:
-			return reads_siftagg(((GatherPath *) p)->subpath);
+			siftagg_arms(((GatherPath *) p)->subpath, arms);
+			break;
 		case T_GatherMergePath:
-			return reads_siftagg(((GatherMergePath *) p)->subpath);
+			siftagg_arms(((GatherMergePath *) p)->subpath, arms);
+			break;
 		case T_SubqueryScanPath:
-			return reads_siftagg(((SubqueryScanPath *) p)->subpath);
+			siftagg_arms(((SubqueryScanPath *) p)->subpath, arms);
+			break;
 		case T_ProjectionPath:
-			return reads_siftagg(((ProjectionPath *) p)->subpath);
+			siftagg_arms(((ProjectionPath *) p)->subpath, arms);
+			break;
 		case T_MaterialPath:
-			return reads_siftagg(((MaterialPath *) p)->subpath);
+			siftagg_arms(((MaterialPath *) p)->subpath, arms);
+			break;
 		case T_SortPath:
-			return reads_siftagg(((SortPath *) p)->subpath);
+			siftagg_arms(((SortPath *) p)->subpath, arms);
+			break;
 		default:
-			return false;
+			break;
 	}
+}
+
+/*
+ * The arms of a UNION ALL that read the same index run as the sets of one pass over its units (agg/fuse.c): the dearest pays its scan and
+ * each other the groups it adds, measured at 3 and 7 percent of the first (the arms are planned apart, so each is priced for a pass of its own).
+ */
+static double
+fused_credit(List *arms)
+{
+	double		total = 0,
+				first = 0;
+
+	foreach_ptr(Path, p, arms)
+	{
+		total += p->total_cost;
+		first = Max(first, p->total_cost);
+	}
+	return (total - first) * (1.0 - AGG_FUSED_ARM);
 }
 
 /* the plain aggregates whose transition function the node runs for each row */
@@ -192,6 +217,7 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	Query	   *parse = root->parse;
 	GroupPathExtraData *gextra = extra;
 	Path	   *ip = input_rel->cheapest_total_path;
+	List	   *arms = NIL;
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *cols = NIL,
 			   *scan_tlist = NIL;
@@ -203,7 +229,10 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	int			ndistinct = 0;
 
 	if (!sift_agg_rows || ip == NULL || ip->param_info != NULL || parse->groupClause == NIL || parse->groupingSets != NIL ||
-		parse->hasDistinctOn || !parse->hasAggs || !reads_siftagg(ip))
+		parse->hasDistinctOn || !parse->hasAggs)
+		return;
+	siftagg_arms(ip, &arms);
+	if (arms == NIL)
 		return;
 	/* a SiftAgg scan that took the aggregate itself is the better plan */
 	foreach_ptr(Path, p, output_rel->pathlist)
@@ -260,7 +289,7 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	cp->path.pathtarget = output_rel->reltarget;
 	cp->path.parallel_safe = false;
 	cp->path.rows = groups;
-	cp->path.startup_cost = proj->total_cost + proj->rows * cpu_operator_cost * (s.nkeys * 2 + s.naggs * 2 + ndistinct * 3);
+	cp->path.startup_cost = proj->total_cost - fused_credit(arms) + proj->rows * cpu_operator_cost * (s.nkeys * 2 + s.naggs * 2 + ndistinct * 3);
 	cp->path.total_cost = cp->path.startup_cost + groups * cpu_tuple_cost;
 	/*
 	 * The grouping of PostgreSQL's own plans is priced as one sort of the rows, and a DISTINCT aggregate sorts them again, each by its

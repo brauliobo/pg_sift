@@ -41,7 +41,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 -- The same as an inner join, and as a LEFT JOIN whose ON clause holds the condition.
@@ -55,7 +55,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 SELECT * FROM check_query($q$

@@ -227,6 +227,7 @@ extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
 

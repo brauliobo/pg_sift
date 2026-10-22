@@ -44,7 +44,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 -- The list holds a NULL: IN is NULL, not false, for the countries it lacks.
@@ -55,7 +55,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 -- Without the calendar the key is the plain expression of one column.
