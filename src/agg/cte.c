@@ -33,17 +33,11 @@
  * CTEs and the aggregates that read them). Both are prices of the same rows, so the plan above them, which PostgreSQL estimates from the rows
  * each plan expects (the shared CTE one row, the scans a group count, and a join on an expression key the default selectivity), is not part of
  * the comparison. The factor covers the scans' unnest charge (agg_cost prices the plain plan with the 100 rows per call that PostgreSQL assumes
- * for jsonb_to_recordset, the data has a handful): shapes priced between 1.5 and 1.6 times cheaper ran slower inline than shared, 1.75 and up faster.
+ * for jsonb_to_recordset, the data has a handful): 56 statements of a 195,000-row slice priced 1.15 to 1.6 times cheaper on the scans ran 63 s shared
+ * and 23 s inline, none slower (the one that measured 1.3 times slower under load tied on a repeat). The statements priced less than 1.15 times
+ * cheaper are not measured.
  */
-#define CTE_INLINE_MARGIN	1.6
-
-/*
- * A shared plan priced at least this much has the factor below: 61 statements priced 1.15 to 1.6 times cheaper on the scans ran 59 s shared and
- * 26 s inline (the ones from 1.3 up, 11 of them, 4.3 s and 1.7 s, none slower). A smaller plan keeps the factor above: a statement of a selective
- * filter runs in a millisecond whatever its estimate says, and the scan costs it 2 to 10 ms more.
- */
-#define CTE_INLINE_BIG		8000.0
-#define CTE_INLINE_MARGIN_BIG	1.3
+#define CTE_INLINE_MARGIN	1.15
 
 /* A plan above the scans priced this many times the shared plan has an estimate that cannot be trusted (a nested loop over a join of rows it takes for one). */
 #define CTE_INLINE_ABOVE	20.0
@@ -55,13 +49,6 @@ static planner_hook_type prev_planner_hook;
 
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
-
-/* do the scans cost enough less than the shared work they replace? */
-static bool
-scans_win(double scans, double work, double plain_cost)
-{
-	return (plain_cost >= CTE_INLINE_BIG ? CTE_INLINE_MARGIN_BIG : CTE_INLINE_MARGIN) * scans < work;
-}
 
 static bool
 has_column_index(Oid relid)
@@ -411,8 +398,8 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	 * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
 	 * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
 	 */
-	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? scans_win(scans.total, work, plain_cost) && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
-						(scans_win(scans.total, work, plain_cost) && inlined->planTree->total_cost < CTE_INLINE_TOTALS * plain_cost) ||
+	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
+						(CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_TOTALS * plain_cost) ||
 						scans.total < plain_cost - inlined->planTree->total_cost))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);

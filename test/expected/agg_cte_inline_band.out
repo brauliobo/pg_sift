@@ -1,6 +1,6 @@
 -- The same statement as agg_cte_inline_rows at 130,000 rows, where the three scans cost 1.47 times less than the shared plan spends on the work they replace:
--- inside the band between the factor of a small plan (1.6) and the one of a plan priced at 8,000 or more (1.3). The shared CTE takes 2.1 seconds here, the
--- scans 0.8 s. At 100,000 rows the ratio is 1.78, at 150,000 1.32 and at 200,000 1.09.
+-- less than the factor of 1.6 this choice had before and more than the 1.15 it has. The shared CTE takes 2.1 seconds here, the scans 0.8 s. At 100,000 rows
+-- the ratio is 1.78, at 150,000 1.32 and at 200,000 1.09.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the node under test: the two-level scan (agg_two_level_arm_where) takes the same shape in one node, with no rows to group
