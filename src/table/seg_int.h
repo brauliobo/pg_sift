@@ -34,6 +34,9 @@ typedef struct VerGroup
 	SiftColVerSum *sum;
 } VerGroup;
 
+/* An index scan over rows whose versions sit in different superblocks (updated rows) alternates between them: each needs its decoded unit kept */
+#define SIFT_TBL_FETCH_SCANS	4
+
 struct SiftTblGroupCache
 {
 	int			n;
@@ -41,7 +44,10 @@ struct SiftTblGroupCache
 	int			cap;
 	VerGroup   *vg;
 	int			nvg;
-	SiftTblGroupScan *fetch;	/* serves the TID fetches while the directory and the backend's xmin stay as they were */
+	/* serve the TID fetches while the directory and the backend's xmin stay as they were, one per superblock being fetched from */
+	SiftTblGroupScan *fetch[SIFT_TBL_FETCH_SCANS];
+	uint64		fetch_used[SIFT_TBL_FETCH_SCANS];
+	uint64		fetch_clock;
 	uint32		fetch_version;
 	TransactionId fetch_xmin;
 	uint64		pkey;			/* path_zones: the segments pls was computed over */
