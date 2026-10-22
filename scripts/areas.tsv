@@ -9,7 +9,7 @@
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
 =bm25	^(installcheck-(sift_basic|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
 =col	^(installcheck-(col_|segfmt_mixed|facet_counts|colcodec_|shred_)|tap-shell-col_|tap-01[56]_space|soak-col$|difftest-col)
-=agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|difftest-col)
+=agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|difftest-col|plan-gate)
 =tbl	^(installcheck-(tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
 =dec	^(fuzz|hardened)$
 =any	^(production-regress|coverage|isa-baseline|isolation(-emulated)?|static)$
@@ -25,7 +25,8 @@
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
-^test/col/	^difftest-col|^coverage$|{ci}
+^test/col/	^difftest-col|^plan-gate$|^coverage$|{ci}
+^test/plan/	^plan-gate$|{ci}
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/	^(fuzz|hardened)$|{ci}
 ^test/isolation/	^isolation|{ci}
@@ -37,7 +38,7 @@
 ^src/table/	{tbl}|{any}|gh:replication
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
 # the harness of one job
-^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|production-check|isolation|static)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|production-regress|isolation|static)
+^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|production-check|isolation|static|plangate)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|production-regress|isolation|static|plan-gate)
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
 ^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb

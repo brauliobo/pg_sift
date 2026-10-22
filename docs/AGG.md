@@ -385,3 +385,17 @@ every `on*` result as a bug of the pushdown would. `int` (+1), `float` (relative
 row lost), `dup` (the first row twice), `order` (rows 1 and 2 swapped, seen by a query compared by position), `type` (a wider column type)
 and `cols` (an extra column) must fail; `float-tiny` (relative 1e-11, inside the tolerance) must pass; a mutation that applied to no result
 fails the self-test.
+
+## Plan-choice gate
+
+`scripts/plangate.sh` guards the choice between the normal plan and `Custom Scan (SiftAgg)`. It builds the tables of `test/plan/gen.sql` (events, dims, facts, a month spine and a partitioned copy;
+`--rows`, default 30000, and `--seed`; every row is a hash of its number, and `ANALYZE` reads all of them, so the statistics are the same on every run) and runs each shape of
+`test/plan/shapes.sql` three ways: native (`sift.enable_agg` off), chosen (the planner's own choice) and scan (the table scans off, so the pushdown runs where the query allows it).
+The results must agree by the contract of the differential suite (floats within 1e-12 + 1e-9 of the larger), the plan chosen must be the one the shape expects, and the planner's cost
+of the scan over the native one (the cost ratio) must stay in the shape's band, so that a drift shows before it flips a choice. The table prints, for each shape, the plan chosen, the expected one, the
+ratio and its band, the time of native and of scan (median of `--runs`, default 3) and a verdict: `win` or `lose` when the scan is chosen and faster or slower by more than 1 ms and 20%, `miss` when
+it is not chosen but would win by as much, else `tie`. A wrong result, an unexpected plan or a ratio out of its band fails; so does a `lose`, unless `--warn-time` (the full tier runs at 50000 rows with it: hosted runners
+are noisy). The quick tier runs it without timings (`--runs 0`). The expectations hold from 20000 to 50000 rows; a shape whose plan changes inside that range expects `either`.
+
+To add a shape, append three lines to `test/plan/shapes.sql`: `-- name: x`, `-- expect: new` and the query (a total `ORDER BY` when it has a `LIMIT`); run `scripts/plangate.sh --update` and read the diff:
+it writes the plan chosen and the band of a factor of 2 around the measured ratio (and refreshes the bands of every shape; a plan stays as it is except `new`).
