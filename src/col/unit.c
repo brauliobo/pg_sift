@@ -153,7 +153,7 @@ sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c)
 	if (v->chunk_len[col] == 0)
 		return false;
 	if (!sift_cchunk_parse(v->rec + v->chunk_off[col], v->chunk_len[col], c))
-		elog(ERROR, "sift_col: chunk of a parsed unit is inconsistent");
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: the chunk of leaf %d does not parse", col)));
 	return true;
 }
 
