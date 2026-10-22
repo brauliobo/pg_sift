@@ -536,6 +536,13 @@ extern PGDLLIMPORT int sift_tbl_write_buffer_limit;
 extern PGDLLIMPORT int sift_tbl_max_segments;
 extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT int sift_tbl_init_gate;
+extern PGDLLIMPORT int sift_tbl_seal_gate;
+#ifdef SIFT_TESTING
+/* Test only: waits for the advisory lock of this number to be free (0 = no gate), so that a test holds a window open */
+extern void sift_tbl_gate(int number);
+#else
+#define sift_tbl_gate(number)	((void) 0)
+#endif
 extern PGDLLIMPORT bool sift_tbl_inline_promote;
 extern PGDLLIMPORT int sift_tbl_backpressure;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
