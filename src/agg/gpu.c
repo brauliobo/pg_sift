@@ -541,8 +541,6 @@ gpu_cmp_range(SiftSrcFilterOp op, int64 v, int64 *lo, int64 *hi)
 	}
 }
 
-#define GPU_NEUTRAL		{0, 0, 0, UINT32_MAX}
-
 /*
  * The descriptor of predicate p on a chunk: the field range the comparison keeps. false: no row of the chunk passes (the unit adds nothing).
  * A comparison every row passes is the neutral descriptor, which tests nothing.

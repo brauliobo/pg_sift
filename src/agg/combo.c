@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-#define CHUNK_PAD	(VEC + PADW)
-
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
 static uint32
 intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
