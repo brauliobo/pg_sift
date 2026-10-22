@@ -101,6 +101,7 @@ join_first_rows(AggExec *ex)
 			j->keypos[k] = -1;
 			j->keyexpr[k] = list_nth(j->args, f->keyarg[k]);
 		}
+		j->first.params = j->params;
 		j->params = NIL;
 		j->args = NIL;
 		j->sig = NULL;
