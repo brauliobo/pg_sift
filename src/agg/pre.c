@@ -14,6 +14,9 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 	pa->aggs = true;
 	if (spec->off)
 		return;
+	for (int c = 0; c < SIFT_COL_MAX_COLS && pa->npres < SIFT_SRC_MAX_DIMS; c++)
+		if (spec->pres[c])
+			pa->pres[pa->npres++] = c;
 	for (int d = 0; d < spec->ndims; d++)
 	{
 		pa->dim[pa->ndims].leaf = spec->dim[d].leaf;

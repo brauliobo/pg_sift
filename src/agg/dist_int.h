@@ -97,6 +97,7 @@ void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
 Dist *dist_new(AggExec *ex, bool sgn);
 bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
+uint64 dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, uint64 nwords);
 uint64 dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits);
 void dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 newcap);
 void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v);

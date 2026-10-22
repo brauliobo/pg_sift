@@ -1114,7 +1114,7 @@ set_leaf(SiftColSegment *seg, int col)
 			const SetsLeaf *r = &rec[i];
 			uint64		rel = r->dir_off - PAGG_SETS(h);
 
-			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM)) || !sift_cset_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
+			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM | SETS_PRES)) || !sift_cset_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
 				corrupt(seg, "The small-set record %u names leaf %u, which cannot have one.", i, r->leaf);
 			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
 				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
@@ -1138,6 +1138,25 @@ sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 
 	*len = 0;
 	return sl ? unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
+}
+
+bool
+sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, int64 *wbase, uint64 *nwords, const uint8 **words)
+{
+	uint32		len;
+	const uint8 *blob = sift_cseg_set(seg, col, u, &len);
+	SiftCSet	s;
+
+	if (blob == NULL)
+		return false;
+	if (!sift_cset_open(blob, len, &s))
+		corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
+	if (s.kind != SIFT_CSET_PRES)
+		return false;
+	*wbase = s.base / 64;
+	*nwords = s.nbits / 64;
+	*words = s.data;
+	return true;
 }
 
 /* ---------- sorted runs (col/runs.h, docs/COL.md 2.14) ---------- */
@@ -1232,6 +1251,14 @@ sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at)
 }
 
 uint32
+sift_cseg_set_kinds(SiftColSegment *seg, int col)
+{
+	const SetsLeaf *sl = set_leaf(seg, col);
+
+	return sl ? sl->flags : 0;
+}
+
+uint32
 sift_cseg_run_kinds(SiftColSegment *seg, int col)
 {
 	const RunsLeaf *rl = run_leaf(seg, col);
@@ -1270,6 +1297,45 @@ sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 
 			if (sift_cseg_run(seg, c, u, &r, &at))
 				memset(*used + (at - *off), 2, SIFT_CRUN_HDR);
+		}
+	}
+	return true;
+}
+
+/* The same for the small-set summaries: 2 for the header, the records, the directories and the head of a blob, 1 for the rest of a blob */
+bool
+sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used)
+{
+	const PaggHeader *h = pagg_header(seg);
+	SetsHeader	sh;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_SETS || h->version < 3 || !PAGG_SETS(h))
+		return false;
+	*off = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SETS(h);
+	*len = PAGG_SETS_BYTES(h);
+	seg_read(seg, *off, sizeof(sh), &sh);
+	*used = palloc0(*len);
+	memset(*used, 2, sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf));
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		const SetsLeaf *sl = set_leaf(seg, c);
+		uint64		dir = sl ? sl->dir_off - PAGG_SETS(h) : 0;
+
+		if (sl == NULL)
+			continue;
+		memset(*used + dir, 2, (uint64) (seg->nsb + 1) * sizeof(uint64));
+		memset(*used + dir + (uint64) (seg->nsb + 1) * sizeof(uint64), 1, sl->bytes);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			uint32		blen;
+			const uint8 *blob = sift_cseg_set(seg, c, u, &blen);
+			uint64		start = dir + (uint64) (seg->nsb + 1) * sizeof(uint64);
+			uint64		o;
+
+			if (blob == NULL)
+				continue;
+			seg_read(seg, *off + dir + (uint64) u * sizeof(uint64), sizeof(o), &o);
+			memset(*used + start + o, 2, SIFT_CSET_HDR);
 		}
 	}
 	return true;
@@ -1365,7 +1431,7 @@ sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *k
 	if ((sl = set_leaf(seg, col)) == NULL)
 		return;
 	/* a filter answers only a key: a range of more keys or a LUT of many matches is left to the zones when the leaf has no exact set */
-	if (!(sl->flags & SETS_EXACT) && ((t->kind == SIFT_CT_RANGE && (uint64) t->hi - (uint64) t->lo >= SIFT_CSET_PROBES) || (t->kind == SIFT_CT_LUT && ncodes < 0)))
+	if (!(sl->flags & (SETS_EXACT | SETS_PRES)) && ((t->kind == SIFT_CT_RANGE && (uint64) t->hi - (uint64) t->lo >= SIFT_CSET_PROBES) || (t->kind == SIFT_CT_LUT && ncodes < 0)))
 		return;
 	for (uint32 u = ulo; u < uhi; u++)
 		todo += (keep[u / 64] >> (u % 64)) & 1;

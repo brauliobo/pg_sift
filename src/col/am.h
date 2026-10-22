@@ -60,6 +60,7 @@ extern void sift_col_validate_order_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);
 /* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
 extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);
+extern void sift_col_validate_key_presence(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */

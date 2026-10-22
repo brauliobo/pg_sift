@@ -197,6 +197,7 @@ extern uint64 sift_test_seg_flip_at;
 extern uint8 sift_test_seg_flip_mask;
 extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
 extern bool sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
+extern bool sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 #endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
@@ -219,6 +220,8 @@ extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 extern uint64 sift_cseg_run_bytes(SiftColSegment *seg);
 /* The kinds (RUNS_ORD, RUNS_IDENT) the record of the leaf says some unit has; 0 when the leaf has no run */
 extern uint32 sift_cseg_run_kinds(SiftColSegment *seg, int col);
+/* the kinds (SETS_EXACT, SETS_BLOOM, SETS_PRES) the record of leaf col in the small-set summaries lists */
+extern uint32 sift_cseg_set_kinds(SiftColSegment *seg, int col);
 /*
  * The sorted run of leaf col in unit u (col/runs.h): its header in r and where its bytes start in at; false when the unit has none. Then the entries
  * [pos, pos + cnt) of it as the ordinals of rows (sift_cseg_run_read), each checked to be a row of the unit.
@@ -229,6 +232,8 @@ extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r
 extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
 extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);
+/* The key presence of leaf col in unit u (a PRES summary): the key of bit 0 divided by 64, the words and their number, valid until the next call on seg; false when the unit has none */
+extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, int64 *wbase, uint64 *nwords, const uint8 **words);
 
 /* Liveness (docs/COL.md 2.7): is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);

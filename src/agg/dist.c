@@ -468,25 +468,46 @@ dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 	return false;
 }
 
+/*
+ * The bits of another bitmap added to the set of group g, how many were new: nwords words, little endian and not aligned, the first of which holds the
+ * values from 64 * wbase (a word of a chunk is DB_WORDS words long)
+ */
+uint64
+dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, uint64 nwords)
+{
+	uint64		n = 0;
+
+	for (uint64 i = 0; i < nwords;)
+	{
+		int64		xc = (wbase + (int64) i) >> (DB_SHIFT - 6);
+		uint32		w0 = (uint32) ((wbase + (int64) i) & (DB_WORDS - 1));
+		uint64		cnt = Min(nwords - i, DB_WORDS - w0);
+		uint64	   *ch = d->mode == DD_BITS ? dist_chunk_for(ex, d, g, xc) : NULL;
+
+		for (uint64 k = 0; k < cnt; k++)
+		{
+			uint64		m;
+
+			memcpy(&m, words + (i + k) * sizeof(m), sizeof(m));
+			if (ch)
+			{
+				n += pg_popcount64(m & ~ch[w0 + k]);
+				ch[w0 + k] |= m;
+				continue;
+			}
+			for (; m; m &= m - 1)
+				n += dist_add(ex, d, g, (uint32) (xc * (1 << DB_SHIFT) + (w0 + k) * 64 + pg_rightmost_one_pos64(m)));
+		}
+		i += cnt;
+	}
+	return n;
+}
+
 /* the bits of a chunk of another bitmap (chunk number xc of group g) added to the set; how many were new */
 uint64
 dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits)
 {
-	uint64	   *ch = d->mode == DD_BITS ? dist_chunk_for(ex, d, g, xc) : NULL;
-	uint64		n = 0;
-
-	for (int w = 0; w < DB_WORDS; w++)
-	{
-		if (ch)
-		{
-			n += pg_popcount64(bits[w] & ~ch[w]);
-			ch[w] |= bits[w];
-			continue;
-		}
-		for (uint64 m = bits[w]; m; m &= m - 1)
-			n += dist_add(ex, d, g, (uint32) (xc * (1 << DB_SHIFT) + w * 64 + pg_rightmost_one_pos64(m)));
-	}
-	return n;
+	return dist_or_words(ex, d, g, xc * DB_WORDS, (const uint8 *) bits, DB_WORDS);
 }
 
 /* the groups renumbered through remap (UINT32_MAX: dropped) while the scan runs; newcap is their new capacity */

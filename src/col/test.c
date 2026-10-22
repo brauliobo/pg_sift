@@ -47,6 +47,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_super_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_run_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_run_file_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_set_file_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
@@ -1249,10 +1250,10 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 					case 0: copy[2] = 1; break;							/* flag bits */
 					case 1: copy[3] = 0x80; break;
 					case 2: copy[0] = 0; break;							/* kind */
-					case 3: copy[0] = 3; break;
+					case 3: copy[0] = 4; break;
 					case 4: memcpy(copy + 4, &n, 4); break;				/* no keys */
 					case 5: n = UINT32_MAX; memcpy(copy + 4, &n, 4); break;	/* a count that overflows 32 bits when multiplied */
-					case 6: copy[1] = 0; break;							/* width or probes 0 */
+					case 6: if (orig[0] == SIFT_CSET_PRES) continue; copy[1] = 0; break;							/* width or probes 0 */
 					case 7: copy[1] = orig[0] == SIFT_CSET_EXACT ? 3 : 17; break;
 					case 8: memcpy(copy + 8, &big, 8); break;			/* the bits of a filter; the base of an exact set (whose first offset then is not its smallest key) is not damage */
 					case 9:
@@ -1385,8 +1386,8 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
  * must never read outside the section (meaningful under SANITIZE=1) and every one in a byte the reader or the check uses must be refused: `unnoticed`
  * counts the ones that were not. The padding between the blocks is not counted.
  */
-Datum
-sift_test_col_run_file_damage(PG_FUNCTION_ARGS)
+static Datum
+section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, uint64 *, uint8 **))
 {
 	static const uint8 masks[] = {0x01, 0x80};
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
@@ -1415,7 +1416,7 @@ sift_test_col_run_file_damage(PG_FUNCTION_ARGS)
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
-		if (!sift_cseg_test_run_span(seg, &off, &len, &used))
+		if (!span(seg, &off, &len, &used))
 		{
 			sift_cseg_close(seg);
 			continue;
@@ -1464,6 +1465,19 @@ sift_test_col_run_file_damage(PG_FUNCTION_ARGS)
 	v[2] = Int64GetDatum(refused);
 	v[3] = Int64GetDatum(unnoticed);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+Datum
+sift_test_col_run_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_run_span);
+}
+
+/* sift._test_col_set_file_damage(index, stride): the same for the small-set summaries and the key presence */
+Datum
+sift_test_col_set_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_set_span);
 }
 
 /*

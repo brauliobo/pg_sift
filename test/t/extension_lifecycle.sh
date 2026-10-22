@@ -57,7 +57,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=70
+UPG_CHECKS=73
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 node_init life 6
 node_start life || bail "start failed"
@@ -318,6 +318,19 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "REINDEX INDEX cols13_col" >/dev/null
 	check "after REINDEX every segment of the index is minor 13 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")/$(q life upg \
 		"SELECT sift.col_verify('cols13_col', true)" "SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "13/$S13OFF"
+	# minor 15 segments (the key presence of a leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
+	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols15_col ON cols15 USING sift_col (id, k, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols15_col SET (key_presence = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols15_col')" >/dev/null
+	S15Q="SELECT count(DISTINCT k), count(*), sum(v) FROM cols15"
+	S15OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S15Q" | tail -n 1)
+	check "an index with minor 3 and minor 15 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")" == 3,15
+	check "the index with minor 3 and minor 15 segments verifies and answers a count(DISTINCT) as the heap" test "$(q life upg "SELECT sift.col_verify('cols15_col', true)" \
+		"SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "$S15OFF"
+	q life upg "REINDEX INDEX cols15_col" >/dev/null
+	check "after REINDEX every segment of the index is minor 15 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")/$(q life upg \
+		"SELECT sift.col_verify('cols15_col', true)" "SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "15/$S15OFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does
