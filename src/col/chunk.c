@@ -48,7 +48,8 @@ sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **b
 	const uint8 *pl = c->payload;
 	uint32		len = c->paylen;
 
-	SIFT_INVARIANT(c->enc == SIFT_COLENC_STRS || c->enc == SIFT_COLENC_ISTR, "sift_col: chunk encoding %d holds no strings", c->enc);
+	if (c->enc != SIFT_COLENC_STRS && c->enc != SIFT_COLENC_ISTR)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: encoding %d holds no strings", c->enc)));
 	if (c->enc == SIFT_COLENC_ISTR)
 	{
 		const uint8 *pre;
