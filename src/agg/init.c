@@ -202,8 +202,6 @@ semi_lut_build(AggExec *ex, int ci)
 
 /* the tuples of `in` that pass a semi (the key is in the table) or anti (it is not, or NULL) join of the table, to the next stage */
 
-/* ---------- the scan ---------- */
-
 void
 init_states(AggExec *ex)
 {

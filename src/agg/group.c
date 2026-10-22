@@ -76,11 +76,7 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- executor state ---------- */
-
 /* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
-
-/* ---------- value conversions ---------- */
 
 /* The group of a float: its bits, with the one zero and the one NaN of float8_eq / hashfloat8 (-0 = 0, NaN = NaN) */
 static int64
@@ -92,8 +88,6 @@ float_key(double d)
 	memcpy(&bits, &d, sizeof(bits));
 	return bits;
 }
-
-/* ---------- groups ---------- */
 
 AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
@@ -412,8 +406,6 @@ direct_grow(AggExec *ex)
 	}
 	pfree(remap);
 }
-
-/* ---------- group keys ---------- */
 
 /* the next id of an ident key, for the value v */
 uint32
@@ -821,8 +813,6 @@ key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *val
 				ids[i] = nullid;
 		}
 }
-
-/* ---------- aggregation of a chunk ---------- */
 
 void
 compute_gids(AggExec *ex, int nsel)

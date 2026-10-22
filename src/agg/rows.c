@@ -50,8 +50,6 @@ sift_agg_rows_init(void)
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
-/* ---------- the plan's private data ---------- */
-
 /* the spec as lists that copyObject and the plan cache keep: [nkeys naggs], eqops, collations, [kind argcol filtercol] and [fn restype argtype collid] per aggregate */
 List *
 sift_agg_rows_pack(const SiftRowsSpec *s)
@@ -109,8 +107,6 @@ sift_agg_rows_unpack(List *pack)
 	}
 	return s;
 }
-
-/* ---------- the state ---------- */
 
 
 /* a pair of a count(DISTINCT) set: bit b of mask is set when the b-th aggregate of the set took a row of the group with the value */
@@ -317,8 +313,6 @@ rows_group(RowsExec *ex, const Datum *values, const bool *isnull)
 	return g;
 }
 
-/* ---------- count(DISTINCT) ---------- */
-
 static inline uint64
 pair_hash(uint32 g, int64 v)
 {
@@ -476,8 +470,6 @@ set_finish(RowsExec *ex, RowsSet *st)
 	}
 }
 
-/* ---------- the run ---------- */
-
 static inline bool
 rows_takes(const SiftRowsAgg *a, const Datum *values, const bool *isnull)
 {
@@ -606,8 +598,6 @@ rows_exec(CustomScanState *node)
 {
 	return ExecScan(&node->ss, rows_next, rows_recheck);
 }
-
-/* ---------- executor methods ---------- */
 
 static void
 rows_begin(CustomScanState *node, EState *estate, int eflags)

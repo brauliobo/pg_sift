@@ -22,8 +22,6 @@ array_parent(AggExec *ex, int leaf)
 	return ex->gpar[leaf];
 }
 
-/* ---------- predicates ---------- */
-
 /*
  * c (a numeric) floored (up: ceilinged) to a multiple of 10^-scale, as that integer: PostgreSQL's own numeric_mul, numeric_floor and
  * numeric_ceil do the arithmetic. -1 / 1 when it is below / above every integer within lim, which is where NaN (numeric order puts it

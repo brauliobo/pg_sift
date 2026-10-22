@@ -64,8 +64,6 @@
 #include "agg/plan_int.h"
 #include "agg/plan_join_int.h"
 
-/* ---------- the path ---------- */
-
 bool
 unsupported_clause(AggCtx *c, Node *n)
 {
