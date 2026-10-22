@@ -123,6 +123,15 @@ sift_col_init(void)
 							 "Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs.",
 							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
 							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_merge_min_churn_pct",
+							 "Percent of the rows of a sift_col index that must have changed since its last rewrite (dead, or written after it) for the automatic rewrite to run.",
+							 "The rewrite writes the whole index, so the rows it has to fix must be worth it: 5 bounds the write amplification of the automatic rewrite at 20 bytes written per byte changed. "
+							 "0 does not wait. sift.col_maintain(index) ignores it.",
+							 &sift_col_auto_merge_min_churn_pct, 0.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_max_active",
+							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
+							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
+							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written: 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "

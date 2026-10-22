@@ -21,8 +21,10 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
@@ -30,6 +32,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #include "col/am.h"
 #include "col/seg.h"
@@ -43,11 +46,15 @@
 int			sift_test_col_rollup_panic_armed = 0;
 #endif
 
+#define WHY_BUFFER	"write buffer rows"
+
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
 bool		sift_col_auto_merge = false;
 int			sift_col_auto_merge_dirty_pct = 30;
 double		sift_col_auto_merge_fragmentation = 2.0;
 double		sift_col_auto_merge_buffer_pct = 1.0;
+double		sift_col_auto_merge_min_churn_pct = 0.0;
+int			sift_col_auto_merge_max_active = 0;
 
 /* The merges of the maintenance worker sleep like vacuum_cost_delay does (sift.maintenance_cost_delay); its promotions, which the writers wait for, and the rollup refresh do not */
 static void
@@ -327,7 +334,9 @@ vacuum_truncates(Relation index)
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
  * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite leaves alone an index over sift.vacuum_rewrite_limit.
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite leaves alone an index over sift.vacuum_rewrite_limit, and
+ * waits until sift.col_auto_merge_min_churn_pct percent of the rows changed since the last rewrite: the dead ones, and those of its write buffer and of
+ * its segments but the largest (the one a rewrite leaves).
  */
 static const char *
 rewrite_due(Relation index, bool automatic)
@@ -338,6 +347,8 @@ rewrite_due(Relation index, bool automatic)
 				rows = 0,
 				bytes = 0,
 				buffered = 0,
+				changed = 0,
+				largest = 0,
 				covered;
 
 	sift_dir_read(index, snap);
@@ -352,8 +363,13 @@ rewrite_due(Relation index, bool automatic)
 			rows += e->ndocs;
 			bytes += e->bytes;
 			listed += seg->nsb;
-			for (uint32 u = 0; (e->flags & SIFT_SEG_DIRTY) && u < seg->nsb; u++)
-				dirty += sift_cseg_dirty(seg, u);
+			largest = Max(largest, e->ndocs);
+			if (e->flags & SIFT_SEG_DIRTY)
+			{
+				for (uint32 u = 0; u < seg->nsb; u++)
+					dirty += sift_cseg_dirty(seg, u);
+				changed += e->ndocs - sift_cseg_live_rows(seg);
+			}
 			sift_cseg_close(seg);
 		}
 		else
@@ -367,15 +383,26 @@ rewrite_due(Relation index, bool automatic)
 	}
 	covered = sift_cseg_dir_units(snap);
 	pfree(snap);
-	if (automatic && bytes > ((uint64) sift_vacuum_rewrite_limit << 20))
-		return NULL;
-	if (listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
-		return "dirty units";
-	if (covered > 0 && (double) listed >= sift_col_auto_merge_fragmentation * covered)
-		return "fragmented units";
+	changed += rows - largest + buffered;
+	/* the size and the churn bound what a rewrite of all the segments costs, not the promotion of a write buffer */
+	if (!automatic || (bytes <= ((uint64) sift_vacuum_rewrite_limit << 20) &&
+					   (double) changed * 100 >= sift_col_auto_merge_min_churn_pct * (double) (rows + buffered)))
+	{
+		if (listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
+			return "dirty units";
+		if (covered > 0 && (double) listed >= sift_col_auto_merge_fragmentation * covered)
+			return "fragmented units";
+	}
 	if (buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
-		return "write buffer rows";
+		return WHY_BUFFER;
 	return NULL;
+}
+
+/* Only the write buffer is large: promoting it is the cost of its rows, a rewrite is the cost of the index */
+static bool
+rewrite_all(const char *why)
+{
+	return strcmp(why, WHY_BUFFER) != 0;
 }
 
 /* VACUUM leaves the rewrite to a worker of its own: it is not VACUUM's to hold the table for, and the worker sleeps as sift.maintenance_cost_delay says */
@@ -405,6 +432,7 @@ static const SiftMaintOps col_ops = {
 	.bulkdelete_wbuf = bulkdelete_wbuf,
 	.vacuum_skipped = reap_overflow,
 	.rewrite_due = rewrite_due,
+	.rewrite_all = rewrite_all,
 	.vacuum_done = rewrite_request,
 };
 
@@ -468,6 +496,44 @@ sift_col_maint_worker_main(Datum main_arg)
 	CommitTransactionCommand();
 }
 
+/* Client backends of this database that are running a statement */
+static int
+active_backends(void)
+{
+	int			n = 0;
+
+	pgstat_clear_backend_activity_snapshot();
+	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
+	{
+		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
+
+		n += s->st_backendType == B_BACKEND && s->st_databaseid == MyDatabaseId && s->st_state == STATE_RUNNING;
+	}
+	return n;
+}
+
+/*
+ * sift.col_auto_merge_max_active: waits, with no transaction (and so no snapshot that holds back the horizon), until at most that many client backends
+ * of the database are running a statement: looks again after sift.maintenance_naptime, then twice as late each time, 8 times. False: it stayed busy,
+ * and the next VACUUM asks again.
+ */
+static bool
+wait_quiet(void)
+{
+	long		delay = sift_maintenance_naptime;
+
+	for (int tries = 0; sift_col_auto_merge_max_active > 0 && active_backends() > sift_col_auto_merge_max_active; tries++)
+	{
+		if (tries == 8)
+			return false;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		delay *= 2;
+	}
+	return true;
+}
+
 /* The rewrite VACUUM asked for: the rule is judged again (the index may have changed since), and a held maintenance lock leaves it for the next VACUUM */
 void
 sift_col_rewrite_worker_main(Datum main_arg)
@@ -476,6 +542,8 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	Relation	index;
 
+	if (!wait_quiet())
+		return;
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 	index = try_index_open(indexoid, RowExclusiveLock);
