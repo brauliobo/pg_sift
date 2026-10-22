@@ -58,21 +58,6 @@ cmp_f64_avx512(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 #undef CMPF
 }
 
-F5 void
-between_f64_avx512(uint64 *out, const double *v, int n, double lo, double hi)
-{
-	const __m512d vlo = _mm512_set1_pd(lo),
-				vhi = _mm512_set1_pd(hi);
-
-	if (lo != lo || hi != hi)
-	{
-		agk_between_f64_scalar(out, v, n, lo, hi);
-		return;
-	}
-	AGK_BITS(out, n, 8, 0, i,
-			 _mm512_mask_cmp_pd_mask(_mm512_cmp_pd_mask(LPD(v + i), vlo, _CMP_GE_OQ), LPD(v + i), vhi, _CMP_LE_OQ));
-}
-
 /* Rows whose gathered dword has a nonzero low byte (the LUT has SIFT_AGG_PAD readable bytes after it) */
 K5 __mmask16
 nonzero_byte(__m512i g)
@@ -177,43 +162,6 @@ F5 int64
 sum_i32_avx512(const int32 *v, const uint64 *mask, int n)
 {
 	return mask ? sum_i32_t(v, mask, n, true) : sum_i32_t(v, mask, n, false);
-}
-
-/*
- * The specified accumulators are eight chains of n / 8 dependent adds: plain adds on two ymm accumulators (the latency of a
- * merge-masked or a zmm add is longer, docs/KERNELS.md; a masked load costs more than a plain one, so only the rows of a
- * mask and the tail use it); an unselected lane is loaded as +0.0, which adds nothing (an accumulator is never -0.0).
- */
-K5 double
-sum_f64_t(const double *v, const uint64 *mask, int n, const bool masked)
-{
-	__m256d		a0 = _mm256_setzero_pd(),
-				a1 = a0;
-	double		a[8];
-
-	int			i = 0;
-
-	for (; !masked && i + 8 <= n; i += 8)
-	{
-		a0 = _mm256_add_pd(a0, _mm256_loadu_pd(v + i));
-		a1 = _mm256_add_pd(a1, _mm256_loadu_pd(v + i + 4));
-	}
-	for (; i < n; i += 8)
-	{
-		const uint32 k = masked ? SEL8(mask, i) : (uint32) AGK_LANES(n - i, 8);
-
-		a0 = _mm256_add_pd(a0, _mm256_maskz_loadu_pd(k & 15, v + i));
-		a1 = _mm256_add_pd(a1, _mm256_maskz_loadu_pd(k >> 4, v + i + 4));
-	}
-	_mm256_storeu_pd(a, a0);
-	_mm256_storeu_pd(a + 4, a1);
-	return agk_canon_nan(((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7])));
-}
-
-F5 double
-sum_f64_avx512(const double *v, const uint64 *mask, int n)
-{
-	return mask ? sum_f64_t(v, mask, n, true) : sum_f64_t(v, mask, n, false);
 }
 
 /* Unselected lanes are loaded as +0.0; VFPCLASS 0x99 is QNaN, SNaN, +Inf, -Inf */
@@ -391,53 +339,15 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
-/*
- * The selected values are compressed to the front of a buffer behind the previous value (VPCOMPRESSD), then every value is
- * compared with its predecessor in the buffer. Without a mask the rows are compared with themselves shifted by one.
- * The vector has at most SIFT_AGG_VEC rows.
- */
-F5 int64
-count_changes_avx512(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
-{
-	uint32		buf[SIFT_AGG_VEC + 32];
-	int64		cnt = 0;
-	int			c = 0;
-
-	if (!mask)
-	{
-		if (n == 0)
-			return 0;
-		cnt = v[0] != *prev;
-		for (int i = 1; i < n; i += 16)
-			cnt += __builtin_popcount(_mm512_cmpneq_epi32_mask(L5(v + i), L5(v + i - 1)) & AGK_LANES(n - i, 16));
-		*prev = v[n - 1];
-		return cnt;
-	}
-	buf[0] = *prev;
-	for (int i = 0; i < n; i += 16)
-	{
-		const __mmask16 k = SEL16(mask, i);
-
-		S5(buf + 1 + c, _mm512_maskz_compress_epi32(k, L5(v + i)));
-		c += __builtin_popcount(k);
-	}
-	S5(buf + 1 + c, _mm512_setzero_si512());
-	for (int j = 0; j < c; j += 16)
-		cnt += __builtin_popcount(_mm512_cmpneq_epi32_mask(L5(buf + j), L5(buf + j + 1)) & AGK_LANES(c - j, 16));
-	*prev = buf[c];
-	return cnt;
-}
-
 #define AGK_INIT5(s)	.s = s##_avx512,
 
 const SiftAggKernels sift_aggkern_avx512 = {
-	AGK_INIT5(cmp_f64) AGK_INIT5(between_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
+	AGK_INIT5(cmp_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
 	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
-	AGK_INIT5(sum_i32) AGK_INIT5(sum_f64) AGK_INIT5(absmax_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
-	AGK_INIT5(count_changes)
 };
 
 #endif							/* __x86_64__ */
