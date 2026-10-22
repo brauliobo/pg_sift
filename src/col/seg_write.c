@@ -443,7 +443,8 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 				sum[u] = z->sum_i;
 			nnull[u] = z->nnull;
 			nvals[u] = z->nvals;
-			flags[u] = z->flags;
+			/* 3.1 compares the stored flags with the chunk's exactly: the flag of 3.2 is only in a segment of the minor that says the kinds are complete */
+			flags[u] = w->format >= SIFT_COL_FORMAT_KINDS ? z->flags : z->flags & ~SIFT_COLZ_JNULL;
 			if (def->store == SIFT_COLS_STR)
 				memcpy(set + (Size) u * 4, z->set, 4 * sizeof(uint64));
 		}
