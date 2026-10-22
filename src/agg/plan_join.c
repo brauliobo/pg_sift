@@ -585,6 +585,76 @@ rekey_chains(AggCtx *c, List *quals)
 	return out;
 }
 
+/* the equality of the elements x and y of two jsonb arrays, as a comparison of their type (NULL: the types differ, or have no equality) */
+static Node *
+element_equality(Node *x, Node *y)
+{
+	TypeCacheEntry *tc;
+
+	if (exprType(x) != exprType(y) || exprCollation(x) != exprCollation(y))
+		return NULL;
+	tc = lookup_type_cache(exprType(x), TYPECACHE_EQ_OPR);
+	if (!OidIsValid(tc->eq_opr))
+		return NULL;
+	return (Node *) make_opclause(tc->eq_opr, BOOLOID, false, (Expr *) x, (Expr *) y, InvalidOid, exprCollation(x));
+}
+
+/* `jsonb_build_array(x) = jsonb_build_array(y)`, in the form of the equality op of two arrays */
+static Node *
+element_array_equality(OpExpr *op, FuncExpr *l, FuncExpr *r, Node *x, Node *y)
+{
+	OpExpr	   *e = makeNode(OpExpr);
+	FuncExpr   *a = makeNode(FuncExpr),
+			   *b = makeNode(FuncExpr);
+
+	*e = *op;
+	*a = *l;
+	*b = *r;
+	a->args = list_make1(x);
+	b->args = list_make1(y);
+	e->args = list_make2(a, b);
+	return (Node *) e;
+}
+
+/*
+ * `jsonb_build_array(a1, ..) = jsonb_build_array(b1, ..)` holds when each pair of elements is equal, a NULL (the JSON null) being equal
+ * to itself only. An element of the same type on both sides whose JSON image is its value (an integer, a date, a text of a deterministic
+ * collation) that equals a column of the joined table is a key that equals NULLs; each of the others stays a condition of the table's rows.
+ * False, and the clause as it is, when no element is a key. Without keys the rows of the table are all tested for every tuple.
+ */
+static bool
+array_keys(AggCtx *c, JoinCtx *jc, Node *q, List **conds)
+{
+	OpExpr	   *op = (OpExpr *) q;
+	FuncExpr   *l,
+			   *r;
+	List	   *rest = NIL;
+	int			nkey = jc->j.nkey;
+	ListCell   *la,
+			   *lb;
+
+	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || get_opcode(op->opno) != F_JSONB_EQ)
+		return false;
+	l = linitial(op->args);
+	r = lsecond(op->args);
+	if (!IsA(l, FuncExpr) || !IsA(r, FuncExpr) || l->funcid != F_JSONB_BUILD_ARRAY_ANY || r->funcid != F_JSONB_BUILD_ARRAY_ANY ||
+		l->funcvariadic || r->funcvariadic || list_length(l->args) != list_length(r->args))
+		return false;
+	forboth(la, l->args, lb, r->args)
+	{
+		Node	   *x = lfirst(la),
+				   *y = lfirst(lb),
+				   *eq = element_equality(x, y);
+
+		if (eq == NULL || (!join_clause(c, jc, eq, true) && !join_expr_clause(c, jc, eq, true)))
+			rest = lappend(rest, element_array_equality(op, l, r, x, y));
+	}
+	if (jc->j.nkey == nkey)
+		return false;
+	*conds = list_concat(*conds, rest);
+	return true;
+}
+
 bool
 setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
 {
@@ -642,7 +712,7 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 			jc->j.args = lappend(jc->j.args, expr);
 		}
 		foreach_ptr(Node, q, jc->clauses)
-			if (jc->j.params != NIL || (!join_clause(c, jc, q) && !join_expr_clause(c, jc, q)))
+			if (jc->j.params != NIL || (!array_keys(c, jc, q, &conds) && !join_clause(c, jc, q, false) && !join_expr_clause(c, jc, q, false)))
 				conds = lappend(conds, q);
 		if ((jc->j.nkey == 0 && conds == NIL && jc->j.params == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
 			return false;

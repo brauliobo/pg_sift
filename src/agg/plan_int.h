@@ -310,9 +310,9 @@ extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
 extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
-extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q);
+extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
-extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q);
+extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si);
 extern bool combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si);
 extern Node *lower_scoped(AggCtx *c, int ci, Node *expr);

@@ -40,6 +40,7 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	l->nslot = m->nslot;
 	l->filtered = m->filtered;
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
+	memcpy(l->knull, m->knull, sizeof(l->knull));
 	l->kid = share_array(&off, (size_t) m->nrow * m->nkey, sizeof(uint32));
 	l->next = share_array(&off, m->nrow, sizeof(uint32));
 	l->head = share_array(&off, m->nslot, sizeof(uint32));
@@ -167,6 +168,7 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	m->nslot = l->nslot;
 	m->filtered = l->filtered;
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
+	memcpy(m->knull, l->knull, sizeof(m->knull));
 	m->kid = (uint32 *) (src + l->kid);
 	m->next = (uint32 *) (src + l->next);
 	m->head = (uint32 *) (src + l->head);

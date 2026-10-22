@@ -220,20 +220,21 @@ join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid 
 	return op;
 }
 
-/* the column m of the joined table is the next key of the join */
+/* the column m of the joined table is the next key of the join (nullsafe: a NULL equals a NULL) */
 static void
-join_key(JoinCtx *jc, Var *m)
+join_key(JoinCtx *jc, Var *m, bool nullsafe)
 {
 	SiftAggJoin *j = &jc->j;
 
 	join_var(jc, m);
 	j->keyatt[j->nkey] = m->varattno;
 	j->keytype[j->nkey] = m->vartype;
+	j->keynull[j->nkey] = nullsafe;
 }
 
 /* `column = leaf` of the joined table: the equality of a dictionary leaf with a text column, of an integer leaf with an integer column */
 bool
-join_clause(AggCtx *c, JoinCtx *jc, Node *q)
+join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 {
 	OpExpr	   *op;
 	Oid			lt,
@@ -265,7 +266,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	else if ((lf->vtype != SCV_I32 && lf->typid != INT8OID) || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
-	join_key(jc, (Var *) m);
+	join_key(jc, (Var *) m, nullsafe);
 	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->typid, -1, lf->vtype == SCV_CODE ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
 		return false;
 	use_leaf(c, leaf);
@@ -443,7 +444,7 @@ may_raise_walker(Node *n, AggCtx *c)
  * values and the table is probed with the result (the key is not a leaf, so there is no id to read it from).
  */
 bool
-join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
+join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 {
 	OpExpr	   *op;
 	Oid			lt,
@@ -483,7 +484,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 	foreach_ptr(Var, v, w.vars)
 		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
 			return false;
-	join_key(jc, (Var *) m);
+	join_key(jc, (Var *) m, nullsafe);
 	j->keypos[j->nkey] = -1;
 	jc->kexpr[j->nkey] = e;
 	j->nkey++;

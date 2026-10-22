@@ -324,9 +324,12 @@ combo_child_rows(AggExec *ex, int ci, uint32 **rows)
 	return n;
 }
 
-/* the key of the entry (v: the ids of its leaves, NULL when every key is an expression); false when a key is NULL: no row matches */
+/*
+ * The key of the entry (v: the ids of its leaves, NULL when every key is an expression); false when a key is NULL: no row matches. A NULL
+ * key that equals NULL (keynull) is not that: nul[k] says so, and the rows to find are those whose key is NULL too.
+ */
 static bool
-combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, int64 *iv)
+combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, int64 *iv, bool *nul)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -340,7 +343,12 @@ combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, 
 			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
 
 			if (isnull)
-				return false;
+			{
+				if (!j->keynull[k])
+					return false;
+				nul[k] = true;
+				continue;
+			}
 			if (cs->map->ktext[k])
 			{
 				struct varlena *t = PG_DETOAST_DATUM_PACKED(d);
@@ -353,7 +361,12 @@ combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, 
 			continue;
 		}
 		if (v[j->keypos[k]] == 0)
-			return false;
+		{
+			if (!j->keynull[k])
+				return false;
+			nul[k] = true;
+			continue;
+		}
 		if (cs->map->ktext[k])
 		{
 			ptr[k] = cs->in[j->keypos[k]].ptr[v[j->keypos[k]] - 1];
@@ -396,7 +409,7 @@ combo_key_id(AggExec *ex, int ci, int k, const uint64 *v, const char *ptr, uint3
 
 /* the rows of the table whose key is the entry's */
 static int
-combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
+combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 *len, const int64 *iv, const bool *nul, uint32 **rows)
 {
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 	MapTab	   *m = ex->cs[ci].map;
@@ -406,8 +419,11 @@ combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 
 	if (m->nrow == 0)
 		return 0;
 	for (int k = 0; k < j->nkey; k++)
-		if ((kid[k] = combo_key_id(ex, ci, k, v, ptr[k], len[k], iv[k])) == 0)
+	{
+		kid[k] = nul[k] ? 0 : combo_key_id(ex, ci, k, v, ptr[k], len[k], iv[k]);
+		if (kid[k] == 0 && !nul[k])
 			return 0;
+	}
 	return map_find_ids(m, kid, rows);
 }
 
@@ -420,11 +436,12 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
 	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
 	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+	bool		nul[SIFT_AGG_MAX_JKEYS] = {0};
 
 	if (j->params != NIL)
 		return combo_child_rows(ex, ci, rows);
 	*rows = NULL;
-	return combo_keys(ex, ci, v, ptr, len, iv) ? combo_find(ex, ci, v, ptr, len, iv, rows) : 0;
+	return combo_keys(ex, ci, v, ptr, len, iv, nul) ? combo_find(ex, ci, v, ptr, len, iv, nul, rows) : 0;
 }
 
 typedef struct PriorKeyed
@@ -467,7 +484,7 @@ combo_prior_keyed(AggExec *ex, int ci, int prior)
 	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nkey == 0 || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return false;
 	for (int k = 0; k < j->nkey && w.ok; k++)
-		if (j->keyexpr[k])
+		if (j->keyexpr[k] && !j->keynull[k])
 			reads_prior_only(j->keyexpr[k], &w);
 		else
 			w.ok = false;
@@ -485,6 +502,7 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
 	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
 	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+	bool		nul[SIFT_AGG_MAX_JKEYS] = {0};
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	uint32	   *rows;
 	int			nm;
@@ -492,7 +510,7 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 	for (int p = 0; p < cb->nleaves; p++)
 		if (cb->leaf[p] < 0 && cb->refcombo[p] == prior)
 			map_bind(ex, p, pm, row, cb->refcol[p]);
-	if (!combo_keys(ex, ci, NULL, ptr, len, iv))
+	if (!combo_keys(ex, ci, NULL, ptr, len, iv, nul))
 		return false;
 	nm = map_find(ex->cs[ci].map, ptr, len, iv, &rows);
 	return j->fslot >= 0 && !ex->cs[ci].map->filtered && nm > 0 ? combo_filter_rows(ex, ci, rows, nm) > 0 : nm > 0;

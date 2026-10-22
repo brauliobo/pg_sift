@@ -282,15 +282,15 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 {
 	Datum		kv[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
-	bool		anynull = false;
+	bool		dead = false;
 	size_t		kb;
 
 	for (int k = 0; k < m->nkey; k++)
 	{
 		kv[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
-		anynull |= knull[k];
+		dead |= knull[k] && !m->knull[k];
 	}
-	if (anynull && !m->keep)
+	if (dead && !m->keep)
 		return;					/* NULL equals nothing */
 	if (m->nrow == m->cap)
 		map_grow(m);
@@ -430,7 +430,10 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 	m->keep = sift_aggjoin_preserves(j->kind);
 	m->mcol = MemoryContextAllocZero(cxt, Max(j->ncol, 1) * sizeof(MapCol));
 	for (int k = 0; k < j->nkey; k++)
+	{
 		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+		m->knull[k] = j->keynull[k];
+	}
 	for (int c = 0; c < j->ncol; c++)
 		get_typlenbyval(j->coltype[c], &m->mcol[c].len, &m->mcol[c].byval);
 	return m;
@@ -558,11 +561,8 @@ map_index_rows(MapTab *m)
 	{
 		const uint32 *kid = m->kid + (size_t) r * m->nkey;
 		uint32		h;
-		bool		anynull = false;
 
-		for (int k = 0; k < m->nkey; k++)
-			anynull |= kid[k] == 0;
-		if (anynull)
+		if (map_key_dead(m, kid))
 			continue;
 		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
 		m->next[r] = m->head[h];
@@ -1005,7 +1005,7 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
-		appendStringInfo(&k, "%d/%u ", j->keyatt[i], j->keytype[i]);
+		appendStringInfo(&k, "%d/%u/%d ", j->keyatt[i], j->keytype[i], j->keynull[i]);
 	if (cols || own)
 	{
 		appendStringInfo(&k, "|%d|", j->ncol);
