@@ -187,6 +187,9 @@ new_tomb_segment(Relation rel)
 	return e;
 }
 
+/* The first writer writes the metapage and then the directory, two blocks one after the other: a file of the metapage alone is being laid out */
+#define BLOCKS_WRITTEN(rel)	(RelationGetNumberOfBlocks(rel) > SIFT_DIRECTORY_BLKNO)
+
 void
 sift_tbl_ensure_init(Relation rel)
 {
@@ -195,7 +198,7 @@ sift_tbl_ensure_init(Relation rel)
 	/* a read between the first writer's metapage and its tombstone segment caches a table that is not laid out yet */
 	if (st->initialized && find_seg(&st->dir, is_tomb, 0) != NULL)
 		return;
-	if (RelationGetNumberOfBlocks(rel) == 0)
+	if (!BLOCKS_WRITTEN(rel))
 	{
 		static const SiftOptions none = {0};
 
@@ -234,7 +237,7 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 	int			nold = st->nwbuf,
 				n = 0;
 
-	if (RelationGetNumberOfBlocks(rel) == 0)
+	if (!BLOCKS_WRITTEN(rel))
 	{
 		st->initialized = false;
 		st->dir.nsegs = 0;

@@ -93,6 +93,8 @@ sift_tbl_bulk_begin(Relation rel, SiftTblRel *st)
 	b->isnull = palloc(b->desc->natts * sizeof(bool));
 	b->budget = Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024);
 	sift_tbl_refresh(rel, st);
+	/* the vblocks come from the directory as it is now, without the active lock: no writer may race for them, as none does in the new table of a rewrite */
+	Assert(st->fresh);
 	b->vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
 	sift_cbatch_reset(b->sw.batch, b->vbase / SIFT_SB_PAGES);
 	MemoryContextSwitchTo(old);
