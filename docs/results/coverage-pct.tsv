@@ -1,17 +1,17 @@
 family	sub-family	variants	pushed	by design	wrong	percent	build	date	tests
-08	*	281	165	4	0	59.6	v3.2.1	2026-10-22	script:coverage,test:col_topn,test:col_topn_deep,test:col_topn_deep_limits,test:col_topn_hot,test:col_topn_join,test:col_topn_moved,test:col_topn_order,test:col_topn_parallel,test:tbl_topn
+08	*	288	165	4	0	58.1	v3.2.1	2026-10-22	script:coverage,test:col_topn,test:col_topn_deep,test:col_topn_deep_limits,test:col_topn_hot,test:col_topn_join,test:col_topn_moved,test:col_topn_order,test:col_topn_parallel,test:col_topn_text,test:tbl_topn
 08	LIMIT and OFFSET	15	11	0	0	73.3	v3.2.1	2026-10-22	script:coverage
 08	NULLS	16	12	0	0	75.0	v3.2.1	2026-10-22	script:coverage
 08	composition	15	3	3	0	25.0	v3.2.1	2026-10-22	script:coverage
 08	filter	98	91	1	0	93.8	v3.2.1	2026-10-22	script:coverage
-08	fixtures: topn	31	8	0	0	25.8	v3.2.1	2026-10-22	script:coldiff
+08	fixtures: topn	38	8	0	0	21.1	v3.2.1	2026-10-22	script:coldiff
 08	key count	12	0	0	0	0.0	v3.2.1	2026-10-22	script:coverage
 08	key type	44	16	0	0	36.4	v3.2.1	2026-10-22	script:coverage
 08	select list	8	8	0	0	100.0	v3.2.1	2026-10-22	script:coverage
 08	sort expression	14	0	0	0	0.0	v3.2.1	2026-10-22	script:coverage
 08	table kind	21	10	0	0	47.6	v3.2.1	2026-10-22	script:coverage
 08	tie-break	7	6	0	0	85.7	v3.2.1	2026-10-22	script:coverage
-13	*	503	421	36	0	90.1	v3.2.1	2026-10-22	script:coverage,test:agg_arm_distinct,test:agg_distinct,test:agg_distinct_on,test:agg_distinct_parallel,test:agg_full_join_placeholder,test:agg_join_array_key,test:agg_join_filter,test:agg_join_key_types,test:agg_join_none,test:agg_join_table_key,test:agg_preagg_distinct,test:agg_two_level_joins,test:col_topn_join,test:rank_join,test:rank_semi_join
+13	*	507	421	34	0	89.0	v3.2.1	2026-10-22	script:coverage,test:agg_arm_distinct,test:agg_distinct,test:agg_distinct_on,test:agg_distinct_parallel,test:agg_full_join_placeholder,test:agg_join_array_key,test:agg_join_filter,test:agg_join_key_types,test:agg_join_none,test:agg_join_table_key,test:agg_preagg_distinct,test:agg_two_level_joins,test:col_topn_join,test:rank_join,test:rank_semi_join
 13	DISTINCT	32	29	0	0	90.6	v3.2.1	2026-10-22	script:coverage
 13	DISTINCT ON	16	10	6	0	100.0	v3.2.1	2026-10-22	script:coverage
 13	DISTINCT over grouped, windowed or nested	14	12	0	0	85.7	v3.2.1	2026-10-22	script:coverage
@@ -19,53 +19,52 @@ family	sub-family	variants	pushed	by design	wrong	percent	build	date	tests
 13	fixtures: distinct_on	17	17	0	0	100.0	v3.2.1	2026-10-22	script:coldiff
 13	fixtures: flat	81	78	0	0	96.3	v3.2.1	2026-10-22	script:coldiff
 13	fixtures: join	74	72	0	0	97.3	v3.2.1	2026-10-22	script:coldiff
-13	fixtures: part	28	26	0	0	92.9	v3.2.1	2026-10-22	script:coldiff
+13	fixtures: part	32	26	0	0	81.2	v3.2.1	2026-10-22	script:coldiff
 13	fixtures: trap	11	1	0	0	9.1	v3.2.1	2026-10-22	script:coldiff
 13	join child	33	26	0	0	78.8	v3.2.1	2026-10-22	script:coverage
 13	join condition	64	54	4	0	90.0	v3.2.1	2026-10-22	script:coverage
-13	join kind	17	16	1	0	100.0	v3.2.1	2026-10-22	script:coverage
+13	join kind	17	16	0	0	94.1	v3.2.1	2026-10-22	script:coverage
 13	stable or immutable function	24	20	0	0	83.3	v3.2.1	2026-10-22	script:coverage
-13	table kind	34	26	1	0	78.8	v3.2.1	2026-10-22	script:coverage
+13	table kind	34	26	0	0	76.5	v3.2.1	2026-10-22	script:coverage
 13	volatile function	24	0	24	0	-	v3.2.1	2026-10-22	script:coverage
-08	*	281	222	4	0	80.1	8e9e6c9c	2026-10-22	script:coverage,test:col_topn,test:col_topn_deep,test:col_topn_deep_limits,test:col_topn_hot,test:col_topn_join,test:col_topn_moved,test:col_topn_order,test:col_topn_parallel,test:tbl_topn
-08	LIMIT and OFFSET	15	14	0	0	93.3	8e9e6c9c	2026-10-22	script:coverage
-08	NULLS	16	16	0	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-08	composition	15	3	3	0	25.0	8e9e6c9c	2026-10-22	script:coverage
-08	filter	98	91	1	0	93.8	8e9e6c9c	2026-10-22	script:coverage
-08	fixtures: topn	31	29	0	0	93.5	8e9e6c9c	2026-10-22	script:coldiff
-08	key count	12	12	0	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-08	key type	44	30	0	0	68.2	8e9e6c9c	2026-10-22	script:coverage
-08	select list	8	8	0	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-08	sort expression	14	0	0	0	0.0	8e9e6c9c	2026-10-22	script:coverage
-08	table kind	21	12	0	0	57.1	8e9e6c9c	2026-10-22	script:coverage
-08	tie-break	7	7	0	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-08	refused:query_kind	2	0	2	0	-	8e9e6c9c	2026-10-22	script:coverage
-08	refused:table_kind	1	0	1	0	-	8e9e6c9c	2026-10-22	script:coverage
-08	refused:topn_shape	49	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-08	refused:volatile	1	0	1	0	-	8e9e6c9c	2026-10-22	script:coverage
-08	refused:where	4	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	*	503	421	36	0	90.1	8e9e6c9c	2026-10-22	script:coverage,test:agg_arm_distinct,test:agg_distinct,test:agg_distinct_on,test:agg_distinct_parallel,test:agg_full_join_placeholder,test:agg_join_array_key,test:agg_join_filter,test:agg_join_key_types,test:agg_join_none,test:agg_join_table_key,test:agg_preagg_distinct,test:agg_two_level_joins,test:col_topn_join,test:rank_join,test:rank_semi_join
-13	DISTINCT	32	29	0	0	90.6	8e9e6c9c	2026-10-22	script:coverage
-13	DISTINCT ON	16	10	6	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-13	DISTINCT over grouped, windowed or nested	14	12	0	0	85.7	8e9e6c9c	2026-10-22	script:coverage
-13	aggregate DISTINCT	34	34	0	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-13	fixtures: distinct_on	17	17	0	0	100.0	8e9e6c9c	2026-10-22	script:coldiff
-13	fixtures: flat	81	78	0	0	96.3	8e9e6c9c	2026-10-22	script:coldiff
-13	fixtures: join	74	72	0	0	97.3	8e9e6c9c	2026-10-22	script:coldiff
-13	fixtures: part	28	26	0	0	92.9	8e9e6c9c	2026-10-22	script:coldiff
-13	fixtures: trap	11	1	0	0	9.1	8e9e6c9c	2026-10-22	script:coldiff
-13	join child	33	26	0	0	78.8	8e9e6c9c	2026-10-22	script:coverage
-13	join condition	64	54	4	0	90.0	8e9e6c9c	2026-10-22	script:coverage
-13	join kind	17	16	1	0	100.0	8e9e6c9c	2026-10-22	script:coverage
-13	stable or immutable function	24	20	0	0	83.3	8e9e6c9c	2026-10-22	script:coverage
-13	table kind	34	26	1	0	78.8	8e9e6c9c	2026-10-22	script:coverage
-13	volatile function	24	0	24	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:cost	4	0	4	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:distinct_on	6	0	6	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:from_shape	10	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:group_key	7	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:join_condition	4	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:no_source	2	0	2	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:outer_join	5	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:partition_source	1	0	0	0	-	8e9e6c9c	2026-10-22	script:coverage
-13	refused:volatile	24	0	24	0	-	8e9e6c9c	2026-10-22	script:coverage
+08	*	288	233	4	0	82.0	37ca12a3	2026-10-22	script:coverage,test:col_topn,test:col_topn_deep,test:col_topn_deep_limits,test:col_topn_hot,test:col_topn_join,test:col_topn_moved,test:col_topn_order,test:col_topn_parallel,test:col_topn_text,test:tbl_topn
+08	LIMIT and OFFSET	15	14	0	0	93.3	37ca12a3	2026-10-22	script:coverage
+08	NULLS	16	16	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+08	composition	15	3	3	0	25.0	37ca12a3	2026-10-22	script:coverage
+08	filter	98	91	1	0	93.8	37ca12a3	2026-10-22	script:coverage
+08	fixtures: topn	38	36	0	0	94.7	37ca12a3	2026-10-22	script:coldiff
+08	key count	12	12	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+08	key type	44	30	0	0	68.2	37ca12a3	2026-10-22	script:coverage
+08	select list	8	8	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+08	sort expression	14	0	0	0	0.0	37ca12a3	2026-10-22	script:coverage
+08	table kind	21	16	0	0	76.2	37ca12a3	2026-10-22	script:coverage
+08	tie-break	7	7	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+08	refused:query_kind	2	0	2	0	-	37ca12a3	2026-10-22	script:coverage
+08	refused:table_kind	1	0	1	0	-	37ca12a3	2026-10-22	script:coverage
+08	refused:topn_shape	43	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+08	refused:volatile	1	0	1	0	-	37ca12a3	2026-10-22	script:coverage
+08	refused:where	6	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	*	507	434	34	0	91.8	37ca12a3	2026-10-22	script:coverage,test:agg_arm_distinct,test:agg_distinct,test:agg_distinct_on,test:agg_distinct_parallel,test:agg_full_join_placeholder,test:agg_join_array_key,test:agg_join_filter,test:agg_join_key_types,test:agg_join_none,test:agg_join_table_key,test:agg_preagg_distinct,test:agg_two_level_joins,test:col_topn_join,test:rank_join,test:rank_semi_join
+13	DISTINCT	32	29	0	0	90.6	37ca12a3	2026-10-22	script:coverage
+13	DISTINCT ON	16	10	6	0	100.0	37ca12a3	2026-10-22	script:coverage
+13	DISTINCT over grouped, windowed or nested	14	12	0	0	85.7	37ca12a3	2026-10-22	script:coverage
+13	aggregate DISTINCT	34	34	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+13	fixtures: distinct_on	17	17	0	0	100.0	37ca12a3	2026-10-22	script:coldiff
+13	fixtures: flat	81	78	0	0	96.3	37ca12a3	2026-10-22	script:coldiff
+13	fixtures: join	74	72	0	0	97.3	37ca12a3	2026-10-22	script:coldiff
+13	fixtures: part	32	30	0	0	93.8	37ca12a3	2026-10-22	script:coldiff
+13	fixtures: trap	11	1	0	0	9.1	37ca12a3	2026-10-22	script:coldiff
+13	join child	33	26	0	0	78.8	37ca12a3	2026-10-22	script:coverage
+13	join condition	64	54	4	0	90.0	37ca12a3	2026-10-22	script:coverage
+13	join kind	17	17	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+13	stable or immutable function	24	20	0	0	83.3	37ca12a3	2026-10-22	script:coverage
+13	table kind	34	34	0	0	100.0	37ca12a3	2026-10-22	script:coverage
+13	volatile function	24	0	24	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:cost	4	0	4	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:distinct_on	6	0	6	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:from_shape	5	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:group_key	7	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:join_condition	4	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:outer_join	3	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:partition_source	1	0	0	0	-	37ca12a3	2026-10-22	script:coverage
+13	refused:volatile	24	0	24	0	-	37ca12a3	2026-10-22	script:coverage

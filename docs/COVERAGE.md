@@ -29,36 +29,36 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on 8e9e6c9c (2026-10-22) against v3.2.1.
+them (the nightly job `coverage-pct` verifies the file), measured on 37ca12a3 (2026-10-22) against v3.2.1.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 8e9e6c9c |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 37ca12a3 |
 |---|---|---|---|---|
-| **all** | 281 | 4 | 59.6% | 80.1% |
+| **all** | 288 | 4 | 58.1% | 82.0% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
 | NULLS | 16 | 0 | 75.0% | 100.0% |
 | composition | 15 | 3 | 25.0% | 25.0% |
 | filter | 98 | 1 | 93.8% | 93.8% |
-| fixtures: topn | 31 | 0 | 25.8% | 93.5% |
+| fixtures: topn | 38 | 0 | 21.1% | 94.7% |
 | key count | 12 | 0 | 0.0% | 100.0% |
 | key type | 44 | 0 | 36.4% | 68.2% |
 | select list | 8 | 0 | 100.0% | 100.0% |
 | sort expression | 14 | 0 | 0.0% | 0.0% |
-| table kind | 21 | 0 | 47.6% | 57.1% |
+| table kind | 21 | 0 | 47.6% | 76.2% |
 | tie-break | 7 | 0 | 85.7% | 100.0% |
 
-Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 49, `volatile` 1 (by design), `where` 4.
+Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 43, `volatile` 1 (by design), `where` 6.
 
 ### `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 8e9e6c9c |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 37ca12a3 |
 |---|---|---|---|---|
-| **all** | 503 | 36 | 90.1% | 90.1% |
+| **all** | 507 | 34 | 89.0% | 91.8% |
 | DISTINCT | 32 | 0 | 90.6% | 90.6% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
@@ -66,16 +66,16 @@ Tests: script `coverage`.
 | fixtures: distinct_on | 17 | 0 | 100.0% | 100.0% |
 | fixtures: flat | 81 | 0 | 96.3% | 96.3% |
 | fixtures: join | 74 | 0 | 97.3% | 97.3% |
-| fixtures: part | 28 | 0 | 92.9% | 92.9% |
+| fixtures: part | 32 | 0 | 81.2% | 93.8% |
 | fixtures: trap | 11 | 0 | 9.1% | 9.1% |
 | join child | 33 | 0 | 78.8% | 78.8% |
 | join condition | 64 | 4 | 90.0% | 90.0% |
-| join kind | 17 | 1 | 100.0% | 100.0% |
+| join kind | 17 | 0 | 94.1% | 100.0% |
 | stable or immutable function | 24 | 0 | 83.3% | 83.3% |
-| table kind | 34 | 1 | 78.8% | 78.8% |
+| table kind | 34 | 0 | 76.5% | 100.0% |
 | volatile function | 24 | 24 | -% | -% |
 
-Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `from_shape` 10, `group_key` 7, `join_condition` 4, `no_source` 2 (by design), `outer_join` 5, `partition_source` 1, `volatile` 24 (by design).
+Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `from_shape` 5, `group_key` 7, `join_condition` 4, `outer_join` 3, `partition_source` 1, `volatile` 24 (by design).
 
 238 rows: 178 Yes, 23 Partly, 27 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
