@@ -83,6 +83,7 @@ extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones boun
 extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);	/* z: one zone for each of those keys */
 extern void sift_topn_walk_sort(SiftTopN *t);
 extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
+extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
 /* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */
 extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
