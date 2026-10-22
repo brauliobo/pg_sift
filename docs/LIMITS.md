@@ -19,7 +19,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `part_key_tests` | keys times partitions a list of keys is tested against exactly | 20,000 | tests | only the range of the keys prunes |  | `agg/part.c` `KEYS_MAX_TESTS` |  |
 | `joins` | lookup-joined tables per scan | 8 | tables | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` |  |
 | `combos` | value combinations per scan | 16 | combinations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` |  |
-| `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | ERROR 54000 mid-query |  | `agg/combo.c` |  |
+| `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
 | `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` |  |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |

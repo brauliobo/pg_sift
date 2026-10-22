@@ -885,6 +885,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	Tup		   *t = &ex->t0;
 	int			nw = (n + 63) / 64;
 
+	combo_trim(ex);
 	if (ex->dense && !ex->hash && ex->rsel == NULL && dense_chunk(ex, start, n, mask))
 		return;
 	t->n = sift_colk->bits_to_idx(mask, nw, 0, t->sel);

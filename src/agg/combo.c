@@ -74,7 +74,10 @@
 #include "agg/topn.h"
 #include "core/visibility.h"
 #include "core/popcount.h"
+#include "core/limits.h"
 #include "agg/agg_int.h"
+
+#define COMBO_MAX_ENTRIES	16777216	/* entries of one combo cache before the caches start again (combo_trim) */
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
 static uint32
@@ -867,11 +870,6 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 {
 	ComboSt    *cs = &ex->cs[ci];
 
-	if (id >= (uint32) 1 << 24)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
-				 errhint("Set sift.enable_agg to off for this query.")));
 	while (cs->nent <= id)
 	{
 		uint64	   *v;
@@ -925,11 +923,6 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 			combo_same(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs))
 			return e - 1;
 	combo_grow_ent(cs);
-	if (cs->nent >= (uint32) 1 << 24)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
-				 errhint("Set sift.enable_agg to off for this query.")));
 	memcpy(&cs->vid[(size_t) cs->nent * cs->ninputs], v, cs->ninputs * sizeof(uint64));
 	cs->null_input[cs->nent] = ex->null_input;
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
@@ -980,6 +973,27 @@ combo_reset(AggExec *ex, int ci)
 		if (cb->leaf[p] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
 			id64_init(&cs->id64[p]);
 	MemoryContextSwitchTo(old);
+}
+
+/*
+ * The caches are a memo, not a table the answer needs: once one holds COMBO_MAX_ENTRIES entries, all of them start again before the next chunk.
+ * A chunk runs through its joins to the aggregates before the next begins, so no output row of a combo outlives it, and the entries of a combo
+ * keyed by the output rows of another go with it. A cache that was reset costs the evaluations it held, never an error.
+ */
+void
+combo_trim(AggExec *ex)
+{
+	int64		max = sift_limit(combo_entries, COMBO_MAX_ENTRIES);
+	bool		full = false;
+
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		full |= ex->cs[ci].nent >= max;
+	if (!full)
+		return;
+	ex->n_combo_trim++;
+	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		combo_reset(ex, ci);
 }
 
 /* the id (1..) of the value of a 64-bit leaf at index i of the vector, 0 for NULL; a NaN of a numeric leaf is a value */
