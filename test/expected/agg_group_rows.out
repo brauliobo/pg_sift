@@ -60,6 +60,31 @@ SELECT scan, aggregate_runs FROM shape(scoped_shape($$d.grp = 0$$));
  normal |              1
 (1 row)
 
+-- a filter of the scanned table that PostgreSQL has no statistics of (an expression) keeps a guess of its rows, a few dozen of a large table: the groups of
+-- two such scans, FULL JOINed on their keys, are the key columns' own distinct values and the join above is hashed, not nested
+CREATE FUNCTION expr_shape(q text) RETURNS TABLE (scan text, groups_within_factor boolean, join_above text) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+	n jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
+	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")');
+	scan := CASE WHEN n IS NULL THEN 'normal' ELSE 'SiftAgg' END;
+	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN 0.25 * (n ->> 'Plan Rows')::numeric AND 4 * (n ->> 'Plan Rows')::numeric;
+	join_above := jsonb_path_query_first(j, '$.** ? (@."Node Type" like_regex "Join")."Node Type"') #>> '{}';
+	RETURN NEXT;
+END $$;
+SET sift.enable_agg = on;
+SELECT * FROM expr_shape($$
+WITH a AS (SELECT parent_id, (ts - date '2024-01-01') / 30 AS bucket, sum(amount) AS va FROM gr_facts WHERE parent_id % 4 = 1 GROUP BY 1, 2),
+     b AS (SELECT parent_id, (ts - date '2024-01-01') / 30 AS bucket, sum(amount) AS vb FROM gr_facts WHERE parent_id % 4 = 2 GROUP BY 1, 2)
+SELECT a.parent_id, a.bucket, va, vb FROM a FULL JOIN b ON a.parent_id = b.parent_id AND a.bucket = b.bucket$$);
+  scan   | groups_within_factor | join_above 
+---------+----------------------+------------
+ SiftAgg | t                    | Hash Join
+(1 row)
+
+DROP FUNCTION expr_shape(text);
 DROP FUNCTION shape(text), scoped_shape(text);
 DROP TABLE gr_facts, gr_dims;
 DROP EXTENSION pg_sift;

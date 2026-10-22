@@ -395,16 +395,22 @@ stats_expr(AggCtx *c, Node *e)
 	return att > 0 ? list_nth(c->attexpr, att - 1) : e;
 }
 
+/*
+ * rows: what the groups are made of. By PostgreSQL's estimate of the groups (distinct false) they are no more than the rows its statistics
+ * of the table expect after the filters; by the distinct values of the key columns they are no more than the rows given, whatever the
+ * filters keep (a column's values under the filters on it alone, column_distinct).
+ */
 static double
-set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
+set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows, bool distinct)
 {
 	double		n = 0;
 
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
-		List	   *sub = NIL;
+		List	   *sub = NIL,
+				   *rest = NIL;
 		double		bucketed = 1.0,
-					g;
+					g = 1.0;
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
@@ -417,8 +423,18 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 			else
 				sub = lappend(sub, stats_expr(c, list_nth(keys, j)));
 		}
+		foreach_ptr(Node, e, sub)
+		{
+			double		nd;
+
+			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e)) > 0)
+				g *= nd;
+			else
+				rest = lappend(rest, e);
+		}
 		/* Min and Max evaluate their arguments more than once: the estimate is made once */
-		g = sub == NIL ? 1.0 : estimate_num_groups(root, sub, rows, NULL, NULL);
+		if (rest != NIL)
+			g *= Max(estimate_num_groups(root, rest, rows, NULL, NULL), 1.0);
 		n += Min(rows, Max(g, 1.0) * bucketed);
 	}
 	return n;
@@ -547,14 +563,15 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	if (reads_overflow(c, s) || reads_json_null_cast(c))
 		return false;
 	finish_combos(c, s);
-	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
+	s->est_groups = set_groups(c, root, s, keys, input_rel->rows, false);
 	/*
 	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of all the rows
 	 * the lists can pass: a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
-	 * again for each row, while a count that is too large only makes it hash or materialize.
+	 * again for each row, while a count that is too large only makes it hash or materialize. A filter of the table that has no statistics
+	 * keeps a guess of the rows as well (filter_rows_ratio).
 	 */
-	lists = lookup_set_ratio(c, s, input_rel, true);
-	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists) : 0;
+	lists = lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c);
+	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists, true) : 0;
 	if (c->search)
 		s->search = c->search->spec;
 
