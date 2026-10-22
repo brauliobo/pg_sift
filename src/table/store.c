@@ -31,6 +31,21 @@ int			sift_tbl_write_buffer_limit = 4096;	/* kB */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
+int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
+
+#ifdef SIFT_TESTING
+void
+sift_tbl_gate(int number)
+{
+	if (number > 0)
+	{
+		Datum		key = Int64GetDatum(number);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
+}
+#endif
 
 typedef struct CacheEnt
 {
@@ -199,15 +214,7 @@ sift_tbl_ensure_init(Relation rel)
 	{
 		InitArg		arg;
 
-#ifdef SIFT_TESTING
-		if (sift_tbl_init_gate > 0)
-		{
-			Datum		key = Int64GetDatum(sift_tbl_init_gate);
-
-			DirectFunctionCall1(pg_advisory_lock_int8, key);
-			DirectFunctionCall1(pg_advisory_unlock_int8, key);
-		}
-#endif
+		sift_tbl_gate(sift_tbl_init_gate);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_dir_read(rel, &st->dir);
 		if (find_seg(&st->dir, is_tomb, 0) == NULL)
