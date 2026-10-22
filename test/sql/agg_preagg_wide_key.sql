@@ -1,0 +1,182 @@
+-- A group key that is an int8 or a numeric(p,s) column is answered from the cube's histogram of the column, as an int4 or text key is: the group is
+-- the stored integer (numeric: times 10^scale), and the key of the result is built from it as the scan builds it.
+-- Every query runs three ways, which must give the same rows (text, so the scale of the numeric keys counts): from the pre-aggregates, scanning
+-- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
+
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+
+-- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL;
+END $$;
+
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'int8 key',            'SELECT k8, count(*), sum(val), sum(small), avg(small) FROM %s GROUP BY k8'),
+	(2, 'numeric key',         'SELECT kn, count(*), sum(val), sum(amt), avg(amt) FROM %s GROUP BY kn'),
+	(3, 'int8 key, count(key)', 'SELECT k8, count(k8), count(val) FROM %s GROUP BY k8'),
+	(4, 'int8 key, test of it', 'SELECT k8, count(*), sum(val) FROM %s WHERE k8 > 0 GROUP BY k8'),
+	(5, 'numeric key, range',  'SELECT kn, count(*), sum(small) FROM %s WHERE kn >= 2.5 AND kn < 7 GROUP BY kn'),
+	(6, 'numeric key, IN',     'SELECT kn, count(*), sum(small) FROM %s WHERE kn IN (0.25, 1.50, 12.75) GROUP BY kn'),
+	(7, 'int8 key, IS NULL',   'SELECT k8, count(*), sum(small) FROM %s WHERE k8 IS NULL GROUP BY k8'),
+	(8, 'int8 key, FILTER',    'SELECT k8, sum(val) FILTER (WHERE k8 > 100), count(*) FROM %s GROUP BY k8'),
+	(9, 'no rows',             'SELECT k8, count(*), sum(val) FROM %s WHERE id > 100000000 GROUP BY k8'),
+	(10, 'having, limit',      'SELECT kn, count(*) FROM %s GROUP BY kn HAVING count(*) > 10 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(11, 'test of numeric, no key', 'SELECT count(*), sum(small) FROM %s WHERE kn = 1.50'),
+	(12, 'test of int8, no key', 'SELECT count(*), sum(val) FROM %s WHERE k8 = 4611686018427387904'),
+	(13, 'two keys: scan',     'SELECT k8, kt, count(*) FROM %s GROUP BY k8, kt'),
+	(14, 'expression of the key: scan', 'SELECT k8 / 2, count(*) FROM %s GROUP BY k8 / 2'),
+	(15, 'key plus one: scan', 'SELECT kn + 1, count(*) FROM %s GROUP BY kn + 1'),
+	(16, 'int4 key beside',    'SELECT kt, count(*), sum(small) FROM %s GROUP BY kt'),
+	(17, 'grouping sets',      'SELECT k8, count(*) FROM %s GROUP BY GROUPING SETS ((k8), ())'),
+	(18, 'rollup of numeric',  'SELECT kn, count(*) FROM %s GROUP BY ROLLUP (kn)'),
+	(19, 'cast of the key: scan', 'SELECT kt::numeric, count(*), sum(small) FROM %s GROUP BY kt::numeric');
+
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
+	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+
+-- the same, summed up for a table whose answers need not be listed
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
+$$;
+
+-- a snapshot held by another session of this database keeps the pages of rows written since from becoming all-visible: wait for it
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled';
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+
+-- k8: the extremes of int8 with both signs, NULLs, small values; kn: numeric(12,2) with NULLs and one NaN (the unit that holds it has no histogram);
+-- kt: int4; val: int8 with NULLs; amt: numeric(10,2)
+CREATE TABLE wk (id int, k8 bigint, kn numeric(12, 2), kt int, val bigint, small int, amt numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
+INSERT INTO wk
+SELECT g,
+       CASE g % 9 WHEN 0 THEN 4611686018427387904 WHEN 1 THEN -4611686018427387904 WHEN 2 THEN 9223372036854775807 WHEN 3 THEN -9223372036854775807 - 1
+                  WHEN 4 THEN NULL ELSE g % 5 * 100 END,
+       CASE WHEN g = 5000 THEN 'NaN'::numeric WHEN g % 11 = 0 THEN NULL ELSE (g % 13) * 0.25 + (g % 3) * 0.5 END,
+       g % 6,
+       CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 END,
+       repeat('p', 200)
+FROM generate_series(1, 40000) g;
+
+-- an explicit cube with the keys as dims; the default cube; no cube
+CREATE TABLE wc (LIKE wk) WITH (autovacuum_enabled = off);
+CREATE TABLE wd (LIKE wk) WITH (autovacuum_enabled = off);
+CREATE TABLE wo (LIKE wk) WITH (autovacuum_enabled = off);
+INSERT INTO wc SELECT * FROM wk;
+INSERT INTO wd SELECT * FROM wk;
+INSERT INTO wo SELECT * FROM wk;
+DROP TABLE wk;
+CREATE INDEX wc_col ON wc USING sift_col (id, k8, kn, kt, val, small, amt)
+	WITH (write_buffer_limit = 4096, preagg = 'cube(k8: val, small, amt; kn: val, small, amt; kt: small)');
+CREATE INDEX wd_col ON wd USING sift_col (id, k8, kn, kt, val, small, amt) WITH (write_buffer_limit = 4096);
+CREATE INDEX wo_col ON wo USING sift_col (id, k8, kn, kt, val, small, amt) WITH (write_buffer_limit = 4096, preagg = 'off');
+CALL pa_settle();
+-- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) wc, wd, wo;
+SELECT sift.col_verify('wc_col', true);
+
+-- the keys of the result are the column's own: the type, the scale of a numeric, the extremes of int8
+SELECT pg_typeof(k8) AS k8_type, k8, count(*) FROM wc GROUP BY k8 ORDER BY k8 NULLS LAST;
+SELECT pg_typeof(kn) AS kn_type, kn, count(*) FROM wc GROUP BY kn ORDER BY kn NULLS LAST LIMIT 6;
+
+-- 1. built, every page all-visible. The units that hold a numeric NaN are scanned
+SELECT * FROM pa_check('wc');
+SELECT * FROM pa_sum('wd');
+SELECT * FROM pa_sum('wo');
+
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE wc SET k8 = k8 / -3, kn = kn + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM wc WHERE id BETWEEN 18000 AND 18100;
+UPDATE wd SET k8 = k8 / -3, kn = kn + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM wd WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('wc');
+SELECT * FROM pa_sum('wd');
+
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc, wd;
+SELECT * FROM pa_check('wc');
+
+-- 4. rows in the write buffer, then sealed
+INSERT INTO wc SELECT g, g % 4 * 1000, (g % 5) * 1.25, g % 6, g, g % 9, g / 7.0, repeat('p', 200) FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('wc');
+SELECT sift.col_promote('wc_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc;
+SELECT * FROM pa_check('wc');
+
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('wc_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc;
+SELECT sift.col_verify('wc_col', true);
+SELECT * FROM pa_check('wc');
+
+-- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX wc_col;
+RESET parallel_leader_participation;
+SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('wc_col');
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('wc');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX wc_col;
+SELECT * FROM pa_check('wc');
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('wc');
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+
+-- the switch
+SET sift.agg_preagg = off;
+SELECT pre IS NULL AS off FROM pa_units('SELECT k8, count(*) FROM wd GROUP BY k8');
+RESET sift.agg_preagg;
+SELECT pre > 0 AS on FROM pa_units('SELECT k8, count(*) FROM wd GROUP BY k8');
+
+DROP TABLE wc, wd, wo, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;
