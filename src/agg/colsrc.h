@@ -514,10 +514,11 @@ typedef struct SiftSrcProvider
 	 * leaf cannot store are read again from the heap as the query's SQL reads them. set_recheck, called before `begin`, says how the query reads
 	 * the leaf (a SiftSrcRecheck); the rows of a unit with such a value leave it (`live` does not have them) and the source returns them as the
 	 * unit that follows it, from the heap (the snapshot's version of each), their leaf now holding the value SQL gives, or still an
-	 * overflow value where SQL raises. overflow_raise raises the error SQL raises for the first of `rows` (rows of the unit just returned, which
+	 * overflow value where SQL raises. key (SRK_CAST of a leaf that is the value column of an object with free keys): only the member of this key is
+	 * read as the cast to the type cast reads it, a value of another key is not an error. overflow_raise raises the error SQL raises for the first of `rows` (rows of the unit just returned, which
 	 * has such values) when the source recorded one, and returns when it did not.
 	 */
-	void		(*set_recheck) (void *impl, int leaf, int mode);
+	void		(*set_recheck) (void *impl, int leaf, int mode, const char *key, Oid cast);
 	void		(*overflow_raise) (void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 	/*
 	 * The rows `live` took out of the unit the source is at, to be read again from the heap (NULL: none, or the source reads them all). They are
@@ -767,7 +768,7 @@ typedef enum SiftSrcRecheck
 
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */
 extern bool sift_colsrc_can_recheck(Oid relam, bool index);
-extern void sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode);
+extern void sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode, const char *key, Oid cast);
 extern void sift_colsrc_overflow_raise(SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rows);
 extern uint64 *sift_colsrc_recheck_rows(SiftSrcSource *src, const SiftSrcUnit *unit);
 
