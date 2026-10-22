@@ -51,6 +51,7 @@ INSERT INTO shapes VALUES
 	('scalar where', 'SELECT grp, count(*) FROM items_%s WHERE (doc ->> ''score'')::float8 > 3 GROUP BY grp'),
 	('scalar filter', 'SELECT grp, count(*) FILTER (WHERE (doc ->> ''score'')::float8 > 3) FROM items_%s GROUP BY grp'),
 	('scalar gated', 'SELECT grp, sum((doc ->> ''score'')::float8) FILTER (WHERE grp = 1), avg((doc ->> ''score'')::float8) FILTER (WHERE grp = 2) FROM items_%s GROUP BY grp'),
+	('elements',  'SELECT p ->> ''cat'' c, count(*), avg((p ->> ''score'')::float8) FROM items_%s, jsonb_array_elements(doc -> ''parts'') p GROUP BY 1'),
 	('list',      'SELECT o.cat, count(*), avg(o.score) FROM items_%s, jsonb_to_recordset(doc -> ''parts'') AS o(cat text, score float8) GROUP BY o.cat');
 
 SELECT k AS every, s.n, pushed(format(s.q, k)) AS pushed, reread(format(s.q, k)) AS reread, same(format(s.q, k)) AS result
