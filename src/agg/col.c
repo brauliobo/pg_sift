@@ -416,7 +416,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 
 	if (src->rck)
 	{
-		bool		again = src->rck->taken && src->rck->npend > 0;
+		bool		again = src->rck->taken && recheck_pending(src);
 
 		src->rck->active = false;
 		src->rck->taken = false;
@@ -661,6 +661,7 @@ static const SiftSrcProvider col_provider = {
 	.tolerate_ovf = col_tolerate_ovf,
 	.set_recheck = col_set_recheck,
 	.overflow_raise = col_overflow_raise,
+	.recheck_rows = col_recheck_rows,
 	.read_types = col_read_types,
 	.read_jnull = col_read_jnull,
 	.prune_str = col_prune_str,

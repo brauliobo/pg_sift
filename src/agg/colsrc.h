@@ -520,6 +520,11 @@ typedef struct SiftSrcProvider
 	void		(*set_recheck) (void *impl, int leaf, int mode);
 	void		(*overflow_raise) (void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 	/*
+	 * The rows `live` took out of the unit the source is at, to be read again from the heap (NULL: none, or the source reads them all). They are
+	 * the source's to read, but the executor may clear those that a conjunct on a column the stored unit holds rejects: they are not read.
+	 */
+	uint64	   *(*recheck_rows) (void *impl, const SiftSrcUnit *unit);
+	/*
 	 * Also with them: read_types gives the JSON type of the value of the leaf of each row of the unit in tags[0..nrow): the index of the
 	 * name jsonb_typeof gives (0 string, 1 number, 2 boolean, 3 object, 4 array, 5 null) or SIFT_SRC_TYPE_NONE (its NULL). It raises when
 	 * the index did not store the type of some row (as filter_types does).
@@ -764,6 +769,7 @@ typedef enum SiftSrcRecheck
 extern bool sift_colsrc_can_recheck(Oid relam, bool index);
 extern void sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode);
 extern void sift_colsrc_overflow_raise(SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rows);
+extern uint64 *sift_colsrc_recheck_rows(SiftSrcSource *src, const SiftSrcUnit *unit);
 
 /* Can the source of this access method filter by the JSON type of a leaf (SiftSrcProvider.filter_types)? */
 extern bool sift_colsrc_can_types(Oid relam, bool index);

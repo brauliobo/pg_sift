@@ -559,6 +559,12 @@ part_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
 	*dict = *presented(impl, leaf, dict);
 }
 
+static uint64 *
+part_recheck_rows(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_colsrc_recheck_rows(cur_of(impl), unit_of(impl));
+}
+
 /*
  * No match set (select), no top-N (tids, zone, zone_range, read_rows): the planner never gives a partitioned table a search or a ranked scan.
  * The others are the partitions' own; a provider that lacks one of them has no partitions (sift_colsrc_can_part).
@@ -584,6 +590,7 @@ static const SiftSrcProvider part_provider = {
 	.tolerate_ovf = part_tolerate_ovf,
 	.set_recheck = part_set_recheck,
 	.overflow_raise = part_overflow_raise,
+	.recheck_rows = part_recheck_rows,
 	.read_types = part_read_types,
 	.read_jnull = part_read_jnull,
 	.prune_str = part_prune_str,
