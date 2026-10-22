@@ -1241,9 +1241,83 @@ part_recheck_rows(void *impl, const SiftSrcUnit *unit)
 	return sift_colsrc_recheck_rows(cur_of(impl), unit_of(impl));
 }
 
+/* ---- the top-N: the rows of a unit are the partition's, its TIDs are the partition's heap's ---- */
+
+static void
+part_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	sift_colsrc_tids(cur_of(impl), unit_of(impl), rows, n, tids);
+}
+
+static void
+part_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	sift_colsrc_zone(cur_of(impl), unit_of(impl), leaf, z);
+}
+
+/* the zone over the partitions of the superblocks [lo, hi) together: the units they hold add up, the range is the union of the ranges that have a value */
+static uint32
+part_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	PartSource *ps = impl;
+	uint32		units = 0;
+
+	count_sbs(ps);
+	*z = (SiftSrcZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
+	for (int i = 0; i < ps->n && ps->off[i] < hi; i++)
+	{
+		uint32		from = Max(lo, ps->off[i]),
+					to = Min(hi, ps->off[i + 1]);
+		SiftSrcZone pz;
+
+		if (from >= to)
+			continue;
+		open_part(ps, i);
+		units += sift_colsrc_zone_range(ps->src[i], from - ps->off[i], to - ps->off[i], leaf, &pz);
+		z->nvals += pz.nvals;
+		z->nnull += pz.nnull;
+		z->inexact |= pz.inexact;
+		if (pz.nnull < pz.nvals)
+		{
+			z->min = Min(z->min, pz.min);
+			z->max = Max(z->max, pz.max);
+		}
+	}
+	return units;
+}
+
+static void
+part_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	sift_colsrc_read_rows(cur_of(impl), unit_of(impl), leaf, rows, n, vec);
+	vec->dict = presented(impl, leaf, vec->dict);
+}
+
+int
+sift_aggpart_count(SiftSrcSource *src)
+{
+	return ps_of(src->impl)->n;
+}
+
+int
+sift_aggpart_current(SiftSrcSource *src)
+{
+	return ps_of(src->impl)->cur;
+}
+
+Relation
+sift_aggpart_heap(SiftSrcSource *src, int i)
+{
+	PartSource *ps = src->impl;
+
+	if (ps->heap[i] == NULL)
+		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
+	return ps->heap[i];
+}
+
 /*
- * No match set (select), no top-N (tids, zone, zone_range, read_rows): the planner never gives a partitioned table a search or a ranked scan.
- * The others are the partitions' own; a provider that lacks one of them has no partitions (sift_colsrc_can_part).
+ * No match set (select): the planner never gives a partitioned table a search. The others are the partitions' own; a provider that lacks
+ * one of them has no partitions (sift_colsrc_can_part), or no top-N (sift_colsrc_can_tids).
  */
 static const SiftSrcProvider part_provider = {
 	.close = part_close,
@@ -1267,6 +1341,10 @@ static const SiftSrcProvider part_provider = {
 	.set_recheck = part_set_recheck,
 	.overflow_raise = part_overflow_raise,
 	.recheck_rows = part_recheck_rows,
+	.tids = part_tids,
+	.zone = part_zone,
+	.zone_range = part_zone_range,
+	.read_rows = part_read_rows,
 	.read_types = part_read_types,
 	.read_jnull = part_read_jnull,
 	.prune_str = part_prune_str,

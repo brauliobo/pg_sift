@@ -593,14 +593,16 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		return;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
-	if (c->nparts > 0 || c->func_rti != 0 || fs.lefts != NIL ||
-		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
+	if (c->func_rti != 0 || fs.lefts != NIL ||
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) :
+		  sift_colsrc_can_tids(get_rel_relam(c->nparts > 0 ? c->partheap[0] : c->heapoid), false)))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
 	s = agg_spec_new(c);
-	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
+	if (c->nparts == 0)
+		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
 	if (!agg_quals(c, s, &fs))
 		return;
 	if (s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))
