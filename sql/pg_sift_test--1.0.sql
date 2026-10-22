@@ -43,6 +43,9 @@ CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
 -- longest wait of this backend for the maintenance of others since the last call, in microseconds
 CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_maint_wait_us' LANGUAGE C STRICT;
+-- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
+CREATE FUNCTION sift._test_dir_updates() RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
 -- copied pages of VACUUM's bounded relocation (with the current sift.vacuum_rewrite_limit)
 CREATE FUNCTION sift._test_space(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_space' LANGUAGE C STRICT;
@@ -201,6 +204,9 @@ CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEF
 CREATE FUNCTION sift._test_col_cube_damage(index regclass, units int4, OUT blobs int8, OUT intact int8, OUT with_minmax int8, OUT cut int8, OUT cut_accepted int8,
 										   OUT damaged int8, OUT accepted int8, OUT unsound int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_cube_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_damage(index regclass, section text, units int4, OUT objects int8, OUT intact int8, OUT cut int8, OUT cut_accepted int8,
+									  OUT damaged int8, OUT accepted int8, OUT unsound int8, OUT flags int4) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_damage' LANGUAGE C STRICT;
 
 -- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text

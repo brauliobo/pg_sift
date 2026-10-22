@@ -45,6 +45,14 @@ PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_churn);
+PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
+
+/* a new setting starts the count of the directory updates it applies to */
+static void
+crash_dir_assign(int newval, void *extra)
+{
+	sift_test_dir_updates = 0;
+}
 
 void
 sift_store_test_init(void)
@@ -64,6 +72,12 @@ sift_store_test_init(void)
 	DefineCustomBoolVariable("sift.test_run_gap",
 							 "Testing: every run a segment stream takes is followed by a page taken by another writer.",
 							 NULL, &sift_test_run_gap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_crash_dir",
+							"Testing: SIGKILL before (n) or after (-n) the nth directory update since this setting (0 = never).",
+							NULL, &sift_test_crash_dir, 0, INT_MIN, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_dir_assign, NULL);
+	DefineCustomBoolVariable("sift.test_crash_worker",
+							 "Testing: sift.test_crash_dir applies to background workers (on) or to the other processes (off).",
+							 NULL, &sift_test_crash_worker, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_max_extents",
 							"Testing: extents a segment may use (0 = what its header page holds).",
 							NULL, &sift_test_max_extents, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -623,6 +637,13 @@ sift_test_maint_failures(PG_FUNCTION_ARGS)
 }
 
 /* The longest time this backend waited for the maintenance of others since the last call, in microseconds */
+/* sift._test_dir_updates(): the directory updates of this process since sift.test_crash_dir was set */
+Datum
+sift_test_dir_updates_count(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(sift_test_dir_updates);
+}
+
 Datum
 sift_test_maint_wait_us(PG_FUNCTION_ARGS)
 {

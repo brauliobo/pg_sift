@@ -1,0 +1,62 @@
+-- The stored objects of a column segment under damage (sift._test_col_damage): the unit record with its chunks, each chunk alone and the leaf list,
+-- read as a scan reads them, cut at every length that matters and with bytes set to other values and bits flipped, one at a time. A reader must
+-- never read outside the object (meaningful under SANITIZE=1), refuse a cut object below the bytes it needs, refuse with a corruption error and
+-- keep what the format promises in what it accepts. The indexes cover what 3.2 and 3.3 added to the sections: chunks with overflow values, their
+-- type tags and the kinds (JSON nulls, the types of an astext leaf; column format minor 6), the leaves of wide values and the new type tags (minor 5:
+-- lanes in the leaf list), the cube with the minimum and maximum (minor 7, sift._test_col_cube_damage).
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE dm (id int, kind text, doc jsonb, n bigint) WITH (autovacuum_enabled = off);
+INSERT INTO dm
+SELECT g, 'k' || g % 7,
+       jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || g % 5, 'qty', g % 7)))
+       || CASE g % 11 WHEN 0 THEN '{"w": "heavy"}'::jsonb WHEN 1 THEN '{"w": null}'::jsonb WHEN 2 THEN '{"w": true}'::jsonb
+                      WHEN 3 THEN '{"w": [1]}'::jsonb WHEN 4 THEN '{}'::jsonb ELSE jsonb_build_object('w', g / 4.0) END
+       || CASE g % 5 WHEN 0 THEN '{"a": 1}'::jsonb WHEN 1 THEN '{"a": null}'::jsonb WHEN 2 THEN '{"a": true}'::jsonb WHEN 3 THEN '{"a": "s"}'::jsonb
+                      ELSE '{}'::jsonb END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE g * 7 END
+FROM generate_series(1, 3000) g;
+CREATE INDEX dm_col ON dm USING sift_col (id, kind, doc, n)
+	WITH (write_buffer_limit = 4096, paths = 'doc.items[]{category text, qty int4}, doc.w float8, doc.a astext');
+
+CREATE TYPE dw_lvl3 AS ENUM ('lo', 'ok', 'hi');
+CREATE TABLE dw (id int, big numeric(30, 5), m money, iv interval, anynum numeric, t time, u uuid, e dw_lvl3, b bytea) WITH (autovacuum_enabled = off);
+INSERT INTO dw
+SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE (g * 1234567.12345)::numeric(30, 5) END, (g * 3.25)::numeric::money,
+       make_interval(mins => g, days => g % 40, months => g % 5), CASE WHEN g % 17 = 0 THEN 'NaN'::numeric ELSE g / 7.0 END, make_time(g % 24, g % 60, 0),
+       md5(g::text)::uuid, (ARRAY['lo', 'ok', 'hi'])[1 + g % 3]::dw_lvl3, decode(md5(g::text), 'hex')
+FROM generate_series(1, 2000) g;
+CREATE INDEX dw_col ON dw USING sift_col (id, big, m, iv, anynum, t, u, e, b) WITH (write_buffer_limit = 4096);
+
+CREATE TABLE dc (id int, kind int, grp text, val bigint, small int) WITH (autovacuum_enabled = off);
+INSERT INTO dc SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END, g % 1000 - 400
+FROM generate_series(1, 3000) g;
+CREATE INDEX dc_col ON dc USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096, cube_minmax = true);
+
+SELECT 'dm_col' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('dm_col')
+UNION ALL SELECT 'dw_col', array_agg(DISTINCT format) FROM sift._test_col_formats('dw_col')
+UNION ALL SELECT 'dc_col', array_agg(DISTINCT format) FROM sift._test_col_formats('dc_col') ORDER BY 1;
+SELECT sift.col_verify('dm_col', true), sift.col_verify('dw_col', true), sift.col_verify('dc_col', true);
+
+-- every section of every index: the objects are there and read intact, damage is made, some of it is refused, and nothing is unsound
+SELECT x.idx, y.section, objects > 0 AS objects_made, intact = objects AS intact_read, cut > 0 AS cuts_made, damaged > 0 AS damages_made,
+       accepted < damaged AS some_refused, unsound = 0 AS sound
+FROM (VALUES ('dm_col'), ('dw_col'), ('dc_col')) x(idx), (VALUES ('unit'), ('chunk'), ('schema')) y(section),
+     LATERAL sift._test_col_damage(x.idx::regclass, y.section, 2)
+ORDER BY 1, 2;
+
+-- the flags the chunks of the jsonb index carry: nulls, overflow values, their type tags and the kinds
+SELECT (flags & 15) = 15 AS nulls_overflow_tags_kinds FROM sift._test_col_damage('dm_col', 'chunk', 2);
+
+-- a schema cut anywhere is refused: the leaf list of the wide index is the longest
+SELECT cut_accepted = 0 AS schema_cuts_refused FROM sift._test_col_damage('dw_col', 'schema', 1);
+
+-- the cube with the minimum and maximum
+SELECT blobs > 0 AS cubes, with_minmax = blobs AS all_with_minmax, cut_accepted = 0 AS cuts_refused, unsound = 0 AS sound
+FROM sift._test_col_cube_damage('dc_col', 2);
+
+DROP TABLE dm, dw, dc;
+DROP TYPE dw_lvl3;
+DROP EXTENSION pg_sift_test CASCADE;
