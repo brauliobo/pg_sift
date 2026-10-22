@@ -350,10 +350,37 @@ mentions_key(Node *clause, Oid relid, List *names)
 }
 
 /*
+ * Does the hash split of rel, or of a level under it, take this condition on its column as sift_aggpart_prune computes it, an equality of the
+ * key's type, operator family and collation? A plan that cannot prune what PostgreSQL prunes when it runs keeps the normal plan.
+ */
+static bool
+hash_clause_handled(AggCtx *c, RelOptInfo *rel, Var *v, Node *operand, Oid opno, Oid collid, bool any)
+{
+	PartitionScheme sc = rel->part_scheme;
+	Oid			relid = planner_rt_fetch(rel->relid, c->root)->relid;
+
+	if (sc->strategy == PARTITION_STRATEGY_HASH)
+		for (int k = 0; k < sc->partnatts; k++)
+		{
+			Node	   *e = linitial(rel->partexprs[k]);
+
+			if (IsA(e, Var) && strcmp(get_attname(relid, ((Var *) e)->varattno, false), get_attname(c->heapoid, v->varattno, false)) == 0)
+				return v->vartype == ((Var *) e)->vartype && collid == sc->partcollation[k] &&
+					get_op_opfamily_strategy(opno, sc->partopfamily[k]) == HTEqualStrategyNumber &&
+					(any ? get_element_type(exprType(operand)) : exprType(operand)) == v->vartype;
+		}
+	for (int i = -1; (i = bms_next_member(rel->live_parts, i)) >= 0;)
+		if (rel->part_rels[i]->part_scheme != NULL && hash_clause_handled(c, rel->part_rels[i], v, operand, opno, collid, any))
+			return true;
+	return false;
+}
+
+/*
  * A condition on a column the partitions are split by whose operand is a parameter of a generic plan or a stable function (PostgreSQL prunes
  * the partitions with it when the plan starts) is kept in c->partprune, in the terms of the table with varno 1: the scan evaluates the operands
- * when it starts and drops the partitions the partition bounds refute (sift_aggpart_prune). False when the partitions are split by hash on
- * such a column: the bounds cannot refute a hash remainder, and the normal plan keeps the pruning.
+ * when it starts and drops the partitions the partition bounds refute (sift_aggpart_prune). So is an equality on a column a hash level splits by,
+ * whatever its operand, as the remainder needs the values of every column of the level. False when a hash level's column is compared by a
+ * condition that is not an equality of its type: the bounds cannot refute a hash remainder, and the normal plan keeps the pruning.
  */
 static bool
 part_prune_clauses(AggCtx *c)
@@ -367,12 +394,27 @@ part_prune_clauses(AggCtx *c)
 	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
 	{
 		Node	   *cl = (Node *) ri->clause;
+		bool		dynamic = extern_param_walker(cl, NULL) || contain_mutable_functions(cl);
 
-		if (!(extern_param_walker(cl, NULL) || contain_mutable_functions(cl)) || contain_volatile_functions(cl) || exec_param_walker(cl, NULL) ||
-			!mentions_key(cl, c->heapoid, names))
+		if (contain_volatile_functions(cl) || exec_param_walker(cl, NULL) || !mentions_key(cl, c->heapoid, names))
 			continue;
 		if (mentions_key(cl, c->heapoid, hashed))
-			return false;
+		{
+			Var		   *v;
+			Node	   *operand;
+			Oid			opno,
+						collid;
+			bool		any;
+
+			if (!sift_aggpart_key_clause(cl, &v, &operand, &opno, &collid, &any) || !hash_clause_handled(c, c->rel, v, operand, opno, collid, any))
+			{
+				if (dynamic)
+					return false;
+				continue;
+			}
+		}
+		else if (!dynamic)
+			continue;
 		cl = copyObject(cl);
 		ChangeVarNodes(cl, c->relid, 1, 0);
 		c->partprune = lappend(c->partprune, cl);
@@ -383,8 +425,8 @@ part_prune_clauses(AggCtx *c)
 /*
  * The source of a partitioned table: the live partitions after PostgreSQL's pruning, each read through a sift_col index of the same layout, the
  * columns in the terms of the table (the query is compiled once, against them). A partition without such an index, of another storage, or whose
- * index differs from the others' keeps the normal plan, and so does a table split by hash on a column a parameter is compared with. The partitions
- * a parameter or a stable function prunes when the plan runs are dropped when the scan starts.
+ * index differs from the others' keeps the normal plan, and so does a table split by hash on a column that a parameter is compared with other than by
+ * an equality. The partitions a parameter or a stable function prunes when the plan runs are dropped when the scan starts.
  */
 static bool
 part_source(AggCtx *c)

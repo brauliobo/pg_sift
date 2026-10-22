@@ -97,12 +97,14 @@ partitions' pages and rows. Pre-aggregates answer per unit as on a plain table. 
 PostgreSQL (a role without access to the partitions reads through the parent).
 
 The normal plan stays when a partition has no `sift_col` index, has an index with other columns or options, is not a heap table (`sift_table`, a foreign
-table), is read with `ONLY`, or the table is an inheritance parent (a mixed tree too); when the table is split by hash on a column that a parameter of
-the query is compared with (the normal plan prunes the remainders, a bound cannot); and for the shapes the scan reads one index for (a ranked search with
+table), is read with `ONLY`, or the table is an inheritance parent (a mixed tree too); when a parameter is compared with a column a hash level splits by other
+than by an equality of the column's type (`k > $1`, a value of another type, an expression key: the normal plan prunes the remainders); and for the shapes the scan reads one index for (a ranked search with
 `sift.score`, a top-N, a time series of unions). A condition on a partition key column whose operand is a parameter of a generic plan or a stable function
 (`d >= $1`, `k = ANY ($1)`, `ts >= now() - interval '30 days'`) prunes partitions when the plan starts, as in PostgreSQL: the scan evaluates the operand when
 it starts and does not read the partitions whose bounds it refutes (`EXPLAIN ANALYZE` shows `Partitions Removed`); a default partition stays unless the bounds
-of the others refute it. A plan is invalidated when a partition or its index is attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
+of the others refute it. A hash level is pruned by the remainders: an equality or `= ANY` on every column of its key (a parameter, a stable function or a
+constant) gives the values, the key's hash function gives each its remainder, and a partition whose remainder none of them has is not read (`k = $1`,
+`k = ANY ($1)`, `a = $1 AND b = $2`; a NULL value or an empty list reads no partition). A plan is invalidated when a partition or its index is attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
 Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
 
 ## Partial indexes
@@ -322,7 +324,7 @@ same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates 
 a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), group keys up to the limit of 8, rollups and cubes of up to 7 columns (`k_keys_*`, `k_rollup_*`, `k_cube_*`) and the plain traps one past each limit (9 keys, 9 joined tables, 17 combos), lookup joins of up to 8 tables and 16 combos (`j_joins_*`, `j_combos_*`), generic aggregates (`g_*`: the variance family, `DISTINCT` forms over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine, `x_bool_*`: `bool_and`, `bool_or` and `every` merged from two workers) with their traps (a volatile transition function, a float read into text with `-0`), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
 that are not numbers, `DISTINCT ON` (`do_*`: latest and earliest rows, mixed sort directions, expressions, joins, every column type, and the plain traps), outer joins, a set-returning function in the select
-list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE` and `SERIALIZABLE`; partitioned tables (`pa_*`: pruning at every level, a dropped column before the index, a default and an unlogged partition, `ONLY`, partitions without the index or with other options, inheritance, run-time pruning of parameters and stable functions) run DML through the parent in the scenarios.
+list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE` and `SERIALIZABLE`; partitioned tables (`pa_*`: pruning at every level, a dropped column before the index, a default and an unlogged partition, `ONLY`, partitions without the index or with other options, inheritance, run-time pruning of parameters, stable functions and hash remainders) run DML through the parent in the scenarios.
 
 ### Scenarios
 
