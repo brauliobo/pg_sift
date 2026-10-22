@@ -104,4 +104,11 @@ dir_pressure(const SiftTblRel *st)
 	return st->dir.nsegs > sift_tbl_max_segments / 2;
 }
 
+/* The directory is past sift.table_backpressure percent of its entries: a writer settles, waiting for the maintenance lock, before it opens another write buffer */
+static inline bool
+dir_backpressure(const SiftTblRel *st)
+{
+	return sift_tbl_backpressure > 0 && st->dir.nsegs * 100 > sift_tbl_backpressure * sift_tbl_max_segments;
+}
+
 #endif							/* SIFT_SEG_INT_H */

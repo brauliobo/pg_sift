@@ -17,6 +17,7 @@
 
 #include "core/lane.h"
 #include "table/table.h"
+#include "table/seg_int.h"
 #include "table/store_int.h"
 
 #define OVF_PAYLOAD		(SIFT_PAGE_PAYLOAD - TBL_PAGE_INIT)
@@ -83,12 +84,16 @@ again:
 		Page		hp,
 					dp;
 
-		/* the directory is full: whoever promotes and merges holds the maintenance lock, which is waited for (not under the active lock: that one is taken inside it) before this is an error */
-		if (st->dir.nsegs >= sift_tbl_max_segments - 2 && !waited)
+		/*
+		 * the directory is full, or past sift.table_backpressure: whoever promotes and merges holds the maintenance lock, which is waited for
+		 * (not under the active lock: that one is taken inside it) before this is an error
+		 */
+		if ((st->dir.nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st)) && !waited)
 		{
 			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 			waited = true;
-			sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true);
+			(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
+								   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 			goto again;
 		}
 		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
@@ -137,7 +142,7 @@ again:
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote)
-		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false);
+		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 	if (old.gen)
 		sift_tbl_auto_defrag_check(rel, st);
 	return first;

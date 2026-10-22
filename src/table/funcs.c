@@ -117,6 +117,21 @@ sift_table_segments(PG_FUNCTION_ARGS)
 }
 
 #ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_tbl_hold_maint);
+
+/* Takes the maintenance lock of the table and keeps it to the end of the transaction, as a long VACUUM or merge does */
+Datum
+sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	(void) sift_maint_lock(rel, true);
+	table_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(sift_test_tbl_tagged);
 
 /* The column groups of the table with unfrozen rows (rows that are not final) */

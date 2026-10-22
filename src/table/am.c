@@ -46,7 +46,20 @@
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
+int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
+
+/* The directory is half full from the first merge on (dir_pressure), so a threshold at or under that is no backpressure */
+static bool
+backpressure_check_hook(int *newval, void **extra, GucSource source)
+{
+	if (*newval > 0 && *newval <= 50)
+	{
+		GUC_check_errdetail("The value is 0 (off) or a percent above 50, where the directory is already filling.");
+		return false;
+	}
+	return true;
+}
 
 static void
 check_compression(const char *spec)
@@ -74,6 +87,11 @@ sift_tbl_define_gucs(void)
 							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_backpressure",
+							"Percent of the directory of a sift_table from which a writer that needs a new write buffer first waits for the maintenance lock and merges.",
+							"0 (off): a writer waits only when the directory is nearly full. Above 50, the percent of the entries.",
+							&sift_tbl_backpressure, 0, 0, 99,
+							PGC_USERSET, 0, backpressure_check_hook, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
 							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
 							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
