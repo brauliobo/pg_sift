@@ -1,6 +1,6 @@
--- trap: a path declared float8 cast from its jsonb value (the index flags the values its float8 leaves cannot store, so the scan keeps the normal plan)
+-- trap: a path declared float8 cast from its jsonb value (the index flags the values its float8 leaves cannot store: the scan reads those rows again from the heap)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: 1
