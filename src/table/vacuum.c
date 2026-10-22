@@ -634,7 +634,11 @@ background_vacuum(Relation rel, SiftTblMaintain *r)
 	bool		active = VacuumCostActive;
 
 	params.freeze_min_age = params.freeze_table_age = params.multixact_freeze_min_age = params.multixact_freeze_table_age = -1;
+#if PG_VERSION_NUM >= 190000
+	params.log_vacuum_min_duration = -1;	/* renamed in 19 */
+#else
 	params.log_min_duration = -1;
+#endif
 	params.index_cleanup = VACOPTVALUE_ENABLED;
 	params.truncate = tbl_truncates(rel) ? VACOPTVALUE_ENABLED : VACOPTVALUE_DISABLED;
 	*r = (SiftTblMaintain) {.blocks_before = RelationGetNumberOfBlocks(rel)};
