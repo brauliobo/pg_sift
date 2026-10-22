@@ -299,6 +299,7 @@ register_combos(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	bool		preserved = false;
+	int			nj = 0;
 
 	join_first_rows(ex);
 	for (int j = 0; j < s->njoin; j++)
@@ -306,6 +307,22 @@ register_combos(AggExec *ex)
 
 	ex->comcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
 	ex->cs = palloc0(Max(s->ncombo, 1) * sizeof(ComboSt));
+	ex->clbase = palloc0(Max(s->ncombo, 1) * sizeof(int));
+	ex->xcout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	ex->cfree = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	ex->cfree_ok = palloc0(Max(s->ncombo, 1) * sizeof(bool));
+	for (int ci = 0; ci < s->ncombo; ci++)
+		nj += s->combo[ci].join >= 0 && !s->join[s->combo[ci].join].scoped;
+	ex->jcombo = palloc0(Max(nj, 1) * sizeof(int));
+	ex->stage = palloc0(Max(nj, 1) * sizeof(Tup));
+	ex->alcout = palloc0(Max(nj, 1) * sizeof(uint32 **));
+	ex->seid = palloc0(Max(nj, 1) * sizeof(uint32 *));
+	ex->t0.cout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	for (int x = 0; x < nj; x++)
+	{
+		ex->stage[x].cout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+		ex->alcout[x] = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	}
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		SiftAggCombo *cb = &s->combo[ci];
@@ -379,8 +396,7 @@ scan_buffers(AggExec *ex)
 		st->sel = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		st->tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		st->ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
-		for (int y = 0; y <= x; y++)
-			st->cout[ex->jcombo[y]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		st->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		ex->seid[x] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	}
 	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)

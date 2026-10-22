@@ -15,6 +15,7 @@ void agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool 
 const double *eval_vx(AggExec *ex, SiftAggAgg *a, int nsel);
 void agg_tuples(AggExec *ex, Tup *t);
 void join_stage(AggExec *ex, int s, Tup *in);
+Tup *stage_tuples(AggExec *ex, int s);
 void dense_init(AggExec *ex);
 void agg_chunk(AggExec *ex, int start, int n, const uint64 *mask);
 

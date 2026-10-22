@@ -17,11 +17,11 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `partitions` | leaf partitions per SiftAgg scan, after PostgreSQL's pruning | 32,768 | partitions | normal plan (slug partition_count, the detail has the count) |  | `agg/part.h` `SIFT_AGG_MAX_PARTS` | yes |
 | `hash_part_combos` | value combinations the remainders of a hash level are computed for (once per level) | 1,048,576 | combinations | the partitions of the level are kept (not pruned) |  | `agg/part.c` `HASH_MAX_COMBOS` | yes |
 | `part_key_tests` | keys times range or list partitions a list of keys is tested against exactly | 20,000 | tests | only the range of the keys prunes |  | `agg/part.c` `KEYS_MAX_TESTS` | yes |
-| `joins` | lookup-joined tables per scan | 8 | tables | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` | yes |
-| `combos` | value combinations per scan | 16 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
+| `joins` | lookup-joined tables per scan | 32 | tables | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` | yes |
+| `combos` | value combinations per scan | 128 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
-| `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` | yes |
+| `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` | yes |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |
 | `lookup_kb` | estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine | 262,144 (256 MiB) | kB | normal plan (slug join_child, spine_rows) | `sift.agg_lookup_max_kb` | `agg/plan.c` |  |
 | `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
@@ -29,7 +29,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `topn_rows` | LIMIT + OFFSET a top-N scan keeps in a heap | 100,000 | rows | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` | yes |
 | `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 4 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
 | `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/plan_order.c` `FIRST_MAX_KEYS` |  |
-| `first_order_cols` | ORDER BY columns of a first-row lookup child | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` |  |
+| `first_order_cols` | ORDER BY columns of a first-row lookup child | 8 | columns | the sub-select runs once per key, as a lookup subquery |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` | yes |
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
 | `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |
 | `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |

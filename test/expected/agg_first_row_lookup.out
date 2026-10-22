@@ -236,7 +236,7 @@ SELECT * FROM check_first($q$
 $q$);
  pushed | differences | lookups 
 --------+-------------+---------
- t      |           0 |       0
+ t      |           0 |       1
 (1 row)
 
 -- laterals one after the other, the second keyed by a column of the first's row: two lookup tables
