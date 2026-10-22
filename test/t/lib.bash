@@ -110,6 +110,17 @@ node_promote() { pg_ctl -D "$(dir "$1")/data" -w promote >/dev/null; }
 conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=postgres"; }
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
+# use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
+# tree). Only this tree defines sift.table_auto_defrag, which scripts/pgtest.sh conf sets: a released library warns that "sift" is a reserved prefix
+# in the first statement of a session, and the test compares what the statements print.
+use_root() {
+	local conf=$(dir "$1")/data/postgresql.conf
+	ROOT=$2
+	sed -i '/^sift\.table_auto_defrag = /d' "$conf"
+	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep '^sift\.table_auto_defrag = ' >>"$conf"
+	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
+dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
+}
 node_start() {
 	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
 		>/dev/null 2>&1 || return

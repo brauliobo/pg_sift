@@ -196,7 +196,8 @@ AFTER=$(fingerprint new)
 check "BM25 answers and scores are identical" test "$(head -n 1 <<<"$AFTER")" == "$(head -n 1 <<<"$BEFORE")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"
-check "the preflight finds nothing to fix" quiet env PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
+# the cluster runs with sift.table_auto_defrag = off (scripts/pgtest.sh conf), which the preflight warns about: its session has the shipped value
+check "the preflight finds nothing to fix" quiet env PGOPTIONS="-c sift.table_auto_defrag=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \
