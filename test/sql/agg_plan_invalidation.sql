@@ -80,7 +80,8 @@ SELECT * FROM chk('write buffer');
 VACUUM events;
 SELECT * FROM chk('vacuum');
 
--- without the index the plans are the normal ones, with an index that lacks a column too
+-- without the index the plans are the normal ones, with an index that lacks a column too (the shared CTE takes the scan for the aggregates the index covers when
+-- they cost 1.3 times less than the work they replace and the plan with the ordinary reader of the rest totals at most 1.1 times the shared one)
 DROP INDEX events_col;
 SELECT * FROM chk('drop index');
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind);

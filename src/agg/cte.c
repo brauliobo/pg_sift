@@ -37,13 +37,31 @@
  */
 #define CTE_INLINE_MARGIN	1.6
 
+/*
+ * A shared plan priced at least this much has the factor below: 61 statements priced 1.15 to 1.6 times cheaper on the scans ran 59 s shared and
+ * 26 s inline (the ones from 1.3 up, 11 of them, 4.3 s and 1.7 s, none slower). A smaller plan keeps the factor above: a statement of a selective
+ * filter runs in a millisecond whatever its estimate says, and the scan costs it 2 to 10 ms more.
+ */
+#define CTE_INLINE_BIG		8000.0
+#define CTE_INLINE_MARGIN_BIG	1.3
+
 /* A plan above the scans priced this many times the shared plan has an estimate that cannot be trusted (a nested loop over a join of rows it takes for one). */
 #define CTE_INLINE_ABOVE	20.0
+
+/* ... and where an ordinary plan still reads the table, the inline plan may total this many times the shared one at most (priced 1.06 times above it, run 1.35 times faster) */
+#define CTE_INLINE_TOTALS	1.1
 
 static planner_hook_type prev_planner_hook;
 
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
+
+/* do the scans cost enough less than the shared work they replace? */
+static bool
+scans_win(double scans, double work, double plain_cost)
+{
+	return (plain_cost >= CTE_INLINE_BIG ? CTE_INLINE_MARGIN_BIG : CTE_INLINE_MARGIN) * scans < work;
+}
 
 static bool
 has_column_index(Oid relid)
@@ -390,9 +408,11 @@ plan_cte(SIFT_PLANNER_PARAMS)
 		 plain_cost, inlined->planTree->total_cost, scans.total, work, scans.n);
 	/*
 	 * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
-	 * column of an aggregate) the plan reads the table twice and the totals decide.
+	 * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
+	 * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
 	 */
-	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
+	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? scans_win(scans.total, work, plain_cost) && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
+						(scans_win(scans.total, work, plain_cost) && inlined->planTree->total_cost < CTE_INLINE_TOTALS * plain_cost) ||
 						scans.total < plain_cost - inlined->planTree->total_cost))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
