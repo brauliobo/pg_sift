@@ -1,0 +1,769 @@
+table_rows	query	index	variant	plan	exec_median_ms	planning_median_ms
+100000	SELECT * WHERE id = c (id ascending)	btree	planner	Index	0.039	0.649
+100000	SELECT * WHERE id = c (id ascending)	btree	forced index scan	Index	0.036	0.863
+100000	SELECT * WHERE id = c (id ascending)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.042	0.688
+100000	count(*) WHERE id = c	btree	planner	IndexOnly	0.041	0.568
+100000	count(*) WHERE id = c	btree	forced index scan	IndexOnly	0.039	0.528
+100000	count(*) WHERE id = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.039	0.480
+100000	SELECT * WHERE rnd = c (random int)	btree	planner	Index	0.031	0.612
+100000	SELECT * WHERE rnd = c (random int)	btree	forced index scan	Index	0.034	0.761
+100000	SELECT * WHERE rnd = c (random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.051	0.823
+100000	SELECT * WHERE id IN (10 values)	btree	planner	Index	0.045	0.357
+100000	SELECT * WHERE id IN (10 values)	btree	forced index scan	Index	0.042	0.342
+100000	SELECT * WHERE id IN (10 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.086	0.344
+100000	SELECT * WHERE id IN (100 values)	btree	planner	Index	0.482	0.456
+100000	SELECT * WHERE id IN (100 values)	btree	forced index scan	Index	0.497	0.616
+100000	SELECT * WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.491	0.423
+100000	count(*) WHERE id IN (100 values)	btree	planner	IndexOnly	0.169	0.599
+100000	count(*) WHERE id IN (100 values)	btree	forced index scan	IndexOnly	0.267	0.355
+100000	count(*) WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.454	0.403
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	planner	Index	0.069	0.473
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced index scan	Index	0.058	0.417
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.072	0.362
+100000	count(*) WHERE id BETWEEN (0.1%)	btree	planner	IndexOnly	0.053	0.226
+100000	count(*) WHERE id BETWEEN (0.1%)	btree	forced index scan	IndexOnly	0.047	0.193
+100000	count(*) WHERE id BETWEEN (0.1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.057	0.183
+100000	SELECT * WHERE id BETWEEN (20%)	btree	planner	Index	2.542	0.556
+100000	SELECT * WHERE id BETWEEN (20%)	btree	forced index scan	Index	2.431	0.364
+100000	SELECT * WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	2.198	0.279
+100000	count(*) WHERE id BETWEEN (20%)	btree	planner	IndexOnly	1.657	0.192
+100000	count(*) WHERE id BETWEEN (20%)	btree	forced index scan	IndexOnly	2.752	0.392
+100000	count(*) WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	3.319	0.262
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	planner	BmpHeap/BmpIdx	0.245	0.275
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced index scan	Index	0.287	0.355
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.334	0.493
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	planner	IndexOnly	0.043	0.199
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced index scan	IndexOnly	0.051	0.231
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.286	0.272
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	planner	IndexOnly	1.905	0.268
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced index scan	IndexOnly	1.680	0.297
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	7.803	0.334
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	planner	IndexOnly	0.031	0.465
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced index scan	IndexOnly	0.029	0.459
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.046	0.667
+100000	SELECT * ORDER BY rnd LIMIT 10	btree	planner	Index	0.070	0.934
+100000	SELECT * ORDER BY rnd LIMIT 10	btree	forced index scan	Index	0.063	0.603
+100000	SELECT * ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.045	0.891
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	planner	IndexOnly	0.146	0.509
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced index scan	IndexOnly	0.138	0.538
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced bitmap scan	Index	1.768	0.743
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	planner	IndexOnly	0.040	0.689
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced index scan	IndexOnly	0.034	0.667
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced bitmap scan	Index	0.078	0.811
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	planner	Index	0.038	0.604
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced index scan	Index	0.038	0.871
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced bitmap scan	Sort/BmpHeap/BmpIdx	2.048	0.874
+100000	SELECT id, rnd ORDER BY rnd (all rows)	btree	planner	IndexOnly	8.029	0.967
+100000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced index scan	IndexOnly	7.035	0.722
+100000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced bitmap scan	Sort/Seq	31.033	0.927
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	IndexOnly	0.058	0.843
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	IndexOnly	0.047	0.652
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.206	0.718
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	BmpHeap/BmpIdx	0.199	0.847
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	Index	0.250	0.974
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.143	0.953
+100000	count(*) WHERE grp = c (1%)	btree	planner	IndexOnly	0.175	0.555
+100000	count(*) WHERE grp = c (1%)	btree	forced index scan	IndexOnly	0.150	0.772
+100000	count(*) WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	1.766	0.988
+100000	SELECT * WHERE grp = c (1%)	btree	planner	BmpHeap/BmpIdx	1.510	0.661
+100000	SELECT * WHERE grp = c (1%)	btree	forced index scan	Index	0.636	0.552
+100000	SELECT * WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.969	0.494
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	planner	BmpHeap/BmpIdx	0.226	0.303
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced index scan	Index	0.186	0.292
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced bitmap scan	BmpHeap/BmpIdx	0.176	0.238
+100000	min(rnd), max(rnd)	btree	planner	IndexOnly/IndexOnly	0.059	0.547
+100000	min(rnd), max(rnd)	btree	forced index scan	IndexOnly/IndexOnly	0.065	0.625
+100000	min(rnd), max(rnd)	btree	forced bitmap scan	Seq	13.282	1.002
+100000	SELECT * WHERE s_short = c (distinct text)	btree	planner	Index	0.056	1.170
+100000	SELECT * WHERE s_short = c (distinct text)	btree	forced index scan	Index	0.035	0.644
+100000	SELECT * WHERE s_short = c (distinct text)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.056	0.892
+100000	count(*) WHERE s_short LIKE c%	btree	planner	IndexOnly	0.059	0.303
+100000	count(*) WHERE s_short LIKE c%	btree	forced index scan	IndexOnly	0.053	0.267
+100000	count(*) WHERE s_short LIKE c%	btree	forced bitmap scan	BmpHeap/BmpIdx	0.150	0.261
+100000	SELECT * WHERE u = c	btree	planner	Index	0.039	0.677
+100000	SELECT * WHERE u = c	btree	forced index scan	Index	0.051	1.013
+100000	SELECT * WHERE u = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.037	0.614
+100000	count(*) WHERE rnd IS NULL	btree	planner	IndexOnly	0.030	0.195
+100000	count(*) WHERE rnd IS NULL	btree	forced index scan	IndexOnly	0.033	0.216
+100000	count(*) WHERE rnd IS NULL	btree	forced bitmap scan	BmpHeap/BmpIdx	0.029	0.161
+100000	SELECT DISTINCT grp	btree	planner	Unique/IndexOnly	7.532	0.622
+100000	SELECT DISTINCT grp	btree	forced index scan	Unique/IndexOnly	10.488	1.210
+100000	SELECT DISTINCT grp	btree	forced bitmap scan	Seq	18.736	0.955
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	planner	Seq	26.391	1.253
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced index scan	Index	52.763	0.853
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced bitmap scan	Seq	33.806	0.972
+100000	100 id lookups by nested loop join	btree	planner	NestedLoop/Index	0.168	1.076
+100000	100 id lookups by nested loop join	btree	forced index scan	NestedLoop/Index	0.163	1.232
+100000	100 id lookups by nested loop join	btree	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.226	0.840
+100000	SELECT * WHERE id = c (id ascending)	sift_col default class	planner	Seq	10.006	1.191
+100000	count(*) WHERE id = c	sift_col default class	planner	SiftAgg	0.181	1.167
+100000	SELECT * WHERE rnd = c (random int)	sift_col default class	planner	Seq	8.784	0.731
+100000	SELECT * WHERE id IN (10 values)	sift_col default class	planner	Seq	10.197	1.280
+100000	SELECT * WHERE id IN (100 values)	sift_col default class	planner	Seq	11.449	1.359
+100000	count(*) WHERE id IN (100 values)	sift_col default class	planner	SiftAgg	0.689	1.297
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col default class	planner	Seq	9.900	1.152
+100000	count(*) WHERE id BETWEEN (0.1%)	sift_col default class	planner	SiftAgg	0.189	1.039
+100000	SELECT * WHERE id BETWEEN (20%)	sift_col default class	planner	Seq	10.269	1.220
+100000	count(*) WHERE id BETWEEN (20%)	sift_col default class	planner	SiftAgg	0.190	0.852
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col default class	planner	Seq	11.104	1.217
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col default class	planner	Seq	9.730	0.915
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col default class	planner	SiftAgg	0.372	0.968
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.421	1.342
+100000	SELECT * ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.313	0.696
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col default class	planner	SiftAgg	3.112	0.707
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col default class	planner	SiftAgg	0.392	0.704
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col default class	planner	SiftAgg	0.184	0.670
+100000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col default class	planner	Sort/Seq	33.981	1.150
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	SiftAgg	0.207	0.686
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	Seq	10.486	0.897
+100000	count(*) WHERE grp = c (1%)	sift_col default class	planner	SiftAgg	0.373	0.885
+100000	SELECT * WHERE grp = c (1%)	sift_col default class	planner	Seq	11.450	0.865
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col default class	planner	Seq	11.177	1.153
+100000	min(rnd), max(rnd)	sift_col default class	planner	SiftAgg	0.290	0.951
+100000	SELECT * WHERE s_short = c (distinct text)	sift_col default class	planner	Seq	17.297	0.848
+100000	count(*) WHERE s_short LIKE c%	sift_col default class	planner	SiftAgg	2.519	0.939
+100000	SELECT * WHERE u = c	sift_col default class	planner	Seq	14.920	1.182
+100000	count(*) WHERE rnd IS NULL	sift_col default class	planner	SiftAgg	0.335	0.723
+100000	SELECT DISTINCT grp	sift_col default class	planner	SiftAgg	0.540	0.506
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col default class	planner	SiftAgg	0.413	0.760
+100000	100 id lookups by nested loop join	sift_col default class	planner	SiftAgg	0.177	0.693
+100000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.097	0.638
+100000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.098	0.623
+100000	count(*) WHERE id = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.108	0.849
+100000	count(*) WHERE id = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.104	0.771
+100000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.256	0.632
+100000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.287	0.769
+100000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.147	0.960
+100000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.177	1.120
+100000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.581	1.363
+100000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.325	0.901
+100000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.591	1.012
+100000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.483	0.720
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.107	1.059
+100000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.097	1.019
+100000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.151	0.978
+100000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.162	0.978
+100000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	3.394	1.117
+100000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.276	0.938
+100000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.251	0.948
+100000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.768	0.916
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.797	1.264
+100000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.846	0.932
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.706	0.828
+100000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.839	1.230
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.482	1.181
+100000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	8.100	0.904
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.313	0.742
+100000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	13.370	0.980
+100000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.469	1.923
+100000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	22.844	1.131
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	3.818	1.178
+100000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	bitmap scan forced	Sort/Seq	14.668	0.939
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.473	1.347
+100000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	15.934	0.904
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.278	1.040
+100000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/BmpHeap/BmpIdx	2.741	1.248
+100000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	Sort/Seq	27.119	0.852
+100000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	bitmap scan forced	Sort/Seq	30.704	0.809
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.334	1.568
+100000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.380	0.967
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.353	1.047
+100000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.379	1.102
+100000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.391	1.142
+100000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.394	0.975
+100000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	2.582	2.237
+100000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.198	1.009
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.154	1.203
+100000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.128	0.701
+100000	min(rnd), max(rnd)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.215	0.685
+100000	min(rnd), max(rnd)	sift_col col_*_ops	bitmap scan forced	Seq	13.815	1.104
+100000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	4.445	1.134
+100000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	3.386	1.047
+100000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	2.932	0.842
+100000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	bitmap scan forced	Seq	14.236	1.100
+100000	SELECT * WHERE u = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	4.181	1.085
+100000	SELECT * WHERE u = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	3.980	1.025
+100000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.052	0.936
+100000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.049	0.736
+100000	SELECT DISTINCT grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.715	0.890
+100000	SELECT DISTINCT grp	sift_col col_*_ops	bitmap scan forced	Seq	16.235	0.832
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.470	0.835
+100000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	bitmap scan forced	Seq	34.435	0.874
+100000	100 id lookups by nested loop join	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.192	0.845
+100000	100 id lookups by nested loop join	sift_col col_*_ops	bitmap scan forced	NestedLoop/BmpHeap/BmpIdx	2.048	0.782
+200000	SELECT * WHERE id = c (id ascending)	btree	planner	Index	0.028	0.640
+200000	SELECT * WHERE id = c (id ascending)	btree	forced index scan	Index	0.034	0.576
+200000	SELECT * WHERE id = c (id ascending)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.044	0.601
+200000	count(*) WHERE id = c	btree	planner	IndexOnly	0.042	0.643
+200000	count(*) WHERE id = c	btree	forced index scan	IndexOnly	0.040	0.503
+200000	count(*) WHERE id = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.059	0.621
+200000	SELECT * WHERE rnd = c (random int)	btree	planner	Index	0.033	0.805
+200000	SELECT * WHERE rnd = c (random int)	btree	forced index scan	Index	0.038	0.826
+200000	SELECT * WHERE rnd = c (random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.038	0.807
+200000	SELECT * WHERE id IN (10 values)	btree	planner	Index	0.043	0.462
+200000	SELECT * WHERE id IN (10 values)	btree	forced index scan	Index	0.040	0.507
+200000	SELECT * WHERE id IN (10 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.072	0.374
+200000	SELECT * WHERE id IN (100 values)	btree	planner	Index	0.386	0.455
+200000	SELECT * WHERE id IN (100 values)	btree	forced index scan	Index	0.343	0.478
+200000	SELECT * WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.289	0.426
+200000	count(*) WHERE id IN (100 values)	btree	planner	IndexOnly	0.268	0.324
+200000	count(*) WHERE id IN (100 values)	btree	forced index scan	IndexOnly	0.160	0.304
+200000	count(*) WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.243	0.300
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	planner	Index	0.080	0.389
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced index scan	Index	0.062	0.275
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.086	0.347
+200000	count(*) WHERE id BETWEEN (0.1%)	btree	planner	IndexOnly	0.076	0.216
+200000	count(*) WHERE id BETWEEN (0.1%)	btree	forced index scan	IndexOnly	0.080	0.207
+200000	count(*) WHERE id BETWEEN (0.1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.082	0.231
+200000	SELECT * WHERE id BETWEEN (20%)	btree	planner	Index	5.247	0.347
+200000	SELECT * WHERE id BETWEEN (20%)	btree	forced index scan	Index	6.160	0.554
+200000	SELECT * WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	6.145	0.402
+200000	count(*) WHERE id BETWEEN (20%)	btree	planner	IndexOnly	3.706	0.309
+200000	count(*) WHERE id BETWEEN (20%)	btree	forced index scan	IndexOnly	3.593	0.271
+200000	count(*) WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	7.060	0.316
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	planner	BmpHeap/BmpIdx	0.290	0.278
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced index scan	Index	0.331	0.373
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.359	0.310
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	planner	IndexOnly	0.063	0.332
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced index scan	IndexOnly	0.089	0.336
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.503	0.280
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	planner	IndexOnly	2.906	0.309
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced index scan	IndexOnly	3.795	0.306
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	19.725	0.295
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	planner	IndexOnly	0.038	0.595
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced index scan	IndexOnly	0.042	0.811
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.050	0.795
+200000	SELECT * ORDER BY rnd LIMIT 10	btree	planner	Index	0.064	0.681
+200000	SELECT * ORDER BY rnd LIMIT 10	btree	forced index scan	Index	0.060	0.605
+200000	SELECT * ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.069	1.045
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	planner	IndexOnly	0.159	0.825
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced index scan	IndexOnly	0.160	1.119
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced bitmap scan	Index	2.145	0.788
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	planner	IndexOnly	0.040	0.759
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced index scan	IndexOnly	0.051	1.060
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced bitmap scan	Index	0.085	1.014
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	planner	Index	0.055	1.015
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced index scan	Index	0.054	0.923
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced bitmap scan	Sort/BmpHeap/BmpIdx	3.741	1.235
+200000	SELECT id, rnd ORDER BY rnd (all rows)	btree	planner	IndexOnly	12.343	0.930
+200000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced index scan	IndexOnly	12.996	0.894
+200000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced bitmap scan	Sort/Seq	59.556	1.110
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	IndexOnly	0.072	0.747
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	IndexOnly	0.095	0.991
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.576	1.052
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	BmpHeap/BmpIdx	0.545	1.356
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	Index	0.324	0.783
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.300	0.824
+200000	count(*) WHERE grp = c (1%)	btree	planner	IndexOnly	0.260	0.833
+200000	count(*) WHERE grp = c (1%)	btree	forced index scan	IndexOnly	0.240	0.559
+200000	count(*) WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	3.433	1.003
+200000	SELECT * WHERE grp = c (1%)	btree	planner	BmpHeap/BmpIdx	4.077	1.216
+200000	SELECT * WHERE grp = c (1%)	btree	forced index scan	Index	3.290	1.322
+200000	SELECT * WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	3.628	1.018
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	planner	BmpHeap/BmpIdx	0.360	0.379
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced index scan	Index	0.372	0.308
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced bitmap scan	BmpHeap/BmpIdx	0.251	0.243
+200000	min(rnd), max(rnd)	btree	planner	IndexOnly/IndexOnly	0.082	1.109
+200000	min(rnd), max(rnd)	btree	forced index scan	IndexOnly/IndexOnly	0.081	1.045
+200000	min(rnd), max(rnd)	btree	forced bitmap scan	Seq	24.498	1.070
+200000	SELECT * WHERE s_short = c (distinct text)	btree	planner	Index	0.054	1.270
+200000	SELECT * WHERE s_short = c (distinct text)	btree	forced index scan	Index	0.061	1.191
+200000	SELECT * WHERE s_short = c (distinct text)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.065	1.138
+200000	count(*) WHERE s_short LIKE c%	btree	planner	IndexOnly	0.065	0.223
+200000	count(*) WHERE s_short LIKE c%	btree	forced index scan	IndexOnly	0.063	0.276
+200000	count(*) WHERE s_short LIKE c%	btree	forced bitmap scan	BmpHeap/BmpIdx	0.294	0.307
+200000	SELECT * WHERE u = c	btree	planner	Index	0.044	1.039
+200000	SELECT * WHERE u = c	btree	forced index scan	Index	0.038	1.140
+200000	SELECT * WHERE u = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.049	0.883
+200000	count(*) WHERE rnd IS NULL	btree	planner	IndexOnly	0.048	0.261
+200000	count(*) WHERE rnd IS NULL	btree	forced index scan	IndexOnly	0.053	0.298
+200000	count(*) WHERE rnd IS NULL	btree	forced bitmap scan	BmpHeap/BmpIdx	0.069	0.258
+200000	SELECT DISTINCT grp	btree	planner	Unique/IndexOnly	14.132	0.734
+200000	SELECT DISTINCT grp	btree	forced index scan	Unique/IndexOnly	14.288	0.792
+200000	SELECT DISTINCT grp	btree	forced bitmap scan	Seq	35.591	0.944
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	planner	Seq	53.299	0.981
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced index scan	Index	117.016	1.101
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced bitmap scan	Seq	57.419	0.981
+200000	100 id lookups by nested loop join	btree	planner	NestedLoop/Index	0.220	1.092
+200000	100 id lookups by nested loop join	btree	forced index scan	NestedLoop/Index	0.182	0.634
+200000	100 id lookups by nested loop join	btree	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.221	0.657
+200000	SELECT * WHERE id = c (id ascending)	sift_col default class	planner	Seq	18.077	1.005
+200000	count(*) WHERE id = c	sift_col default class	planner	SiftAgg	0.215	1.292
+200000	SELECT * WHERE rnd = c (random int)	sift_col default class	planner	Seq	19.810	0.965
+200000	SELECT * WHERE id IN (10 values)	sift_col default class	planner	Seq	21.041	0.943
+200000	SELECT * WHERE id IN (100 values)	sift_col default class	planner	Seq	20.877	0.949
+200000	count(*) WHERE id IN (100 values)	sift_col default class	planner	SiftAgg	0.977	0.924
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col default class	planner	Seq	18.784	1.092
+200000	count(*) WHERE id BETWEEN (0.1%)	sift_col default class	planner	SiftAgg	0.245	1.180
+200000	SELECT * WHERE id BETWEEN (20%)	sift_col default class	planner	Seq	19.526	1.152
+200000	count(*) WHERE id BETWEEN (20%)	sift_col default class	planner	SiftAgg	0.271	0.745
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col default class	planner	Seq	18.241	0.904
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col default class	planner	Seq	20.141	0.872
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col default class	planner	SiftAgg	0.742	1.236
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.484	0.924
+200000	SELECT * ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.451	0.814
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col default class	planner	SiftAgg	4.479	0.856
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col default class	planner	SiftAgg	0.402	0.682
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col default class	planner	SiftAgg	0.229	0.916
+200000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col default class	planner	Sort/Seq	63.988	0.587
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	SiftAgg	0.286	0.890
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	Seq	21.348	0.894
+200000	count(*) WHERE grp = c (1%)	sift_col default class	planner	SiftAgg	0.561	0.713
+200000	SELECT * WHERE grp = c (1%)	sift_col default class	planner	Seq	21.298	1.134
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col default class	planner	Seq	23.510	0.769
+200000	min(rnd), max(rnd)	sift_col default class	planner	SiftAgg	0.405	0.980
+200000	SELECT * WHERE s_short = c (distinct text)	sift_col default class	planner	Seq	28.005	0.737
+200000	count(*) WHERE s_short LIKE c%	sift_col default class	planner	SiftAgg	4.537	0.685
+200000	SELECT * WHERE u = c	sift_col default class	planner	Seq	27.462	0.771
+200000	count(*) WHERE rnd IS NULL	sift_col default class	planner	SiftAgg	0.471	0.579
+200000	SELECT DISTINCT grp	sift_col default class	planner	SiftAgg	1.179	0.623
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col default class	planner	SiftAgg	0.676	0.711
+200000	100 id lookups by nested loop join	sift_col default class	planner	SiftAgg	0.209	0.732
+200000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.106	0.830
+200000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.100	0.952
+200000	count(*) WHERE id = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.112	0.972
+200000	count(*) WHERE id = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.125	0.884
+200000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.549	1.114
+200000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.482	1.031
+200000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.198	1.026
+200000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.172	1.290
+200000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	2.266	1.194
+200000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.752	1.195
+200000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	1.032	1.232
+200000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.279	1.104
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.199	0.988
+200000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.174	1.096
+200000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.318	1.212
+200000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.173	1.068
+200000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	4.727	1.010
+200000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	4.980	1.288
+200000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.201	0.585
+200000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	5.191	0.820
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.358	0.943
+200000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.307	1.336
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.270	0.862
+200000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.213	1.042
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.616	0.614
+200000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	16.791	1.213
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.388	0.796
+200000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	26.293	0.783
+200000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.446	1.134
+200000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	33.822	0.957
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	5.136	0.991
+200000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	bitmap scan forced	Sort/Seq	29.341	0.818
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.382	0.498
+200000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	25.067	0.840
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.204	0.726
+200000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/BmpHeap/BmpIdx	4.045	0.676
+200000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	Sort/Seq	70.398	0.752
+200000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	bitmap scan forced	Sort/Seq	58.679	0.800
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.300	1.278
+200000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.657	0.871
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.422	0.779
+200000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.592	1.080
+200000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.662	0.881
+200000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	3.464	0.809
+200000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	5.170	0.971
+200000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	4.217	0.928
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.202	1.051
+200000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.177	0.805
+200000	min(rnd), max(rnd)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.420	0.766
+200000	min(rnd), max(rnd)	sift_col col_*_ops	bitmap scan forced	Seq	27.430	1.110
+200000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	6.423	0.852
+200000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	6.919	0.887
+200000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	6.611	1.286
+200000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	bitmap scan forced	Seq	22.349	0.814
+200000	SELECT * WHERE u = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	7.142	1.041
+200000	SELECT * WHERE u = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	7.287	1.115
+200000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.483	0.610
+200000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.051	0.633
+200000	SELECT DISTINCT grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	1.377	0.797
+200000	SELECT DISTINCT grp	sift_col col_*_ops	bitmap scan forced	Seq	32.898	0.798
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.555	0.596
+200000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	bitmap scan forced	Seq	56.194	0.725
+200000	100 id lookups by nested loop join	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.199	0.744
+200000	100 id lookups by nested loop join	sift_col col_*_ops	bitmap scan forced	NestedLoop/BmpHeap/BmpIdx	2.102	0.685
+25000	SELECT * WHERE id = c (id ascending)	btree	planner	Index	0.041	1.053
+25000	SELECT * WHERE id = c (id ascending)	btree	forced index scan	Index	0.042	0.954
+25000	SELECT * WHERE id = c (id ascending)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.053	0.913
+25000	count(*) WHERE id = c	btree	planner	IndexOnly	0.060	1.141
+25000	count(*) WHERE id = c	btree	forced index scan	IndexOnly	0.052	0.856
+25000	count(*) WHERE id = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.061	0.719
+25000	SELECT * WHERE rnd = c (random int)	btree	planner	Index	0.039	0.649
+25000	SELECT * WHERE rnd = c (random int)	btree	forced index scan	Index	0.034	0.668
+25000	SELECT * WHERE rnd = c (random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.045	0.651
+25000	SELECT * WHERE id IN (10 values)	btree	planner	Index	0.041	0.310
+25000	SELECT * WHERE id IN (10 values)	btree	forced index scan	Index	0.060	0.547
+25000	SELECT * WHERE id IN (10 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.079	0.574
+25000	SELECT * WHERE id IN (100 values)	btree	planner	Index	0.471	0.521
+25000	SELECT * WHERE id IN (100 values)	btree	forced index scan	Index	0.461	0.681
+25000	SELECT * WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.503	0.561
+25000	count(*) WHERE id IN (100 values)	btree	planner	IndexOnly	0.265	0.425
+25000	count(*) WHERE id IN (100 values)	btree	forced index scan	IndexOnly	0.262	0.408
+25000	count(*) WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.578	0.386
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	planner	Index	0.058	0.486
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced index scan	Index	0.040	0.294
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.067	0.432
+25000	count(*) WHERE id BETWEEN (0.1%)	btree	planner	IndexOnly	0.052	0.302
+25000	count(*) WHERE id BETWEEN (0.1%)	btree	forced index scan	IndexOnly	0.048	0.273
+25000	count(*) WHERE id BETWEEN (0.1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.069	0.212
+25000	SELECT * WHERE id BETWEEN (20%)	btree	planner	Index	0.837	0.320
+25000	SELECT * WHERE id BETWEEN (20%)	btree	forced index scan	Index	0.723	0.358
+25000	SELECT * WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.674	0.294
+25000	count(*) WHERE id BETWEEN (20%)	btree	planner	IndexOnly	0.560	0.335
+25000	count(*) WHERE id BETWEEN (20%)	btree	forced index scan	IndexOnly	0.564	0.329
+25000	count(*) WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.987	0.357
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	planner	BmpHeap/BmpIdx	0.225	0.399
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced index scan	Index	0.082	0.460
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.107	0.337
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	planner	IndexOnly	0.036	0.225
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced index scan	IndexOnly	0.053	0.241
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.141	0.328
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	planner	IndexOnly	0.491	0.250
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced index scan	IndexOnly	0.645	0.379
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	2.045	0.228
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	planner	IndexOnly	0.047	0.812
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced index scan	IndexOnly	0.031	0.639
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.058	0.627
+25000	SELECT * ORDER BY rnd LIMIT 10	btree	planner	Index	0.046	0.540
+25000	SELECT * ORDER BY rnd LIMIT 10	btree	forced index scan	Index	0.058	0.608
+25000	SELECT * ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.077	0.948
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	planner	IndexOnly	0.174	0.780
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced index scan	IndexOnly	0.135	0.539
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced bitmap scan	Index	0.503	0.486
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	planner	IndexOnly	0.043	0.612
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced index scan	IndexOnly	0.033	0.717
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced bitmap scan	Index	0.042	1.097
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	planner	Index	0.047	1.036
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced index scan	Index	0.041	1.132
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced bitmap scan	Sort/BmpHeap/BmpIdx	0.497	0.982
+25000	SELECT id, rnd ORDER BY rnd (all rows)	btree	planner	IndexOnly	2.513	0.990
+25000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced index scan	IndexOnly	2.618	0.891
+25000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced bitmap scan	Sort/Seq	6.588	0.829
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	IndexOnly	0.036	0.934
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	IndexOnly	0.039	0.692
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.078	1.011
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	BmpHeap/BmpIdx	0.056	0.643
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	Index	0.046	0.831
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.056	0.685
+25000	count(*) WHERE grp = c (1%)	btree	planner	IndexOnly	0.073	0.592
+25000	count(*) WHERE grp = c (1%)	btree	forced index scan	IndexOnly	0.066	0.514
+25000	count(*) WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.362	0.939
+25000	SELECT * WHERE grp = c (1%)	btree	planner	BmpHeap/BmpIdx	0.470	1.100
+25000	SELECT * WHERE grp = c (1%)	btree	forced index scan	Index	0.483	1.160
+25000	SELECT * WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.519	1.111
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	planner	BmpHeap/BmpIdx	0.519	0.420
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced index scan	Index	0.540	0.399
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced bitmap scan	BmpHeap/BmpIdx	0.616	0.574
+25000	min(rnd), max(rnd)	btree	planner	IndexOnly/IndexOnly	0.080	0.947
+25000	min(rnd), max(rnd)	btree	forced index scan	IndexOnly/IndexOnly	0.093	1.147
+25000	min(rnd), max(rnd)	btree	forced bitmap scan	Seq	3.149	1.312
+25000	SELECT * WHERE s_short = c (distinct text)	btree	planner	Index	0.055	1.081
+25000	SELECT * WHERE s_short = c (distinct text)	btree	forced index scan	Index	0.045	0.971
+25000	SELECT * WHERE s_short = c (distinct text)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.051	0.873
+25000	count(*) WHERE s_short LIKE c%	btree	planner	IndexOnly	0.034	0.231
+25000	count(*) WHERE s_short LIKE c%	btree	forced index scan	IndexOnly	0.056	0.283
+25000	count(*) WHERE s_short LIKE c%	btree	forced bitmap scan	BmpHeap/BmpIdx	0.068	0.313
+25000	SELECT * WHERE u = c	btree	planner	Index	0.041	0.737
+25000	SELECT * WHERE u = c	btree	forced index scan	Index	0.033	0.681
+25000	SELECT * WHERE u = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.100	1.060
+25000	count(*) WHERE rnd IS NULL	btree	planner	IndexOnly	0.044	0.234
+25000	count(*) WHERE rnd IS NULL	btree	forced index scan	IndexOnly	0.056	0.287
+25000	count(*) WHERE rnd IS NULL	btree	forced bitmap scan	BmpHeap/BmpIdx	0.065	0.326
+25000	SELECT DISTINCT grp	btree	planner	Unique/IndexOnly	2.356	1.008
+25000	SELECT DISTINCT grp	btree	forced index scan	Unique/IndexOnly	2.258	0.948
+25000	SELECT DISTINCT grp	btree	forced bitmap scan	Seq	5.046	0.817
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	planner	Seq	8.335	0.988
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced index scan	Index	11.265	0.862
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced bitmap scan	Seq	8.552	1.142
+25000	100 id lookups by nested loop join	btree	planner	NestedLoop/Index	0.187	0.811
+25000	100 id lookups by nested loop join	btree	forced index scan	NestedLoop/Index	0.191	1.106
+25000	100 id lookups by nested loop join	btree	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.240	1.123
+25000	SELECT * WHERE id = c (id ascending)	sift_col default class	planner	Seq	2.418	0.904
+25000	count(*) WHERE id = c	sift_col default class	planner	SiftAgg	0.173	0.988
+25000	SELECT * WHERE rnd = c (random int)	sift_col default class	planner	Seq	2.369	0.809
+25000	SELECT * WHERE id IN (10 values)	sift_col default class	planner	Seq	2.750	1.120
+25000	SELECT * WHERE id IN (100 values)	sift_col default class	planner	Seq	3.131	1.002
+25000	count(*) WHERE id IN (100 values)	sift_col default class	planner	SiftAgg	0.270	1.049
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col default class	planner	Seq	2.818	1.039
+25000	count(*) WHERE id BETWEEN (0.1%)	sift_col default class	planner	SiftAgg	0.186	1.025
+25000	SELECT * WHERE id BETWEEN (20%)	sift_col default class	planner	Seq	2.401	0.910
+25000	count(*) WHERE id BETWEEN (20%)	sift_col default class	planner	SiftAgg	0.155	0.703
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col default class	planner	Seq	2.463	1.022
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col default class	planner	Seq	2.383	0.592
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col default class	planner	SiftAgg	0.210	0.977
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.223	0.501
+25000	SELECT * ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.282	1.181
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col default class	planner	SiftAgg	2.326	1.030
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col default class	planner	SiftAgg	0.236	0.675
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col default class	planner	SiftAgg	0.259	1.089
+25000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col default class	planner	Sort/Seq	7.295	0.812
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	SiftAgg	0.229	1.165
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	Seq	2.885	1.002
+25000	count(*) WHERE grp = c (1%)	sift_col default class	planner	SiftAgg	0.180	1.091
+25000	SELECT * WHERE grp = c (1%)	sift_col default class	planner	Seq	3.598	1.198
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col default class	planner	Seq	2.692	0.839
+25000	min(rnd), max(rnd)	sift_col default class	planner	SiftAgg	0.168	0.801
+25000	SELECT * WHERE s_short = c (distinct text)	sift_col default class	planner	Seq	4.336	0.889
+25000	count(*) WHERE s_short LIKE c%	sift_col default class	planner	SiftAgg	0.828	0.861
+25000	SELECT * WHERE u = c	sift_col default class	planner	Seq	3.567	1.097
+25000	count(*) WHERE rnd IS NULL	sift_col default class	planner	SiftAgg	0.209	0.854
+25000	SELECT DISTINCT grp	sift_col default class	planner	SiftAgg	0.270	0.641
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col default class	planner	SiftAgg	0.234	0.680
+25000	100 id lookups by nested loop join	sift_col default class	planner	SiftAgg	0.226	1.364
+25000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.150	1.623
+25000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.124	0.834
+25000	count(*) WHERE id = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.116	0.943
+25000	count(*) WHERE id = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.102	0.678
+25000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.165	0.968
+25000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.137	0.640
+25000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.149	1.107
+25000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.145	0.906
+25000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.517	0.698
+25000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.527	0.929
+25000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.744	1.944
+25000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.793	0.962
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.111	0.666
+25000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.136	0.997
+25000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.122	0.643
+25000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.143	0.641
+25000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.848	1.014
+25000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.739	0.721
+25000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.241	0.623
+25000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.041	0.885
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.202	0.559
+25000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.199	0.575
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.268	0.737
+25000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.300	0.638
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.218	0.857
+25000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.846	0.535
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.194	0.577
+25000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	3.504	0.669
+25000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.259	0.689
+25000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	4.105	0.582
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	1.951	0.746
+25000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	bitmap scan forced	Sort/Seq	4.582	0.487
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.242	0.615
+25000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	3.700	0.421
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.158	0.607
+25000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/BmpHeap/BmpIdx	0.682	1.006
+25000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	Sort/Seq	7.110	1.019
+25000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	bitmap scan forced	Sort/Seq	5.899	0.540
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.199	1.078
+25000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.157	0.790
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.152	0.664
+25000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.117	0.573
+25000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.161	0.655
+25000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.650	0.597
+25000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.534	0.917
+25000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.498	0.553
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.100	0.880
+25000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.115	1.026
+25000	min(rnd), max(rnd)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.133	0.635
+25000	min(rnd), max(rnd)	sift_col col_*_ops	bitmap scan forced	Seq	2.354	0.428
+25000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.251	1.472
+25000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.973	1.486
+25000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.715	0.702
+25000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	bitmap scan forced	Seq	2.518	0.638
+25000	SELECT * WHERE u = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.967	1.102
+25000	SELECT * WHERE u = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.132	1.274
+25000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.071	0.644
+25000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.066	0.962
+25000	SELECT DISTINCT grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.305	1.127
+25000	SELECT DISTINCT grp	sift_col col_*_ops	bitmap scan forced	Seq	4.924	0.729
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.225	0.787
+25000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	bitmap scan forced	Seq	7.630	0.530
+25000	100 id lookups by nested loop join	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.249	1.203
+25000	100 id lookups by nested loop join	sift_col col_*_ops	bitmap scan forced	NestedLoop/BmpHeap/BmpIdx	2.987	1.039
+1000000	SELECT * WHERE id = c (id ascending)	btree	planner	Index	0.046	0.865
+1000000	SELECT * WHERE id = c (id ascending)	btree	forced index scan	Index	0.056	1.095
+1000000	SELECT * WHERE id = c (id ascending)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.056	1.040
+1000000	count(*) WHERE id = c	btree	planner	IndexOnly	0.071	1.136
+1000000	count(*) WHERE id = c	btree	forced index scan	IndexOnly	0.094	1.111
+1000000	count(*) WHERE id = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.070	1.188
+1000000	SELECT * WHERE rnd = c (random int)	btree	planner	Index	0.049	1.098
+1000000	SELECT * WHERE rnd = c (random int)	btree	forced index scan	Index	0.046	0.956
+1000000	SELECT * WHERE rnd = c (random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.073	1.172
+1000000	SELECT * WHERE id IN (10 values)	btree	planner	Index	0.073	0.661
+1000000	SELECT * WHERE id IN (10 values)	btree	forced index scan	Index	0.119	1.048
+1000000	SELECT * WHERE id IN (10 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.098	0.512
+1000000	SELECT * WHERE id IN (100 values)	btree	planner	Index	0.615	0.656
+1000000	SELECT * WHERE id IN (100 values)	btree	forced index scan	Index	0.534	0.452
+1000000	SELECT * WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.645	0.742
+1000000	count(*) WHERE id IN (100 values)	btree	planner	IndexOnly	0.352	0.444
+1000000	count(*) WHERE id IN (100 values)	btree	forced index scan	IndexOnly	0.353	0.420
+1000000	count(*) WHERE id IN (100 values)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.813	0.418
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	planner	Index	0.353	0.538
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced index scan	Index	0.176	0.436
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.240	0.350
+1000000	count(*) WHERE id BETWEEN (0.1%)	btree	planner	IndexOnly	0.172	0.452
+1000000	count(*) WHERE id BETWEEN (0.1%)	btree	forced index scan	IndexOnly	0.192	0.948
+1000000	count(*) WHERE id BETWEEN (0.1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.249	0.281
+1000000	SELECT * WHERE id BETWEEN (20%)	btree	planner	Index	29.653	0.542
+1000000	SELECT * WHERE id BETWEEN (20%)	btree	forced index scan	Index	26.146	0.372
+1000000	SELECT * WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	31.542	0.379
+1000000	count(*) WHERE id BETWEEN (20%)	btree	planner	IndexOnly	10.531	0.241
+1000000	count(*) WHERE id BETWEEN (20%)	btree	forced index scan	IndexOnly	10.659	0.290
+1000000	count(*) WHERE id BETWEEN (20%)	btree	forced bitmap scan	BmpHeap/BmpIdx	31.604	0.272
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	planner	BmpHeap/BmpIdx	2.619	0.363
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced index scan	Index	1.827	0.300
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	2.174	0.450
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	planner	IndexOnly	0.183	0.319
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced index scan	IndexOnly	0.171	0.230
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	btree	forced bitmap scan	BmpHeap/BmpIdx	1.767	0.462
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	planner	IndexOnly	18.455	0.275
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced index scan	IndexOnly	15.573	0.246
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	btree	forced bitmap scan	BmpHeap/BmpIdx	118.684	0.381
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	planner	IndexOnly	0.045	0.957
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced index scan	IndexOnly	0.041	0.648
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.070	0.885
+1000000	SELECT * ORDER BY rnd LIMIT 10	btree	planner	Index	0.067	0.859
+1000000	SELECT * ORDER BY rnd LIMIT 10	btree	forced index scan	Index	0.081	1.156
+1000000	SELECT * ORDER BY rnd LIMIT 10	btree	forced bitmap scan	Index	0.069	0.974
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	planner	IndexOnly	0.298	0.888
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced index scan	IndexOnly	0.231	0.790
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	btree	forced bitmap scan	Index	2.234	0.878
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	planner	IndexOnly	0.039	0.796
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced index scan	IndexOnly	0.031	1.020
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	btree	forced bitmap scan	Index	0.051	0.775
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	planner	Index	0.036	0.783
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced index scan	Index	0.040	0.857
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	btree	forced bitmap scan	Sort/BmpHeap/BmpIdx	14.661	0.976
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	btree	planner	IndexOnly	78.233	0.913
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced index scan	IndexOnly	86.226	1.057
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	btree	forced bitmap scan	Sort/Seq	303.911	1.371
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	IndexOnly	0.179	0.971
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	IndexOnly	0.167	0.693
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	1.931	0.835
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	planner	BmpHeap/BmpIdx	1.707	1.127
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced index scan	Index	1.744	1.035
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	btree	forced bitmap scan	BmpHeap/BmpIdx	1.631	0.901
+1000000	count(*) WHERE grp = c (1%)	btree	planner	IndexOnly	0.776	0.485
+1000000	count(*) WHERE grp = c (1%)	btree	forced index scan	IndexOnly	0.775	0.535
+1000000	count(*) WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	14.601	0.844
+1000000	SELECT * WHERE grp = c (1%)	btree	planner	BmpHeap/BmpIdx	15.851	0.825
+1000000	SELECT * WHERE grp = c (1%)	btree	forced index scan	Index	13.132	1.305
+1000000	SELECT * WHERE grp = c (1%)	btree	forced bitmap scan	BmpHeap/BmpIdx	16.857	1.171
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	planner	BmpHeap/BmpIdx	0.484	0.235
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced index scan	Index	0.382	0.246
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	btree	forced bitmap scan	BmpHeap/BmpIdx	0.407	0.376
+1000000	min(rnd), max(rnd)	btree	planner	IndexOnly/IndexOnly	0.061	0.745
+1000000	min(rnd), max(rnd)	btree	forced index scan	IndexOnly/IndexOnly	0.066	0.721
+1000000	min(rnd), max(rnd)	btree	forced bitmap scan	Seq	105.462	0.921
+1000000	SELECT * WHERE s_short = c (distinct text)	btree	planner	Index	0.052	1.083
+1000000	SELECT * WHERE s_short = c (distinct text)	btree	forced index scan	Index	0.034	0.646
+1000000	SELECT * WHERE s_short = c (distinct text)	btree	forced bitmap scan	BmpHeap/BmpIdx	0.056	0.996
+1000000	count(*) WHERE s_short LIKE c%	btree	planner	IndexOnly	0.095	0.234
+1000000	count(*) WHERE s_short LIKE c%	btree	forced index scan	IndexOnly	0.144	0.481
+1000000	count(*) WHERE s_short LIKE c%	btree	forced bitmap scan	BmpHeap/BmpIdx	0.670	0.284
+1000000	SELECT * WHERE u = c	btree	planner	Index	0.034	0.979
+1000000	SELECT * WHERE u = c	btree	forced index scan	Index	0.035	0.658
+1000000	SELECT * WHERE u = c	btree	forced bitmap scan	BmpHeap/BmpIdx	0.061	0.953
+1000000	count(*) WHERE rnd IS NULL	btree	planner	IndexOnly	0.044	0.289
+1000000	count(*) WHERE rnd IS NULL	btree	forced index scan	IndexOnly	0.039	0.229
+1000000	count(*) WHERE rnd IS NULL	btree	forced bitmap scan	BmpHeap/BmpIdx	0.053	0.212
+1000000	SELECT DISTINCT grp	btree	planner	Unique/IndexOnly	61.690	0.878
+1000000	SELECT DISTINCT grp	btree	forced index scan	Unique/IndexOnly	62.305	0.860
+1000000	SELECT DISTINCT grp	btree	forced bitmap scan	Seq	152.092	1.216
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	planner	Seq	247.698	1.164
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced index scan	Index	1755.001	0.978
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	btree	forced bitmap scan	Seq	248.049	0.655
+1000000	100 id lookups by nested loop join	btree	planner	NestedLoop/Index	0.194	0.709
+1000000	100 id lookups by nested loop join	btree	forced index scan	NestedLoop/Index	0.211	0.799
+1000000	100 id lookups by nested loop join	btree	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.249	0.809
+1000000	SELECT * WHERE id = c (id ascending)	sift_col default class	planner	Seq	78.800	0.913
+1000000	count(*) WHERE id = c	sift_col default class	planner	SiftAgg	0.333	1.061
+1000000	SELECT * WHERE rnd = c (random int)	sift_col default class	planner	Seq	88.062	1.088
+1000000	SELECT * WHERE id IN (10 values)	sift_col default class	planner	Seq	92.466	1.015
+1000000	SELECT * WHERE id IN (100 values)	sift_col default class	planner	Seq	92.981	0.726
+1000000	count(*) WHERE id IN (100 values)	sift_col default class	planner	SiftAgg	3.710	1.205
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col default class	planner	Seq	76.182	0.880
+1000000	count(*) WHERE id BETWEEN (0.1%)	sift_col default class	planner	SiftAgg	0.454	1.088
+1000000	SELECT * WHERE id BETWEEN (20%)	sift_col default class	planner	Seq	79.729	0.950
+1000000	count(*) WHERE id BETWEEN (20%)	sift_col default class	planner	SiftAgg	0.610	0.899
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col default class	planner	Seq	85.576	0.894
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col default class	planner	Seq	81.528	0.734
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col default class	planner	SiftAgg	2.469	1.008
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.553	1.080
+1000000	SELECT * ORDER BY rnd LIMIT 10	sift_col default class	planner	SiftAgg	0.473	1.005
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col default class	planner	SiftAgg	7.756	0.716
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col default class	planner	SiftAgg	0.558	1.039
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col default class	planner	SiftAgg	0.206	0.810
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col default class	planner	Sort/Seq	350.013	1.040
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	SiftAgg	0.806	1.471
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col default class	planner	Seq	107.943	1.114
+1000000	count(*) WHERE grp = c (1%)	sift_col default class	planner	SiftAgg	3.190	1.430
+1000000	SELECT * WHERE grp = c (1%)	sift_col default class	planner	Seq	98.126	1.014
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col default class	planner	Seq	108.471	0.928
+1000000	min(rnd), max(rnd)	sift_col default class	planner	SiftAgg	1.407	0.722
+1000000	SELECT * WHERE s_short = c (distinct text)	sift_col default class	planner	Seq	132.399	0.917
+1000000	count(*) WHERE s_short LIKE c%	sift_col default class	planner	SiftAgg	27.302	1.076
+1000000	SELECT * WHERE u = c	sift_col default class	planner	Seq	125.183	1.053
+1000000	count(*) WHERE rnd IS NULL	sift_col default class	planner	SiftAgg	2.261	0.988
+1000000	SELECT DISTINCT grp	sift_col default class	planner	SiftAgg	4.614	1.127
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col default class	planner	SiftAgg	3.080	0.941
+1000000	100 id lookups by nested loop join	sift_col default class	planner	SiftAgg	0.404	1.525
+1000000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.107	1.265
+1000000	SELECT * WHERE id = c (id ascending)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.105	1.254
+1000000	count(*) WHERE id = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.102	1.062
+1000000	count(*) WHERE id = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.110	0.841
+1000000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.985	0.804
+1000000	SELECT * WHERE rnd = c (random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.287	1.251
+1000000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.432	1.224
+1000000	SELECT * WHERE id IN (10 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.304	0.645
+1000000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	5.409	1.499
+1000000	SELECT * WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	4.665	1.171
+1000000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	3.251	1.103
+1000000	count(*) WHERE id IN (100 values)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	5.001	1.242
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.243	0.799
+1000000	SELECT * WHERE id BETWEEN (0.1% of rows)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.221	0.717
+1000000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.353	1.262
+1000000	count(*) WHERE id BETWEEN (0.1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.333	0.990
+1000000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	24.303	1.190
+1000000	SELECT * WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	26.458	1.060
+1000000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.858	1.152
+1000000	count(*) WHERE id BETWEEN (20%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	28.339	1.202
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	5.902	1.016
+1000000	SELECT * WHERE rnd BETWEEN (0.1%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	5.412	0.964
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	6.129	1.322
+1000000	SELECT id WHERE rnd BETWEEN (0.1%, covering)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	5.845	1.046
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	2.836	0.779
+1000000	count(*) WHERE rnd BETWEEN (20%, random int)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	108.320	1.267
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.522	1.315
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	134.114	0.812
+1000000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.547	1.131
+1000000	SELECT * ORDER BY rnd LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	133.209	1.159
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	8.366	1.411
+1000000	SELECT id, rnd ORDER BY rnd LIMIT 1000	sift_col col_*_ops	bitmap scan forced	Sort/Seq	120.881	0.897
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.438	0.626
+1000000	SELECT id, rnd ORDER BY rnd DESC LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/Seq	125.700	0.874
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.226	1.177
+1000000	SELECT id, ts WHERE grp = c ORDER BY ts LIMIT 10	sift_col col_*_ops	bitmap scan forced	Sort/BmpHeap/BmpIdx	17.655	0.910
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	planner, sift.enable_col_scan on	Sort/Seq	294.859	1.196
+1000000	SELECT id, rnd ORDER BY rnd (all rows)	sift_col col_*_ops	bitmap scan forced	Sort/Seq	305.680	0.797
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.708	1.062
+1000000	count(*) WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	2.232	1.152
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	1.594	1.018
+1000000	SELECT * WHERE grp = c AND ts BETWEEN (narrow)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	1.558	0.976
+1000000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	2.267	1.056
+1000000	count(*) WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	15.726	0.930
+1000000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	15.920	1.030
+1000000	SELECT * WHERE grp = c (1%)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	17.015	1.137
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	0.232	0.965
+1000000	SELECT * WHERE ts BETWEEN (second column of (grp, ts))	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.207	0.904
+1000000	min(rnd), max(rnd)	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	1.444	0.929
+1000000	min(rnd), max(rnd)	sift_col col_*_ops	bitmap scan forced	Seq	96.575	0.957
+1000000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	41.665	1.063
+1000000	SELECT * WHERE s_short = c (distinct text)	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	39.810	1.220
+1000000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	22.574	1.133
+1000000	count(*) WHERE s_short LIKE c%	sift_col col_*_ops	bitmap scan forced	Seq	112.240	0.978
+1000000	SELECT * WHERE u = c	sift_col col_*_ops	planner, sift.enable_col_scan on	BmpHeap/BmpIdx	64.348	1.237
+1000000	SELECT * WHERE u = c	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	58.560	1.014
+1000000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	2.450	1.188
+1000000	count(*) WHERE rnd IS NULL	sift_col col_*_ops	bitmap scan forced	BmpHeap/BmpIdx	0.057	0.996
+1000000	SELECT DISTINCT grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	4.938	1.249
+1000000	SELECT DISTINCT grp	sift_col col_*_ops	bitmap scan forced	Seq	179.532	1.156
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	3.002	1.186
+1000000	SELECT grp, count(*), sum(amount) GROUP BY grp	sift_col col_*_ops	bitmap scan forced	Seq	273.950	0.914
+1000000	100 id lookups by nested loop join	sift_col col_*_ops	planner, sift.enable_col_scan on	SiftAgg	0.292	0.993
+1000000	100 id lookups by nested loop join	sift_col col_*_ops	bitmap scan forced	NestedLoop/BmpHeap/BmpIdx	2.877	1.421
