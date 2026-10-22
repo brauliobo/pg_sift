@@ -91,6 +91,7 @@
 #define AGG_UNIT_COST		200.0
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_START_COST		210000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units, charged 0.6 ms because the arms of a pass open them once, which a selective btree plan does not pay */
+#define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
@@ -1198,7 +1199,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = AGG_START_COST * cpu_operator_cost + k.child_cost + c->subplan_cost;
+	startup = AGG_START_COST * cpu_operator_cost + k.child_cost + c->subplan_cost + AGG_PART_PAIR * c->nparts * c->nparts * cpu_operator_cost;
 	if (s->nworkers > 0)
 		cost_parallel(s, &k, &startup);
 	p->startup_cost = startup + k.scan_cost;
