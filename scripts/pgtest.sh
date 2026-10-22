@@ -11,6 +11,7 @@
 #   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
 #                                each in its own database and output directory $SIFT_TMP/regress/<t> (parallel runs)
+#   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database)
 #   scripts/pgtest.sh stop       stop the cluster
@@ -148,11 +149,36 @@ clean() {
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
 	local out=$TMP/regress/$1 rc=0
-	rm -rf "$out" && mkdir -p "$out"
-	PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" \
-		--bindir= --dbname="contrib_regression_$1" "$@" || rc=$?
+	pg_regress "$out" "contrib_regression_$1" "$@" || rc=$?
 	[[ $rc == 0 ]] || cat "$out/regression.diffs" 2>/dev/null
 	return $rc
+}
+
+# pg_regress OUTDIR DB TEST...: pg_regress in a database it creates, the output in a fresh OUTDIR
+pg_regress() {
+	local out=$1 db=$2
+	shift 2
+	rm -rf "$out" && mkdir -p "$out"
+	PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+}
+
+# leftovers [TEST...]: each test alone in a database of its own (all of test/sql without names); prints "TEST: object" for what it left behind
+# (scripts/leftovers.sql: relations, functions, types, schemas, extensions, roles, ALTER SYSTEM...) and exits 1 when any test left something
+leftovers() {
+	local t db bad=0 before now left
+	(( $# )) || set -- $(cd "$REPO/test/sql" && ls *.sql | sed 's/\.sql$//')
+	cluster_left() { psql -U postgres -d postgres -X -qAt -v cluster=on -f "$REPO/scripts/leftovers.sql" | { grep -E '^(role|ALTER SYSTEM) ' || true; }; }
+	before=$(cluster_left)
+	for t in "$@"; do
+		db=contrib_regression_$t
+		pg_regress "$TMP/regress/$t" "$db" "$t" >/dev/null || echo "$t: FAILED, what it left may come from that (diffs in $TMP/regress/$t)"
+		now=$(cluster_left)
+		left=$(psql -U postgres -d "$db" -X -qAt -v cluster=off -f "$REPO/scripts/leftovers.sql"; comm -13 <(echo "$before") <(echo "$now"))
+		[[ -z ${left//$'\n'/} ]] || { bad=1; echo "$left" >"$TMP/regress/$t/leftovers"; sed "s/^/$t: /" <<<"$left" | head -12; (( $(wc -l <<<"$left") <= 12 )) || echo "$t: ... all $(wc -l <<<"$left") in $TMP/regress/$t/leftovers"; }
+		before=$now
+		dropdb -U postgres --force "$db"
+	done
+	return $bad
 }
 
 tap() {
@@ -176,11 +202,12 @@ case ${1:-} in
 		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS LSAN_OPTIONS=$LSAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
 		;;
 	regress) shift; regress "$@" ;;
+	leftovers) shift; leftovers "$@" ;;
 	initdb-template) initdb_template "$2" ;;
 	new-data) new_data "$2" "${3:-}" ;;
 	tap) tap "${2:-}" ;;
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
-	*) sed -n '2,29p' "$0"; exit 1 ;;
+	*) sed -n '2,30p' "$0"; exit 1 ;;
 esac
