@@ -151,6 +151,41 @@ SELECT * FROM pw_fuzz('build', 21, 40);
  build |      40 |         0 | t               | 
 (1 row)
 
+-- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table), for
+-- the workers as for the serial walk: the units read with and without sift.topn_zone_keys (the count of the workers depends on who takes what: a bound)
+CREATE FUNCTION pw_units(q text, workers int, zk bool) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE line text; n int;
+BEGIN
+	PERFORM pw_mode(true, workers);
+	PERFORM set_config('sift.topn_zone_keys', zk::text, true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line ~ '^ *Units: ' THEN n := regexp_replace(line, '^ *Units: ', '')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT q, pw_kind(q, 2) AS kind_w2, pw_units(q, 2, true) <= 8 AS zone_keys_read_few, pw_units(q, 2, true) < pw_units(q, 2, false) AS fewer_than_without
+FROM (VALUES ('SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10'), ('SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10'),
+			 ('SELECT id, k_mix FROM pw WHERE g = 2 ORDER BY k_mix, id LIMIT 10')) v (q);
+                                q                                 | kind_w2  | zone_keys_read_few | fewer_than_without 
+------------------------------------------------------------------+----------+--------------------+--------------------
+ SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10             | parallel | t                  | t
+ SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10   | parallel | t                  | t
+ SELECT id, k_mix FROM pw WHERE g = 2 ORDER BY k_mix, id LIMIT 10 | parallel | t                  | t
+(3 rows)
+
+SELECT q, (pw_check(q)).* FROM (VALUES
+	('SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10'),
+	('SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10'),
+	('SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10'),
+	('SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand, id LIMIT 30')) v (q);
+                                   q                                   | same |   kind   
+-----------------------------------------------------------------------+------+----------
+ SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10                  | t    | parallel
+ SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10        | t    | parallel
+ SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10 | t    | parallel
+ SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand, id LIMIT 30  | t    | parallel
+(4 rows)
+
 -- a generic plan: LIMIT and OFFSET are parameters; up to the cap the workers keep a heap each, NULL (all rows) and past the cap the scan sorts, serial
 SET plan_cache_mode = force_generic_plan;
 SELECT pw_mode(false, 0);
@@ -308,5 +343,5 @@ SELECT * FROM pw_fuzz('table, written', 27, 40, 'pwt');
 (1 row)
 
 DROP TABLE pwt, pw;
-DROP FUNCTION pw_mode(bool, int), pw_rows(text), pw_kind(text, int), pw_check(text), pw_query(int, int, text), pw_fuzz(text, int, int, text), pw_gen_kind();
+DROP FUNCTION pw_mode(bool, int), pw_rows(text), pw_kind(text, int), pw_check(text), pw_query(int, int, text), pw_fuzz(text, int, int, text), pw_gen_kind(), pw_units(text, int, bool);
 DROP EXTENSION pg_sift;

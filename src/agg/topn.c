@@ -226,6 +226,9 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 
 		t->key[j] = (TopKey) {leaf, fl & 1, (fl & 2) != 0, lay->leaf[leaf].vtype};
 	}
+	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */
+	for (t->wkeys = 1; sift_topn_zone_keys && t->wkeys < t->nkey && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64); t->wkeys++)
+		;
 	t->nout = list_nth_int(l, i++);
 	t->attno = palloc(Max(t->nout, 1) * sizeof(int));
 	for (int c = 0; c < t->nout; c++)
@@ -772,10 +775,6 @@ sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
 	MemoryContext cxt = GetMemoryChunkContext(t);
 
 	t->nsb = nsb;
-	t->wkeys = 1;
-	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */
-	while (sift_topn_zone_keys && t->wkeys < t->nkey && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64))
-		t->wkeys++;
 	t->wbound = MemoryContextAllocZero(cxt, (Size) nsb * t->wkeys * sizeof(Rank));
 	t->wunits = MemoryContextAllocZero(cxt, nsb * sizeof(uint32));
 	t->word = MemoryContextAlloc(cxt, nsb * sizeof(uint32));
@@ -835,12 +834,12 @@ walk_cmp(const void *pa, const void *pb, void *arg)
 }
 
 /*
- * Can a row of superblock sb sort before the n-th best so far, or tie with it? Its bound on each key is a lower bound of its rows' keys, so a
- * row's keys are not before the bounds in key order: the superblock is out when its bound is behind the n-th on a key that the bounds before
- * it tie on, and in when it is ahead of it (or a bound is none).
+ * Can a row of a superblock with these bounds on the leading keys sort before the n-th best so far, or tie with it? A bound on each key is a
+ * lower bound of its rows' keys, so a row's keys are not before the bounds in key order: the superblock is out when its bound is behind the
+ * n-th on a key that the bounds before it tie on, and in when it is ahead of it (or a bound is none).
  */
 static bool
-walk_viable(const SiftTopN *t, uint32 sb)
+bounds_viable(const SiftTopN *t, const Rank *bound)
 {
 	const TopEnt *w;
 
@@ -849,12 +848,35 @@ walk_viable(const SiftTopN *t, uint32 sb)
 	w = &t->heap[0];
 	for (int j = 0; j < t->wkeys; j++)
 	{
-		int			c = rank_cmp(t->wbound[(Size) sb * t->wkeys + j], rank_of(&t->key[j], (w->nul >> j) & 1, w->k[j]));
+		int			c = rank_cmp(bound[j], rank_of(&t->key[j], (w->nul >> j) & 1, w->k[j]));
 
 		if (c != 0)
 			return c < 0;
 	}
 	return true;
+}
+
+static bool
+walk_viable(const SiftTopN *t, uint32 sb)
+{
+	return bounds_viable(t, &t->wbound[(Size) sb * t->wkeys]);
+}
+
+/*
+ * The walk of a parallel scan, where a participant has no table of the bounds (the leader's order is all it gets): the superblock it takes
+ * next, by the zones z of its leading keys. The first key is tested against the bound of every participant, all of them against the n-th row
+ * of this participant's heap, which is no better than the n-th of the result.
+ */
+bool
+sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
+{
+	Rank		bound[SIFT_TOPN_MAX_KEYS];
+
+	if (!sift_topn_zone_viable(t, &z[0]))
+		return false;
+	for (int j = 0; j < t->wkeys; j++)
+		bound[j] = zone_best(&t->key[j], &z[j]);
+	return bounds_viable(t, bound);
 }
 
 void

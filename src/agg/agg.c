@@ -513,6 +513,31 @@ topn_window_viable(AggExec *ex, uint32 lo, uint32 hi)
 	return false;
 }
 
+/* The zones of the leading sort keys of superblock sb, which bound the walk (agg/topn.h); its number of units */
+static uint32
+topn_walk_zones(AggExec *ex, uint32 sb, SiftSrcZone *zs)
+{
+	uint32		units = 0;
+
+	for (int j = 0; j < sift_topn_walk_keys(ex->topn); j++)
+		units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(ex->topn, j), &zs[j]);
+	return units;
+}
+
+/* Can a unit of superblock sb of the walk hold a row that sorts before the n-th so far, or ties with it? */
+static bool
+topn_walk_viable(AggExec *ex, uint32 sb)
+{
+	SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
+	uint32		n = topn_walk_zones(ex, sb, zs);
+
+	if (sift_topn_walk_zone_viable(ex->topn, zs))
+		return true;
+	while (n-- > 0)
+		sift_topn_skip(ex->topn);
+	return false;
+}
+
 /* Windows of superblocks from the end the best values are at (agg/topn.h) */
 
 /*
@@ -578,26 +603,27 @@ topn_items(AggExec *ex)
 		{
 			lo = shared_order(sh, ex->spec)[item];
 			hi = lo + 1;
-		}
-		else if (sh->topn_reverse)
-		{
-			hi = sh->nsb - item * sh->topn_item;
-			lo = hi > sh->topn_item ? hi - sh->topn_item : 0;
-		}
-		else
-		{
-			lo = item * sh->topn_item;
-			hi = Min(lo + sh->topn_item, sh->nsb);
-		}
-		if (sift_topn_wants_zones(ex->topn) && !topn_window_viable(ex, lo, hi))
-		{
-			/* the walk gives the best bound first: the superblocks after this one are no better, whatever bound the others reach */
-			if (sh->topn_walk)
+			if (!topn_walk_viable(ex, lo))
 			{
+				/* the walk gives the best bound first: the superblocks after this one are no better, whatever bound the others reach */
 				pg_atomic_write_u32(&sh->next, sh->nitems);
 				break;
 			}
-			continue;
+		}
+		else
+		{
+			if (sh->topn_reverse)
+			{
+				hi = sh->nsb - item * sh->topn_item;
+				lo = hi > sh->topn_item ? hi - sh->topn_item : 0;
+			}
+			else
+			{
+				lo = item * sh->topn_item;
+				hi = Min(lo + sh->topn_item, sh->nsb);
+			}
+			if (sift_topn_wants_zones(ex->topn) && !topn_window_viable(ex, lo, hi))
+				continue;
 		}
 		topn_scan(ex, lo, hi, sh->nsb, &ch);
 	}
@@ -655,10 +681,8 @@ topn_run(AggExec *ex)
 		for (uint32 sb = 0; sb < nsb; sb++)
 		{
 			SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
-			uint32		units = 0;
+			uint32		units = topn_walk_zones(ex, sb, zs);
 
-			for (int j = 0; j < sift_topn_walk_keys(t); j++)
-				units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(t, j), &zs[j]);
 			sift_topn_walk_add(t, sb, units, zs);
 		}
 		sift_topn_walk_sort(t);
