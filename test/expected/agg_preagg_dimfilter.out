@@ -119,7 +119,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | all  | t
  24 | int8 IS NULL         | all  | t
  25 | text eq              | all  | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | all  | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
@@ -131,7 +131,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |      24 |        1 |      7
+      32 |      0 |      25 |        1 |      6
 (1 row)
 
 SELECT * FROM pa_sum('eo');
@@ -217,7 +217,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | some | t
  24 | int8 IS NULL         | some | t
  25 | text eq              | some | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | some | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
@@ -229,7 +229,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |       0 |       24 |      8
+      32 |      0 |       0 |       25 |      7
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -262,7 +262,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | some | t
  24 | int8 IS NULL         | some | t
  25 | text eq              | some | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | some | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
@@ -303,7 +303,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | some | t
  24 | int8 IS NULL         | some | t
  25 | text eq              | some | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | some | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
@@ -353,7 +353,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | some | t
  24 | int8 IS NULL         | some | t
  25 | text eq              | some | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | some | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
@@ -404,7 +404,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | all  | t
  24 | int8 IS NULL         | all  | t
  25 | text eq              | all  | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | all  | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
@@ -462,7 +462,7 @@ SELECT * FROM pa_check('ec');
  23 | int8 not equal       | all  | t
  24 | int8 IS NULL         | all  | t
  25 | text eq              | all  | t
- 26 | min, max: scan       | none | t
+ 26 | min, max: scan       | all  | t
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
@@ -479,7 +479,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('ec');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |       0 |       22 |     10
+      32 |      0 |       0 |       23 |      9
 (1 row)
 
 SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre

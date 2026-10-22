@@ -114,8 +114,8 @@ sift.async_maintenance = off'
 	upd=$(LC_ALL=C q "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 	check "$ref: ALTER EXTENSION UPDATE" test $rc -eq 0
 	# the text index is always named (a word over 255 bytes), the JSON paths index of a release before column format 6 too, and a sift_table without calendar cells
-	check "$ref: the update names the text indexes, and the JSON paths index when it is before column format 6" test \
-		"$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public' <<<"$upd")" == "1/$((2 + (newest < 6)))"
+	check "$ref: the update names the text indexes and the two column indexes (the sections that are on by default since 3.3 lack in every unit of that release)" test \
+		"$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public' <<<"$upd")" == "1/4"
 	check "$ref: the update names the VACUUM FULL of the timestamp sift_table when the release has one" test "$(grep -c 'VACUUM FULL public.tbl_ts;' <<<"$upd")/$(grep -c 'VACUUM FULL public' <<<"$upd")" == "$([[ $hastbl == yes ]] && echo 1/1 || echo 0/0)"
 	check "$ref: the extension is at the version of this tree" test "$(q "SELECT extversion = default_version FROM pg_extension, pg_available_extensions WHERE extname = 'pg_sift' AND name = 'pg_sift'")" == t
 	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace

@@ -20,7 +20,7 @@ SELECT g, 'k' || g % 7,
        CASE WHEN g % 13 = 0 THEN NULL ELSE g * 7 END
 FROM generate_series(1, 3000) g;
 CREATE INDEX dm_col ON dm USING sift_col (id, kind, doc, n)
-	WITH (write_buffer_limit = 4096, paths = 'doc.items[]{category text, qty int4}, doc.w float8, doc.a astext');
+	WITH (write_buffer_limit = 4096, paths = 'doc.items[]{category text, qty int4}, doc.w float8, doc.a astext', cube_minmax = false, superunit = 0);
 
 CREATE TYPE dw_mood AS ENUM ('sad', 'ok', 'happy');
 CREATE TABLE dw (id int, big numeric(30, 5), m money, iv interval, anynum numeric, t time, u uuid, e dw_mood, b bytea) WITH (autovacuum_enabled = off);
@@ -29,12 +29,12 @@ SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE (g * 1234567.12345)::numeric(30, 5)
        make_interval(mins => g, days => g % 40, months => g % 5), CASE WHEN g % 17 = 0 THEN 'NaN'::numeric ELSE g / 7.0 END, make_time(g % 24, g % 60, 0),
        md5(g::text)::uuid, (ARRAY['sad', 'ok', 'happy'])[1 + g % 3]::dw_mood, decode(md5(g::text), 'hex')
 FROM generate_series(1, 2000) g;
-CREATE INDEX dw_col ON dw USING sift_col (id, big, m, iv, anynum, t, u, e, b) WITH (write_buffer_limit = 4096);
+CREATE INDEX dw_col ON dw USING sift_col (id, big, m, iv, anynum, t, u, e, b) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 
 CREATE TABLE dc (id int, kind int, grp text, val bigint, small int) WITH (autovacuum_enabled = off);
 INSERT INTO dc SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END, g % 1000 - 400
 FROM generate_series(1, 3000) g;
-CREATE INDEX dc_col ON dc USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096, cube_minmax = true);
+CREATE INDEX dc_col ON dc USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 
 SELECT 'dm_col' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('dm_col')
 UNION ALL SELECT 'dw_col', array_agg(DISTINCT format) FROM sift._test_col_formats('dw_col')

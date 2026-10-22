@@ -7,7 +7,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_rf (id int, kind int, val bigint, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_rf SELECT g, g % 6, (g * 977) % 100000 - 50000, repeat('p', 100) FROM generate_series(1, 12000) g;
-	CREATE INDEX iso_rf_idx ON iso_rf USING sift_col (id, kind, val) WITH (write_buffer_limit = 4096);
+	CREATE INDEX iso_rf_idx ON iso_rf USING sift_col (id, kind, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 	INSERT INTO iso_rf SELECT g, g % 6, (g * 977) % 100000 - 50000, repeat('p', 100) FROM generate_series(12001, 18000) g;
 	SELECT sift.col_promote('iso_rf_idx');
 	INSERT INTO iso_rf SELECT g, g % 6, (g * 977) % 100000 - 50000, repeat('p', 100) FROM generate_series(18001, 24000) g;

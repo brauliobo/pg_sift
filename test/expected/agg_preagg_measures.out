@@ -94,14 +94,14 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | all  | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | all  | t
  18 | expression: scan                | -    | t
 (18 rows)
 
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |      11 |        1 |      2
+      18 |      0 |      12 |        1 |      2
 (1 row)
 
 SELECT * FROM pa_sum('eo');
@@ -164,14 +164,14 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | some | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | some | t
  18 | expression: scan                | -    | t
 (18 rows)
 
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |       0 |       12 |      2
+      18 |      0 |       0 |       13 |      2
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -195,7 +195,7 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | some | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | some | t
  18 | expression: scan                | -    | t
 (18 rows)
 
@@ -221,7 +221,7 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | some | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | some | t
  18 | expression: scan                | -    | t
 (18 rows)
 
@@ -259,7 +259,7 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | some | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | some | t
  18 | expression: scan                | -    | t
 (18 rows)
 
@@ -296,7 +296,7 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | all  | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | all  | t
  18 | expression: scan                | -    | t
 (18 rows)
 
@@ -364,7 +364,7 @@ SELECT * FROM pa_check('ec');
  14 | zone on the id                  | some | t
  15 | having, limit                   | all  | t
  16 | a measure past the eighth: scan | -    | t
- 17 | min, max: scan                  | -    | t
+ 17 | min, max: scan                  | all  | t
  18 | expression: scan                | -    | t
 (18 rows)
 
@@ -376,7 +376,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('ec');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |       0 |       11 |      3
+      18 |      0 |       0 |       12 |      3
 (1 row)
 
 SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre

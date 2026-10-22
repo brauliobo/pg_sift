@@ -131,13 +131,13 @@ SELECT * FROM pa_sum('rd');
 SELECT * FROM pa_sum('rh');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      2
+      24 |      0 |       1 |        0 |      3
 (1 row)
 
 SELECT * FROM pa_sum('ro');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      2
+      24 |      0 |       1 |        0 |      3
 (1 row)
 
 SELECT * FROM pa_sum('rf');
@@ -355,7 +355,7 @@ SELECT * FROM pa_check('rc');
 SELECT * FROM pa_sum('rx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      2
+      24 |      0 |       1 |        0 |      3
 (1 row)
 
 ALTER INDEX rx_col SET (rollup_dims = 'a, b');
@@ -461,7 +461,7 @@ SELECT sift.col_verify('rx_col', true);
 SELECT * FROM pa_sum('rx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      2
+      24 |      0 |       1 |        0 |      3
 (1 row)
 
 -- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
