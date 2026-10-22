@@ -622,7 +622,16 @@ match_leaf_node(AggCtx *c, Node *e)
 		if (c->group < 0)
 			return -1;
 		if (c->func_kind == FK_ELEMENTS && r.fcol == 1 && list_length(r.path) == 1)
-			return child_leaf(c, c->group, strVal(linitial(r.path)), want);
+		{
+			int			l = child_leaf(c, c->group, strVal(linitial(r.path)), want);
+
+			if (l >= 0)
+			{
+				c->io_pending = cast_to != InvalidOid && r.as_text ? l + 1 : 0;
+				c->cast_pending = cast_to != InvalidOid && !r.as_text ? l + 1 : 0;
+			}
+			return l;
+		}
 		if (c->func_kind == FK_EACH && r.fcol == 2 && r.path == NIL)
 			return child_leaf(c, c->group, "value", want);
 	}

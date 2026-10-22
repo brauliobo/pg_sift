@@ -937,7 +937,12 @@ leaf_read(Node *n, const Unconditional *u)
 		arg = linitial(((FuncExpr *) n)->args);
 	else
 		return false;
-	return exprType(n) == l->typid && json_access(u->c, arg, &r) && r.att == l->attno && r.as_text == u->as_text && paths_equal(r.path, l->path);
+	if (exprType(n) != l->typid || !json_access(u->c, arg, &r) || r.as_text != u->as_text)
+		return false;
+	/* the member of an element of the unnested array: `p ->> 'k'` of jsonb_array_elements */
+	if (l->parent >= 0)
+		return r.att == 0 && r.fcol == 1 && u->c->func_kind == FK_ELEMENTS && list_length(r.path) == 1 && strcmp(strVal(linitial(r.path)), l->name) == 0;
+	return r.att == l->attno && paths_equal(r.path, l->path);
 }
 
 /* does the expression evaluate what u looks for, for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only */
@@ -1349,11 +1354,11 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 				filtered = false;
 	uint64		gate = 0;
 
-	if (m >= c->lay->nleaves - c->nvleaf || c->group >= 0 || c->func_rti != 0 || c->joins != NIL || c->search || !OidIsValid(c->indexoid) ||
-		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+	if (m >= c->lay->nleaves - c->nvleaf || (c->group >= 0) != (c->func_kind == FK_ELEMENTS) || (c->func_rti != 0) != (c->group >= 0) || c->joins != NIL ||
+		c->search || !OidIsValid(c->indexoid) || !sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
 		return SRK_NONE;
 	l = leaf_of(c, m);
-	if (l->kind != SCL_SCALAR || l->parent >= 0 || l->path == NIL || l->wide)
+	if (l->kind != SCL_SCALAR || l->parent != c->group || (c->group < 0 && l->path == NIL) || l->wide)
 		return SRK_NONE;
 	if (bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && l->typid == FLOAT8OID)
 		kind = SRK_CAST;
@@ -1364,6 +1369,14 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	}
 	else
 		return SRK_NONE;
+	/* the error of an element is kept for its row, not for the element: a condition on the elements may drop the one that raises and keep another */
+	for (int i = 0; c->group >= 0 && i < s->npred; i++)
+		if (s->pred[i]->level != 0)
+		{
+			c->dirty_leaf = m;
+			c->dirty_why = "a condition on the elements of the list may drop the element whose value raises: the error of an element is kept for its row";
+			return SRK_NONE;
+		}
 	read = bms_make_singleton(m);
 	for (int i = 0; i < s->npred; i++)
 		if (pred_reads_set(c, s->pred[i], read))
