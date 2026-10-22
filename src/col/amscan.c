@@ -21,6 +21,7 @@
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -895,12 +896,15 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 
 /* ---- off means off ---- */
 
+/*
+ * With sift.enable_col_scan off the planner must build no bitmap path on a sift_col index: a path with a bad cost still beats one that
+ * enable_seqscan = off disabled (PostgreSQL counts the disabled nodes before the cost). The index stays in the list, SiftAgg reads it there.
+ * Up to PostgreSQL 18 get_relation_info_hook clears amhasgetbitmap of the index; 19 has no such hook, so the bitmap paths that use one are
+ * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off.
+ */
+#if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 
-/*
- * With sift.enable_col_scan off the planner builds no bitmap path on a sift_col index: a path with a bad cost still beats one that
- * enable_seqscan = off disabled (PostgreSQL counts the disabled nodes before the cost). The index stays in the list, SiftAgg reads it there.
- */
 static void
 col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
 {
@@ -919,3 +923,55 @@ sift_col_scan_init(void)
 	prev_info_hook = get_relation_info_hook;
 	get_relation_info_hook = col_get_relation_info;
 }
+#else
+static set_rel_pathlist_hook_type prev_pathlist_hook;
+
+static bool
+bitmap_uses_col(Path *path)
+{
+	switch (nodeTag(path))
+	{
+		case T_IndexPath:
+			return ((IndexPath *) path)->indexinfo->relam == sift_col_am_oid();
+		case T_BitmapAndPath:
+			foreach_ptr(Path, p, ((BitmapAndPath *) path)->bitmapquals)
+				if (bitmap_uses_col(p))
+					return true;
+			return false;
+		case T_BitmapOrPath:
+			foreach_ptr(Path, p, ((BitmapOrPath *) path)->bitmapquals)
+				if (bitmap_uses_col(p))
+					return true;
+			return false;
+		default:
+			return false;
+	}
+}
+
+/* disabled like a node of a plan whose enable_ setting is off: it loses to every path that is not, whatever its cost */
+static void
+disable_col_bitmaps(List *paths)
+{
+	foreach_ptr(Path, p, paths)
+		if (IsA(p, BitmapHeapPath) && bitmap_uses_col(((BitmapHeapPath *) p)->bitmapqual))
+			p->disabled_nodes = Max(p->disabled_nodes, 1) + 1;
+}
+
+static void
+col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	if (prev_pathlist_hook)
+		prev_pathlist_hook(root, rel, rti, rte);
+	if (sift_enable_col_scan)
+		return;
+	disable_col_bitmaps(rel->pathlist);
+	disable_col_bitmaps(rel->partial_pathlist);
+}
+
+void
+sift_col_scan_init(void)
+{
+	prev_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = col_set_rel_pathlist;
+}
+#endif
