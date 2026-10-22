@@ -156,5 +156,61 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
 
 RESET sift.test_col_dict_cache;
 DROP TABLE dc;
+-- the lengths of the lists of a unit are decoded once as well (integer elements: no dictionary is involved): the second scan finds them, the answers are the same
+CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO lc SELECT g, 1 + g % 50, jsonb_build_array(jsonb_build_object('qty', g % 7, 'price', g % 11), jsonb_build_object('qty', (g + 1) % 7, 'price', (g + 3) % 11)) FROM generate_series(1, 20000) g;
+CREATE INDEX lc_idx ON lc USING sift_col (id, parent_id, parts) WITH (paths = 'parts[]{qty int4, price int4}');
+VACUUM (FREEZE, ANALYZE) lc;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000; SET random_page_cost = 1000;
+\set q 'SELECT e.qty, count(*) AS n, sum(e.price) AS s FROM lc f CROSS JOIN LATERAL jsonb_to_recordset(f.parts) e(qty int, price int) WHERE f.parent_id IN (3, 4) GROUP BY 1'
+CREATE TEMP TABLE lc_first AS :q;
+SELECT loads > 0 AS lengths_decoded, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
+ lengths_decoded | none_found 
+-----------------+------------
+ t               | t
+(1 row)
+
+CREATE TEMP TABLE lc_second AS :q;
+SELECT loads = 0 AS none_decoded, hits > 0 AS found FROM sift._test_col_dict_cache(true);
+ none_decoded | found 
+--------------+-------
+ t            | t
+(1 row)
+
+SET sift.enable_agg = off;
+CREATE TEMP TABLE lc_off AS :q;
+RESET sift.enable_agg;
+SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE lc_second EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_second)) d) AS differences;
+ groups | differences 
+--------+-------------
+      7 |           0
+(1 row)
+
+-- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
+SET sift.test_col_dict_cache = 1;
+REINDEX INDEX lc_idx;
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+ reset 
+-------
+ t
+(1 row)
+
+CREATE TEMP TABLE lc_small AS :q;
+CREATE TEMP TABLE lc_small2 AS :q;
+SELECT hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
+ none_found 
+------------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM ((TABLE lc_small2 EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_small2)) d) AS differences;
+ differences 
+-------------
+           0
+(1 row)
+
+RESET sift.test_col_dict_cache;
+DROP TABLE lc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
