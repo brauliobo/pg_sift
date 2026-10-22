@@ -147,7 +147,7 @@ again:
 	if (old.gen && sift_tbl_inline_promote && !sift_tbl_settle_async(rel, st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 	if (old.gen)
-		sift_tbl_auto_defrag_check(rel, st);
+		sift_tbl_auto_defrag_tick(rel, st);
 	return first;
 }
 

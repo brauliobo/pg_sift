@@ -35,6 +35,7 @@
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
+#include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/snapmgr.h"
@@ -53,10 +54,20 @@
 
 #define MAX_MERGE_STEPS	16
 
+/* The cost delay of the pass (autovacuum's, or a worker's sift.table_auto_defrag_delay): a point where the page accesses so far may make it sleep */
+#if PG_VERSION_NUM >= 180000
+#define COST_DELAY()	vacuum_delay_point(false)
+#else
+#define COST_DELAY()	vacuum_delay_point()
+#endif
+
 /* A VACUUM or a pass is at work in this backend: closing the write buffer it takes must not ask for a worker */
 static bool maintaining = false;
 /* The bytes the space step may copy under the lock of the table; a worker lowers it */
 static uint64 space_cap = PG_UINT64_MAX;
+/* The bytes the merge steps of a pass may rewrite (a worker lowers it to sift.table_auto_defrag_budget), and whether the last run of steps stopped at a limit with merges left */
+static uint64 merge_cap = PG_UINT64_MAX;
+static bool merge_capped = false;
 
 /* A growable array of TIDs: the dead rows VACUUM found, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up) */
 typedef struct TidList
@@ -285,6 +296,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 		{
 			CHECK_FOR_INTERRUPTS();
 			vacuum_page(rel, st, &seg, p, v);
+			COST_DELAY();
 		}
 	}
 	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
@@ -369,6 +381,24 @@ relocate_page(Page page, const SiftExtent *old, const SiftExtent *fresh, int n)
 /* Closes the open write buffer segment once it is worth a column segment (pages) */
 #define VACUUM_CLOSE_PAGES	8
 
+/* Merge steps while they find something, up to MAX_MERGE_STEPS and merge_cap bytes, a cost delay after each; the steps made */
+static int
+merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest)
+{
+	uint64		bytes = 0,
+				done;
+	int			steps = 0;
+
+	while (steps < MAX_MERGE_STEPS && bytes < merge_cap && (done = sift_tbl_merge(rel, st, oldest)) > 0)
+	{
+		bytes += done;
+		steps++;
+		COST_DELAY();
+	}
+	merge_capped = steps == MAX_MERGE_STEPS || bytes >= merge_cap;
+	return steps;
+}
+
 /*
  * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the end of the file is
  * given back (sift_maint_space): under AccessExclusiveLock, which keeps every reader out, what this VACUUM released is reusable at once
@@ -382,8 +412,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
-	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st, v->oldest); i++)
-		CHECK_FOR_INTERRUPTS();
+	(void) merge_steps(rel, st, v->oldest);
 	if (tomb_drops(st, v))
 		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
 	(void) sift_recycle(rel);
@@ -449,6 +478,8 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 bool		sift_tbl_auto_defrag = false;
 int			sift_tbl_auto_defrag_free_pct = 25;
 int			sift_tbl_auto_defrag_delay = 10;
+int			sift_tbl_auto_defrag_budget = 128;
+int			sift_tbl_auto_defrag_dead_pct = 20;
 bool		sift_tbl_auto_defrag_indexes = true;
 
 /* The bytes a worker copies under AccessExclusiveLock at most: the window in which the table is closed to readers stays short */
@@ -478,17 +509,6 @@ tbl_truncates(Relation rel)
 		ReleaseSysCache(tup);
 	}
 	return truncates;
-}
-
-/* The pause between the steps of a worker, which keeps its writes from competing with the queries */
-static void
-defrag_nap(bool background)
-{
-	if (!background || sift_tbl_auto_defrag_delay <= 0)
-		return;
-	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sift_tbl_auto_defrag_delay, PG_WAIT_EXTENSION);
-	ResetLatch(MyLatch);
-	CHECK_FOR_INTERRUPTS();
 }
 
 /*
@@ -548,11 +568,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 			r->dead_rows = clear_removable(rel, st, &v);
 		(void) sift_tbl_drop_dead_groups(rel, st);
 		(void) sift_tbl_freeze_groups(rel, st, oldest);
-		for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st, oldest); i++)
-		{
-			r->merged++;
-			defrag_nap(background);
-		}
+		r->merged = merge_steps(rel, st, oldest);
 		(void) sift_recycle(rel);
 		(void) sift_maint_orphan_sweep(rel);
 		if (tbl_truncates(rel))
@@ -570,10 +586,11 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 }
 
 /*
- * Is the table worth a pass now, and which: called by the backend that closed a write buffer (every few megabytes of writes), from what it
- * has at hand. The dead rows are told by the tombstones against the rows of the column segments (the exact percent of a segment is known
- * after its bits are cleared, which the pass does), the space by the free blocks of the file. The tombstones outlive a pass until a VACUUM
- * has been through the indexes, so what the backend saw when it asked last decides whether they grew since; likewise the free blocks.
+ * Is the table worth a pass now, and which: called by the backend that closed a write buffer (every few megabytes of writes) and, through
+ * sift_tbl_auto_defrag_tick, by one that deletes, updates or reads, from what it has at hand. The dead rows are told by the tombstones
+ * against the rows of the column segments (the exact percent of a segment is known after its bits are cleared, which the pass does), the
+ * space by the free blocks of the file. The tombstones outlive a pass until a VACUUM has been through the indexes, so what the backend saw
+ * when it asked last decides whether they grew since; likewise the free blocks.
  */
 static bool
 dead_wanted(Relation rel, SiftTblRel *st, uint64 seen)
@@ -586,12 +603,12 @@ dead_wanted(Relation rel, SiftTblRel *st, uint64 seen)
 		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += st->dir.segs[i].ndocs;
 	tombs = st->nents + st->nrecent;
-	return sift_tbl_dead_rewrite_pct < 100 && rows > 0 && tombs * 100 >= rows * sift_tbl_dead_rewrite_pct &&
-		tombs >= seen && (tombs - seen) * 200 >= rows * sift_tbl_dead_rewrite_pct;
+	return sift_tbl_auto_defrag_dead_pct < 100 && rows > 0 && tombs * 100 >= rows * sift_tbl_auto_defrag_dead_pct &&
+		tombs >= seen && (tombs - seen) * 200 >= rows * sift_tbl_auto_defrag_dead_pct;
 }
 
-void
-sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st)
+static void
+auto_defrag_check(Relation rel, SiftTblRel *st)
 {
 	BlockNumber nblocks;
 	SiftFreeStats fs;
@@ -600,6 +617,9 @@ sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st)
 				space;
 
 	if (!sift_tbl_auto_defrag || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
+		return;
+	sift_tbl_refresh(rel, st);
+	if (!st->initialized)
 		return;
 	sift_tbl_tomb_sync(rel, st);
 	tombs = st->nents + st->nrecent;
@@ -617,7 +637,23 @@ sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st)
 	{
 		st->defrag_tombs = tombs;
 		st->defrag_free = fs.blocks;
+		sift_tbl_refresh(rel, st);	/* the request moved the directory version */
 	}
+}
+
+/* A table whose writes are small, or only deletes, closes no write buffer for a long time: its deletes and its readers look as well, each backend once per naptime */
+void
+sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st)
+{
+	int64		now;
+
+	if (!sift_tbl_auto_defrag || IsInParallelMode())
+		return;
+	now = GetCurrentTimestamp();
+	if (now - st->defrag_at < (int64) sift_maintenance_naptime * 1000)
+		return;
+	st->defrag_at = now;
+	auto_defrag_check(rel, st);
 }
 
 /*
@@ -629,8 +665,6 @@ static void
 background_vacuum(Relation rel, SiftTblMaintain *r)
 {
 	struct VacuumParams params = {0};
-	double		delay = VacuumCostDelay;
-	bool		active = VacuumCostActive;
 
 	params.freeze_min_age = params.freeze_table_age = params.multixact_freeze_min_age = params.multixact_freeze_table_age = -1;
 #if PG_VERSION_NUM >= 190000
@@ -642,26 +676,16 @@ background_vacuum(Relation rel, SiftTblMaintain *r)
 	params.truncate = tbl_truncates(rel) ? VACOPTVALUE_ENABLED : VACOPTVALUE_DISABLED;
 	*r = (SiftTblMaintain) {.blocks_before = RelationGetNumberOfBlocks(rel)};
 	space_cap = DEFRAG_RELOCATE_BYTES;
-	VacuumCostDelay = sift_tbl_auto_defrag_delay;
-	VacuumCostActive = VacuumCostDelay > 0;
-	VacuumCostBalance = 0;
-	PG_TRY();
-	{
-		sift_tbl_relation_vacuum(rel, &params, NULL);
-	}
-	PG_FINALLY();
-	{
-		space_cap = PG_UINT64_MAX;
-		VacuumCostDelay = delay;
-		VacuumCostActive = active;
-	}
-	PG_END_TRY();
+	sift_tbl_relation_vacuum(rel, &params, NULL);
 	r->blocks_after = RelationGetNumberOfBlocks(rel);
 }
 
 /* The passes a worker makes after the one it was asked for, while they find something to do, and the pause between them (a fourth of sift.maintenance_naptime, 100 ms at least) */
 #define DEFRAG_TRIES		20
 #define DEFRAG_IDLE_TRIES	3
+
+/* The tombstones the last pass of this worker left: the next one waits for them to grow, not for the rows it could not remove */
+static uint64 worker_tombs = 0;
 
 typedef enum WorkerPass
 {
@@ -681,6 +705,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 	bool		ran = false;
 
 	*r = (SiftTblMaintain) {.busy = true};
+	merge_cap = sift_tbl_auto_defrag_budget > 0 ? (uint64) sift_tbl_auto_defrag_budget << 20 : PG_UINT64_MAX;
 	StartTransactionCommand();
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock) && (rel = try_table_open(relid, NoLock)) != NULL)
 	{
@@ -694,12 +719,15 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
-			else if (pass == PASS_CLEAR || dead_wanted(rel, st, 0))
+			else if (pass == PASS_CLEAR || dead_wanted(rel, st, worker_tombs))
 			{
 				if (sift_tbl_auto_defrag_indexes)
 					background_vacuum(rel, r);
 				else
 					sift_tbl_maintain(rel, true, true, r);
+				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
+				sift_tbl_tomb_sync(rel, st);
+				worker_tombs = st->nents + st->nrecent;
 			}
 			else
 				sift_tbl_maintain(rel, true, false, r);
@@ -725,6 +753,10 @@ maint_worker(Datum main_arg, WorkerPass first)
 	SiftTblMaintain r;
 	int			idle = 0;
 
+	/* the page accesses of every pass are charged as autovacuum's are (vacuum_cost_limit), and the steps sleep for them */
+	SetConfigOption("vacuum_cost_delay", psprintf("%d", sift_tbl_auto_defrag_delay), PGC_SUSET, PGC_S_OVERRIDE);
+	VacuumUpdateCosts();
+
 	if (!worker_pass(relid, first, &r))
 		return;
 	for (int i = 0; i < DEFRAG_TRIES && idle < DEFRAG_IDLE_TRIES; i++)
@@ -736,7 +768,7 @@ maint_worker(Datum main_arg, WorkerPass first)
 		CHECK_FOR_INTERRUPTS();
 		if (!worker_pass(relid, first == PASS_SETTLE ? PASS_SETTLE : PASS_SPACE, &r))
 			break;
-		idle = (r.promoted + r.merged > 0 || r.blocks_after < before) ? 0 : idle + 1;
+		idle = (r.promoted + r.merged > 0 || merge_capped || r.blocks_after < before) ? 0 : idle + 1;
 	}
 	StartTransactionCommand();
 	{

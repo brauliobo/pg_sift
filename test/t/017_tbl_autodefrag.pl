@@ -51,9 +51,14 @@ sub quiet_for
 	return slurp_file($node->logfile, $offset) !~ $worker;
 }
 
+subtest 'a table that was never written is read and deleted from without a look at its pages' => sub {
+	$node->safe_psql('postgres', 'DROP TABLE IF EXISTS z; CREATE TABLE z (id int) USING sift_table; CREATE INDEX z_id ON z (id)');
+	is($node->safe_psql('postgres', 'SELECT count(*) FROM z; SELECT count(*) FROM z WHERE id = 1; DELETE FROM z WHERE id = 1'), "0\n0", 'empty');
+};
+
 subtest 'below the thresholds nothing is asked for' => sub {
 	fill('a');
-	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 10 = 0');	# 10% of the rows, the default threshold is 30
+	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 20 = 0');	# 5% of the rows, the default threshold is 20
 	my $offset = -s $node->logfile;
 	my $before = $node->safe_psql('postgres', sprintf($digest, 'a'));
 	churn_writes('a', 'SET sift.table_auto_defrag = on', $rows + 1);
@@ -87,11 +92,46 @@ subtest 'above the thresholds a worker rewrites the segments and keeps every row
 	is($node->safe_psql('postgres', sprintf($digest, 'c')), $after_writes, 'the same rows after VACUUM');
 };
 
+# A table that only deletes closes no write buffer: the deletes and the reads look at it, each backend once per naptime (200 ms here)
+subtest 'a read after the deletes asks for the pass' => sub {
+	fill('e');
+	# the session that deletes does not ask (a statement slower than the naptime would ask for rows that are not committed yet): the read does
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM e WHERE id % 10 < 4');
+	my $offset = -s $node->logfile;
+	sleep 1;
+	$node->safe_psql('postgres', 'SELECT count(*) FROM e');	# the aggregate source
+	ok(fired($offset), 'a worker started and finished');
+	is($node->safe_psql('postgres', "SELECT sum(dead_rows) FROM sift.table_segments('e') WHERE kind = 'columns'"), '0', 'the dead rows were cleared and dropped');
+	is($node->safe_psql('postgres', 'SELECT count(*) FROM e'), $rows * 6 / 10, 'the live rows are all there');
+};
+
+subtest 'a delete after the earlier ones committed asks for the pass' => sub {
+	fill('f');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM f WHERE id % 10 < 4');
+	my $offset = -s $node->logfile;
+	sleep 1;
+	$node->safe_psql('postgres', 'DELETE FROM f WHERE id = 5');
+	ok(fired($offset), 'a worker started and finished');
+};
+
+subtest 'a read below the thresholds, or with the setting off, asks for nothing' => sub {
+	fill('g');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM g WHERE id % 20 = 0');
+	fill('h');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM h WHERE id % 10 < 4');
+	my $offset = -s $node->logfile;
+	sleep 1;
+	$node->safe_psql('postgres', 'SELECT count(*) FROM g; SELECT * FROM g WHERE id = 7');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; SELECT count(*) FROM h');
+	ok(quiet_for($offset, 2), 'no worker started');
+};
+
 subtest 'a reader holding the table makes the worker give up the tail without waiting' => sub {
 	fill('d');
-	$node->safe_psql('postgres', 'DELETE FROM d WHERE id % 10 < 4');
+	# the sessions here do not ask for a pass themselves: the one that holds the table is the call under test
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM d WHERE id % 10 < 4');
 	my $bg = $node->background_psql('postgres');
-	$bg->query_safe('BEGIN; SET sift.enable_agg = off; DECLARE cur CURSOR FOR SELECT * FROM d; FETCH 1 FROM cur');
+	$bg->query_safe('SET sift.table_auto_defrag = off; BEGIN; SET sift.enable_agg = off; DECLARE cur CURSOR FOR SELECT * FROM d; FETCH 1 FROM cur');
 	my $blocks = $node->safe_psql('postgres', "SELECT relation_blocks FROM sift.table_space('d')");
 	my $res = $node->safe_psql('postgres', "SET statement_timeout = '5s'; SELECT busy FROM sift.table_maintain('d')");
 	is($res, 'f', 'the call returned while the cursor was open');
@@ -104,7 +144,7 @@ sub crash_fixture
 {
 	$node->safe_psql('postgres', "DROP TABLE IF EXISTS s; CREATE TABLE s (id int, v bigint, body text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)");
 	$node->safe_psql('postgres', "INSERT INTO s SELECT g, g * 3, repeat(md5(g::text), CASE WHEN g % 400 = 0 THEN 300 ELSE 1 END) FROM generate_series(1, 60000) g");
-	$node->safe_psql('postgres', 'UPDATE s SET v = v + 1 WHERE id % 10 = 0; DELETE FROM s WHERE id % 20 = 1');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; UPDATE s SET v = v + 1 WHERE id % 10 = 0; DELETE FROM s WHERE id % 20 = 1');
 	$node->safe_psql('postgres', 'VACUUM s');
 	$node->safe_psql('postgres', 'ALTER TABLE s RESET (vacuum_truncate)');
 }

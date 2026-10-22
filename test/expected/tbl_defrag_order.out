@@ -1,0 +1,47 @@
+-- The segments that are mostly dead are rewritten the most dead first: a pass that stops early (the byte budget of the background worker) has
+-- freed the most it could for the bytes it copied. A rewrite makes a new segment with the next generation, so the order of the generations of
+-- the rewritten segments is the order of the rewrites; each is told by the rows it keeps.
+CREATE EXTENSION pg_sift;
+SET sift.table_auto_defrag = off;
+SET sift.table_dead_rewrite_pct = 30;
+CREATE TABLE od (id int, grp int, pad text) USING sift_table WITH (autovacuum_enabled = false);
+-- three segments of 1000 rows, the most dead one the largest in bytes (a rule of "smallest first" would rewrite it last)
+INSERT INTO od SELECT g, 1, repeat('a', 200) FROM generate_series(1, 1000) g;
+VACUUM od;
+INSERT INTO od SELECT g, 2, repeat('b', 1000) FROM generate_series(1001, 2000) g;
+VACUUM od;
+INSERT INTO od SELECT g, 3, repeat('c', 200) FROM generate_series(2001, 3000) g;
+VACUUM od;
+SELECT count(*) AS segments, min(rows) AS min_rows, max(rows) AS max_rows FROM sift.table_segments('od') WHERE kind = 'columns';
+ segments | min_rows | max_rows 
+----------+----------+----------
+        3 |     1000 |     1000
+(1 row)
+
+-- 40%, 90% and 60% dead
+DELETE FROM od WHERE grp = 1 AND id % 5 < 2;
+DELETE FROM od WHERE grp = 2 AND id % 10 < 9;
+DELETE FROM od WHERE grp = 3 AND id % 5 < 3;
+SELECT busy, dead_rows, merged FROM sift.table_maintain('od');
+ busy | dead_rows | merged 
+------+-----------+--------
+ f    |      1900 |      3
+(1 row)
+
+SELECT array_agg(rows ORDER BY gen) AS rows_by_rewrite, sum(dead_rows) AS dead_left
+	FROM sift.table_segments('od') WHERE kind = 'columns';
+ rows_by_rewrite | dead_left 
+-----------------+-----------
+ {100,400,600}   |         0
+(1 row)
+
+SELECT grp, count(*) FROM od GROUP BY grp ORDER BY grp;
+ grp | count 
+-----+-------
+   1 |   600
+   2 |   100
+   3 |   400
+(3 rows)
+
+DROP TABLE od;
+DROP EXTENSION pg_sift;

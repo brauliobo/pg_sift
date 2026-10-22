@@ -12,12 +12,28 @@ setup
 	SELECT busy FROM sift.table_maintain('iso_m');
 }
 
+# a scan that stops at its 100th row until the advisory lock 1 is free
+setup
+{
+	CREATE FUNCTION iso_scan() RETURNS bigint LANGUAGE plpgsql AS $$
+	DECLARE n bigint := 0; r record;
+	BEGIN
+		FOR r IN SELECT id FROM iso_m LOOP
+			n := n + 1;
+			IF n = 100 THEN PERFORM pg_advisory_lock(1); PERFORM pg_advisory_unlock(1); END IF;
+		END LOOP;
+		RETURN n;
+	END $$;
+}
+
 teardown
 {
+	DROP FUNCTION iso_scan();
 	DROP TABLE iso_m;
 }
 
 session r
+step rscan	{ SELECT iso_scan() AS rows_seen; }
 step rb		{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS seen FROM iso_m; }
 step rc		{ SELECT count(*) AS seen FROM iso_m; }
 step re		{ COMMIT; }
@@ -27,6 +43,8 @@ step wd		{ DELETE FROM iso_m WHERE id % 2 = 0; }
 step wi		{ INSERT INTO iso_m SELECT g, 'again' FROM generate_series(30001, 40000) g; }
 
 session m
+step mlock	{ SELECT pg_advisory_lock(1); }
+step munlock	{ SELECT pg_advisory_unlock(1); }
 step mm		{ SELECT busy, dead_rows FROM sift.table_maintain('iso_m'); }
 step mcount	{ SELECT count(*) AS live FROM iso_m; }
 
@@ -40,3 +58,6 @@ permutation rb wd mm rc re mm mcount
 permutation rb wd wi mm rc re mm mcount
 # a holder of the table's lock: busy at once, and the call works after it
 permutation lb wd mm le mm mcount
+# the pass rewrites the half-dead segment under a scan that began after the deletes, and under writers
+permutation wd mlock rscan mm munlock mcount
+permutation wd mlock rscan wi mm munlock mcount
