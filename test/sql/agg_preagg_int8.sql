@@ -112,7 +112,9 @@ CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, val, small)
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096);
 CREATE INDEX eo_col ON eo USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
+-- FREEZE: a page whose buffer another backend has pinned (the checkpointer writing it) is passed by a VACUUM that has nothing to freeze there,
+-- and stays out of the visibility map, so its unit is scanned; with a tuple to freeze on every page the VACUUM waits for the pin
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
 SELECT sift.col_verify('ec_col', true);
 
 -- the result is PostgreSQL's: a numeric of scale 0 for the sum, the numeric division of the sum by the count for the average
@@ -138,7 +140,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) ec, ed;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
 SELECT * FROM pa_check('ec');
 
 -- 4. rows in the write buffer, then sealed
@@ -146,12 +148,12 @@ INSERT INTO ec SELECT g, g % 6, 'g' || (g % 40), CASE WHEN g % 6 = 3 THEN NULL E
 FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ec');
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT * FROM pa_check('ec');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT sift.col_verify('ec_col', true);
 SELECT * FROM pa_check('ec');
 
