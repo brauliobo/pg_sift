@@ -26,7 +26,8 @@ load() {
 
 # merged TABLE: seals the write buffer with short statements, which starts the worker, and waits until it merged the backlog;
 # sets MERGED_MS and SLEPT, the samples that found the worker in an extension wait while the backlog was still there, which is the
-# throttle (the wait that follows the last merge, while the worker looks for more work, is not counted)
+# throttle (the wait that follows the last merge, while the worker looks for more work, is not counted; a free worker that finds the index
+# locked by an insert waits in the same way for a moment, so the free one is told from the throttled one by the number of samples, not by none)
 merged() {
 	local t0 segs live slept
 	SLEPT=0
@@ -55,7 +56,7 @@ diag "worker merge: ${FAST} ms with no delay (asleep in $FAST_SLEPT samples), ${
 
 # the merges read and write the whole index at least once: MB * 8 groups of 16 pages, each worth DELAY_MS
 check "the throttled merge takes the time its I/O is worth (at least 2 s)" test "$SLOW" -ge 2000
-check "the throttled worker sleeps while it merges and the free one never does" test "$FAST_SLEPT" -eq 0 -a "$SLOW_SLEPT" -ge 5
+check "the throttled worker sleeps while it merges, many times more than the free one" test "$SLOW_SLEPT" -ge 5 -a "$((FAST_SLEPT * 5))" -lt "$SLOW_SLEPT"
 check "both merged the backlog" test "$(sql delay "SELECT count(*) <= 12 FROM sift.segments('fast_idx') UNION SELECT count(*) <= 12 FROM sift.segments('slow_idx')")" == t
 check "both are intact and find every row" test "$(sql delay "SELECT sift.verify('fast_idx', true)" "SELECT sift.verify('slow_idx', true)" "SELECT sift._test_check('fast_idx') + sift._test_check('slow_idx')" | tail -1)" == 0
 
