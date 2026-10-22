@@ -16,7 +16,6 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
@@ -36,6 +35,7 @@
 #include "utils/typcache.h"
 
 #include "agg/accum_int.h"
+#include "agg/dist_int.h"
 #include "agg/rows.h"
 #include "core/compat.h"
 
@@ -349,19 +349,8 @@ static void
 set_spill(RowsExec *ex, RowsSet *st)
 {
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-	TupleDesc	desc = CreateTemplateTupleDesc(3);
-	AttrNumber	att[2] = {1, 2};
-	Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
-				coll[2] = {InvalidOid, InvalidOid};
-	bool		nulls[2] = {false, false};
 
-	TupleDescInitEntry(desc, 1, "g", INT4OID, -1, 0);
-	TupleDescInitEntry(desc, 2, "v", INT8OID, -1, 0);
-	TupleDescInitEntry(desc, 3, "mask", INT4OID, -1, 0);
-	sift_tupdesc_finalize(desc);
-	st->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
-	st->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
-	st->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_NONE);
+	agg_pair_sort(3, TUPLESORT_NONE, &st->sort, &st->put, &st->get);
 	MemoryContextSwitchTo(old);
 	for (uint64 i = 0; i < st->cap; i++)
 		if (st->ent[i].mask)
