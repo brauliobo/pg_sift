@@ -94,6 +94,7 @@
 
 bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
+bool		sift_agg_super = true;
 bool		sift_agg_dense = true;
 bool		sift_agg_semi_lut = true;
 bool		sift_agg_two_level_on = true;
@@ -128,6 +129,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_preagg_distinct",
 							 "Answers count(DISTINCT col) of a column the cube stores a histogram of from the groups of the histograms of the units whose rows are all visible, with sift.agg_preagg.",
 							 NULL, &sift_agg_preagg_distinct, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_super",
+							 "Answers a group of exact units from the summary the sift_col index stored for the group (reloption superunit) instead of from each unit.",
+							 NULL, &sift_agg_super, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.agg_rollup_cost",
 							 "Scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit is answered from its rollup only when that costs less (0: always).",
@@ -1165,6 +1170,8 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	if (!c->pa_on)
 		return;
 	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
+	if (c->super_on)
+		ExplainPropertyInteger("Superunits", NULL, c->n_super, es);
 	if (!PA_ROLLUP(ex->pa))
 		return;
 	if (ex->pa.rows)

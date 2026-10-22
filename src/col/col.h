@@ -19,7 +19,7 @@
 #include "col/wide.h"
 #include "core/filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	10			/* the newest minor 3.3 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete (docs/COL.md 2.2), minor 7 the minimum and maximum of each integer measure in every group of the cube (docs/COL-PREAGG.md 2), minor 8 the calendar cells of a date or timestamp column as a dim of the cube of a sift_table (docs/COL-PREAGG.md 2), minor 9 the rollup of the rows of a unit by a few scalar columns (docs/COL-PREAGG.md 2), minor 10 the small-set summary of the leaves of the option set_columns (docs/COL.md 2.13) */
+#define SIFT_COL_FORMAT_MINOR	12			/* the newest minor 3.3 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete (docs/COL.md 2.2), minor 7 the minimum and maximum of each integer measure in every group of the cube (docs/COL-PREAGG.md 2), minor 8 the calendar cells of a date or timestamp column as a dim of the cube of a sift_table (docs/COL-PREAGG.md 2), minor 9 the rollup of the rows of a unit by a few scalar columns (docs/COL-PREAGG.md 2), minor 10 the small-set summary of the leaves of the option set_columns (docs/COL.md 2.13), minor 12 the summaries of groups of units, the option superunit (docs/COL-PREAGG.md 10) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_TAGS	4			/* what 3.1 writes: the tags and kinds of a chunk (minor 4 and 5 say nothing about their completeness); the minor of a segment of a schema without shredded leaves, and of one whose kinds a merge could not carry over, under the default setting */
 #define SIFT_COL_FORMAT_WIDE_ROWS 11		/* 3.3: SiftSegEntry.format of the write buffer of a sift_table that holds a row on tail pages (table/table.h); a build that does not know it cannot write the table */
@@ -30,7 +30,8 @@
 #define SIFT_COL_FORMAT_CALENDAR	8		/* 3.3: the cubes of a sift_table segment hold, for each date, timestamp and timestamptz column, the groups of its calendar cells (days, else months, else years; the first day of a cell is the key); a schema without shredded leaves, written only under sift.col_format_minor 8 */
 #define SIFT_COL_FORMAT_ROWS	9			/* 3.3: a unit also holds the rollup of its rows by the scalar columns of the reloption rollup_dims; written only for an index with the option under sift.col_format_minor 9, and then for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_SETS	10			/* 3.3: the segment has the small-set summary of some leaf in some unit; written only for an index with the reloption set_columns, and then for a schema that has no shredded leaves or whose every kind is known */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SETS	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_SUPER	12			/* 3.3: the sidecar also holds, per group of units of the segment, the merged leaf sums and cube (a superunit summary); written only for an index with the reloption superunit, and then for a schema that has no shredded leaves or whose every kind is known */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SUPER	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -468,8 +469,20 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
+	uint32		nsu;			/* a superunit (sift_col_super): the units it stands for, whose merged pre-aggregates are all it has; 0 for a unit */
 	void	   *priv;
 } SiftColUnit;
+
+/*
+ * Superunits (docs/COL-PREAGG.md section 10). With sift_col_super(src, true), a source whose next unit starts a group of units of a segment that
+ * holds a summary of the group hands over the group as one unit, when every unit of the group passed the zone tests and is exact (clean,
+ * every page all-visible to the snapshot). It has pre-aggregates only (sift_col_unit_agg, sift_col_unit_hist): a consumer that cannot answer
+ * from them calls sift_col_unit_split, and the next calls return the units of the group one by one.
+ */
+extern void sift_col_super(SiftColSource *src, bool on);
+extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
+/* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
+extern uint32 sift_col_super_span(SiftColSource *src);
 
 /*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes

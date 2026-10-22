@@ -9,6 +9,7 @@
 
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/index.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -41,6 +42,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_super_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
@@ -1282,6 +1284,88 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	v[9] = Int64GetDatum(damaged);
 	v[10] = Int64GetDatum(accepted);
 	v[11] = Int64GetDatum(missed);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift._test_col_super_damage(index): every byte of the superunit block of every segment of the index, read as itself with a bit flipped (two flips), one
+ * damage at a time, through a fresh open of the segment and the check of sift.col_verify. A damage must never read outside the block (meaningful under
+ * SANITIZE=1) and every one must be refused, by the reader or by the check: `unnoticed` counts the ones that were not.
+ */
+Datum
+sift_test_col_super_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 masks[] = {0x01, 0x80};
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	int64		supers = 0,
+				damaged = 0,
+				refused = 0;
+	Datum		v[4];
+	bool		nulls[4] = {false};
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		off,
+					len;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (!sift_cseg_test_super_span(seg, &off, &len))
+		{
+			sift_cseg_close(seg);
+			continue;
+		}
+		sift_cseg_close(seg);
+		supers++;
+		for (uint64 b = 0; b < len; b++)
+			for (int m = 0; m < lengthof(masks); m++)
+			{
+				MemoryContext cx = AllocSetContextCreate(old, "super damage", ALLOCSET_DEFAULT_SIZES);
+
+				damaged++;
+				BeginInternalSubTransaction(NULL);
+				MemoryContextSwitchTo(cx);
+				PG_TRY();
+				{
+					SiftColSegment *s2;
+
+					sift_test_seg_flip_at = off + b;
+					sift_test_seg_flip_mask = masks[m];
+					s2 = sift_cseg_open(index, &snap->segs[i], cx);
+					sift_cseg_verify_super(s2);
+					sift_test_seg_flip_at = UINT64_MAX;
+					sift_cseg_close(s2);
+					MemoryContextSwitchTo(old);
+					ReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+				}
+				PG_CATCH();
+				{
+					sift_test_seg_flip_at = UINT64_MAX;
+					MemoryContextSwitchTo(old);
+					FlushErrorState();
+					RollbackAndReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+					refused++;
+				}
+				PG_END_TRY();
+				MemoryContextDelete(cx);
+			}
+	}
+	index_close(index, AccessShareLock);
+	v[0] = Int64GetDatum(supers);
+	v[1] = Int64GetDatum(damaged);
+	v[2] = Int64GetDatum(refused);
+	v[3] = Int64GetDatum(damaged - refused);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 

@@ -162,6 +162,24 @@ extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
+/*
+ * Superunits (docs/COL-PREAGG.md section 10): the units in groups of fan consecutive ones, group k = units [k * fan, min((k + 1) * fan, nsb)), with the page
+ * masks of the units, the merged sums of every INT leaf and the merged cube of the dims all of them hold. fan 0: the segment has none.
+ * sift_cseg_super_agg: false when the leaf has no summary in the group (not INT, an overflow value, one unit). sift_cseg_super_cube: NULL when the group has none,
+ * else valid until the next call on seg. sift_cseg_super_pagemask fills 4 words for each of the n units from the first of group k.
+ */
+extern uint32 sift_cseg_super_fan(SiftColSegment *seg);
+extern void sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm);
+extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a);
+extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);
+/* sift.col_verify: the superunit block says what the units say (page masks, sums, cubes); an error otherwise, nothing when the segment has none */
+extern void sift_cseg_verify_super(SiftColSegment *seg);
+#ifdef SIFT_TESTING
+/* tests: one byte of the stream is read as its value xor the mask (sift_test_seg_flip_at UINT64_MAX: none); the span of the superunit block in the stream */
+extern uint64 sift_test_seg_flip_at;
+extern uint8 sift_test_seg_flip_mask;
+extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
+#endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);

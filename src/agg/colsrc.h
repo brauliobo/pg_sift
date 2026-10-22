@@ -180,6 +180,7 @@ typedef struct SiftSrcUnit
 {
 	uint32		sb;
 	int			nrow;
+	uint32		nsu;			/* a superunit (sift_colsrc_super): the units it stands for; it has pre-aggregates only. 0 for a unit */
 	void	   *priv;			/* the source's */
 } SiftSrcUnit;
 
@@ -513,6 +514,10 @@ typedef struct SiftSrcProvider
 	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
+	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
+	void		(*super) (void *impl, bool on);
+	void		(*split) (void *impl, const SiftSrcUnit *unit);
+	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
 	/*
 	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows
 	 * `rows` (ascending, in the numbering `read` and `live` use) of the unit the source is at. zone: the zone of an integer-typed leaf
@@ -746,6 +751,28 @@ static inline bool
 sift_colsrc_unit_rollup_miss(SiftSrcSource *src, const SiftSrcUnit *unit)
 {
 	return src->prov->unit_rollup_miss != NULL && src->prov->unit_rollup_miss(src->impl, unit);
+}
+
+/* Asks the source for superunits (docs/COL-PREAGG.md section 10): true when it has them */
+static inline bool
+sift_colsrc_super(SiftSrcSource *src, bool on)
+{
+	if (src->prov->super == NULL)
+		return false;
+	src->prov->super(src->impl, on);
+	return true;
+}
+
+static inline uint32
+sift_colsrc_super_span(SiftSrcSource *src)
+{
+	return src->prov->super_span ? src->prov->super_span(src->impl) : 0;
+}
+
+static inline void
+sift_colsrc_split(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	src->prov->split(src->impl, unit);
 }
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */

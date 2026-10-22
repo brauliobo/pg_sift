@@ -25,6 +25,7 @@ typedef struct ColCursor
 	uint64	   *setcut;			/* units a small-set summary cleared, nsb bits */
 	uint32		cur;
 	uint32		end;
+	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -80,6 +81,7 @@ typedef struct ColUnit
 	SiftColSource *src;
 	SiftColSegment *seg;		/* NULL for an in-memory unit */
 	uint32		u;
+	uint32		nsu;			/* a superunit: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -124,6 +126,7 @@ struct SiftColSource
 	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
+	bool		super;			/* sift_col_super */
 	int			nseg;
 	ColCursor  *seg;
 	ColMem	   *mem;
@@ -141,6 +144,9 @@ struct SiftColSource
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
 };
+
+/* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
+extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
 
 static inline void
 set_ones(uint64 *bits, uint32 n)

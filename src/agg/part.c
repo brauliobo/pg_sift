@@ -939,7 +939,7 @@ part_next(void *impl, SiftSrcUnit *unit)
 	{
 		if (ps->cur >= 0 && sift_colsrc_next(ps->src[ps->cur], &ps->cunit))
 		{
-			*unit = (SiftSrcUnit) {ps->off[ps->cur] + ps->cunit.sb, ps->cunit.nrow, ps};
+			*unit = (SiftSrcUnit) {.sb = ps->off[ps->cur] + ps->cunit.sb,.nrow = ps->cunit.nrow,.priv = ps};
 			return true;
 		}
 		if (!start_next(ps))

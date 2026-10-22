@@ -407,6 +407,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi),
 	palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64))};
 
+	c->nosuper_to = 0;
 	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 i = 0; i < seg->nsb; i++)
 		sift_col_bit_set(c->keep, i);
@@ -533,16 +534,20 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		load_memory(cu, src->order[src->ocur++]);
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
-	else
+	else if (!(src->super && col_super_take(src, best, cu)))
 		load_stored(cu, best->seg, best->cur++);
 	SIFT_COL_JITTER();
-	cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
-	src->cnt.units++;
-	src->cnt.rows_scanned += cu->v.nrows;
+	if (cu->nsu == 0)
+	{
+		cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
+		src->cnt.rows_scanned += cu->v.nrows;
+	}
+	src->cnt.units += Max(cu->nsu, 1);
 	unit->src = src;
 	unit->sb = bsb;
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = mem;
+	unit->nsu = cu->nsu;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -567,8 +572,40 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->sb = b->sb;
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = true;
+	unit->nsu = 0;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_col_super(SiftColSource *src, bool on)
+{
+	src->super = on;
+}
+
+uint32
+sift_col_super_span(SiftColSource *src)
+{
+	uint32		fan = 0;
+
+	for (int i = 0; i < src->nseg; i++)
+		fan = Max(fan, sift_cseg_super_fan(src->seg[i].seg));
+	return fan * 4 * Max(src->nseg, 1);
+}
+
+void
+sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
+{
+	ColUnit    *cu = unit->priv;
+
+	Assert(cu->nsu > 0);
+	for (int i = 0; i < src->nseg; i++)
+		if (src->seg[i].seg == cu->seg)
+		{
+			src->seg[i].cur = cu->u;
+			src->seg[i].nosuper_to = cu->u + cu->nsu;
+		}
+	src->cnt.units -= cu->nsu;
 }
 
 const SiftColSchema *
