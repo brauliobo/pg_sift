@@ -108,13 +108,12 @@ INSERT INTO s_q VALUES
 	('clean leaf',         'SELECT grp, count(*) FILTER (WHERE doc ->> ''t'' = ''k1'') FROM s_t GROUP BY grp');
 SELECT n, pushed(q) AS pushed, outcome(q) FROM s_q ORDER BY n;
 
--- the cast runs for some rows only, or the leaf is read otherwise: the normal plan, rows or error as the heap
+-- the cast runs for some rows only, or the leaf is read otherwise: the normal plan, rows or error as the heap (a condition on the cast: agg_scalar_dirty_where)
 TRUNCATE s_q;
 INSERT INTO s_q VALUES
 	('case branch',        'SELECT grp, sum(CASE WHEN grp = 1 THEN (doc ->> ''v'')::float8 END) FROM s_t GROUP BY grp'),
 	('case branch drops',  'SELECT grp, sum(CASE WHEN id <> 1234 THEN (doc ->> ''v'')::float8 END) FROM s_t GROUP BY grp'),
 	('filter clause',      'SELECT grp, sum((doc ->> ''v'')::float8) FILTER (WHERE id <> 1234) FROM s_t GROUP BY grp'),
-	('conjunct',           'SELECT grp, count(*) FROM s_t WHERE (doc ->> ''v'')::float8 > 3 GROUP BY grp'),
 	('two kinds',          'SELECT grp, sum((doc ->> ''v'')::float8), sum((doc -> ''v'')::float8) FROM s_t GROUP BY grp'),
 	('typeof',             'SELECT grp, sum((doc ->> ''v'')::float8) FROM s_t WHERE jsonb_typeof(doc -> ''v'') <> ''string'' GROUP BY grp'),
 	('sub-select',         'SELECT grp, sum((doc ->> ''v'')::float8) FROM s_t WHERE id IN (SELECT id FROM s_t WHERE (doc ->> ''v'')::float8 > 3) GROUP BY grp');

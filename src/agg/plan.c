@@ -507,7 +507,12 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		if (c->stats.ovf[m] && !bms_is_member(m, typed) && spec_recheck(c, s, m) == SRK_NONE && !member_source(c, s, m))
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m))));
-			agg_refused_on(DIRTY_UNITS, leaf_name(c, m));
+			if (bms_is_member(m, c->order_refused))
+				agg_refused_f(DIRTY_ORDER, "%s: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row", leaf_name(c, m));
+			else if (c->dirty_why && c->dirty_leaf == m)
+				agg_refused_f(DIRTY_UNITS, "%s: %s", leaf_name(c, m), c->dirty_why);
+			else
+				agg_refused_on(DIRTY_UNITS, leaf_name(c, m));
 			return true;
 		}
 	return false;

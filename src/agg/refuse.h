@@ -40,6 +40,7 @@
 	X(DISTINCT_ON, "distinct_on", "DISTINCT ON has no total order for the row it keeps", 0, 1) \
 	X(GROUPING_SETS, "grouping_sets", "the arm does not group by grouping sets", 0, 0) \
 	X(DIRTY_UNITS, "dirty_units", "some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does", 0, 0) \
+	X(DIRTY_ORDER, "dirty_order", "a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too", 0, 1) \
 	X(VOLATILE, "volatile", "the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce", 0, 1) \
 	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate", 1, 0) \
 	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1, 1) \
