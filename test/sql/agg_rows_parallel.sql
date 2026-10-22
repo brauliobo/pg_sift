@@ -150,3 +150,4 @@ DEALLOCATE by_bucket;
 
 DROP TABLE facts, shapes;
 DROP EXTENSION pg_sift;
+DROP FUNCTION check_all, check_rows, cursor_rows, generic_rows, mode_of, rescan_rows, rows_of;

@@ -163,3 +163,6 @@ BEGIN
 	CLOSE c;
 	RAISE NOTICE 'cursor % %', cardinality(want), got = want || ARRAY(SELECT x FROM unnest(want) WITH ORDINALITY u(x, o) ORDER BY o DESC);
 END $$;
+DROP FUNCTION cd_check, cd_choice, cd_mode, cd_plan, cd_stat, cd_workers;
+DROP TABLE cd, cd_q;
+DROP EXTENSION pg_sift;

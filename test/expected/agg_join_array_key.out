@@ -167,3 +167,6 @@ SELECT * FROM each_join('jsonb_build_array(f.kind, f.ts) = jsonb_build_array(b.k
  inner     | t
 (3 rows)
 
+DROP FUNCTION each_join, outcome, pushed, report, runq, runs_in_scan, same;
+DROP TABLE buckets, facts;
+DROP EXTENSION pg_sift;

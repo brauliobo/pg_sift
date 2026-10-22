@@ -122,6 +122,6 @@ SELECT shape, pushed(q), same_rows(q) AS same FROM shapes WHERE shape NOT LIKE '
 SELECT shape, pushed(q), same_ordered(q) AS same FROM shapes WHERE shape LIKE 'order%' ORDER BY id;
 
 DROP TABLE shapes;
-DROP FUNCTION pushed(text), same_rows(text), same_ordered(text), error_of(text, boolean);
+DROP FUNCTION pushed(text), same_rows(text), same_ordered(text), error_of(text, boolean), outcome, runq, runs_in_scan;
 DROP TABLE nn;
 DROP EXTENSION pg_sift;

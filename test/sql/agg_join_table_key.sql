@@ -79,6 +79,6 @@ BEGIN
 END $$;
 SELECT key_filters('d.at::date = f.ts') AS cast_key, key_filters('d.n2::int = f.k') AS widened_key, key_filters('d.n4 + 1 = f.k') AS no_key;
 
-DROP FUNCTION key_filters(text), each_join(text, text), report(bool, text, text, text), same(text), pushed(text);
+DROP FUNCTION key_filters(text), each_join(text, text), report(bool, text, text, text), same(text), pushed(text), outcome, runq, runs_in_scan;
 DROP TABLE facts, dims;
 DROP EXTENSION pg_sift;

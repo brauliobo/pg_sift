@@ -624,3 +624,7 @@ SELECT n, t_check(q) FROM q ORDER BY n;
 (9 rows)
 
 DROP TABLE k;
+DROP FUNCTION doc, doc_full, fmt, t_check, t_outcome, t_pushed, t_rows, tfmt;
+DROP TABLE q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

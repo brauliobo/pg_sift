@@ -160,6 +160,6 @@ SELECT key_filters('d.at::date = f.ts') AS cast_key, key_filters('d.n2::int = f.
         1 |           1 |      0
 (1 row)
 
-DROP FUNCTION key_filters(text), each_join(text, text), report(bool, text, text, text), same(text), pushed(text);
+DROP FUNCTION key_filters(text), each_join(text, text), report(bool, text, text, text), same(text), pushed(text), outcome, runq, runs_in_scan;
 DROP TABLE facts, dims;
 DROP EXTENSION pg_sift;

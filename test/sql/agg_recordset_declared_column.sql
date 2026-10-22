@@ -27,6 +27,6 @@ $q$) AS row_reaches_function;
 SELECT outcome($q$
  SELECT e.category, count(*) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.doc->'items') e(category text, score float8) GROUP BY 1
 $q$, true) AS error;
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE docs;
 DROP EXTENSION pg_sift;

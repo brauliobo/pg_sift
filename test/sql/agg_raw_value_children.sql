@@ -72,6 +72,6 @@ SELECT * FROM check_query('string member', $q$SELECT c.category, count(*) AS n F
 SELECT * FROM check_query('object member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20004 GROUP BY 1$q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

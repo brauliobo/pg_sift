@@ -19,7 +19,7 @@ SELECT same($q$
  SELECT f.entity_id % 3 AS g, count(*) AS n, count(CAST(r.value AS float)) AS members, sum(CAST(r.value AS float)) AS total
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'k' COLLATE ci GROUP BY 1
 $q$) AS insensitive_key;
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP COLLATION ci;
 DROP EXTENSION pg_sift;

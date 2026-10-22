@@ -92,3 +92,6 @@ SELECT scan_nodes(series_query()) AS scan_nodes, differences(series_query()) AS 
           4 |           0
 (1 row)
 
+DROP FUNCTION differences, scan_nodes, series_query;
+DROP TABLE events, dims, maps;
+DROP EXTENSION pg_sift;

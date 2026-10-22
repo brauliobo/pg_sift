@@ -51,6 +51,6 @@ $q$);
  inner join, on | t    | t    | [{"n": 13333, "ids": 13333}]
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

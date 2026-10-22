@@ -133,6 +133,6 @@ DROP FUNCTION rec_q(text, text, text);
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE d_t;
 DROP EXTENSION pg_sift;

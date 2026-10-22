@@ -55,3 +55,4 @@ SELECT n, shape, c.* FROM cases, LATERAL check_case(q) c ORDER BY n;
 
 DROP TABLE events, cases;
 DROP EXTENSION pg_sift;
+DROP FUNCTION check_case;

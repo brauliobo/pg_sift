@@ -54,6 +54,6 @@ $q$);
  dirty: kind and n | t    | 
 (1 row)
 
-DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE pr_clean, pr_dirty;
 DROP EXTENSION pg_sift;

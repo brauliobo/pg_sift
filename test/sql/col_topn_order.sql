@@ -150,5 +150,5 @@ SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
 RESET sift.topn_walk;
 
 DROP TABLE ow;
-DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool);
+DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;
 DROP EXTENSION pg_sift;

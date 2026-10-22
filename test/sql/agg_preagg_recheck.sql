@@ -41,6 +41,6 @@ SELECT * FROM check_query('dirty: kind and n', $q$
  SELECT e.kind, count(*), sum(e.n) FROM pr_dirty d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1
 $q$);
 
-DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE pr_clean, pr_dirty;
 DROP EXTENSION pg_sift;

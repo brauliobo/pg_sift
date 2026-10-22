@@ -23,6 +23,6 @@ SELECT * FROM check_query('key and filter', $q$
  SELECT CASE WHEN country_code IN (SELECT iso2 FROM countries) THEN country_code || kind END AS k, count(*) FILTER (WHERE country_code IN (SELECT iso2 FROM countries)) AS known
  FROM facts GROUP BY 1
 $q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, countries;
 DROP EXTENSION pg_sift;

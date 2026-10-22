@@ -42,6 +42,6 @@ SELECT same(replace(spine_query($$d.enabled$$), 'GROUP BY 1', 'GROUP BY 1 HAVING
 -- the spine itself empties
 SELECT same(replace(spine_query($$d.enabled$$), 'ON ev.period = pe.period', 'ON ev.period = pe.period AND pe.period = ''none''')) AS same_spine_condition;
 
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), units_read(text), spine_query(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), units_read(text), spine_query(text), pushed, runq;
 DROP TABLE events, dims;
 DROP EXTENSION pg_sift;

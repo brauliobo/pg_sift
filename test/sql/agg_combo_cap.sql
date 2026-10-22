@@ -73,3 +73,4 @@ RESET sift.test_limits;
 DROP TABLE ev, maps, groups, cases;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
+DROP FUNCTION check_case;

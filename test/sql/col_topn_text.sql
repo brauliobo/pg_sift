@@ -128,3 +128,7 @@ CREATE INDEX tv_col ON tv USING sift_col (id, w);
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS overflow_key;
+DROP FUNCTION tx_check, tx_coll, tx_mode;
+DROP TABLE tx, tx_q, tr, tv;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

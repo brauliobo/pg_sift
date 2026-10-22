@@ -150,6 +150,6 @@ $q$);
  cast out of range | t    | t    | 22003 integer out of range
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE entries, labels, sources;
 DROP EXTENSION pg_sift;

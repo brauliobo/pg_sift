@@ -15,6 +15,6 @@ SELECT same($q$
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'k'
  WHERE EXISTS (SELECT 1 FROM jsonb_each(f.extra) e WHERE (e.value)::float8 > 3) GROUP BY 1
 $q$) AS exists_members;
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;
