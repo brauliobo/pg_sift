@@ -31,6 +31,7 @@
 #include "col/col.h"
 #include "bm25/estimate.h"
 #include "core/lane.h"
+#include "core/ops.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
@@ -178,10 +179,10 @@ check_meta(Relation index, Buffer buf)
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build reads formats %u.0 to %u.%u",
-						RelationGetRelationName(index), meta->format_major, meta->format_minor,
+				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build (pg_sift %s) reads formats %u.0 to %u.%u",
+						RelationGetRelationName(index), meta->format_major, meta->format_minor, SIFT_MODULE_VERSION,
 						SIFT_FORMAT_MAJOR, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
-				 errhint("REINDEX the index.")));
+				 errhint("Install the pg_sift release that wrote the index, or a later one, on every node that reads it; REINDEX rewrites it with this build.")));
 	if (meta->high_water < FIRST_DATA_BLKNO)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
 }
@@ -269,7 +270,7 @@ sift_store_new_gen(Relation index)
 
 /* Validates the mutator's result inside the record; aborts it on failure */
 static void
-finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
 		   Page dirpage)
 {
 	SiftDirectoryData *dir = DIR(dirpage);
@@ -283,7 +284,8 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 		GenericXLogAbort(state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index cannot hold more than %d segments", SIFT_MAX_SEGMENTS)));
+				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), SIFT_MAX_SEGMENTS),
+				 errhint("Run sift.merge() on the index.")));
 	}
 	for (int i = 0; !err && i < dir->nsegs; i++)
 	{
@@ -302,7 +304,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 	if (err)
 	{
 		GenericXLogAbort(state);
-		elog(ERROR, "sift: invalid directory update: %s", err);
+		SIFT_INVARIANT(false, "sift: invalid directory update: %s", err);
 	}
 	dir->version++;
 	SiftPageSetUsed(dirpage, DIR_USED(dir->nsegs));
@@ -383,7 +385,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
-		finish_dir(state, &before, META(mp), dp);
+		finish_dir(index, state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
 	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */
