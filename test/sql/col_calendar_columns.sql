@@ -17,9 +17,10 @@ INSERT INTO cc SELECT i,
 FROM generate_series(1, 30000) i;
 VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) cc;
 
-CREATE INDEX cc_off ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX cc_off ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 CREATE INDEX cc_on ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts, d, tz', cube_minmax = false, superunit = 0);
 CREATE INDEX cc_all ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'all', cube_minmax = false, superunit = 0);
+CREATE INDEX cc_default ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 7;
 CREATE INDEX cc_seven ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
@@ -34,8 +35,11 @@ ALTER INDEX cc_on SET (calendar_columns = 'ts, d');
 SELECT 'cc_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('cc_off')
 UNION ALL SELECT 'cc_on', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_on')
 UNION ALL SELECT 'cc_all', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_all')
+UNION ALL SELECT 'cc_default', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_default')
 UNION ALL SELECT 'cc_seven', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_seven') ORDER BY 1;
-SELECT sift.col_verify('cc_off', true), sift.col_verify('cc_on', true), sift.col_verify('cc_all', true), sift.col_verify('cc_seven', true);
+SELECT sift.col_verify('cc_off', true), sift.col_verify('cc_on', true), sift.col_verify('cc_all', true), sift.col_verify('cc_seven', true), sift.col_verify('cc_default', true);
+-- no option is the same as 'all'
+SELECT (SELECT preagg_bytes FROM sift.col_index_info('cc_default')) = (SELECT preagg_bytes FROM sift.col_index_info('cc_all')) AS default_is_all;
 
 SELECT idx, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, cut > 0 AS cuts_made, cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made,
        accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
@@ -78,12 +82,12 @@ INSERT INTO cc_q VALUES
 	(12, 'tz session: scan', 'SELECT date_trunc(''month'', tz)::date, count(*) FROM cc GROUP BY 1');
 
 -- one index at a time: the planner takes any index of the table, so each is rebuilt alone for its shapes
-DROP INDEX cc_off, cc_on, cc_all, cc_seven;
+DROP INDEX cc_off, cc_on, cc_all, cc_default, cc_seven;
 CREATE FUNCTION cc_check(OUT idx text, OUT n int, OUT shape text, OUT pre text, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE o text; z record; u record;
 BEGIN
 	FOREACH o IN ARRAY ARRAY['off', 'ts, d, tz', 'all', 'ts, d'] LOOP
-		EXECUTE format('CREATE INDEX cc_i ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = %L)', CASE o WHEN 'off' THEN '' ELSE o END);
+		EXECUTE format('CREATE INDEX cc_i ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = %L)', o);
 		FOR z IN SELECT * FROM cc_q ORDER BY cc_q.n LOOP
 			SELECT * INTO u FROM cc_units(z.q);
 			idx := o; n := z.n; shape := z.shape;
