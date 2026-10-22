@@ -187,8 +187,6 @@ ratio_table(const Table *t, bool verbose)
 	}
 }
 
-/* ---------- speeds ---------- */
-
 /* ns per value of fn over all blobs: the best of three runs of at least 50 ms */
 static double
 timed(Set *s, void (*fn) (Blob *, void *), void *arg)

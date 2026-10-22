@@ -38,8 +38,6 @@ xalloc(size_t n)
 	return p;
 }
 
-/* ---------- data ---------- */
-
 static const uint32 sizes[] = {0, 1, 2, 3, 31, 32, 33, 63, 64, 65, 1023, 1024, 1025, 1056, 2047, 2048, 2049, 5000, 33000, 70001};
 
 static const char *const policies[] = {
@@ -48,8 +46,6 @@ static const char *const policies[] = {
 };
 
 #define NPOL ((int) lengthof(policies))
-
-/* ---------- one chunk ---------- */
 
 typedef struct Chunk
 {
@@ -342,8 +338,6 @@ test_alternating(SiftRng *r, int scale)
 	}
 }
 
-/* ---------- kernels ---------- */
-
 static void
 fill_random(SiftRng *r, void *p, size_t bytes)
 {
@@ -467,8 +461,6 @@ test_kernels_level(SiftRng *r, SiftSimdLevel level, int iters)
 	}
 }
 
-/* ---------- strings and bit vectors ---------- */
-
 static void
 test_strs(SiftRng *r, int scale)
 {
@@ -540,8 +532,6 @@ test_bits(SiftRng *r, int scale)
 		free(w), free(w2), free(blob);
 	}
 }
-
-/* ---------- corruption fuzz ---------- */
 
 typedef struct FuzzArg
 {
@@ -723,8 +713,6 @@ test_fuzz(SiftRng *r, int scale)
 	}
 	printf("fuzz: %llu errors raised, %llu damaged blobs decoded\n", (unsigned long long) errs, (unsigned long long) oks);
 }
-
-/* ---------- policy parsing ---------- */
 
 static void
 test_policy(void)
