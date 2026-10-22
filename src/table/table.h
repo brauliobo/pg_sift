@@ -320,6 +320,7 @@ extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx
 
 /* Tombstones */
 extern void sift_tbl_tomb_sync(Relation rel, SiftTblRel *st);
+extern uint64 sift_tbl_tomb_entries(Relation rel, SiftTblRel *st);
 extern void sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid,
 								 SiftTblTombKind kind, uint64 succ);
 /*

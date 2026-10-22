@@ -71,14 +71,91 @@ tomb_flatten(SiftTblRel *st)
 	st->nrecent = 0;
 }
 
+#define TOMB_RADIX_BITS		11
+#define TOMB_RADIX_MIN		256		/* a batch of fewer entries is sorted by comparing */
+
+/*
+ * Sorts a batch by (key, seq). The batch is in log order, so seq rises along it and a stable sort on the key is the sort on both: a radix sort on
+ * the digits of key - min that differ, in as many passes as the keys span (a log of 32,000 entries takes 3 passes; qsort with a comparison call took
+ * 3 ms of the 6 a backend needs for its first statement on such a table). A batch already in order is left as it is.
+ */
+static void
+tomb_sort(SiftTblTomb *a, uint32 n)
+{
+	SiftTblTomb *src = a,
+			   *dst;
+	uint64		lo = PG_UINT64_MAX,
+				hi = 0;
+	bool		sorted = true;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		lo = Min(lo, a[i].key);
+		hi = Max(hi, a[i].key);
+		sorted &= i == 0 || a[i - 1].key <= a[i].key;
+	}
+	if (sorted)
+		return;
+	if (n < TOMB_RADIX_MIN)
+	{
+		qsort(a, n, sizeof(SiftTblTomb), cmp_tomb);
+		return;
+	}
+	dst = palloc(n * sizeof(SiftTblTomb));
+	for (int shift = 0; shift < 64 && ((hi - lo) >> shift) != 0; shift += TOMB_RADIX_BITS)
+	{
+		uint32		count[(1 << TOMB_RADIX_BITS) + 1] = {0};
+		SiftTblTomb *t;
+
+		for (uint32 i = 0; i < n; i++)
+			count[(((src[i].key - lo) >> shift) & ((1 << TOMB_RADIX_BITS) - 1)) + 1]++;
+		/* one digit for every entry: the pass would copy the array as it is */
+		if (count[(((src[0].key - lo) >> shift) & ((1 << TOMB_RADIX_BITS) - 1)) + 1] == n)
+			continue;
+		for (int d = 0; d < (1 << TOMB_RADIX_BITS); d++)
+			count[d + 1] += count[d];
+		for (uint32 i = 0; i < n; i++)
+			dst[count[((src[i].key - lo) >> shift) & ((1 << TOMB_RADIX_BITS) - 1)]++] = src[i];
+		t = src;
+		src = dst;
+		dst = t;
+	}
+	if (src != a)
+		memcpy(a, src, n * sizeof(SiftTblTomb));
+	pfree(src == a ? dst : src);
+}
+
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows */
 static void
 tomb_add(SiftTblRel *st, SiftTblTomb *batch, uint32 n)
 {
-	qsort(batch, n, sizeof(SiftTblTomb), cmp_tomb);
+	tomb_sort(batch, n);
+	/* the first look of a backend at a log that is long: into the main array, not through the recent one and a second copy */
+	if (st->nents == 0 && st->nrecent == 0 && n > TOMB_RECENT_MAX)
+	{
+		merge_tombs(st, &st->ents, &st->nents, &st->capents, batch, n);
+		return;
+	}
 	merge_tombs(st, &st->recent, &st->nrecent, &st->caprecent, batch, n);
 	if (st->nrecent > TOMB_RECENT_MAX)
 		tomb_flatten(st);
+}
+
+/* The entries appended to the log so far, from its header page alone: no page of the log is read and no entry sorted */
+uint64
+sift_tbl_tomb_entries(Relation rel, SiftTblRel *st)
+{
+	const SiftSegEntry *e = find_seg(&st->dir, is_tomb, 0);
+	Buffer		buf;
+	uint64		n;
+
+	if (e == NULL)
+		return 0;
+	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
+	n = TBL_TOMB_HDR(BufferGetPage(buf))->nentries;
+	UnlockReleaseBuffer(buf);
+	return n;
 }
 
 void
@@ -107,6 +184,9 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 	UnlockReleaseBuffer(buf);
 	if (n == st->tomb_synced)
 		return;
+	/* the header says how many entries are new: the batch is allocated once (appenders may add more while it is read) */
+	capbatch = Max(64, n - st->tomb_synced + TBL_TOMB_CAP);
+	batch = palloc(capbatch * sizeof(SiftTblTomb));
 	while (BlockNumberIsValid(blk))
 	{
 		const SiftTblTombPage *tp;
