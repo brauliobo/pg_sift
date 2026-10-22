@@ -223,6 +223,26 @@ dist_move(void *arg, uint32 g, uint32 v)
 	(void) dist_add(mv->ex, mv->to, g, v);
 }
 
+/* a tuplesort of (int4, int8) rows ordered by both, and the slots that put rows in and read them back; a third int4 column rides along unsorted. In the current memory context */
+void
+agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get)
+{
+	TupleDesc	desc = CreateTemplateTupleDesc(natts);
+	AttrNumber	att[2] = {1, 2};
+	Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
+				coll[2] = {InvalidOid, InvalidOid};
+	bool		nulls[2] = {false, false};
+
+	TupleDescInitEntry(desc, 1, "a", INT4OID, -1, 0);
+	TupleDescInitEntry(desc, 2, "b", INT8OID, -1, 0);
+	if (natts > 2)
+		TupleDescInitEntry(desc, 3, "c", INT4OID, -1, 0);
+	sift_tupdesc_finalize(desc);
+	*put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	*get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	*sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, flags);
+}
+
 /* the structure of d moves to mode `to`, its pairs added to the new one */
 static void
 dist_convert(AggExec *ex, Dist *d, DistMode to)
@@ -233,18 +253,8 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	if (to == DD_SORT)
 	{
 		MemoryContext mc = MemoryContextSwitchTo(ex->cxt);
-		TupleDesc	desc = CreateTemplateTupleDesc(2);
-		AttrNumber	att[2] = {1, 2};
-		Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
-					coll[2] = {InvalidOid, InvalidOid};
-		bool		nulls[2] = {false, false};
 
-		TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
-		TupleDescInitEntry(desc, 2, "val", INT8OID, -1, 0);
-		sift_tupdesc_finalize(desc);
-		d->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
-		d->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
-		d->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_RANDOMACCESS);
+		agg_pair_sort(2, TUPLESORT_RANDOMACCESS, &d->sort, &d->put, &d->get);
 		MemoryContextSwitchTo(mc);
 		d->nsid = d->nsidcap = d->sidgroups = 0;
 		d->sid = NULL;

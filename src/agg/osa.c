@@ -14,7 +14,6 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "access/skey.h"
 #include "access/stratnum.h"
@@ -142,18 +141,8 @@ static void
 osa_spill(AggExec *ex, Osa *o)
 {
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-	TupleDesc	desc = CreateTemplateTupleDesc(2);
-	AttrNumber	att[2] = {1, 2};
-	Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
-				coll[2] = {InvalidOid, InvalidOid};
-	bool		nulls[2] = {false, false};
 
-	TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
-	TupleDescInitEntry(desc, 2, "key", INT8OID, -1, 0);
-	sift_tupdesc_finalize(desc);
-	o->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
-	o->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
-	o->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_NONE);
+	agg_pair_sort(2, TUPLESORT_NONE, &o->sort, &o->put, &o->get);
 	MemoryContextSwitchTo(old);
 	for (uint64 i = 0; i < o->cap; i++)
 		if (o->slot[i].sid1)
