@@ -274,6 +274,38 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
+/*
+ * The dictionary of a wide leaf for the rows of sel only, with their codes at their rows in the leaf's buffer (the other rows are zero): a
+ * scan that keeps a few rows of a unit converts the values of those, not one per distinct value of the unit. It is not the dictionary of the
+ * unit, so a whole read of the leaf in the same unit makes that one again.
+ */
+static void
+wide_scatter(ColSource *src, int leaf, const SiftColSel *sel, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
+{
+	SiftAggWide *w = &src->wide[leaf];
+	const SiftColDef *def = sift_col_def(src->cs, leaf);
+	SiftColVec	v[SIFT_COL_MAX_LANES];
+	ColLeafBuf *b = leaf_buf(src, leaf, nrow);
+	uint32	   *codes = b->data;
+
+	for (int k = 0; k < Max(def->lanes, 1); k++)
+		sift_col_read(&src->unit, leaf + k, sel, &v[k]);
+	w->cxt = src->cxt;
+	sift_aggwide_build(w, def, v, sel->count);
+	src->wgen[leaf] = 0;
+	src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
+	memset(codes, 0, (nrow + SIFT_AGG_PAD) * sizeof(uint32));
+	if (w->has_null)
+		memset(b->isnull, 0, nrow);
+	for (uint32 k = 0; k < sel->count; k++)
+	{
+		codes[idx[k]] = w->codes[k];
+		if (w->has_null)
+			b->isnull[idx[k]] = w->isnull[k];
+	}
+	*vec = (SiftSrcVec) {.data = codes, .isnull = w->has_null ? b->isnull : NULL, .dict = &src->dict[leaf], .n = nrow};
+}
+
 /* A selection of the unit's rows, of the bits of the executor */
 static void
 col_sel(ColSource *src, const SiftSrcUnit *unit, const uint64 *bits, SiftColSel *sel)
@@ -291,7 +323,7 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	SiftColVec	v;
 	uint32	   *idx;
 
-	if ((src->sel.keep && src->sel.compact) || src->lay->leaf[leaf].wide)	/* the rows of a compacted unit are not the engine's: the whole leaf */
+	if (src->sel.keep && src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
 	{
 		col_read(impl, unit, leaf, vec);
 		return;
@@ -299,8 +331,13 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	col_sel(src, unit, bits, &sel);
 	idx = MemoryContextAlloc(src->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&sel, idx);
-	sift_col_read(&src->unit, leaf, &sel, &v);
-	col_scatter(src, leaf, &v, idx, unit->nrow, vec);
+	if (src->lay->leaf[leaf].wide)
+		wide_scatter(src, leaf, &sel, idx, unit->nrow, vec);
+	else
+	{
+		sift_col_read(&src->unit, leaf, &sel, &v);
+		col_scatter(src, leaf, &v, idx, unit->nrow, vec);
+	}
 	pfree(idx);
 }
 
