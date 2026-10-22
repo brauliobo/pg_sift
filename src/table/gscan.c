@@ -467,7 +467,8 @@ col_vec(SiftTblGroupScan *g, int c)
 	{
 		MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
 
-		sift_col_read(&g->unit, c, NULL, &g->vec[c]);
+		if (!sift_col_read_codes(&g->unit, c, &g->vec[c]))
+			sift_col_read(&g->unit, c, NULL, &g->vec[c]);
 		MemoryContextSwitchTo(old);
 	}
 	return &g->vec[c];
@@ -494,6 +495,20 @@ exc_find(const SiftColVec *ev, uint32 i, int attno, const char **p, uint32 *len)
 		b += *len;
 	}
 	return false;
+}
+
+/* The text of a code of a leaf read as codes (sift_col_read_codes): its string is read from the dictionary of the segment in place */
+static Datum
+code_text(SiftTblGroupScan *g, int leaf, uint32 code)
+{
+	char		buf[SIFT_COL_DICT_MAX_ENTRY];
+	uint32		len;
+	const char *s = sift_col_code_str(&g->unit, leaf, code, &len, buf);
+	text	   *t = palloc(VARHDRSZ + len);
+
+	SET_VARSIZE(t, VARHDRSZ + len);
+	memcpy(VARDATA(t), s, len);
+	return PointerGetDatum(t);
 }
 
 /* Attribute a of the row at position pos of the vectors of the current unit, allocated in the current memory context */
@@ -525,6 +540,8 @@ fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
 		else
 			*isnull = true;
 	}
+	else if (vec->store == SIFT_COLS_STR && vec->dict == NULL)
+		*value = code_text(g, leaf, vec->codes[pos]);
 	else
 		*value = value_out(&gs->schema->cols[leaf], att, vec, pos);
 }

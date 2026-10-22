@@ -560,6 +560,8 @@ of a segment of the new form with one of the old makes a new dictionary and writ
 blocks of 32 strings saves less than that of the whole dictionary: a dictionary of random uuids, which does not compress, grows by 4 bytes a string, and one of hex digests or words by about a fifth
 (60,000 texts of `'text ' ||` an md5, a `sift_table`: 1.16 MB of segments in the compact form, 1.49 MB in this one; stored uncompressed they took 2.53 MB).
 
+A `sift_table` row fetch (`sift_tbl_gscan_fill`) takes the strings of a segment with such a dictionary the same way, one at a time from the stream (`sift_col_read_codes`, `sift_col_code_str`), while the strings read from the segment are fewer than a sixteenth of its dictionary (the same count as the reads of `sift_col_read_text`); then the dictionary is loaded and cached and the reads come from it.
+
 ### 2.16 Key presence of a leaf in a unit (column format minor 15, 3.3; opt-in)
 
 `count(DISTINCT k)` of a whole table reads the key chunk of every unit and adds each key to a set, so it costs the rows. The reloption `key_presence = 'a, b'` (default none;
