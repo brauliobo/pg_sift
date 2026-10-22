@@ -259,7 +259,6 @@ typedef struct SharedWork
 	List	   *names;
 	Bitmapset  *seen;
 	List	   *arms;
-	int			readers;		/* the aggregates (or reads with none above) that take the CTEs' rows */
 	double		cost;
 } SharedWork;
 
@@ -282,14 +281,10 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
 		if (named)
 		{
 			if (agg == NULL)
-			{
-				w->readers++;
 				w->cost += plan->total_cost;
-			}
 			else if (!list_member_ptr(w->arms, agg))
 			{
 				w->arms = lappend(w->arms, agg);
-				w->readers++;
 				w->cost += agg->total_cost;
 			}
 		}
@@ -308,13 +303,44 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
 }
 
 static double
-shared_work_cost(PlannedStmt *stmt, List *names, int *readers)
+shared_work_cost(PlannedStmt *stmt, List *names)
 {
-	SharedWork	w = {stmt, names, NULL, NIL, 0, 0};
+	SharedWork	w = {stmt, names, NULL, NIL, 0};
 
 	shared_work(&w, stmt->planTree, NULL);
-	*readers = w.readers;
 	return w.cost;
+}
+
+/* does the plan read a table that has a column index other than through a SiftAgg node? */
+static bool
+plain_reader(PlannedStmt *stmt, Plan *plan)
+{
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+		return false;
+	if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
+	{
+		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
+
+		if (rte->rtekind == RTE_RELATION && has_column_index(rte->relid))
+			return true;
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		if (plain_reader(stmt, p))
+			return true;
+	return plain_reader(stmt, plan->lefttree) || plain_reader(stmt, plan->righttree);
+}
+
+static bool
+plain_reader_stmt(PlannedStmt *stmt)
+{
+	if (plain_reader(stmt, stmt->planTree))
+		return true;
+	foreach_ptr(Plan, p, stmt->subplans)
+		if (plain_reader(stmt, p))
+			return true;
+	return false;
 }
 
 static PlannedStmt *
@@ -328,7 +354,6 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	ScanArms	scans = {0};
 	double		plain_cost,
 				work;
-	int			readers;
 
 	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
@@ -345,14 +370,14 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	plain_cost = plan_cost_without_unread_ctes(plain);
 	sift_agg_arms(inlined->planTree, &scans);
 	sift_agg_arms_list(inlined->subplans, &scans);
-	work = shared_work_cost(plain, walk.names, &readers);
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans for %d readers",
-		 plain_cost, inlined->planTree->total_cost, scans.total, work, scans.n, readers);
+	work = shared_work_cost(plain, walk.names);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
+		 plain_cost, inlined->planTree->total_cost, scans.total, work, scans.n);
 	/*
-	 * When every reader of the CTE is a scan, the scans are weighed against the work they replace. When some reader stays an ordinary aggregate
-	 * (the index lacks a column of it) the plan reads the table twice and the totals decide.
+	 * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
+	 * column of an aggregate) the plan reads the table twice and the totals decide.
 	 */
-	if (scans.n > 0 && (scans.n >= readers ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
+	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
 						scans.total < plain_cost - inlined->planTree->total_cost))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
