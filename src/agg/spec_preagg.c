@@ -245,16 +245,13 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 	return SPW_MEAS_NOT_STORED;
 }
 
-/*
- * Can the histogram of leaf answer a test of it? The keys of a 32-bit leaf or a dictionary code; without a group key also those of a 64-bit
- * integer (not a numeric, whose NaN the vectors present as a value).
- */
+/* Can the histogram of leaf answer a test of it or be a group key? The keys of a 32-bit leaf, a dictionary code, an int8 or a numeric(p,s) (its scaled integer) */
 static bool
-hist_leaf_ok(const SiftSrcLayout *lay, int nbase, int leaf, bool keyed)
+hist_leaf_ok(const SiftSrcLayout *lay, int nbase, int leaf)
 {
 	SiftSrcVecType vt = plain_leaf(lay, nbase, -1, leaf) ? lay->leaf[leaf].vtype : SCV_F64;
 
-	return vt == SCV_I32 || vt == SCV_CODE || (!keyed && vt == SCV_I64 && lay->leaf[leaf].typid != NUMERICOID);
+	return vt == SCV_I32 || vt == SCV_CODE || vt == SCV_I64;
 }
 
 /*
@@ -275,7 +272,7 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 		if (l == -2)
 			return -2;
 		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension */
-		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l, dim >= 0))
+		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l))
 			*zdim = l;
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
 			continue;
@@ -459,9 +456,10 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		return SPW_ROW_KEYS;
 	if (s->nkeys == 1)
 	{
-		if (s->key[0].kind != SAK_LEAF)
+		/* a group key of the column itself: a 32-bit or text leaf, or the int8 or numeric one that the keys of a program of one leaf stand for */
+		dim = s->key[0].kind == SAK_LEAF ? s->key[0].leaf : s->key[0].kind == SAK_NUM ? num_leaf(&s->key[0].num) : -1;
+		if (dim < 0)
 			return SPW_ROW_KEY;
-		dim = s->key[0].leaf;
 	}
 	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
 	if (dim == -2)
@@ -474,7 +472,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	if (dim >= 0)
 	{
 		d = pa_dim(pa, dim);
-		if (d < 0 || !hist_leaf_ok(lay, nbase, dim, s->nkeys == 1))
+		if (d < 0 || !hist_leaf_ok(lay, nbase, dim))
 			return SPW_ROW_NO_HIST;
 	}
 	else if (!pa->aggs)

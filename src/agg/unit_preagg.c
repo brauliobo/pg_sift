@@ -287,6 +287,13 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 	bool		cover = false;
 
 #define PA_NULL(g) (isnull ? isnull[g] : (g) >= nonnull)
+	if (k->numk)
+	{
+		/* the program of one leaf: the ids of its values, as the scan gives them */
+		for (int j = 0; j < nkept; j++)
+			ids[j] = PA_NULL(kept[j]) ? 0 : idmap_id(&k->im, key[kept[j]]);
+		return;
+	}
 	if (dict)
 		map = dict_kmap(ex, dict_slot(ex, dict), dict, ki);
 	for (int j = 0; j < nkept && !dict; j++)
