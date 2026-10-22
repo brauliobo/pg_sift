@@ -4,6 +4,8 @@ starting permutation: s1prep s2num s1io s1wh s1whg s1jc s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
@@ -72,6 +74,8 @@ starting permutation: s1prep s2text s1io s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
@@ -113,10 +117,128 @@ step s1io: EXECUTE io;
 ERROR:  invalid input syntax for type double precision: "x"
 step s1end: ROLLBACK; DEALLOCATE ALL;
 
+starting permutation: s1prep s2text s1ga s1fl s1end
+step s1prep: BEGIN;
+		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
+		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE wh;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+QUERY PLAN                                    
+----------------------------------------------
+Sort                                          
+  Sort Key: grp                               
+  ->  Custom Scan (SiftAgg)                   
+        Index: iso_sc_col                     
+        Filters: doc.v > '3'::double precision
+        Group Keys: grp                       
+        Pushed Aggregates: count(*)           
+(7 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+step s1ga: EXECUTE ga;
+grp|   s
+---+----
+  0|    
+  1|3000
+  2|    
+(3 rows)
+
+step s1fl: EXECUTE fl;
+ERROR:  invalid input syntax for type double precision: "x"
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2num s1ga s1fl s1end
+step s1prep: BEGIN;
+		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
+		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE wh;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+QUERY PLAN                                    
+----------------------------------------------
+Sort                                          
+  Sort Key: grp                               
+  ->  Custom Scan (SiftAgg)                   
+        Index: iso_sc_col                     
+        Filters: doc.v > '3'::double precision
+        Group Keys: grp                       
+        Pushed Aggregates: count(*)           
+(7 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5'));
+step s1ga: EXECUTE ga;
+grp|   s
+---+----
+  0|    
+  1|3000
+  2|    
+(3 rows)
+
+step s1fl: EXECUTE fl;
+grp|  n
+---+---
+  0|401
+  1|400
+  2|400
+(3 rows)
+
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
 starting permutation: s1prep s2text s1whg s1wh s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
@@ -169,6 +291,8 @@ starting permutation: s1prep s2begin s2text s1io s1jc s1wh s2abort s1io s1wh s1e
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;

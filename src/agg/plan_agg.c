@@ -632,8 +632,9 @@ bool
 compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	SiftAggAgg	fresh;
-	Bitmapset  *used;
-	bool		other;
+	Bitmapset  *outer;
+	bool		other,
+				ok = true;
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
@@ -649,12 +650,17 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 			return false;
 	}
 	fresh = *out;
-	used = bms_copy(c->used);
+	outer = c->used;
+	c->used = NULL;
 	other = c->other_group;
-	if (compile_native_agg(c, a, out, ai))
-		return true;
-	*out = fresh;
-	c->used = used;
-	c->other_group = other;
-	return compile_gen(c, a, out, ai);
+	if (!compile_native_agg(c, a, out, ai))
+	{
+		*out = fresh;
+		c->used = NULL;
+		c->other_group = other;
+		ok = compile_gen(c, a, out, ai);
+	}
+	out->reads = c->used;
+	c->used = bms_union(outer, c->used);
+	return ok;
 }

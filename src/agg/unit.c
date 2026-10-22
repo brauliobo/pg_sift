@@ -218,6 +218,19 @@ leaf_rechecked(const SiftAggSpec *s, int leaf)
 	return false;
 }
 
+/* the rows of own that the FILTER of an aggregate of gate (bit j: agg[j]) keeps: the rows whose cast the aggregates evaluate */
+static void
+gate_rows(AggExec *ex, uint64 gate, uint64 *own)
+{
+	int			nrw = (ex->unit.nrow + 63) / 64;
+	uint64	   *keep = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+
+	for (int j = 0; j < ex->spec->naggs; j++)
+		if (gate >> j & 1)
+			sift_colk->bits_or(keep, row_bitmap(ex, ex->spec->agg[j].filter), nrw);
+	sift_colk->bits_and(own, keep, nrw);
+}
+
 /*
  * The rows of the unit that hold a value the index cannot store in a leaf the scan reads, NULL when there is none. The leaves after the source's
  * read their values from one of its leaves (the value column of a member of an object, the array of a length): theirs count too.
@@ -231,7 +244,24 @@ overflow_rows(AggExec *ex, bool rechecked, bool lists_only)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->leaves[i] < ex->nbase && s->recheck[i] != SRK_RECORDSET_LAZY && (s->recheck[i] != SRK_NONE) == rechecked &&
 			(s->recheck[i] == SRK_RECORDSET ? lists_only || !ex->recheck_after_late : !lists_only))
-			leaf_overflow_rows(ex, s->leaves[i], &rows);
+		{
+			uint64	   *own = NULL;
+
+			if (!rechecked || !s->gate[i])
+				leaf_overflow_rows(ex, s->leaves[i], &rows);
+			else
+			{
+				leaf_overflow_rows(ex, s->leaves[i], &own);
+				if (own)
+				{
+					gate_rows(ex, s->gate[i], own);
+					if (!rows)
+						rows = own;
+					else
+						sift_colk->bits_or(rows, own, (ex->unit.nrow + 63) / 64);
+				}
+			}
+		}
 	for (int j = 0; j < s->nvleaf && !lists_only; j++)
 	{
 		if (s->vleaf[j].types)

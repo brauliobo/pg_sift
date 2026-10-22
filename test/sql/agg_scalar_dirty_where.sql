@@ -19,15 +19,7 @@ BEGIN
 END $$;
 
 -- the plan the pushdown gives the query
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN 'scan'; END IF;
-	END LOOP;
-	RETURN 'normal';
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT CASE WHEN pushed(q) THEN 'scan' ELSE 'normal' END $$;
 
 CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text; n bigint := 0;
@@ -144,6 +136,7 @@ DROP TABLE w_q;
 DROP TABLE w_t;
 DROP FUNCTION reread(text);
 DROP FUNCTION plan_of(text);
+DROP FUNCTION pushed(text);
 DROP FUNCTION outcome(text);
 DROP FUNCTION runq(text, bool);
 DROP EXTENSION pg_sift;

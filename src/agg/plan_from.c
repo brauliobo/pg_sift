@@ -803,6 +803,7 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 	s->nleaves = n;
 	qsort(s->leaves, n, sizeof(int), cmp_int);
 	s->recheck = palloc0(Max(n, 1));
+	s->gate = palloc0(Max(n, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)
 		s->recheck[i] = s->leaves[i] < c->lay->nleaves ? spec_recheck(c, s, s->leaves[i]) : SRK_NONE;
 	for (int j = 0; j < s->nvleaf; j++)
@@ -959,6 +960,9 @@ unconditional(Node *n, Unconditional *u)
 	{
 		Aggref	   *a = (Aggref *) n;
 
+		/* the FILTER is tested for every row that reaches the aggregate; the arguments for the rows it keeps */
+		if (unconditional((Node *) a->aggfilter, u))
+			return true;
 		if (a->aggfilter != NULL)
 			return false;
 		foreach_ptr(Node, x, list_concat_copy(a->aggdirectargs, a->args))
@@ -1269,6 +1273,56 @@ others_first(AggCtx *c, const Unconditional *u)
 	return true;
 }
 
+/* counts the reads of the leaf in the arguments of the aggregates with a FILTER that does not read it: the aggregate evaluates them for the rows the FILTER keeps */
+static bool
+filtered_reads(Node *n, Unconditional *u)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Aggref) && ((Aggref *) n)->aggfilter != NULL)
+	{
+		Aggref	   *a = (Aggref *) n;
+		Unconditional t = *u;
+
+		t.nread = 0;
+		count_leaf_reads((Node *) a->aggfilter, &t);
+		if (t.nread == 0)
+		{
+			count_leaf_reads((Node *) a->args, u);
+			count_leaf_reads((Node *) a->aggdirectargs, u);
+		}
+		return false;
+	}
+	return expression_tree_walker(n, filtered_reads, u);
+}
+
+/*
+ * The aggregates that read leaf m (bit j: agg[j]), when each has a FILTER that cannot raise and reads no leaf that holds a bad value: its row raises
+ * where one of them keeps it. 0: there is one without, or too many aggregates for the bits.
+ */
+static uint64
+gate_mask(AggCtx *c, const SiftAggSpec *s, int m)
+{
+	uint64		mask = 0;
+	Bitmapset  *dirty = NULL;
+
+	if (s->naggs > 64)
+		return 0;
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+		if (c->stats.ovf[i])
+			dirty = bms_add_member(dirty, i);
+	for (int j = 0; j < s->naggs; j++)
+		if (bms_is_member(m, s->agg[j].reads))
+		{
+			const SiftAggPred *f = s->agg[j].filter;
+
+			if (f == NULL || f->late || f->level != 0 || pred_reads_set(c, f, dirty))
+				return 0;
+			mask |= UINT64CONST(1) << j;
+		}
+	return mask;
+}
+
 /*
  * Can leaf m, a number or boolean path of the document that the query reads only as `(doc ->> 'k')::T` (SRK_IOCAST) or, for float8, as the
  * cast of `doc -> 'k'` (SRK_CAST), be read again from the heap? A row whose value the leaf cannot store is read as SQL reads it: the text of the
@@ -1291,7 +1345,9 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	Unconditional all;
 	SiftSrcRecheck kind;
 	Bitmapset  *read;
-	bool		tested = false;
+	bool		tested = false,
+				filtered = false;
+	uint64		gate = 0;
 
 	if (m >= c->lay->nleaves - c->nvleaf || c->group >= 0 || c->func_rti != 0 || c->joins != NIL || c->search || !OidIsValid(c->indexoid) ||
 		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
@@ -1320,6 +1376,17 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 			}
 			tested = true;
 		}
+	for (int j = 0; j < s->naggs; j++)
+		if (s->agg[j].filter != NULL && pred_reads_set(c, s->agg[j].filter, read))
+		{
+			if (!scalar_test(s->agg[j].filter, m))
+			{
+				c->dirty_leaf = m;
+				c->dirty_why = "the FILTER of an aggregate tests the cast in a way that is none of a comparison with a constant, an IN list of integers and a NULL test";
+				return SRK_NONE;
+			}
+			filtered = true;
+		}
 	if (tested)
 	{
 		for (int i = 0; i < s->npred; i++)
@@ -1329,20 +1396,43 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 			return order_refused(c, m);
 	}
 	else if (!unconditional((Node *) q->targetList, &u) && !unconditional(q->havingQual, &u))
-		return SRK_NONE;
-	/* every read is in the conditions and the targets: the one the walk found is in the same tree as the others */
+	{
+		/* not every row evaluates it: the rows that the FILTER of every aggregate that reads it keeps do */
+		gate = gate_mask(c, s, m);
+		if (gate == 0)
+		{
+			c->dirty_leaf = m;
+			c->dirty_why = "the cast runs for some rows only (a CASE branch), or in an aggregate whose FILTER may raise, reads another path that holds a bad value or is missing";
+			return SRK_NONE;
+		}
+	}
+	/* every read is in the conditions and the targets (in the arguments of the aggregates with a FILTER when it is gated): the one the walk found is in the same tree as the others */
 	all = u;
 	all.nread = 0;
 	count_leaf_reads((Node *) q, &all);
 	u.nread = 0;
-	count_leaf_reads((Node *) q->targetList, &u);
-	count_leaf_reads(q->havingQual, &u);
-	count_leaf_reads(q->jointree->quals, &u);
+	if (gate)
+	{
+		filtered_reads((Node *) q->targetList, &u);
+		filtered_reads(q->havingQual, &u);
+	}
+	else
+	{
+		count_leaf_reads((Node *) q->targetList, &u);
+		count_leaf_reads(q->havingQual, &u);
+		count_leaf_reads(q->jointree->quals, &u);
+	}
 	if (all.nread != u.nread)
 		return SRK_NONE;
+	for (int i = 0; gate && i < s->nleaves; i++)
+		if (s->leaves[i] == m)
+			s->gate[i] = gate;
 	for (int i = 0; i < s->npred; i++)
 		if (pred_reads_set(c, s->pred[i], read))
 			s->pred[i]->pass_poison = true;
+	for (int j = 0; filtered && j < s->naggs; j++)
+		if (s->agg[j].filter != NULL && pred_reads_set(c, s->agg[j].filter, read))
+			s->agg[j].filter->pass_poison = true;
 	return kind;
 }
 

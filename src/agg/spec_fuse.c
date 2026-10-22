@@ -526,6 +526,7 @@ fuse_adapt(Fuse *f, FuseArm *arm)
 	a->nleaves = f->u.nleaves;
 	a->leaves = f->u.leaves;
 	a->recheck = f->u.recheck;
+	a->gate = f->u.gate;
 	a->key = palloc(Max(s->nkeys, 1) * sizeof(SiftAggKey));
 	memcpy(a->key, s->key, s->nkeys * sizeof(SiftAggKey));
 	for (int j = 0; j < s->nkeys; j++)
@@ -702,6 +703,7 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 		total += m[i]->nleaves;
 	leaves = palloc(Max(total, 1) * sizeof(int));
 	recheck = palloc0(Max(total, 1));
+	out->gate = palloc0(Max(total, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < m[i]->nleaves; j++)
 		{
@@ -709,6 +711,9 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 
 			/* the error is raised for the rows the common conjuncts keep, which an arm's own conjuncts would drop before it in the scan of the arm */
 			if (n > 1 && m[i]->recheck[j] == SRK_CAST_TESTED)
+				return false;
+			/* the bits of a gate are the arm's aggregates */
+			if (m[i]->gate[j] != 0)
 				return false;
 			while (at < k && leaves[at] < m[i]->leaves[j])
 				at++;
