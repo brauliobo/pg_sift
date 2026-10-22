@@ -367,9 +367,11 @@ SELECT count(*) FROM t WHERE NOT body @@> 'omega OR sigma';
 
 SELECT id FROM t WHERE body @@> ALL (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM t WHERE NOT body @@> ANY (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 -- a parameter: the array of a generic plan is read when the scan starts
 PREPARE any_s(text[]) AS SELECT id, round(sift.score(ctid)::numeric, 4) FROM t WHERE body @@> ANY ($1) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
