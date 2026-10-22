@@ -334,6 +334,8 @@ typedef struct SiftSrcRollupNeed
  * Planner: the histograms and rollups the index writes (a unit may still lack one, or hold fewer dims of a rollup); ndims 0 when none.
  * aggs: units have unit_agg sums (always, even with ndims 0)
  */
+#define SIFT_SRC_MONTH	128			/* unit_hist(dim): the dim of a timestamp leaf by month is SIFT_SRC_MONTH + the leaf */
+
 typedef struct SiftSrcPreagg
 {
 	bool		aggs;
@@ -344,6 +346,7 @@ typedef struct SiftSrcPreagg
 		int			nmeas;
 		int			meas[SIFT_SRC_MAX_MEAS];
 		bool		minmax;			/* the units written from now on store min and max of the integer measures per group */
+		bool		month;			/* leaf is a timestamp leaf and the histogram groups it by the first day of its month (keys: days since 2000-01-01), asked for as unit_hist(SIFT_SRC_MONTH + leaf) */
 	}			dim[SIFT_SRC_MAX_DIMS];
 	int			nrollups;
 	struct

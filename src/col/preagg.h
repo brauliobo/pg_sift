@@ -33,12 +33,15 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROLLUP_TUPLES	4096		/* the most tuples of a rollup in a unit (explicit rollup(...)); the default takes at most a 32nd of the unit's elements, at least 64 */
 #define SIFT_PAGG_ROLLUP_MIN	64
 #define SIFT_PAGG_MAX_MEAS		8
+#define SIFT_PAGG_MONTH			128			/* a cube dim whose directory leaf is this plus a timestamp leaf: the groups of the month of that leaf (SIFT_COL_MAX_COLS leaves precede it) */
 #define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
 #define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
+#define SIFT_PAGG_MONTH_GROUPS	1024		/* the months a month dim holds in a unit: 85 years */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
+#define SIFT_PAGG_MONTH_PERMILLE 50			/* the month dims of a unit may take this much of its bytes (at least twice the minimum budget) */
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
@@ -69,6 +72,7 @@ typedef struct SiftCPaggDim
 {
 	int16		leaf;
 	uint8		nmeas;
+	bool		month;					/* leaf is a timestamp leaf and the dim groups it by the month: the key is the day number of the first day of the month (days since 2000-01-01, as a date) */
 	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
@@ -104,6 +108,17 @@ typedef struct SiftCPaggSpec
  */
 extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);
+
+/*
+ * Adds to a default spec the month dim of every timestamp leaf (without time zone) of the top level, with the measures of a default dim: a GROUP BY of
+ * date_trunc('month', ts) is then a histogram of the unit as a leaf that holds it would be (docs/COL-PREAGG.md 2). A sift_table has no index option to ask
+ * for it, so its writer adds it to the default; column format minor 8.
+ */
+extern void sift_cpagg_spec_months(const SiftColSchema *s, SiftCPaggSpec *spec);
+/* The day number (days since 2000-01-01) of the first day of the month of a timestamp (microseconds since 2000-01-01); false for an infinity */
+extern bool sift_cpagg_month_of(int64 us, int64 *day);
+/* Is a stored month key a first day of a month? */
+extern bool sift_cpagg_month_start(int64 day);
 
 /* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
@@ -235,10 +250,10 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
- * false on any difference, or when the cube holds min and max (minmax) and the segment's column format may not. A blob of length 0 is none.
+ * false on any difference, or when the cube holds min and max (minmax) or a month dim and the segment's column format (format) may not. A blob of length 0 is none.
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
-							 const uint8 *eblob, uint32 elen, bool minmax_ok);
+							 const uint8 *eblob, uint32 elen, int format);
 /*
  * What the stored sidecar of the units of a segment holds, against what the spec of the index writes now (sift_col_refresh, the planner's share of the
  * units that have a section). Read from the headers of the blobs only. dim[i], mm[i] and roll[i] count the units that hold the dim of spec dim i (with

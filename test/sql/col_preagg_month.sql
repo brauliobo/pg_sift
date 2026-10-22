@@ -1,0 +1,75 @@
+-- The month dim of the cube of a sift_table (column format minor 8, docs/COL-PREAGG.md section 2): written under the default sift.col_format_minor and
+-- not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back by the decoder that refuses a damaged cube; checked
+-- against the chunks by the verify of the segments; kept by a rewrite.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE cmo (id int, ts timestamp, tz timestamptz, d date, kind int, amt numeric(10, 2), flt float8, pad text) USING sift_table;
+CREATE TABLE cmo_nots (id int, kind int, amt numeric(10, 2), pad text) USING sift_table;
+CREATE TABLE cmo_seven (LIKE cmo) USING sift_table;
+CREATE FUNCTION cmo_fill(tbl regclass, lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format($q$INSERT INTO %s SELECT g, CASE WHEN g %% 41 = 0 THEN NULL ELSE timestamp '2001-02-03 04:05:06' + g * interval '1 hour' END,
+		timestamptz '2001-02-03 04:05:06+00' + g * interval '1 hour', date '2001-02-03' + g / 8, g %% 6, ((g * 91) %% 20000) / 100.0 - 50, (g %% 71) / 7.0 - 3, repeat('p', 60)
+		FROM generate_series(%s, %s) g$q$, tbl, lo, hi);
+END $$;
+SELECT cmo_fill('cmo', 1, 60000);
+INSERT INTO cmo_nots SELECT g, g % 6, g / 7.0, repeat('p', 60) FROM generate_series(1, 60000) g;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo, cmo_nots;
+SET sift.col_format_minor = 7;
+SELECT cmo_fill('cmo_seven', 1, 60000);
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo_seven;
+RESET sift.col_format_minor;
+
+-- the minor of the segments: 8 with a timestamp column, 4 under the setting 7 and without a timestamp column (a month dim over many months does not fit the
+-- byte budget of the cube of a unit, and the unit goes without it: the data here spans 14 years)
+SELECT 'cmo' AS tbl, array_agg(DISTINCT format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns'
+UNION ALL SELECT 'cmo_seven', array_agg(DISTINCT format) FROM sift.table_segments('cmo_seven') WHERE kind = 'columns'
+UNION ALL SELECT 'cmo_nots', array_agg(DISTINCT format) FROM sift.table_segments('cmo_nots') WHERE kind = 'columns' ORDER BY 1;
+SELECT sift._test_tbl_verify('cmo') > 0 AS cmo_ok, sift._test_tbl_verify('cmo_seven') > 0 AS seven_ok, sift._test_tbl_verify('cmo_nots') > 0 AS nots_ok;
+
+-- only the table's timestamp column has the month dim (not the timestamptz, whose month depends on the zone, nor the date); a damaged cube is refused, and one that is accepted is still sound
+SELECT 'cmo' AS tbl, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, with_month = blobs AS all_with_month, cut > 0 AS cuts_made,
+       cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made, accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
+FROM sift._test_tbl_cube_damage('cmo', 3)
+UNION ALL
+SELECT 'cmo_seven', blobs > 0, intact = blobs, with_month = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+FROM sift._test_tbl_cube_damage('cmo_seven', 3)
+UNION ALL
+SELECT 'cmo_nots', blobs > 0, intact = blobs, with_month = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+FROM sift._test_tbl_cube_damage('cmo_nots', 3)
+ORDER BY 1;
+
+-- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes minor 8
+SET sift.col_format_minor = 7;
+SELECT cmo_fill('cmo', 60001, 90000);
+VACUUM (DISABLE_PAGE_SKIPPING) cmo;
+RESET sift.col_format_minor;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+SELECT cmo_fill('cmo', 90001, 120000);
+VACUUM (DISABLE_PAGE_SKIPPING) cmo;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+VACUUM (FULL) cmo;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+SELECT blobs > 0 AS has_cubes, with_month = blobs AS all_with_month FROM sift._test_tbl_cube_damage('cmo', 3);
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+
+-- deletes, updates and VACUUM, then a rewrite
+DELETE FROM cmo WHERE id % 3 = 0;
+UPDATE cmo SET ts = ts + interval '400 days' WHERE id % 5 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) cmo;
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+VACUUM (FULL) cmo;
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+
+-- a column added later has no month dim in the segments written before; the month of the old column is still there
+ALTER TABLE cmo ADD COLUMN ts2 timestamp DEFAULT '2020-01-01';
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+SELECT blobs > 0 AS has_cubes, intact = blobs AS intact_decodes FROM sift._test_tbl_cube_damage('cmo', 3);
+
+DROP TABLE cmo, cmo_nots, cmo_seven;
+DROP FUNCTION cmo_fill(regclass, int, int);
+DROP EXTENSION pg_sift_test CASCADE;

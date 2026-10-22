@@ -570,6 +570,7 @@ extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 typedef struct SiftAggPaShape
 {
 	int			dim;
+	bool		month;				/* dim >= 0: the cube's month dim of that timestamp leaf, not the leaf's own dim */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
@@ -588,6 +589,8 @@ typedef struct SiftAggPaShape
  * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
  * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
  */
+/* a SAK_LUT key of a timestamp leaf whose expression is the same all month (date_trunc('month', ts)::date, extract(year FROM ts), ...): the month dim of the cube answers it */
+extern bool sift_aggkey_month(const SiftAggKey *k);
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
 /* Why a spec is not answered from the pre-aggregates, in the order the checks run */

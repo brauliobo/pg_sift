@@ -19,6 +19,7 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 		pa->dim[pa->ndims].leaf = spec->dim[d].leaf;
 		pa->dim[pa->ndims].nmeas = spec->dim[d].nmeas;
 		pa->dim[pa->ndims].minmax = spec->minmax;
+		pa->dim[pa->ndims].month = spec->dim[d].month;
 		for (int m = 0; m < spec->dim[d].nmeas; m++)
 			pa->dim[pa->ndims].meas[m] = spec->dim[d].meas[m];
 		pa->ndims++;

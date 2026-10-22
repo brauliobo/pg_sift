@@ -143,13 +143,111 @@ col_usable(const SiftCPaggCol *c, uint32 nrows)
 	return c->ready && c->n == nrows && !has_ovf(c);
 }
 
+#define PAGG_USECS_DAY		INT64CONST(86400000000)
+#define PAGG_EPOCH_DAYS		10957			/* 1970-01-01 to 2000-01-01 */
+#define PAGG_MAX_DAYS		110000000		/* a little past the days of the range of a timestamp */
+
+/* Days since 1970-01-01 of a civil date and the civil month of a day number: the proleptic Gregorian calendar PostgreSQL's date_trunc uses (H. Hinnant's algorithms) */
+static int64
+civil_days(int64 y, unsigned m)
+{
+	int64		era;
+	unsigned	yoe,
+				doy;
+
+	y -= m <= 2;
+	era = (y >= 0 ? y : y - 399) / 400;
+	yoe = (unsigned) (y - era * 400);
+	doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5;
+	return era * 146097 + (int64) (yoe * 365 + yoe / 4 - yoe / 100 + doy) - 719468;
+}
+
+static void
+civil_month(int64 z, int64 *y, unsigned *m)
+{
+	int64		era;
+	unsigned	doe,
+				yoe,
+				doy,
+				mp;
+
+	z += 719468;
+	era = (z >= 0 ? z : z - 146096) / 146097;
+	doe = (unsigned) (z - era * 146097);
+	yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	mp = (5 * doy + 2) / 153;
+	*m = mp < 10 ? mp + 3 : mp - 9;
+	*y = yoe + era * 400 + (*m <= 2);
+}
+
+static int64
+day_of(int64 us)
+{
+	int64		d = us / PAGG_USECS_DAY;
+
+	return us % PAGG_USECS_DAY < 0 ? d - 1 : d;
+}
+
+bool
+sift_cpagg_month_of(int64 us, int64 *day)
+{
+	int64		y;
+	unsigned	m;
+
+	if (us == PG_INT64_MAX || us == PG_INT64_MIN)
+		return false;
+	civil_month(day_of(us) + PAGG_EPOCH_DAYS, &y, &m);
+	*day = civil_days(y, m) - PAGG_EPOCH_DAYS;
+	return true;
+}
+
+bool
+sift_cpagg_month_start(int64 day)
+{
+	int64		first;
+
+	return day > -PAGG_MAX_DAYS && day < PAGG_MAX_DAYS && sift_cpagg_month_of(day * PAGG_USECS_DAY, &first) && first == day;
+}
+
+/* The key of a month dim: the first day of the month of each row of a timestamp leaf; false (the unit has no such dim) for an infinity */
+static bool
+month_keys(const SiftCPaggCol *c, uint32 nrows, int64 *out)
+{
+	int64		last_day = 0,
+				last_first = 0;
+	bool		have = false;
+
+	for (uint32 i = 0; i < nrows; i++)
+	{
+		int64		d;
+
+		if (is_null(c->nulls, i))
+		{
+			out[i] = 0;
+			continue;
+		}
+		if (c->key[i] == PG_INT64_MAX || c->key[i] == PG_INT64_MIN)
+			return false;
+		d = day_of(c->key[i]);
+		if (!have || d != last_day)
+		{
+			if (!sift_cpagg_month_of(c->key[i], &last_first))
+				return false;
+			last_day = d;
+			have = true;
+		}
+		out[i] = last_first;
+	}
+	return true;
+}
+
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
-build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, const Scratch *sc,
-		  DimBuild *b)
+build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg,
+		  const Scratch *sc, DimBuild *b)
 {
 	StringInfo	out = &b->blob;
-	const SiftCPaggCol *dc = &cols[sd->leaf];
 	uint32		ng = 0,
 				nullg = UINT32_MAX,
 				hsize = sc->hsize,
@@ -313,7 +411,7 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 	for (int d = 0; d < nd; d++)
 		if (db[d].keep)
 		{
-			put_u(out, spec->dim[db[d].spec].leaf);
+			put_u(out, spec->dim[db[d].spec].leaf + (spec->dim[db[d].spec].month ? SIFT_PAGG_MONTH : 0));
 			put_u(out, db[d].blob.len);
 		}
 	for (int d = 0; d < nd; d++)
@@ -323,11 +421,15 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 
 /* The histogram of every dim of the spec */
 static void
-build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, DimBuild *db)
+build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 cubeg, DimBuild *db)
 {
-	uint32		hsize = 16;
+	uint32		hsize = 16,
+				maxg = cubeg;
 	Scratch		sc;
 
+	for (int d = 0; d < spec->ndims; d++)
+		if (spec->dim[d].month)
+			maxg = Max(maxg, SIFT_PAGG_MONTH_GROUPS);
 	while (hsize < 2 * (maxg + 1))
 		hsize *= 2;
 	sc.hsize = hsize;
@@ -347,9 +449,21 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	{
 		int			lean;
 
+		const SiftCPaggCol *dc = &cols[spec->dim[d].leaf];
+		SiftCPaggCol mc;
+		int64	   *mkey = NULL;
+
 		db[d] = (DimBuild) {.spec = d};
 		initStringInfo(&db[d].blob);
-		db[d].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[d]);
+		if (spec->dim[d].month && col_usable(dc, nrows))
+		{
+			mkey = palloc(nrows * sizeof(int64));
+			mc = (SiftCPaggCol) {mkey, dc->nulls, NULL, nrows, month_keys(dc, nrows, mkey)};
+			dc = &mc;
+		}
+		db[d].ok = !(spec->dim[d].month && mkey == NULL) && build_dim(s, &spec->dim[d], dc, cols, nrows, spec->dim[d].month ? maxg : cubeg, &sc, &db[d]);
+		if (mkey)
+			pfree(mkey);
 		/* the dims are chosen by the size they have with the first measures: the others come with a dim that is kept, as the planner expects */
 		lean = spec->dim[d].lean > 0 ? Min(spec->dim[d].lean, db[d].nm) : db[d].nm;
 		db[d].bytes = db[d].ok && lean < db[d].nm ? db[d].cut[lean] + db[d].tail[lean] - db[d].cut[db[d].nm] : db[d].blob.len;
@@ -817,28 +931,38 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 				StringInfo out, StringInfo eout)
 {
 	DimBuild	db[SIFT_PAGG_MAX_DIMS];
-	Size		budget = 0,
-				used = 0;
+	Size		budget[2] = {0, 0},		/* the dims of the columns, and the month dims, which have a larger budget of their own: a month is a few dozen bytes, for the question most asked of a time column */
+				used[2] = {0, 0};
 
 	if (spec->off || nrows == 0 || (spec->ndims == 0 && (eout == NULL || spec->nrollups == 0)))
 		return;
 	if (spec->permille > 0)
-		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
+	{
+		budget[0] = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
+		budget[1] = Max((Size) SIFT_PAGG_MIN_BUDGET * 2, unit_bytes / 1000 * SIFT_PAGG_MONTH_PERMILLE);
+	}
 	if (spec->ndims > 0)
 	{
 		build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), db);
 		/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
 		for (int round = 0; round < spec->ndims; round++)
 		{
-			int			best = -1;
+			int			best = -1,
+						cls;
 
 			for (int d = 0; d < spec->ndims; d++)
 				if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
 					best = d;
-			if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
+			if (best < 0)
 				break;
+			cls = spec->dim[best].month;
+			if (budget[cls] > 0 && used[cls] + db[best].bytes + 1 > budget[cls])
+			{
+				db[best].ok = false;
+				continue;
+			}
 			db[best].keep = true;
-			used += db[best].bytes;
+			used[cls] += db[best].bytes;
 		}
 		emit_cube(spec, db, spec->ndims, out);
 		for (int d = 0; d < spec->ndims; d++)
