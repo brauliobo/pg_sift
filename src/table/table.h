@@ -88,6 +88,7 @@ typedef struct SiftTblPageHdr
 
 #define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_WBUFPAGE_SEALED: set on every page when the segment is sealed (sift_lane_flag_sealed_pages) */
 #define SIFT_TBL_PAGE_OVFDATA	0x0100	/* continuation bytes of an overflow row, no slots */
+#define SIFT_TBL_PAGE_TAIL		0x0200	/* an OVFDATA page the write buffer's page table does not list (no vblock): the bytes of a row too wide for the table of its buffer */
 
 #define TBL_PAGE(page)	((SiftTblPageHdr *) SiftPageGetData(page))
 #define TBL_PAGE_INIT	MAXALIGN(sizeof(SiftTblPageHdr))
@@ -275,6 +276,8 @@ extern SiftTblVerState sift_tbl_ver_state(Relation rel, Snapshot snapshot, const
 
 /* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
 extern const SiftTblRec *sift_tbl_page_rec(Page page, uint64 gen, uint32 off);
+/* The bytes of an overflow row that a continuation page of write buffer gen holds; a page that is none, or holds no bytes, is corruption */
+extern uint32 sift_tbl_ovf_piece(Page page, uint64 gen);
 /* The row of a record as a HeapTuple (an overflow row is read from its pages); t_self/t_tableOid are the caller's */
 extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key);
 extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
@@ -545,6 +548,7 @@ extern void sift_tbl_gate(int number);
 #define sift_tbl_gate(number)	((void) 0)
 #endif
 extern PGDLLIMPORT bool sift_tbl_inline_promote;
+extern PGDLLIMPORT bool sift_tbl_wide_rows;
 extern PGDLLIMPORT int sift_tbl_backpressure;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
 

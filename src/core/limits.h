@@ -152,7 +152,7 @@
 	X(prefix_index, "SIFT_MAX_PREFIX_INDEX", "core/sift.h", SIFT_MAX_PREFIX_INDEX, "characters", \
 	  "prefix_index option", "option rejected at CREATE INDEX", "prefix_index option", 0) \
 	X(write_buffer_kb, "SIFT_DEFAULT_WRITE_BUFFER_LIMIT", "core/sift.h", SIFT_DEFAULT_WRITE_BUFFER_LIMIT, "kB", \
-	  "default write buffer; a sift_table row must fit it", "ERROR 54000 for a larger sift_table row", "write_buffer_limit option", 0) \
+	  "default write buffer; a sift_table row that does not fit it needs sift.table_wide_rows", "ERROR 54000 for a larger sift_table row unless sift.table_wide_rows is on (then up to 1 GB)", "sift.table_wide_rows", 0) \
 	X(table_vblocks, "-", "table/wbuf.c", 4294967294, "blocks", \
 	  "virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left)", "ERROR 54000, VACUUM FULL renumbers them", "-", 0) \
 	X(query_bytes, "SIFT_QUERY_MAX_BYTES", "bm25/query.h", SIFT_QUERY_MAX_BYTES, "bytes", \

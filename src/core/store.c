@@ -295,7 +295,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
-		else if (s->format > Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ))	/* the column engine numbers its segment formats on its own */
+		else if (s->format > Max(Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ), SIFT_COL_FORMAT_WIDE_ROWS))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
 			if (dir->segs[j].gen == s->gen)
