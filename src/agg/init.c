@@ -404,6 +404,7 @@ scan_buffers(AggExec *ex)
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->c64 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	ex->okb = MemoryContextAlloc(ex->cxt, maxv);
+	ex->ncnt = MemoryContextAlloc(ex->cxt, (s->naggs + 1) * sizeof(int64 *));
 	ex->fwin = MemoryContextAllocZero(ex->cxt, maxv);
 	ex->nb = MemoryContextAlloc(ex->cxt, maxv);
 	ex->vstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * maxv * sizeof(double));

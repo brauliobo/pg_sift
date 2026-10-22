@@ -122,6 +122,9 @@ extern const SiftAggKernels *sift_aggkern_for(SiftSimdLevel level);
 /* The scalar table, the specification */
 extern const SiftAggKernels sift_aggkern_scalar;
 
+/* cnt[c][gid[i]] += 1 for each of the nc >= 1 counters over the rows of mask (NULL: all n): count_gid for several counters in one walk of the rows (scalar at every level, like count_gid) */
+extern void sift_aggk_count_gid_n(int64 *const *cnt, int nc, const uint32 *gid, const uint64 *mask, int n);
+
 /* Registers the dispatch rebind (sift_cpu_register); called from _PG_init */
 extern void sift_aggkern_init(void);
 

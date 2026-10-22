@@ -192,6 +192,29 @@ agk_count_gid_scalar(int64 *cnt, const uint32 *gid, const uint64 *mask, int n)
 }
 
 void
+sift_aggk_count_gid_n(int64 *const *cnt, int nc, const uint32 *gid, const uint64 *mask, int n)
+{
+	int64	   *a = cnt[0],
+			   *b = nc > 1 ? cnt[1] : a,
+			   *c = nc > 2 ? cnt[2] : a;
+
+	switch (nc)
+	{
+		case 1:
+			FOREACH_ROW(mask, n, i, a[gid[i]]++);
+			break;
+		case 2:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; a[g]++; b[g]++; });
+			break;
+		case 3:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; a[g]++; b[g]++; c[g]++; });
+			break;
+		default:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; for (int k = 0; k < nc; k++) cnt[k][g]++; });
+	}
+}
+
+void
 agk_sum_gid_i32_scalar(int64 *acc, const uint32 *gid, const int32 *v, const uint64 *mask, int n)
 {
 	FOREACH_ROW(mask, n, i, acc[gid[i]] += v[i]);
