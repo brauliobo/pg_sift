@@ -212,11 +212,28 @@ SELECT rr_set('part', 'SELECT id, s FROM (SELECT id, tenant, tableoid, ctid AS c
 SET ROLE sift_t_rr_user;
 SELECT * FROM rr_check('part', 'SELECT id, sift.score(ctid) AS s FROM rr_pt WHERE body @@> ''alpha beta'' ORDER BY sift.score(ctid) DESC LIMIT 7');
 RESET ROLE;
+
+-- 9. a policy that is itself a match: the rows it keeps come from the heap, and its word is not a term of the ranking (the scores are the owner's)
+CREATE TABLE rr_pm (id int, tenant text, body text);
+INSERT INTO rr_pm SELECT i, (ARRAY['sift_t_rr_user', 'hidden'])[1 + i % 2], CASE WHEN i % 4 < 2 THEN 'open ' ELSE 'closed ' END || repeat('beta ', 1 + (i / 4) % 3) || 'w' || i % 7
+	FROM generate_series(1, 1200) i;
+CREATE INDEX rr_pm_body ON rr_pm USING sift (body);
+ANALYZE rr_pm;
+GRANT SELECT ON rr_pm TO sift_t_rr_user;
+ALTER TABLE rr_pm ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON rr_pm USING (tenant = current_user AND body @@> 'open');
+SELECT rr_set('pm', 'SELECT id, s FROM (SELECT id, tenant, body, ctid AS c, sift.score(ctid) AS s FROM rr_pm WHERE body @@> ''beta'' OFFSET 0) q
+	WHERE tenant = ''sift_t_rr_user'' AND body ~ ''open'' ORDER BY s DESC, c LIMIT 6');
+SET ROLE sift_t_rr_user;
+SELECT * FROM rr_check('pm', 'SELECT id, sift.score(ctid) AS s FROM rr_pm WHERE body @@> ''beta'' ORDER BY sift.score(ctid) DESC LIMIT 6');
+SELECT rr_plan('EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) AS s FROM rr_pm WHERE body @@> ''beta'' ORDER BY sift.score(ctid) DESC LIMIT 6') ~ 'Query: ''beta''::text\n' AS query_is_the_users;
+RESET ROLE;
+
 RESET sift.rls_scores;
 
 DROP VIEW rr_ranked;
 DROP FUNCTION rr_check(text, text), rr_set(text, text), rr_rows(text), rr_plan(text), rr_boom(text), rr_mine(text);
-DROP TABLE rr_items, rr_tags, rr_grants, rr_ref, rr_a, rr_b, rr_pt;
+DROP TABLE rr_items, rr_tags, rr_grants, rr_ref, rr_a, rr_b, rr_pt, rr_pm;
 DROP OWNED BY sift_t_rr_user, sift_t_rr_owner, sift_t_rr_bypass;
 DROP ROLE sift_t_rr_user, sift_t_rr_owner, sift_t_rr_bypass;
 DROP EXTENSION pg_sift;

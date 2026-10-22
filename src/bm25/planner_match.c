@@ -128,15 +128,19 @@ rel_secured(PlannerInfo *root, RelOptInfo *rel)
 
 /*
  * A qual the scan answers: a query, or an array of queries ORed. The match is not leakproof, so a rel with security quals
- * keeps it out of the scan, unless sift.rls_scores lets a ranked scan answer the user's own matches (never a policy's): the scan
- * reads the index, and a row it returns has passed the security quals first (cscan.c scan_verify).
+ * keeps it out of the scan, unless sift.rls_scores lets a ranked scan answer the user's own matches (never a policy's: a policy's
+ * word is a qual of the heap row, and as a term of the query its weight would enter the score): the scan reads the index, and a
+ * row it returns has passed the security quals first (cscan.c scan_verify).
  */
 bool
 scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query)
 {
-	if (ranked && sift_rls_scores && IsA(clause, RestrictInfo) &&
-		((RestrictInfo *) clause)->security_level >= root->qual_security_level)
+	if (ranked && sift_rls_scores && IsA(clause, RestrictInfo))
+	{
+		if (((RestrictInfo *) clause)->security_level < root->qual_security_level)
+			return false;
 		clause = (Node *) ((RestrictInfo *) clause)->clause;
+	}
 	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query);
 }
 
