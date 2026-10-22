@@ -219,19 +219,23 @@ chunk_run(void *a)
 	uint64		pm[SIFT_PAGEMASK_WORDS],
 				all[SIFT_PAGEMASK_WORDS] = {~0ULL, ~0ULL, ~0ULL, ~0ULL};
 	uint64	   *om = palloc(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
+	uint8	   *chunk = malloc(j->len);		/* exactly its length for ASan: the copy of the job keeps readable padding */
 	uint32		np = 0,
 				bits = 0;
 
-	if (sift_chunk_check(j->p, j->len) != NULL)
-		return;
-	sift_chunk_pagemask(j->p, pm);
-	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-		np += sift_pc64(pm[w]);
-	if (sift_chunk_offsets(j->p, all, om) != np)
-		fz_bad("a valid DOCMAP chunk lists %u pages, its offsets are of another number", np);
-	for (uint32 k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
-		bits += sift_pc64(om[k]);
-	j->digest = mix(np, bits);
+	memcpy(chunk, j->p, j->len);
+	if (sift_chunk_check(chunk, j->len) == NULL)
+	{
+		sift_chunk_pagemask(chunk, pm);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			np += sift_pc64(pm[w]);
+		if (sift_chunk_offsets(chunk, all, om) != np)
+			fz_bad("a valid DOCMAP chunk lists %u pages, its offsets are of another number", np);
+		for (uint32 k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
+			bits += sift_pc64(om[k]);
+		j->digest = mix(np, bits);
+	}
+	free(chunk);
 }
 
 int
