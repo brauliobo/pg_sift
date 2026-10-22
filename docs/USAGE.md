@@ -260,6 +260,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.agg_lookup_cache_kb` | 256 MB | 0 to 2147483647 kB: memory per backend that keeps the rows of the tables a `SiftAgg` scan joined for the next query while the table is unchanged and fully vacuumed (`Cached Lookup Tables` in `EXPLAIN ANALYZE`); a table whose rows need more than half of it is loaded per query; `0` keeps nothing ([docs/AGG.md](AGG.md)) |
 | `sift.agg_lookup_shared_kb` | 0 (off) | 0 to 2147483647 kB, superuser: dynamic shared memory, for all backends together, that keeps the rows of the joined tables a `SiftAgg` scan loaded so that other backends read them instead of loading them (`Cached Lookup Tables`), while the table is unchanged and fully vacuumed; a table whose rows need more than half of it is not kept, the least recently used go first. It needs no restart or preload, and is taken from `dynamic_shared_memory_type` (`/dev/shm` for `posix`): keep it below what that holds ([docs/AGG.md](AGG.md)) |
 | `sift.agg_lookup_max_rows` | 1000000 | rows a sub-select, `VALUES` list or function joined to a `SiftAgg` scan may have, as the planner estimates them (the rows go into a lookup table in memory when the scan starts); a larger one keeps the normal join ([docs/AGG.md](AGG.md), "Joins to plans") |
+| `sift.explain_refusals` | off | report as a notice why a query kept the normal plan instead of `Custom Scan (SiftAgg)`: the first reason each candidate path (arm) gave up for, `SiftAgg not used: <slug>: <reason>` ([Why a query kept the normal plan](#why-a-query-kept-the-normal-plan)); the plans are the same with it on or off |
 | `sift.col_auto_merge` | off | after a `VACUUM` that leaves a `sift_col` index scattered by churn, a background worker seals its write buffer and merges all its segments into one (the end state of `REINDEX`, without its exclusive lock); it needs `sift.async_maintenance`, sleeps as `sift.maintenance_cost_delay` says, skips an index over `sift.vacuum_rewrite_limit` MB and one whose maintenance lock is held (superuser; set it per database or in `postgresql.conf`, the worker reads no session setting) |
 | `sift.col_auto_merge_dirty_pct`, `_fragmentation`, `_buffer_pct` | 30, 2.0, 1.0 | the rule of that rewrite: more than this percent of the units hold a dead row, or the units listed are this many times the superblocks they cover, or the write buffer holds more than this percent of the rows |
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
@@ -407,6 +408,54 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 ```
 
 Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way.
+
+### Why a query kept the normal plan
+
+The pushdown refuses most shapes by design, and the planner gives up without a word. `SET sift.explain_refusals = on` makes it say why: for each candidate path (arm: `single`, `distinct`,
+`topn`, `two_level`, `rows`, and the decisions `lookup` and `cte_inline`) it reports the first reason the path gave up for, as a notice in the session that plans the query (also under `EXPLAIN`),
+and compares a path that was built with the normal plan (`cost`). The setting changes no plan and costs nothing when off.
+
+```sql
+SET sift.explain_refusals = on;
+EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM plain_table GROUP BY 1;
+-- NOTICE:  SiftAgg not used: no_source: no sift_col index or sift_table covers the table
+-- DETAIL:  arm: single
+```
+
+A sub-select is planned in its own query level and its arms are named `L2:single`, and the plan of a statement with its shared CTE inlined, `inline:single`.
+
+| slug | arm | the query kept the normal plan because |
+|---|---|---|
+| `other` | any | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded |
+| `disabled` | single | sift.enable_agg is off |
+| `query_kind` | single | the query has a set-returning function in the select list, row locks or a recursive CTE |
+| `from_shape` | single, distinct | the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads |
+| `table_kind` | single, distinct, topn | the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table |
+| `no_source` | single, distinct, topn | no sift_col index or sift_table covers the table |
+| `partition_source` | single, distinct | a partition has no column index the plan can use, or the partitions do not share a layout |
+| `join_child` | single, distinct | a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child |
+| `outer_join` | single, distinct | an outer join of the scanned table keeps rows the scan cannot reproduce |
+| `unnest_leaf` | single, distinct | the array or object a lateral function unnests is not a leaf of the column index |
+| `where` | single, distinct, topn | a condition of the WHERE or ON clause is not one the scan can test |
+| `join_condition` | single, distinct | a join condition is not an equality or filter the scan can look up |
+| `group_key` | single, distinct | a group key is not a leaf, or an expression of one, that the scan reads |
+| `too_many_keys` | single, distinct, two_level | the query groups by more columns than the scan holds |
+| `output_expr` | single, distinct | the select list or HAVING reads something besides group keys and the aggregates the scan computes |
+| `aggregate` | single, distinct | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes |
+| `distinct_on` | distinct | DISTINCT ON has no total order for the row it keeps |
+| `grouping_sets` | two_level, rows | the arm does not group by grouping sets |
+| `dirty_units` | single, distinct, topn | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
+| `first_memory` | single, distinct | the first rows of the groups would not fit in the memory of a hash aggregate |
+| `lateral_limit` | lookup | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
+| `two_arms` | two_level | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
+| `two_keys` | two_level | a key of the two level aggregate is not one every arm groups by |
+| `two_aggs` | two_level | an aggregate over the arms is not one the two level scan computes |
+| `spine_shape` | two_level | the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms |
+| `spine_rows` | two_level | the spine has more than 10,000 rows |
+| `rows_shape` | rows | the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group |
+| `topn_shape` | topn | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests |
+| `cost` | any | the normal plan is estimated cheaper than the scan |
+| `cte_cost` | cte_inline | the shared CTE plan is estimated cheaper than the plan with the CTE inlined |
 
 PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background promotion by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](#limits).
 

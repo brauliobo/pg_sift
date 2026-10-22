@@ -1,0 +1,319 @@
+/*
+ * agg/refuse.c - sift.explain_refusals and sift.explain_why: why a query kept the normal plan.
+ *
+ * The planner of agg/plan*.c gives up silently, by design, for most shapes. With sift.explain_refusals on, the sites of the registry
+ * (refuse.h) record the first reason each arm (a candidate path: single, distinct, two_level, rows, topn) gave up for; an arm that did add a
+ * path is compared with the cheapest normal path of its stage. The reasons of a call of the planner hook are reported when it returns:
+ * as a notice, or as a row of sift.explain_why, which plans a SELECT without running it. Nothing is recorded, and no plan changes, with the setting off.
+ */
+#include "postgres.h"
+
+#include "access/tupdesc.h"
+#include "access/xact.h"
+#include "executor/executor.h"
+#include "fmgr.h"
+#include "funcapi.h"
+#include "nodes/extensible.h"
+#include "nodes/parsenodes.h"
+#include "optimizer/pathnode.h"
+#include "tcop/tcopprot.h"
+#include "utils/builtins.h"
+#include "utils/float.h"
+#include "utils/guc.h"
+#include "utils/tuplestore.h"
+
+#include "agg/refuse.h"
+
+PG_FUNCTION_INFO_V1(sift_agg_explain_why);
+
+bool		sift_explain_refusals = false;
+const char *agg_variant = NULL;
+
+#define AGG_REFUSAL_ROW(id, slug, text) {slug, text},
+static const struct
+{
+	const char *slug;
+	const char *text;
+}			refusals[] = {{NULL, NULL}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
+
+typedef struct ArmNote
+{
+	const char *name;
+	AggRefusal	why;
+	const char *detail;
+	bool		candidate;
+	bool		used;
+	List	   *paths;
+	RelOptInfo *rel;
+	Path		best;			/* the cheapest normal path of the upper relation when the arm added its first */
+	bool		has_best;
+	bool		cheaper;		/* a path of the arm is no dearer than best, as add_path compares them (enable_* off counts) */
+	double		scan;
+	double		normal;
+} ArmNote;
+
+static ArmNote *arm;
+static List *done;
+static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
+static Tuplestorestate *why_store;
+static TupleDesc why_desc;
+
+static bool
+is_siftagg(const Path *p)
+{
+	return IsA(p, CustomPath) && strncmp(((const CustomPath *) p)->methods->CustomName, "SiftAgg", 7) == 0;
+}
+
+bool
+agg_refuse_note(AggRefusal why, const char *detail)
+{
+	if (arm != NULL && arm->why == AGG_REFUSE_NONE)
+	{
+		arm->why = why;
+		arm->detail = detail ? pstrdup(detail) : NULL;
+		arm->candidate = true;
+	}
+	return false;
+}
+
+/* [variant:][L<level>:]name: the arms of a sub-select and of a variant of the statement are told from the top level's */
+static const char *
+arm_name(const char *name)
+{
+	if (stage_level > 1)
+		name = psprintf("L%d:%s", stage_level, name);
+	return agg_variant ? psprintf("%s:%s", agg_variant, name) : name;
+}
+
+/* candidate: the arm applies to the query already (a refusal that follows is reported); else it does until a site names a reason */
+void
+agg_arm_begin(const char *name, bool candidate)
+{
+	if (!sift_explain_refusals)
+		return;
+	arm = palloc0(sizeof(ArmNote));
+	arm->name = arm_name(name);
+	arm->candidate = candidate;
+	arm->scan = arm->normal = get_float8_infinity();
+}
+
+void
+agg_arm_candidate(void)
+{
+	if (arm != NULL)
+		arm->candidate = true;
+}
+
+/* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */
+void
+agg_arm_path(Path *p)
+{
+	if (arm == NULL)
+		return;
+	if (arm->paths == NIL)
+	{
+		foreach_ptr(Path, o, p->parent->pathlist)
+			if (!is_siftagg(o) && (!arm->has_best || compare_path_costs(o, &arm->best, TOTAL_COST) < 0))
+			{
+				arm->best = *o;
+				arm->has_best = true;
+			}
+		if (arm->has_best)
+			arm->normal = arm->best.total_cost;
+	}
+	arm->paths = lappend(arm->paths, p);
+	arm->rel = p->parent;
+	arm->scan = Min(arm->scan, p->total_cost);
+	arm->cheaper |= !arm->has_best || compare_path_costs(p, &arm->best, TOTAL_COST) <= 0;
+}
+
+void
+agg_arm_end(void)
+{
+	ArmNote    *a = arm;
+
+	arm = NULL;
+	if (a == NULL)
+		return;
+	if (a->paths != NIL)
+	{
+		foreach_ptr(Path, p, a->paths)
+			a->used |= list_member_ptr(a->rel->pathlist, p);
+		a->used &= a->cheaper;
+		if (!a->used)
+		{
+			a->why = AGG_REFUSE_COST;
+			a->detail = psprintf("the scan costs %.2f, the normal plan %.2f", a->scan, a->normal);
+		}
+	}
+	else if (!a->candidate)
+		return;
+	else if (a->why == AGG_REFUSE_NONE)
+		a->why = AGG_REFUSE_OTHER;
+	done = lappend(done, a);
+}
+
+static void
+report(const ArmNote *a)
+{
+	const char *slug = refusals[a->why].slug;
+	const char *reason = a->why == AGG_REFUSE_NONE ? NULL :
+		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
+
+	if (why_store != NULL)
+	{
+		Datum		v[6];
+		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL, a->paths == NIL};
+
+		v[0] = CStringGetTextDatum(a->name);
+		v[1] = BoolGetDatum(a->used);
+		v[2] = a->used ? (Datum) 0 : CStringGetTextDatum(slug);
+		v[3] = a->used ? (Datum) 0 : CStringGetTextDatum(reason);
+		v[4] = Float8GetDatum(a->scan);
+		v[5] = Float8GetDatum(a->normal);
+		tuplestore_putvalues(why_store, why_desc, v, n);
+	}
+	else if (!a->used)
+		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name)));
+}
+
+/* a decision outside the arms of the planner hook (the plan of the statement as a whole) */
+void
+agg_report(const char *name, AggRefusal why, const char *detail, bool used)
+{
+	ArmNote		a = {.why = why, .detail = detail, .used = used, .paths = NIL};
+
+	if (!sift_explain_refusals)
+		return;
+	a.name = arm_name(name);
+	report(&a);
+}
+
+/* plans the statement in a variant of itself (inline, flat): its arms are named after it */
+const char *
+agg_variant_push(const char *v)
+{
+	const char *outer = agg_variant;
+
+	if (sift_explain_refusals)
+		agg_variant = outer ? psprintf("%s+%s", outer, v) : v;
+	return outer;
+}
+
+/* an error in the middle of a plan leaves the arm and its list in a context that is gone */
+static void
+forget_arms(void)
+{
+	arm = NULL;
+	done = NIL;
+	agg_variant = NULL;
+	stage_level = 0;
+}
+
+static void
+forget_arms_xact(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_ABORT)
+		forget_arms();
+}
+
+static void
+forget_arms_subxact(SubXactEvent event, SubTransactionId my_subid, SubTransactionId parent_subid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		forget_arms();
+}
+
+void
+agg_stage_begin(AggStage *st, int level)
+{
+	static bool registered;
+
+	st->on = sift_explain_refusals;
+	if (!st->on)
+		return;
+	if (!registered)
+	{
+		RegisterXactCallback(forget_arms_xact, NULL);
+		RegisterSubXactCallback(forget_arms_subxact, NULL);
+		registered = true;
+	}
+	st->outer_arm = arm;
+	st->outer_done = done;
+	st->outer_level = stage_level;
+	arm = NULL;
+	done = NIL;
+	stage_level = level;
+}
+
+/* the pick of a column index that reports for the arm: the one that used it, else the first */
+static const ArmNote *
+pick_of(const char *name)
+{
+	const ArmNote *first = NULL;
+
+	foreach_ptr(ArmNote, b, done)
+		if (strcmp(b->name, name) == 0)
+		{
+			if (b->used)
+				return b;
+			if (first == NULL)
+				first = b;
+		}
+	return first;
+}
+
+void
+agg_stage_end(AggStage *st)
+{
+	if (!st->on)
+		return;
+	foreach_ptr(ArmNote, a, done)
+		if (pick_of(a->name) == a)
+			report(a);
+	arm = st->outer_arm;
+	done = st->outer_done;
+	stage_level = st->outer_level;
+}
+
+Datum
+sift_agg_explain_why(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	char	   *sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	bool		saved = sift_explain_refusals;
+	List	   *trees = pg_parse_query(sql),
+			   *queries;
+	RawStmt    *raw;
+
+	if (list_length(trees) != 1 || !IsA((raw = linitial_node(RawStmt, trees))->stmt, SelectStmt))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement")));
+	InitMaterializedSRF(fcinfo, 0);
+	queries = pg_analyze_and_rewrite_fixedparams(raw, sql, NULL, 0, NULL);
+	PG_TRY();
+	{
+		why_store = rsi->setResult;
+		why_desc = rsi->setDesc;
+		sift_explain_refusals = true;
+		foreach_ptr(PlannedStmt, ps, pg_plan_queries(queries, sql, CURSOR_OPT_PARALLEL_OK, NULL))
+			if (ps->commandType == CMD_SELECT)
+				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+	}
+	PG_FINALLY();
+	{
+		sift_explain_refusals = saved;
+		why_store = NULL;
+		forget_arms();
+	}
+	PG_END_TRY();
+	return (Datum) 0;
+}
+
+void
+sift_agg_refuse_init(void)
+{
+	DefineCustomBoolVariable("sift.explain_refusals",
+							 "Reports as a notice why a query kept the normal plan instead of Custom Scan (SiftAgg): the first reason each candidate path gave up for.",
+							 NULL, &sift_explain_refusals, false,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+}

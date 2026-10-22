@@ -7,6 +7,7 @@
 #include "nodes/extensible.h"
 
 #include "agg/colsrc.h"
+#include "agg/refuse.h"
 #include "agg/search.h"
 #include "agg/spec.h"
 
