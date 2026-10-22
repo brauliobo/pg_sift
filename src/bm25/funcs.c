@@ -223,7 +223,7 @@ match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query, c
 	Oid			analyzer;
 
 	/* the match is not leakproof: the index's document frequencies include the rows a policy or security barrier hides */
-	if (rel->rtekind != RTE_RELATION || planner_rt_fetch(rel->relid, root)->securityQuals != NIL)
+	if (rel->rtekind != RTE_RELATION || planner_rt_fetch(rel->relid, root)->securityQuals != NIL || rel_secured(root, rel))
 		return DEFAULT_MATCH_SEL;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->indpred == NIL && !ii->hypothetical && sift_index_matches_key(ii, expr))
