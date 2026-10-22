@@ -115,6 +115,9 @@ difftest fuzz soak:
 # docs/LIMITS.md from the registry in src/core/limits.h (scripts/gen-limits.sh --check proves it)
 limits:
 	scripts/gen-limits.sh
+# docs/REFERENCE.md and the README block from the sift.* objects of the install scripts (scripts/gen-reference.sh --check proves them)
+reference:
+	scripts/gen-reference.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
