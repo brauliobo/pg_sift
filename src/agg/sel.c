@@ -8,15 +8,17 @@
 #include "agg/sel.h"
 #include "core/popcount.h"
 #include "agg/colsrc.h"
+#include "col/wbuf.h"
 
 /* Few kept rows are decoded one by one; many are decoded with the whole chunk, and the mask keeps the others out */
 #define SEL_SPARSE	8
 
 void
-sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt)
+sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt, Oid heapoid)
 {
 	memset(a, 0, sizeof(*a));
 	a->mcxt = mcxt;
+	a->heapoid = heapoid;
 }
 
 /* idx: the stored ordinal of each kept row of a compacted unit */
@@ -144,12 +146,13 @@ sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64
 }
 
 void
-sift_aggsel_overflow_error(void)
+sift_aggsel_overflow_error(Oid heapoid)
 {
+	sift_cwbuf_invalidate_plans(heapoid);
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-			 errhint("Set sift.enable_agg to off for this query.")));
+			 errhint("The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.")));
 }
 
 /* ---- the JSON type of the values of a leaf (docs/COL-JSONB-31.md 5.1): the tags of the overflow values of the chunks ---- */
@@ -175,6 +178,7 @@ sift_aggsel_types_unknown_error(void)
 typedef struct TypesTest
 {
 	SiftColSource *cs;
+	Oid			heapoid;
 	int			col;
 	Oid			typid;
 	bool		astext;
@@ -202,13 +206,13 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	for (uint32 w = 0; w < bad.nwords; w++)
 		bad.bits[w] = vs->bits[w] & ovf[w];
 	if (sift_col_sel_count(&bad) > 0 && sift_col_vet(cu, &bad))
-		sift_aggsel_overflow_error();
+		sift_aggsel_overflow_error(t->heapoid);
 }
 
 void
 sift_aggsel_filter_types(SiftAggSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits)
 {
-	TypesTest	t = {cs, col, typid, astext, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
+	TypesTest	t = {cs, a->heapoid, col, typid, astext, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
 
 	sift_aggsel_stored(a, cs, cu, bits, types_op, &t);
 }
