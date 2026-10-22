@@ -24,6 +24,12 @@ extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps
  */
 extern int sift_aggpart_prune(SiftSrcSource *src, Oid parent, List *conds);
 
+/*
+ * The partitions none of the keys of a column of the partitioned table can be in (`col`: its Var in the first partition; the keys of an inner or
+ * semi join, which no other row can match) are not read. The same time and conditions as sift_aggpart_prune; n = 0: no partition is read.
+ */
+extern int sift_aggpart_prune_keys(SiftSrcSource *src, Oid parent, const Node *col, const int64 *vals, int n);
+
 /* A condition `col = operand` or `col = ANY (operand)` (an operand with no column): the column, the operand and the operator. The planner asks it to keep the pruning of a hash level. */
 extern bool sift_aggpart_key_clause(Node *cl, Var **var, Node **operand, Oid *opno, Oid *collid, bool *any);
 
