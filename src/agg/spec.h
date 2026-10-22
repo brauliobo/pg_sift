@@ -127,6 +127,9 @@ typedef struct SiftAggPred
 	double		sel;			/* planner only, not packed: the selectivity of a SAP_CMP, for the cost of the scan */
 } SiftAggPred;
 
+/* bit and varbit have no hash operator class, but equal values have the same image (the padding bits are zero): a key of one is grouped by image */
+#define SIFT_EQ_BY_IMAGE(opcode) ((opcode) == F_BITEQ || (opcode) == F_VARBITEQ)
+
 typedef enum SiftAggKeyKind
 {
 	SAK_LEAF,					/* the leaf's value */
