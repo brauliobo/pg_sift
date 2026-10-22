@@ -89,14 +89,15 @@
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
+#define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
 #define AGG_UNIT_COST		200.0
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
-#define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
+#define AGG_START_COST		210000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units, charged 0.6 ms because the arms of a pass open them once, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
-#define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
+#define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows the source reads again from the heap when a leaf the scan rechecks is flagged (the index does not count them) */
 #define AGG_RECHECK_ROW		60.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes */
@@ -1125,11 +1126,11 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
 
-	k->scan_cost = (k->scan_cost - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * cpu_operator_cost +
-		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
+	k->scan_cost = (k->scan_cost - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
-			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * cpu_operator_cost;
+			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 	*startup += parallel_setup_cost * AGG_SETUP_FACTOR;
 }
 
@@ -1152,6 +1153,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	cost_tuples(c, s, input_rel, &k);
 	cost_joins(c, s, &k);
 	cost_work(c, s, &k);
+	/* the reads of the lookup tables are PostgreSQL's own, priced as its plans are */
+	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 		k.scan_cost = (k.scan_cost - k.open_cost) * c->topn_frac + k.open_cost;
@@ -1174,7 +1177,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 	{
-		double		pre_cost = k.units * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * cpu_operator_cost;
+		double		pre_cost = k.units * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * cpu_operator_cost;
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
