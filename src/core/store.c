@@ -42,6 +42,9 @@ bool		sift_test_space_error = false;
 int			sift_test_fail_pages = 0;
 int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
+int			sift_test_crash_dir = 0;
+bool		sift_test_crash_worker = false;
+int			sift_test_dir_updates = 0;
 #endif
 
 #ifdef SIFT_TESTING
@@ -54,6 +57,25 @@ sift_store_space_test_point(int phase)
 		XLogFlush(GetXLogInsertRecPtr());
 		kill(MyProcPid, SIGKILL);
 	}
+}
+
+/*
+ * sift.test_crash_dir = n kills the process with SIGKILL, its log flushed, before (n > 0) or after (n < 0) the |n|-th directory update it makes
+ * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); the WAL it wrote is flushed; sift.test_crash_worker picks
+ * background workers instead of the other processes. sift._test_dir_updates() is the count.
+ */
+void
+sift_store_dir_test_point(bool after)
+{
+	if (!after)
+		sift_test_dir_updates++;
+	if (sift_test_crash_dir == 0 || (MyBackendType == B_BG_WORKER) != sift_test_crash_worker ||
+		sift_test_crash_dir != (after ? -sift_test_dir_updates : sift_test_dir_updates))
+		return;
+	ereport(LOG, (errmsg("sift test: crash %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
+		XLogFlush(XactLastRecEnd);
+	kill(MyProcPid, SIGKILL);
 }
 #endif
 
@@ -333,6 +355,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Page		fp = NULL;
 	Page		xp = NULL;
 
+	SIFT_DIR_TEST_POINT(false);
 	if (pending && !FullTransactionIdIsValid(safexid))
 		safexid = ReadNextFullTransactionId();
 	if (chg->nrelease > 0)
@@ -360,6 +383,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	if (publish && space_exclusive && chg->nrelease > 0)
 		HOLD_INTERRUPTS();
 	GenericXLogFinish(state);
+	SIFT_DIR_TEST_POINT(true);
 	/* These allocations now belong to the directory, even if the caller subsequently errors. */
 	if (published)
 		published->ntaken = published->nspare = 0;

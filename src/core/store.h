@@ -181,8 +181,14 @@ extern PGDLLIMPORT int sift_test_space_crash;
 extern PGDLLIMPORT bool sift_test_space_error;
 extern void sift_store_space_test_point(int phase);
 #define SIFT_SPACE_TEST_POINT(phase) sift_store_space_test_point(phase)
+extern PGDLLIMPORT int sift_test_crash_dir;
+extern PGDLLIMPORT bool sift_test_crash_worker;
+extern PGDLLIMPORT int sift_test_dir_updates;
+extern void sift_store_dir_test_point(bool after);
+#define SIFT_DIR_TEST_POINT(after) sift_store_dir_test_point(after)
 #else
 #define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
+#define SIFT_DIR_TEST_POINT(after) ((void) 0)
 #endif
 extern uint64 sift_store_space_written(void);
 
