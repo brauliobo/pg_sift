@@ -16,7 +16,7 @@ INSERT INTO facts_c SELECT * FROM facts_a ORDER BY id;
 CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount);
 CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount);
 CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount);
-VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 
 -- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
 CREATE FUNCTION fa_state(tbl text) RETURNS TABLE (units int, from_preagg int, same bool) LANGUAGE plpgsql AS $$
@@ -63,7 +63,7 @@ SELECT 'built' AS step, * FROM fa_state('facts_a');
 
 -- cycle 1: the policy of VACUUM leaves every unit with a dead row, none answers from the pre-aggregates, and 1% of dead rows is far from dead_rewrite_pct
 CALL fa_churn(1);
-VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 SELECT 'cycle 1' AS step, * FROM fa_state('facts_a');
 SELECT sum(dead_rows) * 100 / sum(rows) < 10 AS under_dead_rewrite_pct, bool_and(dirty) AS all_dirty FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable';
 
@@ -85,7 +85,7 @@ SELECT 'fragmented units' AS rule, fa_due('facts_a_col', 100, floor(ratio * 100)
 
 -- cycle 2, then the rewrite in this session: the index is the one a REINDEX of the same table gives
 CALL fa_churn(2);
-VACUUM (DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 SELECT 'cycle 2' AS step, * FROM fa_state('facts_a');
 SELECT sift.col_maintenance_due('facts_a_col') AS due;
 SELECT sift.col_maintain('facts_a_col') AS rewritten;
