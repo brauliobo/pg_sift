@@ -18,7 +18,6 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "partitioning/partbounds.h"
-#include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
 #include "nodes/makefuncs.h"
@@ -92,14 +91,12 @@ unit_of(void *impl)
 	return &ps_of(impl)->cunit;
 }
 
-/* what PostgreSQL checks for a query on a partitioned table: its privileges and row security, not the partitions' */
+/* what the scan checks for a query on a partitioned table: its row security; PostgreSQL's executor checked the privileges (of the role, or of the view owner) */
 static void
 check_access(Relation parent)
 {
 	Oid			relid = RelationGetRelid(parent);
 
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLE, RelationGetRelationName(parent));
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

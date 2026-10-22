@@ -429,6 +429,7 @@ typedef struct SiftColZone
 
 #define SIFT_COLO_NOWBUF		0x0001	/* skip the write buffers (verification, maintenance reading immutable data) */
 #define SIFT_COLO_NOCHECKS		0x0002	/* skip the privilege / RLS checks (internal callers that did them) */
+#define SIFT_COLO_NOACL			0x0008	/* skip the table privilege check only (the RLS check stays): the executor of the query checked the privileges of the role, or of the view owner, on the columns it reads */
 
 /* EXPLAIN and cost feedback of a source */
 typedef struct SiftColCounters

@@ -60,6 +60,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
+#include "utils/rls.h"
 #include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
@@ -169,6 +170,10 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 
 			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
 				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
+				return false;
+			/* read through a view, PostgreSQL checks row security as the view owner (usually exempt); the scan refuses it, where the normal plan answers */
+			if (e->relkind == RELKIND_RELATION && e->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(parse->rteperminfos, e)->checkAsUser) &&
+				check_enable_rls(e->relid, InvalidOid, true) == RLS_ENABLED)
 				return false;
 			if (c->relid == 0)
 				c->relid = rti;
