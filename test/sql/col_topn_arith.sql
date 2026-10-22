@@ -173,7 +173,7 @@ FROM (VALUES ('int_plus',        $q$SELECT id, a FROM ta ORDER BY a + 1, id LIMI
 			 ('numeric_cast_wh',$q$SELECT id, n FROM ta WHERE n < 100 ORDER BY (n / 0.5)::int, id LIMIT 5$q$)) v(tag, q)
 ORDER BY tag COLLATE "C";
 
--- what stays with the normal plan, each by a named refusal: the expression is not immutable, or not of the kinds above (CASE and the like come with later steps)
+-- what stays with the normal plan, each by a named refusal: the expression is not immutable, or not of the kinds above
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
 SELECT k, w.used, w.slug, w.reason
