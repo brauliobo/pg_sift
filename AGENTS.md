@@ -1,6 +1,6 @@
 # AGENTS.md
 
-pg_sift: a PostgreSQL extension (17 and 18) with an exact BM25 full-text index access method (`sift`), a column index access method (`sift_col`),
+pg_sift: a PostgreSQL extension (17, 18 and 19) with an exact BM25 full-text index access method (`sift`), a column index access method (`sift_col`),
 a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (SiftAgg)`). The SQLite and MariaDB ports share the search core.
 
 ## Layout

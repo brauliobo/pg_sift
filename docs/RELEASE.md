@@ -56,6 +56,14 @@ A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared 
 PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
 PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).
 PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in one shard and fails the run like 17 and 18.
+19 is a supported major: the source in `src/core/compat.h` carries its differences, and a red 19 job blocks a release like any other.
+
+Following the 19 betas and release candidates needs no change in the repository: the action builds the head of `REL_19_STABLE` (`scripts/pg19-build.sh`: assertions on, ICU, the TAP and contrib modules the tests use).
+`pg19-cache.yml` runs on every push that touches the recipe and every six hours, and stores that build in the cache of `main`; a pull request run restores the newest build of the same recipe,
+so it never waits for a compile and PostgreSQL 19 is at most six hours behind its branch. A new tag (`REL_19_RC2`, the final release) is on the branch already. Bump nothing for those.
+What does need a bump: the cache key is the hash of `scripts/pg19-build.sh`, so a change of the configure flags rebuilds on its own; when 19.x is packaged by PGDG, move the job to the packages and drop
+the git build; when 20 opens, change the default `ref` of the action to `master` (or `REL_20_STABLE` once it exists) and rename the job. To try a build by hand:
+`scripts/pg19-build.sh /var/tmp/pg19 <commit>`, then `PATH=/var/tmp/pg19/bin:$PATH scripts/pgtest.sh install`.
 `scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
 the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18. `assert.yml`
 (assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks (`bench/bench final --docs`) are a separate step, not part of a release.
