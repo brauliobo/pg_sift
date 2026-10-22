@@ -42,7 +42,13 @@ node_mb() { du -sm "$(dir "$1")" | cut -f1; }
 # TAP output
 plan() { echo "1..$1"; }
 ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
-not_ok() { NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"; }
+# a failed check shows the end of every node log: what the servers did around it is rarely there on a rerun
+not_ok() {
+	local n
+	NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"
+	for n in "${NODES[@]}"; do [[ -f $(dir "$n")/postgres.log ]] && diag "log of node $n:"$'\n'"$(tail -25 "$(dir "$n")/postgres.log" | cut -c1-240)"; done
+	return 0
+}
 diag() { sed 's/^/# /' <<<"$*"; }
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
