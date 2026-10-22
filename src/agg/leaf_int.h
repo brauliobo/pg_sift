@@ -81,6 +81,7 @@ uint32 key_value_id(AggExec *ex, int ki, Datum in, bool in_null);
 uint32 *dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki);
 const SiftSrcVec *get_vec(AggExec *ex, int leaf);
 uint32 *elem_offs(AggExec *ex, int leaf);
+uint64 *member_elems(AggExec *ex, int j, const uint32 **offs);
 void idmap_init(IdMap *m);
 uint32 idmap_id(IdMap *m, sift_i128 v);
 const sift_i128 *eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull, const uint64 *alive);

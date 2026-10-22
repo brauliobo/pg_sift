@@ -94,6 +94,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
 	put_int(p, pr->late);
+	put_int(p, pr->pass_poison);
 	put_node(p, pr->expr);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
@@ -339,6 +340,8 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_str(p, s->vleaf[i].key);
 		put_int(p, s->vleaf[i].count);
 		put_int(p, s->vleaf[i].types);
+		put_int(p, s->vleaf[i].recheck);
+		put_int(p, (int) s->vleaf[i].cast);
 	}
 	put_arms(p, s);
 	put_int(p, s->nsets);
@@ -430,6 +433,7 @@ get_pred(Unpack *u)
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
 	pr->late = get_int(u);
+	pr->pass_poison = get_int(u);
 	pr->expr = get_node(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
@@ -702,6 +706,8 @@ sift_aggspec_unpack(const List *items)
 		s->vleaf[i].key = get_str(u);
 		s->vleaf[i].count = get_int(u);
 		s->vleaf[i].types = get_int(u);
+		s->vleaf[i].recheck = get_int(u);
+		s->vleaf[i].cast = (Oid) get_int(u);
 	}
 	get_arms(u, s);
 	s->nsets = get_int(u);
