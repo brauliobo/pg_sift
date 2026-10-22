@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """col-scan-table.py [--write docs/COL-SCAN.md]: the "which btree can be dropped" table of docs/COL-SCAN.md, from docs/results/col-scan.tsv and
 col-scan-space.tsv. Without --write it prints the table; with it, it replaces the text between the two table markers of the file.
-Times are the planner's pick, execution time (median of 3) in ms; sift_col is the index with the operator classes and set_columns."""
+Times are the planner's pick, execution time in ms (the first query of a new backend, and the median of the last three of 24 runs of one session); sift_col is
+the index with the operator classes and set_columns. Regenerate the data with bench/col_scan.py."""
 import csv
 import os
 import sys
@@ -30,11 +31,12 @@ CLASSES = [
 ]
 
 
-def load():
+def load(column="exec_median_ms"):
     t = {}
     with open(os.path.join(RES, "col-scan.tsv")) as f:
         for r in csv.DictReader(f, delimiter="\t"):
-            t[(r["table_rows"], r["query_key"], r["index"], r["variant"])] = float(r["exec_median_ms"])
+            if r[column]:
+                t[(r["table_rows"], r["query_key"], r["index"], r["variant"])] = float(r[column])
     return t
 
 
@@ -45,6 +47,10 @@ def pick(t, n, key, index):
         if v is not None:
             return v
     return t.get((n, key, "btree", "planner")) if index == "btree" else None
+
+
+def ms(v):
+    return "%.2f" % v if v >= 0.1 else "%.3f" % v
 
 
 def verdict(ratios):
@@ -58,8 +64,8 @@ def verdict(ratios):
     return "keep the btree (%.0f times slower)" % worst
 
 
-def table():
-    t = load()
+def table(column):
+    t = load(column)
     out = ["| a btree that serves | sift_col / btree, 1,000,000 rows (ms) | 100,000 rows (ms) | ratio | verdict |", "|---|---|---|---|---|"]
     for label, keys in CLASSES:
         c1, c2, rs = [], [], []
@@ -68,8 +74,8 @@ def table():
             b2, s2 = pick(t, "100000", k, "btree"), pick(t, "100000", k, "sift")
             if None in (b1, s1):
                 continue
-            c1.append("%.2f / %.2f" % (s1, b1))
-            c2.append("%.2f / %.2f" % (s2, b2) if None not in (b2, s2) else "")
+            c1.append("%s / %s" % (ms(s1), ms(b1)))
+            c2.append("%s / %s" % (ms(s2), ms(b2)) if None not in (b2, s2) else "")
             rs.append(s1 / b1)
         if not rs:
             continue
@@ -89,7 +95,9 @@ def space():
 
 
 def main():
-    text = table() + "\n\n" + space()
+    text = ("**A client that connects for each query**: the first query of a new backend (median of three sessions), which parses the dictionaries of its string\n"
+            "columns and fills its caches.\n\n" + table("first_ms") + "\n\n"
+            "**A backend that has run the query before**: the median of the last three of 24 runs in one session (a pooled connection).\n\n" + table("exec_median_ms") + "\n\n" + space())
     if "--write" not in sys.argv:
         print(text)
         return
