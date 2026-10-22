@@ -15,5 +15,5 @@ HDR      = $(SRC)/agg/kern.h $(SRC)/agg/kern_int.h $(SRC)/agg/kern_cases.h $(SRC
 
 include ../tools.mk
 
-$(OUT)/bench: $(OUT)/bench.o $(OUT)/alt.o $(OBJ)
+$(OUT)/bench: $(OUT)/bench.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
