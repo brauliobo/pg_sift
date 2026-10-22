@@ -2,7 +2,7 @@
 #
 # `=NAME<TAB>ERE` names a group of job names of scripts/ci.sh (`scripts/ci.sh --plan`). Any other row is `PATH<TAB>JOBS`: PATH is an ERE over a changed file,
 # JOBS an ERE over job names in which {NAME} stands for a group and \N for a group of PATH; `-` means no job (the file is mapped, nothing runs), `.` every job. A file
-# takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb` and `gh:replication` are the
+# takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb`, `gh:replication` and `gh:macos` are the
 # workflow jobs that are not in scripts/ci.sh. `scripts/ci.sh --selftest` fails when a tracked file matches no row or a job is in no group, so a new
 # test or file is never left out silently. The nightly run and the release check run every job: this map only picks what a push runs.
 #
@@ -49,7 +49,7 @@
 ^test/matrix/	^coverage
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
 ^\.coderabbit\.yaml$	-
-^Formula/	-
+^Formula/	gh:macos
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
 ^scripts/(check-neutral|check-errors|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|limits\.allow|refusals\.allow)	-

@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 and macOS arm64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (the whole suite) and macOS arm64 (the Homebrew build and its test, and a few regression tests, in CI). The chunk codec of the column engine links `liblz4` and `libzstd` when their
 development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
 
 ```sh
@@ -31,7 +31,7 @@ brew test brauliobo/pg_sift/pg_sift
 ```
 
 The formula in this repository builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
-The HEAD-only formula builds `main` and supports macOS arm64.
+The HEAD-only formula builds `main` and supports macOS arm64; CI builds it and runs `brew test` on PostgreSQL 17 and 18.
 The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
 For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
 Remove the extension package with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.

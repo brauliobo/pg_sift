@@ -281,6 +281,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: `make check` on macOS. The stock bash 3.2 failed on the syntax of bash 4 and `make check` exited 0 with no test run; it now stops with `needs bash 4+ (brew install bash)`, a run that selects no job fails, and `scripts/cpu_time.py` and the job claim no longer need Linux (`prctl`, `flock`). `scripts/ci.sh --selftest` checks that a script with bash 4 constructs carries that first-line check. CI builds the Homebrew formula and runs `brew test` and a few regression tests on macOS arm64.
+
 - Changed: with the directory of a `sift` or `sift_col` index full and the merges failing, a forced seal (`sift.promote()`, `sift.merge(index, true)`) leaves the open write buffer open with a NOTICE instead of failing with "has 128 segments", and the error of the refresh that finds no write buffer says what the last failed step was; the limit is `max_segments` of `sift.test_limits` in a test build. Test `dir_full` (isolation).
 
 - Added: `sift.workers`, one row per `sift` and `sift_col` index with the segments, the sealed write buffers waiting, whether maintenance is running, and, when the last background step failed, the failures in a row, when, the earliest retry, the SQLSTATE and the message (the log was the only place; the metapage keeps the last one in space the page had: no format minor, builds without it ignore it and read pages without it as no failure).

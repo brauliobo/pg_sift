@@ -10,6 +10,8 @@ scripts/ci.sh affected              # the same, only the jobs your diff against 
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
+`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only.
+
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
 The gate runs the PostgreSQL of `pg_config` on `PATH` only, and GitHub CI also runs 17: PostgreSQL 17 installs sift into the server's own directories (`SIFT_SUDO` when they are not writable), so run it on a private copy of the installation
