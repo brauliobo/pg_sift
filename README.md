@@ -278,7 +278,7 @@ pg_sift is weaker in text analysis (English stemming only, one key per index) an
 | `jsonb` paths: `col->>'k'`, `jsonb_to_recordset(col)` | Yes | sift_col |
 | `numeric(p>18)`, `money`, `interval` | Yes | sift_col |
 | `time`, `timetz`, enums, `uuid`, `bytea`, `inet`, `macaddr`, `bit`, arrays, ranges | Yes | sift_col |
-| `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions | 91.8% | sift_col |
+| `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions | 93.1% | sift_col |
 
 <!-- coverage:end -->
 
