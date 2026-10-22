@@ -47,6 +47,7 @@ bool		sift_col_rollup_on_demand = true;
 bool		sift_col_rollup_worker = true;
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic = 0;
+int			sift_test_col_refresh_sleep_ms = 0;
 #endif
 
 typedef struct RollupReq
@@ -292,8 +293,12 @@ refresh_segment(Relation index, uint64 rgen)
 
 #ifdef SIFT_TESTING
 			sift_test_col_rollup_panic_armed = sift_test_col_rollup_panic;
+			sift_test_col_refresh_sleep_armed = sift_test_col_refresh_sleep_ms;
 #endif
 			sift_col_merge_segments(index, rel->schema, rel->policy, &rel->pagg, &e, 1, sift_col_format_minor, NULL, NULL);
+#ifdef SIFT_TESTING
+			sift_test_col_refresh_sleep_armed = 0;
+#endif
 			gen = new_gen(index, snap);
 			break;
 		}
