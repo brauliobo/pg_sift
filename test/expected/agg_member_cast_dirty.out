@@ -184,6 +184,116 @@ SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')
  f
 (1 row)
 
+-- a conjunct that tests the member alone casts every member of a row that reaches it: the row raises before the test, whatever the test says
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'day < 500 AND CAST(e.value AS float8) > 3')) AS tested_pushed;
+ tested_pushed 
+---------------
+ t
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'day < 500 AND CAST(e.value AS float8) > 3')) AS tested_clean;
+ tested_clean 
+--------------
+ same
+(1 row)
+
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000'), true) AS tested_string;
+                        tested_string                        
+-------------------------------------------------------------
+ ERR 22023 cannot cast jsonb string to type double precision
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000')) AS tested_string_same;
+ tested_string_same 
+--------------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5990 AND CAST(e.value AS float8) IS NULL')) AS tested_boolean;
+ tested_boolean 
+----------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5980 AND CAST(e.value AS float8) > 3')) AS tested_object;
+ tested_object 
+---------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970 AND CAST(e.value AS float8) > 3')) AS tested_array;
+ tested_array 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900 AND CAST(e.value AS float8) > 3')) AS tested_row_filtered;
+ tested_row_filtered 
+---------------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 6000) AND CAST(e.value AS float8) > 1 AND CAST(e.value AS float8) < 10')) AS tested_twice;
+ tested_twice 
+--------------
+ same
+(1 row)
+
+SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8)), count(*) FILTER (WHERE CAST(e.value AS float8) > 2)', 'day BETWEEN 20 AND 400 AND CAST(e.value AS float8) > 3', 't.src, e.key')) AS tested_filter;
+ tested_filter 
+---------------
+ same
+(1 row)
+
+-- another test of the members may drop the dirty one before the cast, a join or a conjunct that may raise runs where the planner puts it: the plan stays
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$catg_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first;
+ tested_key_first 
+------------------
+ same
+(1 row)
+
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$catg_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first_pushed;
+ tested_key_first_pushed 
+-------------------------
+ f
+(1 row)
+
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND (CAST(e.value AS float8) > 3 OR e.key = $$m_total$$)')) AS tested_or_pushed;
+ tested_or_pushed 
+------------------
+ f
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND (CAST(e.value AS float8) > 3 OR e.key = $$m_total$$)')) AS tested_or;
+ tested_or 
+-----------
+ same
+(1 row)
+
+SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 AND CAST(e.value AS float8) > 3 GROUP BY e.key') AS tested_join;
+ tested_join 
+-------------
+ same
+(1 row)
+
+SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 AND CAST(e.value AS float8) > 3 GROUP BY e.key') AS tested_join_pushed;
+ tested_join_pushed 
+--------------------
+ f
+(1 row)
+
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 5990) AND 100 / (id % 7 + 1) > 3 AND CAST(e.value AS float8) > 3')) AS tested_late;
+ tested_late 
+-------------
+ same
+(1 row)
+
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 5990) AND 100 / (id % 7 + 1) > 3 AND CAST(e.value AS float8) > 3')) AS tested_late_pushed;
+ tested_late_pushed 
+--------------------
+ f
+(1 row)
+
 -- rows in the write buffer, updated and deleted ones, and after promotion
 INSERT INTO m_t VALUES (7001, 1, 10, '{"m_total": 3, "catg_i": 4}'), (7002, 1, 11, '{"m_total": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
@@ -194,6 +304,12 @@ SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS
 
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_catg_a;
  write_buffer_catg_a 
+---------------------
+ same
+(1 row)
+
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id > 7000 AND CAST(e.value AS float8) > 1000')) AS write_buffer_tested;
+ write_buffer_tested 
 ---------------------
  same
 (1 row)
@@ -217,6 +333,12 @@ SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS
  same
 (1 row)
 
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000')) AS after_promotion_tested;
+ after_promotion_tested 
+------------------------
+ same
+(1 row)
+
 DELETE FROM m_t WHERE id IN (100, 6000, 5990, 5980, 5970);
 VACUUM m_t;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete;
@@ -228,6 +350,18 @@ SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete
 SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete_pushed;
  after_delete_pushed 
 ---------------------
+ t
+(1 row)
+
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'CAST(e.value AS float8) > 3')) AS after_delete_tested;
+ after_delete_tested 
+---------------------
+ same
+(1 row)
+
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'CAST(e.value AS float8) > 3')) AS after_delete_tested_pushed;
+ after_delete_tested_pushed 
+----------------------------
  t
 (1 row)
 

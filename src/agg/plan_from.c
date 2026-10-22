@@ -919,6 +919,13 @@ list_read_by_tuple_tests(const SiftAggSpec *s, int grp)
 	return found;
 }
 
+/* a comparison, IN list or NULL test of the members' leaf alone: PostgreSQL casts the value of every member that reaches it */
+static bool
+leaf_test(const SiftAggPred *p, int leaf)
+{
+	return p->level == 1 && !p->late && p->nchild == 0 && p->leaf == leaf && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL);
+}
+
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns (it may drop a row that the error would reach first) */
 SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
@@ -929,20 +936,37 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	if (leaf_recheck(c, m) == SRK_NONE)
 		return SRK_NONE;
 	/*
-	 * the row raises where it reaches the aggregate: no conjunct reads the leaf, nor the member of a key taken from it (the cast of the conjunct would
-	 * raise before the aggregates, with the message of its own type, which the row read again does not know), and none of the members is dropped before it
+	 * the row raises where it reaches the aggregate, none of the members dropped before it. A conjunct that reads the member of a key taken from the
+	 * leaf (the cast of the conjunct would raise before the aggregates, with the message of its own type, which the row read again does not know) or
+	 * anything but the leaf's own value keeps the normal plan. A conjunct that tests the leaf alone casts every member of a row that reaches the
+	 * members, with the cast of the aggregates, and no other test of the members may drop one first: the cast raises before the test (SRK_CAST_TESTED).
+	 * Where it runs relative to a join or a conjunct that may raise is the planner's choice, so none of them is in the query then.
 	 */
 	if (leaf_recheck(c, m) == SRK_CAST)
 	{
 		Bitmapset  *read = bms_make_singleton(m);
+		bool		tested = false;
 
 		for (int j = 0; j < c->nvleaf; j++)
 			if (vleaf_source(c, j) == m)
 				read = bms_add_member(read, c->lay->nleaves - c->nvleaf + j);
 		for (int i = 0; i < s->npred; i++)
-			if (s->pred[i]->level != 0 || pred_reads_set(c, s->pred[i], read))
+			if (pred_reads_set(c, s->pred[i], read))
+			{
+				if (!leaf_test(s->pred[i], m))
+					return SRK_NONE;
+				tested = true;
+			}
+			else if (s->pred[i]->level != 0)
 				return SRK_NONE;
-		return SRK_CAST;
+		if (!tested)
+			return SRK_CAST;
+		if (c->joins != NIL)
+			return SRK_NONE;
+		for (int i = 0; i < s->npred; i++)
+			if (s->pred[i]->late)
+				return SRK_NONE;
+		return SRK_CAST_TESTED;
 	}
 	/* no error to raise, so no order to keep: the rows read again give the text any conjunct and key reads */
 	if (leaf_of(c, m)->parent < 0 && leaf_recheck(c, m) == SRK_TEXT)

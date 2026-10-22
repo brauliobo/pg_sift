@@ -769,7 +769,8 @@ typedef enum SiftSrcRecheck
 	SRK_TEXT,					/* the text of the scalar (a record column of jsonb_to_recordset, `->>` and a cast of it) through the input function of the leaf's type; a key of an array is NULL */
 	SRK_RECORDSET,				/* an array leaf unnested by jsonb_to_recordset: the whole list of a row raises when one of its values does, and a list that is not an array of objects raises */
 	SRK_CAST,					/* a member of jsonb_each read only through the cast of its jsonb value to the leaf's number type: a value of another JSON type raises where the row reaches the aggregate */
-	SRK_RECORDSET_LAZY			/* a spec's SRK_RECORDSET whose error the EXISTS test of the list raises when it reaches the row, not the rows' conjuncts (the source is given SRK_RECORDSET) */
+	SRK_RECORDSET_LAZY,			/* a spec's SRK_RECORDSET whose error the EXISTS test of the list raises when it reaches the row, not the rows' conjuncts (the source is given SRK_RECORDSET) */
+	SRK_CAST_TESTED				/* a spec's SRK_CAST that a conjunct of the members casts too: the cast of the conjunct raises first, for every row that reaches the members, so the error is raised before they are tested (the source is given SRK_CAST) */
 } SiftSrcRecheck;
 
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */
