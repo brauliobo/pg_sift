@@ -29,43 +29,43 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on d7ce0836 (2026-10-22) against v3.2.0.
+them (the nightly job `coverage-pct` verifies the file), measured on b3db76d7 (2026-10-22) against v3.2.0.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.0 | Covered at d7ce0836 |
+| Sub-family | Variants | By design | Covered at v3.2.0 | Covered at b3db76d7 |
 |---|---|---|---|---|
-| **all** | 259 | 4 | 68.6% | 72.2% |
+| **all** | 263 | 4 | 63.7% | 74.9% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
-| NULLS | 16 | 0 | 100.0% | 100.0% |
+| NULLS | 16 | 0 | 75.0% | 100.0% |
 | composition | 15 | 3 | 25.0% | 25.0% |
 | filter | 98 | 1 | 93.8% | 93.8% |
-| fixtures: topn | 9 | 0 | 88.9% | 88.9% |
-| key count | 12 | 0 | 50.0% | 100.0% |
-| key type | 44 | 0 | 36.4% | 36.4% |
+| fixtures: topn | 13 | 0 | 61.5% | 92.3% |
+| key count | 12 | 0 | 0.0% | 100.0% |
+| key type | 44 | 0 | 36.4% | 50.0% |
 | select list | 8 | 0 | 100.0% | 100.0% |
 | sort expression | 14 | 0 | 0.0% | 0.0% |
 | table kind | 21 | 0 | 47.6% | 47.6% |
 | tie-break | 7 | 0 | 85.7% | 85.7% |
 
-Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 66, `volatile` 1 (by design), `where` 4.
+Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 60, `volatile` 1 (by design), `where` 4.
 
 ### `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.0 | Covered at d7ce0836 |
+| Sub-family | Variants | By design | Covered at v3.2.0 | Covered at b3db76d7 |
 |---|---|---|---|---|
-| **all** | 502 | 36 | 90.1% | 90.1% |
+| **all** | 503 | 36 | 90.1% | 90.1% |
 | DISTINCT | 32 | 0 | 90.6% | 90.6% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
 | aggregate DISTINCT | 34 | 0 | 100.0% | 100.0% |
 | fixtures: distinct_on | 17 | 0 | 100.0% | 100.0% |
 | fixtures: flat | 81 | 0 | 96.3% | 96.3% |
-| fixtures: join | 73 | 0 | 97.3% | 97.3% |
+| fixtures: join | 74 | 0 | 97.3% | 97.3% |
 | fixtures: part | 28 | 0 | 92.9% | 92.9% |
 | fixtures: trap | 11 | 0 | 9.1% | 9.1% |
 | join child | 33 | 0 | 78.8% | 78.8% |
@@ -241,9 +241,9 @@ Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `dist
 | W04 | Window, order, limit | Window function over the aggregate of the same query level: rank() OVER (ORDER BY count(*)), running sum, lag, share of the total | Yes | sift_col | `SELECT status, rank() OVER (ORDER BY count(*) DESC) FROM orders GROUP BY status` | The window runs in PostgreSQL above the groups of SiftAgg (sorted by the window, as for any aggregate plan). Proof: fixture `w_window_over_agg`, fixture `w_window_month_lag`, test `agg_window`. |
 | W05 | Window, order, limit | Top-N rows: WHERE ... ORDER BY index columns [ASC\|DESC] LIMIT n [OFFSET m] with no aggregate | Partly (the sort columns and the tie-break column (usually id) are in the sift_col index; the planner takes it when its cost is lower) | sift_col | `SELECT id, total FROM orders ORDER BY total DESC, id LIMIT 5` | A bounded heap of the n + m best rows per scan, zone maps skip units, the winners are fetched from the heap by TID; EXPLAIN shows Top-N. A large n (about a third of the table) or a btree on the sort column can win by cost (sift.enable_topn = off removes the path). Proof: test `col_topn`, fixture `h_topn_numeric`, fixture `h_topn_two_keys`. |
 | W07 | Window, order, limit | Top-N rows of a text match: WHERE col @@> q [AND filters] ORDER BY created_at DESC LIMIT n | Partly (the BM25 index and a sift_col index with the sort columns are on the table; the planner takes it by cost against an ordered btree) | BM25 + sift_col | `SELECT id FROM docs WHERE body @@> 'wireless' ORDER BY created_at DESC, id LIMIT 10` | The BM25 index gives the match set without reading the heap, the column index orders the matching rows; the heap is read n + m times, whatever the number of matches. Superblocks that cannot beat the heap are skipped (EXPLAIN: Superblocks Skipped By Top-N). Proof: test `col_topn`, fixture `h_topn_search_date`, fixture `h_topn_search_asc`. |
-| W08 | Window, order, limit | Top-N sort keys: int2/4/8, date, timestamp(tz), numeric, float4/8; ASC or DESC, NULLS FIRST or LAST, several keys, OFFSET | Yes | BM25 + sift_col | `SELECT id FROM t ORDER BY a DESC NULLS LAST, b, id LIMIT 7 OFFSET 3` | Default btree order of the type; NaN is the largest. More than 4 sort keys sort every row that passes (W09). Proof: fixture `h_topn_numeric_nulls`, fixture `h_topn_two_keys`, fixture `h_topn_columns`. |
+| W08 | Window, order, limit | Top-N sort keys: int2/4/8, bool, date, time, timestamp(tz), numeric(p<=18), money, float4/8; ASC or DESC, NULLS FIRST or LAST, several keys, OFFSET | Yes | BM25 + sift_col | `SELECT id FROM t ORDER BY a DESC NULLS LAST, b, id LIMIT 7 OFFSET 3` | Default btree order of the type; NaN is the largest. More than 4 sort keys sort every row that passes (W09). Proof: fixture `h_topn_numeric_nulls`, fixture `h_topn_two_keys`, fixture `h_topn_columns`, fixture `topn_key_money`, fixture `topn_key_money_asc`, fixture `topn_key_time`, fixture `topn_key_time_asc`. |
 | W09 | Window, order, limit | Top-N with a LIMIT or OFFSET that is a parameter, with n + m over 100000, or with more than 4 sort keys | Yes | sift_col | `SELECT id FROM t ORDER BY a, id LIMIT $1` | A parameter of a generic plan is read when the scan starts: up to 100000 rows and 4 keys the best are kept in a heap, past that or with LIMIT NULL every row that passes is kept as keys and TID (an array in memory up to hash_mem, then a tuplesort at work_mem that spills) and sorted, and the heap is read only for the rows the Limit takes (not for the OFFSET rows when the output is plain columns). A constant n + m past 100000, more than 4 sort keys, or a heap that costs more than the sort is planned as that sort by cost. Proof: test `col_topn`, test `col_topn_deep`, test `col_topn_deep_limits`, fixture `topn_param_limit_10`, fixture `topn_param_limit_cap1`, fixture `topn_param_limit_null`. |
-| W10 | Window, order, limit | Top-N by a text key or an expression: ORDER BY source, ORDER BY total * 2, ORDER BY lower(source) | No (a sort key must be a numeric or date column of the index) | sift_col, sift_table | `SELECT id FROM t ORDER BY name, id LIMIT 10` | Proof: fixture `h_topn_text_key`, fixture `h_topn_expr_out`. |
+| W10 | Window, order, limit | Top-N by a text key or an expression: ORDER BY source, ORDER BY total * 2, ORDER BY lower(source) | No (a sort key must be a bool, numeric(p<=18), money, date, time, timestamp or float column of the index) | sift_col, sift_table | `SELECT id FROM t ORDER BY name, id LIMIT 10` | Proof: fixture `h_topn_text_key`, fixture `h_topn_expr_out`. |
 | W11 | Window, order, limit | Top-N of rows over a join, a window function or FOR UPDATE | No (only a single table with no groups, windows or row marks; a SELECT DISTINCT is the group-by of K12) | sift_col | `SELECT o.id FROM orders o JOIN stores s ON s.id = o.store_id ORDER BY o.total, o.id LIMIT 5` | Proof: test `col_topn`. |
 | W12 | Window, order, limit | Top-N of an OR of searches of one index: col @@> a OR col @@> b | Partly (every branch is a constant or parameter match of the same index, with no other predicate in the OR; with sift.score() or another predicate the normal plan stays) | BM25 + sift_col | `SELECT id FROM docs WHERE body @@> 'a' OR body @@> 'b' ORDER BY created_at DESC LIMIT 10` | The match set is the union of the branches, each bound as its own query: its errors and its phrase rechecks are the normal plan's. A search ORed with a predicate on a column is S16. Proof: test `col_topn`, fixture `topn_or_search_two`, fixture `topn_or_search_phrase`, fixture `topn_or_search_column`. |
 | W13 | Window, order, limit | Top-N on a sift_table | Yes | sift_table | `SELECT id FROM t ORDER BY a, id LIMIT 10` | The same top-N as on a sift_col index: the filters, the match set of a BM25 search and the numeric, date or integer sort columns are read from the column units and the write buffers, and the table only for the n rows of the result. A superblock is skipped when the zones of its units hold nothing better than the n-th row, whatever its place in the table: the new version of an updated row lands in the write buffer with any value. The limits of W09 to W12 apply. Proof: test `tbl_topn`. |
