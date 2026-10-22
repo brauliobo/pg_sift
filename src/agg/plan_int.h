@@ -356,6 +356,8 @@ extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
+extern double filter_rows_ratio(AggCtx *c);
+extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double agg_share_rows(AggCtx *c);
 
