@@ -27,6 +27,8 @@ import sys
 from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import store_charts  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 
 DATASETS = ('articles', 'places')
@@ -328,7 +330,9 @@ def main():
     for d in DATASETS:
         rows.update(load(os.path.join(args.results, f'{d}.tsv')))
     os.makedirs(args.out, exist_ok=True)
-    for name, svg in make(rows, args.tier).items():
+    charts = make(rows, args.tier)
+    charts.update(store_charts.make(args.results))   # the aggregate benchmarks: light and dark variants
+    for name, svg in charts.items():
         with open(os.path.join(args.out, name), 'w', newline='\n') as f:
             f.write(svg)
         print(os.path.join(args.out, name))

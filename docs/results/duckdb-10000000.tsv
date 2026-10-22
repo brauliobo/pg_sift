@@ -1,0 +1,102 @@
+# pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark (10000000 orders).
+# orders: 10000000
+# postgresql: PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) with pg_sift, PostgreSQL 18.1 (Debian 18.1-1.pgdg12+2) with pg_duckdb
+# pg_duckdb: 1.1.1, commit 7b0db3737a1a, image pgduckdb/pgduckdb:18-v1.1.1 (sha256:44c88eb92079)
+# build: f0d072d1b05b
+# method: client-side milliseconds of one psql session per lane: warm = median of 3 runs after one untimed run; cold = median of 3 first runs in a new session after the buffer cache was emptied (the OS page cache stays); statement timeout 30 s; 3 CPUs and 8g per server, PostgreSQL flags of steps/lib.sh
+# date: 2026-10-22
+# cpu: AMD Ryzen 7 9700X 8-Core Processor, 16 threads, 188 GB RAM
+# duckdb: DuckDB v1.4.3 (threads 3, threads_for_postgres_scan 3, max_workers_per_postgres_scan 2, max_memory 4GB)
+# host_load_before: load 6.91 6.42 7.67 cpu_psi 16.34%
+# host_load_after: load 6.40 7.30 7.84 cpu_psi 7.23%
+version	case	arm	metric	value	min	max	n	load	note
+v3.2.0-24-gf0d072d1	load	sift	load_s	7.1					
+v3.2.0-24-gf0d072d1	load	sift	index_s	6.3					
+v3.2.0-24-gf0d072d1	load	sift	table_mib	1023.0					
+v3.2.0-24-gf0d072d1	load	sift	index_mib	407.0					
+v3.2.0-24-gf0d072d1	load	pg	load_s	8.0					
+v3.2.0-24-gf0d072d1	load	pg	index_s	17.7					
+v3.2.0-24-gf0d072d1	load	pg	table_mib	1023.0					
+v3.2.0-24-gf0d072d1	load	pg	index_mib	526.1					
+v3.2.0-24-gf0d072d1	load	duckdb_parquet	load_s	3.9					
+v3.2.0-24-gf0d072d1	load	duckdb_parquet	table_mib	297.2					
+v3.2.0-24-gf0d072d1	01 point_lookup	pg	warm_ms	0.022	0.021	0.075	9	11.27	
+v3.2.0-24-gf0d072d1	01 point_lookup	sift	warm_ms	0.031	0.029	0.061	9	11.27	normal plan
+v3.2.0-24-gf0d072d1	01 point_lookup	duckdb_heap	warm_ms	3.370	3.087	3.628	3	11.27	
+v3.2.0-24-gf0d072d1	01 point_lookup	duckdb_parquet	warm_ms	6.943	6.471	7.981	3	11.27	
+v3.2.0-24-gf0d072d1	02 orders_per_country	pg	warm_ms	190.199	189.268	193.938	3	11.27	
+v3.2.0-24-gf0d072d1	02 orders_per_country	sift	warm_ms	1.735	1.642	1.903	3	11.27	SiftAgg
+v3.2.0-24-gf0d072d1	02 orders_per_country	duckdb_heap	warm_ms	383.775	382.879	401.551	3	11.27	
+v3.2.0-24-gf0d072d1	02 orders_per_country	duckdb_parquet	warm_ms	9.106	8.910	9.938	3	11.27	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	pg	warm_ms	1789.339	1773.651	1802.633	3	10.10	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	sift	warm_ms	1.974	1.816	2.109	3	10.10	SiftAgg
+v3.2.0-24-gf0d072d1	03 revenue_per_month	duckdb_heap	warm_ms	997.924	995.819	1009.021	3	10.10	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	duckdb_parquet	warm_ms	100.761	99.454	199.699	9	10.10	
+v3.2.0-24-gf0d072d1	04 top_categories	pg	warm_ms	750.159	712.700	834.374	3	9.02	
+v3.2.0-24-gf0d072d1	04 top_categories	sift	warm_ms	2.062	1.931	2.134	3	9.02	SiftAgg
+v3.2.0-24-gf0d072d1	04 top_categories	duckdb_heap	warm_ms	1021.544	1002.197	1098.374	3	9.02	
+v3.2.0-24-gf0d072d1	04 top_categories	duckdb_parquet	warm_ms	27.610	27.151	116.442	9	9.02	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	pg	warm_ms	123.031	120.698	129.158	3	9.02	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	sift	warm_ms	8.447	8.144	8.714	3	9.02	SiftAgg
+v3.2.0-24-gf0d072d1	05 average_shipped_order	duckdb_heap	warm_ms	153.616	153.441	155.298	3	9.02	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	duckdb_parquet	warm_ms	48.259	48.032	48.689	3	9.02	
+v3.2.0-24-gf0d072d1	06 customers_per_month	pg	warm_ms	2683.432	2540.162	2759.450	3	8.27	
+v3.2.0-24-gf0d072d1	06 customers_per_month	sift	warm_ms	41.258	38.973	46.692	3	8.27	SiftAgg
+v3.2.0-24-gf0d072d1	06 customers_per_month	duckdb_heap	warm_ms	700.033	672.798	700.830	3	8.27	
+v3.2.0-24-gf0d072d1	06 customers_per_month	duckdb_parquet	warm_ms	197.787	193.552	362.892	9	8.27	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	pg	warm_ms	144.591	143.335	145.332	3	8.27	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	sift	warm_ms	7.324	7.153	7.519	3	8.27	SiftAgg
+v3.2.0-24-gf0d072d1	07 big_recent_orders	duckdb_heap	warm_ms	183.933	183.622	185.798	3	8.27	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	duckdb_parquet	warm_ms	40.192	40.153	41.073	3	8.27	
+v3.2.0-24-gf0d072d1	08 search_count	pg	warm_ms	76.124	73.820	76.214	3	7.34	
+v3.2.0-24-gf0d072d1	08 search_count	sift	warm_ms	1.678	1.615	1.775	3	7.34	normal plan
+v3.2.0-24-gf0d072d1	08 search_count	duckdb_heap	warm_ms	2366.557	2361.883	2394.585	3	7.34	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	08 search_count	duckdb_parquet	warm_ms	446.883	368.748	499.703	9	7.34	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	09 search_facets	pg	warm_ms	78.083	75.729	85.757	3	6.91	
+v3.2.0-24-gf0d072d1	09 search_facets	sift	warm_ms	9.484	9.039	9.650	3	6.91	SiftAgg
+v3.2.0-24-gf0d072d1	09 search_facets	duckdb_heap	warm_ms	1606.982	1591.588	1612.471	3	6.91	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	09 search_facets	duckdb_parquet	warm_ms	226.639	225.755	228.254	3	6.91	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	10 search_newest	pg	warm_ms	152.803	140.734	152.875	3	6.47	
+v3.2.0-24-gf0d072d1	10 search_newest	sift	warm_ms	39.308	38.355	39.809	3	6.47	normal plan
+v3.2.0-24-gf0d072d1	10 search_newest	duckdb_heap	warm_ms	1574.050	1566.328	1577.248	3	6.47	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	10 search_newest	duckdb_parquet	warm_ms	322.912	317.065	325.266	3	6.47	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	01 point_lookup	pg	cold_ms	0.390	0.346	1.628	3	6.47	
+v3.2.0-24-gf0d072d1	01 point_lookup	sift	cold_ms	1.330	1.259	3.467	3	6.47	normal plan
+v3.2.0-24-gf0d072d1	01 point_lookup	duckdb_heap	cold_ms	12.139	11.730	12.684	3	6.47	
+v3.2.0-24-gf0d072d1	01 point_lookup	duckdb_parquet	cold_ms	15.923	14.964	15.978	3	6.47	
+v3.2.0-24-gf0d072d1	02 orders_per_country	pg	cold_ms	198.925	198.333	243.510	3	6.47	
+v3.2.0-24-gf0d072d1	02 orders_per_country	sift	cold_ms	13.785	12.605	21.119	3	6.47	SiftAgg
+v3.2.0-24-gf0d072d1	02 orders_per_country	duckdb_heap	cold_ms	380.904	375.117	393.113	3	6.47	
+v3.2.0-24-gf0d072d1	02 orders_per_country	duckdb_parquet	cold_ms	16.864	16.483	18.249	3	6.47	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	pg	cold_ms	1815.278	1791.754	1886.630	3	6.91	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	sift	cold_ms	12.422	12.105	22.553	3	6.91	SiftAgg
+v3.2.0-24-gf0d072d1	03 revenue_per_month	duckdb_heap	cold_ms	1002.730	1002.592	1123.285	3	7.24	
+v3.2.0-24-gf0d072d1	03 revenue_per_month	duckdb_parquet	cold_ms	126.978	109.273	135.115	3	7.24	
+v3.2.0-24-gf0d072d1	04 top_categories	pg	cold_ms	775.735	717.947	785.798	3	7.24	
+v3.2.0-24-gf0d072d1	04 top_categories	sift	cold_ms	11.562	11.509	19.650	3	7.24	SiftAgg
+v3.2.0-24-gf0d072d1	04 top_categories	duckdb_heap	cold_ms	1092.326	1088.297	1106.232	3	7.62	
+v3.2.0-24-gf0d072d1	04 top_categories	duckdb_parquet	cold_ms	35.216	34.365	86.171	3	7.62	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	pg	cold_ms	609.820	445.203	621.071	3	7.62	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	sift	cold_ms	24.889	24.434	32.685	3	7.62	SiftAgg
+v3.2.0-24-gf0d072d1	05 average_shipped_order	duckdb_heap	cold_ms	574.059	564.232	601.110	3	7.57	
+v3.2.0-24-gf0d072d1	05 average_shipped_order	duckdb_parquet	cold_ms	58.047	56.630	75.896	3	7.57	
+v3.2.0-24-gf0d072d1	06 customers_per_month	pg	cold_ms	2919.275	2898.137	2926.025	3	7.02	
+v3.2.0-24-gf0d072d1	06 customers_per_month	sift	cold_ms	53.881	52.565	65.441	3	7.02	SiftAgg
+v3.2.0-24-gf0d072d1	06 customers_per_month	duckdb_heap	cold_ms	1084.976	1083.804	1121.508	3	7.02	
+v3.2.0-24-gf0d072d1	06 customers_per_month	duckdb_parquet	cold_ms	239.275	207.542	260.013	3	7.02	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	pg	cold_ms	503.560	416.532	513.206	3	7.10	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	sift	cold_ms	38.975	38.556	50.574	3	7.10	SiftAgg
+v3.2.0-24-gf0d072d1	07 big_recent_orders	duckdb_heap	cold_ms	492.708	477.014	590.163	3	7.10	
+v3.2.0-24-gf0d072d1	07 big_recent_orders	duckdb_parquet	cold_ms	49.269	49.133	67.884	3	7.10	
+v3.2.0-24-gf0d072d1	08 search_count	pg	cold_ms	818.443	796.291	847.593	3	7.17	
+v3.2.0-24-gf0d072d1	08 search_count	sift	cold_ms	5.226	5.074	11.107	3	7.17	normal plan
+v3.2.0-24-gf0d072d1	08 search_count	duckdb_heap	cold_ms	2254.835	2221.365	2285.020	3	6.92	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	08 search_count	duckdb_parquet	cold_ms	381.729	372.876	387.582	3	6.92	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	09 search_facets	pg	cold_ms	829.399	739.864	842.922	3	6.84	
+v3.2.0-24-gf0d072d1	09 search_facets	sift	cold_ms	22.115	19.929	30.546	3	6.84	SiftAgg
+v3.2.0-24-gf0d072d1	09 search_facets	duckdb_heap	cold_ms	2123.630	1609.604	2157.416	3	6.78	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	09 search_facets	duckdb_parquet	cold_ms	261.904	252.705	301.703	3	6.05	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	10 search_newest	pg	cold_ms	1592.224	1553.918	2648.347	3	6.37	
+v3.2.0-24-gf0d072d1	10 search_newest	sift	cold_ms	1001.697	996.343	1010.774	3	6.26	normal plan
+v3.2.0-24-gf0d072d1	10 search_newest	duckdb_heap	cold_ms	1731.867	1702.956	1747.148	3	6.40	substring LIKE form (tsvector is not supported), same rows
+v3.2.0-24-gf0d072d1	10 search_newest	duckdb_parquet	cold_ms	420.621	414.015	451.489	3	6.40	substring LIKE form (tsvector is not supported), same rows

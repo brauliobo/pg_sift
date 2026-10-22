@@ -6,7 +6,8 @@
 
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
-  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py); a block whose
+  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py, highlights.py, aggregates_page.py; charts.py
+                                                          draws docs/img); a block whose
                                                           results file is missing or empty says it is not measured yet
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
   <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the settings table (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
@@ -232,6 +233,9 @@ def generate(root):
         run(*py, os.path.join(steps, 'store.py'), 'render', '--readme', 'README.md', '--benchmarks', 'docs/BENCHMARKS.md')
     run(*py, os.path.join(steps, 'extras.py'), 'render')
     run(*py, os.path.join(steps, 'charts.py'))
+    if have(root, 'store'):
+        run(*py, os.path.join(steps, 'highlights.py'))
+        run(*py, os.path.join(steps, 'aggregates_page.py'))
     run('bash', os.path.join('scripts', 'coverage.sh'), '--gen')
     fill_missing_bench_blocks(root)
     fill_gen_blocks(root)
