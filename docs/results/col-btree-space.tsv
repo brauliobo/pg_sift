@@ -1,0 +1,233 @@
+table_rows	columns	index_kind	index_bytes	bytes_per_row	build_ms_median_of_3
+25000	int, ascending	btree	581632	23.27	8
+25000	int, ascending	brin	24576	0.98	6
+25000	int, ascending	btree_gin	1409024	56.36	25
+25000	int, ascending	sift_col	286720	11.47	9
+25000	int, random	btree	573440	22.94	9
+25000	int, random	brin	24576	0.98	6
+25000	int, random	btree_gin	1359872	54.39	37
+25000	int, random	sift_col	286720	11.47	9
+25000	int, 100 values	btree	196608	7.86	10
+25000	int, 100 values	brin	24576	0.98	6
+25000	int, 100 values	btree_gin	114688	4.59	8
+25000	int, 100 values	sift_col	286720	11.47	9
+25000	timestamptz, ascending	btree	581632	23.27	8
+25000	timestamptz, ascending	brin	24576	0.98	6
+25000	timestamptz, ascending	btree_gin	1409024	56.36	32
+25000	timestamptz, ascending	sift_col	286720	11.47	11
+25000	timestamptz, random	btree	581632	23.27	17
+25000	timestamptz, random	brin	24576	0.98	9
+25000	timestamptz, random	btree_gin	1409024	56.36	35
+25000	timestamptz, random	sift_col	286720	11.47	14
+25000	uuid	btree	802816	32.11	13
+25000	uuid	brin	24576	0.98	10
+25000	uuid	btree_gin	1810432	72.42	43
+25000	uuid	sift_col	548864	21.95	21
+25000	text, 8 chars distinct	btree	802816	32.11	12
+25000	text, 8 chars distinct	brin	24576	0.98	11
+25000	text, 8 chars distinct	btree_gin	1810432	72.42	44
+25000	text, 8 chars distinct	sift_col	286720	11.47	17
+25000	text, 240 chars distinct	btree	8298496	331.94	28
+25000	text, 240 chars distinct	brin	24576	0.98	10
+25000	text, 240 chars distinct	btree_gin	14565376	582.62	98
+25000	text, 240 chars distinct	sift_col	1335296	53.41	27
+25000	text, 20 values	btree	196608	7.86	16
+25000	text, 20 values	brin	24576	0.98	9
+25000	text, 20 values	btree_gin	81920	3.28	10
+25000	text, 20 values	sift_col	286720	11.47	11
+25000	numeric(12,2)	btree	778240	31.13	14
+25000	numeric(12,2)	brin	24576	0.98	7
+25000	numeric(12,2)	btree_gin	1761280	70.45	44
+25000	numeric(12,2)	sift_col	286720	11.47	14
+25000	int(100 values) + timestamptz	btree	802816	32.11	13
+25000	int(100 values) + timestamptz	brin	24576	0.98	8
+25000	int(100 values) + timestamptz	btree_gin	1908736	76.35	35
+25000	int(100 values) + timestamptz	sift_col	286720	11.47	16
+25000	text(20 values) + int(100 values) + timestamptz	btree	1032192	41.29	36
+25000	text(20 values) + int(100 values) + timestamptz	brin	24576	0.98	21
+25000	text(20 values) + int(100 values) + timestamptz	btree_gin	1974272	78.97	59
+25000	text(20 values) + int(100 values) + timestamptz	sift_col	286720	11.47	17
+25000	int(100 values) + int random + timestamptz	btree	802816	32.11	19
+25000	int(100 values) + int random + timestamptz	brin	24576	0.98	11
+25000	int(100 values) + int random + timestamptz	btree_gin	3276800	131.07	82
+25000	int(100 values) + int random + timestamptz	sift_col	286720	11.47	14
+50000	int, ascending	btree	1138688	22.77	22
+50000	int, ascending	brin	24576	0.49	13
+50000	int, ascending	btree_gin	2801664	56.03	63
+50000	int, ascending	sift_col	286720	5.73	12
+50000	int, random	btree	1130496	22.61	19
+50000	int, random	brin	24576	0.49	11
+50000	int, random	btree_gin	2711552	54.23	73
+50000	int, random	sift_col	286720	5.73	14
+50000	int, 100 values	btree	376832	7.54	21
+50000	int, 100 values	brin	24576	0.49	9
+50000	int, 100 values	btree_gin	196608	3.93	12
+50000	int, 100 values	sift_col	286720	5.73	12
+50000	timestamptz, ascending	btree	1138688	22.77	14
+50000	timestamptz, ascending	brin	24576	0.49	9
+50000	timestamptz, ascending	btree_gin	2801664	56.03	54
+50000	timestamptz, ascending	sift_col	286720	5.73	15
+50000	timestamptz, random	btree	1138688	22.77	21
+50000	timestamptz, random	brin	24576	0.49	10
+50000	timestamptz, random	btree_gin	2801664	56.03	57
+50000	timestamptz, random	sift_col	417792	8.36	16
+50000	uuid	btree	1589248	31.78	22
+50000	uuid	brin	24576	0.49	18
+50000	uuid	btree_gin	3620864	72.42	81
+50000	uuid	sift_col	942080	18.84	22
+50000	text, 8 chars distinct	btree	1589248	31.78	29
+50000	text, 8 chars distinct	brin	24576	0.49	14
+50000	text, 8 chars distinct	btree_gin	3620864	72.42	99
+50000	text, 8 chars distinct	sift_col	417792	8.36	22
+50000	text, 240 chars distinct	btree	16572416	331.45	65
+50000	text, 240 chars distinct	brin	32768	0.66	12
+50000	text, 240 chars distinct	btree_gin	29130752	582.62	179
+50000	text, 240 chars distinct	sift_col	2383872	47.68	49
+50000	text, 20 values	btree	368640	7.37	23
+50000	text, 20 values	brin	24576	0.49	18
+50000	text, 20 values	btree_gin	163840	3.28	14
+50000	text, 20 values	sift_col	286720	5.73	14
+50000	numeric(12,2)	btree	1540096	30.80	23
+50000	numeric(12,2)	brin	24576	0.49	15
+50000	numeric(12,2)	btree_gin	3522560	70.45	94
+50000	numeric(12,2)	sift_col	286720	5.73	19
+50000	int(100 values) + timestamptz	btree	1589248	31.78	28
+50000	int(100 values) + timestamptz	brin	24576	0.49	15
+50000	int(100 values) + timestamptz	btree_gin	3817472	76.35	76
+50000	int(100 values) + timestamptz	sift_col	286720	5.73	22
+50000	text(20 values) + int(100 values) + timestamptz	btree	2056192	41.12	66
+50000	text(20 values) + int(100 values) + timestamptz	brin	24576	0.49	21
+50000	text(20 values) + int(100 values) + timestamptz	btree_gin	3973120	79.46	92
+50000	text(20 values) + int(100 values) + timestamptz	sift_col	286720	5.73	24
+50000	int(100 values) + int random + timestamptz	btree	1589248	31.78	29
+50000	int(100 values) + int random + timestamptz	brin	24576	0.49	14
+50000	int(100 values) + int random + timestamptz	btree_gin	6520832	130.42	149
+50000	int(100 values) + int random + timestamptz	sift_col	286720	5.73	21
+100000	int, ascending	btree	2260992	22.61	29
+100000	int, ascending	brin	24576	0.25	19
+100000	int, ascending	btree_gin	5611520	56.12	115
+100000	int, ascending	sift_col	286720	2.87	20
+100000	int, random	btree	2236416	22.36	36
+100000	int, random	brin	24576	0.25	17
+100000	int, random	btree_gin	5431296	54.31	118
+100000	int, random	sift_col	434176	4.34	19
+100000	int, 100 values	btree	745472	7.45	39
+100000	int, 100 values	brin	24576	0.25	18
+100000	int, 100 values	btree_gin	335872	3.36	25
+100000	int, 100 values	sift_col	286720	2.87	26
+100000	timestamptz, ascending	btree	2260992	22.61	33
+100000	timestamptz, ascending	brin	24576	0.25	19
+100000	timestamptz, ascending	btree_gin	5611520	56.12	122
+100000	timestamptz, ascending	sift_col	286720	2.87	18
+100000	timestamptz, random	btree	2260992	22.61	34
+100000	timestamptz, random	brin	24576	0.25	22
+100000	timestamptz, random	btree_gin	5611520	56.12	147
+100000	timestamptz, random	sift_col	696320	6.96	28
+100000	uuid	btree	3178496	31.78	39
+100000	uuid	brin	24576	0.25	16
+100000	uuid	btree_gin	7241728	72.42	159
+100000	uuid	sift_col	1859584	18.60	43
+100000	text, 8 chars distinct	btree	3178496	31.78	55
+100000	text, 8 chars distinct	brin	24576	0.25	25
+100000	text, 8 chars distinct	btree_gin	7241728	72.42	264
+100000	text, 8 chars distinct	sift_col	548864	5.49	54
+100000	text, 240 chars distinct	btree	33112064	331.12	210
+100000	text, 240 chars distinct	brin	49152	0.49	33
+100000	text, 240 chars distinct	btree_gin	58245120	582.45	479
+100000	text, 240 chars distinct	sift_col	4612096	46.12	118
+100000	text, 20 values	btree	712704	7.13	60
+100000	text, 20 values	brin	24576	0.25	29
+100000	text, 20 values	btree_gin	475136	4.75	29
+100000	text, 20 values	sift_col	286720	2.87	36
+100000	numeric(12,2)	btree	3072000	30.72	59
+100000	numeric(12,2)	brin	24576	0.25	25
+100000	numeric(12,2)	btree_gin	7028736	70.29	279
+100000	numeric(12,2)	sift_col	548864	5.49	31
+100000	int(100 values) + timestamptz	btree	3178496	31.78	52
+100000	int(100 values) + timestamptz	brin	24576	0.25	21
+100000	int(100 values) + timestamptz	btree_gin	7569408	75.69	168
+100000	int(100 values) + timestamptz	sift_col	286720	2.87	25
+100000	text(20 values) + int(100 values) + timestamptz	btree	4087808	40.88	118
+100000	text(20 values) + int(100 values) + timestamptz	brin	24576	0.25	27
+100000	text(20 values) + int(100 values) + timestamptz	btree_gin	8028160	80.28	161
+100000	text(20 values) + int(100 values) + timestamptz	sift_col	286720	2.87	29
+100000	int(100 values) + int random + timestamptz	btree	3178496	31.78	48
+100000	int(100 values) + int random + timestamptz	brin	24576	0.25	24
+100000	int(100 values) + int random + timestamptz	btree_gin	12984320	129.84	319
+100000	int(100 values) + int random + timestamptz	sift_col	557056	5.57	32
+200000	int, ascending	btree	4513792	22.57	59
+200000	int, ascending	brin	24576	0.12	31
+200000	int, ascending	btree_gin	11206656	56.03	275
+200000	int, ascending	sift_col	286720	1.43	35
+200000	int, random	btree	4472832	22.36	83
+200000	int, random	brin	24576	0.12	25
+200000	int, random	btree_gin	10854400	54.27	358
+200000	int, random	sift_col	811008	4.06	32
+200000	int, 100 values	btree	1449984	7.25	95
+200000	int, 100 values	brin	24576	0.12	31
+200000	int, 100 values	btree_gin	819200	4.10	51
+200000	int, 100 values	sift_col	417792	2.09	43
+200000	timestamptz, ascending	btree	4513792	22.57	56
+200000	timestamptz, ascending	brin	24576	0.12	28
+200000	timestamptz, ascending	btree_gin	11206656	56.03	282
+200000	timestamptz, ascending	sift_col	286720	1.43	35
+200000	timestamptz, random	btree	4513792	22.57	64
+200000	timestamptz, random	brin	24576	0.12	35
+200000	timestamptz, random	btree_gin	11206656	56.03	317
+200000	timestamptz, random	sift_col	1466368	7.33	36
+200000	uuid	btree	6332416	31.66	86
+200000	uuid	brin	24576	0.12	30
+200000	uuid	btree_gin	14475264	72.38	506
+200000	uuid	sift_col	3563520	17.82	78
+200000	text, 8 chars distinct	btree	6332416	31.66	91
+200000	text, 8 chars distinct	brin	24576	0.12	51
+200000	text, 8 chars distinct	btree_gin	14475264	72.38	438
+200000	text, 8 chars distinct	sift_col	1073152	5.37	61
+200000	text, 240 chars distinct	btree	66191360	330.96	341
+200000	text, 240 chars distinct	brin	73728	0.37	37
+200000	text, 240 chars distinct	btree_gin	116514816	582.57	809
+200000	text, 240 chars distinct	sift_col	9093120	45.47	173
+200000	text, 20 values	btree	1409024	7.05	89
+200000	text, 20 values	brin	24576	0.12	36
+200000	text, 20 values	btree_gin	655360	3.28	47
+200000	text, 20 values	sift_col	286720	1.43	42
+200000	numeric(12,2)	btree	6127616	30.64	89
+200000	numeric(12,2)	brin	24576	0.12	37
+200000	numeric(12,2)	btree_gin	14008320	70.04	466
+200000	numeric(12,2)	sift_col	811008	4.06	50
+200000	int(100 values) + timestamptz	btree	6332416	31.66	79
+200000	int(100 values) + timestamptz	brin	24576	0.12	28
+200000	int(100 values) + timestamptz	btree_gin	15294464	76.47	286
+200000	int(100 values) + timestamptz	sift_col	548864	2.74	40
+200000	text(20 values) + int(100 values) + timestamptz	btree	8151040	40.76	261
+200000	text(20 values) + int(100 values) + timestamptz	brin	24576	0.12	47
+200000	text(20 values) + int(100 values) + timestamptz	btree_gin	15933440	79.67	337
+200000	text(20 values) + int(100 values) + timestamptz	sift_col	548864	2.74	53
+200000	int(100 values) + int random + timestamptz	btree	6324224	31.62	77
+200000	int(100 values) + int random + timestamptz	brin	24576	0.12	30
+200000	int(100 values) + int random + timestamptz	btree_gin	26140672	130.70	664
+200000	int(100 values) + int random + timestamptz	sift_col	958464	4.79	37
+1000000	int, ascending	btree	22487040	22.49	150
+1000000	int, ascending	brin	32768	0.03	73
+1000000	int, ascending	btree_gin	56008704	56.01	984
+1000000	int, ascending	sift_col	679936	0.68	128
+1000000	int, random	btree	22265856	22.27	234
+1000000	int, random	brin	32768	0.03	82
+1000000	int, random	btree_gin	54255616	54.26	1456
+1000000	int, random	sift_col	3637248	3.64	111
+1000000	timestamptz, random	btree	22487040	22.49	323
+1000000	timestamptz, random	brin	32768	0.03	94
+1000000	timestamptz, random	btree_gin	56008704	56.01	1338
+1000000	timestamptz, random	sift_col	6668288	6.67	140
+1000000	uuid	btree	31563776	31.56	269
+1000000	uuid	brin	40960	0.04	83
+1000000	uuid	btree_gin	72351744	72.35	1599
+1000000	uuid	sift_col	16941056	16.94	227
+1000000	text, 8 chars distinct	btree	31555584	31.56	347
+1000000	text, 8 chars distinct	brin	40960	0.04	86
+1000000	text, 8 chars distinct	btree_gin	72343552	72.34	1707
+1000000	text, 8 chars distinct	sift_col	5382144	5.38	272
+1000000	int(100 values) + int random + timestamptz	btree	31522816	31.52	407
+1000000	int(100 values) + int random + timestamptz	brin	40960	0.04	98
+1000000	int(100 values) + int random + timestamptz	btree_gin	129867776	129.87	2893
+1000000	int(100 values) + int random + timestamptz	sift_col	4808704	4.81	138
