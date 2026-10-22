@@ -18,7 +18,7 @@ HDR      = $(SRC)/bm25/kernels.h $(SRC)/bm25/kernels_int.h $(SRC)/col/kern.h $(S
 
 include ../tools.mk
 
-$(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OUT)/alt.o $(OBJ)
+$(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 bench-col: $(OUT)/bench
