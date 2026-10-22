@@ -27,7 +27,7 @@
 #include "table/table.h"
 #include "table/seg_int.h"
 
-bool		sift_tbl_bulk_groups = false;
+bool		sift_tbl_bulk_groups = true;
 
 /* Does the expression call a function (or operator) a user defined? Those can read the table; the built-in ones cannot */
 static bool

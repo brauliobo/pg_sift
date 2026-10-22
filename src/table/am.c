@@ -102,8 +102,8 @@ sift_tbl_define_gucs(void)
 							 &sift_tbl_async_promote, false, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_bulk_groups",
 							 "COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups, with no write buffer to promote.",
-							 "Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
-							 &sift_tbl_bulk_groups, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "On by default. Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
+							 &sift_tbl_bulk_groups, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
 							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
 							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
