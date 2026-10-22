@@ -10,11 +10,18 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 
+#include "agg/col_int.h"
+#include "agg/colsrc.h"
 #include "agg/part.h"
+#include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/topn.h"
 #include "bm25/query.h"
 #include "col/col.h"
+#include "col/preagg.h"
+#include "col/setsum.h"
+#include "col/shred.h"
+#include "col/wide.h"
 #include "core/limits.h"
 #include "core/sift.h"
 
