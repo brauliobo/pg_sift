@@ -35,6 +35,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
+#include "optimizer/prep.h"
 #include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
@@ -223,16 +224,22 @@ same_scan(PlannerInfo *a, PlannerInfo *b)
 {
 	ListCell   *la,
 			   *lb;
+	Relids		live;
+	Index		rti = 0;
 
 	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree, b->parse->jointree))
 		return false;
+	live = get_relids_in_jointree((Node *) a->parse->jointree, false, false);
 	forboth(la, a->parse->rtable, lb, b->parse->rtable)
 	{
 		RangeTblEntry same = *(RangeTblEntry *) lfirst(la),
 				   *rb = lfirst(lb);
 
 		same.eref = rb->eref;
-		if (same.rtekind != rb->rtekind || (!arm_private_rte(same.rtekind) && !equal(&same, rb)))
+		rti++;
+		/* a sub-select that was not pulled up is joined: its rows are the arm's lookup, so its query must be the same */
+		if (same.rtekind != rb->rtekind || (!arm_private_rte(same.rtekind) && !equal(&same, rb)) ||
+			(same.rtekind == RTE_SUBQUERY && bms_is_member(rti, live) && !equal(same.subquery, rb->subquery)))
 			return false;
 	}
 	return true;
@@ -776,6 +783,15 @@ two_aggs(TwoLevel *t, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 	return true;
 }
 
+/* the join PostgreSQL made of the tables of the arms' FROM, the input of the arms' own aggregates */
+static RelOptInfo *
+arm_input(PlannerInfo *base)
+{
+	Relids		all = base->all_query_rels;
+
+	return bms_membership(all) == BMS_SINGLETON ? base->simple_rel_array[bms_singleton_member(all)] : find_join_rel(base, all);
+}
+
 /*
  * The outer query aggregates the rows of its FROM item, the arms: a UNION ALL of aggregates (or one) of the same scan, each grouped by
  * a unique row id and by outer keys (a NULL constant where an arm has none of them): see SiftAggArm. The arms are read from their
@@ -795,7 +811,8 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		return;
 	if ((base = two_arms(&t)) == NULL)
 		return;
-	if (!agg_base(c, base, NULL, &fs) || c->nparts > 0)
+	c->detached = true;
+	if (!agg_base(c, base, arm_input(base), &fs) || c->nparts > 0)
 		return;
 	t.s = agg_spec_new(c);
 	if (!agg_quals(c, t.s, &fs) || !arm_gates(c, t.s, t.gates))
