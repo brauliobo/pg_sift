@@ -107,6 +107,8 @@ sift_table_segments(PG_FUNCTION_ARGS)
 				v[4] = Int32GetDatum(e->sb_lo);
 				v[5] = Int32GetDatum(e->sb_hi);
 				nulls[3] = nulls[4] = nulls[5] = false;
+				v[8] = Int32GetDatum(e->format);
+				nulls[8] = e->format == 0;
 			}
 		}
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
@@ -299,6 +301,23 @@ Datum
 sift_test_tbl_page_rec(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BOOL(page_rec_found((uint32) PG_GETARG_INT32(0), (uint32) PG_GETARG_INT32(1)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_ovf_piece);
+
+/* The bytes a continuation page of an overflow row holds when it was given `piece` of them and these flags (a damaged page is an error) */
+Datum
+sift_test_tbl_ovf_piece(PG_FUNCTION_ARGS)
+{
+	Page		page = palloc0(BLCKSZ);
+	uint32		piece;
+
+	sift_page_init(page, SIFT_PT_WBUFDATA, 7);
+	TBL_PAGE(page)->flags = (uint16) PG_GETARG_INT32(1);
+	SiftPageSetUsed(page, (uint32) (TBL_PAGE_INIT + PG_GETARG_INT32(0)));
+	piece = sift_tbl_ovf_piece(page, 7);
+	pfree(page);
+	PG_RETURN_INT32((int32) piece);
 }
 
 PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec_end);

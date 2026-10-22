@@ -350,6 +350,10 @@ CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec' LANGUAGE C STRICT;
 
+-- the bytes a continuation page of an overflow row holds when it was given `piece` of them and these flags: an error when the page is damaged
+CREATE FUNCTION sift._test_tbl_ovf_piece(piece int4, flags int4) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_ovf_piece' LANGUAGE C STRICT;
+
 -- the same for a record of inline_len bytes that ends `over` bytes past the end of the page's data (0: the largest record a page holds)
 CREATE FUNCTION sift._test_tbl_page_rec_end(inline_len int4, over int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec_end' LANGUAGE C STRICT;
