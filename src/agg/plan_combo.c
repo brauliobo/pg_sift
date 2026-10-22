@@ -545,7 +545,8 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 		w.jc = NULL;
 	else if (force)
 		w.jc = force;
-	if (w.bad || (w.nl == 0 && w.jc == NULL && !w.null_input && (!after_joins || w.vars == NIL)))
+	/* a key that reads no column (a stable function, a constant) is one combo of no leaves: evaluated once, it is the one group */
+	if (w.bad || (w.nl == 0 && w.jc == NULL && !w.null_input && !is_key && (!after_joins || w.vars == NIL)))
 		return false;
 	if (w.jc)
 		cb = list_nth(c->combos, w.jc->combo);
