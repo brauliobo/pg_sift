@@ -35,15 +35,19 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROWS_CELLS	4096		/* the most cells (tuples) of the rollup of a unit's rows ... */
 #define SIFT_PAGG_ROWS_RATIO	10			/* ... and at most a 10th of the unit's rows (at least SIFT_PAGG_ROLLUP_MIN): a tuple costs about 15 rows to read, so past a 16th the unit scans anyway; a unit with more has none and scans */
 #define SIFT_PAGG_MAX_MEAS		8
-#define SIFT_PAGG_MONTH			128			/* a cube dim whose directory leaf is this plus a timestamp leaf: the groups of the month of that leaf (SIFT_COL_MAX_COLS leaves precede it) */
+#define SIFT_PAGG_CAL			128			/* a calendar dim (the cells of a date or timestamp leaf) has the directory leaf grain * this + the leaf (SIFT_COL_MAX_COLS leaves precede it); asked of a reader, this + the leaf is the dim at the grain the unit has */
+#define SIFT_CAL_DAY			1			/* the grains of a cell, finest first: a day, a month, a year; the key of a cell is its first day, as days since 2000-01-01 (a date) */
+#define SIFT_CAL_MONTH			2
+#define SIFT_CAL_YEAR			3
 #define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
 #define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
-#define SIFT_PAGG_MONTH_GROUPS	1024		/* the months a month dim holds in a unit: 85 years */
+#define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
+#define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
-#define SIFT_PAGG_MONTH_PERMILLE 50			/* the month dims of a unit may take this much of its bytes (at least twice the minimum budget) */
+#define SIFT_PAGG_CAL_PERMILLE	50			/* the calendar dims of a unit together may take this much of its bytes (at least twice the minimum budget) */
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
@@ -74,7 +78,8 @@ typedef struct SiftCPaggDim
 {
 	int16		leaf;
 	uint8		nmeas;
-	bool		month;					/* leaf is a timestamp leaf and the dim groups it by the month: the key is the day number of the first day of the month (days since 2000-01-01, as a date) */
+	bool		cal;					/* leaf is a date or timestamp leaf and the dim groups it by calendar cells: each unit stores the finest grain (SIFT_CAL_*) that fits, the key of a cell being its first day */
+	uint8		grain;					/* cal: 0, the writer chooses the grain; else exactly this grain (a stored dim, which the verify recomputes) */
 	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
@@ -114,15 +119,19 @@ extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);
 
 /*
- * Adds to a default spec the month dim of every timestamp leaf (without time zone) of the top level, with the measures of a default dim: a GROUP BY of
- * date_trunc('month', ts) is then a histogram of the unit as a leaf that holds it would be (docs/COL-PREAGG.md 2). A sift_table has no index option to ask
- * for it, so its writer adds it to the default; column format minor 8.
+ * Adds to a default spec the calendar dim of every date, timestamp and timestamptz leaf of the top level, with the measures of a default dim: a unit then
+ * stores, for the leaf, the groups of its days, else of its months, else of its years (the finest that fits the cell limit and the byte budget), and every
+ * key that is a function of the cell (date_trunc, extract, ::date) is a histogram of the unit (docs/COL-PREAGG.md 2). A timestamptz is stored as UTC days.
+ * A sift_table has no index option to ask for it, so its writer adds it to the default; column format minor 8.
  */
-extern void sift_cpagg_spec_months(const SiftColSchema *s, SiftCPaggSpec *spec);
-/* The day number (days since 2000-01-01) of the first day of the month of a timestamp (microseconds since 2000-01-01); false for an infinity */
-extern bool sift_cpagg_month_of(int64 us, int64 *day);
-/* Is a stored month key a first day of a month? */
-extern bool sift_cpagg_month_start(int64 day);
+extern void sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec);
+/* The first day (days since 2000-01-01) of the cell of a grain that holds a day, and of the cell after the one that starts at day */
+extern int64 sift_cpagg_cal_cell(int grain, int64 day);
+extern int64 sift_cpagg_cal_next(int grain, int64 day);
+/* Can a stored cell key of a leaf of this type (SIFT_COLT_*) be one: the first day of a cell of the grain, a day the type holds */
+extern bool sift_cpagg_cal_key_ok(int type, int grain, int64 key);
+/* Is leaf c a date, timestamp or timestamptz leaf of the top level that has calendar cells? */
+extern bool sift_cpagg_cal_type(const SiftColSchema *s, int c);
 
 /* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
@@ -148,6 +157,12 @@ extern const char *sift_cpagg_rollup_syntax(const char *opt);
  */
 extern const char *sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
 extern const char *sift_cpagg_rows_syntax(const char *opt);
+/*
+ * The `calendar_columns` option: "a, b" or "all" (date, timestamp and timestamptz columns of the top level): the calendar dims of sift_cpagg_spec_calendar for
+ * these columns only. Refused for a schema with JSON path leaves. "" / "off": none. Same returns as sift_cpagg_rollup_apply.
+ */
+extern const char *sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
+extern const char *sift_cpagg_calendar_syntax(const char *opt);
 
 /* One leaf of a unit as the writer sees it, in the key domain; key is the segment's code for a dictionary leaf. n: the rows of the unit, the elements of the unit's list for a leaf of one */
 typedef struct SiftCPaggCol
@@ -260,7 +275,7 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
- * false on any difference, or when the cube holds min and max (minmax) a month dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.
+ * false on any difference, or when the cube holds min and max (minmax) a calendar dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
 							 const uint8 *eblob, uint32 elen, int format);

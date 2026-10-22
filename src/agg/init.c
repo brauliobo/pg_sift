@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
 #include "executor/nodeSubplan.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -270,6 +271,7 @@ register_key(AggExec *ex, int ki)
 		k->expr = init_lut_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
 		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
 	}
 	else if (sk->kind == SAK_NUM)
 	{

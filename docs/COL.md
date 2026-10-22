@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 10; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the month of a timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the small-set summary of section 2.13)
+## 2. Format (format major 1, col minor 10; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the calendar cells (days, months or years) of a date or timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the small-set summary of section 2.13)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:

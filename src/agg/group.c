@@ -414,10 +414,12 @@ wide_hash(int64 v, uint32 cap)
 }
 
 static uint32 bucket_id(AggExec *ex, KeyState *k, int64 bucket);
+static uint32 cal_id(AggExec *ex, KeyState *k, int64 day);
 
 /*
  * The id of an ident key's value when the range table is not used: ids are given in order of appearance, as the table does. A
- * bucket key (a calendar expression of a timestamp) keeps the id of the value of its expression for each bucket number it sees.
+ * bucket key (a calendar expression of a timestamp) keeps the id of the value of its expression for each bucket number it sees, a calendar key
+ * of a date for each day.
  */
 uint32
 ident_wide_id(AggExec *ex, KeyState *k, int64 v)
@@ -432,7 +434,7 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 		h = (h + 1) & (k->wcap - 1);
 	}
 	k->wval[h] = v;
-	id = k->bucket ? bucket_id(ex, k, v) : ident_add(ex, k, v);
+	id = k->bucket ? bucket_id(ex, k, v) : k->cal ? cal_id(ex, k, v) : ident_add(ex, k, v);
 	k->wid[h] = id;
 	if ((uint64) ++k->nwide * 2 > k->wcap)
 	{
@@ -497,6 +499,13 @@ bucket_id(AggExec *ex, KeyState *k, int64 bucket)
 	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : bucket * k->bucket;
 
 	return key_value_id(ex, (int) (k - ex->ks), Int64GetDatum(us), false);
+}
+
+/* the id of the cell of a date key that starts on a day: the key's expression of that date */
+static uint32
+cal_id(AggExec *ex, KeyState *k, int64 day)
+{
+	return key_value_id(ex, (int) (k - ex->ks), Int32GetDatum((int32) day), false);
 }
 
 /* the number of the bucket of a timestamp, floor(v / us) */

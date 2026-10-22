@@ -1,0 +1,166 @@
+-- The reloption calendar_columns of a sift_col index (column format minor 8, docs/COL-PREAGG.md section 2): the date, timestamp and timestamptz columns it names
+-- get calendar cells in every unit, which answer date_trunc, extract and ::date keys and ranges as for a sift_table. Off by default: an index without it writes
+-- the segments it wrote before; read back by the decoder that refuses a damaged cube; checked against the chunks by sift.col_verify. Every query runs three
+-- ways, which must give the same rows: pre-aggregates, scan of every unit (sift.agg_preagg off), the plain plan (sift.enable_agg off).
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE cc (id int, ts timestamp, d date, tz timestamptz, cat int, amt numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
+INSERT INTO cc SELECT i,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE timestamp '2000-01-01' + (i::bigint * 20011 % (700 * 86400)) * interval '1 second' END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE date '2000-01-01' + (i * 7919 % 700) END,
+	CASE WHEN i % 31 = 0 THEN NULL ELSE timestamptz '2000-01-01 00:00+00' + (i::bigint * 10007 % (700 * 86400)) * interval '1 second' END,
+	i % 10, ((i::bigint * 37) % 100000)::numeric / 100, repeat('p', 100)
+FROM generate_series(1, 30000) i;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cc;
+CREATE INDEX cc_off ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096);
+CREATE INDEX cc_on ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts, d, tz');
+CREATE INDEX cc_all ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'all');
+SET sift.col_format_minor = 7;
+CREATE INDEX cc_seven ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts');
+RESET sift.col_format_minor;
+-- refused: a column that is no date, an unknown column, a name twice, an index with paths
+CREATE INDEX cc_bad1 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'id');
+ERROR:  invalid calendar_columns option: "id" must be a date, timestamp or timestamptz column
+CREATE INDEX cc_bad2 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'nope');
+ERROR:  invalid calendar_columns option: "nope" is not a column of the index
+CREATE INDEX cc_bad3 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'ts, ts');
+ERROR:  invalid calendar_columns option: "ts" is named twice
+CREATE INDEX cc_bad4 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'ts,');
+ERROR:  invalid calendar_columns option "ts,": a column name is missing
+ALTER INDEX cc_on SET (calendar_columns = 'ts, d');
+SELECT 'cc_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('cc_off')
+UNION ALL SELECT 'cc_on', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_on')
+UNION ALL SELECT 'cc_all', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_all')
+UNION ALL SELECT 'cc_seven', array_agg(DISTINCT format) FROM sift._test_col_formats('cc_seven') ORDER BY 1;
+   idx    | minors 
+----------+--------
+ cc_all   | {8}
+ cc_off   | {4}
+ cc_on    | {8}
+ cc_seven | {4}
+(4 rows)
+
+SELECT sift.col_verify('cc_off', true), sift.col_verify('cc_on', true), sift.col_verify('cc_all', true), sift.col_verify('cc_seven', true);
+ col_verify | col_verify | col_verify | col_verify 
+------------+------------+------------+------------
+            |            |            | 
+(1 row)
+
+SELECT idx, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, cut > 0 AS cuts_made, cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made,
+       accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
+FROM (SELECT 'cc_on' AS idx, * FROM sift._test_col_cube_damage('cc_on', 4)
+      UNION ALL SELECT 'cc_all', * FROM sift._test_col_cube_damage('cc_all', 4)) d ORDER BY idx;
+  idx   | has_cubes | intact_decodes | cuts_made | cuts_refused | damages_made | some_refused | accepted_are_sound 
+--------+-----------+----------------+-----------+--------------+--------------+--------------+--------------------
+ cc_all | t         | t              | t         | t            | t            | t            | t
+ cc_on  | t         | t              | t         | t            | t            | t            | t
+(2 rows)
+
+CREATE FUNCTION cc_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION cc_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_preagg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+	END LOOP;
+END $$;
+CREATE TABLE cc_q (n int, shape text, q text);
+INSERT INTO cc_q VALUES
+	(1, 'month',           'SELECT date_trunc(''month'', ts)::date, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(2, 'day',             'SELECT date_trunc(''day'', ts)::date, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(3, 'extract year',    'SELECT extract(year FROM ts)::int, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(4, 'week',            'SELECT date_trunc(''week'', ts)::date, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(5, 'isodow',          'SELECT extract(isodow FROM ts), count(*) FROM cc GROUP BY 1'),
+	(6, 'hour: refused',   'SELECT date_trunc(''hour'', ts), count(*) FROM cc WHERE id < 3000 GROUP BY 1'),
+	(7, 'range',           'SELECT date_trunc(''month'', ts)::date, count(*), sum(amt) FROM cc WHERE ts >= ''2000-03-01'' AND ts < ''2000-09-01'' GROUP BY 1'),
+	(8, 'range, no key',   'SELECT count(*), sum(amt) FROM cc WHERE ts >= ''2000-03-01'' AND ts < ''2000-09-01'''),
+	(9, 'date, quarter',   'SELECT date_trunc(''quarter'', d)::date, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(10, 'date, test',     'SELECT extract(year FROM d), count(*) FROM cc WHERE extract(month FROM d) = 3 GROUP BY 1'),
+	(11, 'tz at UTC',      'SELECT date_trunc(''month'', tz AT TIME ZONE ''UTC'')::date, count(*), sum(amt) FROM cc GROUP BY 1'),
+	(12, 'tz session: scan', 'SELECT date_trunc(''month'', tz)::date, count(*) FROM cc GROUP BY 1');
+-- one index at a time: the planner takes any index of the table, so each is rebuilt alone for its shapes
+DROP INDEX cc_off, cc_on, cc_all, cc_seven;
+CREATE FUNCTION cc_check(OUT idx text, OUT n int, OUT shape text, OUT pre text, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE o text; z record; u record;
+BEGIN
+	FOREACH o IN ARRAY ARRAY['off', 'ts, d, tz', 'all', 'ts, d'] LOOP
+		EXECUTE format('CREATE INDEX cc_i ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = %L)', CASE o WHEN 'off' THEN '' ELSE o END);
+		FOR z IN SELECT * FROM cc_q ORDER BY cc_q.n LOOP
+			SELECT * INTO u FROM cc_units(z.q);
+			idx := o; n := z.n; shape := z.shape;
+			pre := CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END;
+			same := cc_rows(z.q, true, true) IS NOT DISTINCT FROM cc_rows(z.q, false, true) AND cc_rows(z.q, false, true) IS NOT DISTINCT FROM cc_rows(z.q, false, false);
+			RETURN NEXT;
+		END LOOP;
+		DROP INDEX cc_i;
+	END LOOP;
+END $$;
+SELECT * FROM cc_check() ORDER BY idx, n;
+    idx    | n  |      shape       | pre  | same 
+-----------+----+------------------+------+------
+ all       |  1 | month            | all  | t
+ all       |  2 | day              | none | t
+ all       |  3 | extract year     | all  | t
+ all       |  4 | week             | none | t
+ all       |  5 | isodow           | none | t
+ all       |  6 | hour: refused    | scan | t
+ all       |  7 | range            | all  | t
+ all       |  8 | range, no key    | all  | t
+ all       |  9 | date, quarter    | none | t
+ all       | 10 | date, test       | all  | t
+ all       | 11 | tz at UTC        | all  | t
+ all       | 12 | tz session: scan | scan | t
+ off       |  1 | month            | scan | t
+ off       |  2 | day              | scan | t
+ off       |  3 | extract year     | scan | t
+ off       |  4 | week             | scan | t
+ off       |  5 | isodow           | scan | t
+ off       |  6 | hour: refused    | scan | t
+ off       |  7 | range            | scan | t
+ off       |  8 | range, no key    | none | t
+ off       |  9 | date, quarter    | scan | t
+ off       | 10 | date, test       | scan | t
+ off       | 11 | tz at UTC        | scan | t
+ off       | 12 | tz session: scan | scan | t
+ ts, d     |  1 | month            | all  | t
+ ts, d     |  2 | day              | none | t
+ ts, d     |  3 | extract year     | all  | t
+ ts, d     |  4 | week             | none | t
+ ts, d     |  5 | isodow           | none | t
+ ts, d     |  6 | hour: refused    | scan | t
+ ts, d     |  7 | range            | all  | t
+ ts, d     |  8 | range, no key    | all  | t
+ ts, d     |  9 | date, quarter    | none | t
+ ts, d     | 10 | date, test       | all  | t
+ ts, d     | 11 | tz at UTC        | scan | t
+ ts, d     | 12 | tz session: scan | scan | t
+ ts, d, tz |  1 | month            | all  | t
+ ts, d, tz |  2 | day              | none | t
+ ts, d, tz |  3 | extract year     | all  | t
+ ts, d, tz |  4 | week             | none | t
+ ts, d, tz |  5 | isodow           | none | t
+ ts, d, tz |  6 | hour: refused    | scan | t
+ ts, d, tz |  7 | range            | all  | t
+ ts, d, tz |  8 | range, no key    | all  | t
+ ts, d, tz |  9 | date, quarter    | none | t
+ ts, d, tz | 10 | date, test       | all  | t
+ ts, d, tz | 11 | tz at UTC        | all  | t
+ ts, d, tz | 12 | tz session: scan | scan | t
+(48 rows)
+
+DROP TABLE cc, cc_q;
+DROP FUNCTION cc_rows(text, bool, bool), cc_units(text), cc_check();
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

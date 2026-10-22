@@ -57,7 +57,7 @@ check "to 3.1: the cube option (format 7) is a blocker" test -n "$(row "$out" bl
 out=$(uc --to 3.2 clean)
 check "to 3.2: the wide leaf is ok and the cube option is a blocker with the setting 6" grep -q -E '^blocker +facts_cube .*sift\.col_format_minor = 6 and REINDEX INDEX facts_cube' <<<"$out" &&
 	test -z "$(row "$out" blocker facts_wide)"
-check "to 3.2: the month of a timestamp in a sift_table (format 8) is a blocker with the setting 6" grep -q -E '^blocker +months .*sift\.col_format_minor = 6, then ALTER TABLE months' <<<"$out"
+check "to 3.2: the calendar cells of a timestamp in a sift_table (format 8) is a blocker with the setting 6" grep -q -E '^blocker +months .*sift\.col_format_minor = 6, then ALTER TABLE months' <<<"$out"
 check "to 3.3: nothing blocks" test "$(uc --to 3.3 clean | grep -c '^blocker')" == 0
 check "a release that is not major.minor is refused" test "$(uc --to three clean 2>&1 | grep -c 'target must be a release')" == 1
 

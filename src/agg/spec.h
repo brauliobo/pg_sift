@@ -572,7 +572,9 @@ extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 typedef struct SiftAggPaShape
 {
 	int			dim;
-	bool		month;				/* dim >= 0: the cube's month dim of that timestamp leaf, not the leaf's own dim */
+	bool		cal;				/* dim >= 0: the cube's calendar dim of that date or timestamp leaf (the cells of a unit), not the leaf's own dim */
+	uint8		calmask;			/* cal: the grains (1 << SIFT_CAL_*) of the cells that hold one value of the key and the tests; a unit with other cells scans */
+	bool		hcal;				/* hdim is the calendar dim of the leaf */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
@@ -597,8 +599,15 @@ typedef struct SiftAggPaShape
  * Over the rows, when that fails (two or more keys, a key and a conjunct on another column) and the index has the rollup of its rows (reloption
  * rollup_dims): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
  */
-/* a SAK_LUT key of a timestamp leaf whose expression is the same all month (date_trunc('month', ts)::date, extract(year FROM ts), ...): the month dim of the cube answers it */
-extern bool sift_aggkey_month(const SiftAggKey *k);
+/*
+ * Calendar expressions (plan_expr.c): sift_aggexpr_cal classifies a key or a test of a date, timestamp or timestamptz leaf (Param 0) and gives in mask the
+ * grains of calendar cells (bit 1 << SIFT_CAL_*) that hold one value of it; SAC_NOT: it is no calendar expression, SAC_ZONE: it depends on the session time
+ * zone, SAC_FINE: it changes within a day (hour, minute, the timestamp itself). sift_aggkey_cal does so for a SAK_LUT key that is evaluated for each day
+ * of its rows.
+ */
+enum {SAC_NOT, SAC_OK, SAC_ZONE, SAC_FINE};
+extern int	sift_aggexpr_cal(Node *e, uint8 *mask);
+extern int	sift_aggkey_cal(const SiftAggKey *k, uint8 *mask);
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
 /* Why a spec is not answered from the pre-aggregates, in the order the checks run */
@@ -633,7 +642,9 @@ typedef enum SiftPaWhy
 	SPW_ROW_PRED,				/* rows: a conjunct the histogram cannot test */
 	SPW_ROW_NO_HIST,			/* rows: the index writes no histogram of the key */
 	SPW_ROW_NO_SUMS,			/* rows: no sums at all */
-	SPW_ZONE					/* a comparison of the rows with NULL, or an IN list with gaps, decides no unit */
+	SPW_ZONE,					/* a comparison of the rows with NULL, or an IN list with gaps, decides no unit */
+	SPW_ROW_CAL_ZONE,			/* rows: the calendar key uses the session time zone (a timestamptz or a timestamp cast to one) */
+	SPW_ROW_CAL_FINE			/* rows: the calendar key changes within a day (hour, minute, the timestamp itself) */
 } SiftPaWhy;
 
 extern SiftPaWhy sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);

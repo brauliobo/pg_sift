@@ -303,6 +303,7 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure: the smallest and largest value of each group, NULL when the unit does not store them; meaningless where nn is 0 */
 	const int64 *max[SIFT_SRC_MAX_MEAS];
+	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/preagg.h: 1 day, 2 month, 3 year), else 0 */
 } SiftSrcHist;
 
 /*
@@ -350,7 +351,7 @@ typedef struct SiftSrcRollupNeed
  * Planner: the histograms and rollups the index writes (a unit may still lack one, or hold fewer dims of a rollup); ndims 0 when none.
  * aggs: units have unit_agg sums (always, even with ndims 0)
  */
-#define SIFT_SRC_MONTH	128			/* unit_hist(dim): the dim of a timestamp leaf by month is SIFT_SRC_MONTH + the leaf */
+#define SIFT_SRC_CAL	128			/* unit_hist(dim): the calendar cells of a date or timestamp leaf, at the grain the unit has, are SIFT_SRC_CAL + the leaf */
 
 typedef struct SiftSrcPreagg
 {
@@ -362,7 +363,7 @@ typedef struct SiftSrcPreagg
 		int			nmeas;
 		int			meas[SIFT_SRC_MAX_MEAS];
 		bool		minmax;			/* the units written from now on store min and max of the integer measures per group */
-		bool		month;			/* leaf is a timestamp leaf and the histogram groups it by the first day of its month (keys: days since 2000-01-01), asked for as unit_hist(SIFT_SRC_MONTH + leaf) */
+		bool		cal;			/* leaf is a date or timestamp leaf and the histogram groups it by calendar cells (keys: the first day of a cell, days since 2000-01-01; SiftSrcHist.grain), asked for as unit_hist(SIFT_SRC_CAL + leaf) */
 	}			dim[SIFT_SRC_MAX_DIMS];
 	int			nrollups;
 	struct

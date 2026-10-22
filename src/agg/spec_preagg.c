@@ -116,17 +116,17 @@ static int
 pa_dim(const SiftSrcPreagg *pa, int dim)
 {
 	for (int d = 0; d < pa->ndims; d++)
-		if (pa->dim[d].leaf == dim && !pa->dim[d].month)
+		if (pa->dim[d].leaf == dim && !pa->dim[d].cal)
 			return d;
 	return -1;
 }
 
-/* the histogram of the month of the timestamp leaf in pa, -1 if the index writes none */
+/* the histogram of the calendar cells of the date or timestamp leaf in pa, -1 if the index writes none */
 static int
-pa_month(const SiftSrcPreagg *pa, int leaf)
+pa_cal(const SiftSrcPreagg *pa, int leaf)
 {
 	for (int d = 0; d < pa->ndims; d++)
-		if (pa->dim[d].leaf == leaf && pa->dim[d].month)
+		if (pa->dim[d].leaf == leaf && pa->dim[d].cal)
 			return d;
 	return -1;
 }
@@ -162,6 +162,8 @@ static const char *const pawhy_name[] = {
 	[SPW_ROW_NO_HIST] = "rows: no histogram of the key",
 	[SPW_ROW_NO_SUMS] = "rows: no sums",
 	[SPW_ZONE] = "row comparison decides no unit",
+	[SPW_ROW_CAL_ZONE] = "rows: calendar key uses the session time zone",
+	[SPW_ROW_CAL_FINE] = "rows: calendar key finer than a day",
 };
 
 const char *
@@ -202,9 +204,11 @@ static const char *const pawhy_slug[] = {
 	[SPW_ROW_NO_HIST] = "rows_no_histogram",
 	[SPW_ROW_NO_SUMS] = "rows_no_sums",
 	[SPW_ZONE] = "zone_decides_nothing",
+	[SPW_ROW_CAL_ZONE] = "rows_key_time_zone",
+	[SPW_ROW_CAL_FINE] = "rows_key_finer_than_day",
 };
 
-StaticAssertDecl(lengthof(pawhy_slug) == SPW_ZONE + 1 && lengthof(pawhy_name) == SPW_ZONE + 1, "pawhy tables list every SiftPaWhy");
+StaticAssertDecl(lengthof(pawhy_slug) == SPW_ROW_CAL_FINE + 1 && lengthof(pawhy_name) == SPW_ROW_CAL_FINE + 1, "pawhy tables list every SiftPaWhy");
 
 const char *
 sift_pawhy_slug(SiftPaWhy why)
@@ -353,8 +357,10 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 
 		if (l == -2)
 			return -2;
-		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension */
-		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l))
+		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension. The cells of a timestamp stand in for
+		 * its histogram, which a unit that spans more than 32 instants does not have */
+		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l) &&
+			!(lay->leaf[l].vtype == SCV_I64 && pa_cal(pa, l) >= 0))
 			*zdim = l;
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
 			continue;
@@ -505,6 +511,47 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	return SPW_OK;
 }
 
+/* a test of calendar expressions of one leaf or of its NULLs: the grains of the cells that hold one value of it go into *mask */
+static bool
+cal_pred(const SiftAggPred *p, uint8 *mask)
+{
+	uint8		m;
+
+	switch (p->kind)
+	{
+		case SAP_AND:
+		case SAP_OR:
+			for (int i = 0; i < p->nchild; i++)
+				if (!cal_pred(p->child[i], mask))
+					return false;
+			return true;
+		case SAP_NULL:
+			return p->op <= 1;
+		case SAP_LUT:
+			if (sift_aggexpr_cal(p->expr, &m) != SAC_OK)
+				return false;
+			*mask &= m;
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
+ * Can the cells of the calendar dim of leaf test the conjuncts on it? Its zone comparisons are decided by the span of each cell (a unit with a cell that
+ * one cuts is scanned); the others must be tests of calendar expressions of the leaf or of its NULLs, which a cell answers when its grain is in *mask.
+ */
+static bool
+cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, uint8 *mask)
+{
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+
+	for (int i = 0; i < s->npred; i++)
+		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !cal_pred(s->pred[i], mask))
+			return false;
+	return *mask != 0;
+}
+
 /* the sums and histograms of the rows' leaves answer a scan of the rows: at most one key, a column of a histogram */
 static SiftPaWhy
 preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
@@ -512,9 +559,11 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	int			dim = -1,
 				d = -1,
 				hdim = -1,
-				mleaf = -1,
+				cleaf = -1,
 				fdim,
 				zdim;
+	uint8		cmask = 0;
+	bool		hcal = false;
 	SiftPaWhy	why = SPW_OK;
 
 	if (s->nkeys > 1)
@@ -523,34 +572,59 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	{
 		/* a group key of the column itself: a 32-bit or text leaf, or the int8 or numeric one that the keys of a program of one leaf stand for */
 		dim = s->key[0].kind == SAK_LEAF ? s->key[0].leaf : s->key[0].kind == SAK_NUM ? num_leaf(&s->key[0].num) : -1;
-		/* a calendar key that is the same all month: the groups of the month of its timestamp leaf, which no other test may narrow */
-		if (dim < 0 && sift_aggkey_month(&s->key[0]))
-			mleaf = s->key[0].leaf;
-		else if (dim < 0)
-			return SPW_ROW_KEY;
+		/* a calendar key (date_trunc, extract, ::date of a date or timestamp): the cells of the calendar dim of its leaf, when it is the same all cell */
+		if (dim < 0)
+		{
+			int			cal = sift_aggkey_cal(&s->key[0], &cmask);
+
+			if (cal == SAC_ZONE)
+				return SPW_ROW_CAL_ZONE;
+			if (cal == SAC_FINE)
+				return SPW_ROW_CAL_FINE;
+			if (cal != SAC_OK)
+				return SPW_ROW_KEY;
+			cleaf = s->key[0].leaf;
+		}
 	}
 	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
-	if (dim == -2 || (mleaf >= 0 && dim >= 0))
+	if (dim == -2)
 		return SPW_ROW_PRED;
+	/* the tests of the key's calendar leaf are made on its cells; those of another leaf are not */
+	if (cleaf >= 0 && dim >= 0)
+	{
+		if (dim != cleaf || !cal_tests(s, lay, nbase, cleaf, &cmask))
+			return SPW_ROW_PRED;
+		dim = -1;
+	}
 	/* the FILTERs and the other tests of a dim run on the groups of one histogram: the key's, the conjunct's or theirs */
 	fdim = preagg_filter_dim(s, lay, nbase);
-	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim) || (fdim >= 0 && mleaf >= 0))
+	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim) || (fdim >= 0 && cleaf >= 0))
 		return SPW_AGG_FILTER;
 	dim = fdim >= 0 ? fdim : dim;
-	/* count(DISTINCT leaf) reads the groups of the histogram of the leaf itself, not of a month */
+	/* count(DISTINCT leaf) reads the groups of the histogram of the leaf itself, not of its cells */
 	for (int i = 0; i < s->naggs; i++)
 		if (distinct_leaf(&s->agg[i], lay))
 		{
-			if (mleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))
+			if (cleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))
 				return SPW_AGG_DISTINCT;
 			dim = s->agg[i].leaf;
 		}
-	if (mleaf >= 0)
+	/* tests of a date or timestamp that has no histogram of its own: its cells, when they are calendar tests */
+	if (cleaf < 0 && dim >= 0 && fdim < 0 && pa_dim(pa, dim) < 0 && pa_cal(pa, dim) >= 0)
 	{
-		d = pa_month(pa, mleaf);
+		cmask = 0x0E;
+		if (cal_tests(s, lay, nbase, dim, &cmask))
+		{
+			cleaf = dim;
+			dim = -1;
+		}
+	}
+	if (cleaf >= 0)
+	{
+		d = pa_cal(pa, cleaf);
 		if (d < 0)
 			return SPW_ROW_NO_HIST;
-		dim = mleaf;
+		dim = cleaf;
 		zdim = -1;
 	}
 	else if (dim >= 0)
@@ -579,9 +653,31 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 			why = SPW_OK;
 		}
 	}
+	/* ... or from the cells of a date or timestamp it compares, whose span decides each cell (a unit with a cell the comparison cuts is scanned) */
+	if (dim < 0 && hdim < 0 && cleaf < 0 && why == SPW_OK)
+	{
+		List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+
+		foreach_ptr(SiftAggPred, p, cmps)
+		{
+			int			l = sift_aggspec_pred_leaf(p, lay, nbase, -1),
+						cd = l >= 0 ? pa_cal(pa, l) : -1;
+			SiftPaWhy	cwhy = SPW_OK;
+
+			for (int i = 0; cd >= 0 && cwhy == SPW_OK && i < s->naggs; i++)
+				cwhy = cube_agg_ok(&s->agg[i], lay, nbase, pa, cd);
+			if (cd >= 0 && cwhy == SPW_OK)
+			{
+				hdim = l;
+				hcal = true;
+				cmask = 0x0E;
+				break;
+			}
+		}
+	}
 	if (why != SPW_OK)
 		return why;
-	*out = (SiftAggPaShape) {.dim = dim, .month = mleaf >= 0, .hdim = hdim, .list = -1};
+	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hdim = hdim, .list = -1};
 	return SPW_OK;
 }
 

@@ -1,0 +1,82 @@
+# Calendar GROUP BY of a timestamp on a sift_table (ev: id, ts over 3 years, cat, amt), median of 3 runs in ms after a warm-up (one backend, /tmp scratch cluster; sift.agg_preagg off = scanned, sift.enable_agg off = normal; rollup = SiftAgg from the cells).
+# date: 2026-10-22
+# cpu: AMD Ryzen 9 5900XT 16-Core Processor (32 threads), shared host, load average 33 to 43 while measuring: the milliseconds are noisy to about 2 ms, read the ratios of the larger sizes
+# postgresql: PostgreSQL 18.6
+# build: minor8 = this change (default sift.col_format_minor); minor7 = the same build under sift.col_format_minor = 7 (no cells); pr341 = the month dim of PR 341 (timestamp columns only, month grain)
+# shapes: month = date_trunc('month', ts)::date, day = date_trunc('day', ts)::date, extract_year = extract(year FROM ts), week = date_trunc('week', ts)::date, each sum(amt) GROUP BY the key
+# sizes: the bytes of the pre-aggregates of the table (sift._test_tbl_preagg_bytes) and the grain of the cells of its units (days/months/years)
+rows	build	shape	normal_ms	scanned_ms	rollup_ms
+25000	minor7	day	16.985	4.431	5.153
+25000	minor8	day	12.123	3.011	4.000
+25000	pr341	day	17.420	4.674	4.212
+25000	minor7	extract_year	17.428	3.863	3.732
+25000	minor8	extract_year	16.369	3.746	2.640
+25000	pr341	extract_year	17.060	3.432	2.459
+25000	minor7	month	13.152	3.682	3.677
+25000	minor8	month	12.313	2.921	1.795
+25000	pr341	month	15.284	3.703	2.846
+25000	minor7	size	segment_bytes=73728	preagg_bytes=880	grains=0/0/0
+25000	minor8	size	segment_bytes=73728	preagg_bytes=1608	grains=0/1/0
+25000	pr341	size	segment_bytes=73728	preagg_bytes=1608	grains=
+25000	minor7	week	16.516	4.236	4.478
+25000	minor8	week	14.911	4.291	3.973
+25000	pr341	week	14.361	3.930	3.617
+50000	minor7	day	31.487	5.121	4.688
+50000	minor8	day	20.583	4.156	3.674
+50000	pr341	day	33.335	4.841	5.494
+50000	minor7	extract_year	32.707	4.266	4.336
+50000	minor8	extract_year	19.668	2.809	2.215
+50000	pr341	extract_year	37.879	5.267	3.046
+50000	minor7	month	35.268	5.037	4.501
+50000	minor8	month	21.078	3.851	2.468
+50000	pr341	month	29.169	4.001	3.439
+50000	minor7	size	segment_bytes=131072	preagg_bytes=1624	grains=0/0/0
+50000	minor8	size	segment_bytes=131072	preagg_bytes=2384	grains=0/2/0
+50000	pr341	size	segment_bytes=131072	preagg_bytes=2384	grains=
+50000	minor7	week	36.396	5.412	5.432
+50000	minor8	week	24.514	3.955	3.991
+50000	pr341	week	32.948	5.098	4.240
+100000	minor7	day	82.897	5.691	5.945
+100000	minor8	day	68.000	5.152	4.602
+100000	pr341	day	79.665	5.432	5.859
+100000	minor7	extract_year	89.428	4.799	5.170
+100000	minor8	extract_year	96.645	5.066	3.075
+100000	pr341	extract_year	100.110	5.594	3.346
+100000	minor7	month	85.420	5.342	5.223
+100000	minor8	month	79.262	4.730	2.850
+100000	pr341	month	92.655	5.622	2.960
+100000	minor7	size	segment_bytes=262144	preagg_bytes=3248	grains=0/0/0
+100000	minor8	size	segment_bytes=262144	preagg_bytes=7248	grains=1/3/0
+100000	pr341	size	segment_bytes=262144	preagg_bytes=4088	grains=
+100000	minor7	week	84.380	5.047	4.116
+100000	minor8	week	90.599	5.120	3.844
+100000	pr341	week	87.625	4.957	5.028
+200000	minor7	day	125.677	7.017	7.189
+200000	minor8	day	152.698	6.551	3.591
+200000	pr341	day	111.841	6.997	7.252
+200000	minor7	extract_year	134.517	6.390	6.785
+200000	minor8	extract_year	153.802	7.499	3.880
+200000	pr341	extract_year	114.934	6.409	2.608
+200000	minor7	month	142.781	6.717	5.983
+200000	minor8	month	121.804	6.753	3.208
+200000	pr341	month	112.902	6.268	2.331
+200000	minor7	size	segment_bytes=524288	preagg_bytes=6496	grains=0/0/0
+200000	minor8	size	segment_bytes=532480	preagg_bytes=27464	grains=8/0/0
+200000	pr341	size	segment_bytes=524288	preagg_bytes=7472	grains=
+200000	minor7	week	152.373	6.766	6.215
+200000	minor8	week	166.693	6.846	3.414
+200000	pr341	week	111.367	4.921	4.681
+
+rows	build	preagg_bytes	cell_grains
+25000	minor8	1608	0/1/0
+50000	minor8	2384	0/2/0
+100000	minor8	7248	1/3/0
+200000	minor8	27464	8/0/0
+25000	minor7	880	0/0/0
+50000	minor7	1624	0/0/0
+100000	minor7	3248	0/0/0
+200000	minor7	6496	0/0/0
+25000	pr341	1608	-
+50000	pr341	2384	-
+100000	pr341	4088	-
+200000	pr341	7472	-

@@ -115,8 +115,8 @@
 	  "measures of a cube or rollup", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
 	X(cube_groups, "SIFT_PAGG_DEF_GROUPS", "col/preagg.h", SIFT_PAGG_DEF_GROUPS, "groups", \
 	  "groups of a default cube dimension in one unit", "the unit has no histogram for the dimension (it is scanned)", "-", 0) \
-	X(month_groups, "SIFT_PAGG_MONTH_GROUPS", "col/preagg.h", SIFT_PAGG_MONTH_GROUPS, "groups", \
-	  "groups of a month dimension in one unit", "the unit has no histogram for the dimension (it is scanned)", "-", 0) \
+	X(calendar_groups, "SIFT_PAGG_CAL_GROUPS", "col/preagg.h", SIFT_PAGG_CAL_GROUPS, "groups", \
+	  "groups of a calendar dimension (days, else months, else years) in one unit", "the unit tries the next grain, then has no histogram for the dimension (it is scanned)", "-", 0) \
 	X(explicit_groups, "SIFT_PAGG_CUBE_GROUPS", "col/preagg.h", SIFT_PAGG_CUBE_GROUPS, "groups", \
 	  "groups of a dimension of an explicit cube(...) in one unit", "the unit has no histogram for the dimension (it is scanned)", "cube option", 0) \
 	X(rollup_tuples, "SIFT_PAGG_ROLLUP_TUPLES", "col/preagg.h", SIFT_PAGG_ROLLUP_TUPLES, "tuples", \

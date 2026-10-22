@@ -55,18 +55,18 @@ corrupt_cube(SiftColSegment *seg, uint32 u)
 					(unsigned long long) seg->entry.gen, u)));
 }
 
-/* The histogram of dim of a stored unit: from the cube (dim + SIFT_PAGG_MONTH: the month of a timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
+/* The histogram of dim of a stored unit: from the cube (SIFT_PAGG_CAL + a leaf: the calendar cells of a date or timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
 static bool
 seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *out)
 {
 	uint32		len;
-	const uint8 *blob = dim >= SIFT_PAGG_MONTH ? sift_cseg_cube(seg, u, &len) : sift_cseg_dim_cube(seg, u, dim, &len);
+	const uint8 *blob = dim >= SIFT_PAGG_CAL ? sift_cseg_cube(seg, u, &len) : sift_cseg_dim_cube(seg, u, dim, &len);
 	SiftCRollup r;
 	int			found;
 
 	if (blob == NULL)
 		return false;
-	if (dim >= SIFT_PAGG_MONTH || seg->schema->cols[dim].parent < 0)
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent < 0)
 	{
 		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
 			corrupt_cube(seg, u);
@@ -88,7 +88,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	sift_col_unit_stored(unit, &seg, &u);
 	if (!seg_hist(seg, u, dim, mcxt, out))
 		return false;
-	if (dict && dim < SIFT_PAGG_MONTH && seg->schema->cols[dim].store == SIFT_COLS_STR)
+	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
 		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
 	return true;
 }

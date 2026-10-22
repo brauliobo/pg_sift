@@ -576,7 +576,7 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim), NULL, h);
+	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, h);
 }
 
 /* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */

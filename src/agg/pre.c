@@ -19,7 +19,7 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 		pa->dim[pa->ndims].leaf = spec->dim[d].leaf;
 		pa->dim[pa->ndims].nmeas = spec->dim[d].nmeas;
 		pa->dim[pa->ndims].minmax = spec->minmax;
-		pa->dim[pa->ndims].month = spec->dim[d].month;
+		pa->dim[pa->ndims].cal = spec->dim[d].cal;
 		for (int m = 0; m < spec->dim[d].nmeas; m++)
 			pa->dim[pa->ndims].meas[m] = spec->dim[d].meas[m];
 		pa->ndims++;
@@ -97,6 +97,7 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 	h->key = d.key;
 	h->count = d.count;
 	h->nmeas = d.nmeas;
+	h->grain = d.leaf / SIFT_PAGG_CAL;
 	for (int m = 0; m < d.nmeas; m++)
 	{
 		h->meas[m] = leaf_of_col ? leaf_of_col[d.meas[m]] : d.meas[m];

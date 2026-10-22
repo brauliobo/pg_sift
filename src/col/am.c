@@ -105,6 +105,15 @@ sift_col_validate_rollup_dims(const char *value)
 }
 
 void
+sift_col_validate_calendar_columns(const char *value)
+{
+	const char *err = sift_cpagg_calendar_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_validate_set_columns(const char *value)
 {
 	const char *err = sift_cset_syntax(value);
@@ -162,7 +171,7 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written: 10, 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -228,6 +237,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "rollup_dims",
 						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...' (default off; the segments are column format minor 8)",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "calendar_columns",
+						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col' or 'all' (default none; the segments are column format minor 8)",
+						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "set_columns",
 						 "the plain integer and text columns whose distinct values every unit written from now on keeps (a small-set summary that lets an equality or IN test skip units); the segments are column format minor 10 (default none)",
 						 "", sift_col_validate_set_columns, ShareUpdateExclusiveLock);
@@ -251,6 +263,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
 		{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
+		{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
@@ -321,6 +334,14 @@ sift_col_options_rollup_dims(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->rollup_dims ? (const char *) o + o->rollup_dims : "";
+}
+
+const char *
+sift_col_options_calendar_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->calendar_columns ? (const char *) o + o->calendar_columns : "";
 }
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
@@ -402,6 +423,8 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
 		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
+		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
 		if ((err = sift_cset_spec_parse(sift_col_options_set_columns(index), r->schema, (const char *const *) names, r->pagg.set)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
@@ -501,10 +524,11 @@ sift_col_pagg_hash(Relation index)
 {
 	const char *a = sift_col_options_preagg(index),
 			   *b = sift_col_options_rollup(index),
-			   *c = sift_col_options_rollup_dims(index);
+			   *c = sift_col_options_rollup_dims(index),
+			   *d = sift_col_options_calendar_columns(index);
 
 	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^
-		(hash_bytes((const unsigned char *) c, strlen(c)) * 17) ^
+		(hash_bytes((const unsigned char *) c, strlen(c)) * 17) ^ (hash_bytes((const unsigned char *) d, strlen(d)) * 13) ^
 		(sift_col_options(index)->cube_minmax ? 0x9e3779b9 : 0) ^ ((uint32) sift_col_format_minor * 0x85ebca6b);
 }
 

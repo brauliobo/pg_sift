@@ -227,7 +227,7 @@ typedef struct SiftTestDamage
 	int64		blobs,
 				intact,
 				minmax,
-				month,
+				calendar,
 				cut,
 				cut_accepted,
 				damaged,

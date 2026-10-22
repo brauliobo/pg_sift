@@ -24,6 +24,7 @@ typedef struct KeyState
 	uint32	   *wid;
 	uint32		nwide;			/* the entries of the open addressing table */
 	int64		bucket;			/* LUT keys on a timestamp leaf: the microseconds one evaluation covers (the table maps bucket numbers to ids); 0: not one */
+	bool		cal;			/* LUT keys on a date leaf: the units answered from calendar cells map the first day of a cell (the table of wide values) to ids */
 	uint32		nullid;			/* LUT keys on integer leaves: the id of expr(NULL) */
 	uint32		cap;			/* direct mode: ids 0..cap-1 */
 	uint32		mult;

@@ -779,10 +779,10 @@ tbl_preagg(Relation rel, SiftSrcPreagg *pa)
 	SiftCPaggSpec spec;
 	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
 
-	/* the segments are written with the default spec of their layout (its month dims when the minor allows them: seg_write.c), whose columns are the leaves of the table's */
+	/* the segments are written with the default spec of their layout (its calendar dims when the minor allows them: seg_write.c), whose columns are the leaves of the table's */
 	sift_cpagg_spec_default(schema, &spec);
-	if (sift_col_format_minor >= SIFT_COL_FORMAT_MONTH && !schema->kinds)
-		sift_cpagg_spec_months(schema, &spec);
+	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
+		sift_cpagg_spec_calendar(schema, &spec);
 	sift_aggpre_spec(&spec, pa);
 }
 
@@ -805,11 +805,11 @@ static bool
 tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	TblPart    *p = unit->priv;
-	bool		month = dim >= SIFT_SRC_MONTH;
-	int			col = p->col[dim - (month ? SIFT_SRC_MONTH : 0)];
+	bool		cal = dim >= SIFT_SRC_CAL;
+	int			col = p->col[dim - (cal ? SIFT_SRC_CAL : 0)];
 
-	StaticAssertStmt(SIFT_SRC_MONTH == SIFT_PAGG_MONTH, "the month dims of the source and of the cube are numbered alike");
-	return col >= 0 && sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, col + (month ? SIFT_PAGG_MONTH : 0), &p->schema->cols[col], p->leaf_of_col, h);
+	StaticAssertStmt(SIFT_SRC_CAL == SIFT_PAGG_CAL, "the calendar dims of the source and of the cube are numbered alike");
+	return col >= 0 && sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, col + (cal ? SIFT_PAGG_CAL : 0), &p->schema->cols[col], p->leaf_of_col, h);
 }
 
 static const SiftSrcProvider tbl_provider = {
