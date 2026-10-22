@@ -1,0 +1,48 @@
+name: main-verify
+
+# The head of main always gets a complete `ci` run. A push run is no longer cancelled by the next push (ci.yml), but it can still be cancelled by hand or lost
+# to an outage, and then nothing would test the head. Every 20 minutes this finds the head of main; when no `ci` run of main that completed, not cancelled,
+# belongs to that commit and none is waiting or running for it, it dispatches one (a dispatch run covers every job of the quick tier). Dispatching needs no
+# token beyond the one of the run: a workflow_dispatch made with it starts a run.
+on:
+  schedule:
+    - cron: '7,27,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: main-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch ci when the head of main has no finished run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          head=$(gh api "repos/$GH_REPO/branches/main" --jq '.commit.sha + " " + .commit.commit.committer.date')
+          sha=${head% *}
+          age=$(( $(date +%s) - $(date -d "${head#* }" +%s) ))
+          # the push run of a commit that just landed is starting
+          if [ "$age" -lt 600 ]; then
+            echo "head ${sha:0:8} is $age s old: its push run is still starting" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          runs=$(gh run list --workflow ci.yml --branch main --limit 100 --json headSha,status,conclusion,event)
+          state=$(jq -r --arg sha "$sha" '
+            [.[] | select(.headSha == $sha)] as $mine
+            | if any($mine[]; .status == "completed" and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out")) then "finished"
+              elif any(.[]; .status != "completed" and (.headSha == $sha or .event == "workflow_dispatch")) then "running"
+              else "missing" end' <<<"$runs")
+          echo "head ${sha:0:8}: $state" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$state" = missing ]; then
+            gh workflow run ci.yml --ref main
+            echo "dispatched ci on main" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
