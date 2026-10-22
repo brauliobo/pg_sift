@@ -498,8 +498,12 @@ extern void sift_tbl_src_register(void);
  * waiting unless vacuum).
  */
 extern int	sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
-/* A writer closed a write buffer: promotes, freezes the groups whose rows are final and merges while the directory is more than half full */
-extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait);
+/* A writer closed a write buffer: promotes, freezes the groups whose rows are final and merges (steps at most) while the directory is more
+ * than half full; returns the write buffers promoted. A close takes SIFT_TBL_SETTLE_STEPS, a writer held back by sift.table_backpressure
+ * SIFT_TBL_ROOM_STEPS. */
+extern int	sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, int steps);
+#define SIFT_TBL_SETTLE_STEPS	4
+#define SIFT_TBL_ROOM_STEPS		16
 /* Clears the unfrozen flag of the groups whose live rows all committed before oldest; the maintenance lock held. The groups changed. */
 extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
 
@@ -530,6 +534,7 @@ extern PGDLLIMPORT int sift_tbl_write_buffer_limit;
 extern PGDLLIMPORT int sift_tbl_max_segments;
 extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT bool sift_tbl_inline_promote;
+extern PGDLLIMPORT int sift_tbl_backpressure;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */

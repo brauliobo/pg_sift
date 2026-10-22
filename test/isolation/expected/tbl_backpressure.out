@@ -1,0 +1,52 @@
+Parsed test spec with 3 sessions
+
+starting permutation: hb wb wbp wi oseg hc wc orows
+step hb: BEGIN; SELECT sift._test_tbl_hold_maint('iso_bp');
+_test_tbl_hold_maint
+--------------------
+                    
+(1 row)
+
+step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wbp: SET LOCAL sift.table_backpressure = 75;
+step wi: INSERT INTO iso_bp SELECT g, repeat('x', 1000) FROM generate_series(1, 40000) g; <waiting ...>
+step oseg: SELECT count(*) AS entries FROM sift.table_segments('iso_bp');
+entries
+-------
+     13
+(1 row)
+
+step hc: COMMIT;
+step wi: <... completed>
+step wc: COMMIT;
+step orows: SELECT count(*) AS visible FROM iso_bp;
+visible
+-------
+  40000
+(1 row)
+
+
+starting permutation: hb wb wi oseg hc wc orows
+step hb: BEGIN; SELECT sift._test_tbl_hold_maint('iso_bp');
+_test_tbl_hold_maint
+--------------------
+                    
+(1 row)
+
+step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wi: INSERT INTO iso_bp SELECT g, repeat('x', 1000) FROM generate_series(1, 40000) g; <waiting ...>
+step oseg: SELECT count(*) AS entries FROM sift.table_segments('iso_bp');
+entries
+-------
+     14
+(1 row)
+
+step hc: COMMIT;
+step wi: <... completed>
+step wc: COMMIT;
+step orows: SELECT count(*) AS visible FROM iso_bp;
+visible
+-------
+  40000
+(1 row)
+
