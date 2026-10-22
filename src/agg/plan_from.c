@@ -1221,14 +1221,66 @@ scalar_text_type(Oid typid)
 	return typid == BOOLOID || typid == INT4OID || typid == INT8OID || typid == FLOAT8OID;
 }
 
+/* a comparison, IN list, NULL test or boolean expression of the leaf alone, over the rows, that cannot raise by itself: a row the leaf cannot read passes it (pass_poison) */
+static bool
+scalar_test(const SiftAggPred *p, int leaf)
+{
+	return p->level == 0 && !p->late && p->nchild == 0 && p->leaf == leaf && p->leaf2 < 0 && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT);
+}
+
+/* the leaf is left to the normal plan because of the order of the conditions, which reads_overflow names */
+static SiftSrcRecheck
+order_refused(AggCtx *c, int m)
+{
+	c->order_refused = bms_add_member(c->order_refused, m);
+	return SRK_NONE;
+}
+
+/*
+ * Does PostgreSQL test every condition of the WHERE that does not read the leaf (u) before each one that does? A scan sorts its conditions by their
+ * cost, the written order among equals (order_qual_clauses), and stops at the first that drops the row, so a row another condition drops never
+ * reaches the cast of the leaf, however the plan reaches the table. The scan raises for the rows that every other condition keeps, so the two raise
+ * for the same rows exactly when the others come first.
+ */
+static bool
+others_first(AggCtx *c, const Unconditional *u)
+{
+	Node	   *quals = (Node *) c->root->parse->jointree->quals;
+	List	   *conds = quals == NULL ? NIL : IsA(quals, List) ? (List *) quals : list_make1(quals);
+	int			n = list_length(conds);
+	double	   *cost = palloc(Max(n, 1) * sizeof(double));
+	bool	   *reads = palloc(Max(n, 1) * sizeof(bool));
+
+	for (int i = 0; i < n; i++)
+	{
+		Unconditional t = *u;
+		QualCost	qc;
+
+		t.nread = 0;
+		count_leaf_reads(list_nth(conds, i), &t);
+		reads[i] = t.nread > 0;
+		cost_qual_eval_node(&qc, list_nth(conds, i), c->root);
+		cost[i] = qc.per_tuple;
+	}
+	for (int o = 0; o < n; o++)
+		for (int r = 0; r < n; r++)
+			if (!reads[o] && reads[r] && !(cost[o] < cost[r] || (cost[o] == cost[r] && o < r)))
+				return false;
+	return true;
+}
+
 /*
  * Can leaf m, a number or boolean path of the document that the query reads only as `(doc ->> 'k')::T` (SRK_IOCAST) or, for float8, as the
  * cast of `doc -> 'k'` (SRK_CAST), be read again from the heap? A row whose value the leaf cannot store is read as SQL reads it: the text of the
  * scalar through the input function of T, or the number of the jsonb value, and the error SQL raises for another value is raised where the row
  * reaches the aggregate (recheck_late), which is where PostgreSQL evaluates the argument of an aggregate or a grouping expression. So every
- * read of the leaf is that one cast, in a key or an aggregate that every row reaching it evaluates and nowhere else (no conjunct, join or
- * sub-select: a row they drop first must not raise), and nothing the rows go through before the aggregates may drop a row after PostgreSQL has
- * evaluated the cast, which a function in the FROM or a join could.
+ * read of the leaf is that one cast, in a key or an aggregate that every row reaching it evaluates, and nothing the rows go through before the
+ * aggregates may drop a row after PostgreSQL has evaluated the cast, which a function in the FROM or a join could.
+ *
+ * A condition of the WHERE may read it too, as a comparison, IN list or NULL test of the cast: a row of an unreadable value passes it and goes on
+ * to the other conditions, and raises only if they keep it. That is what PostgreSQL does when it tests the others first (others_first); a plan
+ * that tests the cast before a condition that drops the row raises for it. A condition that may raise itself (late) is left to the normal plan.
+ * The rows the condition keeps have a readable value, so the aggregates may read the leaf in any way.
  */
 static SiftSrcRecheck
 scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
@@ -1239,6 +1291,7 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	Unconditional all;
 	SiftSrcRecheck kind;
 	Bitmapset  *read;
+	bool		tested = false;
 
 	if (m >= c->lay->nleaves - c->nvleaf || c->group >= 0 || c->func_rti != 0 || c->joins != NIL || c->search || !OidIsValid(c->indexoid) ||
 		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
@@ -1258,17 +1311,39 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	read = bms_make_singleton(m);
 	for (int i = 0; i < s->npred; i++)
 		if (pred_reads_set(c, s->pred[i], read))
-			return SRK_NONE;
-	if (!unconditional((Node *) q->targetList, &u) && !unconditional(q->havingQual, &u))
+		{
+			if (!scalar_test(s->pred[i], m))
+			{
+				c->dirty_leaf = m;
+				c->dirty_why = "a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean)";
+				return SRK_NONE;
+			}
+			tested = true;
+		}
+	if (tested)
+	{
+		for (int i = 0; i < s->npred; i++)
+			if (s->pred[i]->late)
+				return order_refused(c, m);
+		if (!others_first(c, &u))
+			return order_refused(c, m);
+	}
+	else if (!unconditional((Node *) q->targetList, &u) && !unconditional(q->havingQual, &u))
 		return SRK_NONE;
-	/* every read is in the targets: the one the walk found is in the same tree as the others */
+	/* every read is in the conditions and the targets: the one the walk found is in the same tree as the others */
 	all = u;
 	all.nread = 0;
 	count_leaf_reads((Node *) q, &all);
 	u.nread = 0;
 	count_leaf_reads((Node *) q->targetList, &u);
 	count_leaf_reads(q->havingQual, &u);
-	return all.nread == u.nread ? kind : SRK_NONE;
+	count_leaf_reads(q->jointree->quals, &u);
+	if (all.nread != u.nread)
+		return SRK_NONE;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_reads_set(c, s->pred[i], read))
+			s->pred[i]->pass_poison = true;
+	return kind;
 }
 
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns (it may drop a row that the error would reach first) */

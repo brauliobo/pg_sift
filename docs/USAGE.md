@@ -519,6 +519,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `distinct_on` | semantic | yes | DISTINCT ON has no total order for the row it keeps |
 | `grouping_sets` | semantic |  | the arm does not group by grouping sets |
 | `dirty_units` | semantic |  | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
+| `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too |
 | `volatile` | semantic | yes | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce |
 | `first_memory` | limit |  | the first rows of the groups would not fit in the memory of a hash aggregate |
 | `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill |

@@ -120,6 +120,9 @@ typedef struct AggCtx
 	int			io_pending;		/* 1 + the leaf match_leaf just resolved from `(doc ->> 'k')::T` (0: none), which the use_leaf that follows takes */
 	Bitmapset  *io_ok;			/* leaves read only through such a cast ... */
 	Bitmapset  *io_bad;			/* ... and the leaves read in any other way */
+	Bitmapset  *order_refused;	/* leaves scalar_recheck refused only because PostgreSQL's order of the conditions decides whether a row raises */
+	int			dirty_leaf;		/* the leaf that scalar_recheck refused last for the reason dirty_why (NULL: none) */
+	const char *dirty_why;
 	Bitmapset  *txt_ok;			/* text leaves read only as `doc ->> 'k'` ... */
 	Bitmapset  *txt_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */

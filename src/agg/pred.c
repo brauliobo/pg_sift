@@ -677,6 +677,15 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 		else
 			for (int s = 0; s < nrow; s += VEC)
 				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
+		/* a cast of the leaf that raises for the row: the row goes on to the other conditions, and to the error if they keep it */
+		if (p->pass_poison && p->kind != SAP_ANY_ELEM)
+		{
+			uint64	   *bad = NULL;
+
+			leaf_overflow_rows(ex, p->leaf, &bad);
+			for (int w = 0; bad && w < (nrow + 63) / 64; w++)
+				st->rowmask[w] |= bad[w];
+		}
 		st->rowmask_ok = true;
 	}
 	return st->rowmask;
