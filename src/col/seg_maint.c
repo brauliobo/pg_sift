@@ -529,6 +529,46 @@ verify_run_kinds(SiftColSegment *seg)
 	}
 }
 
+/* A dictionary stored for a lookup: its order names every code once and the strings ascend in it, and the segment says so in its minor */
+static void
+verify_dicts(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		SiftCDict  *d;
+		uint64	   *seen;
+
+		if (seg->schema->cols[c].store != SIFT_COLS_STR)
+			continue;
+		d = sift_cseg_dict(seg, c);
+		if (!d->stored_order)
+			continue;
+		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
+			corrupt(seg, "The dictionary of leaf %d is stored for a lookup in a segment of column format 1.%d.", c, seg->entry.format);
+		seen = palloc0(SIFT_COL_NWORDS(d->n) * sizeof(uint64));
+		for (uint32 i = 0; i < d->n; i++)
+		{
+			uint32		code = d->sorted[i],
+						len,
+						prev_len = 0;
+			const char *s = sift_cdict_str(d, code, &len);
+
+			if (seen[code >> 6] >> (code & 63) & 1)
+				corrupt(seg, "The order of the dictionary of leaf %d lists code %u twice.", c, code);
+			seen[code >> 6] |= UINT64CONST(1) << (code & 63);
+			if (i > 0)
+			{
+				const char *prev = sift_cdict_str(d, d->sorted[i - 1], &prev_len);
+
+				if (sift_cstr_cmp(prev, prev_len, s, len) >= 0)
+					corrupt(seg, "The order of the dictionary of leaf %d is not the byte order of its strings (position %u).", c, i);
+			}
+		}
+		pfree(seen);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 uint64
 sift_cseg_verify(SiftColSegment *seg)
 {
@@ -536,6 +576,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	uint64		live = seg->hdr->ndocs;
 
 	verify_vers(seg);
+	verify_dicts(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		verify_unit(seg, u, keys);

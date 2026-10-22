@@ -169,10 +169,30 @@ typedef struct ZoneArrays
 	bool		any_inl;		/* some unit flags SIFT_COLZ_INLINE: its min and max are prefix keys, not codes */
 } ZoneArrays;
 
+#define DICT_PARSE_AFTER	32	/* tests of a dictionary searched in the stream, over the queries of a backend, before it is parsed and cached */
+
+/* A dictionary of the form that is searched in place (DICT_LOOKUP): where its parts lie in the stream */
+typedef struct DictLook
+{
+	SiftCDictLook look;
+	SiftColSegment *seg;
+	int			col;
+	uint32		n;
+	uint32		fixed;			/* the length of every string, 0: off[] says */
+	uint32		nbytes;
+	uint64		offs_at;		/* stream offsets: u32 off[n + 1] (fixed 0), the strings, u32 code[n] in byte order */
+	uint64		bytes_at;
+	uint64		perm_at;
+	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
+	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
+} DictLook;
+
 typedef struct SegPriv
 {
 	SiftLive	live;
 	SiftCDict **dict;
+	DictLook  **look;			/* [ncols] read on first use; a NULL entry with look_checked: the dictionary is not of that form */
+	bool	   *look_checked;
 	ZoneArrays **zones;
 	uint8	   *unitbuf;
 	Size		unitcap;
@@ -216,5 +236,9 @@ extern const VersUnit *vers_units(SiftColSegment *seg);
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
 typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);
 extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load);
+/* The same without loading: NULL when the cache does not hold it */
+extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);
+/* Counts one more test of the dictionary of leaf col that was searched in the stream, and says how many the backend made */
+extern uint32 sift_cseg_dict_asked(SiftColSegment *seg, int col);
 
 #endif

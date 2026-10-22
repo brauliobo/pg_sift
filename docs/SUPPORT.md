@@ -39,7 +39,7 @@ older ones, and refuses a newer one with a `REINDEX` hint instead of guessing. G
 - `sift_col`: `SET sift.col_format_minor` to the minor the target release reads, then `REINDEX INDEX`; `sift_table`: the same setting, then `ALTER TABLE t SET ACCESS METHOD heap` and back;
 - `sift` (BM25) index: drop it and create it again with the older release, or keep the newer library;
 - a standby that stays on the older release needs the formats the older library reads while its primary writes;
-- 3.3 writes at `sift.col_format_minor = 13` by default: after the update, a 3.2 library cannot read the `sift_table` tables with a date or timestamp column and the indexes with new options written from then on, unless the setting is lowered (6 for 3.2) first.
+- 3.3 writes at `sift.col_format_minor = 14` by default: after the update, a 3.2 library cannot read the `sift_table` tables with a date or timestamp column and the indexes with new options written from then on, unless the setting is lowered (6 for 3.2) first.
 
 The first release that reads each format is the table in [UPGRADING.md](UPGRADING.md#5-first-release-that-reads-each-format), and the release notes of a release
 say which formats it writes by default.

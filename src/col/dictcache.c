@@ -144,6 +144,66 @@ dict_key(DictKey *k, SiftColSegment *seg, int col, uint32 unit)
 	k->unit = unit;
 }
 
+/*
+ * How many tests the backend made of a dictionary it searched in the stream, over all its queries: a dictionary asked often is parsed and kept (the
+ * parse costs about as much as DICT_PARSE_AFTER searches of the stream, and the cache then answers an equality in a hash probe). The counters of
+ * 1,024 dictionaries are kept; the table is emptied when it is full.
+ */
+#define DICT_ASKS_KEPT	1024
+
+typedef struct AskEnt
+{
+	DictKey		key;
+	uint32		asks;
+} AskEnt;
+
+static HTAB *asks;
+
+uint32
+sift_cseg_dict_asked(SiftColSegment *seg, int col)
+{
+	DictKey		k;
+	AskEnt	   *e;
+	bool		found;
+
+	if (asks == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(DictKey),.entrysize = sizeof(AskEnt)};
+
+		if (cache == NULL)
+			cache_init();
+		ctl.hcxt = cache_cx;
+		asks = hash_create("sift column dictionary asks", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	else if (hash_get_num_entries(asks) >= DICT_ASKS_KEPT)
+	{
+		hash_destroy(asks);
+		asks = NULL;
+		return sift_cseg_dict_asked(seg, col);
+	}
+	dict_key(&k, seg, col, UINT32_MAX);
+	e = hash_search(asks, &k, HASH_ENTER, &found);
+	if (!found)
+		e->asks = 0;
+	return ++e->asks;
+}
+
+SiftCDict *
+sift_cseg_dict_peek(SiftColSegment *seg, int col)
+{
+	DictKey		k;
+	DictEnt    *e;
+
+	if (cache == NULL)
+		return NULL;
+	dict_key(&k, seg, col, UINT32_MAX);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
+		return NULL;
+	CDICT_STAT(hits);
+	dict_pin(e, seg->mcxt);
+	return e->obj;
+}
+
 SiftCDict *
 sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 {

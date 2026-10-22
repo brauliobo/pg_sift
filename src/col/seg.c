@@ -139,6 +139,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	pv->live =(SiftLive) {index, entry->gen, h->live_first, h->live_npages, h->sb_hi - h->sb_lo + 1, h->ndocs};
 	sift_live_check(&pv->live);
 	pv->dict = palloc0(h->nterms * sizeof(SiftCDict *));
+	pv->look = palloc0(h->nterms * sizeof(DictLook *));
+	pv->look_checked = palloc0(h->nterms * sizeof(bool));
 	pv->zones = palloc0(h->nterms * sizeof(ZoneArrays *));
 	MemoryContextSwitchTo(old);
 	return seg;
@@ -273,6 +275,145 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 	if (pv->dict[col] == NULL)
 		pv->dict[col] = sift_cseg_dict_cached(seg, col, dict_load);
 	return pv->dict[col];
+}
+
+/* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */
+static const char *
+look_code_str(const DictLook *l, uint32 code, uint32 *len, char *buf)
+{
+	uint64		at;
+
+	if (code >= l->n)
+		corrupt(l->seg, "Code %u is beyond the %u strings of the dictionary of leaf %d.", code, l->n, l->col);
+	if (l->fixed)
+	{
+		*len = l->fixed;
+		at = l->bytes_at + (uint64) code * l->fixed;
+	}
+	else
+	{
+		uint32		o[2];
+
+		seg_read(l->seg, l->offs_at + (uint64) code * sizeof(uint32), sizeof(o), o);
+		if (o[1] < o[0] || o[1] > l->nbytes || o[1] - o[0] > SIFT_COL_DICT_MAX_ENTRY)
+			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+		*len = o[1] - o[0];
+		at = l->bytes_at + o[0];
+	}
+	seg_read(l->seg, at, *len, buf);
+	return buf;
+}
+
+static uint32
+look_perm(const DictLook *l, uint32 pos)
+{
+	uint32		code;
+
+	seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), sizeof(code), &code);
+	if (code >= l->n)
+		corrupt(l->seg, "The order of the dictionary of leaf %d names code %u of %u.", l->col, code, l->n);
+	return code;
+}
+
+/* A string of the order by position; the buffer is the one of the search (a bisection holds one string at a time) */
+static const char *
+look_sorted_str(const void *ctx, uint32 pos, uint32 *len)
+{
+	const DictLook *l = ctx;
+
+	return look_code_str(l, look_perm(l, pos), len, ((DictLook *) l)->buf);
+}
+
+static int64
+look_find(const SiftCDictLook *look, const char *s, uint32 len)
+{
+	const DictLook *l = (const DictLook *) look;
+	SiftCSorted so = {l->n, look_sorted_str, l};
+	SiftColValue c = {.v.s = s,.len = len};
+	uint32		pos = sift_csorted_bound(&so, &c, false);
+
+	return pos < l->n && sift_csorted_cmp(&so, pos, &c) == 0 ? (int64) look_perm(l, pos) : -1;
+}
+
+static uint32
+look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut)
+{
+	const DictLook *l = (const DictLook *) look;
+	SiftCSorted so = {l->n, look_sorted_str, l};
+	uint32		from,
+				to;
+
+	sift_csorted_range(&so, op, c, &from, &to);
+	for (uint32 pos = from; pos < to;)
+	{
+		uint32		codes[1024],
+					k = Min(to - pos, lengthof(codes));
+
+		seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), k * sizeof(uint32), codes);
+		for (uint32 i = 0; i < k; i++)
+		{
+			if (codes[i] >= l->n)
+				corrupt(l->seg, "The order of the dictionary of leaf %d names code %u of %u.", l->col, codes[i], l->n);
+			lut[codes[i] >> 6] |= UINT64CONST(1) << (codes[i] & 63);
+		}
+		pos += k;
+	}
+	return to - from;
+}
+
+SiftCDict *
+sift_cseg_dict_search(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return NULL;
+	if (pv->dict[col] == NULL)
+		pv->dict[col] = sift_cseg_dict_peek(seg, col);
+	if (pv->dict[col] != NULL)
+		return pv->dict[col];
+	if (!pv->look_checked[col])
+	{
+		uint64		off,
+					len;
+		uint32		head[4];
+
+		pv->look_checked[col] = true;
+		dict_region(seg, col, &off, &len);
+		off += sec(seg, SIFT_SEC_DICT)->off;
+		if (len < DICT_HEAD)
+			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+		seg_read(seg, off, DICT_HEAD, head);
+		if (head[0] == DICT_LOOKUP)
+		{
+			DictLook   *l = MemoryContextAllocZero(seg->mcxt, sizeof(DictLook));
+			uint64		offs;
+
+			if (len < DICT_HEAD_LOOKUP)
+				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			seg_read(seg, off, DICT_HEAD_LOOKUP, head);
+			offs = head[2] == 0 ? ((uint64) head[1] + 1) * sizeof(uint32) : 0;
+			l->seg = seg;
+			l->col = col;
+			l->n = head[1];
+			l->fixed = head[2];
+			l->nbytes = head[3];
+			l->offs_at = off + DICT_HEAD_LOOKUP;
+			l->bytes_at = l->offs_at + offs;
+			l->perm_at = off + (DICT_HEAD_LOOKUP + offs + head[3] + 3) / 4 * 4;
+			if (l->n == 0 || l->fixed > SIFT_COL_DICT_MAX_ENTRY || (l->fixed != 0 && (uint64) l->n * l->fixed != l->nbytes) ||
+				l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
+				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			l->look = (SiftCDictLook) {look_find, look_match};
+			l->stub.n = l->n;
+			l->stub.look = &l->look;
+			pv->look[col] = l;
+		}
+	}
+	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order */
+	if (pv->look[col] && sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER)
+		return &pv->look[col]->stub;
+	return sift_cseg_dict(seg, col);
 }
 
 const ZoneArrays *
