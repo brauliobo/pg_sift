@@ -15,7 +15,7 @@ FROM generate_series(1, 9000) g;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) cs;
 
 -- the minor of the segments of an index: without the option, under the setting 7 with it, and with both
-CREATE INDEX cs_off ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX cs_off ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SET sift.col_format_minor = 7;
 CREATE INDEX cs_seven ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
 SET sift.col_format_minor = 6;

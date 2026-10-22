@@ -285,6 +285,9 @@ sift_cpagg_super_cube(const SiftColSchema *s, const uint8 *const *blob, const ui
 		goto done;
 	for (int d = 0; d < h[0].ndims; d++)
 	{
+		/* the calendar cells of a unit are not merged: a group of 16 units holds up to 16 times their cells for a query the units answer as fast (+1.2% of the index) */
+		if (h[0].dim[d].leaf >= SIFT_PAGG_CAL)
+			continue;
 		initStringInfo(&body[kept]);
 		if (merge_dim(h, n, d, &body[kept]))
 			leaf[kept++] = h[0].dim[d].leaf;

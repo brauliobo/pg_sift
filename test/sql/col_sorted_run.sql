@@ -35,11 +35,11 @@ INSERT INTO sr_o SELECT * FROM sr ORDER BY id;
 CREATE TABLE sr_t (LIKE sr) WITH (autovacuum_enabled = off);
 ALTER TABLE sr_t ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sr_t SELECT * FROM sr ORDER BY id;
-CREATE INDEX sr_off ON sr_o USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX sr_off ON sr_o USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SET sift.col_format_minor = 12;
-CREATE INDEX sr_twelve ON sr_t USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_twelve ON sr_t USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 RESET sift.col_format_minor;
-CREATE INDEX sr_on ON sr USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'id, k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_on ON sr USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'id, k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SELECT 'sr_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sr_off')
 UNION ALL SELECT 'sr_twelve', array_agg(DISTINCT format) FROM sift._test_col_formats('sr_twelve')
 UNION ALL SELECT 'sr_on', array_agg(DISTINCT format) FROM sift._test_col_formats('sr_on') ORDER BY 1;
@@ -52,12 +52,12 @@ SELECT count(*) FILTER (WHERE section = 'runs') AS rows_off FROM sift.col_sectio
 SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.02 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
 
 -- the options are checked: names, types that are not ordered by their key (text, uuid, bool), a leaf of a jsonb path
-CREATE INDEX sr_bad1 ON sr USING sift_col (id, k) WITH (order_columns = 'nosuch', cube_minmax = false, superunit = 0);
-CREATE INDEX sr_bad2 ON sr USING sift_col (id, k, kn) WITH (order_columns = 'k,,kn', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_bad1 ON sr USING sift_col (id, k) WITH (order_columns = 'nosuch', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX sr_bad2 ON sr USING sift_col (id, k, kn) WITH (order_columns = 'k,,kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 CREATE TABLE sr_x (id int, s text, b bool, u uuid, j jsonb);
-CREATE INDEX sr_bad3 ON sr_x USING sift_col (id, s) WITH (order_columns = 's', cube_minmax = false, superunit = 0);
-CREATE INDEX sr_bad4 ON sr_x USING sift_col (id, b) WITH (order_columns = 'b', cube_minmax = false, superunit = 0);
-CREATE INDEX sr_bad5 ON sr_x USING sift_col (id, u) WITH (order_columns = 'u', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_bad3 ON sr_x USING sift_col (id, s) WITH (order_columns = 's', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX sr_bad4 ON sr_x USING sift_col (id, b) WITH (order_columns = 'b', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX sr_bad5 ON sr_x USING sift_col (id, u) WITH (order_columns = 'u', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 DROP TABLE sr_x;
 
 -- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off)
@@ -194,7 +194,7 @@ FROM sift._test_col_run_damage('sr_on', 12);
 CREATE TABLE sr_f (id int, k int, f float8, n numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sr_f ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sr_f SELECT g, (hashint4(g) & 2147483647) % 300, g % 91 * 0.25, g % 17 * 1.5, repeat('f', 1500) FROM generate_series(1, 4500) g;
-CREATE INDEX sr_f_idx ON sr_f USING sift_col (id, k, f, n) WITH (write_buffer_limit = 4096, order_columns = 'id, k, f, n', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_f_idx ON sr_f USING sift_col (id, k, f, n) WITH (write_buffer_limit = 4096, order_columns = 'id, k, f, n', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SELECT runs > 0 AS has_runs, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_run_file_damage('sr_f_idx', 997);
 
 -- an index of the old kind takes the option later: the units written before keep their minor and have no run, the ones after are minor 13, a merge writes
@@ -203,7 +203,7 @@ SELECT runs > 0 AS has_runs, damaged > 1000 AS many, refused > 0 AS some_refused
 CREATE TABLE sa (id int, k int, t timestamptz, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sa ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(1, 12000) g;
-CREATE INDEX sa_idx ON sa USING sift_col (id, k, t) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX sa_idx ON sa USING sift_col (id, k, t) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sa_idx');
 ALTER INDEX sa_idx SET (order_columns = 'k, t');
 INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(12001, 24000) g;
