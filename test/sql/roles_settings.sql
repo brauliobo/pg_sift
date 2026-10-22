@@ -95,7 +95,7 @@ $$);
 
 DROP SCHEMA rs CASCADE;
 DROP FUNCTION rs_try();
-DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_roles_drop(text);
+DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
 DROP OWNED BY rs_own, rs_user, rs_grant;
 DROP ROLE rs_own, rs_user, rs_grant;
 SELECT count(*) AS parameter_grants_left FROM pg_parameter_acl WHERE parname LIKE 'sift.%';

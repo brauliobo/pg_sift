@@ -283,7 +283,7 @@ ANALYZE rm.facts;
 WARNING:  permission denied to analyze "facts", skipping it
 RESET SESSION AUTHORIZATION;
 DROP SCHEMA rm CASCADE;
-DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_roles_drop(text);
+DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
 DROP OWNED BY rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos;
 DROP ROLE rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos;
 DROP EXTENSION pg_sift;

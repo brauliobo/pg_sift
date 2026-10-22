@@ -39,7 +39,11 @@ rq_own | CREATE TABLE rq.rfacts (LIKE rq.facts) USING sift_table
 rq_own | INSERT INTO rq.rfacts SELECT * FROM rq.facts
 rq_own | GRANT SELECT ON rq.docs, rq.facts, rq.rdocs, rq.rfacts TO rq_rd, rq_nos, rq_rls, rq_byp
 rq_own | GRANT SELECT, INSERT, UPDATE, DELETE ON rq.docs, rq.facts, rq.rdocs, rq.rfacts TO rq_wr
-rq_own | GRANT SELECT (id, g) ON rq.docs TO rq_col
+rq_own | GRANT SELECT (id, g) ON rq.docs, rq.facts TO rq_col
+rq_own | CREATE VIEW rq.facts_v AS SELECT id, g, val FROM rq.facts
+rq_own | GRANT SELECT ON rq.facts_v TO rq_vw
+rq_own | CREATE VIEW rq.rdocs_v AS SELECT id, body, g, v FROM rq.rdocs
+rq_own | GRANT SELECT ON rq.rdocs_v TO rq_vw, rq_rls
 rq_own | CREATE VIEW rq.docs_v AS SELECT id, body, g, v FROM rq.docs
 rq_own | GRANT SELECT ON rq.docs_v TO rq_vw
 rq_own | CREATE FUNCTION rq.count_docs(q text) RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM rq.docs WHERE body @@> q'
@@ -70,10 +74,8 @@ SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alp
 EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'
 $$);
 
--- the aggregate pushdown on the sift_col index and on the sift_table: the answers of the plain plan for every role, the same columns refused.
--- Known gaps (3.2.0 on, not fixed here): rq_col, who may read the columns id and g only, and rq_vw, who may read only a view of the table, are
--- refused "permission denied for table" at the run of a pushed-down plan that the plain plan answers (the check of the scan wants SELECT on the
--- whole table for the invoking role); the expected output below records it, and the fix changes it to the rows of the plain plan.
+-- the aggregate pushdown on the sift_col index and on the sift_table: PostgreSQL checks the privileges of the role on the columns the query reads
+-- (as the owner of a view the table is read through), and the scan adds none: the plain plan's answer or refusal for every role
 SET sift.enable_agg = on;
 SET seq_page_cost = 10000;
 SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_mem', 'rq_wr', 'rq_rd', 'rq_col', 'rq_non', 'rq_vw'], $$
@@ -82,7 +84,13 @@ SELECT g, count(*) FROM rq.docs GROUP BY g ORDER BY g
 EXPLAIN SELECT g, count(*), sum(v) FROM rq.docs GROUP BY g
 EXPLAIN SELECT g, count(*) FROM rq.docs GROUP BY g
 SELECT g, count(*), sum(val) FROM rq.facts GROUP BY g ORDER BY g
+SELECT g, count(*) FROM rq.facts GROUP BY g ORDER BY g
 EXPLAIN SELECT g, count(*), sum(val) FROM rq.facts GROUP BY g
+EXPLAIN SELECT g, count(*) FROM rq.facts GROUP BY g
+SELECT g, count(*), sum(v) FROM rq.docs_v GROUP BY g ORDER BY g
+SELECT g, count(*), sum(val) FROM rq.facts_v GROUP BY g ORDER BY g
+EXPLAIN SELECT g, count(*), sum(v) FROM rq.docs_v GROUP BY g
+EXPLAIN SELECT g, count(*), sum(val) FROM rq.facts_v GROUP BY g
 $$);
 SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_byp', 'rq_rd', 'rq_rls'], $$
 SELECT g, count(*), sum(v) FROM rq.rdocs GROUP BY g ORDER BY g
@@ -90,13 +98,24 @@ EXPLAIN SELECT g, count(*), sum(v) FROM rq.rdocs GROUP BY g
 SELECT g, count(*), sum(val) FROM rq.rfacts GROUP BY g ORDER BY g
 EXPLAIN SELECT g, count(*), sum(val) FROM rq.rfacts GROUP BY g
 $$);
--- the same aggregate over a view: a role that may read the view and not the table gets the answer of the plain plan
-SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_vw'], $$
-SELECT g, count(*), sum(v) FROM rq.docs_v GROUP BY g ORDER BY g
+-- a table with row-level security read through a view of its owner, to whom no policy applies: the rows of the view, whoever reads it
+SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_vw', 'rq_rls'], $$
+SELECT g, count(*), sum(v) FROM rq.rdocs_v GROUP BY g ORDER BY g
+EXPLAIN SELECT g, count(*), sum(v) FROM rq.rdocs_v GROUP BY g
 $$);
-SET sift.enable_agg = off;
-SELECT * FROM rr_matrix(ARRAY['rq_own', 'rq_vw'], $$
+-- the pushed-down plan and the plain plan agree for every role, row-level security and BYPASSRLS included
+SELECT * FROM rr_pushdown_diff(ARRAY['rq_own', 'rq_mem', 'rq_wr', 'rq_rd', 'rq_col', 'rq_non', 'rq_nos', 'rq_vw', 'rq_byp', 'rq_rls'], $$
+SELECT g, count(*), sum(v) FROM rq.docs GROUP BY g ORDER BY g
+SELECT g, count(*) FROM rq.docs GROUP BY g ORDER BY g
+SELECT count(*) FROM rq.docs
+SELECT sum(id) FROM rq.docs WHERE g = 1
+SELECT g, count(*), sum(val) FROM rq.facts GROUP BY g ORDER BY g
+SELECT g, count(*) FROM rq.facts GROUP BY g ORDER BY g
 SELECT g, count(*), sum(v) FROM rq.docs_v GROUP BY g ORDER BY g
+SELECT g, count(*), sum(val) FROM rq.facts_v GROUP BY g ORDER BY g
+SELECT g, count(*), sum(v) FROM rq.rdocs GROUP BY g ORDER BY g
+SELECT g, count(*), sum(val) FROM rq.rfacts GROUP BY g ORDER BY g
+SELECT g, count(*), sum(v) FROM rq.rdocs_v GROUP BY g ORDER BY g
 $$);
 RESET sift.enable_agg;
 RESET seq_page_cost;
@@ -237,7 +256,7 @@ RESET sift.enable_agg;
 RESET seq_page_cost;
 
 DROP SCHEMA rq CASCADE;
-DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_roles_drop(text);
+DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
 DROP OWNED BY rq_own, rq_mem, rq_wr, rq_rd, rq_col, rq_non, rq_nos, rq_rls, rq_byp, rq_vw;
 DROP ROLE rq_own, rq_mem, rq_wr, rq_rd, rq_col, rq_non, rq_nos, rq_rls, rq_byp, rq_vw;
 DROP EXTENSION pg_sift;

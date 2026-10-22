@@ -331,7 +331,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 static void *
 col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, 0);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */

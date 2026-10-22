@@ -63,7 +63,7 @@ $$);
 SELECT count(*) AS paths_left FROM sift.table_paths;
 
 DROP SCHEMA ru CASCADE;
-DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_roles_drop(text);
+DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
 DROP OWNED BY ru_own, ru_mem, ru_rd;
 DROP ROLE ru_own, ru_mem, ru_rd;
 DROP EXTENSION pg_sift;

@@ -69,11 +69,11 @@ sift_col_set_visibility(SiftColSource *src, const SiftColVisibility *vis)
 }
 
 static void
-check_access(Relation heap)
+check_access(Relation heap, uint32 flags)
 {
 	Oid			relid = RelationGetRelid(heap);
 
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
+	if (!(flags & SIFT_COLO_NOACL) && pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
 		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLE, RelationGetRelationName(heap));
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
@@ -134,7 +134,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
 	if (!(flags & SIFT_COLO_NOCHECKS))
-		check_access(heap);
+		check_access(heap, flags);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
