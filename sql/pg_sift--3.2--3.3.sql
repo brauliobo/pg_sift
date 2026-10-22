@@ -215,7 +215,7 @@ BEGIN
 			CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
-		-- a segment is minor 9, 10, 13 or 15 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13, 2.14, 2.16)
+		-- a segment is minor 9, 10, 13, 14 or 15 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.16, 2.17)
 		-- cube_minmax and superunit are on unless the index says otherwise (dflt): the units written before 3.3 lack their sections
 		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
 				('^paths=', 6, 'JSON paths', false,
@@ -231,7 +231,9 @@ BEGIN
 				('^order_columns=.', 13, 'order_columns', false,
 				 'the units written before the option have no sorted run, so an ORDER BY .. LIMIT on the column reads them whole; a REINDEX writes it'),
 				('^key_presence=.', 15, 'key_presence', false,
-				 'the units written before the option have no key presence, so a count(DISTINCT) of the column reads them whole (nor has a unit whose keys would take more than 3% of its bytes, which a REINDEX does not change); a REINDEX writes it where it fits')
+				 'the units written before the option have no key presence, so a count(DISTINCT) of the column reads them whole (nor has a unit whose keys would take more than 3% of its bytes, which a REINDEX does not change); a REINDEX writes it where it fits'),
+				('^point_columns=.', 14, 'point_columns', false,
+				 'the segments written before the option have no point directory, so an equality or IN list on the column reads their units (zones and summaries cut most); a REINDEX writes it')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;
 		CONTINUE WHEN why IS NULL;

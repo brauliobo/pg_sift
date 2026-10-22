@@ -20,6 +20,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/point.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -331,7 +332,80 @@ typedef struct PruneRange
 	uint32		ulo;
 	uint32		uhi;
 	uint64	   *setcut;
+	ColCursor  *top;			/* the cursor of the segment, for the predicates that all rows must pass (not those of an OR): a point directory may answer one */
 } PruneRange;
+
+/* The keys a test can match, when they are few: the keys of the point directory to probe */
+static bool
+point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
+{
+	int			n = 0;
+
+	switch (t->kind)
+	{
+		case SIFT_CT_SET:
+			if (t->nset == 0 || t->nset > SIFT_CPOINT_MAX_KEYS)
+				return false;
+			memcpy(keys, t->set, t->nset * sizeof(int64));
+			n = t->nset;
+			break;
+		case SIFT_CT_RANGE:
+			if (t->lo > t->hi || (uint64) t->hi - (uint64) t->lo >= SIFT_CPOINT_MAX_KEYS)
+				return false;
+			n = (int) ((uint64) t->hi - (uint64) t->lo) + 1;
+			for (int i = 0; i < n; i++)
+				keys[i] = (int64) ((uint64) t->lo + i);
+			break;
+		case SIFT_CT_LUT:
+			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
+				if (sift_col_bit_test(t->lut, (uint32) k))
+				{
+					if (n == SIFT_CPOINT_MAX_KEYS)
+						return false;
+					keys[n++] = k;
+				}
+			if (n == 0)
+				return false;
+			break;
+		default:
+			return false;
+	}
+	*nkeys = n;
+	return true;
+}
+
+/*
+ * The units that hold the rows the point directory lists for the predicate i, on leaf col, of the segment (the test t), when the directory has a short
+ * answer: the other units are cut, and the cursor keeps the rows for the units that remain (sift_col_point_sel). One directory per segment answers.
+ */
+static void
+prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+{
+	int64		keys[SIFT_CPOINT_MAX_KEYS];
+	int			nkeys;
+	uint32	   *rows,
+				nrows,
+				u = 0;
+	uint64	   *has;
+
+	if (c->prow != NULL || !point_keys(t, keys, &nkeys) || !sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
+		return;
+	has = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	for (uint32 k = 0; k < nrows; k++)
+	{
+		while (u < seg->nsb && seg->sbdir[u].rank_base + seg->sbdir[u].nrows <= rows[k])
+			u++;
+		if (u < seg->nsb)
+			sift_col_bit_set(has, u);
+	}
+	for (uint32 w = 0; w < SIFT_COL_NWORDS(seg->nsb); w++)
+		keep[w] &= has[w];
+	pfree(has);
+	c->prow = rows;
+	c->nprow = nrows;
+	c->pat = 0;
+	c->ppred = i;
+}
 
 static void
 prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr)
@@ -355,6 +429,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		else
 			make_test(src, def, NULL, &preds[i], &t);
 		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+		if (pr->top != NULL)
+			prune_point(seg, pr->top, i, preds[i].col, &t, keep);
 		range[i] = t.kind == SIFT_CT_RANGE;
 		lo[i] = t.lo;
 		hi[i] = t.hi;
@@ -408,15 +484,18 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 {
 	SiftColSegment *seg = c->seg;
 	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi),
-	palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64))};
+	palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64)), (src->flags & SIFT_COLO_POINTS) ? c : NULL};
+	PruneRange	zr = pr;
 
+	zr.top = NULL;
+	c->prow = NULL;
 	c->nosuper_to = 0;
 	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 i = 0; i < seg->nsb; i++)
 		sift_col_bit_set(c->keep, i);
 	prune_preds(src, seg, preds, npreds, c->keep, &pr);
 	for (int i = 0; i < nzones; i++)
-		prune_zone(src, seg, &zones[i], c->keep, &pr);
+		prune_zone(src, seg, &zones[i], c->keep, &zr);
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
 	c->setcut = pr.setcut;
@@ -538,7 +617,22 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
 	else if (!(src->super && col_super_take(src, best, cu)))
-		load_stored(cu, best->seg, best->cur++);
+	{
+		load_stored(cu, best->seg, best->cur);
+		if (best->prow != NULL)
+		{
+			const SiftColSBRef *r = &best->seg->sbdir[best->cur];
+
+			while (best->pat < best->nprow && best->prow[best->pat] < r->rank_base)
+				best->pat++;
+			cu->prow = best->prow + best->pat;
+			while (best->pat < best->nprow && best->prow[best->pat] < r->rank_base + r->nrows)
+				best->pat++;
+			cu->nprow = best->pat - (uint32) (cu->prow - best->prow);
+			cu->ppred = best->ppred;
+		}
+		best->cur++;
+	}
 	SIFT_COL_JITTER();
 	if (cu->nsu == 0)
 	{
@@ -624,6 +718,29 @@ sift_col_sel_alloc(SiftColSource *src, uint32 n, SiftColSel *sel)
 	sel->nwords = SIFT_COL_NWORDS(n);
 	sel->bits = MemoryContextAllocZero(src->arena, sel->nwords * sizeof(uint64));
 	sel->count = 0;
+}
+
+int
+sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel)
+{
+	ColUnit    *cu = unit->priv;
+	uint64	   *keep;
+	uint64		base;
+
+	if (cu->prow == NULL)
+		return -1;
+	keep = MemoryContextAllocZero(cu->src->arena, sel->nwords * sizeof(uint64));
+	base = cu->seg->sbdir[cu->u].rank_base;
+	for (uint32 k = 0; k < cu->nprow; k++)
+	{
+		uint32		r = (uint32) (cu->prow[k] - base);
+
+		if (r < sel->n && sift_col_bit_test(sel->bits, r))
+			sift_col_bit_set(keep, r);
+	}
+	memcpy(sel->bits, keep, sel->nwords * sizeof(uint64));
+	sift_col_sel_count(sel);
+	return cu->ppred;
 }
 
 void

@@ -10,6 +10,7 @@
 #include "core/host.h"
 
 #include "col/compress.h"
+#include "col/point.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -212,14 +213,63 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 	memset(pv->unitbuf + seg->sbdir[u].len, 0, SIFT_COL_PAD);
 }
 
+/*
+ * The point directories at the end of the DICT section (docs/COL.md 2.17), found by the footer in its last 16 bytes: the tables of the leaves, read on
+ * first use. A section without them ends with its last dictionary.
+ */
+static const PointLeaf *
+points_read(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
+	uint64		foot[2];
+	uint32		hdr[4],
+				tail[2];
+
+	if (pv->pt_checked)
+		return pv->pt;
+	pv->pt_checked = true;
+	pv->dict_end = s->len;
+	if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX || s->len < sizeof(foot) + sizeof(hdr))
+		return NULL;
+	seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
+	memcpy(tail, &foot[1], sizeof(tail));
+	if (tail[0] != SIFT_CPOINT_MAGIC || tail[1] != SIFT_CPOINT_VERSION)
+		return NULL;
+	if (foot[0] % 8 != 0 || foot[0] + sizeof(hdr) > s->len - sizeof(foot))
+		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
+	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
+	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != SIFT_CPOINT_VERSION || hdr[2] > (uint32) seg->schema->ncols ||
+		foot[0] + sizeof(hdr) + (uint64) hdr[2] * 24 > s->len - sizeof(foot))
+		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
+	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
+	for (uint32 i = 0; i < hdr[2]; i++)
+	{
+		uint32		rec[4];
+		uint64		at;
+
+		seg_read(seg, s->off + foot[0] + sizeof(hdr) + (uint64) i * 24, sizeof(rec), rec);
+		seg_read(seg, s->off + foot[0] + sizeof(hdr) + (uint64) i * 24 + sizeof(rec), sizeof(at), &at);
+		if (rec[0] >= (uint32) seg->schema->ncols || rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[2] == 0 || rec[2] > rec[1] ||
+			at < foot[0] + sizeof(hdr) + (uint64) hdr[2] * 24 || at + (uint64) rec[1] * sizeof(uint64) > s->len - sizeof(foot))
+			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
+		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[2]};
+	}
+	pv->dict_end = foot[0];
+	return pv->pt;
+}
+
 /* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
 static void
 dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len)
 {
 	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
 	uint32		hdr[2];
-	uint64		next = s->len,
+	uint64		next,
 				tab[SIFT_COL_MAX_COLS];
+
+	points_read(seg);
+	next = PRIV(seg)->dict_end;
 
 	seg_read(seg, s->off, sizeof(hdr), hdr);
 	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
@@ -1524,6 +1574,112 @@ sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *k
 			if (setcut)
 				setcut[u / 64] |= UINT64CONST(1) << (u % 64);
 		}
+	}
+}
+
+static int
+row_cmp(const void *a, const void *b)
+{
+	uint32		x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+
+	return (x > y) - (x < y);
+}
+
+bool
+sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys, uint32 **rows, uint32 *nrows)
+{
+	const PointLeaf *pl = points_read(seg);
+	uint32		cap = 16,
+				n = 0,
+				total,
+				u = 0;
+	uint32	   *r;
+
+	if (pl == NULL || pl[col].nslots == 0)
+		return false;
+	pl += col;
+	total = seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows;
+	r = palloc(cap * sizeof(uint32));
+	for (int k = 0; k < nkeys; k++)
+	{
+		uint64		h = sift_cpoint_hash(keys[k]);
+		uint32		p = sift_cpoint_pos(h, pl->nslots);
+
+		for (uint32 steps = 0;; steps++)
+		{
+			uint64		win[8];
+			uint32		m = Min(8, pl->nslots - p);
+			uint32		j;
+
+			if (steps > pl->nslots / 8 + 1)
+				corrupt(seg, "The point directory of leaf %d has no empty slot.", col);
+			seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
+			for (j = 0; j < m && win[j] != SIFT_CPOINT_EMPTY; j++)
+				if (sift_cpoint_slot_is(win[j], h))
+				{
+					if ((uint32) win[j] >= total)
+						corrupt(seg, "The point directory of leaf %d lists row %u of %u.", col, (uint32) win[j], total);
+					if (n == cap)
+						r = repalloc(r, (cap *= 2) * sizeof(uint32));
+					r[n++] = (uint32) win[j];
+					if (n > SIFT_CPOINT_MAX_ROWS)
+					{
+						pfree(r);
+						return false;
+					}
+				}
+			if (j < m)
+				break;
+			p = (p + m) & (pl->nslots - 1);
+		}
+	}
+	qsort(r, n, sizeof(uint32), row_cmp);
+	for (uint32 i = 0; i < n; i++)
+		if (u == 0 || r[u - 1] != r[i])
+			r[u++] = r[i];
+	*rows = r;
+	*nrows = u;
+	return true;
+}
+
+uint32
+sift_cseg_point_count(SiftColSegment *seg, int col)
+{
+	const PointLeaf *pl = points_read(seg);
+
+	return pl ? pl[col].count : 0;
+}
+
+void
+sift_cseg_verify_points(SiftColSegment *seg)
+{
+	const PointLeaf *pl = points_read(seg);
+	uint32		total = seg->nsb > 0 ? seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows : 0;
+	uint64		win[1024];
+
+	for (int c = 0; pl && c < seg->schema->ncols; c++)
+	{
+		uint64		used = 0;
+
+		if (pl[c].nslots == 0)
+			continue;
+		for (uint32 p = 0; p < pl[c].nslots; p += lengthof(win))
+		{
+			uint32		m = Min(lengthof(win), pl[c].nslots - p);
+
+			seg_read(seg, pl[c].at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
+			for (uint32 j = 0; j < m; j++)
+				if (win[j] != SIFT_CPOINT_EMPTY)
+				{
+					if ((uint32) win[j] >= total)
+						corrupt(seg, "The point directory of leaf %d lists row %u of %u.", c, (uint32) win[j], total);
+					used++;
+				}
+			CHECK_FOR_INTERRUPTS();
+		}
+		if (used != pl[c].count)
+			corrupt(seg, "The point directory of leaf %d lists %llu rows, its record %u.", c, (unsigned long long) used, pl[c].count);
 	}
 }
 

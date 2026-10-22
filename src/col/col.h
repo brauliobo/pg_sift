@@ -445,6 +445,7 @@ typedef struct SiftColZone
 #define SIFT_COLO_NOWBUF		0x0001	/* skip the write buffers (verification, maintenance reading immutable data) */
 #define SIFT_COLO_NOCHECKS		0x0002	/* skip the privilege / RLS checks (internal callers that did them) */
 #define SIFT_COLO_NOACL		0x0008	/* skip the table privilege check only (the RLS check stays): the executor of the query checked the privileges of the role, or of the view owner, on the columns it reads */
+#define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment (docs/COL.md 2.17), whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
 /* EXPLAIN and cost feedback of a source */
@@ -575,6 +576,12 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 
 /* Top level predicates (leaf ids of scalar leaves); a predicate on a child leaf is an error (use the group forms) */
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
+/*
+ * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
+ * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap
+ * check the condition again. A unit without such rows (a write buffer, a segment without a directory) is filtered by every predicate, *used false.
+ */
+extern bool sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used);
 
 /*
  * Wide leaves (docs/COL-LEAFTYPES-32.md). A predicate on the head of a wide integer (two INT lanes) has constants whose two keys are v.i and .lo;

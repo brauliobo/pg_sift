@@ -29,7 +29,7 @@ database has a blocker (or a warning with `--strict`) and 2 when a database coul
 |---|---|---|
 | `version` | `pg_extension` against `sift.version()` | `warn`: the library is newer than the extension (`ALTER EXTENSION pg_sift UPDATE`) or the new release is available; `blocker`: the library is older than the extension scripts |
 | `index`, `table` | the metapage format and the column formats of every `sift` index, `sift_col` index and `sift_table` | `blocker`: this library cannot open it (the error and its hint are the advice); with `--to`, the first release that reads it is newer than the target |
-| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_dims`, `set_columns`, `order_columns` or `key_presence` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
+| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_dims`, `set_columns`, `order_columns`, `key_presence` or `point_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
 | `setting` | `sift.*` in the server configuration, the session, `ALTER DATABASE` and `ALTER ROLE` | `warn`: a setting the library does not define (removed or renamed), a feature switched off (a boolean setting that defaults on), `sift.col_format_minor` kept below the default |
 | `test` | test-only settings and the extension `pg_sift_test` | `warn`: remove them; they need the test build of the library |
 
@@ -66,7 +66,7 @@ one row per command (`kind` `reindex` or `rewrite`, the `object`, the `reason`, 
 | Warning | Why | Command |
 |---|---|---|
 | a `sift` (text) index needs a `REINDEX` | **queries miss rows**: a word over 255 bytes is stored as its first 236 bytes and a hash since 3.3, and an index built before holds it cut at 255 bytes, so a query for it finds nothing. The index does not say whether it holds such a word, so every text index except `analyzer = keyword` is listed, and stays listed after its `REINDEX` | `REINDEX INDEX CONCURRENTLY schema.index;` |
-| a `sift_col` index would gain from a `REINDEX` | an option set after the units were written (`cube_minmax`, JSON `paths`, `rollup_dims`, `set_columns`, `order_columns`, `key_presence`): the older units stay readable and are scanned (or, for `order_columns`, read whole by an `ORDER BY .. LIMIT`) until it is done | `REINDEX INDEX CONCURRENTLY schema.index;` |
+| a `sift_col` index would gain from a `REINDEX` | an option set after the units were written (`cube_minmax`, JSON `paths`, `rollup_dims`, `set_columns`, `order_columns`, `key_presence`, `point_columns`): the older units stay readable and are scanned (or, for `order_columns`, read whole by an `ORDER BY .. LIMIT`) until it is done | `REINDEX INDEX CONCURRENTLY schema.index;` |
 | a `sift_table` would gain from a rewrite | segments below the column format of its schema: no calendar cells for its date and timestamp columns (format 8), JSON kinds that may be incomplete for declared paths (format 6). A `sift_table` cannot be reindexed | `VACUUM FULL schema.table;` |
 
 Nothing but the first is wrong without the command. `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the whole table in the format of `sift.col_format_minor`, so
@@ -112,7 +112,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 11 | a `sift_table` write buffer that took a row over the buffer (`sift.table_wide_rows`, on by default; a 3.2 library reads it, writes beside it and promotes it, but the preflight lists it until it is promoted) | `SET sift.table_wide_rows = off` (a row over the buffer is refused again) |
 | 12 | a `sift_col` index with `superunit` (16 by default) | `WITH (superunit = 0)`, or `sift.col_format_minor` 11 or less |
 | 13 | `order_columns` (option, off) | do not set it, or `sift.col_format_minor` 12 or less |
-| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid), in any index, option or not | `WITH (dict_lookup = off)`, or `sift.col_format_minor` 13 or less |
+| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid), in any index, option or not; `point_columns` (option, off) | `WITH (dict_lookup = off)` and do not set `point_columns`, or `sift.col_format_minor` 13 or less |
 | 15 | `key_presence` (option, off) | do not set it, or `sift.col_format_minor` 14 or less |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off', dict_lookup = off)` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
