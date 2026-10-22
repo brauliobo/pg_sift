@@ -893,8 +893,8 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	child.settings = false;
 	child.printed_subplans = NULL;
 	own = query.planstate->plan->initPlan;
-	if (correlated)
-		query.planstate->plan->initPlan = lcons(lookup_inputs(s->join[i].params), own);
+	if (correlated || s->join[i].first.params != NIL)
+		query.planstate->plan->initPlan = lcons(lookup_inputs(correlated ? s->join[i].params : s->join[i].first.params), own);
 	ExplainPrintPlan(&child, &query);
 	query.planstate->plan->initPlan = own;
 	es->indent = child.indent;
