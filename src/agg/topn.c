@@ -27,6 +27,8 @@
 /* Superblocks whose zones tell whether the sort column follows the table */
 #define TOPN_PROBES		6
 
+bool		sift_topn_zone_keys = true;
+
 bool
 sift_topn_key_ok(const SiftSrcLeaf *lf)
 {
@@ -88,6 +90,13 @@ typedef struct TopKey
 	SiftSrcVecType vtype;
 } TopKey;
 
+/* A key's value as a position in the sort order: NULLs in front of or behind the values, the values by the direction (class -1: no bound) */
+typedef struct Rank
+{
+	int			cls;
+	uint64		ord;
+} Rank;
+
 typedef struct TopEnt
 {
 	int64		k[SIFT_TOPN_MAX_KEYS];
@@ -135,7 +144,8 @@ struct SiftTopN
 		int64		best;
 	}			probe[TOPN_PROBES];
 	/* the walk (sift_topn_walk_*): the zone and the number of units of every superblock, and the superblocks by their best bound */
-	SiftSrcZone *wzone;
+	int			wkeys;				/* leading sort keys whose zones bound the walk */
+	Rank	   *wbound;			/* wkeys per superblock: the best rank its zone allows for that key */
 	uint32	   *wunits;
 	uint32	   *word;
 	uint32		wpos;
@@ -469,13 +479,6 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 	share_bar(t);
 }
 
-/* The first key as a position in the sort order: NULLs in front of or behind the values, the values by the direction */
-typedef struct Rank
-{
-	int			cls;
-	uint64		ord;
-} Rank;
-
 static inline Rank
 rank_of(const TopKey *k, bool isnull, int64 v)
 {
@@ -769,7 +772,11 @@ sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
 	MemoryContext cxt = GetMemoryChunkContext(t);
 
 	t->nsb = nsb;
-	t->wzone = MemoryContextAllocZero(cxt, nsb * sizeof(SiftSrcZone));
+	t->wkeys = 1;
+	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */
+	while (sift_topn_zone_keys && t->wkeys < t->nkey && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64))
+		t->wkeys++;
+	t->wbound = MemoryContextAllocZero(cxt, (Size) nsb * t->wkeys * sizeof(Rank));
 	t->wunits = MemoryContextAllocZero(cxt, nsb * sizeof(uint32));
 	t->word = MemoryContextAlloc(cxt, nsb * sizeof(uint32));
 	for (uint32 i = 0; i < nsb; i++)
@@ -777,44 +784,77 @@ sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
 	t->wpos = 0;
 }
 
+int
+sift_topn_walk_keys(const SiftTopN *t)
+{
+	return t->wkeys;
+}
+
+/* The best rank key j can have in a unit with this zone: before every rank when the zone is not exact, a NULL first under NULLS FIRST, else the bound of the values (NULLs last when there are no values) */
+static Rank
+zone_best(const TopKey *k, const SiftSrcZone *z)
+{
+	if (z->inexact)
+		return (Rank) {-1, 0};
+	if (z->nnull == z->nvals || (z->nnull > 0 && k->nulls_first))
+		return rank_of(k, true, 0);
+	return rank_of(k, false, k->desc ? z->max : z->min);
+}
+
+/* z: the zones of the first sift_topn_walk_keys keys of superblock sb */
 void
 sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z)
 {
-	t->wzone[sb] = *z;
+	for (int j = 0; j < t->wkeys; j++)
+		t->wbound[(Size) sb * t->wkeys + j] = zone_best(&t->key[j], &z[j]);
 	t->wunits[sb] = units;
 }
 
-/* 0: holds rows that sort first whatever the bound (a NULL under NULLS FIRST, a zone that is not exact); 1: by its bound; 2: only NULLs under NULLS LAST */
 static int
-walk_class(const SiftTopN *t, const SiftSrcZone *z)
+rank_cmp(Rank a, Rank b)
 {
-	if (z->inexact || (z->nnull > 0 && t->key[0].nulls_first))
-		return 0;
-	return z->nnull == z->nvals ? 2 : 1;
+	return rank_after(a, b) ? 1 : rank_after(b, a) ? -1 : 0;
 }
 
+/* The superblocks by the best row they can hold, key by key: a unit whose bound on the keys so far ties with another is ordered by the next key */
 static int
 walk_cmp(const void *pa, const void *pb, void *arg)
 {
 	const SiftTopN *t = arg;
 	uint32		a = *(const uint32 *) pa,
 				b = *(const uint32 *) pb;
-	const SiftSrcZone *za = &t->wzone[a],
-			   *zb = &t->wzone[b];
-	int			ca = walk_class(t, za),
-				cb = walk_class(t, zb);
 
-	if (ca != cb)
-		return ca < cb ? -1 : 1;
-	if (ca == 1)
+	for (int j = 0; j < t->wkeys; j++)
 	{
-		int64		ba = t->key[0].desc ? za->max : za->min,
-					bb = t->key[0].desc ? zb->max : zb->min;
+		int			c = rank_cmp(t->wbound[(Size) a * t->wkeys + j], t->wbound[(Size) b * t->wkeys + j]);
 
-		if (ba != bb)
-			return (ba < bb) != t->key[0].desc ? -1 : 1;
+		if (c != 0)
+			return c;
 	}
 	return SIFT_CMP3(a, b);
+}
+
+/*
+ * Can a row of superblock sb sort before the n-th best so far, or tie with it? Its bound on each key is a lower bound of its rows' keys, so a
+ * row's keys are not before the bounds in key order: the superblock is out when its bound is behind the n-th on a key that the bounds before
+ * it tie on, and in when it is ahead of it (or a bound is none).
+ */
+static bool
+walk_viable(const SiftTopN *t, uint32 sb)
+{
+	const TopEnt *w;
+
+	if (t->sort || t->n < t->limit)
+		return true;
+	w = &t->heap[0];
+	for (int j = 0; j < t->wkeys; j++)
+	{
+		int			c = rank_cmp(t->wbound[(Size) sb * t->wkeys + j], rank_of(&t->key[j], (w->nul >> j) & 1, w->k[j]));
+
+		if (c != 0)
+			return c < 0;
+	}
+	return true;
 }
 
 void
@@ -829,7 +869,7 @@ sift_topn_walk_next(SiftTopN *t, uint32 *sb)
 	if (t->wpos >= t->nsb)
 		return false;
 	*sb = t->word[t->wpos];
-	if (!sift_topn_zone_viable(t, &t->wzone[*sb]))
+	if (!walk_viable(t, *sb))
 	{
 		for (; t->wpos < t->nsb; t->wpos++)
 			t->skipped += t->wunits[t->word[t->wpos]];
