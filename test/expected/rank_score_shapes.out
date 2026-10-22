@@ -208,6 +208,7 @@ HINT:  Rank the rows in a subquery or a WITH query of the statement, and change 
 -- a score outside any scan keeps its error
 SELECT sift.score(ctid) FROM ss_items;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 DROP VIEW ss_scored, ss_ref;
 DROP TABLE ss_items, ss_other, ss_dst;
