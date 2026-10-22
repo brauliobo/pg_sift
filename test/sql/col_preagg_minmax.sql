@@ -76,4 +76,4 @@ SELECT sift.col_verify('cm_on', true);
 CREATE INDEX cm_bad ON cm USING sift_col (id, kind, val) WITH (cube_minmax = 'maybe');
 
 DROP TABLE cm;
-DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

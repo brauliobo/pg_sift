@@ -12,4 +12,4 @@ SELECT sift.col_verify('cv_col', true);
 RESET sift.test_col_verify_inval;
 SELECT sift.col_verify('cv_col', true);
 DROP TABLE cv;
-DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_test, pg_sift;

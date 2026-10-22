@@ -33,4 +33,4 @@ SELECT sift.col_verify('cv_col', true);
 (1 row)
 
 DROP TABLE cv;
-DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_test, pg_sift;
