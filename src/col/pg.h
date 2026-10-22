@@ -19,6 +19,21 @@ extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
 extern const SiftColZones *sift_col_zones(Relation index);
 
+/*
+ * How many units of the immutable segments hold the sections the options ask now (same memo as the leaf statistics, which a change of the options
+ * also renews): dim[leaf] the histogram of the leaf, mm[leaf] with min and max, roll[list] the rollup of the list. A unit over a cap or a budget has none.
+ */
+typedef struct SiftColPreStats
+{
+	double		units;
+	double		dim[SIFT_COL_MAX_COLS];
+	double		mm[SIFT_COL_MAX_COLS];
+	double		roll[SIFT_COL_MAX_COLS];
+} SiftColPreStats;
+extern const SiftColPreStats *sift_col_pre_stats(Relation index);
+/* A hash of what decides the sections a unit is written with: the options preagg, rollup and cube_minmax, and sift.col_format_minor */
+extern uint32 sift_col_pagg_hash(Relation index);
+
 /* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
 extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
 

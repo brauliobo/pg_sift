@@ -115,15 +115,7 @@ shared(void)
 	return rollup_shared;
 }
 
-/* what decides the rollup an index writes: its options */
-static uint32
-options_hash(Relation index)
-{
-	const char *a = sift_col_options_preagg(index),
-			   *b = sift_col_options_rollup(index);
-
-	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31);
-}
+#define options_hash(index)		sift_col_pagg_hash(index)
 
 static bool
 is_done(const RollupShared *sh, Oid index, uint64 gen, uint32 hash)
@@ -132,6 +124,19 @@ is_done(const RollupShared *sh, Oid index, uint64 gen, uint32 hash)
 		if (sh->done[i].index == index && sh->done[i].gen == gen && sh->done[i].hash == hash)
 			return true;
 	return false;
+}
+
+/* the segment of this generation was written with these options: nothing refreshes it again (until the server restarts) */
+static void
+remember(Oid index, uint64 gen, uint32 hash)
+{
+	RollupShared *sh = shared();
+
+	SpinLockAcquire(&sh->lock);
+	sh->done[sh->donepos] = (RollupDone) {index, gen, hash};
+	sh->donepos = (sh->donepos + 1) % ROLLUP_DONE;
+	sh->ndone = Min(sh->ndone + 1, ROLLUP_DONE);
+	SpinLockRelease(&sh->lock);
 }
 
 PGDLLEXPORT void sift_col_rollup_worker_main(Datum main_arg);
@@ -224,13 +229,9 @@ finish(const RollupReq *r, bool done, uint64 newgen)
 			sh->req[i] = sh->req[--sh->nreq];
 			break;
 		}
-	if (done && newgen != 0)
-	{
-		sh->done[sh->donepos] = (RollupDone) {r->index, newgen, r->hash};
-		sh->donepos = (sh->donepos + 1) % ROLLUP_DONE;
-		sh->ndone = Min(sh->ndone + 1, ROLLUP_DONE);
-	}
 	SpinLockRelease(&sh->lock);
+	if (done && newgen != 0)
+		remember(r->index, newgen, r->hash);
 }
 
 static void
@@ -274,9 +275,9 @@ new_gen(Relation index, const SiftDirSnapshot *before)
 	return gen;
 }
 
-/* The segment of the request is rewritten alone with the options the index has now, under the maintenance lock. Returns the generation of the result, 0 when skipped */
+/* The segment of this generation is rewritten alone with the options the index has now, under the maintenance lock. Returns the generation of the result, 0 when skipped */
 static uint64
-refresh_segment(Relation index, const RollupReq *r)
+refresh_segment(Relation index, uint64 rgen)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftColRel *rel = sift_col_rel(index);
@@ -285,7 +286,7 @@ refresh_segment(Relation index, const RollupReq *r)
 	sift_maint_lock(index, true);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == r->gen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].gen == rgen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
 			SiftSegEntry e = snap->segs[i];
 
@@ -313,7 +314,7 @@ process(const RollupReq *r)
 	index = try_index_open(r->index, RowExclusiveLock);
 	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= 4)
 	{
-		gen = refresh_segment(index, r);
+		gen = refresh_segment(index, r->gen);
 		ok = gen != 0;
 	}
 	if (index != NULL)
@@ -356,13 +357,112 @@ sift_col_rollup_refresh(PG_FUNCTION_ARGS)
 						errhint("The rollups are refreshed on the primary.")));
 	while (pop(MyDatabaseId, RelationGetRelid(index), &r))
 	{
-		uint64		gen = options_hash(index) == r.hash ? refresh_segment(index, &r) : 0;
+		uint64		gen = options_hash(index) == r.hash ? refresh_segment(index, r.gen) : 0;
 
 		finish(&r, gen != 0, gen);
 		n += gen != 0;
 	}
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT32(n);
+}
+
+PG_FUNCTION_INFO_V1(sift_col_refresh);
+
+/* The generations of the immutable segments whose sidecar is not what the options ask now and that a rewrite can change (sift_cseg_pre_stale), in directory order */
+static int
+stale_segments(Relation index, uint64 *gens)
+{
+	SiftColRel *rel = sift_col_rel(index);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col refresh census", ALLOCSET_DEFAULT_SIZES);
+	RollupShared *sh = shared();
+	uint32		hash = options_hash(index);
+	int			n = 0;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+		SiftColSegment *seg;
+		SiftCPaggCensus c;
+		bool		done,
+					stale;
+
+		/* a segment of a minor above the setting is left as written: a rewrite would drop what only that minor holds (the rollups below 4, the min and max below 7) */
+		if (e->kind != SIFT_SEG_IMMUTABLE || e->format > sift_col_format_minor)
+			continue;
+		SpinLockAcquire(&sh->lock);
+		done = is_done(sh, RelationGetRelid(index), e->gen, hash);
+		SpinLockRelease(&sh->lock);
+		if (done)
+			continue;
+		seg = sift_cseg_open(index, e, cx);
+		sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, &c);
+		stale = sift_cseg_pre_stale(seg, &rel->pagg, sift_col_format_minor, &c);
+		sift_cseg_close(seg);
+		MemoryContextReset(cx);
+		if (stale)
+			gens[n++] = e->gen;
+	}
+	MemoryContextDelete(cx);
+	pfree(snap);
+	return n;
+}
+
+/*
+ * sift.col_refresh(index, max_segments): rewrites the segments whose pre-aggregates are not what the options of the index ask now (preagg, rollup,
+ * cube_minmax: a change takes effect for the units written afterwards only), one at a time, as the on-demand refresh does: each is the atomic
+ * replacement of the maintenance under the maintenance lock, which readers and writers never wait for, and is its own step, so that a cancel or a
+ * crash leaves the segments done and the one in hand as it was; the call is made again to go on. max_segments bounds the rewrites of this call
+ * (NULL: all, 0: only count). A segment of a minor above sift.col_format_minor is left as written, so that the segments stay what the readers of that
+ * setting accept. Returns the segments rewritten and the stale ones left.
+ */
+Datum
+sift_col_refresh(PG_FUNCTION_ARGS)
+{
+	Relation	index;
+	TupleDesc	tupdesc;
+	uint64		gens[SIFT_MAX_SEGMENTS];
+	uint32		hash;
+	int			limit,
+				n,
+				visited = 0,
+				done = 0;
+	Datum		v[2];
+	bool		nulls[2] = {false};
+
+	if (PG_ARGISNULL(0))
+		PG_RETURN_NULL();
+	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
+	if (limit < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	if (!sift_col_is_index(index))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
+	sift_check_maintain(index);
+	if (RecoveryInProgress())
+		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),
+						errhint("The pre-aggregates are refreshed on the primary.")));
+	hash = options_hash(index);
+	n = stale_segments(index, gens);
+	for (; visited < n && done < limit; visited++)
+	{
+		uint64		gen;
+
+		CHECK_FOR_INTERRUPTS();
+		gen = refresh_segment(index, gens[visited]);
+		if (gen != 0)
+		{
+			remember(RelationGetRelid(index), gen, hash);
+			done++;
+		}
+	}
+	index_close(index, RowExclusiveLock);
+	v[0] = Int32GetDatum(done);
+	v[1] = Int32GetDatum(n - visited);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 bool

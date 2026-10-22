@@ -24,15 +24,17 @@ UNION ALL SELECT 'cm_on', array_agg(DISTINCT format) FROM sift._test_col_formats
 UNION ALL SELECT 'cm_nocube', array_agg(DISTINCT format) FROM sift._test_col_formats('cm_nocube') ORDER BY 1;
 SELECT sift.col_verify('cm_off', true), sift.col_verify('cm_six', true), sift.col_verify('cm_on', true), sift.col_verify('cm_nocube', true);
 
--- the cubes of the index with the option hold them, the others do not; a damaged cube is refused, and one that is accepted is still sound
+-- the cubes of the index with the option hold them, the others do not; a damaged cube is refused, and one that is accepted is still sound; the census
+-- of the sidecar that sift.col_refresh takes reads the same bytes without leaving them and calls every cut one odd
 SELECT 'cm_on' AS idx, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, with_minmax = blobs AS all_with_minmax, cut > 0 AS cuts_made,
-       cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made, accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
+       cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made, accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound,
+       census_cut_odd = cut - blobs AS census_calls_cuts_odd, census_odd > 0 AS census_sees_damage
 FROM sift._test_col_cube_damage('cm_on', 4)
 UNION ALL
-SELECT 'cm_off', blobs > 0, intact = blobs, with_minmax = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+SELECT 'cm_off', blobs > 0, intact = blobs, with_minmax = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0, census_cut_odd = cut - blobs, census_odd > 0
 FROM sift._test_col_cube_damage('cm_off', 4)
 UNION ALL
-SELECT 'cm_six', blobs > 0, intact = blobs, with_minmax = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+SELECT 'cm_six', blobs > 0, intact = blobs, with_minmax = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0, census_cut_odd = cut - blobs, census_odd > 0
 FROM sift._test_col_cube_damage('cm_six', 4)
 ORDER BY 1;
 

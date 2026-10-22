@@ -273,6 +273,131 @@ sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, in
 	return NULL;
 }
 
+/* The flags and the measure leaves of the body of a dim (the header decode_dim reads); false when it is not one of this schema */
+static bool
+peek_dim(const SiftColSchema *s, const uint8 *p, uint32 len, uint8 *flags, int16 *meas, int *nmeas)
+{
+	Rd			r = {p, p + len, false};
+	uint64		ng;
+
+	if (len < 3)
+		return false;
+	*nmeas = *r.p++;
+	ng = get_u(&r);
+	if (r.bad || r.p >= r.end || *nmeas > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
+		return false;
+	*flags = *r.p++;
+	for (int m = 0; m < *nmeas; m++)
+	{
+		uint64		l = get_u(&r);
+
+		if (r.bad || l >= (uint64) s->ncols)
+			return false;
+		meas[m] = (int16) l;
+	}
+	return true;
+}
+
+/* The dim and measure leaves of the head of a rollup (the head read_head reads) */
+static bool
+peek_rollup(const SiftColSchema *s, const uint8 *p, uint32 len, int *nd, int16 *dim, int *nm, int16 *meas)
+{
+	Rd			r = {p, p + len, false};
+	uint64		nt;
+
+	if (len < 3)
+		return false;
+	*nd = *r.p++;
+	*nm = *r.p++;
+	nt = get_u(&r);
+	if (*nd == 0 || *nd > SIFT_PAGG_MAX_RDIMS || *nm > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > SIFT_PAGG_ROLLUP_TUPLES)
+		return false;
+	for (int j = 0; j < *nd + *nm; j++)
+	{
+		uint64		l = get_u(&r);
+
+		if (r.bad || l >= (uint64) s->ncols)
+			return false;
+		(j < *nd ? dim : meas)[j < *nd ? j : j - *nd] = (int16) l;
+	}
+	return true;
+}
+
+/* Are all of have among the spec's (and, when exact, no other)? */
+static bool
+leaves_within(const int16 *have, int nhave, const int16 *spec, int nspec, bool exact)
+{
+	if (exact && nhave != nspec)
+		return false;
+	for (int i = 0; i < nhave; i++)
+	{
+		int			j = 0;
+
+		while (j < nspec && spec[j] != have[i])
+			j++;
+		if (j == nspec)
+			return false;
+	}
+	return true;
+}
+
+void
+sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+				  SiftCPaggCensus *c)
+{
+	bool		odd = false;
+	int			nd;
+	int			leaf[SIFT_PAGG_SPEC_DIMS];
+	uint32		blen[SIFT_PAGG_SPEC_DIMS];
+	const uint8 *p;
+
+	c->units++;
+	if (len > 0 && !read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, leaf, blen, &p))
+		odd = true;
+	else if (len > 0)
+		for (int d = 0; d < nd; p += blen[d++])
+		{
+			int16		meas[SIFT_PAGG_MAX_MEAS];
+			int			nm,
+						k = 0;
+			uint8		fl;
+
+			while (k < spec->ndims && spec->dim[k].leaf != leaf[d])
+				k++;
+			if (k == spec->ndims || !peek_dim(s, p, blen[d], &fl, meas, &nm))
+			{
+				odd = true;
+				continue;
+			}
+			c->dim[k]++;
+			c->mm[k] += (fl & PAGG_MINMAX) != 0;
+			odd |= ((fl & PAGG_MINMAX) != 0) != minmax || !leaves_within(meas, nm, spec->dim[k].meas, spec->dim[k].nmeas, spec->fixed);
+		}
+	if (elen > 0 && !read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nd, leaf, blen, &p))
+		odd = true;
+	else if (elen > 0)
+		for (int i = 0; i < nd; p += blen[i++])
+		{
+			int16		dim[SIFT_PAGG_MAX_RDIMS],
+						meas[SIFT_PAGG_MAX_MEAS];
+			int			nrd,
+						nm,
+						k = 0;
+
+			while (k < spec->nrollups && spec->rollup[k].list != leaf[i])
+				k++;
+			if (k == spec->nrollups || !peek_rollup(s, p, blen[i], &nrd, dim, &nm, meas))
+			{
+				odd = true;
+				continue;
+			}
+			c->roll[k]++;
+			odd |= !leaves_within(dim, nrd, spec->rollup[k].dim, spec->rollup[k].ndims, spec->rfixed) ||
+				!leaves_within(meas, nm, spec->rollup[k].meas, spec->rollup[k].nmeas, false);
+		}
+	c->odd += odd;
+}
+
 int
 sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 {

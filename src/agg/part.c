@@ -983,7 +983,12 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
 	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
 		if (w > 0)
+		{
 			tot->elems_per_row[i] = (tot->elems_per_row[i] * tot->nrows + s->elems_per_row[i] * s->nrows) / w;
+			tot->dim_miss[i] = (tot->dim_miss[i] * tot->nrows + s->dim_miss[i] * s->nrows) / w;
+			tot->mm_miss[i] = (tot->mm_miss[i] * tot->nrows + s->mm_miss[i] * s->nrows) / w;
+			tot->roll_miss[i] = (tot->roll_miss[i] * tot->nrows + s->roll_miss[i] * s->nrows) / w;
+		}
 		if (tot->min[i] == 0 && tot->max[i] == 0)
 		{
 			tot->min[i] = s->min[i];
