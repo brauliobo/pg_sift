@@ -357,6 +357,35 @@ plain_agg(const SiftAggAgg *a)
 	}
 }
 
+/* does the group table go to partitions on disk when it outgrows hash memory (agg/spill.c)? It must travel as a blob, one pass, one table */
+bool
+sift_aggspec_spillable(const SiftAggSpec *s)
+{
+	if (s->topn || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+		return false;
+	for (int j = 0; j < s->nkeys; j++)
+		if (s->key[j].kind == SAK_SET)
+			return false;
+	for (int i = 0; i < s->naggs; i++)
+		switch (s->agg[i].kind)
+		{
+			case SAA_COUNT_STAR:
+			case SAA_COUNT:
+			case SAA_SUM_INT:
+			case SAA_AVG_INT:
+			case SAA_SUM_F64:
+			case SAA_AVG_F64:
+			case SAA_MIN:
+			case SAA_MAX:
+			case SAA_SUM_NUM:
+			case SAA_AVG_NUM:
+				break;
+			default:
+				return false;
+		}
+	return true;
+}
+
 /*
  * Why the scan runs in one process whatever the cost (NULL: it can have workers), for EXPLAIN VERBOSE; *agg: the aggregate that decides it,
  * -1 when it is not an aggregate

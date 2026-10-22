@@ -140,6 +140,8 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 	while (sift_colsrc_next(ex->src, &ex->unit))
 	{
 		process_unit(ex);
+		if (ex->spill)
+			spill_check(ex);
 		if (sift_aggbe_stopped(ex->be, ex->be_state))
 			break;				/* the scan is run again without the backend (backend_finish) */
 	}

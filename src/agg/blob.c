@@ -400,26 +400,59 @@ blob_gen(AggExec *ex, int ai, const uint32 *gl, uint32 ng, StringInfo b)
 	ResetExprContext(ex->lutcx);
 }
 
+/* The hash of the key values of group g, the same in every table that holds the group (the ids are not): the partition of a spilled group */
+uint32
+blob_group_hash(AggExec *ex, uint32 g)
+{
+	uint64		h = 0;
+
+	for (int j = 0; j < ex->spec->nkeys; j++)
+	{
+		KeyState   *k = &ex->ks[j];
+		uint32		id = group_key_id(ex, j, g),
+					kh = 0;
+
+		if (id == 0)
+			kh = 0;
+		else if (k->numk)
+			kh = DatumGetUInt32(hash_any((const unsigned char *) &k->im.val[id - 1], sizeof(sift_i128)));
+		else if (k->ident)
+			kh = DatumGetUInt32(hash_any((const unsigned char *) &k->idval[id - 1], sizeof(int64)));
+		else
+			kh = k->ot.hv[id - 1];
+		h = h * 0x9E3779B97F4A7C15ULL + kh + 1;
+	}
+	return (uint32) (h >> 32) ^ (uint32) h;
+}
+
 void
 blob_dump(AggExec *ex, int lane, StringInfo b)
 {
-	SiftAggSpec *s = ex->spec;
 	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
 				ng = 0,
-			   *gl = palloc(Max(n, 1) * sizeof(uint32)),
-			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
-	BlobHdr		h = {BLOB_MAGIC, lane, 0, 0};
+			   *gl = palloc(Max(n, 1) * sizeof(uint32));
 
 	dist_finish_all(ex);
 	for (uint32 g = 0; g < n; g++)
-	{
-		cidx[g] = UINT32_MAX;
 		if (ex->seen[g] > 0)
-		{
-			cidx[g] = ng;
 			gl[ng++] = g;
-		}
-	}
+	blob_dump_list(ex, lane, gl, ng, b);
+	dist_end_all(ex);
+	pfree(gl);
+}
+
+/* the groups gl[0..ng) of the table (their rows have seen > 0) as a blob */
+void
+blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
+{
+	SiftAggSpec *s = ex->spec;
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+	BlobHdr		h = {BLOB_MAGIC, lane, 0, 0};
+
+	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
+	for (uint32 r = 0; r < ng; r++)
+		cidx[gl[r]] = r;
 	h.ngroups = ng;
 	bw_put(b, &h, sizeof(h));
 	for (int j = 0; j < s->nkeys; j++)
@@ -444,8 +477,6 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
 	for (int k = 0; k < s->narms; k++)
 		bw_put(b, ex->arm[k].amax, Max(s->arm[k].ninner, 1) * sizeof(double));
-	dist_end_all(ex);
-	pfree(gl);
 	pfree(cidx);
 }
 

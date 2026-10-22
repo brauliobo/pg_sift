@@ -44,7 +44,7 @@
 	X(DIRTY_ORDER, "dirty_order", "a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too", 0, 1) \
 	X(VOLATILE, "volatile", "the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce", 0, 1) \
 	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate", 1, 0) \
-	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1, 1) \
+	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1, 1) \
 	X(LATERAL_LIMIT, "lateral_limit", "a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties", 0, 0) \
 	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id", 0, 0) \
 	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by", 0, 0) \

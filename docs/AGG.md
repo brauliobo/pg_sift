@@ -154,6 +154,10 @@ The normal plan stays for `<>`, `ctid` in an expression, in `GROUP BY` or compar
 (a custom plan folds it), a partitioned table (TIDs are per partition) and the top-N shapes (their probes read zones of units outside the range). PostgreSQL
 plans a tid range scan for a narrow range (`enable_tidscan = off` shows the scan). Fixtures `tr_*`, test `agg_tid_range`.
 
+## Memory of the group table
+
+The planner prices the table of a scan (the groups it expects times the bytes of a group, about 185 for one key and five aggregates) against `hash_mem`; past it the scan is charged the spill, and the arm keeps the normal plan with the slug `group_memory` when that makes it dearer. The executor holds the same budget: when the table of an aggregate made of `count`, `sum`, `avg`, `min` and `max` passes it at the end of a unit, the groups go to hash partitions on disk as partial blobs (the form the workers send the leader), and the partitions are merged one by one at the end, each split again by another hash while it does not fit, up to `group_spill_depth` levels (`group_spill_parts` partitions at most). A scan that must spill runs without workers. The sums of floats are added in the order the partitions are merged, so the last digits can differ from an unbounded table's. The shapes that cannot spill (`count(DISTINCT)`, the arms of a two-level aggregate, grouping sets, set keys, a top-N) keep the scan until the table is `group_nospill_factor` times hash memory (8 MB at least), and then the normal plan. Tests `agg_group_memory`, `agg_group_spill`, `agg_group_spill_limits`.
+
 ## DISTINCT ON
 
 `SELECT DISTINCT ON (keys) ... ORDER BY keys, sort` is a group by the ON columns that keeps the columns of the first row of each group by the `ORDER BY`. The
