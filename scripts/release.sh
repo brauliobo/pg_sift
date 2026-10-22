@@ -70,7 +70,7 @@ preflight() {
 	[[ -f $R/$notes ]] || soft "write $notes first (docs/releases/TEMPLATE.md)"
 	! grep -qsE 'X\.Y\.Z|<one line|<feature>' "$R/$notes" || soft "$notes still has template text"
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
-	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep -q '^- ' || soft "CHANGELOG.md has nothing under Unreleased"
+	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
@@ -192,7 +192,7 @@ checks() {
 # ---------- the bump
 bump() {
 	local old date oldre f; old=$(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") date=$(date +%F) oldre=${old//./\\.}
-	[[ $(g log -1 --format=%s) == "release: $VERSION"* ]] && return 0
+	[[ $(g log -1 --format=%s) == "release: $VERSION" ]] && return 0
 	sed -i "s/^## Unreleased\$/## Unreleased\n\n## $VERSION - $date/" "$R/CHANGELOG.md"
 	for f in sqlite mariadb; do
 		[[ -f $R/$f/VERSION ]] || continue
