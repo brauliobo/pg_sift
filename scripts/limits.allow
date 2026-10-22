@@ -1,0 +1,43 @@
+# Macros named *_MAX_* or *_LIMIT* that are not limits a user can reach, so they have no row in SIFT_LIMITS (src/core/limits.h).
+# NAME, a tab, the reason. scripts/gen-limits.sh --check fails for a macro that is neither here nor a row, and for a line whose macro is gone.
+# A bound that a user can reach gets a row, not a line here.
+AGG_MAX_ARMS	the same limit as arms (SIFT_AGG_MAX_ARMS), a second copy in plan_two.c
+CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
+COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
+ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
+LOOKCACHE_MAX_BLOCKS	derived from the lookup cache budget (sift.agg_lookup_cache_kb)
+MERGE_MAX_BYTES	no caller left: delete it in a cleanup
+PAGG_MAX_DAYS	range check of a date dimension: a little past the days of a timestamp
+PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
+POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
+PROBE_MAX_ENTRIES	size of the table of one planner probe: an internal bound with no visible effect
+SIFT_AGG_MAX_PARAMS	derived array size of the executor parameters
+SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid input
+SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
+SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
+SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
+SIFT_FOLD_MAX_EXPAND	characters one character expands to in case folding: a property of the Unicode tables
+SIFT_MAX_EXTENTS	derived from the page layout (extents of a segment header)
+SIFT_MAX_OFF	width of a page bitmap: the layout of the postings
+SIFT_MAX_OFFSET	MaxHeapTuplesPerPage, a PostgreSQL bound
+SIFT_MAX_REBINDS	size of the table of kernel rebind callbacks
+SIFT_MAX_W	words of a page bitmap: the layout of the postings
+SIFT_MERGE_MAX_FANIN	merge policy: segments one merge reads at a time
+SIFT_MERGE_MAX_SEGMENTS	merge policy: more directory entries than this start a merge
+SIFT_NUM_MAX_DIGITS	the same limit as wide_digits, counted by the planner
+SIFT_SRC_MAX_DIMS	planner-side array size of the dimensions of a source, above cube_dims
+SIFT_SRC_MAX_MEAS	planner-side array size that mirrors cube_measures
+SIFT_SRC_MAX_RDIMS	planner-side array size that mirrors rollup_dims
+SIFT_SRC_MAX_ROLLUPS	planner-side array size that mirrors rollups
+SIFT_TBL_MAX_OFF	MaxHeapTuplesPerPage, a PostgreSQL bound
+SIFT_TBL_MAX_WBUF_PAGES	array size of the page list of one write buffer: see write_buffer_kb and tx_write_buffers
+SIFT_TBL_ROW_MAX_INLINE	a sift_table row above half a page goes to overflow pages: a layout threshold, not a limit
+SIFT_VK_MAX_GROUPS	shader job layout of the opt-in Vulkan backend
+SIFT_VK_MAX_PRED	shader job layout of the opt-in Vulkan backend
+SIFT_VK_MAX_RS	shader job layout of the opt-in Vulkan backend
+SIFT_VK_MAX_SLOTS	shader job layout of the opt-in Vulkan backend
+SIFT_VK_MAX_SUM	shader job layout of the opt-in Vulkan backend
+SIFT_VK_MAX_UNITS	shader job layout of the opt-in Vulkan backend
+VK_MAX_MEMORY_HEAPS	constant of the Vulkan API
+VK_MAX_MEMORY_TYPES	constant of the Vulkan API
+VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API

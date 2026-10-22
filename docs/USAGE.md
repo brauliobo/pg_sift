@@ -593,6 +593,8 @@ its own docker container.
 
 ## Limits
 
+Every fixed limit of the code, with its value, what happens at it and the setting that changes it, is in the generated table [LIMITS.md](LIMITS.md); the list below adds the context.
+
 - PostgreSQL 17, 18 and 19; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
