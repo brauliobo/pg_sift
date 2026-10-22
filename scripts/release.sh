@@ -76,6 +76,8 @@ preflight() {
 	# the benchmark numbers: blocks that differ from docs/results stop a release, results of an older MAJOR.MINOR are a warning (bench/bench refresh, docs/RELEASE.md)
 	local fresh; fresh=$("$R/scripts/check-bench-fresh.sh" 2>&1) || soft "the benchmark blocks of README.md differ from docs/results: $fresh"
 	grep '^warning:' <<<"$fresh" | while read -r f; do log "$f"; done || true
+	# every speed claim of Unreleased has a case in bench/cases.tsv, or a reasoned line in scripts/bench-cases.allow: the number of lines left is the one to watch
+	local cases; cases=$("$R/scripts/check-bench-cases.sh" --strict 2>&1) || soft "$(grep -c 'claims a speed with no case' <<<"$cases") speed lines of CHANGELOG.md Unreleased have no bench case (scripts/check-bench-cases.sh --strict): cover them in bench/cases.tsv or add them to scripts/bench-cases.allow with a reason"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
