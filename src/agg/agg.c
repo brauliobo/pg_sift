@@ -814,8 +814,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		register_key(ex, j);
 	register_combos(ex);
 	join_filters(ex, old);
-	if (ex->spec->topn && ex->njfilter != ex->spec->njoin)
-		elog(ERROR, "sift: a join of a top-N is not a filter of the scan");	/* the planner takes only the joins that are (plan_order.c, topn_joins_ok) */
+	/* the planner takes only the joins that are (plan_order.c, topn_joins_ok) */
+	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
 	prune_init(ex);
 	filter_init(ex);
