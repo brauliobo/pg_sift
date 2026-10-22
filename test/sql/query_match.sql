@@ -48,7 +48,7 @@ SELECT 'abc' @@> '/a(/';
 SELECT 'Café Straße' @@> 'CAFE strasse', 'Café' @@> 'cafè', 'Café' @@> 'CAF?', 'Ｃａｆé' @@> 'café*',
 	   'Crème brûlée' @@> '"creme brulee"', 'Crème' @@> 'crãme~1', 'Crème' @@> 'krème~1', 'naïve' @@> '/na.ve/';
 
--- long documents and terms
+-- long documents and terms (a word over 255 bytes is its start and a hash: it is no other word, a prefix of its start finds it)
 SELECT repeat('lorem ipsum ', 100000) || 'needle' @@> '"ipsum needle"',
 	   repeat('lorem ipsum ', 100000) @@> 'needle',
 	   repeat('z', 1000) @@> repeat('z', 255),

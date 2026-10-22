@@ -144,7 +144,7 @@
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of an index or sift_table", "writers merge, then ERROR 54000", "-", 0) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
-	  "a BM25 token", "the token is truncated", "-", 0) \
+	  "a BM25 token", "the token is its first 236 bytes and a hash of all of it", "-", 0) \
 	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \
 	  "term frequency in one document", "saturated", "-", 0) \
 	X(doc_length, "SIFT_MAX_DL", "core/sift.h", SIFT_MAX_DL, "tokens", \

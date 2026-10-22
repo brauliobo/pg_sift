@@ -82,7 +82,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
 | `max_segments` | directory entries of an index or sift_table | 128 | segments | writers merge, then ERROR 54000 |  | `core/sift.h` `SIFT_MAX_SEGMENTS` |  |
-| `term_bytes` | a BM25 token | 255 | bytes | the token is truncated |  | `core/sift.h` `SIFT_MAX_TERM_BYTES` |  |
+| `term_bytes` | a BM25 token | 255 | bytes | the token is its first 236 bytes and a hash of all of it |  | `core/sift.h` `SIFT_MAX_TERM_BYTES` |  |
 | `term_tf` | term frequency in one document | 255 | occurrences | saturated |  | `core/sift.h` `SIFT_MAX_TF` |  |
 | `doc_length` | length of one document | 65,535 | tokens | saturated |  | `core/sift.h` `SIFT_MAX_DL` |  |
 | `fields` | fields of a BM25 index | 14 | fields | CREATE INDEX rejected | `fields option` | `core/sift.h` `SIFT_MAX_FIELDS` |  |
