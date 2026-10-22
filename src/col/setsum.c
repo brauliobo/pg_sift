@@ -5,14 +5,18 @@
  *     EXACT (kind 1): aux = bytes of a key offset (1, 2, 4 or 8), v = the smallest key, then n offsets from it, strictly ascending, the first 0.
  *     BLOOM (kind 2): aux = probes k, v = bits (a multiple of 8, 64 or more, below 2^32), then v / 8 bytes. Probe j of key x is bit
  *                     ((uint32) (h1 + j * h2) * v) >> 32 with h = mix(x), h1 = the low and h2 = the high half of h with its low bit set.
+ *     PRES (kind 3): aux = 0, n >= 1 distinct keys, v = the key of bit 0 (a multiple of 64, at most the smallest key), then 8-byte words up to the one that
+ *                    holds the largest key; bit i of word w is key v + 64 w + i. The first and last word are not zero and the bits number n.
  * The writer keeps up to a limit of keys exactly and the rest as a filter of 10 bits a key; a unit whose keys fill the range between its smallest
- * and largest, or that has fewer than two, has none (its zone says as much).
+ * and largest, or that has fewer than two, has none (its zone says as much). A leaf of key_presence keeps every key as PRES where the bitmap takes at
+ * most SIFT_CSET_PRES_PCT of the unit's bytes, else what set_columns would give it.
  */
 
 #include "core/host.h"
 
 #include "col/setsum.h"
 #include "core/cmp.h"
+#include "core/popcount.h"
 
 static inline uint64
 mix64(uint64 x)
@@ -80,6 +84,19 @@ const char *
 sift_cset_syntax(const char *opt)
 {
 	return sift_cpagg_leaf_list(opt, NULL, NULL, NULL, NULL, NULL);
+}
+
+bool
+sift_cset_pres_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
+{
+	return sift_cpagg_dim_ok(s, d) && d->parent < 0 && d->store == SIFT_COLS_INT && !sift_col_def_has_kinds(d) &&
+		(d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE);
+}
+
+const char *
+sift_cset_pres_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
+{
+	return sift_cpagg_leaf_list(opt, s, names, leaf, sift_cset_pres_leaf_ok, "not a plain int2, int4 or date column");
 }
 
 uint32
@@ -160,6 +177,65 @@ sift_cset_build(const int64 *keys, uint32 nd, uint32 limit, StringInfo out)
 }
 
 static inline uint64
+pres_word(const SiftCSet *s, uint64 w)
+{
+	uint64		x;
+
+	memcpy(&x, s->data + w * sizeof(x), sizeof(x));
+	return x;
+}
+
+bool
+sift_cset_build_pres(const int64 *keys, uint32 nd, Size max_bytes, StringInfo out)
+{
+	int64		base = keys[0] & ~(int64) 63;
+	uint64		nwords = ((uint64) keys[nd - 1] - (uint64) base) / 64 + 1;
+	uint64	   *bits;
+
+	if (nwords * sizeof(uint64) + SIFT_CSET_HDR > max_bytes)
+		return false;
+	bits = palloc0(nwords * sizeof(uint64));
+	for (uint32 i = 0; i < nd; i++)
+	{
+		uint64		d = (uint64) keys[i] - (uint64) base;
+
+		bits[d / 64] |= UINT64CONST(1) << (d % 64);
+	}
+	put_head(out, SIFT_CSET_PRES, 0, nd, (uint64) base);
+	appendBinaryStringInfo(out, (const char *) bits, nwords * sizeof(uint64));
+	pfree(bits);
+	return true;
+}
+
+/* is any key of [lo, hi] a bit of the bitmap */
+static bool
+pres_any(const SiftCSet *s, int64 lo, int64 hi)
+{
+	uint64		a,
+				b;
+
+	if (hi < s->base || lo > hi)
+		return false;
+	a = lo <= s->base ? 0 : (uint64) lo - (uint64) s->base;
+	b = (uint64) hi - (uint64) s->base;
+	if (a >= s->nbits)
+		return false;
+	b = Min(b, s->nbits - 1);
+	for (uint64 w = a / 64; w <= b / 64; w++)
+	{
+		uint64		m = pres_word(s, w);
+
+		if (w == a / 64)
+			m &= ~UINT64CONST(0) << (a % 64);
+		if (w == b / 64)
+			m &= ~UINT64CONST(0) >> (63 - b % 64);
+		if (m)
+			return true;
+	}
+	return false;
+}
+
+static inline uint64
 exact_at(const SiftCSet *s, uint32 i)
 {
 	uint64		d = 0;
@@ -184,8 +260,22 @@ sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s)
 	s->data = blob + SIFT_CSET_HDR;
 	s->base = 0;
 	s->nbits = 0;
-	if (flags != 0 || s->n < 2)
+	if (flags != 0 || s->n < (s->kind == SIFT_CSET_PRES ? 1 : 2))
 		return false;
+	if (s->kind == SIFT_CSET_PRES)
+	{
+		uint64		nw = (len - SIFT_CSET_HDR) / sizeof(uint64),
+					pop = 0;
+
+		if (s->aux != 0 || nw == 0 || (len - SIFT_CSET_HDR) % sizeof(uint64) != 0 || (v & 63) != 0 || nw >= UINT64CONST(1) << 32 ||
+			(int64) v > PG_INT64_MAX - (int64) (nw * 64))
+			return false;
+		s->base = (int64) v;
+		s->nbits = nw * 64;
+		for (uint64 w = 0; w < nw; w++)
+			pop += sift_pc64(pres_word(s, w));
+		return pop == s->n && pres_word(s, 0) != 0 && pres_word(s, nw - 1) != 0;
+	}
 	if (s->kind == SIFT_CSET_EXACT)
 	{
 		if ((s->aux != 1 && s->aux != 2 && s->aux != 4 && s->aux != 8) || s->n > SIFT_CSET_LIMIT_MAX ||
@@ -216,6 +306,8 @@ sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s)
 bool
 sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi)
 {
+	if (s->kind == SIFT_CSET_PRES)
+		return pres_any(s, lo, hi);
 	if (s->kind == SIFT_CSET_EXACT)
 	{
 		uint64		dlo,
@@ -254,6 +346,14 @@ sift_cset_matches(const SiftCSet *s, const int64 *keys, uint32 nd)
 {
 	if (s->n != nd)
 		return false;
+	if (s->kind == SIFT_CSET_PRES)
+	{
+		/* the population is n, so n distinct keys that are all bits are the bits */
+		for (uint32 i = 0; i < nd; i++)
+			if (!pres_any(s, keys[i], keys[i]))
+				return false;
+		return true;
+	}
 	if (s->kind == SIFT_CSET_EXACT)
 	{
 		for (uint32 i = 0; i < nd; i++)

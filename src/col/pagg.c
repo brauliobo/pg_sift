@@ -48,6 +48,18 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	return !(a->zflags & SIFT_COLZ_OVERFLOW);
 }
 
+bool
+sift_col_unit_presence(const SiftColUnit *unit, int col, int64 *wbase, uint64 *nwords, const uint8 **words)
+{
+	SiftColSegment *seg;
+	uint32		u;
+
+	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	return sift_cseg_presence(seg, col, u, wbase, nwords, words);
+}
+
 static void
 corrupt_cube(SiftColSegment *seg, uint32 u)
 {

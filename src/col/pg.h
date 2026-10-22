@@ -107,6 +107,7 @@ typedef struct SiftColOptions
 	int			set_columns;	/* offset of the "set_columns" string (the leaves that get a small-set summary in every unit, docs/COL.md 2.13), 0 = none */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			set_limit;		/* up to this many distinct keys a unit keeps exactly, else a bloom filter (0 = the default) */
+	int			key_presence;	/* offset of the "key_presence" string (the leaves that keep every distinct key of a unit as a bitmap, docs/COL.md 2.15), 0 = none */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
 	bool		dict_lookup;	/* a dictionary of many strings is stored to be searched in place (column format minor 14) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
@@ -127,6 +128,7 @@ extern const char *sift_col_options_rollup(Relation index);	/* "" when none (aut
 extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_set_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_presence(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 

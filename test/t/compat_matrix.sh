@@ -3,7 +3,7 @@
 # sift_table; promoted segments and unpromoted write-buffer records), taken over by this tree in the same cluster: ALTER EXTENSION UPDATE, answers
 # through the indexes equal to the plain plan and to what the release answered, sift.verify and sift.col_verify clean, REINDEX, writes (insert,
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
-# (3), at the newest minor it reads, and refuses an index of the minor 7 (cube_minmax), the minor 13 (order_columns) or the minor 14 (a stored dictionary) with a format error instead of a wrong answer; an index with order_columns under the lowest setting writes no run and is read.
+# (3), at the newest minor it reads, and refuses an index of the minor 7 (cube_minmax), the minor 13 (order_columns) or the minor 14 (a stored dictionary) or the minor 15 (key_presence) with a format error instead of a wrong answer; an index with order_columns under the lowest setting writes no run and is read.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -156,15 +156,15 @@ sift.async_maintenance = off'
 	# the setting exists once a function of the library ran in the session
 	lowest=$(q "SELECT count(*) FROM sift.col_segments('docs_col')" "SELECT min_val FROM pg_settings WHERE name = 'sift.col_format_minor'" | tail -1)
 	check "$ref: the lowest column format minor is 3" test "$lowest" == 3
-	formats=("lo $lowest" "cm 7" "rn 13"); [[ $newest == 3 ]] || formats=("lo $lowest" "hi $newest" "cm 7" "rn 13")
+	formats=("lo $lowest" "cm 7" "rn 13" "kp 15"); [[ $newest == 3 ]] || formats=("lo $lowest" "hi $newest" "cm 7" "rn 13" "kp 15")
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		opt=", order_columns = 'g, n'"; [[ $fmt != cm ]] || opt=", cube_minmax = true"
+		opt=", order_columns = 'g, n'"; [[ $fmt != cm ]] || opt=", cube_minmax = true"; [[ $fmt != kp ]] || opt=", key_presence = 'g'"
 		q "SET sift.col_format_minor = $minor" \
 			"CREATE TABLE docs_$fmt AS TABLE docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (id, g, n) WITH (write_buffer_limit = 2048$opt)" \
 			"INSERT INTO docs_$fmt SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
 			"INSERT INTO docs_$fmt SELECT i, i % 9, i % 100, 'y' FROM generate_series(20401, 20600) i" >/dev/null || bail "$ref $fmt docs"
-		[[ $fmt == cm || $fmt == rn ]] && continue
+		[[ $fmt == cm || $fmt == rn || $fmt == kp ]] && continue
 		# a minor 3 segment stores no types: 3.1 refuses an astext leaf of it at query time with the REINDEX hint, by design
 		kind=$textkind; [[ $fmt != lo ]] || kind=text
 		q "SET sift.col_format_minor = $minor" \
@@ -178,11 +178,12 @@ sift.async_maintenance = off'
 	done
 	check "$ref: the cube_minmax clone is minor 7" test "$(q "SELECT min(format) FROM sift.col_segments('docs_cm_col') WHERE kind = 'immutable'")" == 7
 	check "$ref: the order_columns clone is minor 13" test "$(q "SELECT min(format) FROM sift.col_segments('docs_rn_col') WHERE kind = 'immutable'")" == 13
+	check "$ref: the key_presence clone is minor 15" test "$(q "SELECT min(format) FROM sift.col_segments('docs_kp_col') WHERE kind = 'immutable'")" == 15
 	check "$ref: the clone with order_columns under the lowest setting holds no run" test "$(q "SELECT count(*) FROM sift.col_sections('docs_lo_col') WHERE section = 'runs'")" == 0
 	declare -A want=()
 	for f in "${formats[@]}"; do
 		fmt=${f%% *}
-		w=d; [[ $fmt == cm || $fmt == rn ]] || w=$what; w=${w//b/}
+		w=d; [[ $fmt == cm || $fmt == rn || $fmt == kp ]] || w=$what; w=${w//b/}
 		want[$fmt]=$(ans PLAIN_NEW "_$fmt" "$w")
 		agree "$ref: $fmt clone, this tree: index answers equal the plain plan" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}"
 		check "$ref: $fmt clone, this tree: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
@@ -194,15 +195,15 @@ sift.async_maintenance = off'
 	node_start mx || bail "cannot restart $ref"
 	for f in "${formats[@]}"; do
 		fmt=${f%% *}
-		w=d; [[ $fmt == cm || $fmt == rn ]] || w=$what; w=${w//b/}
-		if [[ $fmt != cm && $fmt != rn ]]; then
+		w=d; [[ $fmt == cm || $fmt == rn || $fmt == kp ]] || w=$what; w=${w//b/}
+		if [[ $fmt != cm && $fmt != rn && $fmt != kp ]]; then
 			check "$ref reads the $fmt clone: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)" "SELECT sift.col_verify('jt_${fmt}_col', true)"
 			agree "$ref reads the $fmt clone: index answers equal what this tree answered" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}" tolerate
 			agree "$ref reads the $fmt clone: plain answers equal what this tree answered" "$(ans PLAIN "_$fmt" "$w")" "${want[$fmt]}"
 		else
 			minor=${f##* }
 			err=$(q "SELECT sift.col_verify('docs_${fmt}_col', true)" 2>&1)
-			check "$ref refuses the minor $minor index with a format error" grep -qi 'format' <<<"$err"
+			check "$ref refuses the minor $minor index with a format error and the REINDEX hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2
 			out=$(ans IDX "_$fmt" d)
 			check "$ref never answers wrongly from the minor $minor index (the rows or a format error)" test "$out" == "${want[$fmt]}" -o "$(grep -ci 'format' <<<"$out")" -gt 0
 			check "$ref still serves after the refusal" test "$(q "SELECT 1")" == 1

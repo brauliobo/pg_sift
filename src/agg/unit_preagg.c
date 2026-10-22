@@ -180,6 +180,21 @@ preagg_zones(AggExec *ex)
 	return true;
 }
 
+/*
+ * count(DISTINCT leaf) of a leaf with key_presence: the bitmap of the unit's values added to the aggregate's set. False when the unit has none; the values
+ * added so far do no harm, the scan of the unit adds them again to a set.
+ */
+static bool
+preagg_presence(AggExec *ex, int ai, int leaf)
+{
+	SiftSrcPresence p;
+
+	if (!sift_colsrc_unit_presence(ex->src, &ex->unit, leaf, &p))
+		return false;
+	ex->acc[ai].n[0] += dist_or_words(ex, ex->dist[ai], 0, p.wbase, p.words, p.nwords);
+	return true;
+}
+
 /* no key: the unit's rows are one group, from the sums of the leaves */
 static bool
 preagg_sums(AggExec *ex)
@@ -196,6 +211,12 @@ preagg_sums(AggExec *ex)
 		v[ai].rows = v[ai].nn = nrow;
 		if (leaf < 0)
 			continue;
+		if (a->kind == SAA_COUNT_DISTINCT)
+		{
+			if (!preagg_presence(ex, ai, leaf))
+				return false;
+			continue;
+		}
 		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums))
 			return false;
 		v[ai] = (PaVal) {nrow, ua.nvals - ua.nnull, ua.sum, ua.has_minmax, ua.min, ua.max};

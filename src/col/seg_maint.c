@@ -507,6 +507,28 @@ sift_cseg_verify_super(SiftColSegment *seg)
 	MemoryContextDelete(cx);
 }
 
+/* The kinds a leaf's record in the small-set summaries lists are those of its units' summaries */
+static void
+verify_set_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_set_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+
+			if (blob != NULL && len > 0)
+				have |= blob[0] == SIFT_CSET_EXACT ? SETS_EXACT : blob[0] == SIFT_CSET_BLOOM ? SETS_BLOOM : SETS_PRES;
+		}
+		if (have != want)
+			corrupt(seg, "The record of the small-set summaries of leaf %d lists kinds %u, its units hold %u.", c, want, have);
+	}
+}
+
 /* The kinds a leaf's record in the sorted runs lists are those of its units' runs */
 static void
 verify_run_kinds(SiftColSegment *seg)
@@ -583,6 +605,7 @@ sift_cseg_verify(SiftColSegment *seg)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_cseg_verify_super(seg);
+	verify_set_kinds(seg);
 	verify_run_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);

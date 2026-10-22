@@ -80,6 +80,13 @@ sift.async_maintenance = off'
 			"CREATE INDEX ordhigh_idx ON ordhigh USING sift_col (id, k) WITH (order_columns = 'k')" "VACUUM ANALYZE ordlow" "VACUUM ANALYZE ordhigh" >/dev/null || bail 'minor 13 setup'
 		ordwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$ORDQ")
 		check 'the setting 4 writes no run and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('ordlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('ordhigh_idx') WHERE kind = 'immutable')")" == 4:13
+		# the key presence (minor 15, opt-in): the setting 4 writes none, the default one writes what 3.1 refuses
+		KPQ="SELECT count(DISTINCT k), count(*) FROM kplow"
+		sql legacy "CREATE TABLE kplow AS SELECT i AS id, i % 200 AS k, i * 7919 % 100003 AS v FROM generate_series(1, 3000) i" "CREATE TABLE kphigh AS TABLE kplow" \
+			"SET sift.col_format_minor = 4" "CREATE INDEX kplow_idx ON kplow USING sift_col (id, k, v) WITH (key_presence = 'k')" "RESET sift.col_format_minor" \
+			"CREATE INDEX kphigh_idx ON kphigh USING sift_col (id, k, v) WITH (key_presence = 'k')" "VACUUM ANALYZE kplow" "VACUUM ANALYZE kphigh" >/dev/null || bail 'minor 15 setup'
+		kpwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$KPQ")
+		check 'the setting 4 writes no key presence and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('kplow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('kphigh_idx') WHERE kind = 'immutable')")" == 4:15
 		node_stop legacy
 		use_root "$oldroot"
 		node_start legacy || bail 'cannot restart 3.1'
@@ -94,6 +101,9 @@ sift.async_maintenance = off'
 		check '3.1 reads an index written with order_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('ordlow_idx', true)" "SET sift.enable_agg = on" "$ORDQ" | tail -n 1)" == "$ordwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('ordhigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 13 index with a format error and REINDEX hint' test "$(grep -c 'format 1.13\|REINDEX' <<<"$err")" -ge 2
+		check '3.1 reads an index written with key_presence under the setting 4' test "$(sql legacy "SELECT sift.col_verify('kplow_idx', true)" "SET sift.enable_agg = on" "$KPQ" | tail -n 1)" == "$kpwant"
+		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('kphigh_idx', false)" 2>&1)
+		check '3.1 refuses a minor 15 index with a format error and REINDEX hint' test "$(grep -c 'format 1.15\|REINDEX' <<<"$err")" -ge 2
 	fi
 	node_stop legacy
 	ROOT=$newroot

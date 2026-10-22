@@ -73,6 +73,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `rollup_tuples` | tuples of an explicit rollup in one unit | 4,096 | tuples | the unit has no rollup (it is scanned) | `rollup option` | `col/preagg.h` `SIFT_PAGG_ROLLUP_TUPLES` |  |
 | `set_keys` | distinct keys of a set column a unit keeps exactly (default) | 32 | keys | no pruning by the set | `set_limit option` | `col/setsum.h` `SIFT_CSET_LIMIT` |  |
 | `set_keys_max` | largest value of the set_limit option | 1,024 | keys | option rejected at CREATE or ALTER INDEX | `set_limit option` | `col/setsum.h` `SIFT_CSET_LIMIT_MAX` |  |
+| `presence_pct` | share of a unit's bytes its key presence bitmap may take | 3 | percent | the unit has no presence for the column (it is scanned) | `key_presence option` | `col/setsum.h` `SIFT_CSET_PRES_PCT` |  |
 | `super_fan_max` | largest value of the superunit option: units in one group summary | 256 | units | option rejected at CREATE or ALTER INDEX | `superunit option` | `col/preagg.h` `SIFT_SUPER_MAX_FAN` |  |
 | `shred_spec_bytes` | size of a jsonb shredding spec | 65,536 (64 KiB) | bytes | ERROR at CREATE INDEX |  | `col/shred.h` `SIFT_SHRED_MAX_SPEC_BYTES` |  |
 | `shred_leaves` | leaves of one jsonb shredding spec | 256 | leaves | ERROR at CREATE INDEX |  | `col/shred.h` `SIFT_SHRED_MAX_COLS` |  |

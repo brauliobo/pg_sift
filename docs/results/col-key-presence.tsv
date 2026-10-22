@@ -1,0 +1,12 @@
+# columns: rows, units, rows per unit, query, normal plan (sift.enable_agg off) ms, key_presence off ms, key_presence on ms, ratio off/on
+# queries: distinct = SELECT count(DISTINCT parent_id); distinct_sums = SELECT count(DISTINCT parent_id), count(*), sum(amount); distinct_window = distinct WHERE ts >= '2025-03-01' AND ts < '2026-10-01' (holds for the whole of every unit); sums = SELECT count(*), sum(amount) (does not use the option)
+# pg_sift key presence, 2026-10-22, PostgreSQL 18.6, events(id int, parent_id int, ts date, kind int2, amount int2), 6,313 distinct parent_id, key_presence = 'parent_id'; one backend, no parallel workers, jit off, median of 9 runs, the two indexes interleaved under flock
+# index (bytes): 1,000,000 rows 3,825,664 off, 3,956,736 on (+3.43%, sets section 99,648 = 2.5%); 200,000 rows 811,008 off, 843,776 on (+4.0%, sets section 8,256 = 1.0%; the file grows by 8 KB pages)
+1000000	123	8130	distinct	314.368	16.096	1.112	14.5
+1000000	123	8130	distinct_sums	562.918	16.518	0.966	17.1
+1000000	123	8130	distinct_window	336.301	13.260	1.415	9.4
+1000000	123	8130	sums	145.222	0.841	0.916	0.9
+200000	10	20000	distinct	43.618	2.547	0.423	6.0
+200000	10	20000	distinct_sums	85.604	2.671	0.278	9.6
+200000	10	20000	distinct_window	30.446	2.395	0.665	3.6
+200000	10	20000	sums	20.883	0.209	0.134	1.6

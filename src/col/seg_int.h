@@ -91,6 +91,7 @@ typedef struct PaggHeader
 
 #define SETS_EXACT		0x1
 #define SETS_BLOOM		0x2
+#define SETS_PRES		0x4
 
 typedef struct SetsHeader
 {
