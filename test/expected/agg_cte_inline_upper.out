@@ -71,3 +71,6 @@ SELECT differences(series_query('')) AS shared_cte_differences, differences(seri
                       0 |                  0
 (1 row)
 
+DROP FUNCTION differences, scan_nodes, series_query;
+DROP TABLE events, dims;
+DROP EXTENSION pg_sift;

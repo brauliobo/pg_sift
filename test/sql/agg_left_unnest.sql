@@ -30,6 +30,6 @@ $q$);
 SELECT * FROM check_query('inner join, on', $q$
  SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
 $q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

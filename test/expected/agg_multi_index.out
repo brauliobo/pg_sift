@@ -143,6 +143,6 @@ SELECT used_index('SELECT grp, sum((doc ->> $$n$$)::float8) FROM mi GROUP BY grp
 
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool);
-DROP FUNCTION used_index(text);
+DROP FUNCTION used_index(text), outcome, pushed, runs_in_scan;
 DROP TABLE mi, mi_dim;
 DROP EXTENSION pg_sift;

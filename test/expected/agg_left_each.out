@@ -22,9 +22,9 @@ SELECT * FROM check_query('count', $q$
  SELECT f.dim_a_id % 3 AS k, count(*) AS rows, count(CAST(r.value AS float)) AS dim_b, sum(CAST(r.value AS float)) AS total
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' GROUP BY 1
 $q$);
- label | scan | same |                                              outcome                                               
--------+------+------+----------------------------------------------------------------------------------------------------
- count | t    | t    | [{"k": 0, "rows": 7000, "total": 20006, "dim_b": 4000}, {"k": 1, "rows": 6500, "total": 18240, "me
+ label | scan | same |                                               outcome                                                
+-------+------+------+------------------------------------------------------------------------------------------------------
+ count | t    | t    | [{"k": 0, "rows": 7000, "dim_b": 4000, "total": 20006}, {"k": 1, "rows": 6500, "dim_b": 3714, "total
 (1 row)
 
 SELECT * FROM check_query('filter', $q$
@@ -126,6 +126,6 @@ SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value 
  string member | f    | t    | 22023 cannot cast jsonb string to type double precision
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

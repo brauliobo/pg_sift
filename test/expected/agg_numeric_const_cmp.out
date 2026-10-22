@@ -91,5 +91,5 @@ SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY i
 (0 rows)
 
 DROP TABLE nc, nf, shapes;
-DROP FUNCTION pushed(text), same_rows(text);
+DROP FUNCTION pushed(text), same_rows(text), outcome, runq, runs_in_scan;
 DROP EXTENSION pg_sift;

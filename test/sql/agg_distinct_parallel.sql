@@ -102,3 +102,4 @@ SELECT mode_of('SELECT grp, string_agg(DISTINCT kind, '','') FROM facts GROUP BY
 
 DROP TABLE facts, shapes;
 DROP EXTENSION pg_sift;
+DROP FUNCTION mode_of, rows_of, serial_because;

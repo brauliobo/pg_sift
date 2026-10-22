@@ -90,5 +90,5 @@ DROP TABLE shapes, items_1000, items_33, items_2;
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP EXTENSION pg_sift;

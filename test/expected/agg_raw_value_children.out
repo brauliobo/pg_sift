@@ -128,6 +128,6 @@ SELECT * FROM check_query('object member', $q$SELECT c.category, count(*) AS n F
  object member | f    | t    | 22023 cannot cast jsonb object to type integer
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

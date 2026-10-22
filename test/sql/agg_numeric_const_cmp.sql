@@ -73,5 +73,5 @@ SELECT sift.col_promote('nf_col') >= 0 AS promoted;
 SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
 
 DROP TABLE nc, nf, shapes;
-DROP FUNCTION pushed(text), same_rows(text);
+DROP FUNCTION pushed(text), same_rows(text), outcome, runq, runs_in_scan;
 DROP EXTENSION pg_sift;

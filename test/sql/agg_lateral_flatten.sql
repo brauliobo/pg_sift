@@ -104,6 +104,6 @@ SELECT * FROM check_query('cast out of range', $q$
                        FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true)
  SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE entries, labels, sources;
 DROP EXTENSION pg_sift;

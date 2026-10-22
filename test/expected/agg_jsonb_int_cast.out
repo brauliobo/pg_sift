@@ -115,6 +115,6 @@ SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts 
  string member, reached | f    | t    | 22023 cannot cast jsonb string to type integer
 (1 row)
 
-DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dim_a;
 DROP EXTENSION pg_sift;

@@ -81,6 +81,6 @@ SELECT same(replace(spine_query($$d.enabled$$), 'ON ev.period = pe.period', 'ON 
  t
 (1 row)
 
-DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), units_read(text), spine_query(text);
+DROP FUNCTION same(text), outcome(text, bool), runs_in_scan(text), units_read(text), spine_query(text), pushed, runq;
 DROP TABLE events, dims;
 DROP EXTENSION pg_sift;

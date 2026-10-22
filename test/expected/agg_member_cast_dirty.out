@@ -411,6 +411,6 @@ SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'CAST(e.value 
 DROP FUNCTION mq(text, text, text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE m_t, m_src;
 DROP EXTENSION pg_sift;

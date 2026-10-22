@@ -76,9 +76,9 @@ SELECT * FROM check_query('no outer join', $q$
                                      FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true
  GROUP BY 1
 $q$);
-     label     | scan | same |                                                outcome                                                 
----------------+------+------+--------------------------------------------------------------------------------------------------------
- no outer join | t    | t    | [{"n": 2143, "total": 8572, "category": "catgm"}, {"n": 2857, "total": 14285, "category": "catgj"}, {"
+     label     | scan | same |                                               outcome                                                
+---------------+------+------+------------------------------------------------------------------------------------------------------
+ no outer join | t    | t    | [{"n": 2143, "total": 8572, "category": "catgm"}, {"n": 2857, "total": 14285, "category": "catgj"}, 
 (1 row)
 
 -- on the nullable side of a right join the columns of a sub-select are NULL for the rows the join does not match: not pulled up
@@ -117,9 +117,9 @@ SELECT * FROM check_query('limit', $q$
    INNER JOIN LATERAL (SELECT l.label FROM labels l WHERE l.foreign_id = e.foreign_id ORDER BY l.label LIMIT 1) s ON true)
  SELECT d.day, p.label, count(*) FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
- label | scan | same |                                                outcome                                                
--------+------+------+-------------------------------------------------------------------------------------------------------
- limit | t    | t    | [{"day": "2026-01-01", "count": 1000, "label": "catg_b"}, {"day": "2026-01-02", "count": 1000, "label
+ label | scan | same |                                               outcome                                                
+-------+------+------+------------------------------------------------------------------------------------------------------
+ limit | t    | t    | [{"day": "2026-01-01", "count": 1000, "label": "catg_b"}, {"day": "2026-01-02", "count": 1000, "labe
 (1 row)
 
 -- Error timing: the cast of a member runs for the members of the rows that reach it, with PostgreSQL's SQLSTATE and message.
@@ -150,6 +150,6 @@ $q$);
  cast out of range | t    | t    | 22003 integer out of range
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE entries, labels, sources;
 DROP EXTENSION pg_sift;

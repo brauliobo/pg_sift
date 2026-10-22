@@ -90,3 +90,6 @@ END $$;
 
 -- the shared CTE takes the scan (the arms and the SiftAggRows node above them), and the rows are the normal plan's
 SELECT scan_nodes(series_query()) AS scan_nodes, differences(series_query()) AS differences;
+DROP FUNCTION differences, scan_nodes, series_query;
+DROP TABLE events, dims, maps;
+DROP EXTENSION pg_sift;

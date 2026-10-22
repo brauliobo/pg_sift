@@ -31,7 +31,7 @@ SELECT * FROM check_query('left join, true', $q$
 $q$);
       label      | scan | same |                                         outcome                                          
 -----------------+------+------+------------------------------------------------------------------------------------------
- left join, true | f    | t    | [{"n": 13333, "key": "other"}, {"n": 13333, "key": "m_total"}, {"n": 4444, "key": null}]
+ left join, true | f    | t    | [{"n": 13333, "key": "m_total"}, {"n": 13333, "key": "other"}, {"n": 4444, "key": null}]
 (1 row)
 
 SELECT * FROM check_query('left join, array', $q$
@@ -51,6 +51,6 @@ $q$);
  inner join, on | t    | t    | [{"n": 13333, "ids": 13333}]
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

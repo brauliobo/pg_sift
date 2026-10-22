@@ -310,4 +310,5 @@ SELECT * FROM pa_check('ev');
 
 DROP TABLE ev, ev_dim, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int);
+DROP PROCEDURE pa_settle;
 DROP EXTENSION pg_sift;

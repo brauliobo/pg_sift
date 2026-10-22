@@ -113,5 +113,5 @@ DROP TABLE s_t;
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION outcome(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP EXTENSION pg_sift;

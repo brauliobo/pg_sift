@@ -65,6 +65,6 @@ INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"m_total": "abc"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' WHERE f.id = 20003$q$);
 SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' WHERE f.id = 20005$q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

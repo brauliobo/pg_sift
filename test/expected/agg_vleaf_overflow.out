@@ -219,6 +219,6 @@ DROP FUNCTION l_q(int);
 DROP FUNCTION m_q(int);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE r_t, s_t, list_kinds, l_t, m_t, kinds;
 DROP EXTENSION pg_sift;

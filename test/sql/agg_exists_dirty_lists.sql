@@ -172,7 +172,7 @@ DROP FUNCTION cq(text, text, text);
 DROP FUNCTION tq(text, text, text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE facts;
 DROP TABLE mappings;
 DROP TABLE dims;

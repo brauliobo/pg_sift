@@ -34,6 +34,6 @@ $q$);
  key and filter | t    | t    | [{"k": "BRa", "known": 1666}, {"k": "BRb", "known": 1667}, {"k": "USa", "known": 1666}, {"k": "USb",
 (1 row)
 
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, countries;
 DROP EXTENSION pg_sift;
