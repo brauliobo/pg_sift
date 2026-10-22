@@ -43,7 +43,7 @@ FWD+=(--size "$SIZE")
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
-ALL_STAGES="store updates compression stats gap search"
+ALL_STAGES="store updates compression stats gap search cases"
 [[ $SIZE != standard && $SIZE != full ]] || ALL_STAGES="$ALL_STAGES sets extras"   # the synthetic and the release-to-release benchmarks are published at standard and full
 [[ -n $STAGES ]] || STAGES=$ALL_STAGES
 [[ $SIZE == standard || $SIZE == full || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
@@ -59,6 +59,7 @@ s_gap() {
 }
 s_updates() { bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes 200000,1000000 ${DOCS:+--docs}; }
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
+s_cases() { bench cases --engines pg_duckdb --rows "$P_ROWS" ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass (docs/results/cases.tsv, the block "What got faster in 3.3")
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }
 minutes() { # STAGE: the minutes it takes when everything is measured
@@ -70,6 +71,7 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     stats) echo "${P_MIN_STATS:-3}" ;;
     gap) echo "${P_MIN_GAP:-4}" ;;
     search) echo "$P_MIN_SEARCH" ;;
+    cases) echo "${P_MIN_CASES:-3}" ;;
     sets) echo "${P_MIN_SETS:-25}" ;;
     extras) echo "${P_MIN_EXTRAS:-100}" ;;
   esac
