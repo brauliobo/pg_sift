@@ -2,12 +2,12 @@
 # orders: 200000
 # postgresql: 18.6
 # pg_sift: 3.3
-# build: 7f87b6bd3625
+# build: b3cba0472f21
 # date: 2026-10-22
 # cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
 # method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
-# host_load_before: load 16.51 22.05 25.88 cpu_psi 0.65%
-# host_load_after: load 15.96 21.56 25.64 cpu_psi 1.40%
+# host_load_before: load 22.16 22.13 24.81 cpu_psi 1.63%
+# host_load_after: load 22.23 22.14 24.80 cpu_psi 2.94%
 version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_page_totals	sift	ms	1.748	1.460	2.654	15	16.51	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount) NOISY
 3.3	topn_page_totals	native	ms	19.925	17.118	28.591	15	16.51	Bitmap Heap Scan on orders NOISY
@@ -30,15 +30,15 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	calendar_month	native	ms	65.084	60.817	76.297	15	16.26	Seq Scan on orders NOISY
 3.3	calendar_month	scan	ms	2.041	1.648	2.661	15	16.26	Group Keys: created_at: (date_trunc('month'::text, orders.created_at))::date (per day); Pushed Aggregates: sum(orders.amount), count(*) NOISY
 3.3	calendar_month	pg_duckdb	ms	28.761	27.853	32.190	15	16.26	DuckDBScan NOISY
-3.3	bulk_copy_wal	sift	wal_bytes	20.710	20.695	20.722	3	15.52	200,000 rows, bulk groups
-3.3	bulk_copy_wal	sift	ms	444.726	379.937	470.862	3	15.52	200,000 rows, bulk groups
-3.3	bulk_copy_wal	sift	cpu_ms	440.898	376.268	467.218	3	15.52	200,000 rows, bulk groups
-3.3	bulk_copy_wal	native	wal_bytes	84.553	84.528	84.568	3	15.52	200,000 rows, heap
-3.3	bulk_copy_wal	native	ms	175.581	167.386	203.208	3	15.52	200,000 rows, heap
-3.3	bulk_copy_wal	native	cpu_ms	173.670	166.415	201.052	3	15.52	200,000 rows, heap
-3.3	bulk_copy_wal	bulk_off	wal_bytes	252.557	252.550	252.563	3	15.52	200,000 rows, bulk_off
-3.3	bulk_copy_wal	bulk_off	ms	625.004	520.071	2354.577	3	15.52	200,000 rows, bulk_off
-3.3	bulk_copy_wal	bulk_off	cpu_ms	524.628	513.934	588.565	3	15.52	200,000 rows, bulk_off
 3.3	cluster_visibility_map	sift	ms	1.026	0.625	1.808	15	15.96	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
 3.3	cluster_visibility_map	native	ms	4.308	3.527	5.352	15	15.96	Index Scan using orders_created on orders NOISY
 3.3	cluster_visibility_map	pg_duckdb	ms	11.636	9.595	13.703	15	15.96	DuckDBScan NOISY
+3.3	bulk_copy_wal	sift	wal_bytes	20.709	20.704	20.777	3	22.16	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal	sift	ms	473.657	439.481	503.706	3	22.16	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal	sift	cpu_ms	468.312	434.074	497.313	3	22.16	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal	native	wal_bytes	84.550	84.539	84.635	3	22.16	heap
+3.3	bulk_copy_wal	native	ms	204.619	180.981	244.117	3	22.16	heap
+3.3	bulk_copy_wal	native	cpu_ms	201.187	179.994	241.101	3	22.16	heap
+3.3	bulk_copy_wal	bulk_off	wal_bytes	252.547	252.534	252.583	3	22.16	sift_table, bulk_off
+3.3	bulk_copy_wal	bulk_off	ms	612.058	605.986	664.837	3	22.16	sift_table, bulk_off
+3.3	bulk_copy_wal	bulk_off	cpu_ms	606.041	597.081	655.490	3	22.16	sift_table, bulk_off
