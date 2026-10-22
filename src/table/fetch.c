@@ -42,6 +42,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 
 	f->base.rel = rel;
 	f->st = sift_tbl_rel(rel);
+	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
 	sift_tbl_tomb_sync(rel, f->st);
 	return &f->base;

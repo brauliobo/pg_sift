@@ -109,9 +109,17 @@ sift_tbl_define_gucs(void)
 							NULL, &sift_tbl_auto_defrag_free_pct, 25, 1, 100,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_delay",
-							"Milliseconds the background pass of a sift_table waits after each segment it rewrites.",
-							"0 never waits.", &sift_tbl_auto_defrag_delay, 10, 0, 10000,
+							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
+							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
 							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
+							"Percent of the rows of a sift_table that are tombstones from which the background pass is asked for.",
+							"The pass rewrites the segments that are more than sift.table_dead_rewrite_pct percent dead; 100 never asks for dead rows.",
+							&sift_tbl_auto_defrag_dead_pct, 20, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_budget",
+							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
+							"The worker passes again while the budget stopped the last one. 0 is no limit.",
+							&sift_tbl_auto_defrag_budget, 128, 0, 1048576, PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag_indexes",
 							 "The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included.",
 							 "Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM.",
@@ -267,6 +275,7 @@ static TM_Result
 tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wait, LockWaitPolicy policy,
 		   bool locking, TM_FailureData *tmfd, SiftTblDel *del)
 {
+	sift_tbl_auto_defrag_tick(rel, st);
 	for (;;)
 	{
 		SiftTblRowVer rv;

@@ -106,3 +106,82 @@ step mcount: SELECT count(*) AS live FROM iso_m;
 15000
 (1 row)
 
+
+starting permutation: wd mlock rscan mm munlock mcount
+busy
+----
+f   
+(1 row)
+
+step wd: DELETE FROM iso_m WHERE id % 2 = 0;
+step mlock: SELECT pg_advisory_lock(1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step rscan: SELECT iso_scan() AS rows_seen; <waiting ...>
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |    15000
+(1 row)
+
+step munlock: SELECT pg_advisory_unlock(1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step rscan: <... completed>
+rows_seen
+---------
+    15000
+(1 row)
+
+step mcount: SELECT count(*) AS live FROM iso_m;
+ live
+-----
+15000
+(1 row)
+
+
+starting permutation: wd mlock rscan wi mm munlock mcount
+busy
+----
+f   
+(1 row)
+
+step wd: DELETE FROM iso_m WHERE id % 2 = 0;
+step mlock: SELECT pg_advisory_lock(1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step rscan: SELECT iso_scan() AS rows_seen; <waiting ...>
+step wi: INSERT INTO iso_m SELECT g, 'again' FROM generate_series(30001, 40000) g;
+step mm: SELECT busy, dead_rows FROM sift.table_maintain('iso_m');
+busy|dead_rows
+----+---------
+f   |    15000
+(1 row)
+
+step munlock: SELECT pg_advisory_unlock(1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step rscan: <... completed>
+rows_seen
+---------
+    15000
+(1 row)
+
+step mcount: SELECT count(*) AS live FROM iso_m;
+ live
+-----
+25000
+(1 row)
+

@@ -396,48 +396,82 @@ merge_smallest(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 	return n;
 }
 
-/* The next merge: segments of the same tier, else the smallest ones when the directory has too many */
+int			sift_tbl_dead_rewrite_pct = SIFT_TBL_DEAD_PCT;
+
+/* The shared policy leaves the dead segments to merge_most_dead, which ranks them */
+static bool
+no_dead(Relation rel, const SiftSegEntry *e)
+{
+	return false;
+}
+
+/*
+ * The segment of the current layout with the largest share of dead rows, above sift.table_dead_rewrite_pct percent: a rewrite copies the live
+ * rows and frees the dead ones, so what it frees per byte it copies is that share, and a pass that stops early (the budget of the worker) has
+ * freed the most it could. Cleared liveness bits only: the rows a tombstone says are dead count once a pass has cleared them.
+ */
+static int
+merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+	uint64		best_dead = 0,
+				best_docs = 1;
+	int			n = 0;
+
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		const SiftSegEntry *e = &st->dir.segs[i];
+		SiftColSegment *seg;
+		uint64		dead;
+
+		if (e->kind != SIFT_SEG_IMMUTABLE || !(e->flags & SIFT_SEG_DIRTY) || schema_of(rel, st, e)->hash != l->schema->hash)
+			continue;
+		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+		dead = e->ndocs - sift_cseg_live_rows(seg);
+		sift_cseg_close(seg);
+		if (dead * 100 > (uint64) e->ndocs * sift_tbl_dead_rewrite_pct && dead * best_docs > best_dead * e->ndocs)
+		{
+			sel[0] = *e;
+			best_dead = dead;
+			best_docs = e->ndocs;
+			n = 1;
+		}
+	}
+	return n;
+}
+
+/* The next merge: segments of the same tier, else the most dead segment, else the smallest ones when the directory has too many */
 static int
 merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {(uint64) sift_tbl_write_buffer_limit * 1024, SIFT_MERGE_FANIN, sift_tbl_mostly_dead};
+	SiftMergePolicy pol = {(uint64) sift_tbl_write_buffer_limit * 1024, SIFT_MERGE_FANIN, no_dead};
 	int			n = sift_merge_pick(rel, &pol, &st->dir, false, sel);
 
+	if (n == 0)
+		n = merge_most_dead(rel, st, sel);
 	return n > 0 || !dir_pressure(st) ? n : merge_smallest(rel, st, sel);
 }
 
-bool
+uint64
 sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	XidFinal	fin = {.oldest = oldest};
+	uint64		bytes = 0;
 	int			n;
 
 	sift_tbl_refresh(rel, st);
 	n = merge_pick(rel, st, sel);
 	for (int i = 0; i < n; i++)
+	{
 		if (schema_of(rel, st, &sel[i])->hash != l->schema->hash)
-			return false;
+			return 0;
+		bytes += sel[i].bytes;
+	}
 	if (n == 0)
-		return false;
+		return 0;
 	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, sel, n, tbl_col_format(any_vers(sel, n)), merge_freeze, &fin);
 	sift_tbl_refresh(rel, st);
-	return true;
-}
-
-int			sift_tbl_dead_rewrite_pct = SIFT_TBL_DEAD_PCT;
-
-bool
-sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e)
-{
-	SiftColSegment *seg;
-	bool		dead;
-
-	if (!(e->flags & SIFT_SEG_DIRTY))
-		return false;
-	seg = sift_cseg_open(rel, e, CurrentMemoryContext);
-	dead = sift_cseg_live_rows(seg) * 100 < e->ndocs * (100 - sift_tbl_dead_rewrite_pct);
-	sift_cseg_close(seg);
-	return dead;
+	return bytes;
 }
