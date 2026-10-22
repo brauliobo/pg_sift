@@ -20,11 +20,14 @@ concurrency:
 jobs:
   focused:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       TIER: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 'pr' || 'nightly' }}
+      # a pull request or acceptance run: the whole job. The nightly tier (both revisions built at the larger fixture, every case measured, 490 s hosted) counts
+      # from the end of the package install, which took from 18 s to 1172 s on hosted runners
+      BUDGET_SECONDS: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 300 || 1500 }}
       VERIFY_CONTROL: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_control == true && 'true' || 'false' }}
     steps:
       - name: Start end-to-end clock
@@ -33,7 +36,7 @@ jobs:
           echo "ARTIFACTS=$ARTIFACTS" >> "$GITHUB_ENV"
           mkdir -p "$ARTIFACTS"
           date +%s.%N > "$ARTIFACTS/workflow-start"
-          printf 'Elapsed time is the primary metric. Hardware counters are diagnostic only.\n' > "$ARTIFACTS/workflow-summary.md"
+          printf 'Elapsed time is the primary metric.\n' > "$ARTIFACTS/workflow-summary.md"
 
       # PRs are untrusted: no credentials persisted, secrets, PR-target event or merge checkout.
       - uses: actions/checkout@v6
@@ -96,29 +99,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev linux-tools-common linux-tools-generic build-essential python3
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev build-essential python3
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
-
-      - name: Probe hosted hardware counters (diagnostic only)
-        if: steps.scope.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          started=$(date +%s)
-          finish_phase() { echo "hardware-probe $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
-          trap finish_phase EXIT
-          sysctl kernel.perf_event_paranoid kernel.kptr_restrict > "$ARTIFACTS/perf-sysctl-before.log"
-          set +e
-          { sudo sysctl -w kernel.perf_event_paranoid=0; } > "$ARTIFACTS/perf-sysctl-change.log" 2>&1
-          sysctl_status=$?
-          perf --version > "$ARTIFACTS/perf-version.log" 2>&1
-          perf stat -x, -e instructions,cycles -o "$ARTIFACTS/perf-hardware-stat.csv" \
-            python3 -c 'print(sum(i*i for i in range(200000)))' > "$ARTIFACTS/perf-probe.log" 2>&1
-          probe_status=$?
-          set -e
-          sysctl kernel.perf_event_paranoid kernel.kptr_restrict > "$ARTIFACTS/perf-sysctl-after.log"
-          printf '{"sysctl_exit":%s,"hardware_probe_exit":%s,"primary_metric":"elapsed","diagnostic_only":true}\n' \
-            "$sysctl_status" "$probe_status" > "$ARTIFACTS/perf-probe.json"
-          printf '\nHardware probe exit: %s (see raw counter results; diagnostic only).\n' "$probe_status" >> "$ARTIFACTS/workflow-summary.md"
 
       # Both exact SHA builds, isolated libraries/clusters and paired samples run here,
       # with one PG18/compiler/configuration. No matrix or source/object cache.
@@ -132,15 +114,24 @@ jobs:
           started=$(date +%s)
           finish_phase() { echo "driver-build-setup-measure-cleanup $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
           trap finish_phase EXIT
+          [[ $TIER == nightly ]] && date +%s.%N > "$ARTIFACTS/budget-start"
           acceptance=()
           if [[ "$VERIFY_CONTROL" == true ]]; then acceptance+=(--verify-control); fi
+          rc=0
           nice -n 19 python3 bench/steps/perf_gate.py \
             --baseline-ref "$BASELINE_SHA" --candidate-ref "$CANDIDATE_SHA" \
             --groups "$PERF_GROUPS" --output "$ARTIFACTS/gate" --tier "$TIER" \
             --scratch-root "$RUNNER_TEMP/focused-perf-scratch" --port-base 56240 "${acceptance[@]}" \
-            --budget-seconds 300 --workflow-start-seconds "$(cat "$ARTIFACTS/workflow-start")" \
+            --budget-seconds "$BUDGET_SECONDS" --workflow-start-seconds "$(cat "$ARTIFACTS"/budget-start "$ARTIFACTS"/workflow-start 2>/dev/null | head -1)" \
             --cleanup-report-reserve-seconds 30 \
-            2>&1 | tee "$ARTIFACTS/driver.log"
+            2>&1 | tee "$ARTIFACTS/driver.log" || rc=${PIPESTATUS[0]}
+          # exit 2 is an inconclusive measurement: a hosted runner shares its host (12 % of 439 runs), so it is a warning, not a failed run; the acceptance
+          # run exists to prove the gate can tell, and a regression (1) or an error (3) fail either way
+          if [[ $rc == 2 && "$VERIFY_CONTROL" != true ]]; then
+            echo "::warning::inconclusive measurement: $(sed -n 's/^Error: //p' "$ARTIFACTS/gate/summary.md" | head -1) (see the gate summary)"
+            rc=0
+          fi
+          exit "$rc"
 
       - name: Report total elapsed and budget
         if: always()
@@ -153,24 +144,27 @@ jobs:
           import json, os, time
           from pathlib import Path
           root = Path(os.environ['ARTIFACTS'])
-          start = root / 'workflow-start'
+          start = root / 'budget-start'
+          if not start.exists():
+              start = root / 'workflow-start'
           elapsed = time.time() - float(start.read_text()) if start.exists() else None
           code = os.environ['SCOPE_RUN'] == 'true'
-          over = elapsed is not None and elapsed > 300 and code
+          budget = float(os.environ['BUDGET_SECONDS'])
+          over = elapsed is not None and elapsed > budget and code
           result = {'elapsed_seconds_including_checkout_dependencies_build_setup_cleanup': elapsed,
-                    'pr_target_seconds': [180, 300], 'target_exceeded': over,
+                    'budget_seconds': budget, 'budget_exceeded': over,
                     'gate_status': os.environ['GATE_STATUS'], 'code_change': code,
                     'note': 'Driver allowance deducts prior workflow elapsed time and reserves 30s for cleanup/report/upload. This is not a hard end-to-end deadline: dependency steps, in-flight SQL and cleanup can overrun; upload overhead follows.'}
           (root / 'workflow-timing.json').write_text(json.dumps(result, indent=2) + '\n')
           with (root / 'workflow-summary.md').open('a') as out:
               out.write(f'\nJob status: {result["gate_status"]}.\n')
-              out.write(f'Elapsed including checkout/dependencies/build/setup/cleanup: {elapsed} seconds.\n')
+              out.write(f'Elapsed since {start.name}: {elapsed} seconds.\n')
               if not code:
                   out.write('No measurement ran (documentation-only selection or earlier setup failure; see job status).\n')
               elif over:
-                  out.write('TARGET EXCEEDED: 3–5 minute PR target; this is an explicit measured overage.\n')
+                  out.write(f'BUDGET EXCEEDED: {budget:.0f} seconds for the whole job; this is an explicit measured overage.\n')
               else:
-                  out.write('PR budget target: 3–5 minutes; no hosted duration is claimed before this run.\n')
+                  out.write(f'Within the budget of {budget:.0f} seconds for the whole job.\n')
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as out:
               out.write((root / 'workflow-summary.md').read_text())
               summary = root / 'gate/summary.md'
