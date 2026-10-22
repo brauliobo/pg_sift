@@ -673,7 +673,7 @@ heap_str(IndexScanDesc scan, ColScanOpaque *so, int attno, ItemPointer tid, bool
 	{
 		MemoryContext old = MemoryContextSwitchTo(so->cxt);
 
-		so->fetch = table_index_fetch_begin(so->heap);
+		so->fetch = sift_table_index_fetch_begin(so->heap);
 		so->slot = table_slot_create(so->heap, NULL);
 		MemoryContextSwitchTo(old);
 	}
