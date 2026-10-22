@@ -92,6 +92,8 @@
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_START_COST		210000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units, charged 0.6 ms because the arms of a pass open them once, which a selective btree plan does not pay */
 #define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
+#define AGG_ARM_TUPLE		150.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured) */
+#define AGG_ARM_HIDDEN		330.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
@@ -966,6 +968,7 @@ typedef struct CostAcc
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
 	double		gen_cost;
+	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
 	double		zone_kept;
 	double		agg_rows;
@@ -1136,6 +1139,8 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		if (s->agg[i].kind == SAA_GEN)
 			k->gen_cost += k->agg_rows * s->agg[i].gen->cost + k->rows_out * AGG_GEN_GROUP;
 	}
+	for (int a = 0; a < s->narms; a++)
+		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows) + bucket_eval_cost(c, s, k->agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
@@ -1154,13 +1159,25 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
+	double		arm = k->arm_cost * AGG_SCAN_SPEED * cpu_operator_cost,
+				serial = k->scan_cost,
+				setup = parallel_setup_cost * AGG_SETUP_FACTOR;
 
-	k->scan_cost = (k->scan_cost - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+	k->scan_cost = (k->scan_cost + arm - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
-	*startup += parallel_setup_cost * AGG_SETUP_FACTOR;
+	if (arm > 0)
+	{
+		/*
+		 * The price of the path without workers leaves the arms out: the plan competes with the arms alone, whose rows the operators above them
+		 * price below what they cost. The workers take the share of it that they take of the whole work, with the arms in.
+		 */
+		k->scan_cost = serial * (k->scan_cost + setup) / (serial + arm);
+		return;
+	}
+	*startup += setup;
 }
 
 void

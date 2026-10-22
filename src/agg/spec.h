@@ -532,10 +532,10 @@ extern sift_i128 sift_pow10(int e);
 
 /*
  * The specs whose group tables can leave a process (dumped and merged by value) and be reset: plain keys (a column, or an
- * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column). The others
- * (combos, joins, ordered sets, two level arms, grouping sets, numeric and float keys, numeric states, mapped aggregates) keep
- * their state in the leader: the plan asks for no workers and the scan has no lanes. A join to a child plan (a sub-select, VALUES list or
- * function) is run by the leader only: no workers either.
+ * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column, the outer aggregates of
+ * two level arms). The others (ordered sets, numeric and float keys, numeric states, mapped aggregates) keep their state in the leader: the
+ * plan asks for no workers and the scan has no lanes. A join to a child plan (a sub-select, VALUES list or function) is read by the leader,
+ * who shares it with the workers; a child plan run per combination of leaves is the leader's alone: no workers either.
  */
 extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
 
@@ -545,7 +545,7 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 	if (!sift_aggspec_parallel_ok(s))
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64)
+		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64)
 			return true;
 	return false;
 }

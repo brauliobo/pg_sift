@@ -234,6 +234,14 @@ final_checks(AggExec *g, int64 ntuples)
 	for (int i = 0; i < g->spec->naggs; i++)
 		if (g->spec->agg[i].kind == SAA_AVG_F64 && 8.0 * ntuples * g->amax[i] * g->amax[i] >= DBL_MAX)
 			float_overflow_error();
+	for (int k = 0; k < g->spec->narms; k++)
+		for (int i = 0; i < g->spec->arm[k].ninner; i++)
+		{
+			SiftAggKind kind = g->spec->arm[k].inner[i].kind;
+
+			if ((kind == SAA_AVG_F64 || kind == SAA_X_AVG) && 8.0 * ntuples * g->arm[k].amax[i] * g->arm[k].amax[i] >= DBL_MAX)
+				float_overflow_error();
+		}
 }
 
 /*
@@ -330,6 +338,8 @@ scan_items(AggExec *ex)
 	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_item(ex, &item))
 	{
 		scan_item(ex, item);
+		/* the cells of the last row are groups of the item's table */
+		arms_flush(ex);
 		if (ex->lane_serial)
 			lane_fold(ex);
 		else if (ex->shared->ordered)
