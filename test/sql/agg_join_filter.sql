@@ -139,6 +139,7 @@ INSERT INTO ents_far VALUES (1, 'a'), (5001, 'b'), (9000001, 'c'), (14000001, 'd
 VACUUM (FREEZE, ANALYZE) ev_far;
 ANALYZE ents_far;
 SELECT * FROM same($$SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev_far JOIN ents_far e ON e.id = ev_far.dim_a_id GROUP BY 1$$);
+-- no unit holds a histogram of dim_a_id (too many groups): the units left are scanned, and with the free parallel costs set above the workers price lower
 SELECT * FROM same($$SELECT count(*) AS n FROM ev_far WHERE dim_a_id IN (5001, 9000001, 14000001, 3)$$);
 
 -- the cost of the SiftAgg node follows the units the keys leave: two entities cost less than all of them, and less with the filter than without
