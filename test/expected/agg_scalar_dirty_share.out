@@ -47,30 +47,34 @@ INSERT INTO shapes VALUES
 	('scalar where', 'SELECT grp, count(*) FROM items_%s WHERE (doc ->> ''score'')::float8 > 3 GROUP BY grp'),
 	('scalar filter', 'SELECT grp, count(*) FILTER (WHERE (doc ->> ''score'')::float8 > 3) FROM items_%s GROUP BY grp'),
 	('scalar gated', 'SELECT grp, sum((doc ->> ''score'')::float8) FILTER (WHERE grp = 1), avg((doc ->> ''score'')::float8) FILTER (WHERE grp = 2) FROM items_%s GROUP BY grp'),
+	('elements',  'SELECT p ->> ''cat'' c, count(*), avg((p ->> ''score'')::float8) FROM items_%s, jsonb_array_elements(doc -> ''parts'') p GROUP BY 1'),
 	('list',      'SELECT o.cat, count(*), avg(o.score) FROM items_%s, jsonb_to_recordset(doc -> ''parts'') AS o(cat text, score float8) GROUP BY o.cat');
 SELECT k AS every, s.n, pushed(format(s.q, k)) AS pushed, reread(format(s.q, k)) AS reread, same(format(s.q, k)) AS result
 FROM unnest(ARRAY[1000, 33, 2]) k, shapes s ORDER BY k DESC, s.n;
  every |       n       | pushed | reread | result 
 -------+---------------+--------+--------+--------
+  1000 | elements      | t      |     20 | same
   1000 | list          | t      |     20 | same
   1000 | scalar avg    | t      |     20 | same
   1000 | scalar filter | t      |     20 | same
   1000 | scalar gated  | t      |     20 | same
   1000 | scalar max    | t      |     20 | same
   1000 | scalar where  | t      |     20 | same
+    33 | elements      | t      |    606 | same
     33 | list          | t      |    606 | same
     33 | scalar avg    | t      |    606 | same
     33 | scalar filter | t      |    606 | same
     33 | scalar gated  | t      |    606 | same
     33 | scalar max    | t      |    606 | same
     33 | scalar where  | t      |    606 | same
+     2 | elements      | t      |  10000 | same
      2 | list          | t      |  10000 | same
      2 | scalar avg    | t      |  10000 | same
      2 | scalar filter | t      |  10000 | same
      2 | scalar gated  | t      |  10000 | same
      2 | scalar max    | t      |  10000 | same
      2 | scalar where  | t      |  10000 | same
-(18 rows)
+(21 rows)
 
 -- at the server's own costs the plan follows the share: the scan while the rows it reads again cost less than the normal plan does, the normal plan
 -- (and its answer) past a share the statistics' sample of the flagged units tells

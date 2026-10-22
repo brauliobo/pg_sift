@@ -1,16 +1,18 @@
 Parsed test spec with 2 sessions
 
-starting permutation: s1prep s2num s1io s1wh s1whg s1jc s1end
+starting permutation: s1prep s2num s1io s1wh s1whg s1el s1jc s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -42,7 +44,18 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
-step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5'));
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5', 'parts', jsonb_build_array(jsonb_build_object('score', '7.5'))));
 step s1io: EXECUTE io;
 grp|     s
 ---+------
@@ -66,6 +79,14 @@ grp|  n
   2|400
 (2 rows)
 
+step s1el: EXECUTE el;
+grp|                 a
+---+------------------
+  0|3.0067466266866565
+  1| 2.998500749625187
+  2| 3.001499250374813
+(3 rows)
+
 step s1jc: EXECUTE jc;
 ERROR:  cannot cast jsonb string to type double precision
 step s1end: ROLLBACK; DEALLOCATE ALL;
@@ -76,11 +97,13 @@ step s1prep: BEGIN;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -112,7 +135,18 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
-step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1io: EXECUTE io;
 ERROR:  invalid input syntax for type double precision: "x"
 step s1end: ROLLBACK; DEALLOCATE ALL;
@@ -123,11 +157,13 @@ step s1prep: BEGIN;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -159,7 +195,18 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
-step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1ga: EXECUTE ga;
 grp|   s
 ---+----
@@ -172,17 +219,19 @@ step s1fl: EXECUTE fl;
 ERROR:  invalid input syntax for type double precision: "x"
 step s1end: ROLLBACK; DEALLOCATE ALL;
 
-starting permutation: s1prep s2num s1ga s1fl s1end
+starting permutation: s1prep s2text s1el s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -214,7 +263,78 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
-step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5'));
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
+step s1el: EXECUTE el;
+ERROR:  invalid input syntax for type double precision: "x"
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2num s1ga s1fl s1end
+step s1prep: BEGIN;
+		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
+		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE wh;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
+QUERY PLAN                                    
+----------------------------------------------
+Sort                                          
+  Sort Key: grp                               
+  ->  Custom Scan (SiftAgg)                   
+        Index: iso_sc_col                     
+        Filters: doc.v > '3'::double precision
+        Group Keys: grp                       
+        Pushed Aggregates: count(*)           
+(7 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5', 'parts', jsonb_build_array(jsonb_build_object('score', '7.5'))));
 step s1ga: EXECUTE ga;
 grp|   s
 ---+----
@@ -239,11 +359,13 @@ step s1prep: BEGIN;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -275,7 +397,18 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
-step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1whg: EXECUTE whg;
 grp|  n
 ---+---
@@ -287,17 +420,19 @@ step s1wh: EXECUTE wh;
 ERROR:  invalid input syntax for type double precision: "x"
 step s1end: ROLLBACK; DEALLOCATE ALL;
 
-starting permutation: s1prep s2begin s2text s1io s1jc s1wh s2abort s1io s1wh s1end
+starting permutation: s1prep s2begin s2text s1io s1jc s1wh s1el s2abort s1io s1wh s1el s1end
 step s1prep: BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
 		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el;
 QUERY PLAN                                    
 ----------------------------------------------
 Sort                                          
@@ -329,8 +464,19 @@ Sort
         Pushed Aggregates: sum(doc.v)
 (6 rows)
 
+QUERY PLAN                                       
+-------------------------------------------------
+Sort                                             
+  Sort Key: iso_sc.grp                           
+  ->  Custom Scan (SiftAgg)                      
+        Index: iso_sc_col                        
+        Group Keys: grp                          
+        Pushed Aggregates: avg(doc.parts[].score)
+        Unnests: yes                             
+(7 rows)
+
 step s2begin: BEGIN;
-step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1io: EXECUTE io;
 grp|   s
 ---+----
@@ -355,6 +501,14 @@ grp|  n
   2|400
 (3 rows)
 
+step s1el: EXECUTE el;
+grp|                a
+---+-----------------
+  0|                3
+  1|2.998500749625187
+  2|3.001499250374813
+(3 rows)
+
 step s2abort: ROLLBACK;
 step s1io: EXECUTE io;
 grp|   s
@@ -370,6 +524,14 @@ grp|  n
   0|400
   1|400
   2|400
+(3 rows)
+
+step s1el: EXECUTE el;
+grp|                a
+---+-----------------
+  0|                3
+  1|2.998500749625187
+  2|3.001499250374813
 (3 rows)
 
 step s1end: ROLLBACK; DEALLOCATE ALL;
