@@ -26,6 +26,7 @@
 #include "col/am.h"
 #include "agg/colsrc.h"
 #include "col/pagg.h"
+#include "col/setsum.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
@@ -39,6 +40,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
 PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
+PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
@@ -1111,6 +1113,169 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/*
+ * sift._test_col_set_damage(index, units): the small-set summaries of the first units of the index, opened as stored, cut at every length, with
+ * each byte set to some other values (one at a time) and with the fields of the header the decoder must check set by name (flag bits, kind, count,
+ * width, probes, bits, order). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse a cut one and each named
+ * damage; a damaged blob it accepts is a valid summary of other keys, which the verifier's comparison with the chunk (sift_cset_matches) refuses.
+ */
+Datum
+sift_test_col_set_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	int			maxunits = PG_GETARG_INT32(1);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	int64		blobs = 0,
+				exact = 0,
+				bloom = 0,
+				intact = 0,
+				matching = 0,
+				cut = 0,
+				cut_accepted = 0,
+				named = 0,
+				named_accepted = 0,
+				damaged = 0,
+				accepted = 0,
+				missed = 0;
+	Datum		v[12];
+	bool		nulls[12] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (blobs < maxunits && test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					len,
+					rlen;
+		const uint8 *rec;
+		SiftCUnitView uv;
+		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u))
+			continue;
+		rec = sift_cseg_unit(seg, u, &rlen);
+		if (!sift_cunit_parse(rec, rlen, sc, &uv))
+			elog(ERROR, "unit does not parse");
+		for (int c = 0; c < sc->ncols && blobs < maxunits; c++)
+		{
+			const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+			uint8	   *copy,
+					   *orig;
+			SiftCSet	s;
+			SiftCChunk	ch;
+			int64	   *keys;
+			uint32		nd;
+			SiftCPaggCol col;
+
+			if (blob == NULL)
+				continue;
+			blobs++;
+			orig = palloc(len);
+			memcpy(orig, blob, len);		/* the next call on seg reuses the buffer */
+			copy = palloc(len);
+			if (!sift_cunit_chunk(&uv, c, &ch))
+				elog(ERROR, "unit has no chunk");
+			keys = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
+			sift_cchunk_decode(&ch, keys);
+			col = (SiftCPaggCol) {keys, ch.nulls, ch.ovf, ch.n, true};
+			{
+				int64	   *k2 = palloc(Max(ch.n, 1) * sizeof(int64));
+
+				nd = sift_cset_keys(&col, k2);
+				pfree(keys);
+				keys = k2;
+			}
+			if (sift_cset_open(orig, len, &s))
+			{
+				intact++;
+				exact += s.kind == SIFT_CSET_EXACT;
+				bloom += s.kind == SIFT_CSET_BLOOM;
+				matching += sift_cset_matches(&s, keys, nd);
+			}
+			for (uint32 l = 0; l < len; l++)
+			{
+				memcpy(copy, orig, l);
+				cut++;
+				cut_accepted += sift_cset_open(copy, l, &s);
+			}
+			for (uint32 i = 0; i < len; i++)
+				for (int k = 0; k < lengthof(vals); k++)
+				{
+					memcpy(copy, orig, len);
+					if (copy[i] == vals[k])
+						continue;
+					copy[i] = vals[k];
+					damaged++;
+					if (sift_cset_open(copy, len, &s))
+					{
+						accepted++;
+						missed += sift_cset_matches(&s, keys, nd);
+					}
+				}
+			/* the named damages of the header: flag bits, unknown kinds, counts, and (exact) width, order; (bloom) probes and bits */
+			for (int f = 0; f < 11; f++)
+			{
+				uint32		n = 0;
+				uint64		big = UINT64_MAX;
+
+				memcpy(copy, orig, len);
+				switch (f)
+				{
+					case 0: copy[2] = 1; break;							/* flag bits */
+					case 1: copy[3] = 0x80; break;
+					case 2: copy[0] = 0; break;							/* kind */
+					case 3: copy[0] = 3; break;
+					case 4: memcpy(copy + 4, &n, 4); break;				/* no keys */
+					case 5: n = UINT32_MAX; memcpy(copy + 4, &n, 4); break;	/* a count that overflows 32 bits when multiplied */
+					case 6: copy[1] = 0; break;							/* width or probes 0 */
+					case 7: copy[1] = orig[0] == SIFT_CSET_EXACT ? 3 : 17; break;
+					case 8: memcpy(copy + 8, &big, 8); break;			/* the bits of a filter; the base of an exact set (whose first offset then is not its smallest key) is not damage */
+					case 9:
+						if (orig[0] == SIFT_CSET_EXACT)					/* unsorted: the first two offsets swapped, the larger first */
+						{
+							if (orig[1] > 8 || len < SIFT_CSET_HDR + 2 * orig[1])
+								continue;
+							memcpy(copy + SIFT_CSET_HDR, orig + SIFT_CSET_HDR + orig[1], orig[1]);
+							memcpy(copy + SIFT_CSET_HDR + orig[1], orig + SIFT_CSET_HDR, orig[1]);
+						}
+						else
+							memset(copy + SIFT_CSET_HDR, 0, len - SIFT_CSET_HDR);	/* an empty filter */
+						break;
+					default:											/* one byte of the body gone */
+						named++;
+						named_accepted += sift_cset_open(copy, len - 1, &s);
+						continue;
+				}
+				if (f == 8 && orig[0] == SIFT_CSET_EXACT)
+					continue;
+				named++;
+				named_accepted += sift_cset_open(copy, len, &s);
+			}
+			pfree(orig);
+			pfree(copy);
+			pfree(keys);
+		}
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(blobs);
+	v[1] = Int64GetDatum(exact);
+	v[2] = Int64GetDatum(bloom);
+	v[3] = Int64GetDatum(intact);
+	v[4] = Int64GetDatum(matching);
+	v[5] = Int64GetDatum(cut);
+	v[6] = Int64GetDatum(cut_accepted);
+	v[7] = Int64GetDatum(named);
+	v[8] = Int64GetDatum(named_accepted);
+	v[9] = Int64GetDatum(damaged);
+	v[10] = Int64GetDatum(accepted);
+	v[11] = Int64GetDatum(missed);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 /* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */

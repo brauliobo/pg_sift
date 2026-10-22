@@ -7,6 +7,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
 
@@ -234,6 +235,29 @@ zone_equal(const SiftColDef *def, const SiftCZone *a, const SiftCZone *b)
 	return def->store != SIFT_COLS_STR || memcmp(a->set, b->set, sizeof(a->set)) == 0;
 }
 
+/* The small-set summary of leaf c in unit u, when it has one, is what its keys give (an exact set holds them all and no other, a filter their bits and none else) */
+static void
+verify_set(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	uint32		len,
+				nd;
+	const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+	SiftCSet	s;
+	int64	   *keys;
+
+	if (blob == NULL)
+		return;
+	if (!sift_cset_open(blob, len, &s))
+		corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", c, u);
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a small-set summary in unit %u, whose chunk has no codes.", c, u);
+	keys = palloc(Max(col->n, 1) * sizeof(int64));
+	nd = sift_cset_keys(col, keys);
+	if (!sift_cset_matches(&s, keys, nd))
+		corrupt(seg, "The small-set summary of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(keys);
+}
+
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
 verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
@@ -298,6 +322,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 			if (sa.sum != la.sum || sa.sumsq != la.sumsq || sa.flags != la.flags)
 				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
 		}
+		verify_set(seg, c, u, &pcol[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);

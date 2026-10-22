@@ -159,7 +159,16 @@ extern void sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec,
 extern bool sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */
-extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep);
+extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
+/*
+ * The small-set summary of the leaf alone on the units [ulo, uhi): clears the units it shows cannot hold a match, and sets their bits in
+ * setcut (nsb bits, NULL: not told), which sift_cseg_prune does for the tests it takes; the units the tests before it kept are those it can count as its own.
+ */
+extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
+/* The bytes the summaries of the segment take */
+extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
+/* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
+extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);
 
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);

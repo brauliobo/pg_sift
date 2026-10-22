@@ -537,6 +537,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 			sift_topn_add_skipped(ex->topn, d->n_skipped);
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
+		par->cc.units_set_pruned += d->cc.units_set_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
 		par->cc.rechecked += d->cc.rechecked;

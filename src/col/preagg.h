@@ -96,6 +96,8 @@ typedef struct SiftCPaggSpec
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
+	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that get a small-set summary in every unit (option set_columns, column format minor 8; col/setsum.h) */
+	uint16		set_limit;				/* up to this many distinct keys a unit keeps exactly, a filter beyond */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;

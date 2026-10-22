@@ -12,6 +12,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
 #include "core/cmp.h"
@@ -376,6 +377,9 @@ sift_cseg_kinds_exact(SiftColSegment *seg)
 	return true;
 }
 
+#define SET_STATS_UNITS	64				/* units of a segment the planner's statistics look at for a leaf's summaries */
+static const SetsLeaf *set_leaf(SiftColSegment *seg, int col);
+
 void
 sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 {
@@ -416,6 +420,27 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->inl |= z->any_inl;
 		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
 	}
+	if (set_leaf(seg, col) != NULL)
+	{
+		uint32		stride = Max(seg->nsb / SET_STATS_UNITS, 1);
+
+		for (uint32 u = 0; u < seg->nsb; u += stride)
+		{
+			uint32		len,
+						n;
+			const uint8 *blob = sift_cseg_set(seg, col, u, &len);
+
+			acc->set_sampled++;
+			if (blob != NULL && len >= SIFT_CSET_HDR)
+			{
+				memcpy(&n, blob + 4, sizeof(n));
+				acc->set_units++;
+				acc->set_keys += n;
+			}
+		}
+	}
+	else
+		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
 }
 
 void
@@ -518,6 +543,9 @@ pagg_header(SiftColSegment *seg)
 		if (ver > 1 && PAGG_ECUBEDIR(h) &&
 			(PAGG_ECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_ECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_ECUBE_BYTES(h))))
 			corrupt(seg, "The element cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_ECUBE_BYTES(h)), ULL(PAGG_ECUBEDIR(h)));
+		if (ver > 2 && PAGG_SETS(h) &&
+			(PAGG_SETS(h) % 8 != 0 || PAGG_SETS_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_SETS(h), PAGG_SETS_BYTES(h), 0)))
+			corrupt(seg, "The small-set summaries (%llu bytes at %llu) lie outside the section.", ULL(PAGG_SETS_BYTES(h)), ULL(PAGG_SETS(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -641,10 +669,179 @@ sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
 }
 
 uint64
+sift_cseg_set_bytes(SiftColSegment *seg)
+{
+	const PaggHeader *h = pagg_header(seg);
+
+	return h->version > 2 ? PAGG_SETS_BYTES(h) : 0;
+}
+
+uint64
 sift_cseg_preagg_bytes(SiftColSegment *seg)
 {
 	pagg_header(seg);
-	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end;
+	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg);
+}
+
+/* ---------- small-set summaries ---------- */
+
+/* The record of leaf col in the section, read and checked with the whole section on first use; NULL when the leaf has no summary in any unit */
+static const SetsLeaf *
+set_leaf(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h;
+	int			ncols = seg->schema->ncols;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_SETS)
+		return NULL;
+	h = pagg_header(seg);
+	if (h->version < 3 || !PAGG_SETS(h))
+		return NULL;
+	if (pv->sets == NULL)
+	{
+		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
+		uint64		at = s->off + pv->pagg_end + PAGG_SETS(h),
+					room = PAGG_SETS_BYTES(h),
+					lowest;
+		SetsHeader	sh;
+		SetsLeaf   *rec,
+				   *sets;
+		int			prev = -1;
+
+		seg_read(seg, at, sizeof(sh), &sh);
+		if (sh.magic != SETS_MAGIC || sh.version != 1 || sh.nsb != seg->nsb || sh.nleaves < 1 || sh.nleaves > (uint32) ncols ||
+			sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf) > room)
+			corrupt(seg, "The small-set summaries start with 0x%08x, version %u, %u leaves, %u units.", sh.magic, sh.version, sh.nleaves, sh.nsb);
+		rec = palloc(sh.nleaves * sizeof(SetsLeaf));
+		seg_read(seg, at + sizeof(sh), sh.nleaves * sizeof(SetsLeaf), rec);
+		lowest = PAGG_SETS(h) + sizeof(sh) + sh.nleaves * sizeof(SetsLeaf);
+		sets = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(SetsLeaf));
+		for (uint32 i = 0; i < sh.nleaves; i++)
+		{
+			const SetsLeaf *r = &rec[i];
+			uint64		rel = r->dir_off - PAGG_SETS(h);
+
+			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM)) || !sift_cpagg_dim_ok(seg->schema, &seg->schema->cols[r->leaf]))
+				corrupt(seg, "The small-set record %u names leaf %u, which cannot have one.", i, r->leaf);
+			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
+				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
+				corrupt(seg, "The small-sets of leaf %u (%llu bytes at %llu) lie outside the section.", r->leaf, ULL(r->bytes), ULL(r->dir_off));
+			lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
+			prev = r->leaf;
+			sets[r->leaf] = *r;
+		}
+		pfree(rec);
+		pv->setdir = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
+		pv->sets = sets;
+	}
+	return pv->sets[col].dir_off ? &pv->sets[col] : NULL;
+}
+
+const uint8 *
+sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
+{
+	const SetsLeaf *sl = set_leaf(seg, col);
+	SegPriv    *pv = PRIV(seg);
+
+	*len = 0;
+	return sl ? unit_blob(seg, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
+}
+
+#define SET_PROBE_KEYS	64				/* a LUT of more matches is tested through the summaries that list their keys, not probed key by key */
+#define SET_PROBE_WORK	(4 * 1024 * 1024)	/* IN members times the units to test, past which the summaries are not read */
+
+/* Can a unit whose keys are s hold a row that passes t; codes: the keys of a LUT's matches when there are few (ncodes), else all of them are unknown */
+static bool
+set_may_pass(const SiftCSet *s, const SiftCTest *t, const int64 *codes, int ncodes)
+{
+	switch (t->kind)
+	{
+		case SIFT_CT_RANGE:
+			return sift_cset_may_hold(s, t->lo, t->hi);
+		case SIFT_CT_SET:
+			for (uint32 i = 0; i < t->nset; i++)
+				if (sift_cset_may_hold(s, t->set[i], t->set[i]))
+					return true;
+			return false;
+		default:					/* LUT */
+			if (ncodes >= 0)
+			{
+				for (int i = 0; i < ncodes; i++)
+					if (sift_cset_may_hold(s, codes[i], codes[i]))
+						return true;
+				return false;
+			}
+			if (s->kind == SIFT_CSET_EXACT)
+			{
+				int64		member[SIFT_CSET_LIMIT_MAX];
+
+				sift_cset_members(s, member);
+				for (uint32 i = 0; i < s->n; i++)
+					if (member[i] >= 0 && (uint64) member[i] < t->lutbits && sift_col_bit_test(t->lut, (uint32) member[i]))
+						return true;
+				return false;
+			}
+			return true;
+	}
+}
+
+/* Clears the bits of the units [ulo, uhi) whose summary shows that no key can pass t, and sets their bits in setcut (NULL: not told). Units with overflow values or inline strings are left alone */
+void
+sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
+{
+	const ZoneArrays *z;
+	const SetsLeaf *sl;
+	int64		codes[SET_PROBE_KEYS];
+	int			ncodes = -1;
+	uint32		todo = 0;
+
+	if (t->kind != SIFT_CT_RANGE && t->kind != SIFT_CT_SET && t->kind != SIFT_CT_LUT)
+		return;
+	if (t->kind == SIFT_CT_LUT && t->lo <= t->hi)
+	{
+		/* the matches, when few, are keys to probe in a filter; the bounds of the LUT hold them all */
+		int			m = 0;
+
+		for (int64 c = Max(t->lo, 0); c <= t->hi && c < t->lutbits && m <= SET_PROBE_KEYS; c++)
+			if (sift_col_bit_test(t->lut, (uint32) c))
+			{
+				if (m < SET_PROBE_KEYS)
+					codes[m] = c;
+				m++;
+			}
+		ncodes = m <= SET_PROBE_KEYS ? m : -1;
+	}
+	if ((sl = set_leaf(seg, col)) == NULL)
+		return;
+	/* a filter answers only a key: a range of more keys or a LUT of many matches is left to the zones when the leaf has no exact set */
+	if (!(sl->flags & SETS_EXACT) && ((t->kind == SIFT_CT_RANGE && (uint64) t->hi - (uint64) t->lo >= SIFT_CSET_PROBES) || (t->kind == SIFT_CT_LUT && ncodes < 0)))
+		return;
+	for (uint32 u = ulo; u < uhi; u++)
+		todo += (keep[u / 64] >> (u % 64)) & 1;
+	if (t->kind == SIFT_CT_SET && (uint64) t->nset * todo > SET_PROBE_WORK)
+		return;
+	z = zone_arrays(seg, col);
+	for (uint32 u = ulo; u < uhi; u++)
+	{
+		const uint8 *blob;
+		uint32		len;
+		SiftCSet	s;
+
+		if (!(keep[u / 64] >> (u % 64) & 1) || (z->flags[u] & (SIFT_COLZ_OVERFLOW | SIFT_COLZ_INLINE)) || z->nnull[u] >= z->nvals[u])
+			continue;
+		blob = sift_cseg_set(seg, col, u, &len);
+		if (blob == NULL)
+			continue;
+		if (!sift_cset_open(blob, len, &s))
+			corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
+		if (!set_may_pass(&s, t, codes, ncodes))
+		{
+			keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
+			if (setcut)
+				setcut[u / 64] |= UINT64CONST(1) << (u % 64);
+		}
+	}
 }
 
 uint32
@@ -739,7 +936,7 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
 }
 
 void
-sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
+sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
 {
 	const ZoneArrays *z = zone_arrays(seg, col);
 	uint32		n = seg->nsb,
@@ -768,11 +965,13 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set, n, t->fold, keep);
+			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
 			break;
 		case SIFT_CT_LUT:
 			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set, n, t->fold, keep);
+			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
 			break;
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:

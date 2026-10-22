@@ -17,7 +17,9 @@
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates */
 
 #define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
 
@@ -64,6 +66,8 @@ zone_block_size(const SiftColDef *def, uint32 nsb)
  * directory (u64 offset of each unit's blob, nsb + 1 entries) and the blobs. Offsets are from the start of the header.
  * Version 2 (column format minor 4) adds two entries after the offsets of the sums, the offset of the element directory and its blob bytes,
  * and after the cubes that directory (8-aligned) and the element blobs, laid out like the cubes.
+ * Version 3 (column format minor 8) adds two more, the offset of the small-set summaries and their bytes (0: none): a SetsHeader, a SetsLeaf per
+ * leaf that has them, then per leaf a directory of nsb + 1 offsets and the blobs, laid out like the cubes (offsets from the start of the header).
  */
 typedef struct PaggHeader
 {
@@ -76,9 +80,32 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
+#define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
+#define PAGG_SETS_BYTES(h)		((h)->lagg_off[(h)->ncols + 3])
+
+#define SETS_EXACT		0x1
+#define SETS_BLOOM		0x2
+
+typedef struct SetsHeader
+{
+	uint32		magic;
+	uint32		version;		/* 1 */
+	uint32		nleaves;
+	uint32		nsb;
+} SetsHeader;
+
+typedef struct SetsLeaf
+{
+	uint32		leaf;			/* ascending */
+	uint32		flags;			/* SETS_EXACT, SETS_BLOOM: the kinds of blob some unit has (a hint: a test no filter can answer reads no blob of a leaf with only filters) */
+	uint64		dir_off;		/* the leaf's directory, from the start of the pre-aggregates, 8-aligned */
+	uint64		bytes;			/* the blobs after it */
+} SetsLeaf;
+
+StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-set section is made of 16 and 24 byte records");
 
 /* One INT leaf's sums: sum_lo, sum_hi, sumsq_lo, sumsq_hi (u64 each), flags (u32), all over the units */
 static inline Size
@@ -116,6 +143,10 @@ typedef struct SegPriv
 	uint8	   *ecubebuf;
 	Size		ecubecap;
 	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
+	SetsLeaf   *sets;			/* [ncols] the small-set record of each leaf (dir_off 0: none), read on first use */
+	uint64    **setdir;			/* [ncols] its directory, once read */
+	uint8	   *setbuf;
+	Size		setcap;
 	Size		vers_at;		/* offset of the version section in the DOCMAP section; vers_len 0: there is none */
 	Size		vers_len;
 	VersUnit   *vu;				/* its directory of units, read on first use */

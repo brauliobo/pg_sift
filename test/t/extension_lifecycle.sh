@@ -216,6 +216,16 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
 	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
 		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
+	# minor 10 segments (the small-set summary of a leaf; opt-in) join an index of minor 3 segments: the units written before are read, the others skip by their summary, the results are the heap's
+	q life upg "CREATE TABLE cols8 (id int, grp int, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols8_col ON cols8 USING sift_col (id, grp, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols8_col SET (set_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols8_col')" >/dev/null
+	S8Q="SELECT count(*) || ':' || sum(v) FROM cols8 WHERE grp = 7919"
+	S8OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S8Q" | tail -n 1)
+	check "an index with minor 3 and minor 10 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('cols8_col') WHERE kind = 'immutable'")" == 3,10
+	check "the index with minor 3 and minor 10 segments verifies and answers an equality as the heap" test "$(q life upg "SELECT sift.col_verify('cols8_col', true)" \
+		"SET sift.enable_agg = on" "$S8Q" | tail -n 1)" == "$S8OFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does

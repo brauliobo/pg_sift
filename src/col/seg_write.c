@@ -7,8 +7,18 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
+
+/* The small-set summaries of one leaf: the blobs of its units one after the other and where each starts */
+typedef struct SetAcc
+{
+	StringInfoData blobs;
+	uint64	   *off;			/* [capsb + 1]; unit u's blob is blobs[off[u], off[u + 1]) */
+	bool		any;			/* some unit has one */
+	uint32		kinds;			/* SETS_EXACT, SETS_BLOOM: the kinds of blob the units have */
+} SetAcc;
 
 struct SiftColSegWriter
 {
@@ -35,7 +45,9 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
-	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 8 a unit the rollup of its rows */
+	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf */
+	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
+	bool		anysets;
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -147,6 +159,51 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			memmove(w->pagg.rollup, w->pagg.rollup + 1, w->pagg.nrollups * sizeof(SiftCPaggRollup));
 		}
 	}
+	/* a leaf asks for its small-set summary: minor 9 when some unit gets one (sift_colw_finish) */
+	if (w->setting >= SIFT_COL_FORMAT_SETS && w->set == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (spec->set[c])
+			{
+				if (w->set == NULL)
+					w->set = palloc0(w->schema->ncols * sizeof(SetAcc));
+				initStringInfo(&w->set[c].blobs);
+				w->set[c].off = palloc0(((Size) w->capsb + 1) * sizeof(uint64));
+			}
+		MemoryContextSwitchTo(old);
+	}
+}
+
+/* The small-set summary of each leaf that asks for one, from the keys of the unit just encoded (in the segment's codes for a dictionary leaf; none for an inline one) */
+static void
+add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols)
+{
+	int64	   *keys = NULL;
+
+	for (int c = 0; w->set && c < w->schema->ncols; c++)
+	{
+		SetAcc	   *a = &w->set[c];
+		uint32		nd;
+
+		if (a->blobs.data == NULL)
+			continue;
+		a->off[w->nsb] = a->blobs.len;
+		if (cols[c].ready && cols[c].n > 1)
+		{
+			keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
+			nd = sift_cset_keys(&cols[c], keys);
+			if (sift_cset_build(keys, nd, w->pagg.set_limit ? w->pagg.set_limit : SIFT_CSET_LIMIT, &a->blobs))
+			{
+				a->any = w->anysets = true;
+				a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CSET_EXACT ? SETS_EXACT : SETS_BLOOM;
+			}
+		}
+		a->off[w->nsb + 1] = a->blobs.len;
+	}
+	if (keys)
+		pfree(keys);
 }
 
 /*
@@ -173,7 +230,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		const SiftColDef *def = &w->schema->cols[c];
 
 		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
-		if (def->store == SIFT_COLS_STR && dim[c] && !w->inl[c])
+		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data)) && !w->inl[c])
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -188,6 +245,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
+	add_sets(w, cols);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
 			pfree(tk[c]);
@@ -245,9 +303,9 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 
 	if (!sift_cbatch_kinds_exact(b))
 	{
-		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7 and 9 promise complete kinds */
-		if (w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH)
-			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", w->format);
+		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9 and 10 promise complete kinds */
+		if ((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_MONTH) || w->set)
+			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		/* a schema with a month dim has no leaf with kinds to lose: the minor stays */
 		if (w->format != SIFT_COL_FORMAT_MONTH)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
@@ -262,6 +320,9 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->ecubeoff = repalloc_huge(w->ecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		for (int c = 0; w->set && c < ncols; c++)
+			if (w->set[c].off)
+				w->set[c].off = repalloc_huge(w->set[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 		w->vunit = repalloc_huge(w->vunit, w->capsb * sizeof(VersUnit));
 		memset(w->vunit + w->capsb / 2, 0, w->capsb / 2 * sizeof(VersUnit));
@@ -345,6 +406,52 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	pfree(offs);
 }
 
+/* The records of the leaves that have small-set summaries and where the section ends up, from at (8-aligned, from the start of the header); fills the header's entries */
+static SetsLeaf *
+layout_sets(SiftColSegWriter *w, PaggHeader *h, Size at, int *nleaves)
+{
+	int			n = 0;
+	SetsLeaf   *sl = palloc0(w->schema->ncols * sizeof(SetsLeaf));
+	Size		start = at;
+
+	for (int c = 0; c < w->schema->ncols; c++)
+		if (w->set[c].any)
+			n++;
+	at += sizeof(SetsHeader) + n * sizeof(SetsLeaf);
+	n = 0;
+	for (int c = 0; c < w->schema->ncols; c++)
+		if (w->set[c].any)
+		{
+			at = ALIGN8(at);
+			sl[n++] = (SetsLeaf) {c, w->set[c].kinds, at, w->set[c].blobs.len};
+			at += (w->nsb + 1) * sizeof(uint64) + w->set[c].blobs.len;
+		}
+	PAGG_SETS(h) = start;
+	PAGG_SETS_BYTES(h) = ALIGN8(at) - start;
+	*nleaves = n;
+	return sl;
+}
+
+static void
+write_sets(SiftColSegWriter *w, SetsLeaf *sl, int n)
+{
+	SetsHeader	sh = {SETS_MAGIC, 1, n, w->nsb};
+
+	sw_pad8(w->sw);
+	sift_sw_write(w->sw, &sh, sizeof(sh));
+	sift_sw_write(w->sw, sl, n * sizeof(SetsLeaf));
+	for (int i = 0; i < n; i++)
+	{
+		const SetAcc *a = &w->set[sl[i].leaf];
+
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, a->off, (Size) (w->nsb + 1) * sizeof(uint64));
+		sift_sw_write(w->sw, a->blobs.data, a->blobs.len);
+	}
+	sw_pad8(w->sw);
+	pfree(sl);
+}
+
 static void
 write_pagg(SiftColSegWriter *w)
 {
@@ -354,6 +461,8 @@ write_pagg(SiftColSegWriter *w)
 	Size		hsz = PAGG_HDR_SIZE(ver, ncols),
 				at = hsz;
 	PaggHeader *h = palloc0(hsz);
+	SetsLeaf   *sets = NULL;
+	int			nsets = 0;
 
 	h->magic = PAGG_MAGIC;
 	h->version = ver;
@@ -375,7 +484,10 @@ write_pagg(SiftColSegWriter *w)
 	{
 		PAGG_ECUBEDIR(h) = at;
 		PAGG_ECUBE_BYTES(h) = w->ecube.len;
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->ecube.len);
 	}
+	if (ver > 2 && w->anysets)
+		sets = layout_sets(w, h, at, &nsets);
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
 	{
@@ -418,6 +530,8 @@ write_pagg(SiftColSegWriter *w)
 		sift_sw_write(w->sw, w->ecubeoff, (Size) (nsb + 1) * sizeof(uint64));
 		sift_sw_write(w->sw, w->ecube.data, w->ecube.len);
 	}
+	if (sets)
+		write_sets(w, sets, nsets);
 	pfree(h);
 }
 
@@ -507,6 +621,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->nsb == 0)
 		elog(ERROR, "sift_col: a segment needs at least one unit");
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
+	if (w->anysets)
+		w->format = Max(w->format, SIFT_COL_FORMAT_SETS);
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	write_dicts(w, &h.sections[SIFT_SEC_DICT]);
 	write_zones(w, &h.sections[SIFT_SEC_DICTIDX]);
