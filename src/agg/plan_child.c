@@ -33,11 +33,11 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/tlist.h"
 #include "optimizer/paramassign.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
-#include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
@@ -396,6 +396,32 @@ first_filter_bad(Node *n, void *context)
 }
 
 /*
+ * The ORDER BY of a first-row child: columns of the table (integer, date, timestamp) in either direction, which put the rows of a key in an order
+ * that holds no tie when a unique index holds the key and these columns.
+ */
+static bool
+first_order(Query *q, SiftAggFirst *f)
+{
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		Var		   *v = (Var *) strip_relabel((Node *) get_sortgroupclause_tle(sgc, q->targetList)->expr);
+		Oid			lt,
+					rt;
+		int			cmp = builtin_cmp(sgc->sortop, &lt, &rt);
+
+		if (f->nord == SIFT_AGG_MAX_FORD || !IsA(v, Var) || v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 ||
+			(cmp != SCMP_LT && cmp != SCMP_GT) || lt != v->vartype || rt != v->vartype || v->vartype == BOOLOID ||
+			!sift_aggspec_integer_type(v->vartype))
+			return false;
+		f->ordatt[f->nord] = v->varattno;
+		f->ordtype[f->nord] = v->vartype;
+		f->orddesc[f->nord] = cmp == SCMP_GT;
+		f->ordnullsfirst[f->nord++] = sgc->nulls_first;
+	}
+	return true;
+}
+
+/*
  * `SELECT columns FROM table WHERE column = parameter [AND ...] LIMIT 1` over a table that holds each key once (a unique index on columns
  * among those compared) returns the key's row, whatever plan it has: the scan can read the table as a lookup table (agg/first.c). Anything
  * else the query does (an order, a second table, an offset, a row lock, a condition that is not a comparison with a constant or a null test)
@@ -410,12 +436,12 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	RangeTblEntry *rte;
 	RelOptInfo *brel;
 	List	   *conj;
-	int			atts[SIFT_AGG_MAX_JKEYS];
+	int			atts[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_FORD];
 
 	memset(f, 0, sizeof(*f));
 	if (jc->j.scoped || q->commandType != CMD_SELECT || q->setOperations != NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs ||
 		q->hasSubLinks || q->hasForUpdate || q->hasRecursive || q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL ||
-		q->sortClause != NIL || q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
+		q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
 		q->limitOption != LIMIT_OPTION_COUNT || lim == NULL || !IsA(lim, Const) || lim->constisnull || lim->consttype != INT8OID ||
 		DatumGetInt64(lim->constvalue) != 1 || list_length(q->rtable) != 1 || list_length(q->targetList) > SIFT_AGG_MAX_FOUT ||
 		q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || q->jointree->quals == NULL)
@@ -471,15 +497,21 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		f->keytype[f->nkey] = v->vartype;
 		f->keyarg[f->nkey++] = pos;
 	}
+	if (!first_order(q, f))
+		return;
 	for (int k = 0; k < f->nkey; k++)
 		atts[k] = f->keyatt[k];
-	if (!sift_agg_unique_key(rte->relid, f->nkey, atts))
+	for (int k = 0; k < f->nord; k++)
+		atts[f->nkey + k] = f->ordatt[k];
+	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
 		return;
 	foreach_node(TargetEntry, te, q->targetList)
 	{
 		Var		   *v = (Var *) te->expr;
 
-		if (te->resjunk || te->resno > SIFT_AGG_MAX_FOUT)
+		if (te->resjunk)
+			continue;
+		if (te->resno > SIFT_AGG_MAX_FOUT)
 			return;
 		f->col[te->resno - 1] = IsA(v, Var) && v->varno == 1 && v->varlevelsup == 0 && v->varattno > 0 ? v->varattno : 0;
 		f->ncol = Max(f->ncol, te->resno);
