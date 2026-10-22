@@ -135,6 +135,12 @@ extern bool sift_col_maint_make_room(Relation index);
 extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
+/* sift.col_auto_merge* (col/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint.c) */
+extern PGDLLIMPORT bool sift_col_auto_merge;
+extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
+extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
+extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
 
 /* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
  * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
