@@ -467,6 +467,8 @@ typedef struct SiftColUnit
  */
 extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags);
 extern void sift_col_close(SiftColSource *src);
+/* Releases the buffers the source keeps pinned between units (a partitioned table's scan leaves a partition for good); reading on takes them again */
+extern void sift_col_unpin(SiftColSource *src);
 
 /*
  * The one hook between the engine and the table it indexes: which rows of a unit are visible. The index glue installs the

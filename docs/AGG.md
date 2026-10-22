@@ -104,7 +104,7 @@ than by an equality of the column's type (`k > $1`, a value of another type, an 
 it starts and does not read the partitions whose bounds it refutes (`EXPLAIN ANALYZE` shows `Partitions Removed`); a default partition stays unless the bounds
 of the others refute it. A hash level is pruned by the remainders: an equality or `= ANY` on every column of its key (a parameter, a stable function or a
 constant) gives the values, the key's hash function gives each its remainder, and a partition whose remainder none of them has is not read (`k = $1`,
-`k = ANY ($1)`, `a = $1 AND b = $2`; a NULL value or an empty list reads no partition). A plan is invalidated when a partition or its index is attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
+`k = ANY ($1)`, `a = $1 AND b = $2`; a NULL value or an empty list reads no partition). A plan reads up to 4,096 partitions (the planner keeps the layout and statistics of each, about 40 kB, and takes a pass over them: a table of more partitions, before run-time pruning, keeps the normal plan); the scan opens only the partitions that pruning leaves and releases the pages of one before it reads the next, so a statement that prunes a table of thousands of partitions to a few opens those few. A plan is invalidated when a partition or its index is attached, detached or dropped. `CREATE INDEX` on the parent makes one per partition (also for partitions attached later).
 Fixtures `pa_*` and `t_partitioned`, test `agg_partitions`.
 
 ## Partial indexes

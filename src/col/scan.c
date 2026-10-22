@@ -168,6 +168,16 @@ sift_col_close(SiftColSource *src)
 	UnregisterSnapshot(src->snap);
 }
 
+void
+sift_col_unpin(SiftColSource *src)
+{
+	if (src->flags & COLO_TABLE)
+		return;
+	for (int i = 0; i < src->nseg; i++)
+		sift_cseg_close(src->seg[i].seg);
+	sift_vis_unpin(&src->vis);
+}
+
 int
 sift_col_ncols(const SiftColSource *src)
 {

@@ -39,6 +39,8 @@ extern BlockNumber sift_vis_nblocks(Relation heap);
  */
 extern void sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uint32 dir_version);
 extern void sift_vis_end(SiftVis *v);
+/* releases the pins a check keeps (the visibility map page, the directory page, the heap page of a fetch); the next check takes them again */
+extern void sift_vis_unpin(SiftVis *v);
 
 /*
  * 256-bit mask of all-visible pages of an SB (all zero when !use_vm). The directory version is read after the map: once the directory has
