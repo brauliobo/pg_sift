@@ -77,13 +77,6 @@ def ratio(a, b):
     return va / vb, (math.hypot(ra, rb) if ra is not None and rb is not None else None)
 
 
-def ratio_cell(a, b):
-    r, se = ratio(a, b)
-    if r is None:
-        return a[6] if a is not None and a[6] in ('NA', 'error') else 'n/a'
-    return x(r) + (' ± %.2g' % (r * se) if se is not None and se > FLAG else '')
-
-
 def minutes(seconds):
     return 'about %d minute%s' % (max(1, round(seconds / 60)), '' if round(seconds / 60) <= 1 else 's')
 
