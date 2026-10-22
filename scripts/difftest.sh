@@ -20,6 +20,7 @@
 # (query i in session i mod N), and the mutants N at a time; each query seeds its own random() (filters of the ranked
 # checks), so a run does not depend on N. The parallel stages ask for 3 workers each: keep 3 * N within max_parallel_workers.
 # Needs the scripts/pgtest.sh cluster installed and started. Exit 1 on failure.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
