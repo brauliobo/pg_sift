@@ -40,7 +40,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  maint_backoff_ms    | BACKOFF_MAX_MS                  |    3600000 | t         | f
  max_segments        | SIFT_MAX_SEGMENTS               |        128 | t         | f
  month_groups        | SIFT_PAGG_MONTH_GROUPS          |       1024 | t         | f
- num_in_list         | AGG_MAX_NUM_IN                  |         64 | t         | f
+ num_in_list         | AGG_MAX_NUM_IN                  |         64 | t         | t
  part_key_tests      | KEYS_MAX_TESTS                  |      20000 | t         | t
  partitions          | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
  phrase_terms        | SIFT_MAX_PHRASE                 |        128 | t         | t

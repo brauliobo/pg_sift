@@ -130,6 +130,9 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 
 				out[i >> 6] |= (uint64) (u < st->in_nlut && st->in_lut[u]) << (i & 63);
 			}
+		/* the NaNs of a numeric leaf are stored as overflow rows: NaN equals NaN, and no number */
+		if (v->ovf && ex->lay->leaf[p->leaf].typid == NUMERICOID)
+			set_rows(v->ovf + start / 64, n, st->in_hasnan, out);
 	}
 	else if (st->in_htab)
 	{

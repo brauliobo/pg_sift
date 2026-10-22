@@ -32,7 +32,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `first_order_cols` | ORDER BY columns of a first-row lookup child | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` |  |
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
 | `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` |  |
-| `num_in_list` | constants of a numeric IN list | 64 | constants | the conjunct is not pushed into the scan |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` |  |
+| `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |
 | `arms` | UNION ALL arms of a fused or two-level scan | 4 | arms | not fused |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` |  |
 | `virtual_leaves` | virtual leaves (expressions) per scan | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` |  |
 | `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_LEAVES` |  |

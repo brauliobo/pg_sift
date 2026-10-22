@@ -15,6 +15,7 @@ typedef struct PredState
 	int64		ci;
 	double		cd;
 	bool		in_hasnull;
+	bool		in_hasnan;		/* a numeric list with a NaN: the rows the leaf stores as overflow (its NaNs) are in the set */
 	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
 	int64		in_lo;			/* the least and the greatest element, when there is one (in_nv) */

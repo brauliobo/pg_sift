@@ -50,6 +50,9 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 		return false;
 	if (p->kind == SAP_IN)
 	{
+		/* the NaNs of a numeric leaf are in no zone */
+		if (st->in_hasnan)
+			return false;
 		/* no value in the set: a unit's zone holds none */
 		if (st->in_nv == 0)
 		{
@@ -284,7 +287,8 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		int64	   *set = palloc(FILTER_MAX_SET * sizeof(int64));
 		int			n = 0;
 
-		if ((p->op && st->in_hasnull) || st->in_htab)
+		/* the NaN rows of a numeric leaf are the executor's */
+		if ((p->op && st->in_hasnull) || st->in_htab || st->in_hasnan)
 			return false;
 		for (uint32 i = 0; i < st->in_nlut; i++)
 			if (st->in_lut[i] && n++ < FILTER_MAX_SET)
