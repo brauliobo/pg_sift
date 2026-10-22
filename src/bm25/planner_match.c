@@ -55,6 +55,16 @@ sift_index_matches_key(IndexOptInfo *index, Node *expr)
 	return equal(expr, linitial(index->indexprs));
 }
 
+/* Do quals of a policy or a security barrier view, which the rel's other quals must not run before, sit on the rel? */
+bool
+rel_secured(PlannerInfo *root, RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		if (rinfo->security_level < root->qual_security_level)
+			return true;
+	return false;
+}
+
 bool
 sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
 {
