@@ -251,6 +251,7 @@ static void test_chunks(const set *a, sift_tid *tmp)
 		int ct = (int)rndn(3);
 		size_t cl = sift_chunk_encode(pm, om, ct, chunk);
 		CHECK(cl == sift_chunk_encode(pm, om, ct, NULL) && (ct == SIFT_CT_ARRAY || cl <= sift_chunk_bound(np)), "chunk size");
+		CHECK(sift_chunk_check(chunk, (uint32_t)cl) == NULL, "chunk check rejects the chunk of the writer (type %d)", ct);
 		CHECK(sift_chunk_count(chunk) == j - i, "chunk count");
 		uint64_t pm2[4], sel[4] = { rnd(), rnd() | rnd(), ~0ull, rnd() & rnd() };
 		sift_chunk_pagemask(chunk, pm2);
@@ -275,6 +276,43 @@ static void test_chunks(const set *a, sift_tid *tmp)
 		sift_offmask_andnot(om3, om3, om2, np);
 		CHECK(sift_offmask_popcount(om3, np) == j - i - pc, "offmask or/andnot");
 		i = j;
+	}
+}
+
+/* The chunk check must accept what the writer makes at the edges of a chunk and reject it one byte short: the same offsets on each given page, every type */
+static void edge_chunk(const char *what, const int *pages, int np, const int *offs, int noff)
+{
+	static uint64_t om[256 * SIFT_OFFMASK_WORDS];
+	static uint8_t chunk[4 + 256 * 512 * 4 + 64];
+	uint64_t pm[4] = { 0 };
+	memset(om, 0, sizeof om);
+	for (int k = 0; k < np; k++) {
+		pm[pages[k] >> 6] |= 1ull << (pages[k] & 63);
+		for (int q = 0; q < noff; q++) om[k * SIFT_OFFMASK_WORDS + offs[q] / 64] |= 1ull << (offs[q] & 63);
+	}
+	for (int ct = 0; ct < 4; ct++) {
+		size_t cl = sift_chunk_encode(pm, om, ct, chunk);
+		CHECK(sift_chunk_check(chunk, (uint32_t)cl) == NULL, "chunk check rejects the writer's %s chunk (type %d): %s", what, ct, sift_chunk_check(chunk, (uint32_t)cl));
+		CHECK(sift_chunk_check(chunk, (uint32_t)cl - 1) != NULL, "chunk check accepts a %s chunk (type %d) cut by a byte", what, ct);
+		CHECK(sift_chunk_count(chunk) == (uint32_t)(np * noff), "%s chunk count", what);
+	}
+}
+
+static void test_chunk_edges(void)
+{
+	int all_pages[256], all_offs[512];
+	const int none[1] = { 0 };
+	for (int i = 0; i < 256; i++) all_pages[i] = i;
+	for (int i = 0; i < 512; i++) all_offs[i] = i;
+	edge_chunk("empty", none, 0, none, 0);
+	edge_chunk("first entry", all_pages, 1, all_offs, 1);
+	edge_chunk("last entry", all_pages + 255, 1, all_offs + 511, 1);
+	edge_chunk("corner entries", (const int[]){ 0, 255 }, 2, (const int[]){ 0, 511 }, 2);
+	edge_chunk("every page and offset", all_pages, 256, all_offs, 512);
+	/* the widest offset of a page decides the width of its row: the bytes needed, then 1, 2, 4 or a multiple of 8 */
+	for (int i = 0, m[] = { 7, 8, 15, 16, 31, 32, 63, 64, 255, 256, 257, 511 }; i < (int)(sizeof m / sizeof *m); i++) {
+		int offs[2] = { 0, m[i] };
+		edge_chunk("width", (const int[]){ 17 }, 1, offs, 2);
 	}
 }
 
@@ -381,6 +419,7 @@ int main(int argc, char **argv)
 			if (rnd() % 3 == 0) memcpy(s[1].t, s[0].t, s[0].n * 8), s[1].n = s[0].n; /* identical sets */
 			test_ops(&s[0], &s[1], &s[2], ref, tmp);
 			test_chunks(&s[0], tmp);
+			if (it == 0) test_chunk_edges();
 			if (it % 4 == 0) test_topk(s, ref, tmp);
 		}
 		printf("%s: %ld checks, %ld failures\n", sift_isa_name(isa), checks - c0, fails - f0);
