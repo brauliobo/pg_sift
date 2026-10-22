@@ -6,29 +6,12 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
-	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
-END $$;
+\ir test/agg_helpers.sql
 
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);
 BEGIN
 	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
-END $$;
-
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
 END $$;
 
 CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$

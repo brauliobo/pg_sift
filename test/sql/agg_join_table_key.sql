@@ -20,14 +20,7 @@ INSERT INTO dims VALUES
   ('2025-01-04 08:30', 3, 4, 4, 'e'), (NULL, NULL, NULL, NULL, 'f'), ('2030-06-01 00:00', 9, 9, 9, 'g'), ('infinity', 6, 6, 6, 'h'), ('2025-01-08 01:00', 0, 0, 0, 'i');
 VACUUM (FREEZE, ANALYZE) dims;
 
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 -- the rows of the scan and of the normal plan are the same, and the plan is the scan's
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$

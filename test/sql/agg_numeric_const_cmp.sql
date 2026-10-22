@@ -41,15 +41,7 @@ INSERT INTO shapes (shape, q) VALUES
 	('not', 'SELECT count(*) FROM nc WHERE NOT (n = 5.555)'),
 	('or', 'SELECT count(*) FROM nc WHERE n = 5.555 OR g = 3');
 
--- the statement has the scan
-CREATE FUNCTION pushed(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 -- the rows with and without the scan are the same
 CREATE FUNCTION same_rows(q text) RETURNS boolean LANGUAGE plpgsql AS $$

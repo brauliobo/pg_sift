@@ -22,14 +22,7 @@ INSERT INTO buckets VALUES ('k0', '2025-01-01', 1, true, 1.5, 'a'), ('k0', '2025
   (NULL, NULL, NULL, NULL, NULL, 'g'), ('k9', '2025-01-01', 1, true, 1.50, 'h'), ('k3', NULL, 6, false, 2.5, 'i');
 VACUUM (FREEZE, ANALYZE) buckets;
 
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 -- the rows of the scan and of the normal plan are the same, and the plan is the scan's
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
