@@ -31,11 +31,11 @@ BEGIN
 END $$;
 
 -- one query forced to the scan (the sort and the hash of the normal plan off) with the memory given, then as the normal plan: does it spill, are the rows the same
-CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB') RETURNS TABLE (shape text, spilled boolean, same boolean) LANGUAGE plpgsql AS $$
+CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB', aggs text DEFAULT NULL) RETURNS TABLE (shape text, spilled boolean, same boolean) LANGUAGE plpgsql AS $$
 DECLARE q text; l text; sp boolean := false;
 BEGIN
-	q := format('SELECT %s, count(*) AS m1, count(val) AS m2, sum(val) AS m3, avg(val) AS m4, min(val) AS m5, max(val) AS m6, sum(w) AS m7, avg(w) AS m8, '
-				'min(w) AS m9, max(w) AS m10, sum(n) AS m11, avg(n) AS m12 FROM events GROUP BY %s', kcols, keys);
+	q := format('SELECT %s, %s FROM events GROUP BY %s', kcols, coalesce(aggs, 'count(*) AS m1, count(val) AS m2, sum(val) AS m3, avg(val) AS m4, min(val) AS m5, max(val) AS m6, sum(w) AS m7, avg(w) AS m8, '
+				'min(w) AS m9, max(w) AS m10, sum(n) AS m11, avg(n) AS m12'), keys);
 	DROP TABLE IF EXISTS got;
 	DROP TABLE IF EXISTS want;
 	PERFORM set_config('work_mem', mem, false), set_config('hash_mem_multiplier', '1', false), set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
@@ -55,13 +55,15 @@ SELECT * FROM spill_case('k2 AS k2', 'k2');
 SELECT * FROM spill_case('k1 AS k1, k2 AS k2', 'k1, k2');
 SELECT * FROM spill_case('k3 AS k3', 'k3');
 SELECT * FROM spill_case('k1 % 7 AS k1, ts AS k2', 'k1 % 7, ts');
+-- the sets of count(DISTINCT) (integers, a dictionary of text, numbers) go with their groups, and are united when the partitions are merged
+SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(DISTINCT val) AS m1, count(DISTINCT k2) AS m2, count(DISTINCT id) FILTER (WHERE id % 3 = 0) AS m3, count(*) AS m4');
+SELECT * FROM spill_case('k1 AS k1, k3 AS k2', 'k1, k3', '64kB', 'count(DISTINCT val) AS m1, sum(DISTINCT n) AS m2, avg(DISTINCT n) AS m3, count(DISTINCT n) AS m4');
+
 -- more memory, fewer spills; the answer is the same
 SELECT * FROM spill_case('k1 AS k1', 'k1', '1MB');
-
--- an aggregate that cannot spill keeps the scan until its table is far past hash memory (agg_group_spill_limits); one that can is planned without workers, whose tables would each be a table of the process
+-- a scan that must spill is planned without workers, whose tables would each be a table of the process
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SELECT arm, used, slug FROM sift.explain_why('SELECT k1, count(DISTINCT val) FROM events GROUP BY k1');
 CREATE FUNCTION plan_has(q text, pat text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE l text; plan text := '';
 BEGIN
@@ -121,6 +123,6 @@ DELETE FROM wrong WHERE ctid = (SELECT min(ctid) FROM wrong);
 SELECT same_rows('got', 'wrong') AS control_missing;
 
 DROP TABLE wrong, got, want;
-DROP FUNCTION spill_case(text, text, text), same_rows(regclass, regclass), plan_has(text, text), rescan_case(boolean);
+DROP FUNCTION spill_case(text, text, text, text), same_rows(regclass, regclass), plan_has(text, text), rescan_case(boolean);
 DROP TABLE events;
 DROP EXTENSION pg_sift;
