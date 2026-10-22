@@ -4,7 +4,7 @@
 # then verifies the index, answers from it as before and takes more writes. A segment of a higher minor is left as written below its setting.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-if ((PG_MAJOR < 18)); then echo '1..0 # SKIP two library roots require PostgreSQL 18'; exit 0; fi
+if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 ref=v3.0.1
 if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
 	echo "1..0 # SKIP released library source $ref is unavailable"
