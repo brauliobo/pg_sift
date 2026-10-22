@@ -15,12 +15,13 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "core/limits.h"
 #include "col/seg_int.h"
 
-int			sift_cdict_cache_kb = 64 * 1024;
-#define CDICT_CACHE_BYTES		((Size) sift_cdict_cache_kb * 1024)
-/* the open addressing table that find and intern build on the first lookup by value: 4 slots of 4 bytes per code */
-#define CDICT_SLOT_BYTES		16
+#define CDICT_CACHE_MAX_KB		65536
+#define CDICT_CACHE_BYTES		((Size) sift_limit(dict_cache_kb, CDICT_CACHE_MAX_KB) * 1024)
+/* what a lookup adds to a code, built lazily once the dictionary has been searched a few times: the open addressing table (up to 4 slots of 4 bytes) and the sorted order (4) */
+#define CDICT_SLOT_BYTES		20
 
 #ifdef SIFT_TESTING
 SiftCDictCacheStats sift_cdict_cache_stats;

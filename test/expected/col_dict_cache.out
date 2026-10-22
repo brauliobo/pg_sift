@@ -26,7 +26,7 @@ SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 (1 row)
 
 SELECT bytes AS one FROM sift._test_col_dict_cache(true) \gset
-SELECT set_config('sift.test_col_dict_cache', ((:one * 5.5 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
+SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 5.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
  sized 
 -------
  t
@@ -68,7 +68,7 @@ SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._
  t                  | t
 (1 row)
 
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
@@ -135,7 +135,7 @@ SELECT loads = 0 AS none_parsed, hits > 0 AS found FROM sift._test_col_dict_cach
 (1 row)
 
 -- a cache too small to keep a dictionary parses it every time, with the same answers
-SET sift.test_col_dict_cache = 1;
+SET sift.test_limits = 'dict_cache_kb=1';
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
  rows 
 ------
@@ -154,7 +154,7 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
  t                | t
 (1 row)
 
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 DROP TABLE dc;
 -- the lengths of the lists of a unit are decoded once as well (integer elements: no dictionary is involved): the second scan finds them, the answers are the same
 CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
@@ -188,7 +188,7 @@ SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE 
 (1 row)
 
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
-SET sift.test_col_dict_cache = 1;
+SET sift.test_limits = 'dict_cache_kb=1';
 REINDEX INDEX lc_idx;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
@@ -210,7 +210,7 @@ SELECT (SELECT count(*) FROM ((TABLE lc_small2 EXCEPT TABLE lc_off) UNION ALL (T
            0
 (1 row)
 
-RESET sift.test_col_dict_cache;
+RESET sift.test_limits;
 DROP TABLE lc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
