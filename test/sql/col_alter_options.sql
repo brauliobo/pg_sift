@@ -77,3 +77,5 @@ SELECT count(*) FROM ap;
 VACUUM ao;
 VACUUM ap;
 SELECT sift.col_verify('ao_paths', true), sift.col_verify('ap_plain', true);
+DROP TABLE ao, ap, aw;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
