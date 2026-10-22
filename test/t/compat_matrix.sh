@@ -14,11 +14,6 @@ for row in "${MATRIX[@]}"; do
 	git -C "$REPO" rev-parse --verify -q "${row%% *}^{commit}" >/dev/null || { echo "1..0 # SKIP released library source ${row%% *} is unavailable"; exit 0; }
 done
 newroot=$ROOT
-use_root() {
-	ROOT=$1
-	node_conf mx "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
-dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
-}
 q() { sql mx "$@"; }
 
 # the queries; the names of the tables are replaced by the clone of the format being read (docs -> docs_lo)
@@ -80,7 +75,7 @@ for row in "${MATRIX[@]}"; do
 	oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
 	node_init mx 2 'autovacuum = off
 sift.async_maintenance = off'
-	use_root "$oldroot"
+	use_root mx "$oldroot"
 	node_start mx || bail "cannot start $ref"
 
 	# ---- the release writes
@@ -109,7 +104,7 @@ sift.async_maintenance = off'
 	node_stop mx
 
 	# ---- this tree takes over
-	use_root "$newroot"
+	use_root mx "$newroot"
 	node_start mx || bail "cannot start this tree on $ref data"
 	upd=$(LC_ALL=C q "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 	check "$ref: ALTER EXTENSION UPDATE" test $rc -eq 0
@@ -191,7 +186,7 @@ sift.async_maintenance = off'
 	node_stop mx
 
 	# ---- the release reads them
-	use_root "$oldroot"
+	use_root mx "$oldroot"
 	node_start mx || bail "cannot restart $ref"
 	for f in "${formats[@]}"; do
 		fmt=${f%% *}

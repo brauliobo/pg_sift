@@ -11,16 +11,11 @@ if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
 	exit 0
 fi
 newroot=$ROOT
-use_root() {
-	ROOT=$1
-	node_conf legacy "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
-dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
-}
 oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
 
 node_init legacy 2 'autovacuum = off
 sift.async_maintenance = off'
-use_root "$oldroot"
+use_root legacy "$oldroot"
 node_start legacy || bail "cannot start $ref"
 sql legacy "CREATE EXTENSION pg_sift" "CREATE TABLE items (id int, kind int, grp text, val bigint, amt numeric(10,2), pad text)" \
 	"INSERT INTO items SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
@@ -32,7 +27,7 @@ Q="SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM (SELECT kind, coun
 FORMATS="SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'"
 want=$(sql legacy "$Q")
 node_stop legacy
-use_root "$newroot"
+use_root legacy "$newroot"
 node_start legacy || bail "cannot start the new library"
 sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
 check "the 3.0.1 library wrote segments of minor 3 or below" test "$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == t
@@ -52,7 +47,7 @@ check "the refreshed index verifies and answers as the heap does" test "$(verify
 node_stop legacy
 
 # the 3.0.1 library reads what the new one wrote
-use_root "$oldroot"
+use_root legacy "$oldroot"
 node_start legacy || bail "cannot restart $ref"
 check "the 3.0.1 library verifies the refreshed index" test -z "$(sql legacy "SELECT sift.col_verify('items_idx', true)" 2>&1)"
 check "and answers as before, from the segments the new library wrote" test "$(sql legacy "SET sift.enable_agg = on" "SET seq_page_cost = 10000" "$Q")" == "$want"
@@ -62,7 +57,7 @@ check "and takes more writes: promoted and merged with the refreshed segments" \
 node_stop legacy
 
 # a segment of a higher minor than the setting stays as written: under the default setting the option writes minor 7, under 3 the segment is not rewritten
-use_root "$newroot"
+use_root legacy "$newroot"
 node_start legacy || bail "cannot restart the new library"
 sql legacy "ALTER INDEX items_idx SET (cube_minmax = true, preagg = 'default')" >/dev/null
 check "a refresh under the default setting writes the minor the options ask for (7)" \
