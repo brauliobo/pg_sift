@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 3.2.0 - 2026-10-22
+
 - Changed: pg_sift: a `LEFT JOIN LATERAL (SELECT .. FROM t WHERE t.a = x AND t.b = y LIMIT 1)` over a table with a unique index on the columns it compares is read by SiftAgg as a lookup table (its rows hashed by key, kept for the next query like any other lookup table) instead of running the child for every distinct input: the key has one row, so the row is the one any plan returns. The planner prices both and takes the cheaper; a key the table repeats, a condition, an order, an offset or an expression over the parameter keep the child (`EXPLAIN ANALYZE` shows `First Row Lookup Tables`). Three keys over a 100,000-row table and 60,000 facts: 47 ms (269 ms in the normal plan, 167 ms in a scan that ran the child).
 - Changed: pg_sift: the arms of a `UNION ALL` that join the same lookup table and read the same rows run in one pass over the index also when they ask for other aggregates: the pass computes the union of them and each arm's set updates its own, the lookup being resolved once (three arms over a lookup join, 100,000 documents: 18.7 ms scanned arm by arm, 8.6 ms in one pass; `sift.agg_fuse = off` runs the arms alone).
 - Changed: pg_sift: `sift_table` reads the directory again only when its version changed, where every row operation re-read it (and asked the file system for its length): `UPDATE` of 10% of 200,000 rows takes 171 ms instead of 134, `DELETE` 93 ms instead of 85 (median of 5, one client, 2026-10-21, PostgreSQL 18.6; the host was busy). No format change.
