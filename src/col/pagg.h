@@ -11,6 +11,8 @@
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/scan_unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
+/* A superunit (sift_col_super): its segment and the index of its group there; false for any other unit */
+extern bool sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k);
 
 /*
  * May the pre-aggregates of this unit stand for the rows a query without filters sees: the unit is stored, has no dead row and every page it

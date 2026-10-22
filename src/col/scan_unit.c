@@ -270,6 +270,69 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	return sift_col_unit_allvisible(unit);
 }
 
+/*
+ * The group of units at the cursor as one unit. Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
+ * all-visible (the masks of the units are in the summary, so no unit record is read) and no dead row, read in the order of unit_allvisible and
+ * unit_clean: the all-visible bits first, then the directory, then the liveness.
+ */
+bool
+col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		fan = sift_cseg_super_fan(seg),
+				n,
+				rows = 0;
+	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	if (fan == 0 || c->cur % fan != 0 || c->cur < c->nosuper_to)
+		return false;
+	n = Min(fan, seg->nsb - c->cur);
+	if (n < 2 || c->cur + n > c->end)
+		return false;
+	for (uint32 i = 0; i < n; i++)
+		if (!sift_col_bit_test(c->keep, c->cur + i))
+			return false;
+	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
+	for (uint32 i = 0; i < n; i++)
+	{
+		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+				return false;
+	}
+	if (!(src->flags & COLO_TABLE) && !segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (sift_cseg_dirty(seg, c->cur + i))
+			return false;
+		rows += seg->sbdir[c->cur + i].nrows;
+	}
+	cu->seg = seg;
+	cu->u = c->cur;
+	cu->nsu = n;
+	cu->sb = seg->sbdir[c->cur].sb;
+	cu->v.nrows = rows;
+	cu->clean = cu->clean_ready = cu->av_ready = true;
+	memset(cu->av, 0xFF, sizeof(cu->av));
+	c->cur += n;
+	return true;
+}
+
+bool
+sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->nsu == 0)
+		return false;
+	*seg = cu->seg;
+	*k = cu->u / sift_cseg_super_fan(cu->seg);
+	return true;
+}
+
 /* ---------- pre-aggregates (col/pagg.c, docs/COL-PREAGG.md) ---------- */
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */
@@ -278,7 +341,7 @@ sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 {
 	ColUnit    *cu = unit->priv;
 
-	if (cu->seg == NULL)
+	if (cu->seg == NULL || cu->nsu > 0)
 		return false;
 	*seg = cu->seg;
 	*u = cu->u;

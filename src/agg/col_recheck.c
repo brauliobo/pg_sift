@@ -259,6 +259,7 @@ recheck_next(ColSource *src, SiftSrcUnit *unit)
 	src->rck->active = true;
 	unit->sb = src->unit.sb;
 	unit->nrow = src->unit.nrows;
+	unit->nsu = 0;
 	unit->priv = src;
 	return true;
 }

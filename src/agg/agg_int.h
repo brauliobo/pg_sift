@@ -248,6 +248,9 @@ typedef struct AggExec
 	const uint32 *partoff;		/* a parallel worker of a partitioned table: the leader's first superblock of each partition (sift_aggpart_set_offsets) */
 	int			parts_pruned;	/* the partitions of a partitioned table that its conditions refuted when the scan started (part_prune_init) */
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
+	int64		n_super;		/* of them, in groups answered from the summary of the group (superunits) */
+	int			n_split;		/* superunits split back into units while none answered: a query a summary cannot answer stops asking for them */
+	bool		super_on;		/* the source may hand over superunits: a row level scan that the pre-aggregates can answer, with no match set */
 	int64		n_rollup_miss;	/* exact units scanned for lack of their rollup, and of them those a refresh was queued for */
 	int64		n_rollup_queued;
 	int64		n_rollup_cost;	/* exact units with a rollup scanned because their tuples cost more than their elements */

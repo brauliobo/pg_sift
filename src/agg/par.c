@@ -121,6 +121,8 @@ shared_init(ScanShared *sh, AggExec *ex)
 		sift_aggpart_offsets(ex->src, sh->partoff);
 	sh->ordered = sift_aggspec_ordered(ex->spec);
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
+	if (ex->super_on)
+		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src));
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
 	pg_atomic_init_u32(&sh->next, 0);
 	if (ex->topn)
@@ -266,6 +268,7 @@ typedef struct WorkerDone
 	uint32		pad;
 	int64		n_units;
 	int64		n_pre_units;
+	int64		n_super;
 	int64		n_rollup_miss;
 	int64		n_rollup_queued;
 	int64		n_rollup_cost;
@@ -405,6 +408,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	done.n_units = ex->n_units;
 	done.n_pre_units = ex->n_pre_units;
+	done.n_super = ex->n_super;
 	done.n_rollup_miss = ex->n_rollup_miss;
 	done.n_rollup_queued = ex->n_rollup_queued;
 	done.n_rollup_cost = ex->n_rollup_cost;
@@ -533,6 +537,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 
 		ex->n_units += d->n_units;
 		ex->n_pre_units += d->n_pre_units;
+		ex->n_super += d->n_super;
 		ex->n_rollup_miss += d->n_rollup_miss;
 		ex->n_rollup_queued += d->n_rollup_queued;
 		ex->n_rollup_cost += d->n_rollup_cost;

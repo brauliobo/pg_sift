@@ -410,6 +410,82 @@ verify_vers(SiftColSegment *seg)
 	pfree(cm);
 }
 
+/* The superunit block says what the units say: the page masks, the merged sums of every INT leaf and the merged cube, recomputed by the writer's own functions */
+void
+sift_cseg_verify_super(SiftColSegment *seg)
+{
+	const SiftColSchema *sc = seg->schema;
+	uint32		fan = sift_cseg_super_fan(seg),
+				nsu;
+	MemoryContext cx,
+				old;
+	uint64	   *pm;
+	SiftCAgg   *ua;
+
+	if (fan == 0)
+		return;
+	nsu = (seg->nsb + fan - 1) / fan;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift col verify superunits", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	pm = palloc(fan * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+	ua = palloc(fan * sizeof(SiftCAgg));
+	for (uint32 k = 0; k < nsu; k++)
+	{
+		uint32		n = Min(fan, seg->nsb - k * fan);
+		const uint8 **blob = palloc(n * sizeof(uint8 *));
+		uint32	   *len = palloc(n * sizeof(uint32));
+		bool		anycube = false;
+		StringInfoData want;
+		const uint8 *got;
+		uint32		glen;
+
+		sift_cseg_super_pagemask(seg, k, n, pm);
+		for (uint32 i = 0; i < n; i++)
+		{
+			SiftCUnitView v;
+			uint32		ulen;
+			const uint8 *rec = sift_cseg_unit(seg, k * fan + i, &ulen);
+			const uint8 *cube;
+
+			if (!sift_cunit_parse(rec, ulen, sc, &v) || memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0)
+				corrupt(seg, "The page mask of unit %u in superunit %u is not the unit's.", k * fan + i, k);
+			cube = sift_cseg_cube(seg, k * fan + i, &len[i]);
+			blob[i] = len[i] ? memcpy(palloc(len[i]), cube, len[i]) : NULL;
+			anycube |= len[i] > 0;
+		}
+		for (int c = 0; c < sc->ncols; c++)
+		{
+			SiftCSuperLeaf want_leaf;
+			SiftCAgg	got_leaf;
+			bool		want_ok;
+
+			if (!super_leaf_ok(&sc->cols[c]))
+				continue;
+			for (uint32 i = 0; i < n; i++)
+				sift_cseg_agg(seg, c, k * fan + i, &ua[i]);
+			want_ok = n >= 2 && sift_cpagg_super_leaf(ua, n, sc->cols[c].store == SIFT_COLS_INT, &want_leaf);
+			if (want_ok != sift_cseg_super_agg(seg, c, k, &got_leaf) ||
+				(want_ok && (got_leaf.nvals != want_leaf.nvals || got_leaf.nnull != want_leaf.nnull || got_leaf.min != want_leaf.min ||
+							 got_leaf.max != want_leaf.max || got_leaf.sum != (SiftCI128) (((unsigned __int128) want_leaf.sum_hi << 64) | want_leaf.sum_lo) ||
+							 got_leaf.sumsq != (SiftCI128) (((unsigned __int128) want_leaf.sumsq_hi << 64) | want_leaf.sumsq_lo) ||
+							 got_leaf.flags != (want_leaf.flags & SIFT_CAGG_SUMSQ_OVF) || got_leaf.zflags != want_leaf.zflags)))
+				corrupt(seg, "The summary of leaf %d in superunit %u differs from its units.", c, k);
+		}
+		initStringInfo(&want);
+		if (n >= 2 && anycube && !sift_cpagg_super_cube(sc, blob, len, n, &want))
+			want.len = 0;
+		got = sift_cseg_super_cube(seg, k, &glen);
+		if (want.len != glen || (glen > 0 && memcmp(want.data, got, glen) != 0))
+			corrupt(seg, "The cube of superunit %u differs from the cubes of its units.", k);
+		MemoryContextReset(cx);
+		pm = palloc(fan * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+		ua = palloc(fan * sizeof(SiftCAgg));
+		CHECK_FOR_INTERRUPTS();
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+}
+
 uint64
 sift_cseg_verify(SiftColSegment *seg)
 {
@@ -422,6 +498,7 @@ sift_cseg_verify(SiftColSegment *seg)
 		verify_unit(seg, u, keys);
 		CHECK_FOR_INTERRUPTS();
 	}
+	sift_cseg_verify_super(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
 	sift_sr_release(&seg->sr);

@@ -477,6 +477,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
 	unit->nrow = nrow;
+	unit->nsu = src->unit.nsu;
 	unit->priv = src;
 	return true;
 }
@@ -493,6 +494,26 @@ col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
 	sift_aggsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
 	unit->nrow = nrow;
 	return true;
+}
+
+static void
+col_super(void *impl, bool on)
+{
+	sift_col_super(((ColSource *) impl)->cs, on);
+}
+
+static uint32
+col_super_span(void *impl)
+{
+	return sift_col_super_span(((ColSource *) impl)->cs);
+}
+
+static void
+col_split(void *impl, const SiftSrcUnit *unit)
+{
+	ColSource  *src = impl;
+
+	sift_col_unit_split(src->cs, &src->unit);
 }
 
 static void
@@ -544,8 +565,8 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	SiftColZone cz;
 
-	if (((ColSource *) impl)->lay->leaf[leaf].wide)
-		return false;				/* a NaN is a dictionary entry */
+	if (((ColSource *) impl)->lay->leaf[leaf].wide || ((ColSource *) impl)->unit.nsu > 0)
+		return false;				/* a NaN is a dictionary entry; a superunit holds no overflow value */
 	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
 	return cz.has_ovf;
 }
@@ -702,6 +723,9 @@ static const SiftSrcProvider col_provider = {
 	.nsb = col_nsb,
 	.begin = col_begin,
 	.next = col_next,
+	.super = col_super,
+	.split = col_split,
+	.super_span = col_super_span,
 	.read = col_read,
 	.live = col_live,
 	.vet = col_vet,
