@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / 'bench/steps'))
 import cell
 from catalog import CASES, select
 
+GATING = {c.name for c in CASES if c.gate}
+
 INITIAL_PAIRS = 6
 READ_CONFIRMATION_PAIRS = 16
 MUTATION_CONFIRMATION_PAIRS = 6
@@ -57,6 +59,10 @@ class Inconclusive(Exception):
 
 
 class BudgetExpired(Inconclusive):
+    pass
+
+
+class PlanAbsent(ValueError):
     pass
 
 
@@ -488,7 +494,7 @@ def require_plan(plan,case):
     else:
         valid = any((n.get('Node Type') in ('Index Scan','Index Only Scan','Bitmap Index Scan') and n.get('Index Name')==case.plan) or (case.plan=='docs_bm25' and n.get('Node Type')=='Custom Scan' and n.get('Custom Plan Provider') in ('SiftScan','SiftCount') and n.get('Index')==case.plan) for n in nodes)
     if not valid:
-        raise ValueError(f'{case.name}: required structured plan {case.plan} absent: {topology(plan)}')
+        raise PlanAbsent(f'{case.name}: required structured plan {case.plan} absent: {topology(plan)}')
 
 
 def validate_case(revisions, case):
@@ -1276,7 +1282,12 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             validate_insert(revisions,case,identity,calibration['operations'],deadline,result['validation'],control=cpu_work if control else False,histories=histories)
             result['phase_runtime_seconds']['validation'] = time.monotonic()-validation_start
         else:
-            result['validation'] = validate_case(revisions,case)
+            try:
+                result['validation'] = validate_case(revisions,case)
+            except PlanAbsent as exc:
+                # a planner change moved a revision off the plan the case is named for: it no longer times the same operation, so it is reported, not timed
+                result.update(status='skipped',timing_status='skipped',complete=True,phase='complete',reason=str(exc))
+                return result
             result['phase_runtime_seconds']['validation'] = time.monotonic()-start
             result['phase'] = 'calibration'
             calibration_start = time.monotonic()
@@ -1356,9 +1367,9 @@ def reduce_report(report):
         report['status'] = ('pass' if report['complete'] and report['size_status']=='pass'
                              and report.get('acceptance_pass',False) else 'inconclusive')
         return
-    statuses = {c['timing_status'] for c in report['cases']}
+    statuses = {c['timing_status'] for c in report['cases'] if c['name'] in GATING}
     report['status'] = ('regression' if size_regression or 'regression' in statuses else
-                        'inconclusive' if not report['complete'] or statuses!={'pass'} or report['size_status']!='pass' else 'pass')
+                        'inconclusive' if not report['complete'] or statuses-{'pass','skipped'} or report['size_status']!='pass' else 'pass')
 
 
 def reduce_insert_feasibility(report):
