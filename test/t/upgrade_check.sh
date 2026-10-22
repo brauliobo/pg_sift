@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 39
+plan 42
 node_init uc 21
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
@@ -69,13 +69,20 @@ q clean "CREATE INDEX facts_late ON facts USING sift_col (id, g, n)" "ALTER INDE
 	"CREATE TABLE scat (id int, k int, g int, n int)" "INSERT INTO scat SELECT i, i * 7919 % 100003, i % 9, i % 100 FROM generate_series(1, 3000) i" \
 	"CREATE INDEX scat_new_opts ON scat USING sift_col (id, k, g, n) WITH (set_columns = 'k', rollup_dims = 'g, n')" >/dev/null
 out=$(uc clean)
-check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX facts_late' <<<"$out"
-check "set_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +set_columns with column format [0-9]+ .*REINDEX INDEX facts_late_set' <<<"$out"
-check "rollup_dims set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_dims with column format [0-9]+ .*REINDEX INDEX facts_late_roll' <<<"$out"
+check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
+check "set_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +set_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
+check "rollup_dims set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_dims with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
 check "an index built with set_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
+check "sift.reindex_needed gives the same indexes, one command each" test "$(q clean "SELECT string_agg(command, ' ' ORDER BY command) FROM sift.reindex_needed()")" == \
+	"REINDEX INDEX CONCURRENTLY public.facts_late; REINDEX INDEX CONCURRENTLY public.facts_late_roll; REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 check "the deprecated mutable_limit warns" grep -q -E '^warn +facts_old_opt +option +mutable_limit' <<<"$out"
 check "a warning alone exits 0, and 1 with --strict" test "$(uc clean >/dev/null; echo $?)$(uc --strict clean >/dev/null; echo $?)" == 01
-q clean "DROP INDEX facts_late, facts_old_opt, facts_late_set, facts_late_roll" "DROP TABLE scat" >/dev/null
+# keys that spread over the range get a summary from the REINDEX, so the index leaves the list
+q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n)" "ALTER INDEX scat_late SET (set_columns = 'k')" >/dev/null
+check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.reindex_needed() WHERE index = 'scat_late'::regclass")" == 1
+q clean "REINDEX INDEX CONCURRENTLY public.scat_late" >/dev/null
+check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.reindex_needed() WHERE index = 'scat_late'::regclass")" == 0
+q clean "DROP INDEX facts_late, facts_old_opt, facts_late_set, facts_late_roll, scat_late" "DROP TABLE scat" >/dev/null
 
 # settings and test objects outside the code. A new session has not loaded the library, so ALTER DATABASE takes a name it does not define.
 q cfg "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int)" >/dev/null

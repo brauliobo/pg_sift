@@ -106,38 +106,23 @@ BEGIN
 		END IF;
 		RETURN NEXT;
 
-		-- options that only the units written afterwards follow
-		IF r.amname = 'sift_col' AND lo IS NOT NULL THEN
-			IF 'cube_minmax=true' = ANY (r.opts) OR 'cube_minmax=on' = ANY (r.opts) THEN
-				IF lo < 7 THEN
-					kind := 'option'; detected := format('cube_minmax with column format %s', lo); status := 'warn';
-					advice := format('the units written before the option scan; REINDEX INDEX %s writes the minimum and maximum of every unit', r.rel);
-					RETURN NEXT;
-				END IF;
-			END IF;
-			IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'paths=%') AND lo < 6 THEN
-				kind := 'option'; detected := format('JSON paths with column format %s', lo); status := 'warn';
-				advice := format('segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan. REINDEX INDEX %s writes them', r.rel);
-				RETURN NEXT;
-			END IF;
-			-- a segment is minor 9 or 10 when some unit holds the section, so a lower minor means no unit of the segment does
-			IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'rollup_dims=_%') AND lo < 9 THEN
-				kind := 'option'; detected := format('rollup_dims with column format %s', lo); status := 'warn';
-				advice := format('the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); REINDEX INDEX %s writes it where it fits', r.rel);
-				RETURN NEXT;
-			END IF;
-			IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'set_columns=_%') AND lo < 10 THEN
-				kind := 'option'; detected := format('set_columns with column format %s', lo); status := 'warn';
-				advice := format('the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); REINDEX INDEX %s writes it where it helps', r.rel);
-				RETURN NEXT;
-			END IF;
-		END IF;
 		IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'mutable_limit=%') THEN
 			kind := 'option'; detected := 'mutable_limit'; status := 'warn';
 			advice := format('the deprecated name of write_buffer_limit: ALTER INDEX %s RESET (mutable_limit), then SET (write_buffer_limit = N)', r.rel);
 			RETURN NEXT;
 		END IF;
 	END LOOP;
+
+	-- options that only the units written afterwards follow (the extension of 3.3 on has the function; an older one gets these rows after its update)
+	IF to_regprocedure('sift.reindex_needed()') IS NOT NULL THEN
+		BEGIN
+			FOR r IN SELECT * FROM sift.reindex_needed() LOOP
+				object := r.index::text; kind := 'option'; detected := r.detected; status := 'warn'; advice := r.advice || '; ' || r.command;
+				RETURN NEXT;
+			END LOOP;
+		EXCEPTION WHEN undefined_function OR undefined_file OR lock_not_available THEN NULL;
+		END;
+	END IF;
 
 	-- settings outside the code: the server (file, command line), the session, ALTER DATABASE and ALTER ROLE
 	FOR r IN WITH set_by AS (

@@ -108,10 +108,17 @@ sift.async_maintenance = off'
 	# ---- this tree takes over
 	use_root "$newroot"
 	node_start mx || bail "cannot start this tree on $ref data"
-	check "$ref: ALTER EXTENSION UPDATE" q "ALTER EXTENSION pg_sift UPDATE"
+	upd=$(LC_ALL=C q "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
+	check "$ref: ALTER EXTENSION UPDATE" test $rc -eq 0
+	# the JSON paths index of a release before column format 6 is named with its command; the one of 3.2.0 and the others need none
+	if ((newest < 6)); then
+		check "$ref: the update names the index to REINDEX and only that one" test "$(grep -c 'REINDEX INDEX CONCURRENTLY' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public.jt_col;' <<<"$upd")" == 1/1
+	else
+		check "$ref: the update says that no index needs a REINDEX" grep -qF "no index needs a REINDEX" <<<"$upd"
+	fi
 	check "$ref: the extension is at the version of this tree" test "$(q "SELECT extversion = default_version FROM pg_extension, pg_available_extensions WHERE extname = 'pg_sift' AND name = 'pg_sift'")" == t
 	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
-		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why')")" == 6
+		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'reindex_needed')")" == 7
 	agree "$ref: answers after the update equal what $ref answered" "$(ans IDX "" "${what}b")" "$a"
 	agree "$ref: answers after the update equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 	check "$ref: sift.verify and sift.col_verify are clean" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"

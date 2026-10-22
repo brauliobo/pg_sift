@@ -28,7 +28,7 @@ database has a blocker (or a warning with `--strict`) and 2 when a database coul
 |---|---|---|
 | `version` | `pg_extension` against `sift.version()` | `warn`: the library is newer than the extension (`ALTER EXTENSION pg_sift UPDATE`) or the new release is available; `blocker`: the library is older than the extension scripts |
 | `index`, `table` | the metapage format and the column formats of every `sift` index, `sift_col` index and `sift_table` | `blocker`: this library cannot open it (the error and its hint are the advice); with `--to`, the first release that reads it is newer than the target |
-| `option` | options that only units written afterwards follow | `warn`: `cube_minmax` on an index with older units, JSON `paths` on segments before column format 6 (`REINDEX INDEX` writes them), the deprecated `mutable_limit` |
+| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_dims` or `set_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the `REINDEX INDEX CONCURRENTLY` command, from `sift.reindex_needed()`, which an extension older than 3.3 has after its update), the deprecated `mutable_limit` |
 | `setting` | `sift.*` in the server configuration, the session, `ALTER DATABASE` and `ALTER ROLE` | `warn`: a setting the library does not define (removed or renamed), a feature switched off (a boolean setting that defaults on), `sift.col_format_minor` kept below the default |
 | `test` | test-only settings and the extension `pg_sift_test` | `warn`: remove them; they need the test build of the library |
 
@@ -56,8 +56,14 @@ scripts/upgrade-check.sh app
 ```
 
 `ALTER EXTENSION pg_sift UPDATE` runs the scripts from the installed version to the default one of the control file, through every release in between. The files of
-the indexes and tables are not rewritten: an older index stays in its format until a merge, `VACUUM` or `REINDEX` writes it again, and the preflight tells which
+the indexes and tables are not rewritten: an older index stays in its format until a merge, `VACUUM` or `REINDEX` writes it again, and the preflight and the update tell which
 `REINDEX` is worth it. A `sift_table` cannot be reindexed; it follows `sift.col_format_minor` on its next write.
+
+The last step of an update to 3.3 (from any older version) prints the indexes a `REINDEX` is worth it for: a warning with one `REINDEX INDEX CONCURRENTLY schema.index;` per
+index (the first 20, then the count of the rest), or a notice that none needs it. PostgreSQL shows only warnings from an extension script, which is why the list is one. Nothing is
+wrong without the `REINDEX`: the older units stay readable and are scanned until it is done. The check reads the catalogs and the metapages and cannot fail the update; when the library
+cannot answer (an index locked by another session) it says so and leaves `SELECT * FROM sift.reindex_needed()` to run after reconnecting, which lists the same with the reason for each.
+Run the commands one at a time: `REINDEX CONCURRENTLY` cannot run in a transaction block.
 
 ## 3. A newer PostgreSQL major
 
