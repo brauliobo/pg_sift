@@ -662,13 +662,19 @@ def compression_block(R):
 
 def replace_blocks(args):
     import readme  # steps/readme.py: replace_block
+    import section_render   # steps/section_render.py: imports this module
     R = Results(args.results)
+    S = section_render.Section(args.updates) if os.path.exists(args.updates) else None
     if args.readme:
         readme.replace_block(args.readme, 'store', readme_block(R))
-        readme.replace_block(args.readme, 'store-updates', updates_readme(R))
+        readme.replace_block(args.readme, 'updates', section_render.readme_block(S) if S else updates_readme(R))
     if args.benchmarks:
         readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
         readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
+        if S:
+            readme.replace_block(args.benchmarks, 'updates', section_render.benchmarks_block(S))
+    if S and args.img:
+        section_render.write_chart(S, args.img)
         if os.path.exists(args.compression):
             readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
 
