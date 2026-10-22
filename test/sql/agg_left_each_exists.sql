@@ -1,5 +1,5 @@
 -- The member of `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` belongs to the query's own FROM list: an EXISTS over the members of another document
--- is compiled on its own (the scan used to resolve its elements as that member and crash). The pushdown needs PostgreSQL 18.
+-- is compiled on its own (the scan used to resolve its elements as that member and crash).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb, extra jsonb);
