@@ -27,9 +27,11 @@
 #include "agg/refuse.h"
 
 /*
- * The inline plan must cost this many times less on top of the unnest factor that agg_cost charges its scans (the plain plan is
- * priced with the 100 rows per call that PostgreSQL assumes for jsonb_to_recordset, the data has a handful): S4 on 300000 orders
- * stays on the materialized plan for the 400 store set and takes the inline one for the 4000 store set, where it is 5 times cheaper.
+ * The part of the inline plan that is the scans must cost this many times less than what the shared CTE's plan costs for it, on top of the unnest
+ * factor that agg_cost charges its scans (the plain plan is priced with the 100 rows per call that PostgreSQL assumes for jsonb_to_recordset, the
+ * data has a handful): S4 on 300000 orders stays on the materialized plan for the 400 store set and takes the inline one for the 4000 store set,
+ * where it is 5 times cheaper. What is above the scans (a join of two aggregates, a window) is the same plan in both and not part of the test:
+ * with scans S and the rest U, the plain plan costs U + P, the inline one U + S, and the margin is on P against S.
  */
 #define CTE_INLINE_MARGIN	2.0
 
@@ -87,46 +89,58 @@ has_shared_cte(Query *parse)
 	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &inline_them);
 }
 
-static bool uses_sift_agg(Plan *plan);
+static double sift_agg_cost(Plan *plan);
 
-static bool
-any_sift_agg(List *plans)
+static double
+sift_agg_cost_list(List *plans)
 {
+	double		cost = 0;
+
 	foreach_ptr(Plan, p, plans)
-		if (uses_sift_agg(p))
-			return true;
-	return false;
+		cost += sift_agg_cost(p);
+	return cost;
+}
+
+/* what the SiftAgg nodes of the plan cost (they hold what is below them): 0 when it has none */
+static double
+sift_agg_cost(Plan *plan)
+{
+	double		cost = 0;
+
+	if (plan == NULL)
+		return 0;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+		return plan->total_cost;
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			cost += sift_agg_cost_list(((Append *) plan)->appendplans);
+			break;
+		case T_MergeAppend:
+			cost += sift_agg_cost_list(((MergeAppend *) plan)->mergeplans);
+			break;
+		case T_SubqueryScan:
+			cost += sift_agg_cost(((SubqueryScan *) plan)->subplan);
+			break;
+		case T_CustomScan:
+			cost += sift_agg_cost_list(((CustomScan *) plan)->custom_plans);
+			break;
+		default:
+			break;
+	}
+	return cost + sift_agg_cost(plan->lefttree) + sift_agg_cost(plan->righttree);
 }
 
 static bool
 uses_sift_agg(Plan *plan)
 {
-	if (plan == NULL)
-		return false;
-	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
-		return true;
-	switch (nodeTag(plan))
-	{
-		case T_Append:
-			if (any_sift_agg(((Append *) plan)->appendplans))
-				return true;
-			break;
-		case T_MergeAppend:
-			if (any_sift_agg(((MergeAppend *) plan)->mergeplans))
-				return true;
-			break;
-		case T_SubqueryScan:
-			if (uses_sift_agg(((SubqueryScan *) plan)->subplan))
-				return true;
-			break;
-		case T_CustomScan:
-			if (any_sift_agg(((CustomScan *) plan)->custom_plans))
-				return true;
-			break;
-		default:
-			break;
-	}
-	return uses_sift_agg(plan->lefttree) || uses_sift_agg(plan->righttree);
+	return sift_agg_cost(plan) > 0;
+}
+
+static bool
+any_sift_agg(List *plans)
+{
+	return sift_agg_cost_list(plans) > 0;
 }
 
 /* the CTEs (plan ids) that a CteScan of the plan, or of a CTE it reads, names */
@@ -195,6 +209,8 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	PlannedStmt *plain,
 			   *inlined;
 	const char *outer_variant;
+	double		plain_cost,
+				scan_cost;
 
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
@@ -208,15 +224,16 @@ plan_cte(SIFT_PLANNER_PARAMS)
 		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
 	agg_variant = outer_variant;
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
-	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plan_cost_without_unread_ctes(plain) &&
-		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
+	plain_cost = plan_cost_without_unread_ctes(plain);
+	scan_cost = sift_agg_cost(inlined->planTree) + sift_agg_cost_list(inlined->subplans);
+	if (scan_cost > 0 && (CTE_INLINE_MARGIN - 1.0) * scan_cost < plain_cost - inlined->planTree->total_cost)
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
 		return inlined;
 	}
-	if (sift_explain_refusals && (uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
+	if (sift_explain_refusals && scan_cost > 0)
 		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
-				   psprintf("inline costs %.2f, the shared CTE %.2f", inlined->planTree->total_cost, plan_cost_without_unread_ctes(plain)), false);
+				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f", inlined->planTree->total_cost, scan_cost, plain_cost), false);
 	return plain;
 }
 
