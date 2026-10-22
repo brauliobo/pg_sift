@@ -607,7 +607,7 @@ Every fixed limit of the code, with its value, what happens at it and the settin
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected (build a key of several columns with `sift.sections`). No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
-- Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
+- A word over 255 bytes is stored as its first 236 bytes and a hash of all of it (`REINDEX` makes an index built before 3.3 follow: it holds such words cut at 255 bytes, so a query for one finds nothing there), `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
 - Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
 - `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows

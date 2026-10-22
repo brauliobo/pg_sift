@@ -167,12 +167,12 @@ SELECT toks(E'co­op'), toks(E'zero​width'), toks(E'zw‍j'), toks(E'﻿bom'),
  coop | zero width | zwj  | bom  | ab
 (1 row)
 
--- long tokens are cut at SIFT_MAX_TERM_BYTES on a character boundary
+-- a token over SIFT_MAX_TERM_BYTES is its start (cut at a character boundary), U+FFFF and a hash of all of it
 SELECT pos, length(token), octet_length(token), end_offset
   FROM sift.tokenize(repeat('a', 300) || ' ' || repeat('é', 200) || ' ' || repeat('東', 10) || ' x');
  pos | length | octet_length | end_offset 
 -----+--------+--------------+------------
-   0 |    255 |          255 |        300
+   0 |    253 |          255 |        300
    1 |    200 |          200 |        501
    2 |      1 |            3 |        503
    3 |      1 |            3 |        504
@@ -191,13 +191,13 @@ SELECT octet_length(token), length(token)
   FROM sift.tokenize(repeat('é', 200), case_folding => false, accent_folding => false);
  octet_length | length 
 --------------+--------
-          254 |    127
+          255 |    135
 (1 row)
 
 SELECT octet_length(token) FROM sift.tokenize('a' || repeat('ﬃ', 100));
  octet_length 
 --------------
-          253
+          255
 (1 row)
 
 -- properties over random strings of mixed scripts (deterministic seed)
