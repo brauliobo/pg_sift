@@ -718,28 +718,46 @@ fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 	return true;
 }
 
-/* A fetch scan serving the TID fetches while the directory stays, and the xmin of the backend keeps the segments from being recycled */
+/*
+ * The fetch scan serving the TID fetches into superblock sb while the directory stays, and the xmin of the backend keeps the segments from
+ * being recycled: the one that holds sb, else a new one, else the least recently used is replaced
+ */
 static SiftTblGroupScan *
-fetch_scan(Relation rel, SiftTblRel *st)
+fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
+	int			pick = -1,
+				spare = 0;
 
-	if (c->fetch && !fetch_kept(rel, st, c))
+	if (!fetch_kept(rel, st, c))
+		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
+			if (c->fetch[i])
+			{
+				sift_tbl_gscan_end(c->fetch[i]);
+				c->fetch[i] = NULL;
+			}
+	for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
 	{
-		sift_tbl_gscan_end(c->fetch);
-		c->fetch = NULL;
+		if (c->fetch[i] && c->fetch[i]->cache_sb == sb)
+			pick = i;
+		if (c->fetch[spare] && (c->fetch[i] == NULL || c->fetch_used[i] < c->fetch_used[spare]))
+			spare = i;
 	}
-	if (c->fetch == NULL)
+	if (pick < 0)
 	{
 		MemoryContext old = MemoryContextSwitchTo(st->cxt);
 
-		c->fetch = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
-		c->fetch->park_fill = true;
+		pick = spare;
+		if (c->fetch[pick])
+			sift_tbl_gscan_end(c->fetch[pick]);
+		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
+		c->fetch[pick]->park_fill = true;
 		c->fetch_version = st->dir.version;
 		c->fetch_xmin = TransactionXmin;
 		MemoryContextSwitchTo(old);
 	}
-	return c->fetch;
+	c->fetch_used[pick] = ++c->fetch_clock;
+	return c->fetch[pick];
 }
 
 /* Where tid is among the cached units of its superblock: unit k, position j of its TIDs */
@@ -764,7 +782,7 @@ sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGrou
 
 	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
 		return false;
-	*g = fetch_scan(rel, st);
+	*g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
 	if (!gscan_find(*g, tid, &k, &j))
 	{
 		gscan_park(*g);
@@ -789,7 +807,7 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 
 	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
 		return false;
-	g = fetch_scan(rel, st);
+	g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
 	if (lazy)
 	{
 		int			k;

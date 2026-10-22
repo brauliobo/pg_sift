@@ -321,6 +321,22 @@ SELECT same('ud_t', 'ud_h') AS the_twin_agrees_after_self_insert;
  t
 (1 row)
 
+-- index probes in an order that moves between more superblocks than the table keeps fetch scans for (the versions of an updated row sit in other ones)
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SELECT (SELECT (count(*), sum(t.id), sum(length(t.v)), sum(hashtext(t.v))) FROM generate_series(1, 300) g JOIN ud_t t ON t.id = (g * 7919) % 140000 + 1) IS NOT DISTINCT FROM
+	   (SELECT (count(*), sum(t.id), sum(length(t.v)), sum(hashtext(t.v))) FROM generate_series(1, 300) g JOIN ud_h t ON t.id = (g * 7919) % 140000 + 1) AS probes_agree;
+ probes_agree 
+--------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_hashjoin;
+RESET enable_mergejoin;
 VACUUM ud_t;
 VACUUM ud_h;
 SELECT same('ud_t', 'ud_h') AS the_twin_agrees_after_vacuum;
