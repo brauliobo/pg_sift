@@ -154,7 +154,7 @@ SELECT n, same, pushed, dense, without_dense FROM d_compare();
   6 | t    | t      | t     | f
   7 | t    | t      | t     | f
   8 | t    | t      | t     | f
-  9 | t    | t      | f     | f
+  9 | t    | t      | t     | f
  10 | t    | t      | f     | f
  11 | t    | t      | f     | f
  12 | t    | t      | t     | f
@@ -163,7 +163,7 @@ SELECT n, same, pushed, dense, without_dense FROM d_compare();
  15 | t    | t      | t     | f
  16 | t    | t      | t     | f
  17 | t    | t      | t     | f
- 18 | t    | t      | f     | f
+ 18 | t    | t      | t     | f
  19 | t    | t      | f     | f
  20 | t    | t      | f     | f
  21 | t    | t      | t     | f
@@ -173,7 +173,7 @@ SELECT n, same, pushed, dense, without_dense FROM d_compare();
  25 | t    | t      | t     | f
  26 | t    | t      | t     | f
  27 | t    | t      | t     | f
- 28 | t    | t      | f     | f
+ 28 | t    | t      | t     | f
  29 | t    | t      | t     | f
  30 | t    | t      | t     | f
  31 | t    | t      | t     | f
@@ -189,7 +189,7 @@ SELECT n, same, pushed, dense, without_dense FROM d_compare();
  41 | t    | t      | f     | f
  42 | t    | t      | t     | f
  43 | t    | t      | t     | f
- 44 | t    | t      | f     | f
+ 44 | t    | t      | t     | f
  45 | t    | t      | f     | f
 (45 rows)
 
