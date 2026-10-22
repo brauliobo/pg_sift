@@ -69,6 +69,9 @@ extern void sift_maint_replace(Relation index, const uint64 *old, int nold, cons
 extern void sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
 
+/* Counts a failed background transaction of the worker of the index (after AbortCurrentTransaction) for the backoff and sift.workers; err: the error it was aborted by */
+extern void sift_maint_record_failure(Oid indexoid, ErrorData *err);
+
 /* Registers a dynamic background worker running function in pg_sift for this index */
 extern bool sift_maint_request_worker(Relation index, const char *function);
 
