@@ -30,7 +30,7 @@ check_layout() {
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|docs/NAMING\.md$|scripts/test-perf-select\.py$)'
+EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/restructure-src\.sh$|docs/NAMING\.md$|scripts/test-perf-select\.py$)'
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true
