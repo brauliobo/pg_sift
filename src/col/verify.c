@@ -24,13 +24,19 @@
 
 #define corrupt SIFT_CORRUPT
 
-/* A row's values (hash), and the types of its overflow values apart (tags): a value stored under minor 3 has none, and then the row's types are not compared (known is false) */
+/*
+ * A row's values (hash), and the types of its overflow values apart (tags): a value stored under minor 3 has none, and then the row's types are
+ * not compared (known is false). A string the unit's byte budget turned into an overflow has no type either, and the heap still holds the string:
+ * a row with one (strovf) is compared by the hash of its other leaves (rest).
+ */
 typedef struct RowHash
 {
 	SiftKey		key;
 	uint64		hash;
+	uint64		rest;
 	uint64		tags;
 	bool		known;
+	bool		strovf;
 } RowHash;
 
 typedef struct Collect
@@ -62,6 +68,10 @@ static void
 value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 {
 	rh->hash = value_hash(rh->hash, def, v);
+	if (def->store != SIFT_COLS_STR && def->store != SIFT_COLS_VAR)
+		rh->rest = value_hash(rh->rest, def, v);
+	else if (v->overflow && v->tag == SIFT_COLTAG_UNKNOWN)
+		rh->strovf = true;
 	if (v->overflow)
 	{
 		rh->tags = hash_combine64(rh->tags, murmurhash64(v->tag));
@@ -73,7 +83,7 @@ value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 static RowHash
 row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 {
-	RowHash		rh = {key, 0, 0, true};
+	RowHash		rh = {.key = key, .known = true};
 
 	for (int c = 0; c < sc->ncols; c++)
 	{
@@ -198,7 +208,7 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 	r = sift_col_rel(hc->index);
 	sift_col_make_row(r, tid, values, isnull, &row, hc->tmp);
 	heap = row_hash(r->schema, &row, key.key);
-	if (found->hash != heap.hash)
+	if (found->strovf ? found->rest != heap.rest : found->hash != heap.hash)
 		corrupt(hc->index, "The values of heap tuple (%u,%u) differ from the index's.", ItemPointerGetBlockNumber(tid),
 				ItemPointerGetOffsetNumber(tid));
 	if (found->known && found->tags != heap.tags)

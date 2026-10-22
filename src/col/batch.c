@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "core/limits.h"
 #include "col/enc.h"
 #include "col/enc_int.h"
 
@@ -48,6 +49,7 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 		if (v->otag)
 			memset(v->otag, 0, v->n);
 		v->n = 0;
+		v->noted = false;
 		if (v->eoff)
 			v->eoff[0] = 0;
 		if (v->voff)
@@ -186,12 +188,45 @@ batch_group_end(SiftColBatch *b, int group, uint32 count)
 	b->col[group].eoff[b->nrows + 1] = b->col[group].eoff[b->nrows] + count;
 }
 
+/*
+ * Whether a string of len bytes still fits the byte budget of leaf id in this unit (a value the leaf's dictionary holds costs nothing).
+ * Past it the value is stored as an overflow, as a value the leaf cannot store is, and the first one is announced.
+ */
+static bool
+leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len)
+{
+	SiftCVals  *v = &b->col[id];
+	int64		budget = sift_limit(unit_bytes, SIFT_COL_UNIT_MAX_BYTES);
+	uint64		used = b->dict[id] ? b->dict[id]->nbytes : v->n == 0 ? 0 : v->voff[v->n];
+
+	if (used + len <= (uint64) budget || (b->dict[id] && sift_cdict_find(b->dict[id], s, len) >= 0))
+		return true;
+	if (!v->noted)
+	{
+		const SiftColDef *d = &b->schema->cols[id];
+
+		v->noted = true;
+		ereport(NOTICE,
+				(errmsg("sift_col: the strings of leaf %d (attribute %d%s%s) in superblock %u pass %lld bytes: the values after them are stored as overflow and read from the heap",
+						id, d->attno, d->path[0] ? " path " : "", d->path, b->sb, (long long) budget),
+				 errhint("Index an expression that keeps the part of the value that is used, such as left(column, 255).")));
+	}
+	return false;
+}
+
 static void
 put_value(SiftColBatch *b, int id, const SiftColValue *v)
 {
 	bool		isnull = v->isnull || v->overflow;
 	int64		key = 0;
+	SiftColValue over;
 
+	if ((b->schema->cols[id].store == SIFT_COLS_VAR || b->dict[id]) && !isnull && !leaf_fits(b, id, v->v.s, v->len))
+	{
+		over = (SiftColValue) {.isnull = true, .overflow = true, .tag = SIFT_COLTAG_UNKNOWN};
+		v = &over;
+		isnull = true;
+	}
 	if (b->schema->cols[id].store == SIFT_COLS_VAR)
 	{
 		vals_put_var(b->mcxt, &b->col[id], v->v.s, v->len, isnull, v->overflow, v->tag);
@@ -437,14 +472,14 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 	uint8		tag = lf->present && lf->tag ? lf->tag[slot] : SIFT_COLTAG_UNKNOWN;
 	int64		key = isnull ? 0 : lf->key[slot];
 
-	if (lf->inl)
+	if (lf->inl || lf->voff != NULL)
 	{
-		vals_put(dst->mcxt, &dst->col[col], isnull ? 0 : sift_cdict_intern(dst->dict[col], lf->vb + lf->voff[slot], (uint32) key), isnull, ovf, tag);
-		return;
-	}
-	if (lf->voff != NULL)
-	{
-		vals_put_var(dst->mcxt, &dst->col[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf, tag);
+		if (!isnull && !leaf_fits(dst, col, lf->vb + lf->voff[slot], (uint32) key))
+			isnull = ovf = true, tag = SIFT_COLTAG_UNKNOWN;
+		if (lf->inl)
+			vals_put(dst->mcxt, &dst->col[col], isnull ? 0 : sift_cdict_intern(dst->dict[col], lf->vb + lf->voff[slot], (uint32) key), isnull, ovf, tag);
+		else
+			vals_put_var(dst->mcxt, &dst->col[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf, tag);
 		return;
 	}
 	if (!isnull && lf->remap != NULL)
@@ -456,7 +491,17 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 							errmsg("invalid column unit: dictionary code %lld is outside the dictionary of %u values", (long long) key, dicts[col]->n)));
 		to = &lf->remap[key];
 		if (*to == PG_UINT32_MAX)
-			*to = sift_cdict_intern(dst->dict[col], dicts[col]->bytes + dicts[col]->off[key], cdict_len(dicts[col], (uint32) key));
+		{
+			const char *str = dicts[col]->bytes + dicts[col]->off[key];
+			uint32		len = cdict_len(dicts[col], (uint32) key);
+
+			if (!leaf_fits(dst, col, str, len))
+			{
+				vals_put(dst->mcxt, &dst->col[col], 0, true, true, SIFT_COLTAG_UNKNOWN);
+				return;
+			}
+			*to = sift_cdict_intern(dst->dict[col], str, len);
+		}
 		key = *to;
 	}
 	vals_put(dst->mcxt, &dst->col[col], key, isnull, ovf, tag);
