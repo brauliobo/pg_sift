@@ -128,6 +128,22 @@ SELECT (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE parent_id = '
        (SELECT by_set FROM ss_units('SELECT count(*) FROM ss_b WHERE parent_id = ' || :p1)) = 0 AS no_summary_no_skip;
 SELECT sift.col_verify('ss_on', true);
 
+-- sift.stats() splits the units a scan skipped: the ones only a summary cleared are units_pruned_set, the figure EXPLAIN gives, and the sum is Units Pruned
+CREATE FUNCTION ss_split(q text, OUT set_is_explain bool, OUT parts_add_up bool, OUT set_skips bool, OUT zone_skips bool) LANGUAGE plpgsql AS $$
+DECLARE u record;
+BEGIN
+	PERFORM sift.stats_reset();
+	SELECT * INTO u FROM ss_units(q);
+	SELECT coalesce(sum(value) FILTER (WHERE name = 'units_pruned_set'), 0) = u.by_set,
+		   sum(value) FILTER (WHERE name LIKE 'units_pruned_%') = u.pruned,
+		   sum(value) FILTER (WHERE name = 'units_pruned_set') > 0,
+		   sum(value) FILTER (WHERE name = 'units_pruned_zone') > 0
+	INTO set_is_explain, parts_add_up, set_skips, zone_skips FROM sift.stats();
+END $$;
+SELECT 'point' AS shape, * FROM ss_split('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)
+UNION ALL SELECT 'zone and set', * FROM ss_split('SELECT count(*) FROM ss WHERE id < 3000 AND kind = ' || :k1)
+UNION ALL SELECT 'dense id', * FROM ss_split('SELECT count(*) FROM ss WHERE id = 12345');
+
 -- the planner prices the skipped units: a point lookup is planned cheaper with the summaries than without them (a shape the pre-aggregates cannot answer, so the
 -- scan is priced), an IN list of 50 values, which keeps every unit, gets no credit, and the plans give the same rows
 ANALYZE ss;
@@ -169,6 +185,7 @@ SET max_parallel_workers_per_gather = 2;
 SELECT ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1) AS parallel_point,
        ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE kind = ' || :k1) AS parallel_low,
        ss_by_set('SELECT count(*) FROM ss WHERE cat = ' || quote_literal(:'c1')) AS parallel_text;
+SELECT 'parallel point' AS shape, * FROM ss_split('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1);
 SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
