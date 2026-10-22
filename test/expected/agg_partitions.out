@@ -168,6 +168,41 @@ SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUT
  SiftAgg |               0 |           0 |              0
 (1 row)
 
+-- the bounds the pruning of a plan read are not kept when a partition moves to another one: k = 11 was out of the first partition
+CREATE TABLE pb (k int NOT NULL, v int) PARTITION BY RANGE (k);
+CREATE TABLE pb_a PARTITION OF pb FOR VALUES FROM (0) TO (10) WITH (autovacuum_enabled = false);
+CREATE TABLE pb_b PARTITION OF pb FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
+INSERT INTO pb SELECT i % 20, i FROM generate_series(1, 400) i;
+CREATE INDEX pb_col ON pb USING sift_col (k, v);
+VACUUM (FREEZE, ANALYZE) pb;
+PREPARE pb_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = $1;
+SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            1 |           1 |              0
+(1 row)
+
+ALTER TABLE pb DETACH PARTITION pb_a;
+ALTER TABLE pb DETACH PARTITION pb_b;
+INSERT INTO pb_a SELECT * FROM pb_b WHERE k < 12;
+DELETE FROM pb_b WHERE k < 12;
+ALTER TABLE pb ATTACH PARTITION pb_a FOR VALUES FROM (0) TO (12);
+ALTER TABLE pb ATTACH PARTITION pb_b FOR VALUES FROM (12) TO (20);
+VACUUM (FREEZE, ANALYZE) pb;
+SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            1 |           1 |              0
+(1 row)
+
+SELECT * FROM same_exec('EXECUTE pb_k(13)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 13');
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            1 |           1 |              0
+(1 row)
+
+DEALLOCATE pb_k;
+DROP TABLE pb;
 SELECT * FROM same_exec('EXECUTE pt_param(3)', 'SELECT g, count(*) AS n FROM pt WHERE g = 3 GROUP BY g');
   scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
 ---------+-----------------+--------------+-------------+----------------
