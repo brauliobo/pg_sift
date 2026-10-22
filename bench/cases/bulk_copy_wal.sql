@@ -1,5 +1,5 @@
--- COPY into a sift_table, written as column groups
--- label: `COPY orders FROM file` into a `sift_table`, promoted (WAL bytes, wall time and CPU per load of the orders)
+-- COPY into a sift_table, written as column groups, against a heap COPY
+-- label: `COPY orders FROM file` of the whole CSV, promoted; PostgreSQL is a heap table, pg_sift a `sift_table` with `sift.table_bulk_groups` on (the default), `bulk_off` the same `sift_table` with it off
 --@ prepare
 CREATE TABLE bulk (id bigint, customer_id int, country text, category text, status text, amount numeric(10,2), quantity smallint, created_at timestamp, title text) USING {am}
 --@ load

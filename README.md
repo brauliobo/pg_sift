@@ -45,7 +45,8 @@ against PostgreSQL's.
   the same rows (sift.enable_agg = off): A page of rows with the total of
   its set (11x); ORDER BY coalesce(column, constant) LIMIT n (14x);
   count(DISTINCT key) of a whole table from the key presence of its units
-  (67x); COPY into a sift_table, written as column groups (4.1x less WAL).
+  (67x); COPY into a sift_table, written as column groups, against a heap
+  COPY (4.1x less WAL).
 - Where it does not win:
   - Cold (caches emptied), not the fastest on 3 of 10 questions: point
     lookup (PostgreSQL, 1.4x), average shipped order (ClickHouse, 1.3x), big
@@ -355,9 +356,9 @@ Raw results: [docs/results/duckdb.tsv](docs/results/duckdb.tsv); every question,
 | `key_presence_distinct` | `count(DISTINCT segment_id)` (6,313 values, `key_presence`) | ms | 24.1 | 0.36 | pg_duckdb 19.0; `scan` 1.39 | **67x** | `Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)` |
 | `cube_minmax_groupby` | `min(customer_id), max(customer_id) GROUP BY category` | ms | 22.3 | 0.17 | pg_duckdb 24.1; `scan` 1.73 | **131x** | `Group Keys: category; Pushed Aggregates: min(customer_id), max(customer_id)` |
 | `calendar_month` | `sum(amount), count(*) GROUP BY date_trunc('month', created_at)` | ms | 65.1 | 0.36 | pg_duckdb 28.8; `scan` 2.04 | **180x** | `Group Keys: created_at: (date_trunc('month'::text, orders.created_at))::date (per day)`... |
-| `bulk_copy_wal` | `COPY orders FROM file` into a `sift_table`, promoted (WAL bytes, wall time and CPU per load of the orders) | WAL bytes per row | 84.5 | 20.7 | `bulk_off` 253 | **4.1x** (12x lower than `bulk_off`) | `sift_table, segments written: columns, tombstones` |
-| `bulk_copy_wal` | (the same case) | ms | 205 | 474 | `bulk_off` 612 | 2.3x (slower) (1.3x lower than `bulk_off`) | `sift_table, segments written: columns, tombstones` |
-| `bulk_copy_wal` | (the same case) | CPU ms | 201 | 468 | `bulk_off` 606 | 2.3x (slower) (1.3x lower than `bulk_off`) | `sift_table, segments written: columns, tombstones` |
+| `bulk_copy_wal` | `COPY orders FROM file` of the whole CSV, promoted; PostgreSQL is a heap table, pg_sift a `sift_table` with `sift.table_bulk_groups` on (the default), `bulk_off` the same `sift_table` with it off | WAL bytes per row | 84.5 | 20.7 | `bulk_off` 253 | **4.1x** (`sift.table_bulk_groups` on vs off: 12x lower) | `sift_table, segments written: columns, tombstones` |
+| `bulk_copy_wal` | (the same case) | ms | 205 | 474 | `bulk_off` 612 | 2.3x (slower) (`sift.table_bulk_groups` on vs off: 1.3x lower) | `sift_table, segments written: columns, tombstones` |
+| `bulk_copy_wal` | (the same case) | CPU ms | 201 | 468 | `bulk_off` 606 | 2.3x (slower) (`sift.table_bulk_groups` on vs off: 1.3x lower) | `sift_table, segments written: columns, tombstones` |
 | `cluster_visibility_map` | `count(*), sum(amount) WHERE created_at in a quarter GROUP BY country` after `CLUSTER` | ms | 4.31 | 1.03 | pg_duckdb 11.6 | **4.2x** | `Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount)` |
 
 **Takeaway:** pg_sift (the planner's own choice) is faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 8 of 10 numbers (4.1x to 180x), slower on 2: bulk_copy_wal ms (2.3x slower), bulk_copy_wal CPU ms (2.3x slower).
@@ -366,7 +367,7 @@ Raw results: [docs/results/duckdb.tsv](docs/results/duckdb.tsv); every question,
 
 - PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store's PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).
 - The plan column is what the pg_sift lane's EXPLAIN showed; a case whose plan is not the expected one, or whose answer differs from PostgreSQL's, stops the run.
-- Variants: `bulk_off` is write buffers (`sift.table_bulk_groups = off`); `scan` is the units scanned (`sift.agg_preagg = off`).
+- Variants: `bulk_off` is the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included; `scan` is the units scanned (`sift.agg_preagg = off`).
 - Measured while the host was busy (the load average is in each row of the results): calendar_month, cluster_visibility_map, cube_minmax_groupby, key_presence_distinct, topn_coalesce, topn_lower, topn_page_totals. Read the ratios, not the milliseconds.
 
 Raw results: [docs/results/cases.tsv](docs/results/cases.tsv); the cases: [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases` (`--docs --rows 1000000` for the published size).
