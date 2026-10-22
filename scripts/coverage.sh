@@ -271,19 +271,19 @@ side_conf() {
 		>>"$SIFT_TMP/side-$n/data/postgresql.conf"
 }
 
-# L10: a published sift_table under wal_level = logical raises 0A000 on the first change without pg_sift in shared_preload_libraries
+# L10: publishing a sift_table under wal_level = logical raises 0A000 at CREATE PUBLICATION without pg_sift in shared_preload_libraries
 ext_logical_run() {
 	local out
 	side logical new-data "$SIFT_TMP/side-logical/data" || return 1
 	side_conf logical "wal_level = logical" || return 1
 	side logical start || return 1
-	side logical psql -qAt -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE cv_pub (id int PRIMARY KEY, v int) USING sift_table" -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" >/dev/null || return 1
-	out=$(side logical psql -v VERBOSITY=sqlstate -qAt -c "INSERT INTO cv_pub VALUES (1, 1)" 2>&1 || true)
-	[[ $out == *0A000* ]] || { echo "the first INSERT into a published sift_table raised: ${out:-nothing}"; return 1; }
+	side logical psql -qAt -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE cv_pub (id int PRIMARY KEY, v int) USING sift_table" >/dev/null || return 1
+	out=$(side logical psql -v VERBOSITY=sqlstate -qAt -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" 2>&1 || true)
+	[[ $out == *0A000* ]] || { echo "CREATE PUBLICATION of a sift_table raised: ${out:-nothing}"; return 1; }
 	side logical stop || return 1
 	echo "shared_preload_libraries = 'pg_sift'" >>"$SIFT_TMP/side-logical/data/postgresql.conf"
 	side logical start || return 1
-	side logical psql -qAt -c "INSERT INTO cv_pub VALUES (1, 1)" >/dev/null || { echo "the INSERT still fails with pg_sift in shared_preload_libraries"; return 1; }
+	side logical psql -qAt -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" -c "INSERT INTO cv_pub VALUES (1, 1)" >/dev/null || { echo "the publication or the INSERT still fails with pg_sift in shared_preload_libraries"; return 1; }
 }
 
 # D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
