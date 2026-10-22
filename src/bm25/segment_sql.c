@@ -6,6 +6,7 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/xlog.h"
 #include "access/table.h"
 #include "access/tableam.h"
@@ -169,6 +170,28 @@ sift_index_info(PG_FUNCTION_ARGS)
 	nulls[9] = RecoveryInProgress();
 	v[9] = BoolGetDatum(!nulls[9] && sift_maintenance_busy(index));
 	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift.index_format(rel): the on-disk format of the metapage of a sift index, a sift_col index or a sift_table, the minor a build must read to
+ * open it. A newer minor than this build reads is refused here as everywhere (scripts/upgrade_check.sql reports it).
+ */
+Datum
+sift_index_format(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	Datum		v[2];
+	bool		nulls[2] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(rel, snap);
+	v[0] = Int32GetDatum(snap->meta.format_major);
+	v[1] = Int32GetDatum(snap->meta.format_minor);
+	relation_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
