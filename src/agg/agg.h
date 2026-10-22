@@ -27,6 +27,8 @@ extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts);
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);
+extern MemoryContext sift_agg_memo_begin(void);
+extern void sift_agg_memo_end(MemoryContext cx);
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern void sift_agg_flatten_laterals(Query *q);
 

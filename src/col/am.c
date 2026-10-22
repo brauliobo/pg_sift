@@ -22,6 +22,7 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/hsearch.h"
 #include "utils/numeric.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -414,61 +415,24 @@ sift_col_att_expr(Relation index, int attno)
 	}
 }
 
-SiftColIndexMeta *
-sift_col_index_meta(Relation index)
-{
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
-	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	BlockNumber allvis;
-	Relation	heap;
-	BlockNumber relpages;
-
-	*m = *d;
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		const SiftSegEntry *e = &snap->segs[i];
-
-		if (e->kind == SIFT_SEG_IMMUTABLE)
-		{
-			m->stats.nrows += e->ndocs;
-			m->stats.bytes += e->bytes;
-			m->stats.nsegments++;
-		}
-		else
-			m->stats.nwbuf++;
-	}
-	m->stats.nunits = sift_cseg_dir_units(snap);
-	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
-	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
-	heap = table_open(d->heapoid, AccessShareLock);
-	relpages = RelationGetNumberOfBlocks(heap);
-	visibilitymap_count(heap, &allvis, NULL);
-	m->stats.heap_pages = relpages;
-	m->stats.allvisible_frac = relpages > 0 ? (double) allvis / relpages : 0;
-	table_close(heap, AccessShareLock);
-	pfree(snap);
-	return m;
-}
-
 /*
  * The leaf statistics of an index's immutable segments, memoized per backend: the key of an entry is the index and the generations of
- * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. Eight indexes
- * are kept (the oldest is dropped).
+ * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. A plan reads
+ * every partition of a table (4096 at most for the pushdown), so the memo holds as many indexes, and is dropped whole when it grows past them.
  */
-#define LEAF_STATS_CACHE	8
+#define LEAF_STATS_CACHE	8192
 
-static struct
+typedef struct LeafEntry
 {
-	Oid			index;
+	Oid			index;			/* hash key */
 	uint64		stamp;
 	int			ncols;
 	SiftColLeafStats *st;
 	SiftColZones *zones;
 	SiftColPreStats *pre;
-}			leaf_cache[LEAF_STATS_CACHE];
-static int	leaf_cache_next;
+}			LeafEntry;
+
+static HTAB *leaf_cache;
 
 uint32
 sift_col_pagg_hash(Relation index)
@@ -509,32 +473,65 @@ zones_new(const SiftColIndexMeta *d)
 	return zs;
 }
 
-static int
-leaf_cache_entry(Relation index)
+/* a sample is filled once: the arrays keep the units sampled, not the room for all of them (an index of a few units is 16 bytes a leaf) */
+static void
+zones_shrink(SiftColZones *zs)
+{
+	for (int c = 0; c < zs->ncols; c++)
+		if (zs->lo[c] != NULL)
+		{
+			zs->lo[c] = repalloc(zs->lo[c], Max(zs->n, 1) * sizeof(int64));
+			zs->hi[c] = repalloc(zs->hi[c], Max(zs->n, 1) * sizeof(int64));
+		}
+}
+
+static LeafEntry *
+leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 {
 	const SiftColIndexMeta *d = sift_col_index_defs(index);
-	SiftDirSnapshot dir;
+	SiftDirSnapshot own;
+	const SiftDirSnapshot *dir = snap;
 	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
-	int			slot = -1;
+	Oid			key = RelationGetRelid(index);
+	LeafEntry  *e;
 
 	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
-	sift_dir_read(index, &dir);
-	for (int i = 0; i < dir.nsegs; i++)
-		stamp = stamp * 31 + dir.segs[i].gen * 8 + dir.segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
-	for (int i = 0; i < LEAF_STATS_CACHE; i++)
-		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
-			slot = i;
-	if (slot >= 0 && leaf_cache[slot].stamp == stamp && leaf_cache[slot].ncols == d->ncols)
-		return slot;
-	if (slot < 0)
-		slot = leaf_cache_next++ % LEAF_STATS_CACHE;
-	if (leaf_cache[slot].st)
+	if (dir == NULL)
 	{
-		pfree(leaf_cache[slot].st);
-		pfree(leaf_cache[slot].pre);
-		zones_free(leaf_cache[slot].zones);
+		sift_dir_read(index, &own);
+		dir = &own;
 	}
-	leaf_cache[slot].st = NULL;
+	for (int i = 0; i < dir->nsegs; i++)
+		stamp = stamp * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
+	if (leaf_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};
+
+		leaf_cache = hash_create("sift_col leaf statistics", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
+	if (e != NULL && e->stamp == stamp && e->ncols == d->ncols)
+		return e;
+	if (e != NULL)
+	{
+		pfree(e->st);
+		pfree(e->pre);
+		zones_free(e->zones);
+		hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
+	}
+	else if (hash_get_num_entries(leaf_cache) >= LEAF_STATS_CACHE)
+	{
+		HASH_SEQ_STATUS seq;
+
+		hash_seq_init(&seq, leaf_cache);
+		while ((e = hash_seq_search(&seq)) != NULL)
+		{
+			pfree(e->st);
+			pfree(e->pre);
+			zones_free(e->zones);
+			hash_search(leaf_cache, &e->index, HASH_REMOVE, NULL);
+		}
+	}
 	{
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
 		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
@@ -544,14 +541,14 @@ leaf_cache_entry(Relation index)
 
 		for (int c = 0; c < d->ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
-		for (int i = 0; i < dir.nsegs; i++)
+		for (int i = 0; i < dir->nsegs; i++)
 		{
 			SiftColSegment *seg;
 			SiftCPaggCensus census;
 
-			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 				continue;
-			seg = sift_cseg_open(index, &dir.segs[i], cx);
+			seg = sift_cseg_open(index, &dir->segs[i], cx);
 			for (int c = 0; c < d->ncols; c++)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
 			sift_cseg_zone_sample(seg, zs);
@@ -566,37 +563,84 @@ leaf_cache_entry(Relation index)
 				pre->roll[spec->rollup[k].list] += census.roll[k];
 			sift_cseg_close(seg);
 		}
-		for (int i = 0; i < dir.nsegs; i++)
-			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE && dir.segs[i].format < SIFT_COL_FORMAT_KINDS)
+		for (int i = 0; i < dir->nsegs; i++)
+			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
 				for (int c = 0; c < d->ncols; c++)
 					st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
 		MemoryContextDelete(cx);
-		leaf_cache[slot].index = RelationGetRelid(index);
-		leaf_cache[slot].stamp = stamp;
-		leaf_cache[slot].ncols = d->ncols;
-		leaf_cache[slot].st = st;
-		leaf_cache[slot].zones = zs;
-		leaf_cache[slot].pre = pre;
-		return slot;
+		zones_shrink(zs);
+		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
+		e->stamp = stamp;
+		e->ncols = d->ncols;
+		e->st = st;
+		e->zones = zs;
+		e->pre = pre;
+		return e;
 	}
 }
 
 const SiftColPreStats *
 sift_col_pre_stats(Relation index)
 {
-	return leaf_cache[leaf_cache_entry(index)].pre;
+	return leaf_cache_entry(index, NULL)->pre;
 }
 
 const SiftColLeafStats *
 sift_col_leaf_stats(Relation index)
 {
-	return leaf_cache[leaf_cache_entry(index)].st;
+	return leaf_cache_entry(index, NULL)->st;
 }
 
 const SiftColZones *
 sift_col_zones(Relation index)
 {
-	return leaf_cache[leaf_cache_entry(index)].zones;
+	return leaf_cache_entry(index, NULL)->zones;
+}
+
+SiftColIndexMeta *
+sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	BlockNumber allvis;
+	Relation	heap;
+	BlockNumber relpages;
+
+	*m = *d;
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
+			m->stats.nrows += e->ndocs;
+			m->stats.bytes += e->bytes;
+			m->stats.nsegments++;
+		}
+		else
+			m->stats.nwbuf++;
+	}
+	m->stats.nunits = sift_cseg_dir_units(snap);
+	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
+	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
+	heap = table_open(d->heapoid, AccessShareLock);
+	relpages = RelationGetNumberOfBlocks(heap);
+	visibilitymap_count(heap, &allvis, NULL);
+	m->stats.heap_pages = relpages;
+	m->stats.allvisible_frac = relpages > 0 ? (double) allvis / relpages : 0;
+	table_close(heap, AccessShareLock);
+	if (memo != NULL)
+	{
+		LeafEntry  *e = leaf_cache_entry(index, snap);
+
+		memo->leaves = e->st;
+		memo->zones = e->zones;
+		memo->pre = e->pre;
+	}
+	pfree(snap);
+	return m;
 }
 
 bool
