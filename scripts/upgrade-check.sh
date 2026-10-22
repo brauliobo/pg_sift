@@ -44,7 +44,7 @@ ROLLBACK;
 SQL
 	) || { echo "== $db: the check failed" >&2; rc=2; continue; }
 	echo "== $db"
-	printf 'STATUS\tOBJECT\tKIND\tDETECTED\tADVICE\n%s\n' "$out" | column -t -s $'\t'
+	printf 'STATUS\tOBJECT\tKIND\tDETECTED\tADVICE\n%s\n' "$out" | { column -t -s $'\t' 2>/dev/null || cat; }
 	grep -q $'^blocker\t' <<<"$out" && { ((rc == 2)) || rc=1; }
 	[[ -z $strict ]] || ! grep -q $'^warn\t' <<<"$out" || { ((rc == 2)) || rc=1; }
 done
