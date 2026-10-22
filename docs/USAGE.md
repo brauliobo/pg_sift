@@ -661,6 +661,7 @@ zone maps (min and max of each unit) of the immutable segments, no chunk, and an
 | `useful_pct` | share of them whose range is narrower than the span of the leaf: the zone can exclude a value |
 | `point_units` | units an equality on a value of the data touches, on average |
 | `range_units`, `range_ideal` | the same for a range of `width_pct` percent of the span, and what a column sorted by itself would touch |
+| `depth_max` | the most units whose zones hold one value: the deepest overlap. `point_units` is the average and hides a few deep values; rows that arrive out of order (a late date, a key from the whole range) raise it by one unit per batch written |
 | `correlation` | order of the units against the order of their values: 1 ascending, -1 descending, near 0 scattered |
 | `verdict` | `clustered` (an equality touches 2 units or 2% of them), `partial` (up to 25%) or `scattered` |
 

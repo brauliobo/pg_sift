@@ -149,8 +149,8 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 	for (int c = 0; c < sc->ncols; c++)
 	{
 		const SiftColDef *def = &sc->cols[c];
-		Datum		v[10] = {0};
-		bool		nulls[10] = {false, false, false, true, true, true, true, true, true, true};
+		Datum		v[11] = {0};
+		bool		nulls[11] = {false, false, false, true, true, true, true, true, true, true, true};
 		bool		scored = def->store == SIFT_COLS_INT && def->kind == SIFT_COLK_SCALAR && def->lane == 0 && units > 0;
 
 		v[0] = Int32GetDatum(c);
@@ -169,6 +169,7 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 						gmax = -INFINITY,
 						point = 0,
 						range = 0,
+						depth = 0,
 						corr,
 						span,
 						share;
@@ -219,11 +220,14 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 					/* the zones that hold the middle of zone i, and those that meet the window around it; a zone with an overflow value is always read */
 					point += count_below(slo, n, pr[i].mid, true) - count_below(shi, n, pr[i].mid, false);
 					range += count_below(slo, n, pr[i].mid + half, true) - count_below(shi, n, pr[i].mid - half, false);
+					/* the deepest point of the zones is at the lower end of one of them */
+					depth = Max(depth, count_below(slo, n, lo[i], true) - count_below(shi, n, lo[i], false));
 				}
 				point = point / n + nbad;
 				range = range / n + nbad;
 				share = point / (n + nbad);
-				nulls[5] = nulls[6] = nulls[7] = false;
+				nulls[5] = nulls[6] = nulls[7] = nulls[10] = false;
+				v[10] = Int64GetDatum((int64) depth + nbad);
 				v[5] = Float8GetDatum(point);
 				v[6] = Float8GetDatum(range);
 				v[7] = Float8GetDatum(Min(n, 1 + width * n) + nbad);
