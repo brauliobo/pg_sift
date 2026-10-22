@@ -831,7 +831,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
-		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->src, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	init_states(ex);
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)

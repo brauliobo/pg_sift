@@ -23,6 +23,7 @@
 #include "utils/tuplesort.h"
 #include "utils/varlena.h"
 
+#include "agg/part.h"
 #include "agg/topn.h"
 #include "core/cmp.h"
 #include "core/compat.h"
@@ -146,7 +147,16 @@ typedef struct TopEnt
 	uint32		row;
 	uint8		nul;			/* bit j: key j is NULL */
 	ItemPointerData tid;
+	uint16		part;			/* the partition of the row's heap (a partitioned table), else 0 */
 } TopEnt;
+
+/* The rows of a partition are fetched through its own slot and index fetch, its columns by the attribute numbers of the partition */
+typedef struct TopFetch
+{
+	TupleTableSlot *slot;
+	IndexFetchTableData *fetch;
+	int		   *attno;
+} TopFetch;
 
 struct SiftTopN
 {
@@ -203,8 +213,10 @@ struct SiftTopN
 	uint32	   *word;
 	uint32		wpos;
 	Snapshot	snap;
-	TupleTableSlot *fslot;
-	IndexFetchTableData *fetch;	/* the heap row of a TID: the version an index scan finds, along a HOT chain */
+	SiftSrcSource *src;
+	Relation	rel;			/* the table the rows are fetched from: partitioned, or the heap */
+	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
+	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
 	int64		fetched;
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
@@ -267,8 +279,29 @@ sort_begin(SiftTopN *t)
 	return tuplesort_begin_heap(desc, n, att, op, coll, nf, work_mem, NULL, TUPLESORT_RANDOMACCESS);
 }
 
+/* The slot and the index fetch of a heap: of the partition part of a partitioned table, with the attribute numbers it has for the columns of the scan tuple (by the names of the table's) */
+static void
+fetch_begin(SiftTopN *t, int part)
+{
+	TopFetch   *f = &t->pf[part];
+	Relation	heap = t->rel;
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(t));
+
+	f->attno = t->attno;
+	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		heap = sift_aggpart_heap(t->src, part);
+		f->attno = palloc(Max(t->nout, 1) * sizeof(int));
+		for (int c = 0; c < t->nout; c++)
+			f->attno[c] = get_attnum(RelationGetRelid(heap), get_attname(RelationGetRelid(t->rel), t->attno[c], false));
+	}
+	f->slot = table_slot_create(heap, NULL);
+	f->fetch = sift_table_index_fetch_begin(heap);
+	MemoryContextSwitchTo(old);
+}
+
 SiftTopN *
-sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
+sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftTopN   *t = palloc0(sizeof(SiftTopN));
@@ -338,8 +371,12 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 		t->tids = palloc(t->limit * sizeof(ItemPointerData));
 	}
 	t->snap = snapshot;
-	t->fslot = table_slot_create(heap, NULL);
-	t->fetch = sift_table_index_fetch_begin(heap);
+	t->src = src;
+	t->rel = heap;
+	t->nfetch = heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ? sift_aggpart_count(src) : 1;
+	t->pf = palloc0(t->nfetch * sizeof(TopFetch));
+	if (heap->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		fetch_begin(t, 0);
 	MemoryContextSwitchTo(old);
 	return t;
 }
@@ -347,10 +384,13 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 void
 sift_topn_close(SiftTopN *t)
 {
-	if (t->fslot)
-		ExecDropSingleTupleTableSlot(t->fslot);
-	if (t->fetch)
-		table_index_fetch_end(t->fetch);
+	for (int i = 0; i < t->nfetch; i++)
+	{
+		if (t->pf[i].slot)
+			ExecDropSingleTupleTableSlot(t->pf[i].slot);
+		if (t->pf[i].fetch)
+			table_index_fetch_end(t->pf[i].fetch);
+	}
 	if (t->sort)
 	{
 		ExecDropSingleTupleTableSlot(t->sin);
@@ -695,10 +735,33 @@ read_other_keys(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc
 
 static void share_bar(SiftTopN *t);
 
+/* The partition of the unit the source is at: the TIDs it gives are those of that partition's heap */
+static inline uint16
+unit_part(const SiftTopN *t, SiftSrcSource *src)
+{
+	return t->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ? sift_aggpart_current(src) : 0;
+}
+
+/* The key a row has in the order of ties: its TID, those of the partitions one after the other */
+static inline uint64
+tie_key(const ItemPointerData *tid, uint16 part)
+{
+	return tid_key(tid) | (uint64) part << 48;
+}
+
+static inline void
+tie_tid(int64 tie, ItemPointerData *tid, uint16 *part)
+{
+	ItemPointerSet(tid, (tie >> 16) & PG_UINT32_MAX, tie & 0xFFFF);
+	*part = tie >> 48;
+}
+
 /* The best n of those rows by all the keys go to the heap with their TIDs */
 static void
 finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
+	uint16		part;
+
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
 	for (int x = 0; x < nc; x++)
@@ -709,13 +772,15 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 		t->rows[i] = t->lh[i].row;
 	qsort(t->rows, t->ln, sizeof(uint32), row_cmp);
 	sift_colsrc_tids(src, unit, t->rows, t->ln, t->tids);
+	part = unit_part(t, src);
 	for (int i = 0; i < t->ln; i++)
 	{
 		TopEnt	   *e = &t->lh[i];
 		uint32	   *at = bsearch(&e->row, t->rows, t->ln, sizeof(uint32), row_cmp);
 
 		e->tid = t->tids[at - t->rows];
-		e->tie = tid_key(&e->tid);
+		e->part = part;
+		e->tie = tie_key(&e->tid, part);
 		res_push(t, e);
 	}
 	share_bar(t);
@@ -908,6 +973,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 {
 	int			nk = t->nkey,
 				nc = 0;
+	uint16		part;
 
 	grow_unit_buffers(t, nrow);
 	for (int w = 0; w < (nrow + 63) / 64; w++)
@@ -928,8 +994,9 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 			t->snull[(Size) x * nk + j] = !row_val(t, j, &v, x, &t->skey[(Size) x * nk + j]);
 	}
 	sift_colsrc_tids(src, unit, t->cand, nc, t->tids);
+	part = unit_part(t, src);
 	for (int x = 0; x < nc; x++)
-		sort_put(t, &t->skey[(Size) x * nk], &t->snull[(Size) x * nk], tid_key(&t->tids[x]));
+		sort_put(t, &t->skey[(Size) x * nk], &t->snull[(Size) x * nk], tie_key(&t->tids[x], part));
 	t->nsort += nc;
 }
 
@@ -1379,9 +1446,9 @@ sift_topn_finish(SiftTopN *t)
 	}
 }
 
-/* The next row of the result: the TID of the sort, or of the heap in order */
+/* The next row of the result: the TID of the sort, or of the heap in order, and the partition it is in */
 static bool
-next_tid(SiftTopN *t, ItemPointerData *tid)
+next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part)
 {
 	bool		isnull;
 	int64		tie;
@@ -1391,20 +1458,21 @@ next_tid(SiftTopN *t, ItemPointerData *tid)
 		if (t->pos >= t->nmem)
 			return false;
 		tie = mem_row(t, t->pos++)[t->stride - 1];
-		ItemPointerSet(tid, tie >> 16, tie & 0xFFFF);
+		tie_tid(tie, tid, part);
 		return true;
 	}
 	if (!t->all)
 	{
 		if (t->pos >= t->n)
 			return false;
-		*tid = t->res[t->pos++].tid;
+		*tid = t->res[t->pos].tid;
+		*part = t->res[t->pos++].part;
 		return true;
 	}
 	if (!tuplesort_gettupleslot(t->sort, true, false, t->sout, NULL))
 		return false;
 	tie = DatumGetInt64(slot_getattr(t->sout, t->nkey + 1, &isnull));
-	ItemPointerSet(tid, tie >> 16, tie & 0xFFFF);
+	tie_tid(tie, tid, part);
 	return true;
 }
 
@@ -1412,10 +1480,12 @@ bool
 sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 {
 	ItemPointerData tid;
+	uint16		part;
+	TopFetch   *f;
 	bool		call_again = false,
 				all_dead;
 
-	if (!next_tid(t, &tid))
+	if (!next_tid(t, &tid, &part))
 		return false;
 	if (t->emitted++ < t->skip)
 	{
@@ -1424,8 +1494,11 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 		ExecStoreVirtualTuple(slot);
 		return true;
 	}
+	f = &t->pf[part];
+	if (f->slot == NULL)
+		fetch_begin(t, part);
 	/* the TID is the root of a HOT chain when the row was updated without a new index entry: the fetch follows the chain to the visible version */
-	if (!table_index_fetch_tuple(t->fetch, &tid, t->snap, t->fslot, &call_again, &all_dead))
+	if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid)),
@@ -1433,7 +1506,7 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	t->fetched++;
 	ExecClearTuple(slot);
 	for (int c = 0; c < t->nout; c++)
-		slot->tts_values[c] = slot_getattr(t->fslot, t->attno[c], &slot->tts_isnull[c]);
+		slot->tts_values[c] = slot_getattr(f->slot, f->attno[c], &slot->tts_isnull[c]);
 	ExecStoreVirtualTuple(slot);
 	ExecMaterializeSlot(slot);
 	return true;

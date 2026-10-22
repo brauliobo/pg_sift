@@ -137,7 +137,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	Bitmapset  *allrtis = NULL;
 	List	   *live_rtis = NIL,
 			   *joined = NIL;
-	int			nin = 0;
+	int			nin = 0,
+				skip = fs->skip;
 
 	scan_from((Node *) parse->jointree, fs);
 	if (!fs->ok)
@@ -154,6 +155,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		if (root->simple_rel_array[rti] != NULL)
 			live_rtis = lappend_int(live_rtis, rti);
 	fs->rtis = live_rtis;
+	foreach_int(rti, fs->rtis)
+		fs->ntables += rt_fetch(rti, parse->rtable)->rtekind == RTE_RELATION;
 	c->root = root;
 	c->group = -1;
 	c->nulling = fs->ojrels;
@@ -176,12 +179,15 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if (e->relkind == RELKIND_RELATION && e->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(parse->rteperminfos, e)->checkAsUser) &&
 				check_enable_rls(e->relid, InvalidOid, true) == RLS_ENABLED)
 				return agg_refuse_on(TABLE_KIND, "the table has row-level security and is read through a view");
-			if (c->relid == 0)
+			if (c->relid == 0 && skip == 0)
 				c->relid = rti;
 			else if (part || c->joinless)
 				return agg_refuse(FROM_SHAPE);
 			else
+			{
 				joined = lappend_int(joined, rti);
+				skip -= c->relid == 0;
+			}
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
@@ -230,7 +236,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			return agg_refuse(FROM_SHAPE);
 	}
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
-	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
+	if (fs->ojrels && input_rel == NULL)
 		return agg_refuse(OUTER_JOIN);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind) && jc != llast(c->joins))
@@ -253,16 +259,35 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	return true;
 }
 
-/* agg_base, then the other table of an outer join of two tables as the scanned one when the first did not give a plan (a preserved side) */
+/*
+ * agg_base, then another table of the FROM list as the scanned one when the first did not give a plan: the other table of an outer join of two
+ * tables (a preserved side), or, with inner joins only, each of the tables in turn (the one with the column index, which the others are joined to)
+ */
 static bool
 agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	List	   *planned;
+	int			ntables;
 
 	if (agg_base(c, root, input_rel, fs))
 		return true;
 	if (!fs->flippable)
+	{
+		ntables = fs->ntables;
+		if (fs->lefts != NIL || c->joinless)
+			return agg_refuse_on(FROM_SHAPE, "no other table of the FROM list can be the scanned one");
+		planned = c->planned;
+		for (int skip = 1; skip < ntables; skip++)
+		{
+			memset(c, 0, sizeof(AggCtx));
+			c->planned = planned;
+			agg_refuse_retry();
+			*fs = (FromScan) {.ok = true,.skip = skip};
+			if (agg_base(c, root, input_rel, fs))
+				return true;
+		}
 		return agg_refuse_on(FROM_SHAPE, "no other table of the FROM list can be the scanned one");
+	}
 	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
 	c->planned = planned;

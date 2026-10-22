@@ -41,6 +41,14 @@ extern bool sift_aggpart_key_clause(Node *cl, Var **var, Node **operand, Oid *op
 extern void sift_aggpart_offsets(SiftSrcSource *src, uint32 *off);
 extern void sift_aggpart_set_offsets(SiftSrcSource *src, const uint32 *off);
 
+/*
+ * The top-N fetches the rows it keeps from the heap of the partition each came from: the partitions, the one the source is at (the partition of
+ * the unit its last `next` returned) and the heap of partition i (opened here if the scan never read it).
+ */
+extern int	sift_aggpart_count(SiftSrcSource *src);
+extern int	sift_aggpart_current(SiftSrcSource *src);
+extern Relation sift_aggpart_heap(SiftSrcSource *src, int i);
+
 /* Planner: do two layouts read the same leaves of the same columns (a column of a partition has the attribute number the caller translated to)? */
 extern bool sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b);
 
