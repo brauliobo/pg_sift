@@ -41,7 +41,7 @@ CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -
 LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
-PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable.list))))
+PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
 OWN := host container mb spool host_regex host_stubs store dir stream stubs build merge vtab content cursor write auxfn pscan init
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
@@ -102,7 +102,7 @@ $(B)/stress: tests/stress.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -o $@ tests/stress.c $(OBJS) $(LDLIBS) -lsqlite3
 
 # the column engine of src/portable-col.list, unmodified, against this host; SIMD=none leaves out its vector files and aliases their tables
-COLSRC := $(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable-col.list)))
+COLSRC := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable-col.list)))
 COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512,$(s)),$(s)))),$(COLSRC))
 COLOBJS := $(addprefix $(B)/,$(addsuffix .o,$(COLSRC)))
 COLALIASES := $(if $(filter none,$(SIMD)),$(foreach l,avx2 avx512,-Dsift_col_kernels_$(l)=sift_col_kernels_scalar -Dsift_cc_kernels_$(l)=sift_cc_kernels_scalar \
