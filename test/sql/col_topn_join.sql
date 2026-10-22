@@ -119,6 +119,7 @@ INSERT INTO jt_shapes VALUES
 	(17, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region = f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(18, 'SELECT f.id, f.k_rand FROM jf f JOIN (SELECT g FROM jd WHERE region = 2) d ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10'),
 	(19, 'SELECT f.id, d.region FROM jf f JOIN jd d ON d.g = f.g ORDER BY d.region, f.id LIMIT 10'),
+	-- pushed: a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind; it needs no unique key
 	(20, 'SELECT f.id, f.k_rand FROM jf f WHERE f.g IN (SELECT g FROM jd WHERE region = 2) ORDER BY f.k_rand, f.id LIMIT 10');
 SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LATERAL jt_run(s.q) r ORDER BY s.n;
 

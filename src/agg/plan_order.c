@@ -476,8 +476,8 @@ topn_unique_key(AggCtx *c, JoinCtx *jc)
 
 /*
  * The joins a top-N takes (agg/init_table.c, join_filters): the keys of the loaded table are a conjunct of the scan, `key IN (keys)`, which the rows of
- * the heap hold exactly, so nothing is left to join and no row can match twice. That is an inner join of a table with a unique index on its column,
- * by one integer column of the scanned table, whose ON clause and WHERE read the table's columns alone. The table adds no column to the result (the
+ * the heap hold exactly, so nothing is left to join and no row can match twice. That is a semi join (IN, EXISTS), or an inner join of a table with a
+ * unique index on its column, by one integer column of the scanned table, whose ON clause and WHERE read the table's columns alone. The table adds no column to the result (the
  * columns the query reads are those of the scanned table, topn_columns).
  */
 static bool
@@ -494,12 +494,12 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 			continue;
 		j = &s->join[cb->join];
 		jc = list_nth(c->joins, cb->join);
-		if (j->kind != SJ_INNER || j->params != NIL || j->child >= 0 || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->child >= 0 || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
 			cb->nleaves != 1 || cb->leaf[0] < 0 || cb->leaf[0] >= c->lay->nleaves || cb->nslots != (j->fslot >= 0 ? 1 : 0) ||
 			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 			return agg_refuse_on(TOPN_SHAPE, "a joined table is not an inner join by one key that the rows of the heap hold, with ON and WHERE on its own columns");
 		lf = &c->lay->leaf[cb->leaf[0]];
-		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || !topn_unique_key(c, jc))
+		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || (j->kind == SJ_INNER && !topn_unique_key(c, jc)))
 			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
 	}
 	return true;
@@ -537,6 +537,16 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	add_path(output_rel, &cp->path);
 }
 
+/* The sub-selects a top-N takes are those PostgreSQL pulled up into semi joins (IN, EXISTS): their keys are a conjunct of the scan, like an inner join's */
+static bool
+topn_lefts_ok(List *lefts)
+{
+	foreach_ptr(LeftJoin, lj, lefts)
+		if (lj->kind != SJ_SEMI)
+			return agg_refuse_on(TOPN_SHAPE, "an outer or anti join of the scanned table");
+	return true;
+}
+
 /* A query with a LIMIT, an ORDER BY and no groups: the reason it is not a top-N of the rows of one table is recorded for sift.explain_refusals */
 static bool
 topn_query_ok(PlannerInfo *root, double *count, double *offset)
@@ -550,9 +560,9 @@ topn_query_ok(PlannerInfo *root, double *count, double *offset)
 		agg_refused_on(TOPN_SHAPE, "LIMIT and OFFSET are not constants or parameters, leave no row, or the limit has ties");
 		return false;
 	}
-	if (parse->hasWindowFuncs || parse->distinctClause || parse->setOperations || parse->hasSubLinks)
+	if (parse->hasWindowFuncs || parse->distinctClause || parse->setOperations)
 	{
-		agg_refused_on(TOPN_SHAPE, "the query has a window function, DISTINCT, a set operation or a sub-select");
+		agg_refused_on(TOPN_SHAPE, "the query has a window function, DISTINCT or a set operation");
 		return false;
 	}
 	return true;
@@ -593,7 +603,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		return;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
-	if (c->func_rti != 0 || fs.lefts != NIL ||
+	if (c->func_rti != 0 || !topn_lefts_ok(fs.lefts) ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) :
 		  sift_colsrc_can_tids(get_rel_relam(c->nparts > 0 ? c->partheap[0] : c->heapoid), false)))
 	{
@@ -639,7 +649,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		}
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
-	if (!topn_columns(c, target, &scan_tlist, attno))
+	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
