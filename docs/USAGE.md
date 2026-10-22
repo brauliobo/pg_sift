@@ -464,6 +464,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `grouping_sets` | two_level, rows | the arm does not group by grouping sets |
 | `dirty_units` | single, distinct, topn | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
 | `first_memory` | single, distinct | the first rows of the groups would not fit in the memory of a hash aggregate |
+| `group_memory` | single, distinct, topn | the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill |
 | `lateral_limit` | lookup | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
 | `two_arms` | two_level | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
 | `two_keys` | two_level | a key of the two level aggregate is not one every arm groups by |

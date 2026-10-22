@@ -13,6 +13,7 @@
 #include "executor/executor.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/parsenodes.h"
 #include "optimizer/pathnode.h"
@@ -51,9 +52,13 @@ typedef struct ArmNote
 	bool		cheaper;		/* a path of the arm is no dearer than best, as add_path compares them (enable_* off counts) */
 	double		scan;
 	double		normal;
+	double		spill;			/* of scan, what the cheapest path pays for the groups that outgrow the hash memory */
+	const char *spill_detail;
 } ArmNote;
 
 static ArmNote *arm;
+static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm_path */
+static const char *path_spill_detail;
 static List *done;
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
 static Tuplestorestate *why_store;
@@ -105,6 +110,18 @@ agg_arm_candidate(void)
 		arm->candidate = true;
 }
 
+/* the spill agg_cost charged the path it prices (0: none), for the path agg_arm_path is given next */
+void
+agg_arm_spill(double cost, double groups, double table)
+{
+	if (arm == NULL)
+		return;
+	path_spill = cost;
+	path_spill_detail = cost > 0 ?
+		psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and the spill costs the scan %.2f", groups, table / 1024.0,
+				 (double) get_hash_memory_limit() / 1024.0, cost) : NULL;
+}
+
 /* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */
 void
 agg_arm_path(Path *p)
@@ -124,6 +141,11 @@ agg_arm_path(Path *p)
 	}
 	arm->paths = lappend(arm->paths, p);
 	arm->rel = p->parent;
+	if (p->total_cost < arm->scan)
+	{
+		arm->spill = path_spill;
+		arm->spill_detail = path_spill_detail;
+	}
 	arm->scan = Min(arm->scan, p->total_cost);
 	arm->cheaper |= !arm->has_best || compare_path_costs(p, &arm->best, TOTAL_COST) <= 0;
 }
@@ -143,8 +165,11 @@ agg_arm_end(void)
 		a->used &= a->cheaper;
 		if (!a->used)
 		{
-			a->why = AGG_REFUSE_COST;
-			a->detail = psprintf("the scan costs %.2f, the normal plan %.2f", a->scan, a->normal);
+			/* the memory decided it when the scan, without the spill, is no dearer than the normal plan */
+			bool		memory = a->spill > 0 && a->has_best && a->scan - a->spill <= a->normal;
+
+			a->why = memory ? AGG_REFUSE_GROUP_MEMORY : AGG_REFUSE_COST;
+			a->detail = psprintf("%s%sthe scan costs %.2f, the normal plan %.2f", memory ? a->spill_detail : "", memory ? ": " : "", a->scan, a->normal);
 		}
 	}
 	else if (!a->candidate)
