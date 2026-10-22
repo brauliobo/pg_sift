@@ -85,6 +85,27 @@ SELECT cd_plan('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000') A
 	   cd_plan('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10') AS small_limit,
 	   cd_plan('SELECT id FROM cd ORDER BY a, b, c, d, e, id LIMIT 30') AS five_keys;
 
+-- workers allowed: a top-N that sorts every row that passes is one process (the heaps of the workers are what the leader merges)
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE FUNCTION cd_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; line text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('enable_seqscan', 'off', true);
+	PERFORM set_config('enable_indexscan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: .*sorted' THEN 'sorted' WHEN plan ~ 'Top-N: ' THEN 'heap' ELSE 'other' END || CASE WHEN plan ~ 'Workers Planned' THEN ' with workers' ELSE ' alone' END;
+END $$;
+SELECT cd_workers('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000') AS deep_offset_workers;
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+
 -- the rows that are skipped by the OFFSET are not read from the heap
 CREATE FUNCTION cd_stat(q text, field text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE line text; v bigint;

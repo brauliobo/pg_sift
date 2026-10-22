@@ -540,6 +540,7 @@ extern sift_i128 sift_pow10(int e);
  * who shares it with the workers; a child plan run per combination of leaves is the leader's alone: no workers either.
  */
 extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
+extern const char *sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg);
 
 static inline bool
 sift_aggspec_ordered(const SiftAggSpec *s)

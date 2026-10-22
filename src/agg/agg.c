@@ -45,6 +45,7 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/cost.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "portability/instr_time.h"
@@ -1035,6 +1036,14 @@ explain_source(SiftAggSpec *s, ExplainState *es)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	if (s->topn)
 		ExplainPropertyText("Top-N", psprintf("%s (limit %s)", s->desc_topn, sift_topn_limit_text(s->topn)), es);
+	if (es->verbose && max_parallel_workers_per_gather > 0 && s->nworkers == 0)
+	{
+		int			agg;
+		const char *why = sift_aggspec_serial_reason(s, &agg);
+
+		if (why)
+			ExplainPropertyText("Serial Because", agg >= 0 ? psprintf("%s: %s", s->agg[agg].desc, why) : why, es);
+	}
 }
 
 static void

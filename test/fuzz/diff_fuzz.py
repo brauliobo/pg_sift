@@ -138,6 +138,8 @@ AGGS = [
     ({'amount'}, 'min({e}.amount)'), ({'amount'}, 'max({e}.amount)'), ({'val'}, 'min({e}.val)'), ({'val'}, 'max({e}.val)'), ({'ts'}, 'min({e}.ts)'),
     ({'ts'}, 'max({e}.ts)'), ({'kind'}, 'min({e}.kind)'), ({'kind'}, 'max({e}.kind)'), ({'big'}, 'min({e}.big)'), ({'big'}, 'max({e}.big)'),
     ({'num'}, 'max({e}.num)'), ({'flag'}, 'bool_and({e}.flag)'), ({'flag'}, 'bool_or({e}.flag)'),
+    ({'amount'}, 'count(DISTINCT {e}.amount)'), ({'amount'}, 'sum(DISTINCT {e}.amount)'), ({'amount'}, 'avg(DISTINCT {e}.amount)'), ({'num'}, 'count(DISTINCT {e}.num)'),
+    ({'num'}, 'sum(DISTINCT {e}.num)'), ({'amount'}, 'count(DISTINCT 3 * {e}.amount)'),  # sets of numbers: the workers send them by value
     ({'kind'}, "count(*) FILTER (WHERE {e}.kind = 'k{k}')"), ({'kind'}, "count(*) FILTER (WHERE {e}.kind IS NULL)"),
     ({'grp', 'amount'}, 'sum({e}.amount) FILTER (WHERE {e}.grp IN ({k}, {k2}))'), ({'grp', 'val'}, 'max({e}.val) FILTER (WHERE {e}.grp = {k})'),
     ({'kind', 'big'}, "sum({e}.big) FILTER (WHERE {e}.kind IN ('k{k}', 'k{k2}'))"), ({'amount'}, 'count(*) FILTER (WHERE {e}.amount > {k}00)'),
