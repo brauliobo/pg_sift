@@ -191,14 +191,17 @@ sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx)
 	return idx < seg->npages ? seg->page[idx] : InvalidBlockNumber;
 }
 
-/* Is the write buffer act still open to new pages: its header is its own and the vblocks reserved are not all in use; *tail: its last page */
+/*
+ * Is the write buffer act still open to new pages: its header is its own and, unless room is false (a tail page takes no vblock), the vblocks
+ * reserved are not all in use; *tail: its last page
+ */
 static bool
-wbuf_open(Relation rel, const SiftSegEntry *act, BlockNumber *tail)
+wbuf_open(Relation rel, const SiftSegEntry *act, bool room, BlockNumber *tail)
 {
 	Buffer		hbuf = sift_lane_read_locked(rel, act->header_blk, BUFFER_LOCK_SHARE);
 	Page		hp = BufferGetPage(hbuf);
 	bool		open = !PageIsNew(hp) && SiftPageGetOpaque(hp)->type == SIFT_PT_WBUFHEADER && SiftPageGetOpaque(hp)->gen == act->gen &&
-		TBL_WBUF_HDR(hp)->npages < TBL_WBUF_HDR(hp)->vcap;
+		(!room || TBL_WBUF_HDR(hp)->npages < TBL_WBUF_HDR(hp)->vcap);
 
 	if (open)
 		*tail = SiftLaneHdr(hp)->lanes[0].tail;
@@ -224,10 +227,17 @@ link_wbuf_page(Page cur, Page np, Page hp, void *arg)
 	h->page[h->npages++] = SiftLaneHead(cur)->next;
 }
 
+/* sift_lane_grow's fill for a tail page: it stays out of the page table of the segment, so it takes no vblock */
+static void
+link_tail_page(Page cur, Page np, Page hp, void *arg)
+{
+	init_data_page(np, 0, SIFT_TBL_PAGE_OVFDATA | SIFT_TBL_PAGE_TAIL);
+}
+
 /*
- * Links a page after the tail of the write buffer act, initialized, flagged flags, unlocked, its vblock in *vblock. InvalidBlockNumber
- * when the segment is sealed, full or gone. The segment is full when its vblocks are used up (wbuf_open under the tail lock, which
- * is what the growers of the chain hold).
+ * Links a page after the tail of the write buffer act, initialized, flagged flags, unlocked, its vblock in *vblock (NULL: a tail page,
+ * which is in the chain only). InvalidBlockNumber when the segment is sealed, full or gone. The segment is full when its vblocks are
+ * used up (wbuf_open under the tail lock, which is what the growers of the chain hold); tail pages take none.
  */
 static BlockNumber
 extend_wbuf(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock)
@@ -238,17 +248,19 @@ extend_wbuf(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock)
 	int			lane;
 	bool		crossed;
 
-	if (!wbuf_open(rel, act, &tail) || !BufferIsValid(cur = sift_lane_lock_tail(rel, act->gen, &tail, 1, &lane)))
+	if (!wbuf_open(rel, act, vblock != NULL, &tail) || !BufferIsValid(cur = sift_lane_lock_tail(rel, act->gen, &tail, 1, &lane)))
 		return InvalidBlockNumber;
-	if (!wbuf_open(rel, act, &tail))
+	if (!wbuf_open(rel, act, vblock != NULL, &tail))
 	{
 		UnlockReleaseBuffer(cur);
 		return InvalidBlockNumber;
 	}
-	cur = sift_lane_grow(rel, act->gen, act->header_blk, lane, cur, TBL_PAGE_INIT, PG_UINT32_MAX, link_wbuf_page, &link, &crossed);
+	cur = sift_lane_grow(rel, act->gen, act->header_blk, lane, cur, TBL_PAGE_INIT, PG_UINT32_MAX,
+						 vblock ? link_wbuf_page : link_tail_page, vblock ? (void *) &link : NULL, &crossed);
 	tail = BufferGetBlockNumber(cur);
 	UnlockReleaseBuffer(cur);
-	*vblock = link.vblock;
+	if (vblock)
+		*vblock = link.vblock;
 	return tail;
 }
 
@@ -276,16 +288,46 @@ claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock, uint64 *g
 	}
 }
 
-/* A page of the write buffer gen, which must still be the active one and have room; InvalidBlockNumber otherwise */
+/* A page of the write buffer gen, which must still be the active one and have room (a tail page: no vblock); InvalidBlockNumber otherwise */
 static BlockNumber
-claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags)
+claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags, bool tail)
 {
 	const SiftSegEntry *act;
 	uint32		vb;
 
 	sift_tbl_refresh(rel, st);
 	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
-	return act && act->gen == gen ? extend_wbuf(rel, act, flags, &vb) : InvalidBlockNumber;
+	return act && act->gen == gen ? extend_wbuf(rel, act, flags, tail ? NULL : &vb) : InvalidBlockNumber;
+}
+
+static void
+set_wide_format(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	uint64		gen = *(uint64 *) arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == gen)
+			dir->segs[i].format = SIFT_COL_FORMAT_WIDE_ROWS;
+}
+
+/*
+ * Marks the open write buffer gen as one that holds tail pages (format 11) before the first is written, so that a build that does not know
+ * the layout cannot write to the table; false when gen is no longer the open one.
+ */
+static bool
+mark_wide(Relation rel, SiftTblRel *st, uint64 gen)
+{
+	const SiftSegEntry *act;
+	bool		open;
+
+	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	sift_dir_read(rel, &st->dir);
+	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+	open = act && act->gen == gen;
+	if (open && act->format != SIFT_COL_FORMAT_WIDE_ROWS)
+		sift_dir_update(rel, &(SiftDirChange) {.fn = set_wide_format,.arg = &gen,.extra = InvalidBuffer});
+	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	return open;
 }
 
 /* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
@@ -322,17 +364,21 @@ static BlockNumber
 write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 {
 	uint32		npg = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD;
-	BlockNumber *blks = palloc(npg * sizeof(BlockNumber));
+	bool		wide = npg >= wbuf_vcap();	/* the page table of a buffer cannot list its pages: they are tail pages */
+	BlockNumber *blks;
 	BlockNumber first = InvalidBlockNumber;
 
-	if (npg >= wbuf_vcap())
+	if (wide && !sift_tbl_wide_rows)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
 				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit),
-				 errhint("Raise sift.table_write_buffer_limit (up to 1048576 kB), or keep the document outside the row.")));
+				 errhint("Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.")));
+	blks = palloc(npg * sizeof(BlockNumber));
+	if (wide && !mark_wide(rel, st, gen))
+		goto done;
 	for (uint32 i = 0; i < npg; i++)
-		if (!BlockNumberIsValid(blks[i] = claim_page_in(rel, st, gen, SIFT_TBL_PAGE_OVFDATA)))
+		if (!BlockNumberIsValid(blks[i] = claim_page_in(rel, st, gen, SIFT_TBL_PAGE_OVFDATA, wide)))
 			goto done;
 	for (uint32 i = 0; i < npg; i++)
 	{
@@ -360,6 +406,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 	SiftTblRec	rec = {.len = mtup->t_len,.xmin = xmin,.cmin = cmin,.token = token};
 	Size		need;
 	uint64		ovf_gen = 0;		/* the segment holding the overflow pages written so far */
+	bool		wide = false;		/* the row has tail pages: the buffer is as big as it may get, it is closed behind it */
 
 	if (token)
 		rec.flags |= SIFT_TBL_REC_SPEC;
@@ -389,6 +436,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 				continue;
 			}
 			ovf_gen = st->tgt_gen;
+			wide = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD >= wbuf_vcap();
 		}
 		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
@@ -414,11 +462,27 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 			ItemPointerSet(tid, ph->vblock, off);
 			sift_page_edit_end(rel, &ed, 1);
 			UnlockReleaseBuffer(buf);
+			if (wide)
+				sift_tbl_close_wbuf(rel, st, 0);
 			return;
 		}
 		UnlockReleaseBuffer(buf);
 		st->tgt_blk = InvalidBlockNumber;
 	}
+}
+
+uint32
+sift_tbl_ovf_piece(Page page, uint64 gen)
+{
+	uint32		used;
+
+	if (PageIsNew(page) || SiftPageGetOpaque(page)->type != SIFT_PT_WBUFDATA || SiftPageGetOpaque(page)->gen != gen ||
+		!(TBL_PAGE(page)->flags & SIFT_TBL_PAGE_OVFDATA))
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page is not a continuation page of an overflow row")));
+	used = SiftPageGetUsed(page);
+	if (used <= TBL_PAGE_INIT || used > SIFT_PAGE_PAYLOAD)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer continuation page holds %u bytes", used)));
+	return used - TBL_PAGE_INIT;
 }
 
 /* Reads the row bytes of a record (an overflow row from its pages) into a HeapTuple */
@@ -437,9 +501,10 @@ sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key)
 		{
 			Buffer		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 			Page		p = BufferGetPage(buf);
-			uint32		n = Min(SiftPageGetUsed(p) - TBL_PAGE_INIT, rec->len - got);
+			uint32		n;
 
 			sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, gen);
+			n = Min(sift_tbl_ovf_piece(p, gen), rec->len - got);
 			memcpy((char *) mt + got, (char *) TBL_PAGE(p) + TBL_PAGE_INIT, n);
 			got += n;
 			blk = TBL_PAGE(p)->ovf_next;

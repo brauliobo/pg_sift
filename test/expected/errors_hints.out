@@ -65,11 +65,11 @@ SELECT expect(format('CREATE INDEX ON many USING sift_col (id) WITH (paths = %L)
 -- a row of a sift_table over the write buffer
 SET sift.table_write_buffer_limit = 2048;
 SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
-                                                expect                                                 
--------------------------------------------------------------------------------------------------------
- 54000 row of sift_table "tbl" is too large: 3000024 bytes                                            +
-   detail: A row has to fit one write buffer of 2048 kB.                                              +
-   hint: Raise sift.table_write_buffer_limit (up to 1048576 kB), or keep the document outside the row.
+                                                                           expect                                                                            
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 54000 row of sift_table "tbl" is too large: 3000024 bytes                                                                                                  +
+   detail: A row has to fit one write buffer of 2048 kB.                                                                                                    +
+   hint: Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.
 (1 row)
 
 RESET sift.table_write_buffer_limit;

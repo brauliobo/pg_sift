@@ -86,7 +86,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `doc_length` | length of one document | 65,535 | tokens | saturated |  | `core/sift.h` `SIFT_MAX_DL` |  |
 | `fields` | fields of a BM25 index | 14 | fields | CREATE INDEX rejected | `fields option` | `core/sift.h` `SIFT_MAX_FIELDS` |  |
 | `prefix_index` | prefix_index option | 15 | characters | option rejected at CREATE INDEX | `prefix_index option` | `core/sift.h` `SIFT_MAX_PREFIX_INDEX` |  |
-| `write_buffer_kb` | default write buffer; a sift_table row must fit it | 4,096 (4 MiB) | kB | ERROR 54000 for a larger sift_table row | `write_buffer_limit option` | `core/sift.h` `SIFT_DEFAULT_WRITE_BUFFER_LIMIT` |  |
+| `write_buffer_kb` | default write buffer; a sift_table row that does not fit it needs sift.table_wide_rows | 4,096 (4 MiB) | kB | ERROR 54000 for a larger sift_table row unless sift.table_wide_rows is on (then up to 1 GB) | `sift.table_wide_rows` | `core/sift.h` `SIFT_DEFAULT_WRITE_BUFFER_LIMIT` |  |
 | `query_bytes` | length of a search query | 262,144 (256 KiB) | bytes | ERROR 54000 |  | `bm25/query.h` `SIFT_QUERY_MAX_BYTES` | yes |
 | `query_leaves` | terms of a search query | 256 | terms | ERROR 54000 |  | `core/sift.h` `SIFT_MAX_LEAVES` |  |
 | `query_depth` | nesting of a search query | 32 | levels | ERROR 54000 |  | `core/sift.h` `SIFT_MAX_DEPTH` |  |

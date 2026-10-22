@@ -1,0 +1,192 @@
+-- A row of a sift_table that does not fit one write buffer (4 MB by default, 8 MB at most) used to be refused. With sift.table_wide_rows = on it is
+-- written to tail pages that the page table of the buffer does not list, up to PostgreSQL's 1 GB; the buffer that takes one is format 11, the
+-- others keep the layout of earlier versions. The rows survive an update, a delete, a rollback and the promotion into columns.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE wr (id int, g int, v text) USING sift_table;
+INSERT INTO wr SELECT i, i % 3, repeat(md5(i::text), 100) FROM generate_series(1, 50) i;
+-- off (the default): the row is refused, and the hint names the setting
+INSERT INTO wr VALUES (100, 0, repeat('a', 5000000));
+ERROR:  row of sift_table "wr" is too large: 5000028 bytes
+DETAIL:  A row has to fit one write buffer of 4096 kB.
+HINT:  Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.
+SELECT count(*) AS rows_after_refusal FROM wr;
+ rows_after_refusal 
+--------------------
+                 50
+(1 row)
+
+SET sift.table_wide_rows = on;
+-- 5 MB (beyond the default buffer) and 12 MB (beyond the largest one) next to ordinary rows
+INSERT INTO wr VALUES (100, 0, repeat('a', 5000000)), (101, 1, repeat('bc', 6000000)), (102, 2, 'short');
+SELECT id, length(v), md5(v) FROM wr WHERE id >= 100 ORDER BY id;
+ id  |  length  |               md5                
+-----+----------+----------------------------------
+ 100 |  5000000 | ca6e2f55ffd30e828d900707296d91d9
+ 101 | 12000000 | e24a91ab15724226152b0556e16e9102
+ 102 |        5 | 4f09daa9d95bcb166a302407a0e0babe
+(3 rows)
+
+SELECT count(*), sum(length(v)) FROM wr;
+ count |   sum    
+-------+----------
+    53 | 17160005
+(1 row)
+
+SELECT count(*) AS wrong FROM wr WHERE id <= 50 AND v <> repeat(md5(id::text), 100);
+ wrong 
+-------
+     0
+(1 row)
+
+-- only the buffer that took them is marked: kind, format
+SELECT kind, format FROM sift.table_segments('wr') WHERE kind IN ('buffer', 'sealed buffer') ORDER BY gen;
+     kind      | format 
+---------------+--------
+ sealed buffer |     11
+ sealed buffer |     11
+ buffer        |       
+(3 rows)
+
+-- update and delete keep the other rows, in the buffer and after the promotion into columns
+UPDATE wr SET v = repeat('u', 7000000) WHERE id = 100;
+DELETE FROM wr WHERE id = 101;
+SELECT id, length(v), left(v, 3) FROM wr WHERE id >= 100 ORDER BY id;
+ id  | length  | left 
+-----+---------+------
+ 100 | 7000000 | uuu
+ 102 |       5 | sho
+(2 rows)
+
+VACUUM wr;
+SELECT id, length(v), left(v, 3), md5(v) FROM wr WHERE id >= 100 ORDER BY id;
+ id  | length  | left |               md5                
+-----+---------+------+----------------------------------
+ 100 | 7000000 | uuu  | 70181da1021ae6550cf34709d765ae73
+ 102 |       5 | sho  | 4f09daa9d95bcb166a302407a0e0babe
+(2 rows)
+
+SELECT count(*), sum(length(v)) FROM wr;
+ count |   sum   
+-------+---------
+    52 | 7160005
+(1 row)
+
+SELECT count(*) AS wrong FROM wr WHERE id <= 50 AND v <> repeat(md5(id::text), 100);
+ wrong 
+-------
+     0
+(1 row)
+
+SELECT kind, format FROM sift.table_segments('wr') WHERE kind IN ('buffer', 'sealed buffer') ORDER BY gen;
+  kind  | format 
+--------+--------
+ buffer |       
+(1 row)
+
+SELECT sift._test_tbl_verify('wr') AS verified_rows;
+ verified_rows 
+---------------
+            52
+(1 row)
+
+-- the scan and the normal plan read the same rows
+SELECT g, count(*), sum(length(v)), min(length(v)), max(length(v)) FROM wr GROUP BY g ORDER BY g;
+ g | count |   sum   | min  |   max   
+---+-------+---------+------+---------
+ 0 |    17 | 7051200 | 3200 | 7000000
+ 1 |    17 |   54400 | 3200 |    3200
+ 2 |    18 |   54405 |    5 |    3200
+(3 rows)
+
+SET sift.enable_agg = off;
+SELECT g, count(*), sum(length(v)), min(length(v)), max(length(v)) FROM wr GROUP BY g ORDER BY g;
+ g | count |   sum   | min  |   max   
+---+-------+---------+------+---------
+ 0 |    17 | 7051200 | 3200 | 7000000
+ 1 |    17 |   54400 | 3200 |    3200
+ 2 |    18 |   54405 |    5 |    3200
+(3 rows)
+
+RESET sift.enable_agg;
+-- a rolled back wide row is not visible, and VACUUM returns its pages: the file does not keep them
+BEGIN;
+INSERT INTO wr VALUES (200, 0, repeat('r', 6000000));
+SELECT length(v) FROM wr WHERE id = 200;
+ length  
+---------
+ 6000000
+(1 row)
+
+ROLLBACK;
+SELECT count(*) AS rolled_back FROM wr WHERE id = 200;
+ rolled_back 
+-------------
+           0
+(1 row)
+
+VACUUM wr;
+SELECT count(*), sum(length(v)) FROM wr;
+ count |   sum   
+-------+---------
+    52 | 7160005
+(1 row)
+
+SELECT relation_blocks < 2000 AS file_small FROM sift.table_space('wr');
+ file_small 
+------------
+ t
+(1 row)
+
+-- a wide row in a transaction that commits, read in the same transaction after an update
+BEGIN;
+INSERT INTO wr VALUES (300, 1, repeat('c', 6000000));
+UPDATE wr SET v = v || 'd' WHERE id = 300;
+SELECT length(v), right(v, 2) FROM wr WHERE id = 300;
+ length  | right 
+---------+-------
+ 6000001 | cd
+(1 row)
+
+COMMIT;
+SELECT length(v), right(v, 2) FROM wr WHERE id = 300;
+ length  | right 
+---------+-------
+ 6000001 | cd
+(1 row)
+
+-- a row that fits keeps the earlier layout, whatever the setting says
+CREATE TABLE wn (id int, v text) USING sift_table;
+INSERT INTO wn SELECT i, repeat('n', 100000) FROM generate_series(1, 20) i;
+SELECT kind, format FROM sift.table_segments('wn') WHERE kind IN ('buffer', 'sealed buffer') ORDER BY gen;
+  kind  | format 
+--------+--------
+ buffer |       
+(1 row)
+
+SELECT count(*), sum(length(v)) FROM wn;
+ count |   sum   
+-------+---------
+    20 | 2000000
+(1 row)
+
+-- the continuation page of a row comes from disk: one that is not, or holds no bytes, is corruption
+SELECT sift._test_tbl_ovf_piece(100, 256) AS piece;
+ piece 
+-------
+   100
+(1 row)
+
+SELECT sift._test_tbl_ovf_piece(0, 256);
+ERROR:  sift_table write buffer continuation page holds 600 bytes
+SELECT sift._test_tbl_ovf_piece(-1, 256);
+ERROR:  sift_table write buffer continuation page holds 599 bytes
+SELECT sift._test_tbl_ovf_piece(100, 0);
+ERROR:  sift_table write buffer page is not a continuation page of an overflow row
+SELECT sift._test_tbl_ovf_piece(100000, 256);
+ERROR:  sift_table write buffer continuation page holds 35064 bytes
+DROP TABLE wr, wn;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
