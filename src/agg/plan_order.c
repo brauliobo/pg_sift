@@ -343,6 +343,11 @@ topn_sort_cost(double rows, int nkey, double keybytes, double cmpx)
  */
 #define TOPN_CMP_BYTES	1.0
 #define TOPN_CMP_LOCALE	5.0
+/*
+ * lower() or upper() of an entry, once per distinct entry of a unit (every row, when they are all distinct). Measured on the same 200,000 strings:
+ * 38.8 ms against 13.8 for the key itself under C, 97.1 against 25.8 under en_US.utf8 (about three times that): 25 ms is 0.027 units a row, 11 operators
+ */
+#define TOPN_CMP_XFORM	11.0
 
 /* The bytes a key of byte strings holds in an entry of the heap or a row of the sort: the column's average width, a header and the allocation's */
 static double
@@ -354,11 +359,47 @@ topn_key_width(AggCtx *c, Node *e, Oid typid)
 	return (w > 0 ? w : get_typavgwidth(typid, -1)) + sizeof(uint32) + 16;
 }
 
+/*
+ * The sort expressions the scan evaluates itself (agg/topn.h, TXK_*): coalesce(x, constant), lower(x), upper(x); returns x, the leaf expression.
+ * PostgreSQL evaluates a sort expression for every row that passes, so only one that cannot raise gives the same result when the scan does it: an
+ * arithmetic expression (integer out of range), a cast, a CASE (it can hold either) are not among them
+ */
+static Node *
+topn_xform(Node *e, SiftTopXform *xf, Node **konst)
+{
+	Node	   *x = strip_relabel(e);
+
+	xf->kind = TXK_NONE;
+	if (IsA(x, FuncExpr) && list_length(((FuncExpr *) x)->args) == 1 && (((FuncExpr *) x)->funcid == F_LOWER_TEXT || ((FuncExpr *) x)->funcid == F_UPPER_TEXT))
+	{
+		xf->kind = ((FuncExpr *) x)->funcid == F_LOWER_TEXT ? TXK_LOWER : TXK_UPPER;
+		xf->coll = ((FuncExpr *) x)->inputcollid;
+		return strip_relabel(linitial(((FuncExpr *) x)->args));
+	}
+	if (IsA(x, CoalesceExpr) && list_length(((CoalesceExpr *) x)->args) == 2)
+	{
+		Node	   *k = strip_relabel(lsecond(((CoalesceExpr *) x)->args));
+
+		if (IsA(k, Const) && !((Const *) k)->constisnull && exprType(k) == exprType(linitial(((CoalesceExpr *) x)->args)))
+		{
+			/* a date and the integers of 4 bytes or less are int32 datums, the rest int64 */
+			xf->kind = TXK_COALESCE;
+			if (konst)
+				*konst = k;
+			xf->c = ((Const *) k)->consttype == INT8OID || ((Const *) k)->consttype == TIMESTAMPOID || ((Const *) k)->consttype == TIMESTAMPTZOID ?
+				DatumGetInt64(((Const *) k)->constvalue) : DatumGetInt32(((Const *) k)->constvalue);
+			return strip_relabel(linitial(((CoalesceExpr *) x)->args));
+		}
+	}
+	return e;
+}
+
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */
 static bool
-topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid)
+topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf)
 {
-	Node	   *e = (Node *) get_sortgroupclause_expr(sgc, c->root->processed_tlist);
+	Node	   *e = (Node *) get_sortgroupclause_expr(sgc, c->root->processed_tlist),
+			   *konst = NULL;
 	const SiftSrcLeaf *lf;
 	Oid			opfamily,
 				opcintype;
@@ -372,12 +413,17 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 
 	if (!get_ordering_op_properties(sgc->sortop, &opfamily, &opcintype, &strategy))
 		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
-	*leaf = match_leaf(c, normalize_expr(c, e));
+	*leaf = match_leaf(c, normalize_expr(c, topn_xform(e, xf, &konst)));
 	lf = *leaf >= 0 ? leaf_of(c, *leaf) : NULL;
 	/* a varchar column sorts by the operators of text */
 	if (lf == NULL || !sift_topn_key_ok(lf) || (opcintype != lf->typid && !(lf->typid == VARCHAROID && opcintype == TEXTOID)) ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
-		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, or its operator is not the default btree one of its type");
+		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order (an expression of one only if it cannot raise: coalesce(leaf, constant), lower(leaf), upper(leaf)), or its operator is not the default btree one of its type");
+	if (xf->kind == TXK_COALESCE && lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID && lf->typid != DATEOID &&
+		lf->typid != TIMESTAMPOID && lf->typid != TIMESTAMPTZOID)
+		return agg_refuse_on(TOPN_SHAPE, "coalesce in a sort key is of an integer, date or timestamp column and a constant of its type");
+	if ((xf->kind == TXK_LOWER || xf->kind == TXK_UPPER) && (lf->vtype != SCV_CODE || lf->wide || (lf->typid != TEXTOID && lf->typid != VARCHAROID)))
+		return agg_refuse_on(TOPN_SHAPE, "lower and upper in a sort key are of a text or varchar column");
 	*cmp = *collid = InvalidOid;
 	if (lf->vtype == SCV_CODE)
 	{
@@ -388,7 +434,14 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 			return agg_refuse_on(TOPN_SHAPE, "a text sort key has a nondeterministic collation: strings that are equal under it differ as bytes, and their order is the plan's");
 	}
 	*desc = strategy == TOPN_DESC;
-	appendStringInfo(txt, "%s%s%s", txt->len ? ", " : "", leaf_name(c, *leaf), *desc ? " DESC" : "");
+	appendStringInfo(txt, "%s", txt->len ? ", " : "");
+	if (xf->kind == TXK_COALESCE)
+		appendStringInfo(txt, "coalesce(%s, %s)", leaf_name(c, *leaf), deparse_expression(konst, NIL, false, false));
+	else if (xf->kind != TXK_NONE)
+		appendStringInfo(txt, "%s(%s)", xf->kind == TXK_LOWER ? "lower" : "upper", leaf_name(c, *leaf));
+	else
+		appendStringInfoString(txt, leaf_name(c, *leaf));
+	appendStringInfoString(txt, *desc ? " DESC" : "");
 	if (sgc->nulls_first != *desc)
 		appendStringInfoString(txt, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
 	use_leaf(c, *leaf);
@@ -589,6 +642,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	Oid		   *sortop,
 			   *cmp,
 			   *collid;
+	SiftTopXform *xf;
 	double		count = 0,
 				offset = 0,
 				rows;
@@ -627,12 +681,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	sortop = palloc(nkey * sizeof(Oid));
 	cmp = palloc(nkey * sizeof(Oid));
 	collid = palloc(nkey * sizeof(Oid));
+	xf = palloc0(nkey * sizeof(SiftTopXform));
 	c->topn_cmpx = c->topn_keybytes = 0;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
 		int			j = foreach_current_index(sgc);
 
-		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt, &cmp[j], &collid[j]))
+		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt, &cmp[j], &collid[j], &xf[j]))
 		{
 			agg_refused(TOPN_SHAPE);
 			return;
@@ -642,9 +697,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		if (OidIsValid(cmp[j]))
 		{
 			Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
-			bool		locale = cmp[j] == F_BTTEXTCMP && collid[j] != C_COLLATION_OID;
+			bool		locale = cmp[j] == F_BTTEXTCMP && !sift_collate_is_c(collid[j]);
 
-			c->topn_cmpx = Max(c->topn_cmpx, locale ? TOPN_CMP_LOCALE : TOPN_CMP_BYTES);
+			c->topn_cmpx = Max(c->topn_cmpx, (locale ? TOPN_CMP_LOCALE : TOPN_CMP_BYTES) + (xf[j].kind != TXK_NONE ? TOPN_CMP_XFORM * (locale ? 3 : 1) : 0));
 			c->topn_keybytes += topn_key_width(c, e, exprType(e));
 		}
 	}
@@ -674,9 +729,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
-		c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
+		c->topn_frac = topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &xf[0], NULL),
 									 leaf[0], input_rel->rows, (int64) rows);
-		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
 								 copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
@@ -688,7 +743,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	}
 	c->topn_sorted = true;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
 							 copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 }

@@ -339,7 +339,12 @@ def gen_topn(r, ctx):
     cols = EVENTS
     sortable = ['amount', 'ts', 'kind', 'grp', 'val', 'big', 'num', 'flag', 'parent_id', 'a']
     ks = r.sample(sortable, r.choice([1, 2, 2, 3, 5, 6]))  # more than 4 sort keys sort every row that passes
-    order = [f"e.{k} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
+    # sort expressions the scan evaluates itself (they cannot raise): coalesce of a column and a constant of its type, lower and upper of the text column
+    xform = {'parent_id': lambda c: f'coalesce({c}, {r.choice([0, 300, 5000])})', 'grp': lambda c: f'coalesce({c}, {r.choice([-1, 6, 99])})',
+             'a': lambda c: f'coalesce({c}, {r.choice([0, 100, 100000])})', 'amount': lambda c: f'coalesce({c}, {r.choice([0, 50, 2147483647])})',
+             'big': lambda c: f'coalesce({c}, {r.choice([0, 9223372036854775807, -9223372036854775807 - 1])})',
+             'ts': lambda c: f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", 'kind': lambda c: f"{r.choice(['lower', 'upper'])}({c})"}
+    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.35 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     grouped_ = r.random() < 0.25
     return dict(order=order, limit=r.choice([1, 5, 10, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500, 2500]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
                 grouped=grouped_, keys=[], aggs=[], having=[], ordered=True, gkeys=keys(r, 'e', cols, 2), gagg=[r.choice(['count(*)', 'sum(e.amount)', 'max(e.amount)', 'count(DISTINCT e.grp)', 'min(e.big)', 'sum(e.big)'])])  # not a float: ties within the tolerance would order differently

@@ -247,6 +247,7 @@ col_index() {
 		t_misc) ddl="CREATE INDEX t_misc_col ON t_misc USING $AM (id, grp, qty, t, e, u, b, ia, ta, na, r, tr, mr)" ;;
 		t_net) ddl="CREATE INDEX t_net_col ON t_net USING $AM (id, grp, qty, ip, cd, mac, mac8, tz, b, vb)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
+		t_coal) ddl="CREATE INDEX t_coal_col ON t_coal USING $AM (id, grp, s2, i4, i8, d, ts, tz)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
 		t_rc) ddl="CREATE INDEX t_rc_col ON t_rc USING $AM (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}')" ;;
@@ -284,7 +285,7 @@ col_paths() {
 # fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_load its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
+	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_coal t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
 		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_eo) set -- doc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
@@ -299,7 +300,7 @@ fixture_tables() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_load t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_coal t_dist t_wide t_jp t_eo t_rc t_vd t_load t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
