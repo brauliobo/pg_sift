@@ -259,11 +259,6 @@ sift_count(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 	return count;
 }
 
-EXPORT void
-sift_count_deinit(UDF_INIT *initid)
-{
-}
-
 /* ------------------------------------------------ sift_matches */
 
 EXPORT sx_bool
