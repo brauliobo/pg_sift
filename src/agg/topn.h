@@ -91,6 +91,7 @@ extern void sift_topn_skip(SiftTopN *t);
  */
 extern bool sift_topn_follows(const SiftTopN *t);
 extern PGDLLIMPORT bool sift_topn_zone_keys;	/* sift.topn_zone_keys */
+extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one (docs/COL.md 2.14) */
 extern void sift_topn_walk_begin(SiftTopN *t, uint32 nsb);
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
 extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);	/* z: one zone for each of those keys */
@@ -98,8 +99,11 @@ extern void sift_topn_walk_sort(SiftTopN *t);
 extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
-/* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */
-extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
+/*
+ * The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows (whole: of every row of the unit, not only those
+ * of rmask); the others are read for the few rows that need them
+ */
+extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, bool whole, const uint64 *rmask, int nrow);
 
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
@@ -113,9 +117,17 @@ extern void sift_topn_bound_init(pg_atomic_uint64 *bound);
 extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
 extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
 extern const uint32 *sift_topn_walk_order(const SiftTopN *t);
-extern void sift_topn_add_skipped(SiftTopN *t, int64 n);
+extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
+extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run (docs/COL.md 2.14) */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);
 extern void sift_topn_import(SiftTopN *t, const char *data, Size len);
+
+/*
+ * Sorted runs in a serial walk (docs/COL.md 2.14): sift_topn_run_budget before it, then, after it, sift_topn_revisit_next gives the superblocks whose
+ * units the walk left unfinished, to be scanned again, until it returns false.
+ */
+extern void sift_topn_run_budget(SiftTopN *t, uint32 units);
+extern bool sift_topn_revisit_next(SiftTopN *t, uint32 *sb);
 
 extern bool sift_topn_next(SiftTopN *t, TupleTableSlot *slot);
 extern void sift_topn_rewind(SiftTopN *t);

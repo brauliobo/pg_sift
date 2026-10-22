@@ -19,8 +19,10 @@
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
 #define PAGG_SUPER_MINOR	SIFT_COL_FORMAT_SUPER	/* the column format minor that adds the superunit summaries: directory version 4 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_RUNS_MINOR		SIFT_COL_FORMAT_RUNS	/* the column format minor that adds the sorted runs: directory version 5 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 #define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates (docs/COL.md section 2.13) */
+#define RUNS_MAGIC		0x524C4F43		/* "COLR": the sorted runs, after the small-set summaries (docs/COL.md section 2.14) */
 
 #define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
 
@@ -81,7 +83,7 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 #define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
@@ -111,6 +113,9 @@ StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-
 /* Version 4 (column format minor 12) adds two more entries: the offset of the superunit block and its bytes (0: the segment has none) */
 #define PAGG_SUPERDIR(h)		((h)->lagg_off[(h)->ncols + 4])
 #define PAGG_SUPER_BYTES(h)		((h)->lagg_off[(h)->ncols + 5])
+/* Version 5 (column format minor 13) adds two more: the offset of the sorted runs and their bytes (0: none), the section laid out like the small-set summaries */
+#define PAGG_RUNS(h)			((h)->lagg_off[(h)->ncols + 6])
+#define PAGG_RUNS_BYTES(h)		((h)->lagg_off[(h)->ncols + 7])
 
 /*
  * The superunit block (docs/COL-PREAGG.md section 10): the units of the segment in groups of `fan` consecutive ones (the last group may be shorter,
@@ -137,6 +142,12 @@ super_leaf_ok(const SiftColDef *def)
 {
 	return def->store == SIFT_COLS_INT || def->store == SIFT_COLS_STR;
 }
+
+/* The section of the sorted runs has the shape of the small-set one: a header, a record per leaf (flags: RUNS_ORD, RUNS_IDENT: the kinds of run some unit has), a directory and the blobs per leaf */
+#define RUNS_ORD		0x1
+#define RUNS_IDENT		0x2
+typedef SetsHeader RunsHeader;
+typedef SetsLeaf RunsLeaf;
 
 /* One INT leaf's sums: sum_lo, sum_hi, sumsq_lo, sumsq_hi (u64 each), flags (u32), all over the units */
 static inline Size
@@ -184,6 +195,8 @@ typedef struct SegPriv
 	uint64    **setdir;			/* [ncols] its directory, once read */
 	uint8	   *setbuf;
 	Size		setcap;
+	RunsLeaf   *runs;			/* [ncols] the sorted-run record of each leaf (dir_off 0: none), read on first use */
+	uint64    **rundir;			/* [ncols] its directory, once read */
 	Size		vers_at;		/* offset of the version section in the DOCMAP section; vers_len 0: there is none */
 	Size		vers_len;
 	VersUnit   *vu;				/* its directory of units, read on first use */

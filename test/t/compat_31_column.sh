@@ -73,6 +73,13 @@ sift.async_maintenance = off'
 			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (set_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
 		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
 		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 10)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:10
+		# the sorted run (minor 13, opt-in): the setting 4 writes no run, the default one writes what 3.1 refuses
+		ORDQ="SELECT string_agg(id::text, ',' ORDER BY k, id) FROM (SELECT id, k FROM ordlow ORDER BY k, id LIMIT 50) x"
+		sql legacy "CREATE TABLE ordlow AS SELECT i AS id, i * 7919 % 5000 AS k FROM generate_series(1, 3000) i" "CREATE TABLE ordhigh AS TABLE ordlow" \
+			"SET sift.col_format_minor = 4" "CREATE INDEX ordlow_idx ON ordlow USING sift_col (id, k) WITH (order_columns = 'k')" "RESET sift.col_format_minor" \
+			"CREATE INDEX ordhigh_idx ON ordhigh USING sift_col (id, k) WITH (order_columns = 'k')" "VACUUM ANALYZE ordlow" "VACUUM ANALYZE ordhigh" >/dev/null || bail 'minor 13 setup'
+		ordwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$ORDQ")
+		check 'the setting 4 writes no run and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('ordlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('ordhigh_idx') WHERE kind = 'immutable')")" == 4:13
 		node_stop legacy
 		use_root "$oldroot"
 		node_start legacy || bail 'cannot restart 3.1'
@@ -84,6 +91,9 @@ sift.async_maintenance = off'
 		check '3.1 reads an index written with set_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('sethigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 10 index with a format error and REINDEX hint' test "$(grep -c 'format 1.10\|REINDEX' <<<"$err")" -ge 2
+		check '3.1 reads an index written with order_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('ordlow_idx', true)" "SET sift.enable_agg = on" "$ORDQ" | tail -n 1)" == "$ordwant"
+		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('ordhigh_idx', false)" 2>&1)
+		check '3.1 refuses a minor 13 index with a format error and REINDEX hint' test "$(grep -c 'format 1.13\|REINDEX' <<<"$err")" -ge 2
 	fi
 	node_stop legacy
 	ROOT=$newroot

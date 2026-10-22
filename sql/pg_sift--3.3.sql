@@ -403,7 +403,7 @@ COMMENT ON FUNCTION sift.cluster_advice(regclass, int8) IS 'Which physical order
 -- need before what they only gain from). kind: reindex or rewrite; object: the index or table; reason: what the command changes; command: the statement;
 -- required: queries miss rows until it runs (a word over 255 bytes is stored as its start and a hash since 3.3, and a text index of an older release holds
 -- it cut at 255 bytes; the index does not say whether it holds one, so every text index except analyzer = keyword is listed, and stays listed after its
--- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax, JSON paths, rollup_dims, set_columns) that only the units written after
+-- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax, JSON paths, rollup_dims, set_columns, order_columns) that only the units written after
 -- it follow, set on an index whose older units lack the section; a sift_table (it cannot be reindexed) whose segments are below the column format its
 -- schema is written in now (calendar cells for date and timestamp columns, minor 8; complete JSON kinds for declared paths, minor 6). A VACUUM FULL takes
 -- an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it. Reads the catalogs and the metapages, changes
@@ -438,7 +438,7 @@ BEGIN
 			CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
-		-- a segment is minor 9 or 10 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13)
+		-- a segment is minor 9, 10 or 13 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13, 2.14)
 		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
 				('^paths=', 6, 'JSON paths',
 				 'segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan, and a REINDEX writes them'),
@@ -447,7 +447,9 @@ BEGIN
 				('^rollup_dims=.', 9, 'rollup_dims',
 				 'the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); a REINDEX writes it where it fits'),
 				('^set_columns=.', 10, 'set_columns',
-				 'the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); a REINDEX writes it where it helps')
+				 'the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); a REINDEX writes it where it helps'),
+				('^order_columns=.', 13, 'order_columns',
+				 'the units written before the option have no sorted run, so an ORDER BY .. LIMIT on the column reads them whole; a REINDEX writes it')
 			 ) v(pat, minor, what, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat);
 		CONTINUE WHEN why IS NULL;

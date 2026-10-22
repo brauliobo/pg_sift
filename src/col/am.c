@@ -31,6 +31,7 @@
 #include "col/am.h"
 #include "col/build.h"
 #include "col/seg.h"
+#include "col/runs.h"
 #include "col/setsum.h"
 #include "core/cpu.h"
 #include "core/limits.h"
@@ -43,7 +44,7 @@ int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 bool		sift_test_col_rel_inval = false;
 #endif
 
-/* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10 or 12 */
+/* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10, 12 or 13 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
 {
@@ -51,7 +52,7 @@ check_col_format_minor(int *newval, void **extra, GucSource source)
 	{
 		GUC_check_errdetail("Column format minor %d is written for %s only, whatever the setting.", *newval,
 							*newval == SIFT_COL_FORMAT_WIDE ? "wide leaves" : "the write buffer of a table with a wide row");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10 or 12.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12 or 13.");
 		return false;
 	}
 	return true;
@@ -124,6 +125,15 @@ sift_col_validate_set_columns(const char *value)
 }
 
 void
+sift_col_validate_order_columns(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -184,9 +194,9 @@ sift_col_init(void)
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written (12, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
+							"Column format minor of the segments written (13, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -258,6 +268,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "set_columns",
 						 "the plain integer and text columns whose distinct values every unit written from now on keeps (a small-set summary that lets an equality or IN test skip units); the segments are column format minor 10 (default none)",
 						 "", sift_col_validate_set_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_columns",
+						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
+						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "set_limit",
 					  "Up to this many distinct values a unit keeps a column's small-set summary exactly, beyond it as a bloom filter",
 					  SIFT_CSET_LIMIT, 2, SIFT_CSET_LIMIT_MAX, ShareUpdateExclusiveLock);
@@ -288,6 +301,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
 		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
 		{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
+		{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	};
 	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
 
@@ -341,6 +355,14 @@ sift_col_options_set_columns(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->set_columns ? (const char *) o + o->set_columns : "";
+}
+
+const char *
+sift_col_options_order_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_columns ? (const char *) o + o->order_columns : "";
 }
 
 const char *
@@ -453,6 +475,8 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
 		r->pagg.set_limit = sift_col_options(index)->set_limit;
 		r->pagg.super = sift_col_options(index)->superunit;
+		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

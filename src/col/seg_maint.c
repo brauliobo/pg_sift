@@ -7,6 +7,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/runs.h"
 #include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
@@ -258,6 +259,25 @@ verify_set(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 	pfree(keys);
 }
 
+/* The sorted run of leaf c in unit u, when it has one, is what its chunk gives, entry for entry */
+static void
+verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	SiftCRun	r;
+	uint64		at;
+	uint8	   *blob;
+
+	if (!sift_cseg_run(seg, c, u, &r, &at))
+		return;
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a sorted run in unit %u, whose chunk has no keys.", c, u);
+	blob = palloc(sift_crun_bytes(r.kind, r.n));
+	sift_cseg_run_blob(seg, at, &r, blob);
+	if (!sift_crun_matches(&seg->schema->cols[c], col, blob, sift_crun_bytes(r.kind, r.n)))
+		corrupt(seg, "The sorted run of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(blob);
+}
+
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
 verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
@@ -323,6 +343,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
 		}
 		verify_set(seg, c, u, &pcol[c]);
+		verify_run(seg, c, u, &pcol[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
@@ -486,6 +507,28 @@ sift_cseg_verify_super(SiftColSegment *seg)
 	MemoryContextDelete(cx);
 }
 
+/* The kinds a leaf's record in the sorted runs lists are those of its units' runs */
+static void
+verify_run_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_run_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			SiftCRun	r;
+			uint64		at;
+
+			if (sift_cseg_run(seg, c, u, &r, &at))
+				have |= r.kind == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
+		}
+		if (have != want)
+			corrupt(seg, "The record of the sorted runs of leaf %d lists kinds %u, its units hold %u.", c, want, have);
+	}
+}
+
 uint64
 sift_cseg_verify(SiftColSegment *seg)
 {
@@ -499,6 +542,7 @@ sift_cseg_verify(SiftColSegment *seg)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_cseg_verify_super(seg);
+	verify_run_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
 	sift_sr_release(&seg->sr);

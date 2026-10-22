@@ -5,19 +5,20 @@
 #include "core/host.h"
 
 #include "col/preagg.h"
+#include "col/runs.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
 #include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
 
-/* The small-set summaries of one leaf: the blobs of its units one after the other and where each starts */
+/* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 typedef struct SetAcc
 {
 	StringInfoData blobs;
 	uint64	   *off;			/* [capsb + 1]; unit u's blob is blobs[off[u], off[u + 1]) */
 	bool		any;			/* some unit has one */
-	uint32		kinds;			/* SETS_EXACT, SETS_BLOOM: the kinds of blob the units have */
+	uint32		kinds;			/* SETS_EXACT, SETS_BLOOM (RUNS_ORD, RUNS_IDENT): the kinds of blob the units have */
 } SetAcc;
 
 struct SiftColSegWriter
@@ -46,9 +47,11 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
-	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf */
+	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
 	bool		anysets;
+	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
+	bool		anyruns;
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -140,6 +143,25 @@ map_dicts(SiftColSegWriter *w, const SiftColBatch *b, const bool *inl)
 	}
 }
 
+/* The accumulators of the leaves flagged in want, NULL when there are none */
+static SetAcc *
+acc_new(SiftColSegWriter *w, const bool *want)
+{
+	SetAcc	   *acc = NULL;
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+	for (int c = 0; c < w->schema->ncols; c++)
+		if (want[c])
+		{
+			if (acc == NULL)
+				acc = palloc0(w->schema->ncols * sizeof(SetAcc));
+			initStringInfo(&acc[c].blobs);
+			acc[c].off = palloc0(((Size) w->capsb + 1) * sizeof(uint64));
+		}
+	MemoryContextSwitchTo(old);
+	return acc;
+}
+
 void
 sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 {
@@ -171,25 +193,15 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			memmove(w->pagg.rollup, w->pagg.rollup + 1, w->pagg.nrollups * sizeof(SiftCPaggRollup));
 		}
 	}
-	/* a leaf asks for its small-set summary: minor 9 when some unit gets one (sift_colw_finish) */
+	/* a leaf asks for its small-set summary or its sorted run: minor 10 or 12 when some unit gets one (sift_colw_finish) */
 	if (w->setting >= SIFT_COL_FORMAT_SETS && w->set == NULL)
-	{
-		MemoryContext old = MemoryContextSwitchTo(w->mcxt);
-
-		for (int c = 0; c < w->schema->ncols; c++)
-			if (spec->set[c])
-			{
-				if (w->set == NULL)
-					w->set = palloc0(w->schema->ncols * sizeof(SetAcc));
-				initStringInfo(&w->set[c].blobs);
-				w->set[c].off = palloc0(((Size) w->capsb + 1) * sizeof(uint64));
-			}
-		MemoryContextSwitchTo(old);
-	}
+		w->set = acc_new(w, spec->set);
 	/* the superunit summaries are minor 12, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
 	w->pagg.super = spec->super >= SIFT_SUPER_MIN_FAN && w->setting >= SIFT_COL_FORMAT_SUPER ? Min(spec->super, SIFT_SUPER_MAX_FAN) : 0;
 	if (w->pagg.super)
 		w->format = SIFT_COL_FORMAT_SUPER;
+	if (w->setting >= SIFT_COL_FORMAT_RUNS && w->run == NULL)
+		w->run = acc_new(w, spec->run);
 }
 
 /* The small-set summary of each leaf that asks for one, from the keys of the unit just encoded (in the segment's codes for a dictionary leaf; none for an inline one) */
@@ -220,6 +232,26 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols)
 	}
 	if (keys)
 		pfree(keys);
+}
+
+/* The sorted run of each leaf that asks for one, from the keys of the unit just encoded */
+static void
+add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols)
+{
+	for (int c = 0; w->run && c < w->schema->ncols; c++)
+	{
+		SetAcc	   *a = &w->run[c];
+
+		if (a->blobs.data == NULL)
+			continue;
+		a->off[w->nsb] = a->blobs.len;
+		if (sift_crun_build(&w->schema->cols[c], &cols[c], &a->blobs))
+		{
+			a->any = w->anyruns = true;
+			a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
+		}
+		a->off[w->nsb + 1] = a->blobs.len;
+	}
 }
 
 /*
@@ -262,6 +294,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_sets(w, cols);
+	add_runs(w, cols);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
 			pfree(tk[c]);
@@ -319,9 +352,9 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 
 	if (!sift_cbatch_kinds_exact(b))
 	{
-		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9 and 10 promise complete kinds */
-		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set),
-					   "sift_col: a unit without its kinds in a segment of column format %d", w->set ? SIFT_COL_FORMAT_SETS : w->format);
+		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9, 10 and 12 promise complete kinds */
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set || w->run),
+					   "sift_col: a unit without its kinds in a segment of column format %d", w->run ? SIFT_COL_FORMAT_RUNS : w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		/* a schema with a calendar dim has no leaf with kinds to lose: the minor stays */
 		if (w->format != SIFT_COL_FORMAT_CALENDAR)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
@@ -336,9 +369,13 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->ecubeoff = repalloc_huge(w->ecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
-		for (int c = 0; w->set && c < ncols; c++)
-			if (w->set[c].off)
+		for (int c = 0; c < ncols; c++)
+		{
+			if (w->set && w->set[c].off)
 				w->set[c].off = repalloc_huge(w->set[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
+			if (w->run && w->run[c].off)
+				w->run[c].off = repalloc_huge(w->run[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
+		}
 		w->pmask = repalloc_huge(w->pmask, (Size) w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 		w->vunit = repalloc_huge(w->vunit, w->capsb * sizeof(VersUnit));
@@ -430,43 +467,45 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	pfree(offs);
 }
 
-/* The records of the leaves that have small-set summaries and where the section ends up, from at (8-aligned, from the start of the header); fills the header's entries */
+/*
+ * The records of the leaves of acc that have blobs (the small-set summaries, or the sorted runs) and where the section of them ends up, from at (8-aligned,
+ * from the start of the header): *start and *bytes are what the header says of it
+ */
 static SetsLeaf *
-layout_sets(SiftColSegWriter *w, PaggHeader *h, Size at, int *nleaves)
+layout_blobs(SiftColSegWriter *w, const SetAcc *acc, Size at, Size *start, Size *bytes, int *nleaves)
 {
 	int			n = 0;
 	SetsLeaf   *sl = palloc0(w->schema->ncols * sizeof(SetsLeaf));
-	Size		start = at;
 
+	*start = at;
 	for (int c = 0; c < w->schema->ncols; c++)
-		if (w->set[c].any)
+		if (acc[c].any)
 			n++;
 	at += sizeof(SetsHeader) + n * sizeof(SetsLeaf);
 	n = 0;
 	for (int c = 0; c < w->schema->ncols; c++)
-		if (w->set[c].any)
+		if (acc[c].any)
 		{
 			at = ALIGN8(at);
-			sl[n++] = (SetsLeaf) {c, w->set[c].kinds, at, w->set[c].blobs.len};
-			at += (w->nsb + 1) * sizeof(uint64) + w->set[c].blobs.len;
+			sl[n++] = (SetsLeaf) {c, acc[c].kinds, at, acc[c].blobs.len};
+			at += (w->nsb + 1) * sizeof(uint64) + acc[c].blobs.len;
 		}
-	PAGG_SETS(h) = start;
-	PAGG_SETS_BYTES(h) = ALIGN8(at) - start;
+	*bytes = ALIGN8(at) - *start;
 	*nleaves = n;
 	return sl;
 }
 
 static void
-write_sets(SiftColSegWriter *w, SetsLeaf *sl, int n)
+write_blobs(SiftColSegWriter *w, const SetAcc *acc, uint32 magic, SetsLeaf *sl, int n)
 {
-	SetsHeader	sh = {SETS_MAGIC, 1, n, w->nsb};
+	SetsHeader	sh = {magic, 1, n, w->nsb};
 
 	sw_pad8(w->sw);
 	sift_sw_write(w->sw, &sh, sizeof(sh));
 	sift_sw_write(w->sw, sl, n * sizeof(SetsLeaf));
 	for (int i = 0; i < n; i++)
 	{
-		const SetAcc *a = &w->set[sl[i].leaf];
+		const SetAcc *a = &acc[sl[i].leaf];
 
 		sw_pad8(w->sw);
 		sift_sw_write(w->sw, a->off, (Size) (w->nsb + 1) * sizeof(uint64));
@@ -582,8 +621,10 @@ write_pagg(SiftColSegWriter *w)
 	Size		hsz = PAGG_HDR_SIZE(ver, ncols),
 				at = hsz;
 	PaggHeader *h = palloc0(hsz);
-	SetsLeaf   *sets = NULL;
-	int			nsets = 0;
+	SetsLeaf   *sets = NULL,
+			   *runs = NULL;
+	int			nsets = 0,
+				nruns = 0;
 	StringInfoData super;
 	bool		has_super;
 
@@ -612,11 +653,29 @@ write_pagg(SiftColSegWriter *w)
 		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->ecube.len);
 	}
 	if (ver > 2 && w->anysets)
-		sets = layout_sets(w, h, at, &nsets);
+	{
+		Size		start,
+					bytes;
+
+		sets = layout_blobs(w, w->set, at, &start, &bytes, &nsets);
+		PAGG_SETS(h) = start;
+		PAGG_SETS_BYTES(h) = bytes;
+		at = start + bytes;
+	}
 	if (has_super)
 	{
-		PAGG_SUPERDIR(h) = sets ? PAGG_SETS(h) + PAGG_SETS_BYTES(h) : at;
+		PAGG_SUPERDIR(h) = at;
 		PAGG_SUPER_BYTES(h) = super.len;
+		at = ALIGN8(at + super.len);
+	}
+	if (ver > 4 && w->anyruns)
+	{
+		Size		start,
+					bytes;
+
+		runs = layout_blobs(w, w->run, at, &start, &bytes, &nruns);
+		PAGG_RUNS(h) = start;
+		PAGG_RUNS_BYTES(h) = bytes;
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -661,13 +720,15 @@ write_pagg(SiftColSegWriter *w)
 		sift_sw_write(w->sw, w->ecube.data, w->ecube.len);
 	}
 	if (sets)
-		write_sets(w, sets, nsets);
+		write_blobs(w, w->set, SETS_MAGIC, sets, nsets);
 	if (has_super)
 	{
 		sw_pad8(w->sw);
 		sift_sw_write(w->sw, super.data, super.len);
 	}
 	pfree(super.data);
+	if (runs)
+		write_blobs(w, w->run, RUNS_MAGIC, runs, nruns);
 	pfree(h);
 }
 
@@ -758,6 +819,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
 	if (w->anysets)
 		w->format = Max(w->format, SIFT_COL_FORMAT_SETS);
+	if (w->anyruns)
+		w->format = Max(w->format, SIFT_COL_FORMAT_RUNS);
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	write_dicts(w, &h.sections[SIFT_SEC_DICT]);
 	write_zones(w, &h.sections[SIFT_SEC_DICTIDX]);

@@ -1,0 +1,24 @@
+# columns: rows, variant (btree = sift.enable_agg off with a btree on the key; no_runs = sift.topn_runs off; runs = order_columns on the key), shape, limit n, median of 15 warm runs in ms (EXPLAIN ANALYZE, TIMING OFF); then index lines: bytes of the index and of the runs section
+# shapes: k = ORDER BY k LIMIT n, k random in 1,000,000 values (an unclustered int4); val = the same on numeric(10,2), no btree; k_filter = WHERE amount < 0.1 (10% of the rows) ORDER BY k
+# pg_sift sorted run, 2026-10-22, PostgreSQL 18.6, 1,000,000 rows of (id, k, val, ts, amount, pad) with a 400 byte pad (230 units), load average 55 on 32 CPUs (the two runs differ by that much)
+1000000	run1	k	10	btree=0.015	no_runs=0.338	runs=0.174
+1000000	run1	k	100	btree=0.028	no_runs=1.664	runs=1.263
+1000000	run1	k	1000	btree=0.335	no_runs=8.881	runs=4.909
+1000000	run1	k	10000	btree=5.439	no_runs=31.644	runs=26.711
+1000000	run2	k	10	btree=0.010	no_runs=0.251	runs=0.216
+1000000	run2	k	100	btree=0.026	no_runs=1.919	runs=0.878
+1000000	run2	k	1000	btree=0.372	no_runs=6.484	runs=1.885
+1000000	run2	k	10000	btree=2.597	no_runs=29.032	runs=22.513
+1000000	run1	val	10	no_runs=0.287	runs=0.176
+1000000	run1	val	100	no_runs=1.721	runs=0.725
+1000000	run1	val	1000	no_runs=7.834	runs=5.532
+1000000	run1	val	10000	no_runs=30.859	runs=19.119
+1000000	run2	val	10	no_runs=0.270	runs=0.168
+1000000	run2	val	100	no_runs=3.135	runs=1.503
+1000000	run2	val	1000	no_runs=13.553	runs=6.409
+1000000	run2	val	10000	no_runs=40.268	runs=27.942
+1000000	run1	k_filter	10	btree=0.029	no_runs=3.010	runs=3.087
+1000000	run1	k_filter	100	btree=0.196	no_runs=13.378	runs=13.650
+1000000	run1	k_filter	1000	btree=7.164	no_runs=15.217	runs=16.956
+1000000	run1	k_filter	10000	btree=98.855	no_runs=35.358	runs=39.981
+1000000	index	ten_columns	bytes_runs_off=31875072	bytes_runs_on=48070656	runs_bytes=16012768	unclustered_leaf_bytes=2001320	clustered_leaf_bytes=1320
