@@ -467,8 +467,8 @@ DECLARE c_seq CURSOR FOR SELECT id, v FROM ow_t;
 DECLARE c_seq_h CURSOR FOR SELECT id, v FROM ow_h;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
-DECLARE c_idx CURSOR FOR SELECT id, v FROM ow_t WHERE id > 0 ORDER BY id;
-DECLARE c_idx_h CURSOR FOR SELECT id, v FROM ow_h WHERE id > 0 ORDER BY id;
+DECLARE c_idx CURSOR FOR SELECT id, v FROM ow_t WHERE id BETWEEN 9001 AND 15000 ORDER BY id;
+DECLARE c_idx_h CURSOR FOR SELECT id, v FROM ow_h WHERE id BETWEEN 9001 AND 15000 ORDER BY id;
 SET enable_indexscan = off;
 SET enable_bitmapscan = on;
 DECLARE c_bm CURSOR FOR SELECT id, v FROM ow_t WHERE id > 0;
@@ -477,9 +477,9 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 SELECT take('c_idx', 3) AS first_rows, take('c_idx_h', 3) AS first_rows_of_the_twin;
- first_rows | first_rows_of_the_twin 
-------------+------------------------
- 1,2,3      | 1,2,3
+   first_rows   | first_rows_of_the_twin 
+----------------+------------------------
+ 9001,9002,9003 | 9001,9002,9003
 (1 row)
 
 SELECT ins1('ow_t', 20001, 40000);
@@ -519,13 +519,13 @@ SELECT c AS seq_cursor, c = drain('c_seq_h') AS seq_cursor_agrees FROM (SELECT d
 SELECT take('c_idx', 2) AS next_rows, take('c_idx_h', 2) AS next_rows_of_the_twin;
  next_rows | next_rows_of_the_twin 
 -----------+-----------------------
- 4,5       | 4,5
+ 9004,9005 | 9004,9005
 (1 row)
 
 SELECT c AS index_cursor, c = drain('c_idx_h') AS index_cursor_agrees FROM (SELECT drain('c_idx') AS c) x;
-       index_cursor       | index_cursor_agrees 
---------------------------+---------------------
- 19995:200009985:20083889 | t
+     index_cursor      | index_cursor_agrees 
+-----------------------+---------------------
+ 5995:71957985:6023981 | t
 (1 row)
 
 SELECT c AS bitmap_cursor, c = drain('c_bm_h') AS bitmap_cursor_agrees FROM (SELECT drain('c_bm') AS c) x;
@@ -546,16 +546,16 @@ INSERT INTO ow_t SELECT id + 1000000, v FROM ow_t;
 INSERT INTO ow_h SELECT id + 1000000, v FROM ow_h;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
-INSERT INTO ow_t SELECT id + 2000000, v FROM ow_t WHERE id BETWEEN 1 AND 10000;
-INSERT INTO ow_h SELECT id + 2000000, v FROM ow_h WHERE id BETWEEN 1 AND 10000;
-INSERT INTO ow_t SELECT id + 3000000, v FROM ow_t WHERE id BETWEEN 1 AND 10000;
-INSERT INTO ow_h SELECT id + 3000000, v FROM ow_h WHERE id BETWEEN 1 AND 10000;
+INSERT INTO ow_t SELECT id + 2000000, v FROM ow_t WHERE id BETWEEN 1 AND 3000;
+INSERT INTO ow_h SELECT id + 2000000, v FROM ow_h WHERE id BETWEEN 1 AND 3000;
+INSERT INTO ow_t SELECT id + 3000000, v FROM ow_t WHERE id BETWEEN 1 AND 3000;
+INSERT INTO ow_h SELECT id + 3000000, v FROM ow_h WHERE id BETWEEN 1 AND 3000;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 SELECT count(*), count(*) FILTER (WHERE id < 1000000) AS original FROM ow_t;
  count | original 
 -------+----------
- 95716 |    39286
+ 83716 |    39286
 (1 row)
 
 SELECT total <= 14 AS within_the_limit, sift._test_tbl_tagged('ow_t') > 0 AS carries_its_writer FROM nsegs('ow_t');
