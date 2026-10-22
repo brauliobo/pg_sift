@@ -89,6 +89,22 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
 }
 
+/* A background worker whose transaction failed (sift_col steps run outside a subtransaction): its own transaction keeps the failure like run_step does */
+void
+sift_maint_record_failure(Oid indexoid, ErrorData *err)
+{
+	Relation	index;
+
+	StartTransactionCommand();
+	index = try_index_open(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
+		index_close(index, RowExclusiveLock);
+	}
+	CommitTransactionCommand();
+}
+
 /*
  * Runs fn in a subtransaction, so an ERROR rolls back every buffer lock and pin it held and leaves
  * the blocks fn took in wt unreferenced, which are then returned to the free list. propagate: the

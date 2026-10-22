@@ -242,7 +242,7 @@ CREATE FUNCTION sift.worker_state(index regclass,
 COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of an index: segments and sealed write buffers waiting for promotion, whether a step runs now, and the last background failure with its retry time.';
 
 -- One row per sift and sift_col index of the database whose table the caller can read; due: why a sift_col index would be rewritten now
--- (sift.col_maintenance_due). A sift_col step that fails raises its error to the worker, which the log records: failures stay 0 for it.
+-- (sift.col_maintenance_due). A failed step of a sift_col worker is kept like a BM25 one.
 CREATE VIEW sift.workers AS
 	SELECT c.oid::regclass AS index, a.amname::text AS kind, w.segments, w.sealed, w.running, w.failures, w.failed_at, w.next_retry,
 		   w.error_code, w.last_error,
