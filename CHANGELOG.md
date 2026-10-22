@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.2.2 - 2026-10-22
 
 - The store size rows show the index or columnar data with the heap beside it; README.md drops the places table, the Vulkan table and the rows that are sums of others.
 - Fixed: pg_sift: security: with row-level security on a table, the planner could estimate the rows of a partition or an inheritance child of it from the statistics of the `sift` index, which count the rows the policy hides, so the row counts of `EXPLAIN` (and the plan chosen) for a role under the policy could reveal information about the hidden rows (how many of them hold a term). The estimate is the planner's default now, as it already was for a table without partitions and as the documentation says ("no index estimate" under row-level security); the refusal of `sift.score()` on such a partition or child names the table under the policy (it said "needs a sift index on every partition"). No data was modified and no query result was affected: the rows a policy hides were never returned. Affected: 3.0.0 to 3.2.1 (3.2.0 and 3.2.1 tested, 3.0 and 3.1 by reading the code), a server where a role without `BYPASSRLS` that is not the owner reads, through its parent, a partitioned or inheritance table with a policy whose partitions or children carry a `sift` index. Nothing is needed before upgrading beyond installing the new library (no setting, no `REINDEX`, no change of the extension SQL). Test `rls_stats`.
