@@ -822,7 +822,7 @@ map_load_child(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(cb, j->fslot) ?
 		ex->cs[ci].slot[j->fslot] : NULL;
-	PlanState  *child = list_nth(ex->css.custom_ps, j->child);
+	PlanState  *child = j->subplan > 0 ? list_nth(ex->css.ss.ps.state->es_subplanstates, j->subplan - 1) : list_nth(ex->css.custom_ps, j->child);
 	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
 	MapTab	   *m = map_new(j, own != NULL, ex->cxt);
 	instr_time	t0;
