@@ -96,6 +96,7 @@ bool		sift_agg_semi_lut = true;
 int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
+bool		sift_agg_key_skew = true;
 bool		sift_agg_share_lookups = true;
 bool		sift_agg_fuse = true;
 bool		sift_enable_topn = true;
@@ -138,6 +139,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_join_filter",
 							 "Tests the integer key leaf of an inner or semi lookup join against the keys of the loaded table before tuples are made (zone pruning, source filters, row bitmaps).",
 							 NULL, &sift_agg_join_filter, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_key_skew",
+							 "Prices the probes of the normal plan for the keys of a lookup join by the rows a key owns by the column's most common values, not by the mean rows of a key.",
+							 NULL, &sift_agg_key_skew, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_share_lookups",
 							 "Lets the Custom Scan (SiftAgg) nodes of one statement that join the same table share the rows they load (UNION ALL arms).",
