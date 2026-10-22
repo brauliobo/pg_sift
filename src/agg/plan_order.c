@@ -479,6 +479,27 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	add_path(output_rel, &cp->path);
 }
 
+/* A query with a LIMIT, an ORDER BY and no groups: the reason it is not a top-N of the rows of one table is recorded for sift.explain_refusals */
+static bool
+topn_query_ok(PlannerInfo *root, double *count, double *offset)
+{
+	Query	   *parse = root->parse;
+
+	if (parse->hasTargetSRFs || parse->hasRecursive || root->rowMarks != NIL)
+		return agg_refuse(QUERY_KIND);
+	if (!topn_bounds(parse, root, count, offset))
+	{
+		agg_refused_on(TOPN_SHAPE, "LIMIT and OFFSET are not constants or parameters, leave no row, or the limit has ties");
+		return false;
+	}
+	if (parse->hasWindowFuncs || parse->distinctClause || parse->setOperations || parse->hasSubLinks)
+	{
+		agg_refused_on(TOPN_SHAPE, "the query has a window function, DISTINCT, a set operation or a sub-select");
+		return false;
+	}
+	return true;
+}
+
 void
 topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
@@ -503,11 +524,12 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	int			nkey = list_length(parse->sortClause);
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
 
-	if (!sift_enable_agg || !sift_enable_topn || !topn_bounds(parse, root, &count, &offset) || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 ||
-		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
-		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
+	if (!sift_enable_agg || !sift_enable_topn || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || parse->limitCount == NULL ||
+		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual)
 		return;
 	agg_arm_candidate();
+	if (!topn_query_ok(root, &count, &offset))
+		return;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	if (c->nparts > 0 || c->func_rti != 0 || fs.lefts != NIL ||

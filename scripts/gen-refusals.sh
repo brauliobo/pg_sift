@@ -32,17 +32,17 @@ def read(path):
 
 
 # ---- the table ----
-slugs = []     # (ID, slug, sentence, limit)
-for m in re.finditer(r'^\tX\((\w+), "([a-z_]+)", "((?:[^"\\]|\\.)*)", ([01])\)', read('src/agg/refuse.h'), re.M):
-    slugs.append((m.group(1), m.group(2), m.group(3), m.group(4) == '1'))
+slugs = []     # (ID, slug, sentence, limit, by_design)
+for m in re.finditer(r'^\tX\((\w+), "([a-z_]+)", "((?:[^"\\]|\\.)*)", ([01]), ([01])\)', read('src/agg/refuse.h'), re.M):
+    slugs.append((m.group(1), m.group(2), m.group(3), m.group(4) == '1', m.group(5) == '1'))
 if not slugs:
     sys.exit('gen-refusals: no row found in the SIFT_AGG_REFUSALS table of src/agg/refuse.h')
 
 
 def block():
-    rows = ['| slug | class | the query kept the normal plan because |', '|---|---|---|']
-    for _, slug, text, limit in slugs:
-        rows.append('| `%s` | %s | %s |' % (slug, 'limit' if limit else 'semantic', text.replace('\\"', '"')))
+    rows = ['| slug | class | by design | the query kept the normal plan because |', '|---|---|---|---|']
+    for _, slug, text, limit, by_design in slugs:
+        rows.append('| `%s` | %s | %s | %s |' % (slug, 'limit' if limit else 'semantic', 'yes' if by_design else '', text.replace('\\"', '"')))
     return '\n'.join(rows)
 
 
@@ -88,7 +88,7 @@ used = set()
 for path in glob.glob('src/agg/*.c'):
     used.update(re.findall(r'\bagg_(?:refuse|refused|refuse_note|report)\w*\(\s*(?:"[^"]*",\s*)?(?:AGG_REFUSE_)?([A-Z_]+)', read(path)))
     used.update(re.findall(r'\bAGG_REFUSE_([A-Z_]+)', read(path)))
-for id_, slug, _, _ in slugs:
+for id_, slug, _, _, _ in slugs:
     if id_ != 'OTHER' and id_ not in used:
         errors.append('src/agg/refuse.h: the slug %s has no site in src/agg' % slug)
 

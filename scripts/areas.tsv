@@ -12,7 +12,7 @@
 =agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
 =tbl	^(installcheck-(tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
 =dec	^(fuzz|hardened)$
-=any	^(production-regress|coverage|reference-live|isa-baseline|isolation(-emulated)?|static)$
+=any	^(production-regress|coverage|coverage-pct|reference-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 
