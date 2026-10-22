@@ -45,6 +45,7 @@
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/jsonb.h"
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
@@ -251,7 +252,7 @@ typedef struct PartCand
 {
 	Oid			indexoid;
 	SiftSrcLayout *lay;
-	const SiftSrcStats *stats;
+	const SiftPartStats *stats;
 	const SiftSrcPreagg *pa;
 } PartCand;
 
@@ -292,7 +293,11 @@ part_vars_mutator(Node *n, PartVars *pv)
 
 /*
  * The layout, statistics and pre-aggregates of a partition's index are read once for a plan, however many arms and CTEs scan the table: the
- * planner hook opens a memo (sift_agg_memo_begin) that its plans share and deletes it when the last of them is made.
+ * planner hook opens a memo (sift_agg_memo_begin) that its plans share and deletes it when the last of them is made. They are kept for the
+ * backend as well, in the context "sift cache partition facts", and read again only when the index's stamp moved (its directory, the pages of its
+ * table and those the visibility map says are all-visible) or the catalog entry of the index or of its table was invalidated. The memo gives a plan an
+ * index once, so an entry read again is never one that plan holds; the cache is emptied whole, by the next outermost plan, once it has grown past
+ * FACTS_CACHE (with the entries read again, whose old facts stay until then).
  */
 typedef struct PartMemo
 {
@@ -300,14 +305,72 @@ typedef struct PartMemo
 	PartCand   *pc;
 } PartMemo;
 
+typedef struct FactsWatch
+{
+	Oid			relid;			/* an index or a table the facts depend on */
+	uint32		gen;			/* bumped by every invalidation of its catalog entry */
+} FactsWatch;
+
+typedef struct PartFacts
+{
+	Oid			indexoid;
+	SiftSrcStamp stamp;
+	FactsWatch *index,
+			   *table;
+	uint32		index_gen,
+				table_gen,
+				all_gen;
+	PartCand	pc;				/* pc.lay NULL: not read (yet) */
+} PartFacts;
+
+#define FACTS_CACHE		SIFT_AGG_MAX_PARTS	/* the indexes of the largest scan */
+
 static MemoryContext part_memo_cx;
 static HTAB *part_memo;
+static MemoryContext facts_cx;
+static HTAB *facts;
+static HTAB *facts_watch;
+static uint32 facts_all;		/* bumped by an invalidation of every relation */
+static int	facts_replaced;		/* entries read again since the cache was emptied: their old facts stay until it is */
+
+static void
+facts_inval(Datum arg, Oid relid)
+{
+	FactsWatch *w;
+
+	if (relid == InvalidOid)
+		facts_all++;
+	else if (facts_watch != NULL && (w = hash_search(facts_watch, &relid, HASH_FIND, NULL)) != NULL)
+		w->gen++;
+}
+
+static void
+facts_empty(void)
+{
+	if (facts_cx != NULL)
+		MemoryContextReset(facts_cx);
+	facts = facts_watch = NULL;
+	facts_replaced = 0;
+}
+
+static FactsWatch *
+facts_watch_of(Oid relid)
+{
+	bool		found;
+	FactsWatch *w = hash_search(facts_watch, &relid, HASH_ENTER, &found);
+
+	if (!found)
+		w->gen = 0;
+	return w;
+}
 
 MemoryContext
 sift_agg_memo_begin(void)
 {
 	if (part_memo_cx != NULL)
 		return NULL;
+	if (facts != NULL && hash_get_num_entries(facts) + facts_replaced >= FACTS_CACHE)
+		facts_empty();
 	part_memo_cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan memo", ALLOCSET_DEFAULT_SIZES);
 	return part_memo_cx;
 }
@@ -322,15 +385,74 @@ sift_agg_memo_end(MemoryContext cx)
 	MemoryContextDelete(cx);
 }
 
+/* what is read of a partition's index: its layout in the terms of the partition, and the statistics and pre-aggregates, packed, in cx */
+static void
+read_facts(Relation rel, MemoryContext cx, PartCand *pc)
+{
+	SiftSrcStats *full = palloc(sizeof(SiftSrcStats));
+	SiftSrcPreagg *pa;
+	MemoryContext old;
+
+	sift_colsrc_stats(rel, full);
+	old = MemoryContextSwitchTo(cx);
+	pc->indexoid = RelationGetRelid(rel);
+	pc->lay = sift_colsrc_layout(rel);
+	pc->stats = sift_aggpart_pack_stats(full, pc->lay->nleaves);
+	pc->pa = pa = palloc(sizeof(SiftSrcPreagg));
+	sift_colsrc_preagg(rel, pa);
+	MemoryContextSwitchTo(old);
+	pfree(full);
+}
+
+static PartCand *
+cached_facts(Relation rel)
+{
+	Oid			indexoid = RelationGetRelid(rel);
+	SiftSrcStamp stamp;
+	PartFacts  *e;
+	PartCand	fresh;
+	bool		found;
+
+	if (facts == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(PartFacts)};
+
+		if (facts_cx == NULL)
+		{
+			facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
+			CacheRegisterRelcacheCallback(facts_inval, (Datum) 0);
+		}
+		ctl.hcxt = facts_cx;
+		facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		ctl.entrysize = sizeof(FactsWatch);
+		facts_watch = hash_create("sift partition facts watch", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	sift_colsrc_stamp(rel, &stamp);
+	e = hash_search(facts, &indexoid, HASH_ENTER, &found);
+	if (found && e->pc.lay != NULL && memcmp(&e->stamp, &stamp, sizeof(stamp)) == 0 && e->index->gen == e->index_gen &&
+		e->table->gen == e->table_gen && e->all_gen == facts_all)
+		return &e->pc;
+	if (found)
+		facts_replaced++;
+	/* the generations as of before the facts are read: an invalidation while they are is seen at the next plan */
+	e->index = facts_watch_of(indexoid);
+	e->table = facts_watch_of(rel->rd_index->indrelid);
+	e->index_gen = e->index->gen;
+	e->table_gen = e->table->gen;
+	e->all_gen = facts_all;
+	e->pc.lay = NULL;
+	read_facts(rel, facts_cx, &fresh);
+	e->pc = fresh;
+	e->stamp = stamp;
+	return &e->pc;
+}
+
 /* what is read of a partition's index, in the memo when there is one; its layout's expressions are those of the partition and nothing of it is to be changed */
 static const PartCand *
 part_index_facts(Oid indexoid)
 {
 	PartMemo   *m = NULL;
 	PartCand   *pc;
-	SiftSrcStats *stats;
-	SiftSrcPreagg *pa;
-	MemoryContext old;
 	Relation	rel;
 
 	if (part_memo_cx != NULL)
@@ -347,17 +469,17 @@ part_index_facts(Oid indexoid)
 		if (found)
 			return m->pc;
 	}
-	old = MemoryContextSwitchTo(part_memo_cx ? part_memo_cx : CurrentMemoryContext);
-	pc = palloc0(sizeof(PartCand));
-	pc->indexoid = indexoid;
 	rel = index_open(indexoid, AccessShareLock);
-	pc->lay = sift_colsrc_layout(rel);
-	pc->stats = stats = palloc(sizeof(SiftSrcStats));
-	sift_colsrc_stats(rel, stats);
-	pc->pa = pa = palloc(sizeof(SiftSrcPreagg));
-	sift_colsrc_preagg(rel, pa);
+	if (part_memo_cx != NULL && (facts == NULL || hash_get_num_entries(facts) < FACTS_CACHE))
+		pc = cached_facts(rel);
+	else
+	{
+		MemoryContext cx = part_memo_cx ? part_memo_cx : CurrentMemoryContext;
+
+		pc = MemoryContextAllocZero(cx, sizeof(PartCand));
+		read_facts(rel, cx, pc);
+	}
 	index_close(rel, AccessShareLock);
-	MemoryContextSwitchTo(old);
 	if (m != NULL)
 		m->pc = pc;
 	return pc;
@@ -577,7 +699,7 @@ part_source(AggCtx *c)
 			c->partheap[i] = planner_rt_fetch(leaf->relid, c->root)->relid;
 			c->partindex[i] = pc->indexoid;
 			c->part_pages += leaf->pages;
-			sift_aggpart_add_stats(&c->stats, pc->stats, f->lay->nleaves);
+			sift_aggpart_add_stats(&c->stats, pc->stats);
 		}
 		c->lay = f->lay;
 		c->pa = *f->pa;

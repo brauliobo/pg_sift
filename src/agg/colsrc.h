@@ -120,6 +120,19 @@ typedef struct SiftSrcStats
 	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value (column format below minor 6, docs/COL.md 2.2): a test that needs it raises the REINDEX error */
 } SiftSrcStats;
 
+/*
+ * The state of an index the facts of the planner (its layout, statistics and pre-aggregates) are read at: the same stamp, and no change of the
+ * catalog entry of the index or of its table, means the same facts. A stamp is cheap to take (a few pages), the facts are not.
+ */
+typedef struct SiftSrcStamp
+{
+	uint32		file;			/* the index's file: a REINDEX starts the directory's versions over */
+	uint32		options;		/* the options and format the units are counted against */
+	uint32		version;		/* the directory's: bumped by every change of the segments */
+	uint32		pages;			/* the pages of the table and those the visibility map says are all-visible */
+	uint32		visible;
+} SiftSrcStamp;
+
 /* ---- executor side ---- */
 
 typedef struct SiftSrcSource SiftSrcSource;
@@ -440,6 +453,8 @@ typedef struct SiftSrcProvider
 	bool		(*owns_table) (Oid tablerelam);
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
+	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
+	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
@@ -588,6 +603,7 @@ extern bool sift_colsrc_is_table(Oid tablerelam);
 /* The layout of an open index (table) relation; palloc'd in CurrentMemoryContext */
 extern SiftSrcLayout *sift_colsrc_layout(Relation rel);
 extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
+extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*
  * Opens the source of an index relation (heap == its table) or of a sift_table table (index == NULL). The snapshot is the

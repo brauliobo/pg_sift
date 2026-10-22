@@ -27,6 +27,8 @@
 #include "agg/sel.h"
 #include "agg/wide.h"
 #include "core/popcount.h"
+#include "core/store.h"
+#include "core/visibility.h"
 #include "col/col.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -284,6 +286,19 @@ col_stats(Relation index, SiftSrcStats *st)
 		st->mm_miss[i] = 1.0 - Min(memo.pre->mm[i] / memo.pre->units, 1.0);
 		st->roll_miss[i] = 1.0 - Min(memo.pre->roll[i] / memo.pre->units, 1.0);
 	}
+}
+
+static void
+col_stamp(Relation index, SiftSrcStamp *st)
+{
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+
+	st->file = index->rd_locator.relNumber;
+	st->options = sift_col_pagg_hash(index);
+	st->version = sift_dir_version(index);
+	st->pages = RelationGetNumberOfBlocks(heap);
+	st->visible = sift_vis_count_allvisible(heap, st->pages);
+	table_close(heap, AccessShareLock);
 }
 
 static void *
@@ -674,6 +689,7 @@ static const SiftSrcProvider col_provider = {
 	.owns_table = col_owns_table,
 	.layout = col_layout,
 	.stats = col_stats,
+	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
 	.close = col_close,

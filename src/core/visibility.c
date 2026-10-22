@@ -17,6 +17,7 @@
 
 #include "bm25/kernels.h"
 #include "table/table.h"
+#include "core/popcount.h"
 #include "core/store.h"
 #include "core/visibility.h"
 
@@ -65,6 +66,41 @@ BlockNumber
 sift_vis_nblocks(Relation heap)
 {
 	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
+}
+
+/*
+ * The pages among the first nblocks that the map says are all-visible: what visibilitymap_count counts, from the bytes of the map those pages
+ * use (it counts the whole 8 kB of every map page, a hundred times the work for a partition of a few pages). Not locked, as there: a bit
+ * a writer sets or clears meanwhile is a page more or less.
+ */
+BlockNumber
+sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
+{
+	SMgrRelation smgr = RelationGetSmgr(heap);
+	uint64		left = ((uint64) nblocks + 3) / 4;
+	BlockNumber vm_nblocks,
+				count = 0;
+
+	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
+		return 0;
+	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
+	for (BlockNumber mapblk = 0; left > 0 && mapblk < vm_nblocks; mapblk++)
+	{
+		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+		const char *map = PageGetContents(BufferGetPage(buf));
+		uint32		len = Min(left, VM_MAPSIZE);
+
+		for (uint32 off = 0; off < len; off += sizeof(uint64))
+		{
+			uint64		w = 0;
+
+			memcpy(&w, map + off, Min(len - off, sizeof(w)));
+			count += sift_pc64(w & UINT64CONST(0x5555555555555555));	/* the all-visible bit of each page, not its all-frozen bit */
+		}
+		ReleaseBuffer(buf);
+		left -= len;
+	}
+	return count;
 }
 
 void
