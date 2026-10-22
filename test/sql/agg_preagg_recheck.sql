@@ -13,7 +13,7 @@ CREATE TABLE pr_dirty (LIKE pr_clean) WITH (autovacuum_enabled = off);
 INSERT INTO pr_dirty SELECT id, CASE WHEN id = 17777 THEN jsonb_set(items, '{0,score}', '"abc"') ELSE items END FROM pr_clean;
 CREATE INDEX pr_clean_col ON pr_clean USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
 CREATE INDEX pr_dirty_col ON pr_dirty USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
 
 CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE result text;

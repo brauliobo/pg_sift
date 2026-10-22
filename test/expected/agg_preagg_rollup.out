@@ -148,7 +148,7 @@ CREATE INDEX rx_col ON rx USING sift_col (id, grp, lines, tags, attrs)
 	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096,
 	      preagg = 'rollup(lines[].a, lines[].b: lines[].q, lines[].w, lines[].amt)');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
 SELECT sift.col_verify('rl_col', true), sift.col_verify('rd_col', true), sift.col_verify('rx_col', true);
  col_verify | col_verify | col_verify 
 ------------+------------+------------
@@ -274,7 +274,7 @@ SELECT * FROM pa_sum('rd');
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) rl, rd;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl, rd;
 SELECT * FROM pa_sum('rl');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
@@ -296,7 +296,7 @@ SELECT sift.col_promote('rl_col') >= 0 AS promoted;
  t
 (1 row)
 
-VACUUM (index_cleanup on, disable_page_skipping) rl;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
 SELECT * FROM pa_sum('rl');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
@@ -310,7 +310,7 @@ SELECT sift.col_merge('rl_col', true) >= 0 AS merged;
  t
 (1 row)
 
-VACUUM (index_cleanup on, disable_page_skipping) rl;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
 SELECT sift.col_verify('rl_col', true);
  col_verify 
 ------------
