@@ -143,6 +143,7 @@ struct SiftTopN
 	TupleTableSlot *fslot;
 	int64		skipped;
 	int64		fetched;
+	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
 };
 
 /* The value of a LIMIT or OFFSET expression of the plan, evaluated as the Limit node does when it starts */
@@ -437,6 +438,8 @@ read_other_keys(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc
 	}
 }
 
+static void share_bar(SiftTopN *t);
+
 /* The best n of those rows by all the keys go to the heap with their TIDs */
 static void
 finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
@@ -460,6 +463,7 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 		e->tie = tid_key(&e->tid);
 		heap_push(t, t->heap, &t->n, e);
 	}
+	share_bar(t);
 }
 
 /* The first key as a position in the sort order: NULLs in front of or behind the values, the values by the direction */
@@ -489,6 +493,46 @@ static inline Rank
 ent_rank(const SiftTopN *t, const TopEnt *e)
 {
 	return rank_of(&t->key[0], e->nul & 1, e->k[0]);
+}
+
+/*
+ * The rank of the n-th row so far: the heap's worst when it is full, or the bound the participants of a parallel scan share when that sorts
+ * before it. A row or a zone strictly after it cannot be in the result, whoever holds the n rows.
+ */
+static bool
+bar_rank(const SiftTopN *t, Rank *bar)
+{
+	bool		have = t->n == t->limit;
+
+	if (have)
+		*bar = ent_rank(t, &t->heap[0]);
+	if (t->shared)
+	{
+		uint64		b = pg_atomic_read_u64(t->shared);
+		Rank		r = {1, b};
+
+		if (b != PG_UINT64_MAX && (!have || rank_after(*bar, r)))
+		{
+			*bar = r;
+			have = true;
+		}
+	}
+	return have;
+}
+
+/* a full heap whose worst row has a value tightens the bound of the other participants (a NULL worst row is not a rank among the values) */
+static void
+share_bar(SiftTopN *t)
+{
+	Rank		w;
+	uint64		cur;
+
+	if (t->shared == NULL || t->n < t->limit)
+		return;
+	w = ent_rank(t, &t->heap[0]);
+	cur = pg_atomic_read_u64(t->shared);
+	while (w.cls == 1 && w.ord < cur && !pg_atomic_compare_exchange_u64(t->shared, &cur, w.ord))
+		;
 }
 
 /* With no bound for the heap: every row that passes goes to the sort, with its keys and its TID */
@@ -551,11 +595,7 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	}
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
-	if (t->n == t->limit)
-	{
-		bar = ent_rank(t, &t->heap[0]);
-		barred = true;
-	}
+	barred = bar_rank(t, &bar);
 	for (int w = 0; w < nw; w++)
 		for (uint64 b = rmask[w]; b; b &= b - 1)
 		{
@@ -616,22 +656,18 @@ bool
 sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
 {
 	const TopKey *k = &t->key[0];
-	const TopEnt *w;
-	bool		wnull;
-	int64		best;
+	Rank		bar,
+				best;
 
-	if (t->sort || t->n < t->limit || z->inexact)
+	if (t->sort || z->inexact || !bar_rank(t, &bar))
 		return true;
-	w = &t->heap[0];
-	wnull = w->nul & 1;
-	if (z->nnull > 0 && (k->nulls_first || wnull))
-		return true;
-	if (z->nnull == z->nvals)
-		return wnull;
-	if (wnull)
-		return !k->nulls_first;
-	best = k->desc ? z->max : z->min;
-	return k->desc ? best >= w->k[0] : best <= w->k[0];
+	if (z->nnull > 0 && k->nulls_first)
+		best = (Rank) {0, 0};
+	else if (z->nnull == z->nvals)
+		best = (Rank) {k->nulls_first ? 0 : 2, 0};
+	else
+		best = rank_of(k, false, k->desc ? z->max : z->min);
+	return !rank_after(best, bar);
 }
 
 /* The zone of the unit of superblock sb, probed before the scan; it may be passed in any order */
@@ -850,6 +886,77 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	ExecStoreVirtualTuple(slot);
 	ExecMaterializeSlot(slot);
 	return true;
+}
+
+/* ---- parallel scan: the participants keep a heap each, the leader merges them ---- */
+
+#define TOPN_MAGIC	0x544F5031
+
+bool
+sift_topn_parallel_ok(const SiftTopN *t)
+{
+	return t->sort == NULL && t->limit > 0;
+}
+
+void
+sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound)
+{
+	t->shared = bound;
+}
+
+void
+sift_topn_bound_init(pg_atomic_uint64 *bound)
+{
+	pg_atomic_init_u64(bound, PG_UINT64_MAX);
+}
+
+/* A worker takes the order of the leader's probes */
+void
+sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse)
+{
+	t->nsb = nsb;
+	t->reverse = reverse;
+}
+
+const uint32 *
+sift_topn_walk_order(const SiftTopN *t)
+{
+	return t->word;
+}
+
+void
+sift_topn_add_skipped(SiftTopN *t, int64 n)
+{
+	t->skipped += n;
+}
+
+/* The heap of a worker, for the leader: the entries are the keys and the TID of the rows, not the rows */
+void
+sift_topn_export(const SiftTopN *t, StringInfo b)
+{
+	uint32		h[2] = {TOPN_MAGIC, t->n};
+
+	appendBinaryStringInfo(b, (const char *) h, sizeof(h));
+	appendBinaryStringInfo(b, (const char *) t->heap, t->n * sizeof(TopEnt));
+}
+
+void
+sift_topn_import(SiftTopN *t, const char *data, Size len)
+{
+	uint32		h[2];
+
+	if (len < sizeof(h))
+		elog(ERROR, "sift: bad message of a parallel top-N");
+	memcpy(h, data, sizeof(h));
+	if (h[0] != TOPN_MAGIC || len != sizeof(h) + h[1] * sizeof(TopEnt))
+		elog(ERROR, "sift: bad message of a parallel top-N");
+	for (uint32 i = 0; i < h[1]; i++)
+	{
+		TopEnt		e;
+
+		memcpy(&e, data + sizeof(h) + i * sizeof(TopEnt), sizeof(e));
+		heap_push(t, t->heap, &t->n, &e);
+	}
 }
 
 void

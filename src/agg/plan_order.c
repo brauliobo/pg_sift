@@ -357,6 +357,24 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
 	return true;
 }
 
+/* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
+static void
+topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int64 rows, int nworkers)
+{
+	CustomPath *cp = makeNode(CustomPath);
+
+	s->nworkers = nworkers;
+	cp->path.pathtype = T_CustomScan;
+	cp->path.parent = output_rel;
+	cp->path.pathtarget = root->upper_targets[UPPERREL_ORDERED];
+	cp->path.parallel_safe = false;
+	cp->path.pathkeys = root->sort_pathkeys;
+	cp->methods = &agg_path_methods;
+	agg_cost(c, s, input_rel, &cp->path, Min((double) rows, Max(input_rel->rows, 1.0)));
+	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	add_path(output_rel, &cp->path);
+}
+
 void
 topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
@@ -365,9 +383,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 			   *c = &ctx;
 	FromScan	fs = {.ok = true};
 	SiftAggSpec *s;
-	CustomPath *cp;
 	StringInfoData txt;
 	List	   *scan_tlist = NIL;
+	int			nworkers;
 	uint64		tlo,
 				thi;
 	int			leaf[SIFT_TOPN_MAX_KEYS];
@@ -409,14 +427,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	record_deps(root, parse->limitOffset);
 	s->desc_topn = txt.data;
 
-	cp = makeNode(CustomPath);
-	cp->path.pathtype = T_CustomScan;
-	cp->path.parent = output_rel;
-	cp->path.pathtarget = target;
-	cp->path.parallel_safe = false;
-	cp->path.pathkeys = root->sort_pathkeys;
-	cp->methods = &agg_path_methods;
-	agg_cost(c, s, input_rel, &cp->path, Min((double) rows, Max(input_rel->rows, 1.0)));
-	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
-	add_path(output_rel, &cp->path);
+	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
+	nworkers = parallel_workers(c, s, input_rel, output_rel);
+	if (nworkers > 0)
+		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 }
