@@ -107,11 +107,11 @@ agg_refuse_limit_note(AggRefusal why, int lim, const char *detail)
 	return agg_refuse_note(why, detail);
 }
 
-/* the arm tries another table as the scanned one: a first table that had no column index is not the reason of the arm */
+/* the arm tries another table as the scanned one: a first table that had no column index, or whose FROM tree the other order reads, is not the reason of the arm */
 void
 agg_refuse_retry(void)
 {
-	if (arm != NULL && arm->why == AGG_REFUSE_NO_SOURCE)
+	if (arm != NULL && (arm->why == AGG_REFUSE_NO_SOURCE || arm->why == AGG_REFUSE_FROM_SHAPE))
 		arm->why = AGG_REFUSE_NONE;
 }
 
