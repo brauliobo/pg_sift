@@ -606,12 +606,16 @@ A `scattered` leaf that queries filter on is the one to sort by: `CLUSTER`, load
 equality or window on it reads and the `units_after` a table sorted by it would, the `saved_rows` of every query, the `churn_pct` since the last `ANALYZE`, a `verdict` (`recommended` or `not recommended`), its `reason` and
 the `pg_repack` call. It is not recommended when the table is small (a query saves under `min_rows` rows, about a millisecond of scan, or the index has under 16 units), already ordered, when the sort would scatter a leaf
 that is ordered now and saves about as much, or when over 10% of the rows change a day (the order is lost faster than a repack restores it). A rewrite restores the order at once: the planner and the scans read the
-zone maps of the rebuilt index, no `ANALYZE` is needed (`pg_repack` runs it for the planner of the heap). Switch it off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or one index with
+zone maps of the rebuilt index. Run `VACUUM (ANALYZE) t` right after it: `CLUSTER`, `VACUUM FULL` and `pg_repack` leave the visibility map empty, and autovacuum does not
+come for it (a rewrite counts no inserts, so the insert threshold is not reached). A scan checks the heap for every row of a page that is not all-visible, and the planner prices that (`relallvisible`
+of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 heap pages and took 320 ms instead of 82 ms, and its cost was 12.5 million against 21,500 with the map set, so the normal plan won
+until the `VACUUM`. Switch it off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or one index with
 `ALTER INDEX ... SET (cluster_advice = off)`.
 
 Rewriting the table: `CLUSTER` and `VACUUM FULL` lock it exclusively and work for heap tables with every sift index and for a `sift_table`. `pg_repack` (online, `--order-by`, 1.5.3 tested on PostgreSQL 18) rebuilds the
 `sift`, `sift_col` indexes and keeps their options and the results of the scans, also under concurrent writes, as a non-superuser table owner and on a standby; it needs a primary key or a not-null unique index. It
 cannot rewrite a `sift_table` (it swaps in a heap copy): an event trigger refuses it, and `pg_repack --only-indexes` is fine. `pg_squeeze` only supports heap tables.
+After any of them run `VACUUM (ANALYZE) t` (`pg_repack` runs only the `ANALYZE`).
 
 `sift.stats()` returns what the `Custom Scan (SiftAgg)` scans of the session did, one `(name, value)` row per counter, and `sift.stats_reset()` zeroes them. The counters are plain memory of the
 backend: no shared memory and no `shared_preload_libraries`, nothing is shared between sessions and a restart or a reconnection starts them again (read them before a pooled connection is returned, or log
