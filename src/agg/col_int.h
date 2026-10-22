@@ -53,8 +53,9 @@ typedef struct ColRecheck
 	int			leaf[SIFT_COLSRC_MAX_LEAVES];	/* the leaves with a mode */
 	uint64		gen;			/* the unit (ColSource.ugen) the rows were collected for */
 	uint64	   *flag;			/* its flagged rows, live or not */
+	uint64	   *cand;			/* the live ones: they are read again unless the executor clears them (col_recheck_rows) */
 	uint32		nrow;
-	bool		taken;			/* the live ones are in tid, to be returned as the next unit */
+	bool		taken;			/* cand has rows: recheck_pending makes their TIDs, to be returned as the next unit */
 	uint32		sb;
 	uint32		npend;
 	ItemPointerData *tid;
@@ -111,6 +112,8 @@ extern void col_set_recheck(void *impl, int leaf, int mode);
 extern void col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 extern void recheck_close(ColRecheck *k);
 extern void recheck_collect(ColSource *src, uint32 nrow, uint64 *bits);
+extern uint64 *col_recheck_rows(void *impl, const SiftSrcUnit *unit);
+extern bool recheck_pending(ColSource *src);
 extern bool recheck_next(ColSource *src, SiftSrcUnit *unit);
 extern void col_prune_str(void *impl, const SiftSrcStrTest *t, int nt);
 extern bool col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
