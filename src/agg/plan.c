@@ -143,6 +143,13 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	scan_from((Node *) parse->jointree, fs);
 	if (!fs->ok)
 		return false;
+	/*
+	 * A semi, anti or preserved join whose table has no relation entry was not removed as a useless LEFT JOIN: PostgreSQL 18 merged it into another
+	 * scan of the same table by a unique key (self-join elimination), and moved its conditions to the one it kept, which the FROM tree does not say.
+	 */
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		if (lj->kind != SJ_LEFT && root->simple_rel_array[lj->rti] == NULL)
+			return false;
 	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
 	foreach_int(rti, fs->rtis)
 		if (root->simple_rel_array[rti] != NULL)
