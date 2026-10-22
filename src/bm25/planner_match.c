@@ -116,10 +116,27 @@ sift_match_any_clause(Node *clause, IndexOptInfo *index, Expr **array)
 	return true;
 }
 
-/* A qual the scan answers: a query, or an array of queries ORed */
+/* Do quals of a policy or a security barrier view, which the rel's other quals must not run before, sit on the rel? */
 bool
-scan_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
+rel_secured(PlannerInfo *root, RelOptInfo *rel)
 {
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		if (rinfo->security_level < root->qual_security_level)
+			return true;
+	return false;
+}
+
+/*
+ * A qual the scan answers: a query, or an array of queries ORed. The match is not leakproof, so a rel with security quals
+ * keeps it out of the scan, unless sift.rls_scores lets a ranked scan answer the user's own matches (never a policy's): the scan
+ * reads the index, and a row it returns has passed the security quals first (cscan.c scan_verify).
+ */
+bool
+scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query)
+{
+	if (ranked && sift_rls_scores && IsA(clause, RestrictInfo) &&
+		((RestrictInfo *) clause)->security_level >= root->qual_security_level)
+		clause = (Node *) ((RestrictInfo *) clause)->clause;
 	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query);
 }
 
@@ -246,7 +263,7 @@ is_partition(RelOptInfo *rel)
 	return rel->reloptkind == RELOPT_OTHER_MEMBER_REL;
 }
 
-/* sift.score / max_score of rel in the final target list and in the query's first sort key */
+/* sift.score / max_score of rel in the final target list, in HAVING and in the query's first sort key */
 List *
 score_exprs(PlannerInfo *root, RelOptInfo *rel)
 {
@@ -254,6 +271,7 @@ score_exprs(PlannerInfo *root, RelOptInfo *rel)
 	List	   *own = NIL;
 
 	score_walker((Node *) root->processed_tlist, &refs);
+	score_walker(root->parse->havingQual, &refs);
 	foreach_ptr(Node, e, refs.found)
 		own = lappend(own, is_partition(rel) ? adjust_appendrel_attrs_multilevel(root, e, rel, rel->top_parent) : e);
 	refs = (ScoreRefs) {rel->relid, own};

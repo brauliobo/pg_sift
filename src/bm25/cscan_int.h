@@ -66,6 +66,7 @@ typedef struct SiftScanState
 	ExprState  *cuts;				/* cutoffs of the score, over the scan tuple of a ranked row */
 	Relation	heap;
 	bool		heap_opened;
+	bool		secure;				/* a policy or security barrier view hides rows: no counter of the index in EXPLAIN ANALYZE */
 	Relation	index;
 	IndexInfo  *iinfo;
 	TupleTableSlot *heapslot;
