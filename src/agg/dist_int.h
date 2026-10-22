@@ -92,6 +92,7 @@ dset_hash(uint64 x)
 #pragma GCC visibility push(hidden)
 
 /* dist.c */
+void agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get);
 void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
 Dist *dist_new(AggExec *ex, bool sgn);
