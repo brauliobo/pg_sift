@@ -142,14 +142,14 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 
 	scan_from((Node *) parse->jointree, fs);
 	if (!fs->ok)
-		return agg_refuse(FROM_SHAPE);
+		return agg_refuse_on(FROM_SHAPE, "the FROM tree has a join other than the inner, left, semi, anti or preserved joins of tables the scan reads");
 	/*
 	 * A semi, anti or preserved join whose table has no relation entry was not removed as a useless LEFT JOIN: PostgreSQL 18 merged it into another
 	 * scan of the same table by a unique key (self-join elimination), and moved its conditions to the one it kept, which the FROM tree does not say.
 	 */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->kind != SJ_LEFT && root->simple_rel_array[lj->rti] == NULL)
-			return agg_refuse(FROM_SHAPE);
+			return agg_refuse_on(FROM_SHAPE, "PostgreSQL merged a joined table into another scan of the same table (self-join elimination)");
 	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
 	foreach_int(rti, fs->rtis)
 		if (root->simple_rel_array[rti] != NULL)
@@ -182,7 +182,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			if (c->relid == 0 && skip == 0)
 				c->relid = rti;
 			else if (c->joinless)
-				return agg_refuse(FROM_SHAPE);
+				return agg_refuse_on(FROM_SHAPE, "a second table of the FROM list is read by a query that joins no table");
 			else
 			{
 				joined = lappend_int(joined, rti);
@@ -202,12 +202,12 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		}
 		else if (input_rel == NULL || c->joinless ||
 				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
-			return agg_refuse(FROM_SHAPE);
+			return agg_refuse_on(FROM_SHAPE, "a FROM item is not a table, a lateral function the scan unnests, a sub-select, a VALUES list, a function or a CTE");
 		else
 			joined = lappend_int(joined, rti);
 	}
 	if (c->relid == 0)
-		return agg_refuse(FROM_SHAPE);
+		return agg_refuse_on(FROM_SHAPE, "the FROM list has no table to scan");
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)
@@ -224,16 +224,16 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	if (input_rel != NULL)
 	{
 		if (!bms_is_member(c->relid, input_rel->relids))
-			return agg_refuse(FROM_SHAPE);
+			return agg_refuse_on(FROM_SHAPE, "the scanned table is not an input of the aggregate");
 		for (int m = -1; (m = bms_next_member(input_rel->relids, m)) >= 0;)
 			if (rt_fetch(m, parse->rtable)->rtekind != RTE_JOIN)
 			{
 				if (!bms_is_member(m, allrtis))
-					return agg_refuse(FROM_SHAPE);
+					return agg_refuse_on(FROM_SHAPE, "the aggregate reads a table the FROM tree does not name");
 				nin++;
 			}
 		if (nin + list_length(c->joins) < list_length(fs->rtis))
-			return agg_refuse(FROM_SHAPE);
+			return agg_refuse_on(FROM_SHAPE, "a table of the FROM tree is not an input of the aggregate");
 	}
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
 	if (fs->ojrels && input_rel == NULL)

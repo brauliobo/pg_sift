@@ -1,0 +1,115 @@
+-- A WHERE over the columns of the nullable side of a preserved join (a calendar LEFT JOIN rows): PostgreSQL moves it there from the output of a
+-- grouped sub-select. The calendar days nothing matched have NULL columns and must pass it, and a day whose matches it drops is no row (not
+-- a day of NULL columns), so the scan tests it on the matched tuples. A condition the NULL row fails keeps the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dates (day date PRIMARY KEY);
+INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;
+CREATE TABLE facts (id int PRIMARY KEY, day date, deleted_at timestamp, metrics jsonb);
+INSERT INTO facts
+SELECT i, '2026-01-01'::date + (i % 15), CASE WHEN i % 17 = 0 THEN now() END,
+       CASE WHEN i % 19 = 0 THEN NULL
+            WHEN (i % 15) % 4 = 0 THEN jsonb_build_object('b_x', i % 10, 'b_y', i % 7)
+            ELSE jsonb_build_object('a_x', i % 10, 'a_y', i % 7, 'b_x', i % 5, 'c', (i * 3) % 11) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, day, deleted_at, metrics) WITH (paths = 'metrics.* float8');
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE dates;
+\ir test/agg_check_query.sql
+\set ECHO none
+-- the output of the grouped sub-select is filtered by the caller: the condition is pushed into its input (the NULL row of an empty day passes)
+SELECT * FROM check_query($q$
+ SELECT * FROM (
+   SELECT coalesce(p.cat, 'mhead') AS category, d.day, avg(p.v) AS value, count(DISTINCT p.id) AS n, count(*) AS cells
+   FROM dates d LEFT JOIN (
+     SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat, r.value::float8 AS v
+     FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r WHERE f.deleted_at IS NULL
+   ) p ON p.day = d.day
+   GROUP BY p.cat, d.day
+ ) g WHERE category = 'mhead' ORDER BY 1, 2
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- a condition on the column itself: the days whose matches all fail it are no rows, the days nothing matched are (days 4, 8, 12 hold only b_ keys)
+SELECT * FROM check_query($q$
+ SELECT d.day, p.cat, avg(p.v) AS value, count(DISTINCT p.id) AS n, count(*) AS cells
+ FROM dates d LEFT JOIN (
+   SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat, r.value::float8 AS v
+   FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ ) p ON p.day = d.day
+ WHERE p.cat IS NULL OR p.cat = 'a'
+ GROUP BY d.day, p.cat ORDER BY 1, 2
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- the same through an expression the NULL row passes, and a count of the rows of the join
+SELECT * FROM check_query($q$
+ SELECT d.day, count(*) AS cells, count(p.id) AS matched, sum(p.v) AS total
+ FROM dates d LEFT JOIN (
+   SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat, r.value::float8 AS v
+   FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ ) p ON p.day = d.day
+ WHERE coalesce(p.cat, 'a') = 'a'
+ GROUP BY d.day ORDER BY 1
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- grouping sets that all group by the filtered column
+SELECT * FROM check_query($q$
+ SELECT * FROM (
+   SELECT coalesce(p.cat, 'mhead') AS category, d.day, count(*) AS cells, count(DISTINCT p.id) AS n
+   FROM dates d LEFT JOIN (
+     SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+   ) p ON p.day = d.day
+   GROUP BY GROUPING SETS ((p.cat, d.day), (p.cat))
+ ) g WHERE category = 'mhead' ORDER BY 1, 2
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+-- a condition the NULL row fails keeps the normal plan: the empty days would be dropped by PostgreSQL and kept by the scan
+SELECT * FROM check_query($q$
+ SELECT * FROM (
+   SELECT coalesce(p.cat, 'mhead') AS category, d.day, count(*) AS cells, count(DISTINCT p.id) AS n
+   FROM dates d LEFT JOIN (
+     SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+   ) p ON p.day = d.day
+   GROUP BY p.cat, d.day
+ ) g WHERE category = 'a' ORDER BY 1, 2
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ f      | f        |           0
+(1 row)
+
+-- rows that were updated and deleted since the index was built are read from the heap
+UPDATE facts SET metrics = jsonb_set(metrics, '{a_x}', '9') WHERE id % 11 = 0 AND metrics ? 'a_x';
+UPDATE facts SET day = day + 1 WHERE id % 13 = 0;
+DELETE FROM facts WHERE id % 23 = 0;
+SELECT * FROM check_query($q$
+ SELECT d.day, p.cat, avg(p.v) AS value, count(DISTINCT p.id) AS n, count(*) AS cells
+ FROM dates d LEFT JOIN (
+   SELECT f.id, f.day, split_part(r.key, '_', 1) AS cat, r.value::float8 AS v
+   FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ ) p ON p.day = d.day
+ WHERE p.cat IS NULL OR p.cat = 'a'
+ GROUP BY d.day, p.cat ORDER BY 1, 2
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
+DROP FUNCTION check_query(text);
+DROP TABLE facts, dates;
