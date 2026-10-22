@@ -23,6 +23,7 @@ bench/bench all                    # setup + run + report on the slim tier (the 
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench all --docs             # the slim tier plus the cold-cache tables, then docs/results, docs/img and the generated blocks of README.md and docs/BENCHMARKS.md
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
+bench/bench kit                    # docker only: PostgreSQL + pg_sift, 100,000 orders, the ten store questions with and without the pushdown, answers compared: 10-15 minutes on a laptop
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
