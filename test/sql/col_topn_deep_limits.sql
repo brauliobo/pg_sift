@@ -84,3 +84,6 @@ END $$;
 SELECT v, cl_generic(l, o) FROM (VALUES (10, 0), (10, 1990), (10, 1991), (3000, 0), (5, 2500)) x(l, o), LATERAL (SELECT format('%s+%s', l, o) AS v) y ORDER BY l, o;
 RESET plan_cache_mode;
 RESET sift.test_limits;
+DROP FUNCTION cl_generic(bigint, bigint), cl_check(text), cl_mode(bool);
+DROP TABLE cl, cl_q;
+DROP EXTENSION pg_sift;
