@@ -10,23 +10,7 @@ INSERT INTO nf SELECT i, i % 7, i % 100, 'v' || i % 13 FROM generate_series(1, 2
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n, s);
 VACUUM ANALYZE nf;
 
-CREATE FUNCTION agg_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-
-CREATE FUNCTION agg_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_rows_helpers.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES
