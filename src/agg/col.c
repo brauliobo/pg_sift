@@ -427,6 +427,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 	ColSource  *src = impl;
 	uint32		nrow;
 
+	src->sel.compact = false;
 	if (src->rck)
 	{
 		bool		again = src->rck->taken && recheck_pending(src);
@@ -449,6 +450,20 @@ col_next(void *impl, SiftSrcUnit *unit)
 	return true;
 }
 
+/* The rows of bits are few: the unit goes on as them alone. Not the unit of rows read again from the heap, which has no stored numbering to go back to. */
+static bool
+col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
+{
+	ColSource  *src = impl;
+	uint32		nrow;
+
+	if (src->sel.compact || (src->rck && src->rck->active))
+		return false;
+	sift_aggsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
+	unit->nrow = nrow;
+	return true;
+}
+
 static void
 col_select(void *impl, const SiftFilter *keep)
 {
@@ -461,7 +476,7 @@ col_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPoi
 {
 	ColSource  *src = impl;
 
-	if (src->sel.keep && src->sel.compact)
+	if (src->sel.compact)
 	{
 		uint32	   *ords = palloc(Max(n, 1) * sizeof(uint32));
 
@@ -544,7 +559,7 @@ col_gpu_unit(void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
 {
 	SiftColGpuUnit cg;
 
-	if (((ColSource *) impl)->sel.keep || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
+	if (((ColSource *) impl)->sel.keep || ((ColSource *) impl)->sel.compact || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
 		return false;
 	*g = (SiftSrcGpuUnit) {cg.store, cg.gen, cg.unit, cg.nrows};
 	return true;
@@ -671,6 +686,7 @@ static const SiftSrcProvider col_provider = {
 	.set_filters = col_set_filters,
 	.filter = col_filter,
 	.read_sel = col_read_sel,
+	.narrow = col_narrow,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
 	.set_recheck = col_set_recheck,

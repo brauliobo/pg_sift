@@ -16,7 +16,7 @@
 typedef struct SiftAggSel
 {
 	const SiftFilter *keep;		/* NULL: no restriction */
-	bool		compact;		/* the current unit is compacted */
+	bool		compact;		/* the current unit is compacted: by the match set, or narrowed to the rows the filters left */
 	SiftColSel	sel;			/* the kept rows, in the numbering of the unit as stored */
 	uint32		nrow;			/* rows of the unit as stored */
 	int64		units_skipped;	/* units without a kept row */
@@ -31,6 +31,9 @@ extern void sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt);
 
 /* Restricts the unit the source is at to keep; false when no row of it is kept (the source goes on to the next unit). *nrow: the rows the executor sees */
 extern bool sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow);
+
+/* The unit goes on as the rows of bits (in the numbering the executor sees, which is not compacted yet) alone, renumbered 0..*nrow-1 as a match set's few rows are */
+extern void sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, const uint64 *bits, uint32 *nrow);
 
 /* The unit's operations, in the numbering the executor sees (a.keep NULL: the unit as stored) */
 extern void sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec);

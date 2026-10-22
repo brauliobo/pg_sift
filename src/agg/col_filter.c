@@ -314,7 +314,7 @@ void
 col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 {
 	ColSource  *src = impl;
-	bool		compact = src->sel.keep && src->sel.compact,
+	bool		compact = src->sel.compact,
 				known;
 
 	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
