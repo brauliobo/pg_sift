@@ -22,10 +22,12 @@ permissions:
   contents: read
   actions: read
 
-# a push cancels the run of the one it supersedes; a nightly or dispatch run is never cancelled by a push
+# a pull request run is cancelled by the next push to the same pull request. A push to main never cancels the run of the one before it: that run finishes, and of the
+# runs waiting behind it GitHub keeps the newest, which scopes its diff from the last green run (see `changes`), so every batch of merges gets one complete run and
+# the head of main is tested. A nightly or dispatch run has a group of its own, so a push never cancels it (main-verify.yml dispatches one when the head of main has none).
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
