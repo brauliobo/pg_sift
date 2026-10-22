@@ -286,6 +286,12 @@ section() { # SIZES: the update, delete and VACUUM section (store.py section): S
   py section-merge "$OUT"/*/store-*-section.json -o "$OUT/updates.json" --sha "$(git -C "$REPO" rev-parse --short=12 HEAD)"
   [[ -z ${S_DOCS:-} ]] || { cp "$OUT/updates.json" "$REPO/docs/results/updates.json"; report; }
 }
+prepare() { # SIZES: what a pass needs before it times anything (the image with its build layers, the base images, the CSV of each size), so that the pass starts at once on a calm host
+  local s
+  build_image
+  pull_missing "$STORE_PG_IMAGE"
+  for s in ${SIZES//,/ }; do py gen --rows "$s"; done
+}
 interference() { # SIZE [store.py interference options]
   local extra=()
   mapfile -t extra < <(engine_args; flags)
@@ -368,6 +374,7 @@ case $sub in
   cold) mkdir -p "$OUT"; ensure "${SIZES%%,*}"; point "$CPUS"; cold_at "${SIZES%%,*}" "$CPUS" ;;
   updates) mkdir -p "$OUT"; ensure "${SIZES%%,*}"; updates "${SIZES%%,*}" ;;
   section) mkdir -p "$OUT"; trap 'down' EXIT; section ;;
+  prepare) mkdir -p "$OUT"; prepare ;;
   interference) mkdir -p "$OUT"; interference "${SIZES%%,*}" "${@:2}" ;;
   finish) finish ;;
   report) report ;;
@@ -376,5 +383,5 @@ case $sub in
   table|gap) py "$1" "${2:-$REPO/docs/results/store.json}" ;;
   compare) py compare "$2" "$3" ;;
   clean) clean ;;
-  *) echo "usage: store.sh all|plan|setup|run|cold|updates|section|finish|interference|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
+  *) echo "usage: store.sh all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
 esac

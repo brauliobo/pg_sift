@@ -77,9 +77,11 @@ def tables(S, detail):
     head = lambda first: first + [NAMES[e] for e in S.lanes]
     out = ['**Bulk changes** (rows per second, higher is better)', '']
     out += md_table(head(['orders', 'change']), [line(S, s, ('-', v, 'phase_rows_s'), lambda x: f'{x:,.0f}', best_high, label) for s in S.sizes for v, label in CHANGES]) + ['']
-    out += ['**The read around a churn** (the monthly revenue query, p50 ms, lower is better)', '']
+    out += ['**The read around a churn** (the monthly revenue query, and the next query after a single-row change; p50 ms, lower is better)', '']
     qs = [('03', 'revenue per month')] + ([('05', 'average shipped order')] if detail else [])
-    out += md_table(head(['orders', 'state']), [line(S, s, (q, v, 'latency_ms'), ms, best_bold, f'{label}: {name}') for s in S.sizes for q, label in qs for v, name in STATES]) + ['']
+    rows = [line(S, s, (q, v, 'latency_ms'), ms, best_bold, f'{label}: {name}') for s in S.sizes for q, label in qs for v, name in STATES]
+    rows += [line(S, s, ('-', 'commit', 'visible_ms'), ms, best_bold, 'a single-row change seen by the next query') for s in S.sizes]
+    out += md_table(head(['orders', 'state']), rows) + ['']
     out += ['**VACUUM, WAL and space**', '']
     body = []
     for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of docs/BENCHMARKS.md every size
@@ -87,7 +89,6 @@ def tables(S, detail):
         wal = lambda e: [S.med(s, e, '-', v, 'wal_mib') for v, _ in CHANGES] + [S.med(s, e, '-', 'maintenance', 'wal_mib')]
         body.append([f'{s:,}', 'WAL MiB: the three changes / VACUUM'] + [(f'{sum(w[:3]):,.0f} / {w[3]:,.0f}' if None not in w else 'n/a') for w in map(wal, S.lanes)])
         body.append([f'{s:,}', 'size MiB: fresh, after the changes, after VACUUM'] + [' / '.join(f'{x:,.0f}' if x is not None else 'n/a' for x in (S.med(s, e, '-', v, 'size_mib') for v in ('before', 'after churn', 'after maintenance'))) for e in S.lanes])
-        body.append(line(S, s, ('-', 'commit', 'visible_ms'), ms, best_bold, 'a single-row change seen by the next query, ms'))
     out += md_table(head(['orders', '']), body) + ['']
     cs = S.churn_size()
     if cs:

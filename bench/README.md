@@ -39,7 +39,7 @@ other benchmarks of the host) for the run, and says in the header of each block 
 (`scripts/quiet.sh`) and exits 75 otherwise; `--pr BASE` commits `docs/results`, `docs/img` and the blocks on a new branch and opens a pull request against BASE (it never merges). `bench/refresh.service` and `bench/refresh.timer` are a
 user unit and a weekly timer (Sunday 03:00, a random delay of up to an hour) that run `refresh --calm --pr`; the header of the service says what to install (a clone of its own, the environment file); nothing installs them. The cheap gate
 `scripts/check-bench-fresh.sh` (lint; no measurement) fails when a generated block of README.md or docs/BENCHMARKS.md or a chart differs from what `bench readme` and `bench store render` generate from `docs/results`, and warns when the results are from
-another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them.
+another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them. `bench/bench refresh --prepare` builds the image and generates the data of the update, delete and VACUUM section first (nice, no host lock), so the measuring run starts at once.
 
 **One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
 `docs/results/*.tsv`, `docs/img/*.svg`, the slim section of `docs/BENCHMARKS.md` and the blocks of `README.md` (between the `<!-- bench:NAME:begin -->` / `<!-- bench:NAME:end -->` lines; `bench/bench readme` rewrites
