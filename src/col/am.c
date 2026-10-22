@@ -139,6 +139,10 @@ sift_col_init(void)
 							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
 							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",
 							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.cluster_advice",
+							 "sift.cluster_advice() recommends a physical order for the tables of the sift_col indexes.",
+							 "Off: it answers 'not recommended' for every index. The index option cluster_advice switches one index off.",
+							 &sift_cluster_advice, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_worker",
 							 "A request for a rollup refresh starts the background worker that makes it.",
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
@@ -239,6 +243,9 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "cluster_advice",
+					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
+					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
 					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default off)",
 					   false, ShareUpdateExclusiveLock);
@@ -276,6 +283,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
 		{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
+		{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
 		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
@@ -291,7 +299,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }

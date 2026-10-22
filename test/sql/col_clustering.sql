@@ -59,6 +59,34 @@ CREATE TABLE empty_t (id int);
 CREATE INDEX empty_col ON empty_t USING sift_col (id);
 SELECT leaf, path, units, zoned_units, verdict FROM sift.col_clustering('empty_col');
 
-DROP TABLE ev, empty_t;
+-- sift.cluster_advice: which order of the table would let the scans skip the most units, and when it is not worth it
+-- ev: the leaves that are ordered now (id, day, blk) pay for the sort by rnd; evs: only scattered leaves; evo: ordered, small
+CREATE TABLE evs (id int PRIMARY KEY, grp int, rnd int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evs SELECT i, abs(hashint4(i)) % 300, abs(hashint4(i + 7)) % 100000, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX evs_col ON evs USING sift_col (grp, rnd);
+CREATE TABLE evo (id int, day date, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evo SELECT i, date '2020-01-01' + i / 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX evo_col ON evo USING sift_col (id, day);
+VACUUM (FREEZE, ANALYZE) evs, evo;
+SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
+FROM sift.cluster_advice('ev', 10000);
+SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ' reads', 1) AS why, command
+FROM sift.cluster_advice('evs_col', 10000);
+SELECT tbl, key, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('evo', 10000);
+SELECT tbl, key, verdict, split_part(reason, ' ', 1) AS why FROM sift.cluster_advice('evs');
+-- the two switches
+SET sift.cluster_advice = off;
+SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+RESET sift.cluster_advice;
+ALTER INDEX evs_col SET (cluster_advice = off);
+SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+SELECT tbl, verdict FROM sift.cluster_advice('ev', 10000);
+ALTER INDEX evs_col RESET (cluster_advice);
+SELECT tbl, verdict FROM sift.cluster_advice('evs', 10000);
+-- an index without a sealed unit has nothing to say, an index of another kind has no row
+SELECT tbl, verdict, reason FROM sift.cluster_advice('empty_t');
+SELECT count(*) AS rows FROM sift.cluster_advice('ev_bm25');
+
+DROP TABLE ev, empty_t, evs, evo;
 DROP FUNCTION units_read(text), predicted(text, int[]);
 DROP EXTENSION pg_sift;

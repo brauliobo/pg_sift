@@ -2,7 +2,7 @@
 
 Generated from `sql/pg_sift--3.3.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
 
-Schema `sift`: 46 functions, 3 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
+Schema `sift`: 47 functions, 3 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
 
 Settings (`sift.*`) are in the table of [Maintenance and operations](USAGE.md#maintenance-and-operations); the fixed limits are in [LIMITS.md](LIMITS.md).
 
@@ -13,6 +13,7 @@ The `sift` index (BM25): the operator, ranking, query helpers, facets and the in
 | Object | Kind | Returns | Since | Description |
 |---|---|---|---|---|
 | `text @@> text` | operator | `bool` | 1.0 | Full-text match of a text against a SiftQL query (words, phrases, prefixes, fuzzy terms, NOT, fields); a sift index answers it, with BM25 ranking through sift.score. See [Ranking, filters and joins](USAGE.md#ranking-filters-and-joins). |
+| `sift.cluster_advice(rel regclass DEFAULT NULL, min_rows int8 DEFAULT 100000)` | function | `setof (tbl regclass, index regclass, key text, units int8, units_now float8, units_after float8, saved_rows int8, churn_pct float8, verdict text, reason text, command text)` | 3.3 | Which physical order of a table (CLUSTER, pg_repack --order-by) would let the scans of its sift_col index skip the most units, one row per index: the units read now and after, the rows saved, the churn, a recommended or not recommended verdict with its reason, and the pg_repack call; off by the setting sift.cluster_advice or the index option cluster_advice. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.facet_counts(tbl regclass, key text, query text, facets jsonb, filter text DEFAULT NULL, hits bool DEFAULT false)` | function | `setof (facet text, kind text, value text, lo text, hi text, count int8)` | 3.1 | Facet counts over a search: terms, range, histogram and date_histogram facets of any column type, several in one call. See [Facets](USAGE.md#facets). |
 | `sift.facet_sql(tbl regclass, key text, query text, facets jsonb, filter text DEFAULT NULL, hits bool DEFAULT false)` | function | `text` | 3.1 | The SQL statement that facet_counts runs, one scan per facet. See [Facets](USAGE.md#facets). |
 | `sift.facets(index regclass, facet_index regclass, query text, lim int DEFAULT 10, nulls bool DEFAULT false)` | function | `setof (value text, count int8)` | 1.1 | Counts of the matches of a query per value of a keyword sift index, most frequent first. See [Facets](USAGE.md#facets). |

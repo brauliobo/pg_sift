@@ -19,6 +19,9 @@
 #include "col/am.h"
 #include "col/seg.h"
 
+/* sift.cluster_advice: read by the SQL function sift.cluster_advice() through current_setting */
+bool		sift_cluster_advice = true;
+
 PG_FUNCTION_INFO_V1(sift_col_clustering);
 
 typedef struct Probe
