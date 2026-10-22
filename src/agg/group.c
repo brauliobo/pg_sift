@@ -262,19 +262,6 @@ direct_layout(AggExec *ex)
 	}
 }
 
-static inline uint32
-ids_hash(const uint32 *ids, int nk, uint32 nslot)
-{
-	uint64		h = 0;
-
-	for (int j = 0; j < nk; j++)
-	{
-		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
-		h ^= h >> 32;
-	}
-	return (uint32) h & (nslot - 1);
-}
-
 /* a new group of an id tuple in hash mode, in slot `pos` of its probe */
 static pg_noinline uint32
 hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
@@ -824,6 +811,36 @@ key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *val
 
 /* ---------- aggregation of a chunk ---------- */
 
+/* The ids of the tuples' keys, kid[j * (VEC + PADW) + i] for key j and tuple i (0: NULL, or a key the tuples do not have). */
+void
+compute_kids(AggExec *ex, int nsel, uint32 *kid)
+{
+	uint32	   *maps[SIFT_AGG_MAX_KEYS];
+	int32		bases[SIFT_AGG_MAX_KEYS];
+
+	for (int j = 0; j < ex->spec->nkeys; j++)
+	{
+		const uint32 *idx = NULL;
+		const SiftSrcLeaf *lf = key_lf(ex, j);
+		uint32	   *vals = ex->kids + (Size) j * (VEC + PADW),
+				   *out = kid + (Size) j * (VEC + PADW);
+
+		if (lf)
+			gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
+		key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals);
+		memset(out, 0, nsel * sizeof(uint32));
+		if (maps[j] == NULL)
+			memcpy(out, vals, nsel * sizeof(uint32));
+		else if (lf->vtype == SCV_CODE)
+			sift_aggk->gid_code(out, vals, maps[j], nsel, 1);
+		else
+		{
+			sift_aggk->gid_i32(out, (const int32 *) vals, bases[j], maps[j], nsel, 1);
+			key_null_fix(ex, j, nsel, idx, vals, NULL, 1, out);
+		}
+	}
+}
+
 void
 compute_gids(AggExec *ex, int nsel)
 {
@@ -880,44 +897,15 @@ compute_gids(AggExec *ex, int nsel)
 		}
 		/* the table just replaced the arrays: recompute below, in hash mode */
 	}
+	compute_kids(ex, nsel, ex->tmpu32);
+	for (int i = 0; i < nsel; i++)
 	{
-		uint32	   *maps[SIFT_AGG_MAX_KEYS];
-		int32		bases[SIFT_AGG_MAX_KEYS];
+		uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
 
 		for (int j = 0; j < nk; j++)
-		{
-			const uint32 *idx = NULL;
-			const SiftSrcLeaf *lf = key_lf(ex, j);
-			uint32	   *vals = ex->kids + (Size) j * (VEC + PADW);
-
-			if (lf)
-				gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
-			key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals);
-			/* the ids themselves: gid = 0 + map[..] * 1 into a per key array */
-			{
-				uint32	   *kid = ex->tmpu32 + (Size) j * (VEC + PADW);
-
-				memset(kid, 0, nsel * sizeof(uint32));
-				if (maps[j] == NULL)
-					memcpy(kid, vals, nsel * sizeof(uint32));
-				else if (lf->vtype == SCV_CODE)
-					sift_aggk->gid_code(kid, vals, maps[j], nsel, 1);
-				else
-				{
-					sift_aggk->gid_i32(kid, (const int32 *) vals, bases[j], maps[j], nsel, 1);
-					key_null_fix(ex, j, nsel, idx, vals, NULL, 1, kid);
-				}
-			}
-		}
-		for (int i = 0; i < nsel; i++)
-		{
-			uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
-
-			for (int j = 0; j < nk; j++)
-				ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
-			ex->gid[i] = hash_group(ex, ids);
-		}
-		if (ex->ngroups > ex->gcap)
-			groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
+		ex->gid[i] = hash_group(ex, ids);
 	}
+	if (ex->ngroups > ex->gcap)
+		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
 }

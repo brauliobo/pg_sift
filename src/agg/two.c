@@ -88,8 +88,11 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	{
 		ArmSt	   *a = &ex->arm[k];
 		SiftAggArm *sa = &s->arm[k];
-		uint64	   *nord = MemoryContextAlloc(ex->tcxt, newcap * sizeof(uint64));
+		uint64	   *nord;
 
+		if (a->local)
+			continue;
+		nord = MemoryContextAlloc(ex->tcxt, newcap * sizeof(uint64));
 		memset(nord, 0xff, newcap * sizeof(uint64));
 		for (int ai = 0; ai < sa->ninner; ai++)
 		{
@@ -125,7 +128,56 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	}
 	if (remap)
 		for (uint32 t = 0; t < ex->ntouch; t++)
-			ex->touched[t].g = remap[ex->touched[t].g];
+			if (!ex->arm[ex->touched[t].arm].local)
+				ex->touched[t].g = remap[ex->touched[t].g];
+}
+
+/* the arrays of a local arm for room cells */
+static void
+cells_alloc(AggExec *ex, ArmSt *a, int ninner, uint32 room)
+{
+	a->ccap = room;
+	a->cid = MemoryContextAlloc(ex->cxt, (Size) room * a->nlk * sizeof(uint32));
+	for (int ai = 0; ai < ninner; ai++)
+	{
+		a->n[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(int64));
+		a->i[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(int64));
+		a->d[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(double));
+		a->nf[ai] = MemoryContextAlloc(ex->cxt, room);
+	}
+}
+
+/* the slot of the row's table that the ids of a cell start at */
+static inline uint32
+cell_slot(const ArmSt *a, const uint32 *ids)
+{
+	uint32		pos = ids_hash(ids, a->nlk, a->lcap);
+
+	while ((a->ltab[pos] >> 32) == a->stamp)
+		pos = (pos + 1) & (a->lcap - 1);
+	return pos;
+}
+
+/* room for twice the cells, and a table of four slots each, in which the cells of the row go again */
+static void
+cells_grow(AggExec *ex, int k, ArmSt *a)
+{
+	int			ninner = ex->spec->arm[k].ninner;
+
+	a->ccap *= 2;
+	a->cid = repalloc(a->cid, (Size) a->ccap * a->nlk * sizeof(uint32));
+	for (int ai = 0; ai < ninner; ai++)
+	{
+		a->n[ai] = repalloc(a->n[ai], a->ccap * sizeof(int64));
+		a->i[ai] = repalloc(a->i[ai], a->ccap * sizeof(int64));
+		a->d[ai] = repalloc(a->d[ai], a->ccap * sizeof(double));
+		a->nf[ai] = repalloc(a->nf[ai], a->ccap);
+	}
+	pfree(a->ltab);
+	a->lcap = 4 * a->ccap;
+	a->ltab = MemoryContextAllocZero(ex->cxt, (Size) a->lcap * sizeof(uint64));
+	for (uint32 c = 0; c < a->nc; c++)
+		a->ltab[cell_slot(a, &a->cid[(Size) c * a->nlk])] = (uint64) a->stamp << 32 | (c + 1);
 }
 
 void
@@ -166,6 +218,21 @@ arms_init(AggExec *ex)
 			a->dx[ai] = MemoryContextAlloc(ex->cxt, maxv * sizeof(double));
 			a->ix[ai] = MemoryContextAlloc(ex->cxt, maxv * sizeof(int64));
 		}
+		if (s->arm[k].hmask == 0)
+			continue;
+		a->local = true;
+		memset(a->lpos, -1, sizeof(a->lpos));
+		for (int j = 0; j < s->nkeys; j++)
+			if ((s->arm[k].keymask | s->arm[k].hmask) >> j & 1)
+			{
+				a->lpos[j] = a->nlk;
+				a->lk[a->nlk++] = j;
+			}
+		a->kid = MemoryContextAlloc(ex->cxt, (Size) s->nkeys * maxv * sizeof(uint32));
+		cells_alloc(ex, a, ni, 16);
+		a->lcap = 64;
+		a->ltab = MemoryContextAllocZero(ex->cxt, a->lcap * sizeof(uint64));
+		a->stamp = 1;
 	}
 	ex->captouch = 1024;
 	ex->touched = MemoryContextAlloc(ex->cxt, ex->captouch * sizeof(Touch));
@@ -222,7 +289,11 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 static void
 cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
 {
-	a->ord[g] = row;
+	if (!a->local)
+	{
+		a->ord[g] = row;
+		ex->seen[g]++;
+	}
 	for (int ai = 0; ai < ex->spec->arm[k].ninner; ai++)
 	{
 		a->n[ai][g] = 0;
@@ -237,7 +308,35 @@ cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
 	}
 	ex->touched[ex->ntouch].arm = k;
 	ex->touched[ex->ntouch++].g = g;
-	ex->seen[g]++;
+}
+
+/* the cell of tuple j of a local arm in the row: made when the row has none with the tuple's key ids */
+static uint32
+cell_find(AggExec *ex, int k, ArmSt *a, int j, uint64 row)
+{
+	uint32		ids[SIFT_AGG_MAX_KEYS],
+				pos,
+				c;
+
+	for (int x = 0; x < a->nlk; x++)
+		ids[x] = a->kid[(Size) a->lk[x] * (VEC + PADW) + j];
+	pos = ids_hash(ids, a->nlk, a->lcap);
+	for (; (a->ltab[pos] >> 32) == a->stamp; pos = (pos + 1) & (a->lcap - 1))
+	{
+		c = (uint32) a->ltab[pos] - 1;
+		if (memcmp(&a->cid[(Size) c * a->nlk], ids, a->nlk * sizeof(uint32)) == 0)
+			return c;
+	}
+	if (a->nc == a->ccap)
+	{
+		cells_grow(ex, k, a);
+		pos = cell_slot(a, ids);
+	}
+	c = a->nc++;
+	memcpy(&a->cid[(Size) c * a->nlk], ids, a->nlk * sizeof(uint32));
+	a->ltab[pos] = (uint64) a->stamp << 32 | (c + 1);
+	cell_start(ex, k, a, c, row);
+	return c;
 }
 
 static void
@@ -344,6 +443,17 @@ cell_having(AggExec *ex, int k, uint32 g)
 	return !isnull && DatumGetBool(d);
 }
 
+/* the id of key j in cell g of arm k (0: NULL, or a key the arm does not have) */
+static inline uint32
+cell_key(AggExec *ex, int k, uint32 g, int j)
+{
+	const ArmSt *a = &ex->arm[k];
+
+	if (!a->local)
+		return key_id(ex, j, g);
+	return a->lpos[j] < 0 ? 0 : a->cid[(Size) g * a->nlk + a->lpos[j]];
+}
+
 /* the outer aggregates of group og take the cell (arm k, group g) of the row `row` */
 static void
 cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
@@ -384,7 +494,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 		if (o->kind == SAA_O_COUNT_KEY)
 		{
 			/* the cell's id of the key, 0 for NULL: an arm that does not group by it has none */
-			uint32		id = key_id(ex, o->slot, g);
+			uint32		id = cell_key(ex, k, g, o->slot);
 
 			if (id != 0 && dist_add(ex, ex->dist[oi], og, id))
 				acc->n[og]++;
@@ -429,7 +539,7 @@ cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
 	}
 	for (int j = 0; j < s->nkeys; j++)
 		if (mask >> j & 1)
-			ids[j] = key_id(ex, j, g);
+			ids[j] = cell_key(ex, k, g, j);
 	if (ex->hash)
 		return hash_group(ex, ids);
 	for (int j = 0; j < s->nkeys; j++)
@@ -448,7 +558,8 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	SiftAggArm *sa = &s->arm[k];
 	ArmSt	   *a = &ex->arm[k];
 
-	ex->seen[g]--;
+	if (!a->local)
+		ex->seen[g]--;
 	for (int h = 0; h < sa->nhaving; h++)
 	{
 		double		dv = 0;
@@ -482,6 +593,19 @@ arms_flush(AggExec *ex)
 	for (uint32 t = 0; t < ex->ntouch; t++)
 		flush_cell(ex, ex->touched[t].arm, ex->touched[t].g, ex->cur_order);
 	ex->ntouch = 0;
+	for (int k = 0; k < ex->spec->narms; k++)
+	{
+		ArmSt	   *a = &ex->arm[k];
+
+		if (!a->local || a->nc == 0)
+			continue;
+		a->nc = 0;
+		if (++a->stamp == 0)
+		{
+			memset(a->ltab, 0, a->lcap * sizeof(uint64));
+			a->stamp = 1;
+		}
+	}
 }
 
 /* the tuples of the chunk through every arm: the tuples of a row come together, so a cell lives for one row */
@@ -501,6 +625,20 @@ arm_chunk(AggExec *ex, Tup *t)
 			ArmSt	   *a = &ex->arm[k];
 
 			ex->arm_mask = s->arm[k].keymask | s->arm[k].hmask;
+			if (a->local)
+			{
+				/* the cell is found by the ids; the group table is the outer keys' (and the set's) and needs room for their ids only */
+				uint32		growmask = s->arm[k].keymask | (s->nsets ? (uint32) 1 << (s->nkeys - 1) : 0);
+
+				compute_kids(ex, n, a->kid);
+				for (int j = 0; !ex->hash && j < s->nkeys; j++)
+					if ((growmask >> j & 1) && key_used(&ex->ks[j]) > ex->ks[j].cap)
+					{
+						direct_grow(ex);
+						break;
+					}
+				continue;
+			}
 			compute_gids(ex, n);
 			memcpy(a->gid, ex->gid, n * sizeof(uint32));
 		}
@@ -536,11 +674,13 @@ arm_chunk(AggExec *ex, Tup *t)
 		{
 			ArmSt	   *a = &ex->arm[k];
 			SiftAggArm *sa = &s->arm[k];
-			uint32		g = a->gid[j];
+			uint32		g;
 
 			if (!a->ok[j])
 				continue;
-			if (a->ord[g] != row)
+			if (a->local)
+				g = cell_find(ex, k, a, j, row);
+			else if (a->ord[(g = a->gid[j])] != row)
 				cell_start(ex, k, a, g, row);
 			for (int ai = 0; ai < sa->ninner; ai++)
 				if (a->iok[ai][j])
