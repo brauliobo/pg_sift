@@ -86,26 +86,34 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	return l->size;
 }
 
+/* an array of a table with no rows is a null pointer, which memcpy must not be given even for no bytes */
+static void
+put_array(char *dst, const void *src, Size n)
+{
+	if (n > 0)
+		memcpy(dst, src, n);
+}
+
 void
 map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char *dst)
 {
 	Size		at = l->data;
 
 	memcpy(dst, l, sizeof(MapShared));
-	memcpy(dst + l->kid, m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
-	memcpy(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
-	memcpy(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
+	put_array(dst + l->kid, m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
+	put_array(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
+	put_array(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
 	for (int k = 0; k < m->nkey; k++)
 	{
 		const KeyDict *d = &m->kd[k];
 
-		memcpy(dst + l->key[k].slot, d->slot, (size_t) d->nslot * sizeof(uint32));
+		put_array(dst + l->key[k].slot, d->slot, (size_t) d->nslot * sizeof(uint32));
 		if (m->ktext[k])
 		{
 			uint64	   *off = (uint64 *) (dst + l->key[k].off);
 
-			memcpy(dst + l->key[k].len, d->len, (size_t) d->n * sizeof(uint32));
-			memcpy(dst + l->key[k].hv, d->hv, (size_t) d->n * sizeof(uint32));
+			put_array(dst + l->key[k].len, d->len, (size_t) d->n * sizeof(uint32));
+			put_array(dst + l->key[k].hv, d->hv, (size_t) d->n * sizeof(uint32));
 			for (uint32 i = 0; i < d->n; i++)
 			{
 				off[i] = at - l->data;
@@ -114,7 +122,7 @@ map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char 
 			}
 		}
 		else
-			memcpy(dst + l->key[k].ival, d->ival, (size_t) d->n * sizeof(int64));
+			put_array(dst + l->key[k].ival, d->ival, (size_t) d->n * sizeof(int64));
 	}
 	for (int c = 0; c < m->ncol; c++)
 	{
@@ -122,15 +130,15 @@ map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char 
 
 		if (mc->byval)
 		{
-			memcpy(dst + l->col[c].val, mc->val, (size_t) m->nrow * sizeof(uint64));
+			put_array(dst + l->col[c].val, mc->val, (size_t) m->nrow * sizeof(uint64));
 			if (mc->isnull)
-				memcpy(dst + l->col[c].isnull, mc->isnull, m->nrow);
+				put_array(dst + l->col[c].isnull, mc->isnull, m->nrow);
 		}
 		else
 		{
 			uint64	   *off = (uint64 *) (dst + l->col[c].off);
 
-			memcpy(dst + l->col[c].id, mc->id, (size_t) m->nrow * sizeof(uint32));
+			put_array(dst + l->col[c].id, mc->id, (size_t) m->nrow * sizeof(uint32));
 			for (uint32 i = 0; i < mc->n; i++)
 			{
 				Size		n = datumGetSize(mc->val[i], false, mc->len);
