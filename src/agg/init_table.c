@@ -244,7 +244,7 @@ table_init(AggExec *ex)
 	uint64		total = 1;
 
 	ex->hash = false;
-	ex->direct_max = ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;
@@ -266,11 +266,11 @@ table_init(AggExec *ex)
 				ident_add(ex, k, i);
 		else if (k->numk)
 			idmap_init(&k->im);
-		else if ((s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64) || k->bucket)
+		else if ((s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64) || k->bucket || (k->ident && spill_started(ex)))
 			ident_go_wide(ex, k);
 	}
 	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */
-	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max)
+	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max && spill_presize_ok(ex))
 		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
@@ -331,6 +331,7 @@ table_init(AggExec *ex)
 		ot_init(&ex->aot[i], tc->eq_opr, a->argtype, a->collid);
 	}
 	MemoryContextSwitchTo(old);
+	spill_floor(ex);
 }
 
 /* forgets every group (the dictionary maps hold key ids of the table) */

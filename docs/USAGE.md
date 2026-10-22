@@ -522,7 +522,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too |
 | `volatile` | semantic | yes | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce |
 | `first_memory` | limit |  | the first rows of the groups would not fit in the memory of a hash aggregate |
-| `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill |
+| `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill |
 | `lateral_limit` | semantic |  | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
 | `two_arms` | semantic |  | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
 | `two_keys` | semantic |  | a key of the two level aggregate is not one every arm groups by |

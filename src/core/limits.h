@@ -33,6 +33,13 @@
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
+	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan.c", 32, "times hash memory", \
+	  "estimated group table of a scan that cannot spill (a two level aggregate, count(DISTINCT), ordered and generic aggregates), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
+	  "normal plan (slug group_memory, the detail names the groups and the limit)", "work_mem, hash_mem_multiplier", 1) \
+	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
+	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
+	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill.c", 8, "levels", \
+	  "levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time)", "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 1) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \
