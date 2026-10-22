@@ -18,7 +18,7 @@ import extras  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 UNIT = {'ms': 'ms', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
-VARIANT = {'scan': 'the units scanned (`sift.agg_preagg = off`)', 'bulk_off': 'write buffers (`sift.table_bulk_groups = off`)'}
+VARIANT = {'scan': 'the units scanned (`sift.agg_preagg = off`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
 
 
 def figure(v):
@@ -87,7 +87,7 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
         r = verdict(f)
         sp = '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
         if r and isinstance(f['others'].get('bulk_off'), float) and f['sift']:
-            sp += ' (%s than `bulk_off`)' % ('%s lower' % speed(f['others']['bulk_off'] / f['sift']))
+            sp += ' (`sift.table_bulk_groups` on vs off: %s lower)' % speed(f['others']['bulk_off'] / f['sift'])
         first = f['metric'] == f['case'].metrics[0]
         body.append('| `%s` | %s | %s | %s | %s | %s | %s | %s |' % (f['case'].id, f['case'].label.replace('|', '\\|') if first else '(the same case)', UNIT[f['metric']], figure(f['native']), figure(f['sift']), cell_others(f), sp,
                                                                   ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
