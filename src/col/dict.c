@@ -179,10 +179,13 @@ cdict_sort(SiftCDict *d)
 
 	for (uint32 c = 0; c < d->n; c++)
 	{
+		const uint8 *s = (const uint8 *) d->bytes + d->off[c];
+		uint32		len = Min(cdict_len(d, c), sizeof(uint64));
 		uint64		k = 0;
 
-		memcpy(&k, d->bytes + d->off[c], Min(cdict_len(d, c), sizeof(k)));
-		a[c].key = pg_bswap64(k);
+		for (uint32 i = 0; i < sizeof(uint64); i++)
+			k = k << 8 | (i < len ? s[i] : 0);
+		a[c].key = k;
 		a[c].code = c;
 	}
 	for (int pass = 0; pass < 8; pass++)
