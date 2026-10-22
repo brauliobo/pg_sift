@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((69 + $(wc -w <<<"$DBS")))
+plan $((73 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -139,7 +139,8 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "CREATE INDEX docs_kw ON docs USING sift (((id % 5)::text)) WITH (analyzer = keyword)" >/dev/null
 	check "sift.facets works on the updated 3.0 extension" test "$(q life upg "$FACETS")" == t
 	upd=$(LC_ALL=C q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
-	check "the 1.0 to 3.3 update says that no index needs a REINDEX" grep -qF "no index needs a REINDEX" <<<"$upd"
+	# a text index of an older release cannot say whether it holds a word over 255 bytes, so it is listed as required; a keyword index never held one
+	check "the 1.0 to 3.3 update warns that the text index needs a REINDEX and skips the keyword one" test "$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c docs_kw <<<"$upd")" == 1/0
 	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.3
 	q life postgres "CREATE DATABASE fresh32" "CREATE DATABASE fresh33" "CREATE DATABASE upg31" "CREATE DATABASE upg32" >/dev/null
 	q life fresh32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" >/dev/null
@@ -158,7 +159,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
 	# the 3.2 scripts are the released ones: the functions of 3.3 come with 3.2--3.3.sql and pg_sift--3.3.sql only
 	NEWFN="SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
-		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'reindex_needed')"
+		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')"
 	check "a fresh 3.2 install has none of the functions added in 3.3" test "$(q life fresh32 "$NEWFN")" == ""
 	# the last step of the chain names the index of minor 4 that nothing rewrote, not the one the REINDEX above rewrote
 	upd=$(LC_ALL=C q life upg31 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
@@ -168,13 +169,23 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE items (id int, kind int, val int)" \
 		"INSERT INTO items SELECT g, g % 5, g FROM generate_series(1, 5000) g" "CREATE INDEX items_col ON items USING sift_col (id, kind, val)" \
 		"SELECT sift.col_promote('items_col')" "SET sift.col_format_minor = 6" "CREATE INDEX items_late ON items USING sift_col (id, kind, val)" \
-		"ALTER INDEX items_late SET (set_columns = 'kind')" >/dev/null
+		"ALTER INDEX items_late SET (set_columns = 'kind')" "CREATE TABLE tbl32 (id int, at timestamp) USING sift_table" \
+		"INSERT INTO tbl32 SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32" >/dev/null
+	q life upg32 "CREATE TABLE tbl32_new (id int, at timestamp) USING sift_table" \
+		"INSERT INTO tbl32_new SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32_new" >/dev/null
 	upd=$(LC_ALL=C q life upg32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
 	check "the 3.2 to 3.3 update warns with the REINDEX of the index whose option came after its units" grep -qF "REINDEX INDEX CONCURRENTLY public.items_late;" <<<"$upd"
 	check "the update does not list the index without options" test "$(grep -c items_col <<<"$upd")" == 0
 	check "the printed command runs" q life upg32 "REINDEX INDEX CONCURRENTLY public.items_late"
+	check "the update names the sift_table written without calendar cells, with a VACUUM FULL, and not the one written by this library" test \
+		"$(grep -c 'VACUUM FULL public.tbl32;' <<<"$upd")/$(grep -c 'public.tbl32_new;' <<<"$upd")" == 1/0
+	q life upg32 "VACUUM FULL public.tbl32" >/dev/null
+	check "after the VACUUM FULL the table is in column format 8 and no longer listed" test "$(q life upg32 "SELECT (SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32') WHERE kind = 'columns') || ':' || \
+		(SELECT count(*) FROM sift.upgrade_commands() WHERE kind = 'rewrite')")" == 8:0
+	check "a VACUUM FULL under sift.col_format_minor = 6 writes format 4" test "$(q life upg32 "SET sift.col_format_minor = 6" "VACUUM FULL tbl32_new" \
+		"SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32_new') WHERE kind = 'columns'")" == 4
 	check "3.2 updated to 3.3 has the objects of a fresh 3.3 install" test "$(q life upg32 "$MEMBERS")" == "$(q life fresh33 "$MEMBERS")"
-	check "the functions added in 3.3 exist after a fresh 3.3 install and after each update path" test "$(for d in fresh33 upg upg31 upg32; do q life $d "$NEWFN"; done | sort -u)" == "col_clustering,col_refresh,col_rollup_misses,explain_why,reindex_needed,stats,stats_reset"
+	check "the functions added in 3.3 exist after a fresh 3.3 install and after each update path" test "$(for d in fresh33 upg upg31 upg32; do q life $d "$NEWFN"; done | sort -u)" == "col_clustering,col_refresh,col_rollup_misses,explain_why,stats,stats_reset,upgrade_commands"
 	check "the functions added in 3.3 run on an index written before the update" test "$(q life upg32 "SELECT sift.stats_reset()" \
 		"SELECT remaining FROM sift.col_refresh('items_col', 0)" "SELECT count(*) > 0 FROM sift.col_clustering('items_col')" \
 		"SELECT count(*) >= 0 FROM sift.stats()" "SELECT count(*) >= 0 FROM sift.col_rollup_misses()" \
@@ -186,6 +197,10 @@ if (( PG_MAJOR >= 18 )); then
 	upd=$(LC_ALL=C q life cap32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
 	check "the update lists 20 commands" test "$(grep -c 'REINDEX INDEX CONCURRENTLY' <<<"$upd")" == 20
 	check "the update counts the rest" grep -qx "and 2 more" <<<"$upd"
+	q life postgres "CREATE DATABASE none32" >/dev/null
+	q life none32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
+		"CREATE INDEX f_1 ON f USING sift_col (id, g)" >/dev/null
+	check "an update with nothing to do says so" grep -qF "nothing to REINDEX or rewrite" <<<"$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)"
 	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (set_columns = 'g')" >/dev/null
 	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
@@ -195,9 +210,9 @@ if (( PG_MAJOR >= 18 )); then
 	done
 	upd=$(LC_ALL=C q life lock32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 	q life lock32 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lock32' AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null; wait
-	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for indexes to REINDEX did not run' <<<"$upd")/$(q life lock32 \
+	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for what to REINDEX or rewrite did not run' <<<"$upd")/$(q life lock32 \
 		"SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 0/1/3.3
-	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.reindex_needed()")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
+	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands()")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
 	check "the rollup refresh views exist after a fresh 3.3 install" test "$(q life fresh33 "$ROLLUPSQL")" == t
 	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.3" test "$(q life upg "$ROLLUPSQL")" == t
@@ -288,7 +303,7 @@ if (( PG_MAJOR >= 18 )); then
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 52 "extension_control_path needs PostgreSQL 18"
+	skip 56 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
