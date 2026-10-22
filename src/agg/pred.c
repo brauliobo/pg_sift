@@ -567,12 +567,33 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 	}
 }
 
+/* the row's list raises when SQL reads it (the source recorded the error): the test raises it where it reaches the row, as the sub-plan does */
+static void
+raise_poison(AggExec *ex, const SiftAggPred *p, uint32 r)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->poison_ok)
+	{
+		st->poison = NULL;
+		leaf_overflow_rows(ex, p->leaf2, &st->poison);
+		st->poison_ok = true;
+	}
+	if (st->poison && sift_colsrc_bit(st->poison, r))
+	{
+		uint64	   *one = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
+
+		one[r >> 6] |= UINT64CONST(1) << (r & 63);
+		sift_colsrc_overflow_raise(ex->src, &ex->unit, one);
+	}
+}
+
 /*
  * SAP_ELEM_EXISTS for tuple j: some element of the array of its row passes the element conjuncts (child[0]) and boolean slot `op` of the scoped
  * combo `leaf`, whose inputs are the element's leaves, the row's and the lookup outputs of the tuple. The expressions cannot raise (the planner
  * keeps those that may), so the elements go through the combo VEC at a time, up to the first batch with one that passes; the combo resolves each
  * distinct input once (its lookup runs once for it). The answer is kept for the next tuples of the same row and lookup rows, which are the tuples
- * a join or an unnest repeats.
+ * a join or an unnest repeats. pass_poison: a row whose list raises raises here.
  */
 bool
 elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
@@ -593,6 +614,8 @@ elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
 		}
 	if (st->rowmask_ok && st->memo_row == r && memcmp(ref, st->memo_ref, sizeof(ref)) == 0)
 		return st->memo_res;
+	if (p->pass_poison)
+		raise_poison(ex, p, r);
 	st->memo_res = false;
 	for (uint32 s = offs[r]; s < offs[r + 1] && !st->memo_res; s += VEC)
 	{
