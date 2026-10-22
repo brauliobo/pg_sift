@@ -87,7 +87,7 @@ sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uin
 }
 
 void
-sift_vis_end(SiftVis *v)
+sift_vis_unpin(SiftVis *v)
 {
 	if (BufferIsValid(v->vmbuf))
 		ReleaseBuffer(v->vmbuf);
@@ -95,6 +95,14 @@ sift_vis_end(SiftVis *v)
 	if (BufferIsValid(v->dirbuf))
 		ReleaseBuffer(v->dirbuf);
 	v->dirbuf = InvalidBuffer;
+	if (v->fetch)
+		table_index_fetch_reset(v->fetch);
+}
+
+void
+sift_vis_end(SiftVis *v)
+{
+	sift_vis_unpin(v);
 	table_index_fetch_end(v->fetch);
 	v->fetch = NULL;
 }

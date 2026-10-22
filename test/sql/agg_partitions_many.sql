@@ -1,0 +1,63 @@
+-- A partitioned table of more than 1024 partitions is one source of Custom Scan (SiftAgg) (docs/AGG.md, "Partitioned tables"): a bound a stable function
+-- gives leaves a few of them, the scan opens only those, and a scan of all of them reads one after the other without keeping their pages pinned.
+-- Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+CREATE TABLE pm (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
+DO $$
+BEGIN
+	FOR i IN 0..1199 LOOP
+		EXECUTE format('CREATE TABLE pm_%s PARTITION OF pm FOR VALUES FROM (%L) TO (%L) WITH (autovacuum_enabled = false)', i, DATE '2020-01-01' + i, DATE '2020-01-01' + i + 1);
+	END LOOP;
+END $$;
+CREATE TABLE pm_rest PARTITION OF pm DEFAULT WITH (autovacuum_enabled = false);
+INSERT INTO pm SELECT i, i % 7, DATE '2019-12-25' + i % 1300, i % 100 FROM generate_series(1, 9000) i;
+CREATE INDEX pm_col ON pm USING sift_col (id, g, d, v);
+VACUUM (FREEZE, ANALYZE) pm;
+
+CREATE FUNCTION many_scan(stmt text) RETURNS TABLE (scan text, partitions_listed int, partitions_removed int, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	scan := 'normal'; partitions_listed := 0; partitions_removed := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scan := 'SiftAgg'; END IF;
+		IF l LIKE '%Partitions:%' THEN partitions_listed := array_length(string_to_array(l, ','), 1); END IF;
+		IF l LIKE '%Partitions Removed:%' THEN partitions_removed := trim(split_part(l, ':', 2))::int; END IF;
+	END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', stmt);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', stmt);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
+-- all of the partitions, then the stable bounds: one day, a month, none, the default partition alone
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = DATE ''2021-03-03'' + (current_date - current_date) GROUP BY g');
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2090-01-01'' + (current_date - current_date) GROUP BY g');
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < DATE ''2020-01-01'' + (current_date - current_date) GROUP BY g');
+-- a generic plan
+SET plan_cache_mode = force_generic_plan;
+PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
+SELECT * FROM many_scan('EXECUTE pm_d(ARRAY[DATE ''2020-02-02'', DATE ''2022-06-06'', DATE ''2030-01-01''])');
+RESET plan_cache_mode;
+-- the join keys name the partitions
+CREATE TABLE pm_days (d date);
+INSERT INTO pm_days VALUES ('2020-05-05'), ('2023-01-01');
+SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN pm_days x ON x.d = p.d GROUP BY p.g');
+-- the workers take the superblocks of the partitions the leader kept
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
+SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN pm_days x ON x.d = p.d GROUP BY p.g');
+
+DROP FUNCTION many_scan(text);
+DROP TABLE pm, pm_days;
+DROP EXTENSION pg_sift;
