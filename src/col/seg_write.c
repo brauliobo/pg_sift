@@ -35,6 +35,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
+	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max */
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -76,6 +77,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->pol = pol;
 	w->mcxt = mcxt;
 	w->format = sift_col_write_minor(schema, format, true);
+	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
@@ -120,6 +122,10 @@ void
 sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 {
 	w->pagg = *spec;
+	/* the cube asks for min and max: the segment is minor 7, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
+	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
+	if (w->pagg.minmax)
+		w->format = SIFT_COL_FORMAT_MINMAX;
 }
 
 /*
@@ -217,7 +223,12 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	uint64		off;
 
 	if (!sift_cbatch_kinds_exact(b))
+	{
+		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7 promises complete kinds */
+		if (w->pagg.minmax)
+			elog(ERROR, "sift_col: a unit without its kinds in a segment of column format %d", SIFT_COL_FORMAT_MINMAX);
 		w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
+	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
 	if (w->nsb > 0 && b->sb <= w->sbdir[w->nsb - 1].sb)
 		elog(ERROR, "sift_col: superblock %u added after %u", b->sb, w->sbdir[w->nsb - 1].sb);

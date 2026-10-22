@@ -3,7 +3,8 @@
  * or rewritten, and what a reader may answer from it without reading the unit's chunks. Portable (core/host.h only).
  *
  *   - per INT leaf: the exact sum and the sum of squares as 128-bit integers (the zone's int64 sum overflows, this does not);
- *   - per unit: a mini cube, GROUP BY dim -> count and, for the configured measures, (non-NULL count, sum). A dim is a scalar leaf of
+ *   - per unit: a mini cube, GROUP BY dim -> count and, for the configured measures, (non-NULL count, sum and, from column format minor 7 when
+ *     the index asks for it, the minimum and maximum of an integer measure). A dim is a scalar leaf of
  *     a few distinct values in the unit: a dictionary-coded text leaf (the group key is the segment code) or an integer, date or
  *     numeric leaf (the key is the stored integer). So "count per country", "revenue per category", "orders per month" (a leaf that
  *     holds date_trunc('month', ts)) are one add per group and unit instead of one per row;
@@ -88,6 +89,7 @@ typedef struct SiftCPaggSpec
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
+	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;
@@ -153,6 +155,7 @@ typedef struct SiftCHistDim
 	int			leaf;
 	uint32		ngroups;
 	bool		has_null;
+	bool		minmax;					/* the cube holds min and max for the INT measures */
 	int			nmeas;
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 	int64	   *key;					/* [ngroups] (the NULL group's is 0) */
@@ -160,6 +163,8 @@ typedef struct SiftCHistDim
 	uint32	   *nn[SIFT_PAGG_MAX_MEAS];	/* non-NULL values of the measure in each group */
 	SiftCI128  *sum[SIFT_PAGG_MAX_MEAS];	/* INT measure: exact sum; NULL for a float measure */
 	double	   *sumf[SIFT_PAGG_MAX_MEAS];	/* float measure: sum in row order; NULL for an INT one */
+	int64	   *min[SIFT_PAGG_MAX_MEAS];	/* INT measure of a cube with minmax: the smallest and the largest value of each group (key domain; 0 where nn is 0), else NULL */
+	int64	   *max[SIFT_PAGG_MAX_MEAS];
 } SiftCHistDim;
 
 typedef struct SiftCHist
@@ -230,10 +235,10 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
- * false on any difference. A blob of length 0 is none.
+ * false on any difference, or when the cube holds min and max (minmax) and the segment's column format may not. A blob of length 0 is none.
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
-							 const uint8 *eblob, uint32 elen);
+							 const uint8 *eblob, uint32 elen, bool minmax_ok);
 /* The leaves a stored cube and element blob read (lists, dims and measures), marked true in need[ncols]; false when they do not decode */
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
 

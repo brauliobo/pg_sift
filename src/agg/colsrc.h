@@ -282,6 +282,8 @@ typedef struct SiftSrcHist
 	const uint32 *nn[SIFT_SRC_MAX_MEAS];
 	const SiftSrcI128 *sum[SIFT_SRC_MAX_MEAS];	/* integer measure (numeric: times 10^scale), else NULL */
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
+	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure: the smallest and largest value of each group, NULL when the unit does not store them; meaningless where nn is 0 */
+	const int64 *max[SIFT_SRC_MAX_MEAS];
 } SiftSrcHist;
 
 /*
@@ -338,6 +340,7 @@ typedef struct SiftSrcPreagg
 		int			leaf;
 		int			nmeas;
 		int			meas[SIFT_SRC_MAX_MEAS];
+		bool		minmax;			/* the units written from now on store min and max of the integer measures per group */
 	}			dim[SIFT_SRC_MAX_DIMS];
 	int			nrollups;
 	struct

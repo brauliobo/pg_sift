@@ -95,6 +95,7 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 {
 	uint32		ng,
 				nk;
+	uint8		fl;
 
 	memset(hd, 0, sizeof(*hd));
 	hd->leaf = leaf;
@@ -105,7 +106,11 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	if (r->p >= r->end || hd->nmeas > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
 		return false;
 	hd->ngroups = ng;
-	hd->has_null = (*r->p++ & PAGG_NULLGROUP) != 0;
+	fl = *r->p++;
+	if (fl & ~(PAGG_NULLGROUP | PAGG_MINMAX))
+		return false;
+	hd->has_null = (fl & PAGG_NULLGROUP) != 0;
+	hd->minmax = (fl & PAGG_MINMAX) != 0;
 	for (int m = 0; m < hd->nmeas; m++)
 	{
 		uint64		ml = get_u(r);
@@ -141,6 +146,18 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 			hd->sum[m] = palloc(ng * sizeof(SiftCI128));
 			for (uint32 i = 0; i < ng; i++)
 				hd->sum[m][i] = get_zz128(r);
+			if (hd->minmax)
+			{
+				hd->min[m] = palloc0(ng * sizeof(int64));
+				hd->max[m] = palloc0(ng * sizeof(int64));
+				for (int pass = 0; pass < 2; pass++)
+					for (uint32 i = 0; i < ng; i++)
+						if (hd->nn[m][i] > 0)
+							(pass ? hd->max[m] : hd->min[m])[i] = get_zz(r);
+				for (uint32 i = 0; i < ng; i++)
+					if (hd->min[m][i] > hd->max[m][i])
+						return false;
+			}
 		}
 	}
 	return !r->bad;
@@ -658,7 +675,7 @@ same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)
 
 /* The spec that recomputes a stored cube and element blob: the dims, rollups and measures they hold, exactly */
 static bool
-spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, MemoryContext cx, SiftCPaggSpec *spec)
+spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool minmax_ok, MemoryContext cx, SiftCPaggSpec *spec)
 {
 	memset(spec, 0, sizeof(*spec));
 	spec->fixed = spec->rfixed = true;
@@ -667,8 +684,9 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 	{
 		SiftCHist	h;
 
-		if (!sift_cpagg_decode(s, blob, len, cx, &h))
+		if (!sift_cpagg_decode(s, blob, len, cx, &h) || (h.dim[0].minmax && !minmax_ok))
 			return false;
+		spec->minmax = h.dim[0].minmax;
 		for (int d = 0; d < h.ndims; d++, spec->ndims++)
 		{
 			spec->dim[spec->ndims].leaf = h.dim[d].leaf;
@@ -701,13 +719,14 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 }
 
 bool
-sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen)
+sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+				 bool minmax_ok)
 {
 	SiftCPaggSpec spec;
 	StringInfoData again,
 				eagain;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
-	bool		ok = spec_of(s, blob, len, eblob, elen, cx, &spec);
+	bool		ok = spec_of(s, blob, len, eblob, elen, minmax_ok, cx, &spec);
 
 	MemoryContextDelete(cx);
 	if (!ok)

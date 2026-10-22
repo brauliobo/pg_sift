@@ -39,14 +39,14 @@ int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 bool		sift_test_col_rel_inval = false;
 #endif
 
-/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4 or 6 */
+/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4, 6 or 7 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
 {
 	if (*newval == SIFT_COL_FORMAT_WIDE)
 	{
 		GUC_check_errdetail("Column format minor 5 is written for wide leaves only, whatever the setting.");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1) or 6.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6 or 7.");
 		return false;
 	}
 	return true;
@@ -124,9 +124,9 @@ sift_col_init(void)
 							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
 							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
+							"Column format minor of the segments written: 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -180,6 +180,9 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "cube_minmax",
+					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default off)",
+					   false, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
@@ -197,6 +200,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
+		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
@@ -322,6 +326,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
 		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
+		r->pagg.minmax = sift_col_options(index)->cube_minmax;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
