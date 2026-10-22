@@ -22,6 +22,7 @@
 #include "utils/syscache.h"
 
 #include "core/sift.h"
+#include "core/limits.h"
 #include "agg/agg.h"
 #include "agg/stub.h"
 #include "bm25/am.h"
@@ -309,6 +310,7 @@ _PG_init(void)
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
 	sift_aggstub_init();
+	sift_limits_init();
 #endif
 	/* after the last GUC is defined: a value set before the library loaded is applied to its GUC, not dropped with the placeholder */
 	MarkGUCPrefixReserved("sift");
