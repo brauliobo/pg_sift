@@ -80,19 +80,43 @@ SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$p_total$$),
 -- a conjunct that reads the leaf evaluates the cast before the aggregates: the plan stays
 SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct;
 SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;
+-- a conjunct that tests the member alone casts every member of a row that reaches it: the row raises before the test, whatever the test says
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'day < 500 AND CAST(e.value AS float8) > 3')) AS tested_pushed;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'day < 500 AND CAST(e.value AS float8) > 3')) AS tested_clean;
+SELECT runq(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000'), true) AS tested_string;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000')) AS tested_string_same;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5990 AND CAST(e.value AS float8) IS NULL')) AS tested_boolean;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5980 AND CAST(e.value AS float8) > 3')) AS tested_object;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970 AND CAST(e.value AS float8) > 3')) AS tested_array;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900 AND CAST(e.value AS float8) > 3')) AS tested_row_filtered;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 6000) AND CAST(e.value AS float8) > 1 AND CAST(e.value AS float8) < 10')) AS tested_twice;
+SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8)), count(*) FILTER (WHERE CAST(e.value AS float8) > 2)', 'day BETWEEN 20 AND 400 AND CAST(e.value AS float8) > 3', 't.src, e.key')) AS tested_filter;
+-- another test of the members may drop the dirty one before the cast, a join or a conjunct that may raise runs where the planner puts it: the plan stays
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$asp_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first;
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$asp_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first_pushed;
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND (CAST(e.value AS float8) > 3 OR e.key = $$p_total$$)')) AS tested_or_pushed;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND (CAST(e.value AS float8) > 3 OR e.key = $$p_total$$)')) AS tested_or;
+SELECT same('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 AND CAST(e.value AS float8) > 3 GROUP BY e.key') AS tested_join;
+SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src s ON s.id = t.src AND s.enabled JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE t.id <= 5900 AND CAST(e.value AS float8) > 3 GROUP BY e.key') AS tested_join_pushed;
+SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 5990) AND 100 / (id % 7 + 1) > 3 AND CAST(e.value AS float8) > 3')) AS tested_late;
+SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 5990) AND 100 / (id % 7 + 1) > 3 AND CAST(e.value AS float8) > 3')) AS tested_late_pushed;
 
 -- rows in the write buffer, updated and deleted ones, and after promotion
 INSERT INTO m_t VALUES (7001, 1, 10, '{"p_total": 3, "asp_i": 4}'), (7002, 1, 11, '{"p_total": "x"}');
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS write_buffer;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id <> 7002 AND day < 500')) AS write_buffer_asp_a;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'id > 7000 AND CAST(e.value AS float8) > 1000')) AS write_buffer_tested;
 UPDATE m_t SET metrics = '{"p_total": 1}' WHERE id = 7002;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_update;
 SELECT sift.col_promote('m_col') >= 0 AS promoted;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day < 500')) AS after_promotion;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'day = 600 AND CAST(e.value AS float8) > 1000')) AS after_promotion_tested;
 DELETE FROM m_t WHERE id IN (100, 6000, 5990, 5980, 5970);
 VACUUM m_t;
 SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete;
 SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))')) AS after_delete_pushed;
+SELECT same(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'CAST(e.value AS float8) > 3')) AS after_delete_tested;
+SELECT pushed(mq('e.key, count(*), avg(CAST(e.value AS float8))', 'CAST(e.value AS float8) > 3')) AS after_delete_tested_pushed;
 
 DROP FUNCTION mq(text, text, text);
 DROP FUNCTION pushed(text);

@@ -707,6 +707,9 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 		{
 			int			at = 0;
 
+			/* the error is raised for the rows the common conjuncts keep, which an arm's own conjuncts would drop before it in the scan of the arm */
+			if (n > 1 && m[i]->recheck[j] == SRK_CAST_TESTED)
+				return false;
 			while (at < k && leaves[at] < m[i]->leaves[j])
 				at++;
 			if (at < k && leaves[at] == m[i]->leaves[j])
