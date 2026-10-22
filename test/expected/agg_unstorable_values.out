@@ -115,9 +115,9 @@ SELECT answers(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8
 (1 row)
 
 SELECT answers(eq('id BETWEEN 3000 AND 3002 AND CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS dirty_key_rows;
- dirty_key_rows 
-----------------
- same
+          dirty_key_rows          
+----------------------------------
+ answers (the normal plan raises)
 (1 row)
 
 -- every row that holds a dirty value has the other key's cast raise: both plans do
