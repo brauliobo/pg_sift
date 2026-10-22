@@ -946,7 +946,10 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 		return false;
 	/* the TID is the root of a HOT chain when the row was updated without a new index entry: the fetch follows the chain to the visible version */
 	if (!table_index_fetch_tuple(t->fetch, &tid, t->snap, t->fslot, &call_again, &all_dead))
-		elog(ERROR, "sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid)),
+				 errhint("REINDEX the index.")));
 	t->fetched++;
 	ExecClearTuple(slot);
 	for (int c = 0; c < t->nout; c++)
@@ -1013,11 +1016,9 @@ sift_topn_import(SiftTopN *t, const char *data, Size len)
 {
 	uint32		h[2];
 
-	if (len < sizeof(h))
-		elog(ERROR, "sift: bad message of a parallel top-N");
+	SIFT_INVARIANT(len >= sizeof(h), "sift: bad message of a parallel top-N");
 	memcpy(h, data, sizeof(h));
-	if (h[0] != TOPN_MAGIC || len != sizeof(h) + h[1] * sizeof(TopEnt))
-		elog(ERROR, "sift: bad message of a parallel top-N");
+	SIFT_INVARIANT(h[0] == TOPN_MAGIC && len == sizeof(h) + h[1] * sizeof(TopEnt), "sift: bad message of a parallel top-N");
 	for (uint32 i = 0; i < h[1]; i++)
 	{
 		TopEnt		e;

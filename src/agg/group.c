@@ -604,7 +604,7 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, &mn, &mx);
 			break;
 		default:
-			elog(ERROR, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
+			SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
 	}
 	if (!table || rt_span(&k->rt, mn, mx) > MAX_RANGE)
 	{

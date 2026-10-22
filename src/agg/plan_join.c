@@ -727,7 +727,7 @@ child_pos(List *vars, int att)
 	foreach_ptr(Var, v, vars)
 		if (v->varattno == att)
 			return foreach_current_index(v) + 1;
-	elog(ERROR, "sift: column %d is not an output of the joined plan", att);
+	SIFT_INVARIANT(false, "sift: column %d is not an output of the joined plan", att);
 }
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */

@@ -315,7 +315,8 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	RawStmt    *raw;
 
 	if (list_length(trees) != 1 || !IsA((raw = linitial_node(RawStmt, trees))->stmt, SelectStmt))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement"),
+						errhint("Pass the text of a single SELECT, without a second statement.")));
 	InitMaterializedSRF(fcinfo, 0);
 	queries = pg_analyze_and_rewrite_fixedparams(raw, sql, NULL, 0, NULL);
 	PG_TRY();
