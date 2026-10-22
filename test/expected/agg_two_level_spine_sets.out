@@ -158,3 +158,6 @@ SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 
  LEFT JOIN | t
 (2 rows)
 
+DROP TABLE buckets, events, ticks;
+DROP FUNCTION arms(), each_join(text,text,text,text), plan_lines(text), pushed(text), report(text,text,text,text,text), same(text,boolean,boolean);
+DROP EXTENSION pg_sift;

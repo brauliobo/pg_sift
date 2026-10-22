@@ -126,3 +126,6 @@ UPDATE pw_t SET amount = amount + 1 WHERE id % 59 = 0 AND amount < 'NaN';
 DELETE FROM pw_t WHERE id % 61 = 0;
 INSERT INTO pw_t (id, kind, grp, ts, amount, score, n, note) SELECT i, 'cat_a', i % 5, timestamp '2026-02-01' + i * interval '1 minute', i / 10.0, i / 4.0, i % 700, 'note_new' FROM generate_series(12001, 12300) i;
 SELECT tag, pw_check(replace(q, '{t}', 'pw')) AS sift_col, pw_check(replace(q, '{t}', 'pw_t')) AS sift_table FROM pw_q ORDER BY tag;
+DROP TABLE pw, pw_q, pw_r, pw_t;
+DROP FUNCTION pw_check(text), pw_mode(boolean), pw_why(text);
+DROP EXTENSION pg_sift;

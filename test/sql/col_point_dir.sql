@@ -254,3 +254,4 @@ ALTER INDEX pd_all SET (point_columns = 'k,');
 DROP TABLE pd CASCADE;
 DROP FUNCTION pd_cmp(regclass, text, text), pd_idx(text), pd_bmp(text), pd_seq(text), pd_plan(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP TABLE pd_q, pd_qk, pd_w;

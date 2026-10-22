@@ -1014,3 +1014,4 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP
 DROP TABLE tcd, tcm, tcy, tci, tc7;
 DROP FUNCTION pm_check(text, int, int, int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP TABLE pm_q;

@@ -277,3 +277,6 @@ SELECT tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$
  same+topn 30 | same+topn 30  | same+topn 30   | same+topn 30
 (1 row)
 
+DROP TABLE tc, tc_q, tq, tv;
+DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

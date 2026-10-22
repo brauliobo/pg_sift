@@ -132,3 +132,4 @@ DROP FUNCTION tx_check, tx_coll, tx_mode;
 DROP TABLE tx, tx_q, tr, tv;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
+DROP COLLATION tx_nd;

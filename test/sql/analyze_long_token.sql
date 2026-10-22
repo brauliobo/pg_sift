@@ -32,3 +32,4 @@ SELECT sift.verify('lt_idx', true);
 
 DROP TABLE lt;
 DROP EXTENSION pg_sift;
+DROP FUNCTION lt_ids(text), lt_ids_seq(text);

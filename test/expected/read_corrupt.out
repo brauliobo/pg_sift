@@ -265,3 +265,4 @@ SELECT rc_sweep('rc_pk', 'heavy');
 DROP TABLE rc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
+DROP FUNCTION rc_damage(regclass,text,integer,integer,integer), rc_read(bytea,integer,integer,integer,integer), rc_sweep(regclass,text);

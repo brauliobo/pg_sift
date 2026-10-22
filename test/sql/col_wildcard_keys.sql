@@ -38,3 +38,4 @@ DROP TABLE jw;
 DROP FUNCTION runq(text, bool), same(text), pushed(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
+DROP FUNCTION outcome(text,boolean), runs_in_scan(text);
