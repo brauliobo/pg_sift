@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a session that read a new `sift_table` while its first writer was between writing the metapage and the tombstone segment cached the table as laid out; its own first write then added a write buffer to a directory that was never flagged as a `sift_table`, and every later read of the table failed with "The metapage does not carry the sift_table flag". The first write now checks that the segment exists, not only that the table was read.
+
 ## 3.2.0 - 2026-10-22
 
 - Changed: pg_sift: a `LEFT JOIN LATERAL (SELECT .. FROM t WHERE t.a = x AND t.b = y LIMIT 1)` over a table with a unique index on the columns it compares is read by SiftAgg as a lookup table (its rows hashed by key, kept for the next query like any other lookup table) instead of running the child for every distinct input: the key has one row, so the row is the one any plan returns. The planner prices both and takes the cheaper; a key the table repeats, a condition, an order, an offset or an expression over the parameter keep the child (`EXPLAIN ANALYZE` shows `First Row Lookup Tables`). Three keys over a 100,000-row table and 60,000 facts: 47 ms (269 ms in the normal plan, 167 ms in a scan that ran the child).
