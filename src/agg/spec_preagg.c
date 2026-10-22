@@ -68,6 +68,49 @@ num_leaf(const SiftAggNum *n)
 	return n->n == 1 && n->step[0].op == SNX_LEAF ? n->step[0].leaf : -1;
 }
 
+int
+sift_aggnum_linear(const SiftAggNum *n, sift_i128 *mul, sift_i128 *add)
+{
+	const SiftAggNx *s = n->step;
+	int			l = 0,
+				k = 1;
+
+	*mul = 1;
+	*add = 0;
+	if (n->n == 1)
+		return num_leaf(n);
+	if (n->n != 4 || s[3].op != SNX_INTCAST || s[3].b != 1)
+		return -1;
+	if (s[0].op == SNX_CONST && s[1].op == SNX_LEAF)
+	{
+		l = 1;
+		k = 0;
+	}
+	else if (s[0].op != SNX_LEAF || s[1].op != SNX_CONST)
+		return -1;
+	switch (s[2].op)
+	{
+		case SNX_ADD:
+			*add = s[k].c;
+			break;
+		case SNX_SUB:
+			if (l == 0)
+				*add = -s[k].c;
+			else
+			{
+				*mul = -1;
+				*add = s[k].c;
+			}
+			break;
+		case SNX_MUL:
+			*mul = s[k].c;
+			break;
+		default:
+			return -1;
+	}
+	return s[l].leaf;
+}
+
 /* the leaf of the histogram `dim` in pa, -1 if the index writes none */
 static int
 pa_dim(const SiftSrcPreagg *pa, int dim)
@@ -145,7 +188,15 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 			break;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
-			leaf = num_leaf(&a->num);
+			{
+				sift_i128	mul,
+							add;
+
+				leaf = sift_aggnum_linear(&a->num, &mul, &add);
+			}
+			/* the arithmetic of an element's value is not checked against the zone of the unit: the rollup's tuples hold sums only */
+			if (group >= 0 && a->num.n > 1)
+				return SPW_AGG_ARG;
 			sums = true;
 			break;
 		case SAA_SUM_F64:

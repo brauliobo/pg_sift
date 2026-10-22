@@ -1,0 +1,444 @@
+-- The sum and avg of an int8 column plus, minus or times a constant (`sum(n8 + 1)`, `avg(5 - n8)`, `sum(3 * n8)`) are added up from the stored sums of a unit
+-- as `mul * sum + add * count` when the unit's zone proves that no value makes the arithmetic leave int8; a unit that may hold one is scanned, and the scan
+-- raises "bigint out of range" as PostgreSQL's int8pl, int8mi and int8mul do. Every query runs three ways, which must give the same rows or the same error
+-- (text, so the scale of the numeric sums): from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off).
+-- `pre` says how many units the first one answered from metadata.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+-- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		workers := coalesce(substring(l from 'Workers Planned: (\d+)')::int, workers);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL; workers := NULL;
+END $$;
+CREATE TABLE ev (id int, kind int, grp text, n8 bigint, m8 bigint, pad text) WITH (autovacuum_enabled = off);
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'plus',               'SELECT kind, sum(n8 + 1), avg(n8 + 1), count(n8) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(2, 'minus',              'SELECT kind, sum(n8 - 5) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(3, 'constant minus',     'SELECT kind, sum(5 - n8), avg(5 - n8) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(4, 'times',              'SELECT kind, sum(n8 * 3), sum(3 * n8), sum(n8 * -2) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(5, 'times zero, plus zero', 'SELECT kind, sum(n8 * 0), sum(n8 + 0) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(6, 'no key',             'SELECT sum(n8 + 1), avg(n8 - 1), sum(n8 * 7) FROM %s WHERE id <= 30000'),
+	(7, 'text key',           'SELECT grp, sum(n8 + 100), sum(m8 + 1) FROM %s WHERE id <= 30000 GROUP BY grp'),
+	(8, 'int4 and int2 constants', 'SELECT kind, sum(n8 + 2147483647), sum(n8 * 7::int2), sum(n8 - 32767::int2) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(9, 'a large factor',     'SELECT kind, sum(n8 * 1000000000000) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(10, 'where on the key',  'SELECT kind, sum(n8 + 1) FROM %s WHERE id <= 30000 AND kind IN (1, 3) GROUP BY kind'),
+	(11, 'absent key',        'SELECT kind, sum(n8 + 1) FROM %s WHERE kind = 99 GROUP BY kind'),
+	(12, 'NULL measures',     'SELECT kind, sum(n8 + 1), avg(n8 + 1), count(n8) FROM %s WHERE grp = ''g_null'' GROUP BY kind'),
+	(13, 'the type',          'SELECT pg_typeof(sum(n8 + 1)), pg_typeof(avg(n8 * 2)) FROM %s WHERE id <= 10'),
+	(14, 'int8 max + 1 raises', 'SELECT sum(n8 + 1) FROM %s'),
+	(15, 'int8 min - 1 raises', 'SELECT kind, sum(n8 - 1) FROM %s GROUP BY kind'),
+	(16, 'a product that raises', 'SELECT kind, sum(n8 * 1000000000000000) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(17, 'the zone avoids the extremes', 'SELECT sum(n8 + 1), avg(n8 + 1) FROM %s WHERE id < 30000'),
+	(18, 'two leaves: scan',  'SELECT kind, sum(n8 + m8) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(19, 'two operations: scan', 'SELECT kind, sum((n8 + 1) * 2), sum(n8 + 1 + 2) FROM %s WHERE id <= 30000 GROUP BY kind'),
+	(20, 'on the key leaf: scan', 'SELECT n8, sum(n8 + 1) FROM %s WHERE id < 100 GROUP BY n8');
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
+	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+-- the same, summed up for a table whose answers need not be listed
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
+$$;
+-- a snapshot held by another session of this database (the refresh worker rewriting a segment) keeps the pages of rows written since from
+-- becoming all-visible, so the units stay scanned: wait for the queue to drain
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled';
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+-- n8: values of a few million with NULLs; every 1000th row of the ids 30001 to 40000 holds an int8 extreme, the rows of the group g_null have no n8
+INSERT INTO ev
+SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE g % 7 END,
+       CASE WHEN g % 31 = 0 THEN 'g_null' ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
+       CASE WHEN g % 31 = 0 OR g % 13 = 0 THEN NULL
+            WHEN g > 30000 AND g % 1000 = 0 THEN 9223372036854775807
+            WHEN g > 30000 AND g % 1000 = 500 THEN -9223372036854775807 - 1
+            ELSE (g::bigint * 977) % 2000001 - 1000000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE g % 1000 END, repeat('p', 200)
+FROM generate_series(1, 40000) g;
+-- an explicit cube with the measures; the default cube; no cube
+CREATE TABLE ec (LIKE ev) WITH (autovacuum_enabled = off);
+CREATE TABLE ed (LIKE ev) WITH (autovacuum_enabled = off);
+CREATE TABLE eo (LIKE ev) WITH (autovacuum_enabled = off);
+INSERT INTO ec SELECT * FROM ev;
+INSERT INTO ed SELECT * FROM ev;
+INSERT INTO eo SELECT * FROM ev;
+DROP TABLE ev;
+CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096, preagg = 'cube(kind: n8, m8; grp: n8, m8)');
+CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096);
+CREATE INDEX eo_col ON eo USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096, preagg = 'off');
+CALL pa_settle();
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
+SELECT sift.col_verify('ec_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- 1. built, every page all-visible
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+SELECT * FROM pa_sum('ed');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |       10 |      2
+(1 row)
+
+SELECT * FROM pa_sum('eo');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |        2 |      1
+(1 row)
+
+-- the answers of the first way, which the plain plan gives too (the rows of a query on one line)
+SELECT n, replace(pa_rows(format(q, 'ec'), true, true), E'\n', ' / ') AS answer FROM pa_q WHERE n NOT IN (7) ORDER BY n;
+ n  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+----+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  1 | (,-44857950,-15063.112827400940,2978) / (0,-45832376,-13472.185773074662,3402) / (1,-48376249,-14211.589012925969,3404) / (2,-50826693,-14935.848662944461,3403) / (3,-51444756,-15121.915343915344,3402) / (4,-61173198,-17976.255656773435,3403) / (5,-58521303,-17186.873127753304,3405) / (6,-54622256,-16051.206582427270,3403)
+  2 | (,-44875818) / (0,-45852788) / (1,-48396673) / (2,-50847111) / (3,-51465168) / (4,-61193616) / (5,-58541733) / (6,-54642674)
+  3 | (,44875818,15069.112827400940) / (0,45852788,13478.185773074662) / (1,48396673,14217.589012925969) / (2,50847111,14941.848662944461) / (3,51465168,15127.915343915344) / (4,61193616,17982.255656773435) / (5,58541733,17192.873127753304) / (6,54642674,16057.206582427270)
+  4 | (,-134582784,-134582784,89721856) / (0,-137507334,-137507334,91671556) / (1,-145138959,-145138959,96759306) / (2,-152490288,-152490288,101660192) / (3,-154344474,-154344474,102896316) / (4,-183529803,-183529803,122353202) / (5,-175574124,-175574124,117049416) / (6,-163876977,-163876977,109251318)
+  5 | (,0,-44860928) / (0,0,-45835778) / (1,0,-48379653) / (2,0,-50830096) / (3,0,-51448158) / (4,0,-61176601) / (5,0,-58524708) / (6,0,-54625659)
+  6 | (-415654781,-15511.506753731343,-2909771067)
+  8 | (,6395161439838,-314026496,-142441054) / (0,7305693531316,-320850446,-157309112) / (1,7309985954735,-338657571,-159918521) / (2,7307836020645,-355810672,-162336197) / (3,7305687918936,-360137106,-162921492) / (4,7307825674140,-428236207,-172682702) / (5,7312123293327,-409672956,-170096343) / (6,7307832225082,-382379613,-166131760)
+  9 | (,-44860928000000000000) / (0,-45835778000000000000) / (1,-48379653000000000000) / (2,-50830096000000000000) / (3,-51448158000000000000) / (4,-61176601000000000000) / (5,-58524708000000000000) / (6,-54625659000000000000)
+ 10 | (1,-48376249) / (3,-51444756)
+ 11 | 
+ 12 | (,,,0) / (0,,,0) / (1,,,0) / (2,,,0) / (3,,,0) / (4,,,0) / (5,,,0) / (6,,,0)
+ 13 | (numeric,numeric)
+ 14 | ERROR: bigint out of range
+ 15 | ERROR: bigint out of range
+ 16 | ERROR: bigint out of range
+ 17 | (-415964768,-15521.652598977574)
+ 18 | (,-37215403) / (0,-37754312) / (1,-43030238) / (2,-41240097) / (3,-39322258) / (4,-52182142) / (5,-56293938) / (6,-47980286)
+ 19 | (,-89715900,-44851994) / (0,-91664752,-45825572) / (1,-96752498,-48369441) / (2,-101653386,-50819887) / (3,-102889512,-51437952) / (4,-122346396,-61166392) / (5,-117042606,-58514493) / (6,-109244512,-54615450)
+ 20 | (,) / (-903277,-903276) / (-904254,-904253) / (-905231,-905230) / (-906208,-906207) / (-907185,-907184) / (-908162,-908161) / (-910116,-910115) / (-912070,-912069) / (-913047,-913046) / (-914024,-914023) / (-915001,-915000) / (-915978,-915977) / (-916955,-916954) / (-917932,-917931) / (-918909,-918908) / (-919886,-919885) / (-920863,-920862) / (-921840,-921839) / (-922817,-922816) / (-924771,-924770) / (-925748,-925747) / (-926725,-926724) / (-927702,-927701) / (-928679,-928678) / (-929656,-929655) / (-930633,-930632) / (-931610,-931609) / (-932587,-932586) / (-933564,-933563) / (-934541,-934540) / (-935518,-935517) / (-937472,-937471) / (-938449,-938448) / (-940403,-940402) / (-941380,-941379) / (-942357,-942356) / (-943334,-943333) / (-944311,-944310) / (-945288,-945287) / (-946265,-946264) / (-947242,-947241) / (-948219,-948218) / (-950173,-950172) / (-951150,-951149) / (-952127,-952126) / (-953104,-953103) / (-954081,-954080) / (-955058,-955057) / (-956035,-956034) / (-957012,-957011) / (-957989,-957988) / (-958966,-958965) / (-959943,-959942) / (-960920,-960919) / (-962874,-962873) / (-963851,-963850) / (-964828,-964827) / (-965805,-965804) / (-966782,-966781) / (-967759,-967758) / (-968736,-968735) / (-970690,-970689) / (-971667,-971666) / (-972644,-972643) / (-973621,-973620) / (-975575,-975574) / (-976552,-976551) / (-977529,-977528) / (-978506,-978505) / (-979483,-979482) / (-980460,-980459) / (-981437,-981436) / (-982414,-982413) / (-983391,-983390) / (-984368,-984367) / (-985345,-985344) / (-986322,-986321) / (-988276,-988275) / (-989253,-989252) / (-990230,-990229) / (-991207,-991206) / (-992184,-992183) / (-993161,-993160) / (-994138,-994137) / (-995115,-995114) / (-996092,-996091) / (-997069,-997068) / (-998046,-998045) / (-999023,-999022)
+(19 rows)
+
+-- the plan counts the units answered from the pre-aggregates
+SELECT units, pre FROM pa_units('SELECT kind, sum(n8 + 1), avg(n8 * 3) FROM ed WHERE id <= 30000 GROUP BY kind');
+ units | pre 
+-------+-----
+     4 |   3
+(1 row)
+
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE ec SET n8 = -(n8 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
+DELETE FROM ec WHERE id BETWEEN 18000 AND 18100;
+UPDATE ed SET n8 = -(n8 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
+DELETE FROM ed WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+SELECT * FROM pa_sum('ed');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |       10 |      2
+(1 row)
+
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (index_cleanup on, disable_page_skipping) ec, ed;
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+-- 4. rows in the write buffer (a kind no unit holds), then sealed
+INSERT INTO ec SELECT g, CASE WHEN g % 4 = 0 THEN NULL ELSE 7 + g % 3 END, 'g' || (g % 40), g % 1000, g % 77, repeat('p', 200)
+FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+SELECT kind, sum(n8 + 1), sum(n8 * 3) FROM ec WHERE kind >= 7 GROUP BY kind ORDER BY kind;
+ kind |  sum   |  sum   
+------+--------+--------
+    7 | 156625 | 468750
+    8 | 156625 | 468750
+    9 | 156625 | 468750
+(3 rows)
+
+SELECT sift.col_promote('ec_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (index_cleanup on, disable_page_skipping) ec;
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (index_cleanup on, disable_page_skipping) ec;
+SELECT sift.col_verify('ec_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+-- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX ec_col;
+RESET parallel_leader_participation;
+SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('ec_col');
+ parallel_segments 
+-------------------
+ t
+(1 row)
+
+SELECT * FROM pa_check('ec');
+ n  |            shape             | pre  | same 
+----+------------------------------+------+------
+  1 | plus                         | some | t
+  2 | minus                        | some | t
+  3 | constant minus               | some | t
+  4 | times                        | some | t
+  5 | times zero, plus zero        | some | t
+  6 | no key                       | some | t
+  7 | text key                     | some | t
+  8 | int4 and int2 constants      | some | t
+  9 | a large factor               | some | t
+ 10 | where on the key             | -    | t
+ 11 | absent key                   | none | t
+ 12 | NULL measures                | -    | t
+ 13 | the type                     | none | t
+ 14 | int8 max + 1 raises          | -    | t
+ 15 | int8 min - 1 raises          | -    | t
+ 16 | a product that raises        | -    | t
+ 17 | the zone avoids the extremes | some | t
+ 18 | two leaves: scan             | -    | t
+ 19 | two operations: scan         | -    | t
+ 20 | on the key leaf: scan        | -    | t
+(20 rows)
+
+UPDATE ec SET m8 = m8 WHERE id < 3000;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('ec');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |       10 |      2
+(1 row)
+
+SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre
+FROM (SELECT n, pa_units(format(q, 'ec')) AS u FROM pa_q WHERE n IN (1, 4, 6)) z ORDER BY n;
+ n | workers | some_pre 
+---+---------+----------
+ 1 | t       | t
+ 4 | t       | t
+ 6 | t       | t
+(3 rows)
+
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+-- a transaction that deleted rows sees them gone, another does not until it commits
+BEGIN;
+DELETE FROM eo WHERE id BETWEEN 1 AND 100;
+SELECT * FROM pa_sum('eo');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |        2 |      1
+(1 row)
+
+ROLLBACK;
+SELECT * FROM pa_sum('eo');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      20 |      0 |       0 |        2 |      1
+(1 row)
+
+-- the switch
+SET sift.agg_preagg = off;
+SELECT pre IS NULL AS off FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
+ off 
+-----
+ t
+(1 row)
+
+RESET sift.agg_preagg;
+SELECT pre > 0 AS on FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
+ on 
+----
+ t
+(1 row)
+
+DROP TABLE ec, ed, eo, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;
