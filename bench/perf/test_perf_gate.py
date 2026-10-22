@@ -36,6 +36,18 @@ class Methodology(unittest.TestCase):
         self.assertEqual(gate.verdict({'upper':1.11,'lower':1.10},True),'inconclusive')
         self.assertEqual(gate.verdict({'upper':1.12,'lower':1.10001},True),'regression')
 
+    def test_a_case_that_does_not_gate_cannot_decide_the_verdict(self):
+        for name, insert, other, expected in (('storage_insert', 'regression', 'pass', 'pass'),
+                                              ('storage_insert', 'inconclusive', 'pass', 'pass'),
+                                              ('agg_group', 'pass', 'regression', 'regression'),
+                                              ('agg_group', 'pass', 'inconclusive', 'inconclusive')):
+            with self.subTest(case=name, insert=insert, other=other):
+                report = dict(config={'verify_control': False}, status='pass', complete=True, size_complete=True, required_size_states=[],
+                              size_checks=[dict(state='settled_build', status='pass')],
+                              cases=[dict(name='storage_insert', timing_status=insert), dict(name='agg_group', timing_status=other)])
+                gate.reduce_report(report)
+                self.assertEqual(report['status'], expected)
+
     def test_t_interval(self):
         logs = [-.06,-.04,-.02,.02,.04,.06]
         b = gate.interval([(1,math.exp(x)) for x in logs])
@@ -87,6 +99,18 @@ class Methodology(unittest.TestCase):
             self.assertEqual(calls[12:],['A','B','B','A']*(count//2))
             self.assertEqual(result['confirmation']['samples'],[[1,1]]*count)
             self.assertIsNot(result['initial']['samples'],result['confirmation']['samples'])
+
+    def test_a_case_off_its_required_plan_is_skipped_not_an_error(self):
+        saved = []
+        class Rev: conn=None
+        with patch.object(gate,'validate_case',side_effect=gate.PlanAbsent('plan absent')), patch.object(gate,'calibrate') as calibration:
+            result = gate.measure([Rev(),Rev()],gate.CASES[0],math.inf,sink=saved)
+        calibration.assert_not_called()
+        self.assertEqual((result['timing_status'],result['complete'],result['reason']),('skipped',True,'plan absent'))
+        report = dict(config={'verify_control': False}, status='pass', complete=True, size_complete=True, required_size_states=[],
+                      size_checks=[dict(state='settled_build', status='pass')], cases=[dict(result, name='agg_group'), dict(name='agg_scan', timing_status='pass')])
+        gate.reduce_report(report)
+        self.assertEqual(report['status'], 'pass')
 
     def test_partial_sixteen_pair_confirmation_retains_initial_and_raw(self):
         saved = []

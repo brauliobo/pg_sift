@@ -1,4 +1,7 @@
-"""Fixed, versioned logical workloads. Smoke membership is independent of selection."""
+"""Fixed, versioned logical workloads. Smoke membership is independent of selection.
+
+A case with gate=False is measured and reported but does not decide the verdict: its operation takes under a millisecond, and on hosted runners it
+was 37 of the 52 non-pass verdicts of 439 runs (storage_insert 25, storage_point_lookup 12) without one confirmed regression."""
 from dataclasses import dataclass
 
 
@@ -14,6 +17,7 @@ class Case:
     check: str = ''
     settings: str = ''
     nightly: bool = False
+    gate: bool = True
     lifecycle: str = 'read'
     workload_version: str = 'v1'
 
@@ -42,8 +46,8 @@ CASES = [
     Case('agg_filter', 'agg', 'SELECT g,count(*),sum(amount) FROM docs WHERE amount>200 GROUP BY g ORDER BY g', 'SELECT g,count(*),sum(amount) FROM seed WHERE amount>200 GROUP BY g ORDER BY g', 'SiftAgg'),
     Case('agg_table_group', 'agg', 'SELECT g,count(*),sum(amount) FROM store GROUP BY g ORDER BY g', 'SELECT g,count(*),sum(amount) FROM seed GROUP BY g ORDER BY g', 'SiftAgg'),
     Case('agg_table_scan', 'agg', 'SELECT sum(amount) FROM store WHERE id BETWEEN 100 AND 7000', 'SELECT sum(amount) FROM seed WHERE id BETWEEN 100 AND 7000', 'SiftAgg', settings='SET sift.agg_preagg=off'),
-    Case('storage_point_lookup', 'storage', 'SELECT id,g,amount,body FROM store WHERE id=4097', 'SELECT id,g,amount,body FROM seed WHERE id=4097', 'store_pk', True),
-    Case('storage_insert', 'storage', "INSERT INTO mutable VALUES ({id},1,7,'insert common',repeat('p',1500))", reset=RESET, check=STATE, lifecycle='insert_trajectory', workload_version='committed_append_settled_composite_v4'),
+    Case('storage_point_lookup', 'storage', 'SELECT id,g,amount,body FROM store WHERE id=4097', 'SELECT id,g,amount,body FROM seed WHERE id=4097', 'store_pk', True, gate=False),
+    Case('storage_insert', 'storage', "INSERT INTO mutable VALUES ({id},1,7,'insert common',repeat('p',1500))", reset=RESET, check=STATE, lifecycle='insert_trajectory', workload_version='committed_append_settled_composite_v4', gate=False),
     Case('storage_update', 'storage', 'UPDATE mutable SET amount=amount+1 WHERE id BETWEEN 100 AND 200', reset=RESET, check=STATE, lifecycle='reset_each_operation'),
     Case('storage_vacuum_space', 'storage', 'VACUUM (DISABLE_PAGE_SKIPPING) mutable', reset=RESET+'; DELETE FROM mutable WHERE id>2048', check=STATE, lifecycle='reset_each_operation'),
     Case('bm25_phrase_nightly', 'bm25', "SELECT count(*) FROM docs WHERE body @@> '\"common wire\"'", "SELECT count(*) FROM seed WHERE body LIKE '%common wire%'", 'docs_bm25', nightly=True),

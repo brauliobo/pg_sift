@@ -494,7 +494,7 @@ class InsertThroughput(unittest.TestCase):
         self.assertFalse(saved['size_checks']['complete'])
         self.assertEqual(saved['size_checks']['completed_histories'],completed)
         self.assertEqual(saved['size_checks']['expected_histories'],5)
-        case=dict(timing_status='inconclusive',validation=saved,operations=2,
+        case=dict(name='storage_insert',timing_status='inconclusive',validation=saved,operations=2,
                   calibration=dict(histories=5,pilot_pair=helper.clean_pair(2048,role='pilot')))
         report=dict(config={'verify_control':False},status='inconclusive' if isinstance(primary,gate.Inconclusive) else 'error',
                     complete=False,size_complete=False,required_size_states=['mutable_insert_trajectory'],size_checks=[],cases=[case])
