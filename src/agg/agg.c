@@ -264,7 +264,7 @@ unmatched_tail(AggExec *ex)
 
 		for (int p = 0; p < cb->nleaves; p++)
 			if (cb->leaf[p] < 0)
-				v[p] = (uint64) prior[cb->refcombo[p]] + 1;
+				v[p] = combo_prior_vid(ex, prev, p, prior[cb->refcombo[p]]);
 		combo_bind_leaves(ex, prev, v);
 		combo_emit(ex, prev, &null, NULL, 0, 1);
 		prior[prev] = null.base;

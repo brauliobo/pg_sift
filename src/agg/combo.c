@@ -245,6 +245,77 @@ leaf64_datum(const Id64 *m, const SiftSrcLeaf *lf, uint32 id)
 	return NumericGetDatum(lf->scale > 0 ? int64_div_fast_to_numeric(v, lf->scale) : int64_to_numeric(v));
 }
 
+/* the id of the value of column refcol[p] in output row `out` of the earlier lookup, made on its first sight; the row is kept to bind it */
+static uint32
+prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	ComboSt    *cs = &ex->cs[ci];
+	const ComboSt *prior = &ex->cs[cb->refcombo[p]];
+	PriorVal   *pv = &cs->pv[p];
+	uint32		row,
+				id = 0;
+
+	if (out == COMBO_NONE)
+		return 0;
+	if (out >= pv->nmemo)
+	{
+		uint32		cap = Max(Max(pv->nmemo * 2, out + 1), 256);
+
+		pv->memo = pv->memo ? repalloc(pv->memo, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		memset(pv->memo + pv->nmemo, 0xFF, (cap - pv->nmemo) * sizeof(uint32));
+		pv->nmemo = cap;
+	}
+	row = prior->maprow[out];
+	if (row != UINT32_MAX)
+	{
+		const MapCol *mc = &prior->map->mcol[cb->refcol[p]];
+		bool		isnull;
+		Datum		d = map_col(prior->map, row, cb->refcol[p], &isnull);
+
+		if (!isnull)
+		{
+			if (!mc->byval)
+				id = mc->id[row];
+			else
+			{
+				MemoryContext old = MemoryContextSwitchTo(cs->cxt);
+
+				if (cs->id64[p].tab == NULL)
+					id64_init(&cs->id64[p]);
+				MemoryContextSwitchTo(old);
+				id = id64_id(&cs->id64[p], (int64) d);
+			}
+		}
+	}
+	if (id > pv->nrep)
+	{
+		uint32		cap = Max(Max(pv->nrep * 2, id), 64);
+
+		pv->rep = pv->rep ? repalloc(pv->rep, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		memset(pv->rep + pv->nrep, 0xFF, (cap - pv->nrep) * sizeof(uint32));
+		pv->nrep = cap;
+	}
+	if (id > 0 && pv->rep[id - 1] == UINT32_MAX)
+		pv->rep[id - 1] = out;
+	pv->memo[out] = id;
+	return id;
+}
+
+/*
+ * The id (0 NULL) of the value of a column of an earlier lookup at its output row `out`, which stands for the leaf in the entries of the combo:
+ * the rows of that table with the same value share one entry (a few hundred types, not the thousands of entities that hold them).
+ */
+uint64
+combo_prior_vid(AggExec *ex, int ci, int p, uint32 out)
+{
+	const PriorVal *pv = &ex->cs[ci].pv[p];
+
+	if (out < pv->nmemo && pv->memo[out] != COMBO_UNEVAL)
+		return pv->memo[out];
+	return prior_vid_new(ex, ci, p, out);
+}
+
 /* the leaf values of an entry (v: ids) as the Params of the combo's expressions */
 void
 combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
@@ -261,12 +332,11 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 		if (cb->leaf[p] < 0)
 		{
 			ComboSt    *prior = &ex->cs[cb->refcombo[p]];
-			uint32		row = prior->maprow[v[p] - 1];
 
-			if (row == UINT32_MAX)
+			if (v[p] == 0)
 				bind_param(ex, p, (Datum) 0, true);
 			else
-				map_bind(ex, p, prior->map, row, cb->refcol[p]);
+				map_bind(ex, p, prior->map, prior->maprow[cs->pv[p].rep[v[p] - 1]], cb->refcol[p]);
 			continue;
 		}
 		lf = &ex->lay->leaf[cb->leaf[p]];
@@ -816,7 +886,7 @@ combo_unmatched(AggExec *ex, int ci, const uint32 *prior)
 			rows[nm++] = r;
 	for (int p = 0; p < cb->nleaves; p++)
 		if (cb->leaf[p] < 0)
-			v[p] = (uint64) prior[cb->refcombo[p]] + 1;
+			v[p] = combo_prior_vid(ex, ci, p, prior[cb->refcombo[p]]);
 	combo_bind_leaves(ex, ci, v);
 	combo_emit(ex, ci, &ent, rows, nm, nm);
 	MemoryContextSwitchTo(old);
@@ -970,7 +1040,13 @@ combo_reset(AggExec *ex, int ci)
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)
-		if (cb->leaf[p] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
+		if (cb->leaf[p] < 0)
+		{
+			/* the output rows of the earlier lookup start again with it (combo_trim): so do the ids of its values */
+			memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+			memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
+		}
+		else if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
 			id64_init(&cs->id64[p]);
 	MemoryContextSwitchTo(old);
 }
@@ -1033,7 +1109,7 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		{
 			Assert(tuples != NULL);
 			for (int i = 0; i < n; i++)
-				vid[i] = (uint64) tuples->cout[cb->refcombo[p]][i] + 1;
+				vid[i] = alive && !sift_colsrc_bit(alive, i) ? 0 : combo_prior_vid(ex, ci, p, tuples->cout[cb->refcombo[p]][i]);
 		}
 		else
 		{
