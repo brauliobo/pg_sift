@@ -17,7 +17,8 @@ install_sift($node);
 plan skip_all => 'space crash injection needs the testing build' unless $node->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
 $node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
 
-my $rows = knob('SIFT_ROWS', 60000, 30000);
+# with 30000 rows (the quick size of knob) the third subtest never gets its worker; 60000 do (the test then takes 15 s)
+my $rows = $ENV{SIFT_ROWS} // 60000;
 my $worker = qr/table maintenance worker finished/;
 my $digest = 'SET sift.enable_agg = off; SELECT count(*) || $$:$$ || sum(id) || $$:$$ || sum(v) || $$:$$ || sum(length(t)) FROM %s';
 
