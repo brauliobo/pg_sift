@@ -62,6 +62,14 @@ bloom_has(const SiftCSet *s, int64 key)
 	return true;
 }
 
+/* The leaves of a set: those of a pre-aggregate dimension, and a top-level uuid, whose dictionary holds the 16 bytes of each value (its keys are codes, as a text's) */
+bool
+sift_cset_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
+{
+	return sift_cpagg_dim_ok(s, d) ||
+		(d->kind == SIFT_COLK_SCALAR && d->parent < 0 && d->store == SIFT_COLS_STR && d->type == SIFT_COLT_UUID);
+}
+
 /* 'a, b': the names of the leaves; empty or 'off': none */
 static const char *
 spec_walk(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
@@ -89,8 +97,8 @@ spec_walk(const char *opt, const SiftColSchema *s, const char *const *names, boo
 					c = i;
 			if (c < 0)
 				return "unknown column";
-			if (!sift_cpagg_dim_ok(s, &s->cols[c]))
-				return "not a plain integer or text column";
+			if (!sift_cset_leaf_ok(s, &s->cols[c]))
+				return "not a plain integer, text or uuid column";
 			leaf[c] = true;
 		}
 		if (end == NULL)

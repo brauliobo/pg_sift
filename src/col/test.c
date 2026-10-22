@@ -17,6 +17,7 @@
 #include "utils/builtins.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
+#include "utils/uuid.h"
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -114,6 +115,12 @@ parse_value(const SiftColDef *def, char *s)
 			v.v.f = strtod(s, NULL);
 			break;
 		default:
+			if (def->type == SIFT_COLT_UUID)
+			{
+				v.v.s = (const char *) DatumGetUUIDP(DirectFunctionCall1(uuid_in, CStringGetDatum(s)));
+				v.len = UUID_LEN;
+				break;
+			}
 			v.v.s = s;
 			v.len = strlen(s);
 	}
