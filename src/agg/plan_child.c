@@ -72,14 +72,16 @@ projects_columns(Path *p)
 	return IsA(p, SubqueryScanPath) || p->pathtype == T_ValuesScan || p->pathtype == T_FunctionScan || p->pathtype == T_CteScan;
 }
 
-/* the cheapest path of the rows of a sub-select, VALUES list, function or UNION ALL of sub-selects */
+/* the cheapest path of the rows of a sub-select, VALUES list, function or UNION ALL of sub-selects, or of the scan of a table the plan reads for its rows */
 Path *
 child_path(RelOptInfo *rel, bool correlated)
 {
 	Path	   *best = NULL;
 
 	foreach_ptr(Path, p, rel->pathlist)
-		if ((p->param_info == NULL || (correlated && IsA(p, SubqueryScanPath))) && (projects_columns(p) || IsA(p, AppendPath) || IsA(p, MergeAppendPath)) &&
+		if ((p->param_info == NULL || (correlated && IsA(p, SubqueryScanPath))) &&
+			(projects_columns(p) || IsA(p, AppendPath) || IsA(p, MergeAppendPath) ||
+			 (rel->rtekind == RTE_RELATION && (p->pathtype == T_SeqScan || p->pathtype == T_IndexScan || p->pathtype == T_BitmapHeapScan))) &&
 			(best == NULL || p->total_cost < best->total_cost))
 			best = p;
 	return best;
