@@ -50,3 +50,4 @@ SELECT expect('SELECT sift.score(ctid) FROM many');
 DROP TABLE one, many, tbl, docs;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
