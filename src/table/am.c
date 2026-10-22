@@ -119,7 +119,7 @@ sift_tbl_define_gucs(void)
 	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
 							"Percent of the rows of a sift_table that are tombstones from which the background pass is asked for.",
 							"The pass rewrites the segments that are more than sift.table_dead_rewrite_pct percent dead; 100 never asks for dead rows.",
-							&sift_tbl_auto_defrag_dead_pct, 20, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
+							&sift_tbl_auto_defrag_dead_pct, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_budget",
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",

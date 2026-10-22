@@ -117,7 +117,7 @@ sift.table_bulk_groups	sift_table				COPY, CREATE TABLE AS and REFRESH MATERIALI
 sift.table_backpressure	sift_table				a writer that needs a new write buffer first waits for the maintenance lock and merges, when the directory passes this percent	the wait; 0 waits only when the directory is nearly full	COL-TAM.md#7-maintenance
 sift.table_compression	sift_table		auto, none, lz4[:N], zstd[:N], encodings; per column 'auto; col=zstd:9'		chunk compression of the column segments the table writes	the sift_col trade-off: zstd -4.0% size, build +30%, scans slower to decode	COL-TAM.md#8-compression-options-defaults
 sift.table_dead_rewrite_pct	sift_table				VACUUM rewrites a column segment alone above this percent of dead rows	100 never rewrites	COL-TAM.md#7-maintenance
-sift.table_auto_defrag	sift_table	table-defrag			a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM	background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below	COL-TAM.md#7-maintenance
+sift.table_auto_defrag	sift_table	table-defrag			a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM	background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)	COL-TAM.md#7-maintenance
 sift.table_auto_defrag_indexes	sift_table	table-defrag					COL-TAM.md#7-maintenance
 sift.table_auto_defrag_free_pct	sift_table	table-defrag					COL-TAM.md#7-maintenance
 sift.table_auto_defrag_delay	sift_table	table-defrag					COL-TAM.md#7-maintenance

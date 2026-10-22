@@ -58,7 +58,7 @@ subtest 'a table that was never written is read and deleted from without a look 
 
 subtest 'below the thresholds nothing is asked for' => sub {
 	fill('a');
-	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 20 = 0');	# 5% of the rows, the default threshold is 20
+	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 50 = 0');	# 2% of the rows, the default threshold is 5
 	my $offset = -s $node->logfile;
 	my $before = $node->safe_psql('postgres', sprintf($digest, 'a'));
 	churn_writes('a', 'SET sift.table_auto_defrag = on', $rows + 1);
@@ -130,7 +130,7 @@ subtest 'a delete after the earlier ones committed asks for the pass' => sub {
 
 subtest 'a read below the thresholds, or with the setting off, asks for nothing' => sub {
 	fill('g');
-	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM g WHERE id % 20 = 0');
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM g WHERE id % 50 = 0');
 	fill('h');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM h WHERE id % 10 < 4');
 	my $offset = -s $node->logfile;
