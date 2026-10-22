@@ -10,11 +10,6 @@ for ref in v3.0.1 v3.1.0; do
 	fi
 done
 newroot=$ROOT
-use_root() {
-	ROOT=$1
-	node_conf legacy "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
-dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
-}
 QUERY="SELECT count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s != \"gift\")')) || ':' ||
  count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s == null)')) || ':' ||
  count(*) FILTER (WHERE items @> '[{\"s\":null}]') FROM oldcol"
@@ -24,7 +19,7 @@ for ref in v3.0.1 v3.1.0; do
 	oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
 	node_init legacy 2 'autovacuum = off
 sift.async_maintenance = off'
-	use_root "$oldroot"
+	use_root legacy "$oldroot"
 	textkind=astext
 	[[ $ref != v3.0.1 ]] || textkind=text
 	node_start legacy || bail "cannot start $ref"
@@ -43,7 +38,7 @@ sift.async_maintenance = off'
 	# The small INSERT stays in the old library's write buffer, never an immutable segment.
 	check "$ref left unpromoted records" test "$(sql legacy "SELECT count(*) FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == 0
 	node_stop legacy
-	use_root "$newroot"
+	use_root legacy "$newroot"
 	node_start legacy || bail 'cannot start new library'
 	sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail 'SQL update'
 	if [[ $ref == v3.1.0 ]]; then
@@ -88,7 +83,7 @@ sift.async_maintenance = off'
 		kpwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$KPQ")
 		check 'the setting 4 writes no key presence and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('kplow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('kphigh_idx') WHERE kind = 'immutable')")" == 4:15
 		node_stop legacy
-		use_root "$oldroot"
+		use_root legacy "$oldroot"
 		node_start legacy || bail 'cannot restart 3.1'
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('oldcol_idx', false)" 2>&1)
 		diag "3.1 refusal: $err"

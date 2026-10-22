@@ -116,12 +116,13 @@ A standby that stays on the older release needs the same: its primary writes the
 
 ## Defaults changed in 3.3
 
-An existing index or table keeps what it holds; the new default applies to the units written after the update (promotion, merge, `REINDEX`), and `sift.upgrade_commands()` lists the `REINDEX` that gives older units the new sections. To keep the 3.2 behavior set the value named in the last column.
+An existing index or table keeps what it holds; the new default applies to the units written after the update (promotion, merge, `REINDEX`), and `sift.upgrade_commands()` lists the `REINDEX` that gives older units the new sections. To keep the 3.2 behavior set the value named in the last column. `sift.table_auto_defrag` is read from the library, not from the extension script: it is on for every `sift_table` of the cluster as soon as the 3.3 library runs (after the restart), whatever the extension version, and the preflight of section 1 warns about the `off` that keeps 3.2, as it does for any feature switched off.
 
 | Setting | 3.2 | 3.3 | Measured (200,000 rows, 53 units) | To keep the 3.2 behavior |
 |---|---|---|---|---|
 | `sift_col` option `cube_minmax` | off | on | `GROUP BY` with `min`/`max` of an integer 5.5 -> 0.34 ms; index +0.17% | `WITH (cube_minmax = false)` |
 | `sift_col` option `superunit` | 0 | 16 | whole-table aggregates 4 to 7 times faster; index +1.0% | `WITH (superunit = 0)` |
+| `sift.table_auto_defrag` (server setting, with `sift.async_maintenance`, on in 3.2 too) | off | on | four clients of an update, insert and delete mix on 200,000 rows: 7,536 against 5,092 transactions a second, range read p99 16.8 against 34.2 ms; a table that only appends starts no pass | `sift.table_auto_defrag = off` |
 
 ## 5. First release that reads each format
 
