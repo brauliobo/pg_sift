@@ -6,8 +6,8 @@
 
 #include "agg/colsrc.h"
 
-/* the partitions a scan reads, at most (the spec's lists, and the offsets a parallel scan shares, have this room) */
-#define SIFT_AGG_MAX_PARTS		1024
+/* the partitions of a plan, at most: planning keeps the layout and statistics of each (about 40 kB), as the scan opens, one after the other, those the statement does not prune */
+#define SIFT_AGG_MAX_PARTS		4096
 
 /*
  * The source of the n partitions heaps[i] with their column indexes indexes[i] (all of one provider, with the same layout: the planner proved it).

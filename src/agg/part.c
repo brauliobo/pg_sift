@@ -45,8 +45,12 @@ typedef struct PartSource
 {
 	int			n;
 	Relation   *heap;
-	Relation   *index;
+	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads: the pruned ones are never opened (the first's always is: the layout) */
 	SiftSrcSource **src;
+	Oid		   *indexoid;
+	Snapshot	snapshot;
+	MemoryContext mcxt;
+	bool		opened;			/* open_rest ran: the partitions can no longer be pruned */
 	uint32	   *off;			/* n + 1: the first superblock of each partition, the total last */
 	bool		have_off;
 	bool	   *skip;			/* sift_aggpart_prune: the partitions the scan does not read (no superblocks), NULL: all are read */
@@ -104,6 +108,27 @@ check_access(Relation parent)
 
 static const SiftSrcProvider part_provider;
 
+static void
+open_part(PartSource *ps, int i)
+{
+	if (ps->src[i] != NULL)
+		return;
+	ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
+	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt);
+}
+
+/* the sources of the partitions the scan reads: opened at the first use (the pruned ones are not opened at all) */
+static void
+open_rest(PartSource *ps)
+{
+	if (ps->opened)
+		return;
+	ps->opened = true;
+	for (int i = 0; i < ps->n; i++)
+		if (ps->skip == NULL || !ps->skip[i])
+			open_part(ps, i);
+}
+
 SiftSrcSource *
 sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt)
 {
@@ -114,16 +139,17 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 		elog(ERROR, "sift: %d partitions in a scan, from 1 to %d", n, SIFT_AGG_MAX_PARTS);
 	check_access(parent);
 	ps->n = n;
+	ps->snapshot = snapshot;
+	ps->mcxt = mcxt;
 	ps->heap = MemoryContextAlloc(mcxt, n * sizeof(Relation));
-	ps->index = MemoryContextAlloc(mcxt, n * sizeof(Relation));
-	ps->src = MemoryContextAlloc(mcxt, n * sizeof(SiftSrcSource *));
+	ps->index = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
+	ps->src = MemoryContextAllocZero(mcxt, n * sizeof(SiftSrcSource *));
+	ps->indexoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
+	memcpy(ps->indexoid, indexes, n * sizeof(Oid));
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
 	for (int i = 0; i < n; i++)
-	{
 		ps->heap[i] = table_open(heaps[i], AccessShareLock);
-		ps->index[i] = index_open(indexes[i], AccessShareLock);
-		ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], snapshot, mcxt);
-	}
+	open_part(ps, 0);
 	ps->nleaves = sift_colsrc_source_layout(ps->src[0])->nleaves;
 	ps->id = MemoryContextAllocZero(mcxt, NSLOTS(ps->nleaves) * sizeof(PartId));
 	ps->dict = MemoryContextAllocZero(mcxt, NSLOTS(ps->nleaves) * sizeof(SiftSrcDict));
@@ -140,8 +166,11 @@ part_close(void *impl)
 
 	for (int i = 0; i < ps->n; i++)
 	{
-		sift_colsrc_close(ps->src[i]);
-		index_close(ps->index[i], NoLock);
+		if (ps->src[i])
+		{
+			sift_colsrc_close(ps->src[i]);
+			index_close(ps->index[i], NoLock);
+		}
 		table_close(ps->heap[i], NoLock);
 	}
 }
@@ -162,6 +191,7 @@ count_sbs(PartSource *ps)
 
 	if (ps->have_off)
 		return;
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
 	{
 		ps->off[i] = (uint32) total;
@@ -199,6 +229,10 @@ sift_aggpart_set_offsets(SiftSrcSource *src, const uint32 *off)
 
 	memcpy(ps->off, off, (ps->n + 1) * sizeof(uint32));
 	ps->have_off = true;
+	/* the partitions without superblocks (pruned, or empty) are never read: not opened */
+	ps->skip = palloc0(ps->n * sizeof(bool));
+	for (int i = 0; i < ps->n; i++)
+		ps->skip[i] = off[i + 1] == off[i];
 }
 
 typedef struct QualVars
@@ -418,7 +452,8 @@ prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 {
 	int			dropped = 0;
 
-	Assert(!ps->have_off);
+	if (ps->opened)
+		return 0;				/* the partitions are read already: the keys came too late */
 	if (ps->skip == NULL)
 		ps->skip = palloc0(ps->n * sizeof(bool));
 	for (int i = 0; i < ps->n; i++)
@@ -548,6 +583,8 @@ start_next(PartSource *ps)
 
 		if (from >= to)
 			continue;
+		if (ps->cur >= 0)
+			sift_colsrc_unpin(ps->src[ps->cur]);	/* a scan of many partitions would pin the pages of all of them */
 		ps->cur = i;
 		ps->next = i + 1;
 		sift_colsrc_begin(ps->src[i], from - ps->off[i], to - ps->off[i], ps->prune, ps->nprune);
@@ -570,6 +607,8 @@ part_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, in
 	ps->next = 0;
 	while (ps->next < ps->n && ps->off[ps->next + 1] <= sb_lo)
 		ps->next++;
+	if (ps->cur >= 0)
+		sift_colsrc_unpin(ps->src[ps->cur]);
 	ps->cur = -1;
 }
 
@@ -664,6 +703,8 @@ part_counters(const void *impl, SiftSrcCounters *c)
 	{
 		SiftSrcCounters pc;
 
+		if (ps->src[i] == NULL)
+			continue;
 		sift_colsrc_counters(ps->src[i], &pc);
 		c->units += pc.units;
 		c->units_pruned += pc.units_pruned;
@@ -689,8 +730,10 @@ part_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 {
 	PartSource *ps = impl;
 
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
-		sift_colsrc_prune_str(ps->src[i], t, nt);
+		if (ps->src[i])
+			sift_colsrc_prune_str(ps->src[i], t, nt);
 }
 
 static bool
@@ -706,8 +749,10 @@ part_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 	PartSource *ps = impl;
 	int			n = 0;
 
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
-		n = sift_colsrc_set_wide(ps->src[i], t, nt);
+		if (ps->src[i])
+			n = sift_colsrc_set_wide(ps->src[i], t, nt);
 	return n;
 }
 
@@ -723,8 +768,10 @@ part_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 	PartSource *ps = impl;
 	uint64		applied = 0;
 
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
-		applied = sift_colsrc_set_filters(ps->src[i], f, nf);
+		if (ps->src[i])
+			applied = sift_colsrc_set_filters(ps->src[i], f, nf);
 	return applied;
 }
 
@@ -745,8 +792,10 @@ part_tolerate_ovf(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
-		sift_colsrc_tolerate_ovf(ps->src[i], leaf);
+		if (ps->src[i])
+			sift_colsrc_tolerate_ovf(ps->src[i], leaf);
 }
 
 static void
@@ -754,8 +803,10 @@ part_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	PartSource *ps = impl;
 
+	open_rest(ps);
 	for (int i = 0; i < ps->n; i++)
-		sift_colsrc_set_recheck(ps->src[i], leaf, mode, key, cast);
+		if (ps->src[i])
+			sift_colsrc_set_recheck(ps->src[i], leaf, mode, key, cast);
 }
 
 static void
