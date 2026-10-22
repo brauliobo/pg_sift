@@ -92,6 +92,11 @@ INSERT INTO shapes VALUES
  ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
 SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
 
+-- a spine of 12,001 rows is used; one above the memory of the lookups is refused
+SET sift.agg_lookup_max_kb = 512;
+SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';
+RESET sift.agg_lookup_max_kb;
+
 -- The cost of the scan against the normal plan: with the table scans on, a probe of one key keeps its index scan.
 RESET enable_seqscan;
 RESET enable_indexscan;

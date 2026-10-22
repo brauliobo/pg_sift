@@ -860,8 +860,6 @@ two_aggs(TwoLevel *t, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 	return true;
 }
 
-#define SPINE_MAX_ROWS	10000	/* a spine is matched by its rows for each distinct key of the cells: few rows */
-
 /* the spine's range table entry: a table, or a sub-select over one with a WHERE that PostgreSQL pulled up (its rows are the rel's filtered ones); 0 if it is not */
 static Index
 spine_item(Node *n)
@@ -1087,7 +1085,7 @@ two_spine(TwoLevel *t)
 		add_column_to_pathtarget(target, (Expr *) v, 0);
 	set_pathtarget_cost_width(root, target);
 	p = (Path *) create_projection_path(root, rel, rel->cheapest_total_path, target);
-	if (p->rows > SPINE_MAX_ROWS)
+	if (!agg_lookup_fits(p->rows, p->pathtarget->width))
 		return agg_refuse(SPINE_ROWS);
 	t->ctx.spine = p;
 	sp->child = 0;

@@ -34,7 +34,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  join_keys           | SIFT_AGG_MAX_JKEYS              |          3 | t         | f
  joins               | SIFT_AGG_MAX_JOINS              |          8 | t         | f
  layout_leaves       | SIFT_COLSRC_MAX_LEAVES          |        128 | t         | f
- lookup_rows         | -                               |    1000000 | t         | f
+ lookup_kb           | -                               |     262144 | t         | f
  lookup_shared_bytes | SHARE_MAX                       | 1073741824 | t         | f
  lookup_shared_slots | LOOKSHM_SLOTS                   |         64 | t         | f
  maint_backoff_ms    | BACKOFF_MAX_MS                  |    3600000 | t         | f
@@ -63,7 +63,6 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  shred_spec_bytes    | SIFT_SHRED_MAX_SPEC_BYTES       |      65536 | t         | f
  shred_steps         | SIFT_SHRED_MAX_STEPS            |         16 | t         | f
  shred_text          | SIFT_SHRED_MAX_TEXT             |    1048576 | t         | f
- spine_rows          | SPINE_MAX_ROWS                  |      10000 | t         | f
  string_bytes        | SIFT_COL_MAX_VALUE              | 1073741823 | t         | t
  table_vblocks       | -                               | 4294967294 | t         | f
  term_bytes          | SIFT_MAX_TERM_BYTES             |        255 | t         | f
@@ -77,7 +76,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_conjuncts      | SIFT_AGG_MAX_WIDE               |          8 | t         | f
  wide_digits         | SIFT_COL_MAX_WIDE_SCALE         |         38 | t         | f
  write_buffer_kb     | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |       4096 | t         | f
-(73 rows)
+(72 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';

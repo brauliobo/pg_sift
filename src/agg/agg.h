@@ -20,6 +20,8 @@ extern PGDLLIMPORT bool sift_topn_walk;
 extern PGDLLIMPORT int sift_agg_param_set_size;
 extern PGDLLIMPORT bool sift_agg_key_skew;
 extern PGDLLIMPORT int sift_agg_lookup_max_rows;
+extern PGDLLIMPORT int sift_agg_lookup_max_kb;
+extern bool agg_lookup_fits(double rows, int width);
 
 /* agg/first.c: does a unique index of the table hold only columns among atts */
 extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts);

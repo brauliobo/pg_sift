@@ -169,8 +169,8 @@ sift_agg_init(void)
 							NULL, &sift_agg_lookup_cache_kb, 256 * 1024, 0, MAX_KILOBYTES,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_shared_kb",
-							"Shared memory, for all backends together, that keeps the rows of the joined tables a scan loaded for the queries of other backends, while the table does not change (0: off). Dynamic shared memory, taken as entries are kept and returned as they go.",
-							NULL, &sift_agg_lookup_shared_kb, 0, 0, MAX_KILOBYTES,
+							"Shared memory, for all backends together, that keeps the rows of the joined tables a scan loaded for the queries of other backends, while the table does not change (0: off, -1: the smaller of sift.agg_lookup_cache_kb and a twentieth of shared_buffers). Dynamic shared memory, taken as entries are kept and returned as they go.",
+							NULL, &sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
@@ -192,9 +192,13 @@ sift_agg_init(void)
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_lookup_max_kb",
+							"Memory of the rows a sub-select, VALUES list, function or spine joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
+							NULL, &sift_agg_lookup_max_kb, 256 * 1024, 0, MAX_KILOBYTES,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_max_rows",
-							"Rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
-							NULL, &sift_agg_lookup_max_rows, 1000000, 0, INT_MAX,
+							"The older form of sift.agg_lookup_max_kb: rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, whatever their width (-1: the memory limit decides).",
+							NULL, &sift_agg_lookup_max_rows, -1, -1, INT_MAX,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",

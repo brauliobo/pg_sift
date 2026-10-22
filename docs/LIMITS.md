@@ -23,10 +23,9 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
 | `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` |  |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |
-| `lookup_rows` | estimated rows of a lookup table | 1,000,000 | rows | normal plan (slug join_child) | `sift.agg_lookup_max_rows` | `agg/agg.c` |  |
+| `lookup_kb` | estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine | 262,144 (256 MiB) | kB | normal plan (slug join_child, spine_rows) | `sift.agg_lookup_max_kb` | `agg/plan.c` |  |
 | `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
 | `lookup_shared_slots` | lookup tables shared through DSM at one time | 64 | tables | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/lookshm.c` `LOOKSHM_SLOTS` |  |
-| `spine_rows` | rows of a spine joined to the arms of a two-level scan | 10,000 | rows | normal plan (slug spine_rows) |  | `agg/plan_two.c` `SPINE_MAX_ROWS` |  |
 | `topn_rows` | LIMIT + OFFSET a top-N scan keeps in a heap | 100,000 | rows | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` | yes |
 | `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 4 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
 | `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/plan_order.c` `FIRST_MAX_KEYS` |  |
