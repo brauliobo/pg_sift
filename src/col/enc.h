@@ -42,8 +42,11 @@ typedef struct SiftCDict
 	char	   *bytes;
 	Size		nbytes;
 	Size		bytescap;
-	uint32	   *slots;			/* open addressing table of code + 1; built lazily by intern / find */
+	uint32	   *slots;			/* open addressing table of code + 1; built by intern, and by find once the dictionary has been asked a few times */
 	uint32		nslots;
+	uint32		finds;			/* linear finds so far, before the table is worth building */
+	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
+	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
 } SiftCDict;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
@@ -51,6 +54,10 @@ extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
 extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
 /* The code, or -1 */
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
+/* Whether a string passes a LT, LE, GT, GE (byte order) or PREFIX predicate on the string c */
+extern bool sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c);
+/* Sets in lut the bit of every code whose string satisfies op (LT, LE, GT, GE in byte order, PREFIX) against c; returns how many */
+extern uint32 sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut);
 /* The bytes and length of a code < d->n */
 extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 /*

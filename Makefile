@@ -58,7 +58,7 @@ TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += tbl_wide_rows col_wildcard_keys
 TESTING_REGRESS += col_topn_deep_limits
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths
-TESTING_REGRESS += col_dict_cache col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build
+TESTING_REGRESS += col_dict_cache col_dict_lookup col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql

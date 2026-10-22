@@ -121,33 +121,6 @@ ctest_make_num(const SiftColDef *def, const SiftColPred *p, SiftCTest *t)
 	}
 }
 
-/* Bytewise order of dictionary values (the C collation) */
-static int
-str_cmp(const char *a, uint32 alen, const char *b, uint32 blen)
-{
-	int			r = memcmp(a, b, Min(alen, blen));
-
-	return r != 0 ? r : (alen > blen) - (alen < blen);
-}
-
-static bool
-str_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c)
-{
-	switch (op)
-	{
-		case SIFT_COLOP_LT:
-			return str_cmp(s, len, c->v.s, c->len) < 0;
-		case SIFT_COLOP_LE:
-			return str_cmp(s, len, c->v.s, c->len) <= 0;
-		case SIFT_COLOP_GT:
-			return str_cmp(s, len, c->v.s, c->len) > 0;
-		case SIFT_COLOP_GE:
-			return str_cmp(s, len, c->v.s, c->len) >= 0;
-		default:					/* PREFIX */
-			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
-	}
-}
-
 /* Turns the bit set of matching codes into a LUT test: none -> NONE, all -> NONNULL, else the LUT with its bounds and fold */
 static void
 ctest_lut_finish(SiftCTest *t, uint64 *lut, uint32 ncodes)
@@ -157,13 +130,13 @@ ctest_lut_finish(SiftCTest *t, uint64 *lut, uint32 ncodes)
 	t->kind = SIFT_CT_LUT;
 	t->lo = PG_INT64_MAX;
 	t->hi = PG_INT64_MIN;
-	for (uint32 c = 0; c < ncodes; c++)
-		if (sift_col_bit_test(lut, c))
+	for (uint32 w = 0; w < SIFT_COL_NWORDS(ncodes); w++)
+		if (lut[w])
 		{
-			count++;
-			t->lo = Min(t->lo, c);
-			t->hi = Max(t->hi, c);
-			t->fold[(c & 255) >> 6] |= UINT64CONST(1) << (c & 63);
+			count += pg_popcount64(lut[w]);
+			t->lo = Min(t->lo, (int64) w * 64 + pg_rightmost_one_pos64(lut[w]));
+			t->hi = Max(t->hi, (int64) w * 64 + pg_leftmost_one_pos64(lut[w]));
+			t->fold[w & 3] |= lut[w];		/* code & 255 is the bit of the word w & 3 */
 		}
 	t->fold_valid = true;
 	t->lut = lut;
@@ -217,9 +190,7 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 			}
 			return;
 		default:
-			for (uint32 c = 0; c < dict->n; c++)
-				if (str_matches(p->op, SIFT_COL_DICT_STR(dict, c), cdict_len(dict, c), &p->vals[0]))
-					lut[c >> 6] |= UINT64CONST(1) << (c & 63);
+			sift_cdict_match(dict, p->op, &p->vals[0], lut);
 			ctest_lut_finish(t, lut, dict->n);
 	}
 }
@@ -555,7 +526,7 @@ strs_match(SiftColOp op, const SiftColPred *p, const char *s, uint32 len)
 					return true;
 			return false;
 		default:
-			return str_matches(op, s, len, &p->vals[0]);
+			return sift_cstr_matches(op, s, len, &p->vals[0]);
 	}
 }
 
