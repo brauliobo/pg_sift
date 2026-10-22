@@ -32,6 +32,8 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_MAX_ROLLUPS	8			/* rollups of an option: one per list */
 #define SIFT_PAGG_ROLLUP_TUPLES	4096		/* the most tuples of a rollup in a unit (explicit rollup(...)); the default takes at most a 32nd of the unit's elements, at least 64 */
 #define SIFT_PAGG_ROLLUP_MIN	64
+#define SIFT_PAGG_ROWS_CELLS	4096		/* the most cells (tuples) of the rollup of a unit's rows ... */
+#define SIFT_PAGG_ROWS_RATIO	10			/* ... and at most a 10th of the unit's rows (at least SIFT_PAGG_ROLLUP_MIN): a tuple costs about 15 rows to read, so past a 16th the unit scans anyway; a unit with more has none and scans */
 #define SIFT_PAGG_MAX_MEAS		8
 #define SIFT_PAGG_MONTH			128			/* a cube dim whose directory leaf is this plus a timestamp leaf: the groups of the month of that leaf (SIFT_COL_MAX_COLS leaves precede it) */
 #define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
@@ -80,7 +82,7 @@ typedef struct SiftCPaggDim
 /* The rollup of one list: the dims it may hold (a unit keeps the ones that fit) and its measures */
 typedef struct SiftCPaggRollup
 {
-	int16		list;					/* the GROUP leaf */
+	int16		list;					/* the GROUP leaf; -1: the rows of the unit (column format minor 8), dims and measures are top-level leaves */
 	uint8		ndims;
 	int16		dim[SIFT_PAGG_MAX_RDIMS];
 	uint8		nmeas;
@@ -138,6 +140,12 @@ extern const char *sift_cpagg_syntax(const char *opt);
  */
 extern const char *sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
 extern const char *sift_cpagg_rollup_syntax(const char *opt);
+/*
+ * The `rollup_dims` option: "a, b" or "a, b: m1, m2" (top-level scalar leaves; the measures are the integer and numeric top-level leaves when none are named): the
+ * rollup of the rows of every unit, a cell per distinct combination of the dims (list -1 of spec). "" / "off": none. Same returns as sift_cpagg_rollup_apply.
+ */
+extern const char *sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
+extern const char *sift_cpagg_rows_syntax(const char *opt);
 
 /* One leaf of a unit as the writer sees it, in the key domain; key is the segment's code for a dictionary leaf. n: the rows of the unit, the elements of the unit's list for a leaf of one */
 typedef struct SiftCPaggCol
@@ -242,7 +250,7 @@ extern bool sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, 
 extern bool sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCHist *h);
 /* Decodes only the dim of this leaf: 1 found (out set), 0 the unit has none (the cap, the byte budget, an overflow), -1 the bytes are not a cube of this schema */
 extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out);
-/* The rollup of the list group in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
+/* The rollup of the list group (-1: of the rows) in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
 extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, int group, uint32 *len);
 /* The dim with this leaf, NULL if the unit has none (the cap, the budget, an overflow) */
 /* The measure slot of leaf m in the dim, -1 if it is not stored */
@@ -250,7 +258,7 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
- * false on any difference, or when the cube holds min and max (minmax) or a month dim and the segment's column format (format) may not. A blob of length 0 is none.
+ * false on any difference, or when the cube holds min and max (minmax) a month dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
 							 const uint8 *eblob, uint32 elen, int format);

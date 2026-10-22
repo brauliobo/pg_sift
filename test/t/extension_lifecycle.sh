@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((46 + $(wc -w <<<"$DBS")))
+plan $((48 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -182,7 +182,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3 and minor 7 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('colm_col') WHERE kind = 'immutable'")" == 3,7
 	check "the index with minor 3 and minor 7 segments verifies and answers min and max as the heap" test "$(q life upg "SELECT sift.col_verify('colm_col', true)" \
 		"SET sift.enable_agg = on" "$MMQ" | tail -n 1)" == "$MMOFF"
-	# a sift_table with a timestamp column written as minor 3 takes the writes of the default minor 8 (the month of the column is a dim of the cube): the units written before scan, the others answer, the results are the plain plan's
+	# a sift_table with a timestamp column written as minor 3 takes the writes of the default setting (the month of the column is a dim of the cube): the units written before scan, the others answer, the results are the plain plan's
 	q life upg "SET sift.col_format_minor = 3" "CREATE TABLE tblm (id int, ts timestamp, v numeric(10,2)) USING sift_table" \
 		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0 FROM generate_series(1, 30000) g" "VACUUM tblm" >/dev/null
 	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0 FROM generate_series(30001, 60000) g" "VACUUM tblm" >/dev/null
@@ -190,6 +190,17 @@ if (( PG_MAJOR >= 18 )); then
 	MONOFF=$(q life upg "SET sift.enable_agg = off" "$MONQ" | tail -n 1)
 	check "a sift_table with minor 3 and minor 8 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.table_segments('tblm') WHERE kind = 'columns'")" == 3,8
 	check "the sift_table with minor 3 and minor 8 segments answers the months as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
+	# minor 9 segments (the rollup of the rows; opt-in) join an index of minor 3 and minor 7 segments: the units written before scan, the others answer, the results are the heap's
+	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX rowr_col SET (cube_minmax = true)" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(20001, 30000) g" \
+		"SELECT sift.col_promote('rowr_col')" "ALTER INDEX rowr_col SET (rollup_dims = 'a, b')" \
+		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(30001, 40000) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
+	RRQ="SELECT string_agg(a || ':' || b || ':' || n || ':' || s, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n, sum(v) s FROM rowr GROUP BY a, b) g"
+	RROFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$RRQ" | tail -n 1)
+	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
+	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
+		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does
@@ -215,7 +226,7 @@ if (( PG_MAJOR >= 18 )); then
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 34 "extension_control_path needs PostgreSQL 18"
+	skip 36 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with

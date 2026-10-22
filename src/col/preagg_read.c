@@ -176,11 +176,11 @@ is_month_dim(const SiftColSchema *s, uint64 l)
 }
 
 /*
- * The directory of a blob: leaf and body bytes of each entry (at most max of them; the dims of a cube, or the lists of an element blob); body
- * points at the first body. false when inconsistent
+ * The directory of a blob: leaf and body bytes of each entry (at most max of them; the dims of a cube, or the lists of an element blob, where the
+ * leaf ncols is the rows of the unit; cube: the dims of a cube, which may name months, else a list); body points at the first body. false when inconsistent
  */
 static bool
-read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool months, int *nd, int *leaf, uint32 *blen, const uint8 **body)
+read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool cube, int *nd, int *leaf, uint32 *blen, const uint8 **body)
 {
 	Rd			r = {blob, blob + len, false};
 	uint64		total = 0;
@@ -195,10 +195,10 @@ read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, bool mo
 		uint64		l = get_u(&r),
 					n = get_u(&r);
 
-		/* a cube's directory may name the month of a timestamp leaf (column format minor 8) */
-		if (r.bad || n == 0 || n > len || (l >= (uint64) s->ncols && !(months && is_month_dim(s, l))))
+		/* a cube's directory may name the month of a timestamp leaf (column format minor 8), an element blob's the rows of the unit (leaf ncols, minor 9) */
+		if (r.bad || n == 0 || n > len || (l >= (uint64) s->ncols + !cube && !(cube && is_month_dim(s, l))))
 			return false;
-		leaf[d] = (int) l;
+		leaf[d] = l == (uint64) s->ncols ? -1 : (int) l;
 		blen[d] = (uint32) n;
 		total += n;
 	}
@@ -323,7 +323,7 @@ peek_rollup(const SiftColSchema *s, const uint8 *p, uint32 len, int *nd, int16 *
 	*nd = *r.p++;
 	*nm = *r.p++;
 	nt = get_u(&r);
-	if (*nd == 0 || *nd > SIFT_PAGG_MAX_RDIMS || *nm > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > SIFT_PAGG_ROLLUP_TUPLES)
+	if (*nd == 0 || *nd > SIFT_PAGG_MAX_RDIMS || *nm > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > PAGG_MAX_TUPLES)
 		return false;
 	for (int j = 0; j < *nd + *nm; j++)
 	{
@@ -405,7 +405,7 @@ sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax
 				continue;
 			}
 			c->roll[k]++;
-			odd |= !leaves_within(dim, nrd, spec->rollup[k].dim, spec->rollup[k].ndims, spec->rfixed) ||
+			odd |= !leaves_within(dim, nrd, spec->rollup[k].dim, spec->rollup[k].ndims, spec->rfixed || spec->rollup[k].list < 0) ||
 				!leaves_within(meas, nm, spec->rollup[k].meas, spec->rollup[k].nmeas, false);
 		}
 	c->odd += odd;
@@ -468,7 +468,7 @@ sift_cpagg_rollup_tuples(const uint8 *blob, uint32 len)
 		return 0;
 	rd.p += 2;
 	nt = get_u(&rd);
-	return rd.bad || nt > SIFT_PAGG_ROLLUP_TUPLES ? 0 : (uint32) nt;
+	return rd.bad || nt > PAGG_MAX_TUPLES ? 0 : (uint32) nt;
 }
 
 bool
@@ -498,18 +498,21 @@ read_head(const SiftColSchema *s, Rd *rd, SiftCRollup *r)
 	r->ndims = *rd->p++;
 	r->nmeas = *rd->p++;
 	nt = (uint32) get_u(rd);
-	if (r->ndims == 0 || r->ndims > SIFT_PAGG_MAX_RDIMS || r->nmeas > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > SIFT_PAGG_ROLLUP_TUPLES)
+	if (r->ndims == 0 || r->ndims > SIFT_PAGG_MAX_RDIMS || r->nmeas > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > PAGG_MAX_TUPLES)
 		return false;
 	r->ntuples = nt;
 	for (int j = 0; j < r->ndims; j++)
 	{
 		uint64		l = get_u(rd);
 
-		if (rd->bad || l >= (uint64) s->ncols || s->cols[l].parent < 0 || (r->list >= 0 && r->list != s->cols[l].parent))
+		/* the dims of a list's rollup are leaves of that list, those of the rows' are top-level leaves: all of one parent */
+		if (rd->bad || l >= (uint64) s->ncols || (j > 0 && r->list != s->cols[l].parent))
 			return false;
 		r->dim[j] = (int16) l;
 		r->list = s->cols[l].parent;
 	}
+	if (r->list < 0 ? nt > SIFT_PAGG_ROWS_CELLS : nt > SIFT_PAGG_ROLLUP_TUPLES)
+		return false;
 	for (int m = 0; m < r->nmeas; m++)
 	{
 		uint64		l = get_u(rd);
@@ -652,6 +655,21 @@ read_meas(const SiftColSchema *s, Rd *rd, SiftCRollup *r, int m, const SiftCRoll
 		read_minmax(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].minmax), nnz);
 }
 
+/* what a rollup written from rows cannot break: a tuple stands for at least one element, a measure has no more values than the tuple has elements, and min <= max */
+static bool
+rollup_sound(const SiftCRollup *r)
+{
+	for (uint32 t = 0; t < r->ntuples; t++)
+		if (r->count[t] == 0)
+			return false;
+	for (int m = 0; m < r->nmeas; m++)
+		for (uint32 t = 0; r->nn[m] != NULL && t < r->ntuples; t++)
+			if (r->nn[m][t] > r->count[t] ||
+				(r->nn[m][t] > 0 && ((r->min[m] != NULL && r->min[m][t] > r->max[m][t]) || (r->minf[m] != NULL && r->minf[m][t] > r->maxf[m][t]))))
+				return false;
+	return true;
+}
+
 bool
 sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r)
 {
@@ -671,7 +689,7 @@ sift_cpagg_rollup_decode_need(const SiftColSchema *s, const uint8 *blob, uint32 
 	for (int m = 0; ok && m < r->nmeas; m++)
 		ok = read_meas(s, &rd, r, m, need);
 	MemoryContextSwitchTo(old);
-	return ok && !rd.bad && rd.p == rd.end;
+	return ok && !rd.bad && rd.p == rd.end && rollup_sound(r);
 }
 
 /* the order of the tuples by one dim, ties by position (so that the sums of a group add in the order of the tuples) */
@@ -794,7 +812,8 @@ sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const u
 				ok = false;
 				break;
 			}
-			need[r.list] = true;
+			if (r.list >= 0)
+				need[r.list] = true;
 			for (int j = 0; j < r.ndims; j++)
 				need[r.dim[j]] = true;
 			for (int m = 0; m < r.nmeas; m++)
@@ -849,7 +868,7 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 			SiftCRollup r;
 			SiftCPaggRollup *ru = &spec->rollup[spec->nrollups++];
 
-			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r))
+			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r) || r.list != list[i] || (r.list < 0 && format < SIFT_COL_FORMAT_ROWS))
 				return false;
 			*ru = (SiftCPaggRollup) {.list = r.list, .ndims = r.ndims, .nmeas = r.nmeas};
 			memcpy(ru->dim, r.dim, sizeof(ru->dim));

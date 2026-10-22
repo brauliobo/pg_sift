@@ -465,6 +465,108 @@ parse_rollup_dims(const char *opt, const SiftColSchema *s, const char *const *na
 	return NULL;
 }
 
+/* a measure of the rows' rollup: an integer or numeric top-level leaf (a float sum depends on the order of the additions, so none is stored) */
+static bool
+rows_meas_ok(const SiftColSchema *s, const SiftColDef *m)
+{
+	return meas_in(s, m, -1) && m->store == SIFT_COLS_INT;
+}
+
+/* "a, b" or "a, b: m1, m2" (dims, then measures) of the rows of a unit: the rollup of list -1 (column format minor 8); "off" and "" name none */
+static const char *
+parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+	SiftCPaggRollup ru = {.list = -1};
+	int			nrows = 0;
+
+	if (is_word(opt, "off"))
+		return NULL;
+	do
+	{
+		char	   *dn = take_name(c);
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a column name is missing";
+		nrows++;
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a column of the index", dn);
+		if (s->cols[leaf].parent >= 0)
+			return psprintf("\"%s\" is a leaf of a list: name it in rollup", dn);
+		if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
+			return psprintf("\"%s\" must be a boolean, integer, date, numeric or text column", dn);
+		for (int j = 0; j < ru.ndims; j++)
+			if (ru.dim[j] == leaf)
+				return psprintf("\"%s\" is named twice", dn);
+		if (ru.ndims == SIFT_PAGG_MAX_RDIMS)
+			return psprintf("a rollup of the rows holds at most %d columns", SIFT_PAGG_MAX_RDIMS);
+		ru.dim[ru.ndims++] = leaf;
+	} while (eat(c, ','));
+	if (nrows < 2)
+		return "rollup_dims needs at least two columns (the cube answers one)";
+	if (eat(c, ':'))
+	{
+		do
+		{
+			char	   *mn = take_name(c);
+			int			m;
+
+			if (*mn == '\0')
+				return "a measure name is missing";
+			if (!s)
+				continue;
+			if ((m = find_scalar(s, names, mn)) < 0)
+				return psprintf("\"%s\" is not a column of the index", mn);
+			if (!rows_meas_ok(s, &s->cols[m]))
+				return psprintf("measure \"%s\" must be a smallint, integer, bigint or numeric column", mn);
+			if (ru.nmeas == SIFT_PAGG_MAX_MEAS)
+				return "a rollup holds at most 8 measures";
+			ru.meas[ru.nmeas++] = m;
+		} while (eat(c, ','));
+	}
+	else if (s)
+	{
+		/* no measures named: the integer and numeric columns that are not dims, decimals first */
+		for (int pass = 0; pass < 2; pass++)
+			for (int m = 0; m < s->ncols && ru.nmeas < SIFT_PAGG_MAX_MEAS; m++)
+			{
+				bool		dim = false;
+
+				for (int j = 0; j < ru.ndims; j++)
+					dim |= ru.dim[j] == m;
+				if (!dim && rows_meas_ok(s, &s->cols[m]) && (s->cols[m].type == SIFT_COLT_NUMERIC) == (pass == 0))
+					ru.meas[ru.nmeas++] = m;
+			}
+	}
+	if (*c->p)
+		return psprintf("unexpected \"%s\"", c->p);
+	if (s && spec->nrollups == SIFT_PAGG_MAX_ROLLUPS)
+		return "a rollup option holds at most 8 lists";
+	if (s)
+	{
+		memmove(spec->rollup + 1, spec->rollup, spec->nrollups * sizeof(SiftCPaggRollup));	/* ascending list order: the rows' -1 first */
+		spec->rollup[0] = ru;
+		spec->nrollups++;
+	}
+	return NULL;
+}
+
+const char *
+sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+}
+
+const char *
+sift_cpagg_rows_syntax(const char *opt)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, NULL, NULL, NULL);
+}
+
 const char *
 sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {

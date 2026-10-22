@@ -105,6 +105,7 @@ typedef struct SiftSrcStats
 	double		dim_miss[SIFT_COLSRC_MAX_LEAVES];	/* share of the units without the histogram of a leaf, without its min and max, and without the rollup of a list: units written before the options asked for them (0: the source does not tell) */
 	double		mm_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		roll_miss[SIFT_COLSRC_MAX_LEAVES];
+	double		rows_miss;		/* the same for the rollup of the rows */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
@@ -351,7 +352,7 @@ typedef struct SiftSrcPreagg
 	int			nrollups;
 	struct
 	{
-		int			list;			/* the SCL_ARRAY / SCL_OBJECT leaf */
+		int			list;			/* the SCL_ARRAY / SCL_OBJECT leaf; -1: the rollup of the rows of a unit */
 		int			ndims;
 		int			dim[SIFT_SRC_MAX_RDIMS];
 		int			nmeas;

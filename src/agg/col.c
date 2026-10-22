@@ -272,6 +272,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	}
 	sift_colsrc_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
 	st->zones = col_zones(memo.zones, meta);
+	st->rows_miss = memo.pre->units > 0 ? 1.0 - Min(memo.pre->rows / memo.pre->units, 1.0) : 0.0;
 	for (int i = 0; memo.pre->units > 0 && i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
 		st->dim_miss[i] = 1.0 - Min(memo.pre->dim[i] / memo.pre->units, 1.0);

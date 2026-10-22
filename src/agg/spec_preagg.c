@@ -400,11 +400,11 @@ dim_leaf(const SiftSrcLayout *lay, int nbase, int group, int leaf)
 	return plain_leaf(lay, nbase, group, leaf) && (lay->leaf[leaf].vtype == SCV_I32 || lay->leaf[leaf].vtype == SCV_CODE);
 }
 
-/* Adds the leaves a predicate of the elements of group tests to dims; false when it tests more than plain dim leaves (a combo, a late expression) */
+/* Adds the leaves a predicate of the elements of group (of the rows: -1) tests to dims; false when it tests more than plain dim leaves (a combo, a late expression) */
 static bool
 pred_dims(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group, int *dims, int *nd)
 {
-	if (p->late || p->level != 1)
+	if (p->late || p->level != (group >= 0))
 		return false;
 	switch (p->kind)
 	{
@@ -437,7 +437,8 @@ in_leaves(const int *arr, int n, int leaf)
 
 /*
  * The rollup of the list that answers a scan of its elements: the dims are the group keys, the leaves the element conjuncts test and the leaves
- * count(leaf) reads; the measures the other aggregates read. Conjuncts of the rows must be zone comparisons.
+ * count(leaf) reads; the measures the other aggregates read. Conjuncts of the rows must be zone comparisons. A scan of the rows (group -1) is
+ * answered by the rollup of the rows the same way, where every conjunct tests dims.
  */
 static SiftPaWhy
 preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
@@ -465,7 +466,7 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	}
 	for (int i = 0; i < s->npred; i++)
 	{
-		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
+		int			l = group < 0 ? -2 : sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
 
 		if (l != -2 ? (l >= 0 && !list_member_ptr(cmps, s->pred[i])) : !pred_dims(s->pred[i], lay, nbase, group, dims, &nd))
 			return SPW_PRED;
@@ -498,14 +499,15 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	for (int i = 0; i < nm; i++)
 		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
 			return SPW_MEAS_NOT_STORED;
-	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .ndims = nd, .nmeas = nm};
+	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .rows = group < 0, .ndims = nd, .nmeas = nm};
 	memcpy(out->rdim, dims, nd * sizeof(int));
 	memcpy(out->rmeas, meas, nm * sizeof(int));
 	return SPW_OK;
 }
 
-SiftPaWhy
-sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+/* the sums and histograms of the rows' leaves answer a scan of the rows: at most one key, a column of a histogram */
+static SiftPaWhy
+preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
 	int			dim = -1,
 				d = -1,
@@ -515,26 +517,6 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 				zdim;
 	SiftPaWhy	why = SPW_OK;
 
-	if (s->narms)
-		return SPW_ARMS;
-	if (s->nsets && (s->group < 0 || s->setpred || s->setaggs))
-		return SPW_SETS;
-	if (s->njoin)
-		return SPW_JOIN;
-	if (s->ncombo)
-		return SPW_COMBO;
-	if (s->npost)
-		return SPW_POST;
-	if (s->nvleaf)
-		return SPW_VLEAF;
-	if (s->naggs == 0)
-		return SPW_NO_AGG;
-	if (s->search)
-		return SPW_SEARCH;
-	if (s->topn)
-		return SPW_TOPN;
-	if (s->group >= 0)
-		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
 	if (s->nkeys > 1)
 		return SPW_ROW_KEYS;
 	if (s->nkeys == 1)
@@ -603,6 +585,59 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	return SPW_OK;
 }
 
+/* does the answer of the sums and histograms depend on the zone of a unit lying inside a comparison with a column other than the histogram's: only the units that do are answered */
+static bool
+rows_zone_bound(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftAggPaShape *shape)
+{
+	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, lay, nbase))
+		if (sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->dim)
+			return true;
+	return false;
+}
+
+SiftPaWhy
+sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+{
+	SiftPaWhy	why;
+
+	if (s->narms)
+		return SPW_ARMS;
+	if (s->nsets && (s->group < 0 || s->setpred || s->setaggs))
+		return SPW_SETS;
+	if (s->njoin)
+		return SPW_JOIN;
+	if (s->ncombo)
+		return SPW_COMBO;
+	if (s->npost)
+		return SPW_POST;
+	if (s->nvleaf)
+		return SPW_VLEAF;
+	if (s->naggs == 0)
+		return SPW_NO_AGG;
+	if (s->search)
+		return SPW_SEARCH;
+	if (s->topn)
+		return SPW_TOPN;
+	if (s->group >= 0)
+		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
+	why = preagg_rows(s, lay, nbase, pa, out);
+	/*
+	 * What the histograms cannot give (two keys, a key and a test of another column), or give only for the units inside a comparison, the rollup of the
+	 * rows may: it answers every exact unit.
+	 */
+	for (int r = 0; r < pa->nrollups; r++)
+		if (pa->rollup[r].list < 0 && (why != SPW_OK || rows_zone_bound(s, lay, nbase, out)))
+		{
+			SiftAggPaShape rows;
+			SiftPaWhy	rwhy = preagg_rollup(s, lay, nbase, pa, &rows);
+
+			if (rwhy == SPW_OK)
+				*out = rows;
+			return rwhy == SPW_OK || why == SPW_OK ? SPW_OK : rwhy;
+		}
+	return why;
+}
+
 bool
 sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
@@ -636,7 +671,7 @@ sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *
 	e += s->nkeys >= 3 ? 28.0 * (s->nkeys - 2) : 0.0;
 	t += 45.0 * s->nkeys;
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 1)
+		if (s->pred[i]->level == (s->group >= 0))
 		{
 			e += 3.0;
 			t += 10.0;

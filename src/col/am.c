@@ -41,14 +41,14 @@ int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 bool		sift_test_col_rel_inval = false;
 #endif
 
-/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4, 6 or 7 */
+/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4, 6, 7, 8 or 9 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
 {
 	if (*newval == SIFT_COL_FORMAT_WIDE)
 	{
 		GUC_check_errdetail("Column format minor 5 is written for wide leaves only, whatever the setting.");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6 or 7.");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8 or 9.");
 		return false;
 	}
 	return true;
@@ -94,6 +94,15 @@ sift_col_validate_rollup(const char *value)
 }
 
 void
+sift_col_validate_rollup_dims(const char *value)
+{
+	const char *err = sift_cpagg_rows_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -135,9 +144,9 @@ sift_col_init(void)
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
 							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
+							"Column format minor of the segments written: 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a timestamp column, the minor 9 only for an index with the option rollup_dims.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -200,6 +209,9 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
 					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default off)",
 					   false, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_dims",
+						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...' (default off; the segments are column format minor 8)",
+						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
@@ -216,6 +228,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
 		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
+		{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
 		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	};
@@ -268,6 +281,14 @@ sift_col_options_rollup(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->rollup ? (const char *) o + o->rollup : "";
+}
+
+const char *
+sift_col_options_rollup_dims(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->rollup_dims ? (const char *) o + o->rollup_dims : "";
 }
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
@@ -343,6 +364,8 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
 		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
+		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
@@ -438,9 +461,11 @@ uint32
 sift_col_pagg_hash(Relation index)
 {
 	const char *a = sift_col_options_preagg(index),
-			   *b = sift_col_options_rollup(index);
+			   *b = sift_col_options_rollup(index),
+			   *c = sift_col_options_rollup_dims(index);
 
 	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^
+		(hash_bytes((const unsigned char *) c, strlen(c)) * 17) ^
 		(sift_col_options(index)->cube_minmax ? 0x9e3779b9 : 0) ^ ((uint32) sift_col_format_minor * 0x85ebca6b);
 }
 
@@ -560,7 +585,10 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 				pre->mm[spec->dim[k].leaf] += census.mm[k];
 			}
 			for (int k = 0; k < spec->nrollups; k++)
-				pre->roll[spec->rollup[k].list] += census.roll[k];
+				if (spec->rollup[k].list >= 0)
+					pre->roll[spec->rollup[k].list] += census.roll[k];
+				else
+					pre->rows += census.roll[k];
 			sift_cseg_close(seg);
 		}
 		for (int i = 0; i < dir->nsegs; i++)

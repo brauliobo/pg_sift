@@ -1,0 +1,238 @@
+-- The rollup of the rows of a unit (reloption rollup_dims, column format minor 9, docs/COL-PREAGG.md section 2): a cell for each distinct combination of a few
+-- scalar columns with the rows, the sums, the minima and the maxima of its measures. A GROUP BY of two or more of them, and a test of one with a group by
+-- another, are answered from the cells of the exact units. Every query runs three ways, which must give the same rows (text): from the pre-aggregates,
+-- scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata:
+-- none for an index without the option, a unit written before it, a unit with more cells than the cap, a query the cells cannot answer.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- the cells are the rollup's, not the cost model's: the tests take them for every exact unit
+SET sift.agg_rollup_cost = 0;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 7
+SET max_parallel_maintenance_workers = 0;
+
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+
+-- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL;
+END $$;
+
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'two keys',            'SELECT a, b, count(*), sum(v), sum(w) FROM %s GROUP BY a, b'),
+	(2, 'keys swapped',        'SELECT b, a, count(*), sum(v), avg(w) FROM %s GROUP BY b, a'),
+	(3, 'test a, key b',       'SELECT b, count(*), sum(v), min(v), max(v) FROM %s WHERE a = 3 GROUP BY b'),
+	(4, 'tests of two, no key','SELECT count(*), sum(w), count(v) FROM %s WHERE a IN (1, 2, 5) AND b = ''b03'''),
+	(5, 'range of a',          'SELECT b, count(*), sum(v) FROM %s WHERE a BETWEEN 3 AND 7 GROUP BY b'),
+	(6, 'range of the text',   'SELECT a, count(*), sum(w) FROM %s WHERE b >= ''b02'' AND b < ''b05'' GROUP BY a'),
+	(7, 'three keys',          'SELECT a, b, c, count(*), sum(v) FROM %s GROUP BY a, b, c'),
+	(8, 'NULL keys',           'SELECT a, b, count(*), count(a), count(b), count(v) FROM %s GROUP BY a, b'),
+	(9, 'test IS NULL',        'SELECT b, count(*), sum(v) FROM %s WHERE a IS NULL GROUP BY b'),
+	(10, 'min and max',        'SELECT a, b, min(v), max(v), min(w), max(w) FROM %s GROUP BY a, b'),
+	(11, 'FILTER on a dim',    'SELECT b, count(*), sum(v) FILTER (WHERE a = 1), count(*) FILTER (WHERE a > 4) FROM %s GROUP BY b, c'),
+	(12, 'having, limit',      'SELECT a, b, sum(v) FROM %s GROUP BY a, b HAVING count(*) > 3 ORDER BY 3 DESC NULLS LAST, 1, 2 LIMIT 5'),
+	(13, 'date and a',         'SELECT d, a, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' GROUP BY d, a'),
+	(14, 'test of date',       'SELECT a, count(*), sum(v) FROM %s WHERE d = date ''2024-05-01'' GROUP BY a'),
+	(15, 'other test: scan',   'SELECT a, b, count(*) FROM %s WHERE v > 0 GROUP BY a, b'),
+	(16, 'float: scan',        'SELECT a, b, max(f), min(f) FROM %s GROUP BY a, b'),
+	(17, 'distinct: scan',     'SELECT a, b, count(DISTINCT c) FROM %s GROUP BY a, b'),
+	(18, 'expression: scan',   'SELECT a %% 3, b, count(*) FROM %s GROUP BY a %% 3, b'),
+	(19, 'grouping sets',      'SELECT a, b, count(*) FROM %s GROUP BY GROUPING SETS ((a, b), (b), ())'),
+	(20, 'zone of another',    'SELECT a, b, count(*) FROM %s WHERE id < 20000 GROUP BY a, b'),
+	(21, 'measure of a dim',   'SELECT a, b, sum(c), max(c) FROM %s GROUP BY a, b'),
+	(22, 'one key: the cube',  'SELECT a, count(*), sum(v) FROM %s GROUP BY a'),
+	(23, 'no rows',            'SELECT a, b, count(*), sum(v) FROM %s WHERE a = 99 GROUP BY a, b'),
+	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c');
+
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
+	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+
+-- the same, summed up for a table whose answers need not be listed
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
+$$;
+
+-- a snapshot held by another session of this database keeps the pages of rows written since from becoming all-visible: wait for it
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled';
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+
+-- a: 12 values and NULLs, b: 8 texts and NULLs, c: 5 values from -2, d: 8 months, v: bigint with NULLs and negatives, w: numeric(10,2), f: float8
+CREATE TABLE rw (id int, a int, b text, c int, d date, v bigint, w numeric(10, 2), f float8, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO rw
+SELECT g, CASE WHEN g % 13 = 0 THEN NULL ELSE g % 12 END, CASE WHEN g % 17 = 0 THEN NULL ELSE 'b0' || (g * 7 % 8) END, g % 5 - 2,
+       date '2024-01-01' + (g / 5000) * 31, CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 - 50 END, (g % 71) / 7.0 - 3, repeat('p', 200)
+FROM generate_series(1, 40000) g;
+
+-- named measures; the default measures; ids as a dim (a unit has more cells than the cap); no option; the setting 8 (the option is ignored)
+CREATE TABLE rc (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rd (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rh (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE ro (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rf (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rx (LIKE rw) WITH (autovacuum_enabled = off);
+INSERT INTO rc SELECT * FROM rw;
+INSERT INTO rd SELECT * FROM rw;
+INSERT INTO rh SELECT * FROM rw;
+INSERT INTO ro SELECT * FROM rw;
+INSERT INTO rf SELECT * FROM rw;
+INSERT INTO rx SELECT * FROM rw;
+DROP TABLE rw;
+CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, d: v, w, c');
+CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, c');
+CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'id, a: v');
+CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
+SET sift.col_format_minor = 8;
+CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b');
+RESET sift.col_format_minor;
+CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
+CALL pa_settle();
+-- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rc, rd, rh, ro, rf, rx;
+SELECT sift.col_verify('rc_col', true), sift.col_verify('rd_col', true), sift.col_verify('rh_col', true), sift.col_verify('rf_col', true);
+
+-- 1. built, every page all-visible: the indexes with the option answer from their cells, the others scan
+SELECT * FROM pa_check('rc');
+SELECT * FROM pa_sum('rd');
+SELECT * FROM pa_sum('rh');
+SELECT * FROM pa_sum('ro');
+SELECT * FROM pa_sum('rf');
+
+-- EXPLAIN says it: the rollup, its dims and measures, the units it answered
+CREATE FUNCTION pa_explain(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ '(Pre-aggregate|Units|Rows Scanned)' THEN RETURN NEXT trim(l); END IF;
+	END LOOP;
+END $$;
+SELECT pa_explain FROM pa_explain('SELECT a, b, count(*), sum(v) FROM rc GROUP BY a, b');
+
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE rc SET v = -(v / 2), c = c + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM rc WHERE id BETWEEN 18000 AND 18100;
+UPDATE rd SET v = -(v / 2), c = c + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM rd WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('rc');
+SELECT * FROM pa_sum('rd');
+
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc, rd;
+SELECT * FROM pa_check('rc');
+
+-- 4. rows in the write buffer, then sealed
+INSERT INTO rc SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g / 7.0, g / 3.0, repeat('p', 200)
+FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('rc');
+SELECT sift.col_promote('rc_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc;
+SELECT * FROM pa_check('rc');
+
+-- 5. merged: the dead rows are gone and every unit is stored with its cells again
+SELECT sift.col_merge('rc_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc;
+SELECT sift.col_verify('rc_col', true);
+SELECT * FROM pa_check('rc');
+
+-- 6. the option comes after the build: the segments written before have no cells (their units scan), the ones written after have them, and a merge of both
+-- writes them for every unit. Under the setting 8 the option is ignored
+SELECT * FROM pa_sum('rx');
+ALTER INDEX rx_col SET (rollup_dims = 'a, b');
+INSERT INTO rx SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 320000) g;
+SELECT sift.col_promote('rx_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT * FROM pa_check('rx');
+SELECT sift.col_verify('rx_col', true);
+SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT sift.col_verify('rx_col', true);
+SELECT * FROM pa_sum('rx');
+SET sift.col_format_minor = 8;
+INSERT INTO rf SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
+SELECT sift.col_promote('rf_col') >= 0 AS promoted;
+RESET sift.col_format_minor;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rf;
+SELECT sift.col_verify('rf_col', true);
+SELECT * FROM pa_sum('rf');
+-- the option off again: a merge of the units that hold cells writes none
+ALTER INDEX rx_col SET (rollup_dims = '');
+SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT sift.col_verify('rx_col', true);
+SELECT * FROM pa_sum('rx');
+
+-- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX rc_col;
+RESET parallel_leader_participation;
+SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('rc_col');
+SELECT sift.col_verify('rc_col', true);
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('rc');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX rc_col;
+SELECT * FROM pa_check('rc');
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('rc');
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+
+-- a transaction that deleted rows sees them gone, another does not until it commits
+BEGIN;
+DELETE FROM rd WHERE id BETWEEN 1 AND 100;
+SELECT * FROM pa_sum('rd');
+ROLLBACK;
+SELECT * FROM pa_sum('rd');
+
+-- the switch
+SET sift.agg_preagg = off;
+SELECT pre IS NULL AS off FROM pa_units('SELECT a, b, count(*) FROM rd GROUP BY a, b');
+RESET sift.agg_preagg;
+SELECT pre > 0 AS on FROM pa_units('SELECT a, b, count(*) FROM rd GROUP BY a, b');
+
+DROP TABLE rc, rd, rh, ro, rf, rx, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int), pa_explain(text);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

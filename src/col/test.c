@@ -738,13 +738,46 @@ sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const 
 	pfree(copy);
 }
 
+/* The rollup of the rows of a unit decoded as stored, cut at every length and with every byte set to other values: a cut is always refused, and the decoder never reads outside the blob */
+static void
+rows_damage(const SiftColSchema *sc, const uint8 *blob, uint32 len, MemoryContext cx, SiftTestDamage *r)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	uint8	   *copy = palloc(len);
+	SiftCRollup ro;
+
+	r->blobs++;
+	MemoryContextReset(cx);
+	r->intact += sift_cpagg_rollup_decode(sc, blob, len, cx, &ro);
+	for (uint32 l = 0; l < len; l++)
+	{
+		MemoryContextReset(cx);
+		memcpy(copy, blob, l);
+		r->cut++;
+		r->cut_accepted += sift_cpagg_rollup_decode(sc, copy, l, cx, &ro);
+	}
+	for (uint32 i = 0; i < len; i++)
+		for (int k = 0; k < lengthof(vals); k++)
+		{
+			memcpy(copy, blob, len);
+			if (copy[i] == vals[k])
+				continue;
+			copy[i] = vals[k];
+			MemoryContextReset(cx);
+			r->damaged++;
+			r->accepted += sift_cpagg_rollup_decode(sc, copy, len, cx, &ro);
+		}
+	pfree(copy);
+}
+
 /*
- * sift._test_col_cube_damage(index, units): sift_test_cube_damage of the cube blob of the first units of the index
+ * sift._test_col_cube_damage(index, units, rows): sift_test_cube_damage of the cube blob of the first units of the index (rows: rows_damage of their rollup of the rows)
  */
 Datum
 sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 {
 	int			maxunits = PG_GETARG_INT32(1);
+	bool		rows = PG_GETARG_BOOL(2);
 	TestScan	ts;
 	SiftColUnit unit;
 	TupleDesc	tupdesc;
@@ -764,9 +797,12 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 					elen;
 		const uint8 *blob;
 
-		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_cube(seg, u, &len)) == NULL)
+		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = rows ? sift_cseg_rollup(seg, u, -1, &len) : sift_cseg_cube(seg, u, &len)) == NULL)
 			continue;
-		sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, sift_cseg_ecube(seg, u, &elen), elen, cx, &r);
+		if (rows)
+			rows_damage(sift_col_rel(ts.index)->schema, blob, len, cx, &r);
+		else
+			sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, sift_cseg_ecube(seg, u, &elen), elen, cx, &r);
 	}
 	scan_close(&ts);
 	v[0] = Int64GetDatum(r.blobs);

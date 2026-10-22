@@ -1063,6 +1063,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s, int nleaves)
 	{
 		tot->allvisible_frac = (tot->allvisible_frac * tot->nrows + s->allvisible_frac * s->nrows) / w;
 		tot->exact_frac = (tot->exact_frac * tot->nrows + s->exact_frac * s->nrows) / w;
+		tot->rows_miss = (tot->rows_miss * tot->nrows + s->rows_miss * s->nrows) / w;
 	}
 	for (int i = 0; i < Min(nleaves, SIFT_COLSRC_MAX_LEAVES); i++)
 	{
