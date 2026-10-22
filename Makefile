@@ -105,7 +105,7 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals reference
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
@@ -118,6 +118,9 @@ limits:
 # the slug tables of docs/USAGE.md and docs/COL-PLAN.md from src/agg/refuse.h (scripts/gen-refusals.sh --check proves them and the planner sources)
 refusals:
 	scripts/gen-refusals.sh
+# docs/REFERENCE.md and the README block from the sift.* objects of the install scripts (scripts/gen-reference.sh --check proves them)
+reference:
+	scripts/gen-reference.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
