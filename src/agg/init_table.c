@@ -69,6 +69,42 @@ join_live_rows(AggExec *ex, int ci, MemoryContext caller)
 	return live;
 }
 
+/*
+ * A top-N has no join to test the rows of its heap again, so the keys must be those of the rows that hold the rest of the ON clause (the table's
+ * own conditions, which the planner has checked read no leaf of the scan) when the table was loaded whole. live: the rows kept so far, NULL all.
+ */
+static bool *
+join_own_rows(AggExec *ex, int ci, bool *live)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const MapTab *m = ex->cs[ci].map;
+
+	if (j->fslot < 0 || m->filtered)
+		return live;
+	if (live == NULL)
+	{
+		live = palloc(Max(m->nrow, 1) * sizeof(bool));
+		memset(live, true, m->nrow);
+	}
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		bool		isnull;
+		Datum		d;
+
+		if (!live[r])
+			continue;
+		for (int c = 0; c < j->ncol; c++)
+			map_bind(ex, cb->nleaves + c, m, r, c);
+		d = ExecEvalExprSwitchContext(ex->cs[ci].slot[j->fslot], ex->lutcx, &isnull);
+		live[r] = !isnull && DatumGetBool(d);
+		if ((r & 1023) == 1023)
+			ResetExprContext(ex->lutcx);
+	}
+	ResetExprContext(ex->lutcx);
+	return live;
+}
+
 static SiftAggPred *
 join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 {
@@ -115,7 +151,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 	List	   *add = NIL;
 	int			total = s->npreds_total;
 
-	if (!sift_agg_join_filter || s->topn)
+	/* the joins of a top-N are only these filters: whatever the setting says */
+	if (!sift_agg_join_filter && !s->topn)
 		goto done;
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
@@ -145,6 +182,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
 			memset(&ex->ps[total], 0, sizeof(PredState));
 			live = join_live_rows(ex, ci, caller);
+			if (s->topn)
+				live = join_own_rows(ex, ci, live);
 			if ((p = join_filter_pred(ex, ci, k, leaf, total, live)) != NULL)
 			{
 				add = lappend(add, p);
