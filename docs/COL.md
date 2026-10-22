@@ -688,7 +688,7 @@ selection vector of a bitmap is `bits_to_idx` (its output has `SIFT_COL_IDXPAD` 
 `gather_u32` and `for_i64_sel[SIFT_COLW_64]` with base 0, and the owner of each element of a list column is `expand_parents`. A table
 other than this one keeps an operation only when it is different in kind, and says why at the declaration: the aggregation table
 keeps what is specific to the executor (float8 order comparisons, a byte LUT fused with a bound check, the row mask of array elements,
-group ids, reductions, `count_changes`), the shredder table keeps its histogram, state bitmaps and min / max over *state bytes*
+group ids, reductions), the shredder table keeps its histogram, state bitmaps and min / max over *state bytes*
 (no bit vector, no padded value arrays; the composition `range` + `SiftAggKernels.minmax_*` was measured and is slower for float8
 and at the scalar level).
 

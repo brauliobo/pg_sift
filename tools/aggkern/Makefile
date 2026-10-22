@@ -1,5 +1,5 @@
-# Standalone harness of the aggregation operators (src/agg/kern*.c, no backend linked). The col kernels are linked for the
-# position table the AVX2 count_changes shares with bits_to_idx.
+# Standalone harness of the aggregation operators (src/agg/kern*.c, no backend linked). The col and bm25 kernels are linked for the
+# shim of tools/kernels.
 #   nice make -j4          build test + bench into $(OUT)
 #   make test [N=20]       N thousand random cases per level (all operators) plus the length grid
 #   make bench             ns per 4096-element vector per operator and level (under flock /tmp/sift-perf.lock)
@@ -15,5 +15,5 @@ HDR      = $(SRC)/agg/kern.h $(SRC)/agg/kern_int.h $(SRC)/agg/kern_cases.h $(SRC
 
 include ../tools.mk
 
-$(OUT)/bench: $(OUT)/bench.o $(OUT)/alt.o $(OBJ)
+$(OUT)/bench: $(OUT)/bench.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)

@@ -2,8 +2,8 @@
  * agg/kern_avx2.c - AVX2 aggregation operators. Predicates compare 4 rows per instruction (doubles) and take the bits with
  * MOVMSK; lookups use VPGATHER (masked where a lane may not be touched); reductions keep several independent accumulators.
  * Results are bit-identical to the scalar table (agg/kern.c): float compares are mapped to unordered predicates so that
- * NaN is greater than everything, and the float sum keeps the eight accumulators of the specification (two ymm). Slots that
- * a per-group scatter or a gather does not speed up (gid_code, gid_i32, count_gid, sum_gid_*) are the scalar functions.
+ * NaN is greater than everything. Slots that a per-group scatter or a gather does not speed up (gid_code, gid_i32, count_gid,
+ * sum_gid_*) are the scalar functions.
  */
 #include "core/host.h"
 
@@ -105,22 +105,6 @@ cmp_f64_avx2(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 	}
 }
 
-F2 void
-between_f64_avx2(uint64 *out, const double *v, int n, double lo, double hi)
-{
-	const __m256d vlo = _mm256_set1_pd(lo),
-				vhi = _mm256_set1_pd(hi);
-
-	if (lo != lo || hi != hi)
-	{
-		agk_between_f64_scalar(out, v, n, lo, hi);
-		return;
-	}
-	AGK_BITS(out, n, 4, 0, i,
-			 _mm256_movemask_pd(_mm256_and_pd(_mm256_cmp_pd(LDPD(v + i), vlo, _CMP_GE_OQ),
-											  _mm256_cmp_pd(LDPD(v + i), vhi, _CMP_LE_OQ))));
-}
-
 /* bit = byte != 0 of a gathered dword (the LUT has SIFT_AGG_PAD readable bytes after it) */
 K2 uint32
 nonzero_byte(__m256i g)
@@ -195,40 +179,6 @@ F2 int64
 sum_i32_avx2(const int32 *v, const uint64 *mask, int n)
 {
 	return mask ? sum_i32_t(v, mask, n, true) : sum_i32_t(v, mask, n, false);
-}
-
-/* Unselected rows are ANDed to +0.0, which adds nothing to an accumulator (an accumulator is never -0.0) */
-K2 double
-sum_f64_t(const double *v, const uint64 *mask, int n, const bool masked)
-{
-	__m256d		a0 = _mm256_setzero_pd(),
-				a1 = a0;
-	double		a[8];
-
-	for (int i = 0; i < n; i += 8)
-	{
-		__m256d		x0 = LDPD(v + i),
-					x1 = LDPD(v + i + 4);
-
-		if (masked || i + 8 > n)
-		{
-			const uint32 b = masked ? BYTE(mask, i) : (uint32) AGK_LANES(n - i, 8);
-
-			x0 = _mm256_and_pd(x0, _mm256_castsi256_pd(lanes64(b & 15)));
-			x1 = _mm256_and_pd(x1, _mm256_castsi256_pd(lanes64(b >> 4)));
-		}
-		a0 = _mm256_add_pd(a0, x0);
-		a1 = _mm256_add_pd(a1, x1);
-	}
-	_mm256_storeu_pd(a, a0);
-	_mm256_storeu_pd(a + 4, a1);
-	return agk_canon_nan(((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7])));
-}
-
-F2 double
-sum_f64_avx2(const double *v, const uint64 *mask, int n)
-{
-	return mask ? sum_f64_t(v, mask, n, true) : sum_f64_t(v, mask, n, false);
 }
 
 /* Unselected lanes are ANDed to +0.0; a lane is finite when |x| <= DBL_MAX (false for NaN and Inf) */
@@ -456,54 +406,16 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
-/*
- * The selected values are packed to the front of a buffer behind the previous value (VPERMD with the position table), then
- * every value is compared with its predecessor in the buffer. Without a mask the rows are compared with themselves shifted
- * by one. The vector has at most SIFT_AGG_VEC rows.
- */
-F2 int64
-count_changes_avx2(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
-{
-	uint32		buf[SIFT_AGG_VEC + 16];
-	int64		cnt = 0;
-	int			c = 0;
-
-	if (!mask)
-	{
-		if (n == 0)
-			return 0;
-		cnt = v[0] != *prev;
-		for (int i = 1; i < n; i += 8)
-			cnt += __builtin_popcount(~ms32(_mm256_cmpeq_epi32(LD(v + i), LD(v + i - 1))) & AGK_LANES(n - i, 8));
-		*prev = v[n - 1];
-		return cnt;
-	}
-	buf[0] = *prev;
-	for (int i = 0; i < n; i += 8)
-	{
-		const uint32 b = BYTE(mask, i);
-
-		ST(buf + 1 + c, _mm256_permutevar8x32_epi32(LD(v + i), _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) sift_colk_lut_pos[b]))));
-		c += __builtin_popcount(b);
-	}
-	ST(buf + 1 + c, _mm256_setzero_si256());
-	for (int j = 0; j < c; j += 8)
-		cnt += __builtin_popcount(~ms32(_mm256_cmpeq_epi32(LD(buf + j), LD(buf + j + 1))) & AGK_LANES(c - j, 8));
-	*prev = buf[c];
-	return cnt;
-}
-
 #define AGK_INIT2(s)	.s = s##_avx2,
 
 const SiftAggKernels sift_aggkern_avx2 = {
-	AGK_INIT2(cmp_f64) AGK_INIT2(between_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
-	AGK_INIT2(sum_i32) AGK_INIT2(sum_f64) AGK_INIT2(absmax_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
+	AGK_INIT2(cmp_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
+	AGK_INIT2(sum_i32) AGK_INIT2(absmax_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
 	.gid_code = agk_gid_code_scalar,
 	.gid_i32 = agk_gid_i32_scalar,
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
-	AGK_INIT2(count_changes)
 };
 
 #endif							/* __x86_64__ */
