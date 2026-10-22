@@ -42,10 +42,13 @@ extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
  * Var, volatile function or sub-plan: constants, or parameters of the statement that the scan evaluates when it starts.
  * flags: TOPN_SKIP_OFFSET: the scan tuple is the output as it is (plain columns), so the Limit node above, which throws the first OFFSET rows
  * away unread, is given rows of NULLs for them and the heap is read for the rows it takes only; TOPN_SORT: the plan is priced as a sort of
- * every row that passes, whatever the bound is (a heap of many rows costs more than the sort).
+ * every row that passes, whatever the bound is (a heap of many rows costs more than the sort). TOPN_TOTALS: the plan also computes aggregates
+ * of the whole set of rows that pass (the window functions over (), SiftAggSpec.agg), after the columns of the heap in the scan tuple: no unit
+ * is left out for the sort key's zone, and the scan is serial.
  */
 #define TOPN_SKIP_OFFSET	1
 #define TOPN_SORT			2
+#define TOPN_TOTALS			4
 /*
  * What a sort key does to the value of its leaf before it is compared (a sort expression the scan evaluates for every row that passes, which cannot
  * raise): TXK_COALESCE: NULL is the constant c (an integer, date or timestamp leaf and a constant of its type); TXK_LOWER, TXK_UPPER: the string of the

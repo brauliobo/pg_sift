@@ -469,11 +469,12 @@ unit_rows(AggExec *ex, uint64 *rmask, int nrow)
 	apply_late(ex, rmask, nrow, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow(ex, rmask, true);
-	if (ex->topn)
-		topn_unit(ex, rmask, nrow);
-	else
+	/* the aggregates of a top-N first: it reads the other sort keys of a few rows into the buffers of their leaves, which an aggregate over such a leaf reads whole */
+	if (!ex->topn || ex->spec->naggs > 0)
 		for (int st = 0; st < nrow; st += VEC)
 			agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
+	if (ex->topn)
+		topn_unit(ex, rmask, nrow);
 }
 
 /* The elements of the kept rows that the conjuncts on the elements keep, as a bitmap over the elements of the unit */
