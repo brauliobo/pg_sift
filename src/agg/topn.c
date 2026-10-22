@@ -26,8 +26,6 @@
 /* Superblocks whose zones tell whether the sort column follows the table */
 #define TOPN_PROBES		6
 
-/* ---------- planner ---------- */
-
 bool
 sift_topn_key_ok(const SiftSrcLeaf *lf)
 {
@@ -80,8 +78,6 @@ sift_topn_limit_text(Node *spec)
 		return psprintf("%d", (int) (DatumGetInt64(((Const *) count)->constvalue) + (offset ? DatumGetInt64(((Const *) offset)->constvalue) : 0)));
 	return pstrdup("by parameter");
 }
-
-/* ---------- executor ---------- */
 
 typedef struct TopKey
 {
@@ -605,8 +601,6 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		finish_unit(t, src, unit, nc);
 }
 
-/* ---------- the visit order ---------- */
-
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
@@ -805,8 +799,6 @@ sift_topn_walk_next(SiftTopN *t, uint32 *sb)
 	t->wpos++;
 	return true;
 }
-
-/* ---------- the result ---------- */
 
 void
 sift_topn_finish(SiftTopN *t)

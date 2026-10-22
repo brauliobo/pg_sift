@@ -76,8 +76,6 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
-/* ---------- combos and lookup joins ---------- */
-
 #define CHUNK_PAD	(VEC + PADW)
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */

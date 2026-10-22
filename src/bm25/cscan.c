@@ -46,8 +46,6 @@
 /* The rows a keyed scan keeps in its first round when it has no hint */
 #define KEYED_INITIAL_ROWS	1024
 
-/* ---------- scan tuple ---------- */
-
 static void
 init_cols(SiftScanState *ss, CustomScan *cs)
 {
@@ -139,8 +137,6 @@ scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 	}
 	return !want_doc || (*doc = index_text(ss)) != NULL;
 }
-
-/* ---------- scan lifecycle ---------- */
 
 static void
 add_stats(SiftScanState *ss)
@@ -351,8 +347,6 @@ start_scan(SiftScanState *ss)
 	MemoryContextSwitchTo(old);
 }
 
-/* ---------- row sources ---------- */
-
 /* Next heap-order match, from the pages read ahead when the scan returns tuples */
 static bool
 next_match(SiftScanState *ss)
@@ -527,8 +521,6 @@ scan_recheck(ScanState *node, TupleTableSlot *slot)
 {
 	return true;
 }
-
-/* ---------- executor methods ---------- */
 
 /* The most rows a LIMIT $n [OFFSET $m] asks of a generic plan, evaluated now that the parameters are known */
 static int64
@@ -750,8 +742,6 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyInteger("Heap Checks", NULL, t.heap_checks, es);
 	ExplainPropertyInteger("Heap Pages", NULL, t.heap_pages, es);
 }
-
-/* ---------- parallel ---------- */
 
 /* Superblocks of the heap as of now: what a snapshot taken before sees lies in them */
 static uint32

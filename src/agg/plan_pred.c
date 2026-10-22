@@ -62,8 +62,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-/* ---------- predicates ---------- */
-
 TypeClass
 type_class(Oid t)
 {

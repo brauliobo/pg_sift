@@ -30,8 +30,6 @@ init_data_page(Page page, uint32 vblock, uint16 flags)
 	TBL_PAGE(page)->flags = flags;
 }
 
-/* ---------- write buffers ---------- */
-
 typedef struct SwapArg
 {
 	uint64		sealed;			/* gen of the open write buffer being replaced, 0 for none */

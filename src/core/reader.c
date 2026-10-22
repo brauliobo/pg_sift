@@ -33,8 +33,6 @@
 #include "core/store.h"
 #include "core/store_int.h"
 
-/* ---------- stream reader ---------- */
-
 void
 sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, int nextents,
 			 uint64 gen)

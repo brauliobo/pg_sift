@@ -12,8 +12,6 @@
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
 
-/* ---------- iterator ---------- */
-
 /* AND / OR of k >= 1 cursors; the single cursor itself for k = 1 */
 static sift_cur *
 op_cursor(SegCurs *cs, MemoryContext cx, EvalKind kind, sift_cur **kid, int k)

@@ -42,8 +42,6 @@
 #include "bm25/planner_int.h"
 #include "bm25/pushdown.h"
 
-/* ---------- plans ---------- */
-
 static IndexOptInfo *
 rel_index(RelOptInfo *rel, Oid indexoid)
 {

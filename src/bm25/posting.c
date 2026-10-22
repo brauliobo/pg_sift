@@ -22,8 +22,6 @@ sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl)
 	return sift_kern_bound_u8(&bm, tf, dl);
 }
 
-/* ---------- reader ---------- */
-
 /* the codec of the portable core (bm25/bitmap.c) raises through the host */
 void
 sift_codec_corrupt(const char *what)

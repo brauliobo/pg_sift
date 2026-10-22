@@ -119,8 +119,6 @@ tbl_slot_callbacks(Relation rel)
 	return sift_tbl_slot_ops();
 }
 
-/* ---------- rows ---------- */
-
 /* The row of slot as a MinimalTuple with every external TOAST value expanded (no TOAST table exists for this AM) */
 static MinimalTuple
 form_mtuple(Relation rel, TupleTableSlot *slot)
@@ -205,8 +203,6 @@ tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid
 	for (int i = 0; i < nslots; i++)
 		insert_one(rel, slots[i], cid, options, 0);
 }
-
-/* ---------- delete, update, lock ---------- */
 
 /*
  * Decides whether the version at tid may be deleted, updated or locked now. TM_Ok: the tuple lock is held, *del is the state
@@ -424,8 +420,6 @@ tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
 }
 
-/* ---------- lifecycle ---------- */
-
 static void
 tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
 								 TransactionId *freezeXid, MultiXactId *minmulti)
@@ -509,8 +503,6 @@ tbl_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages,
 	*pages = Max(*pages, (BlockNumber) Min(scan_pages, (double) MaxBlockNumber));
 	*allvisfrac = 0;
 }
-
-/* ---------- handler ---------- */
 
 static const TableAmRoutine sift_tbl_methods = {
 	.type = T_TableAmRoutine,

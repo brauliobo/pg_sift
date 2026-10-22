@@ -152,8 +152,6 @@ sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 	return any;
 }
 
-/* ---------- text tests on the encoded form ---------- */
-
 static Node *
 strip_relabel(Node *n)
 {

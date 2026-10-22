@@ -33,8 +33,6 @@
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
 
-/* ---------- keyed scan ---------- */
-
 /*
  * ORDER BY keys, score DESC: the score only breaks the ties of the keys, so the matches to score are those of
  * the best keys and the ones tied with the last of them. A round passes over the matches in heap order for the

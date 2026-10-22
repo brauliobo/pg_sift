@@ -12,8 +12,6 @@
 
 #define PAGE_RANK_WORDS	((MAXOFF + 63) / 64)	/* words of rank bits of a page of docs */
 
-/* ---------- liveness, format 2 ---------- */
-
 Live2 *
 live2(SiftSegment *seg)
 {
@@ -136,8 +134,6 @@ live2_cleared(SiftSegment *seg, int nd, uint64 dead_dl)
 	l2->h.ndead += nd;
 	l2->h.dead_dl += dead_dl;
 }
-
-/* ---------- liveness ---------- */
 
 /*
  * The liveness bits of the docs of the SB, read once for all its pages: the bit of rank rank_base + i is bit
@@ -422,8 +418,6 @@ sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
 	return live;
 }
 
-/* ---------- VACUUM ---------- */
-
 /* Deletes the docs of ranks dead[] (ascending) of one SB (format 1) */
 static void
 delete_ranks(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
@@ -592,8 +586,6 @@ sb_dead2(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, v
 	}
 	return nd;
 }
-
-/* ---------- the dead postings of each term (format 2) ---------- */
 
 typedef struct DeadScan
 {

@@ -24,8 +24,6 @@
 #include "core/cpu.h"
 #include "col/col.h"
 
-/* ---------- format (version 1) ---------- */
-
 #define SIFT_CC_MAGIC		0xC5
 #define SIFT_CC_VERSION		1
 #define SIFT_CC_HDRLEN		24		/* magic, version, kind, flags, u32 n, i64 min, i64 max; then the root node, then u32 check */
@@ -67,8 +65,6 @@ typedef enum SiftCcKind
 #define SIFT_CC_MIN_GAIN	0.03	/* an explicit lz4/zstd policy still needs this share of the stream saved */
 #define SIFT_CC_MIN_WRAP	128		/* streams below this many bytes are never wrapped */
 
-/* ---------- policy: the column option `compression` ---------- */
-
 typedef enum SiftCcMode
 {
 	SIFT_CCM_AUTO = 0,			/* cascade + cost rule */
@@ -96,8 +92,6 @@ extern const char *sift_cc_policy_for_column(const char *spec, const char *colna
 extern char *sift_cc_policy_name(const SiftCcPolicy *p);
 extern void sift_cc_policy_default(SiftCcPolicy *p);
 
-/* ---------- writing ---------- */
-
 typedef struct SiftCcInfo
 {
 	uint32		n;
@@ -116,8 +110,6 @@ typedef struct SiftCcInfo
  */
 extern void sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, const uint64 *nulls, const SiftCcPolicy *pol,
 						   SiftCcInfo *info);
-
-/* ---------- reading ---------- */
 
 typedef struct SiftCc SiftCc;
 
@@ -156,8 +148,6 @@ extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
 
 /* Slots of a u32 array that takes the writes of every kernel for n values: whole rows of 32 values plus the pad (SIFT_COL_PAD bytes) */
 #define SIFT_CC_CAP32(n)	((((uint64) (n) + 31) / 32) * 32 + SIFT_COL_PAD / 4)
-
-/* ---------- other blobs the engine stores ---------- */
 
 /* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule. */
 extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol);

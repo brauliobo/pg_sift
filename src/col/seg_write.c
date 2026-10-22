@@ -10,8 +10,6 @@
 #include "col/ver.h"
 #include "core/live.h"
 
-/* ---------- writer ---------- */
-
 struct SiftColSegWriter
 {
 	SiftWriteTarget *wt;

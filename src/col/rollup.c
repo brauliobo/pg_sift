@@ -135,8 +135,6 @@ is_done(const RollupShared *sh, Oid index, uint64 gen, uint32 hash)
 	return false;
 }
 
-/* ---------- the worker ---------- */
-
 PGDLLEXPORT void sift_col_rollup_worker_main(Datum main_arg);
 
 static void
@@ -341,8 +339,6 @@ sift_col_rollup_worker_main(Datum main_arg)
 		process(&r);
 }
 
-/* ---------- the request, from a SELECT ---------- */
-
 PG_FUNCTION_INFO_V1(sift_col_rollup_refresh);
 
 /* sift.col_rollup_refresh(index): the queued requests of the index are refreshed now, in this session; the number of segments rewritten */
@@ -406,8 +402,6 @@ sift_col_rollup_request(Relation index, uint64 gen)
 		launch_worker();
 	return queued;
 }
-
-/* ---------- SQL: sift.col_rollup_counters, sift.col_rollup_queue ---------- */
 
 PG_FUNCTION_INFO_V1(sift_col_rollup_counters);
 PG_FUNCTION_INFO_V1(sift_col_rollup_queue);
