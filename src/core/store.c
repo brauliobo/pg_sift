@@ -174,7 +174,7 @@ check_meta(Relation index, Buffer buf)
 	SiftMetaPageData *meta = META(page);
 
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE)
+	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE || SiftPageGetUsed(page) > sizeof(SiftMetaPageData))
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
@@ -373,15 +373,15 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	if (BufferIsValid(chg->extra))
 		xp = GenericXLogRegisterBuffer(state, chg->extra, 0);
 	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
-	{
 		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
-		SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
-	}
 	before = *META(mp);
 	if (publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
+		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
+		if (META(mp)->maint_failed_at != 0)
+			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
