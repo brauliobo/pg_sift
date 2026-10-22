@@ -300,14 +300,23 @@ lane_fold(AggExec *ex)
 
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
-		AggAcc	   *a = &ex->acc[i];
+		double	   *pg_restrict dt = ex->acc[i].dt;
+		const double *pg_restrict d = ex->acc[i].d;
+		uint32		g = 0;
 
-		if (a->dt)
-			for (uint32 g = 0; g < n; g++)
-			{
-				a->dt[g] += a->d[g];
-				a->d[g] = 0;
-			}
+		if (dt == NULL)
+			continue;
+		/* the pointers in locals: through the accumulator every store would reload them and keep the loop scalar */
+		for (; g + 4 <= n; g += 4)
+		{
+			dt[g] += d[g];
+			dt[g + 1] += d[g + 1];
+			dt[g + 2] += d[g + 2];
+			dt[g + 3] += d[g + 3];
+		}
+		for (; g < n; g++)
+			dt[g] += d[g];
+		memset(ex->acc[i].d, 0, n * sizeof(double));
 	}
 }
 
