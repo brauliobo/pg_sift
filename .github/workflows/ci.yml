@@ -1,6 +1,7 @@
 name: ci
 
-# A pull request runs the fast tier: lint, and one PostgreSQL 18 job with the regression tests its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`)
+# Only a pull request from an `integration/` branch, or one labeled `ci`, starts work; any other pull request skips every job (`gate` still passes). That one runs the
+# fast tier: lint, and one PostgreSQL 18 job with the regression tests its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`)
 # and the tests it touches, a few minutes in all. A push to main runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
 # production-library stages and the other jobs; its base is the last green run of main, so a red or cancelled push is not forgotten by the next one.
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
@@ -11,6 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
     inputs:
       heavy:
@@ -31,16 +33,20 @@ permissions:
 # runs waiting behind it GitHub keeps the newest, which scopes its diff from the last green run (see `changes`), so every batch of merges gets one complete run and
 # the head of main is tested. A nightly or dispatch run has a group of its own, so a push never cancels it (main-verify.yml dispatches one when the head of main has none).
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# `changes` and `lint` start the work and carry the condition; the other jobs skip through `needs`. Any label other than `ci` starts a run of its own that skips
+# everything, in a group of its own, so it does not cancel the run of the pull request.
 jobs:
   changes:
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'labeled' || github.event.label.name == 'ci') && (startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.scope.outputs.jobs }}
       fast: ${{ steps.scope.outputs.fast }}
+      fastjobs: ${{ steps.scope.outputs.fastjobs }}
       sqlite: ${{ steps.scope.outputs.sqlite }}
       mariadb: ${{ steps.scope.outputs.mariadb }}
       replication: ${{ steps.scope.outputs.replication }}
@@ -79,14 +85,15 @@ jobs:
           PG: ${{ steps.scope.outputs.pg }}
           JOBS: ${{ steps.scope.outputs.jobs }}
           FAST: ${{ steps.scope.outputs.fast }}
+          FASTJOBS: ${{ steps.scope.outputs.fastjobs }}
           VERSIONS: ${{ inputs.versions }}
           EVENT: ${{ github.event_name }}
           HEAVY: ${{ github.event_name == 'schedule' || inputs.heavy == true }}
         run: |
-          # a pull request: one PostgreSQL 18 job, the regression tests of the diff and the tests it touches (`only`, SIFT_CI_JOBS)
+          # a pull request: one PostgreSQL 18 job, the regression tests of the areas the diff touches (`jobs`, narrower than the push's: scripts/areas.tsv `fast:` rows) and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
-          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg event "$EVENT" --arg versions "$VERSIONS" '
-            if $event == "pull_request" then (if $pg == "true" then [{pg: 18, shard: 1, n: 1, tier: "fast", jobs: $jobs, only: $fast}] else [] end) else
+          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
+            if $event == "pull_request" then (if $pg == "true" then [{pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast}] else [] end) else
             (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}] else [] end)
             + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end end
@@ -95,6 +102,7 @@ jobs:
 
   # no PostgreSQL: the syntax of every script, the portable core, the map of areas against the tests, the workflows
   lint:
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'labeled' || github.event.label.name == 'ci') && (startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -110,6 +118,7 @@ jobs:
       - run: scripts/check-bench-fresh.sh
       - run: scripts/gen-refusals.sh --check
       - run: scripts/coverage.sh --docs
+      - run: scripts/gen-docs.py --check
       - run: scripts/ci.sh --selftest
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint

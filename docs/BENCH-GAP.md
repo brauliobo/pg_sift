@@ -1,7 +1,7 @@
 # Gap report: pg_sift against ClickHouse and Elasticsearch on the store questions
 
 Internal tooling. The aim is for pg_sift to be faster than ClickHouse and Elasticsearch on the quick aggregation questions of the
-online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)). This file says where it is not, where its time goes, and the
+online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#aggregates-an-online-store)). This file says where it is not, where its time goes, and the
 single change that would move each question the most. The tables below are generated; the text under "Reading of the 3.1.0 tables" was written from them and the
 text under "Findings (history)" from an earlier profile, so the second is a baseline and not a description of the current build.
 
@@ -30,31 +30,31 @@ The results JSON has one format (`meta` and `rows` with `dataset, tier, engine, 
 
 | q | question | sift_col | sift_table | PostgreSQL | ClickHouse | Elasticsearch | ES, cache on | sift_col / ClickHouse | sift_col / ES | sift_col / ES cache on |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 01 | Find one order by its id | 0.175 | 0.137 | 0.206 | 3.97 | 1.28 | 0.987 | 0.04 | 0.14 | 0.18 |
-| 02 | How many orders per country | 0.795 | 0.663 | 36.5 | 8.5 | 6.63 | 3.64 | 0.09 | 0.12 | 0.22 |
-| 03 | Revenue per month | 0.847 | 4.64 | 125 | 12.1 | 15.9 | 4.12 | 0.07 | 0.05 | 0.21 |
-| 04 | The 10 categories with the most revenue | 0.846 | 0.65 | 99.7 | 10.7 | 14.3 | 3.27 | 0.08 | 0.06 | 0.26 |
-| 05 | Average value of the shipped orders of one country in one year | 1.9 | 3.31 | 10.5 | 8.06 | 4.79 | 2.64 | 0.24 | 0.40 | 0.72 |
-| 06 | How many different customers ordered each month | 5.34 | 6.29 | 471 | 22.4 | 50.6 | 41.5 | 0.24 | 0.11 | 0.13 |
-| 07 | How many orders over $100 in the last 30 days | 1.44 | 1.79 | 13.8 | 3.56 | 3.45 | 2.17 | 0.40 | 0.42 | 0.66 |
-| 08 | Search "wireless headphones": how many orders match | 0.589 | 1.1 | 6.09 | 3.33 | 3.35 | 1.92 | 0.18 | 0.18 | 0.31 |
-| 09 | Search "wireless headphones", shipped orders of $50 or more: orders per category | 2.05 | 1.66 | 6.72 | 18.9 | 5.04 | 2.64 | 0.11 | 0.41 | 0.78 |
-| 10 | Search "wireless headphones", shipped orders: the 10 newest | 4.57 | 2.66 | 2.89 | 18.8 | 6.44 | 4.05 | 0.24 | 0.71 | **1.13** |
+| 01 | Find one order by its id | 0.234 | 0.216 | 0.267 | 4.64 | 1.72 | 1.16 | 0.05 | 0.14 | 0.20 |
+| 02 | How many orders per country | 0.75 | 0.632 | 36 | 7.44 | 6.14 | 2.81 | 0.10 | 0.12 | 0.27 |
+| 03 | Revenue per month | 0.795 | 4.46 | 121 | 11.3 | 15.6 | 2.95 | 0.07 | 0.05 | 0.27 |
+| 04 | The 10 categories with the most revenue | 0.842 | 0.761 | 99.3 | 10.4 | 15.6 | 2.54 | 0.08 | 0.05 | 0.33 |
+| 05 | Average value of the shipped orders of one country in one year | 1.77 | 3.43 | 10.5 | 7.02 | 4.64 | 2.87 | 0.25 | 0.38 | 0.62 |
+| 06 | How many different customers ordered each month | 5.01 | 6 | 436 | 20.5 | 49.8 | 35 | 0.24 | 0.10 | 0.14 |
+| 07 | How many orders over $100 in the last 30 days | 1.46 | 1.66 | 13.6 | 3.36 | 3.6 | 2.34 | 0.43 | 0.40 | 0.62 |
+| 08 | Search "wireless headphones": how many orders match | 0.634 | 1.15 | 6.02 | 3.55 | 3.41 | 1.79 | 0.18 | 0.19 | 0.35 |
+| 09 | Search "wireless headphones", shipped orders of $50 or more: orders per category | 1.9 | 1.69 | 6.58 | 18.6 | 4.94 | 2.72 | 0.10 | 0.38 | 0.70 |
+| 10 | Search "wireless headphones", shipped orders: the 10 newest | 4.47 | 2.54 | 2.84 | 17.3 | 6.43 | 4.36 | 0.26 | 0.70 | **1.03** |
 
 #### 1,000,000 orders, 3 CPUs (warm median, ms; a ratio above 1, in bold, means pg_sift is slower)
 
 | q | question | sift_col | sift_table | PostgreSQL | ClickHouse | Elasticsearch | ES, cache on | sift_col / ClickHouse | sift_col / ES | sift_col / ES cache on |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 01 | Find one order by its id | 0.212 | 0.158 | 0.238 | 2.95 | 1.49 | 1.16 | 0.07 | 0.14 | 0.18 |
-| 02 | How many orders per country | 0.815 | 0.641 | 22.7 | 4.62 | 5.82 | 2.95 | 0.18 | 0.14 | 0.28 |
-| 03 | Revenue per month | 0.797 | 4.81 | 197 | 16.6 | 9.78 | 3.04 | 0.05 | 0.08 | 0.26 |
-| 04 | The 10 categories with the most revenue | 0.852 | 0.717 | 41.3 | 6.05 | 9.93 | 3.91 | 0.14 | 0.09 | 0.22 |
-| 05 | Average value of the shipped orders of one country in one year | 1.96 | 3.53 | 10.5 | 5.88 | 3.82 | 2.09 | 0.33 | 0.51 | 0.94 |
-| 06 | How many different customers ordered each month | 5.21 | 6.73 | 217 | 9.89 | 35.9 | 28.2 | 0.53 | 0.15 | 0.18 |
-| 07 | How many orders over $100 in the last 30 days | 1.46 | 1.8 | 12.2 | 3.36 | 3.49 | 2.12 | 0.43 | 0.42 | 0.69 |
-| 08 | Search "wireless headphones": how many orders match | 0.613 | 1.08 | 7.42 | 3.28 | 3.18 | 2.43 | 0.19 | 0.19 | 0.25 |
-| 09 | Search "wireless headphones", shipped orders of $50 or more: orders per category | 1.94 | 1.61 | 7.9 | 10.1 | 4.68 | 2.39 | 0.19 | 0.41 | 0.81 |
-| 10 | Search "wireless headphones", shipped orders: the 10 newest | 4.6 | 2.65 | 65.6 | 7.47 | 6.32 | 3.51 | 0.62 | 0.73 | **1.31** |
+| 01 | Find one order by its id | 0.209 | 0.155 | 0.237 | 2.78 | 1.33 | 1.05 | 0.08 | 0.16 | 0.20 |
+| 02 | How many orders per country | 0.793 | 0.622 | 21.5 | 4.94 | 5.43 | 2.78 | 0.16 | 0.15 | 0.29 |
+| 03 | Revenue per month | 0.823 | 4.58 | 190 | 6.41 | 10.1 | 2.49 | 0.13 | 0.08 | 0.33 |
+| 04 | The 10 categories with the most revenue | 0.789 | 0.696 | 40.1 | 5.47 | 10.5 | 3.13 | 0.14 | 0.08 | 0.25 |
+| 05 | Average value of the shipped orders of one country in one year | 1.75 | 3.36 | 10.5 | 5.33 | 4.27 | 2.22 | 0.33 | 0.41 | 0.79 |
+| 06 | How many different customers ordered each month | 5.05 | 6.36 | 198 | 9.88 | 36.9 | 29.2 | 0.51 | 0.14 | 0.17 |
+| 07 | How many orders over $100 in the last 30 days | 1.44 | 1.68 | 11.9 | 3.44 | 3.28 | 1.82 | 0.42 | 0.44 | 0.79 |
+| 08 | Search "wireless headphones": how many orders match | 0.689 | 1.18 | 7.56 | 3.3 | 3.29 | 1.9 | 0.21 | 0.21 | 0.36 |
+| 09 | Search "wireless headphones", shipped orders of $50 or more: orders per category | 1.91 | 1.7 | 7.84 | 10.1 | 4.14 | 2.56 | 0.19 | 0.46 | 0.75 |
+| 10 | Search "wireless headphones", shipped orders: the 10 newest | 4.56 | 2.55 | 66.5 | 8.29 | 6.78 | 4.08 | 0.55 | 0.67 | **1.12** |
 <!-- bench:gap-table:end -->
 
 ## Planning
@@ -70,16 +70,16 @@ a sift table with `sift.enable_agg = off` (the planner hook returns at once) and
 
 | q | planning, warm backend | planning, first statement of a backend | parse + plan, no sift library | parse + plan, hook loaded (plain table) | parse + plan, `sift.enable_agg = off` | parse + plan, SiftAgg planned | planning / `sift_col` median |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 01 | 0.01 | 0.71 | 0.015 | 0.016 | 0.015 | 0.016 | 2.4% |
-| 02 | 0.02 | 0.86 | 0.017 | 0.015 | 0.016 | 0.017 | 2.5% |
-| 03 | 0.02 | 0.78 | 0.016 | 0.018 | 0.020 | 0.020 | 2.5% |
-| 04 | 0.04 | 0.90 | 0.020 | 0.026 | 0.022 | 0.021 | 4.3% |
-| 05 | 0.05 | 0.81 | 0.024 | 0.024 | 0.023 | 0.029 | 2.6% |
-| 06 | 0.12 | 0.87 | 0.018 | 0.019 | 0.019 | 0.023 | 2.2% |
-| 07 | 0.03 | 0.88 | 0.018 | 0.019 | 0.021 | 0.025 | 2.3% |
-| 08 | 0.01 | 0.91 | 0.018 | 0.020 | 0.015 | 0.019 | 1.8% |
-| 09 | 0.06 | 0.89 | 0.041 | 0.039 | 0.029 | 0.037 | 3.1% |
-| 10 | 0.05 | 0.84 | 0.024 | 0.025 | 0.020 | 0.032 | 1.1% |
+| 01 | 0.01 | 0.75 | 0.014 | 0.018 | 0.019 | 0.019 | 4.3% |
+| 02 | 0.05 | 1.27 | 0.018 | 0.017 | 0.019 | 0.020 | 6.2% |
+| 03 | 0.04 | 0.90 | 0.017 | 0.018 | 0.020 | 0.022 | 4.3% |
+| 04 | 0.02 | 0.88 | 0.018 | 0.020 | 0.020 | 0.020 | 2.8% |
+| 05 | 0.08 | 0.87 | 0.024 | 0.034 | 0.031 | 0.040 | 4.7% |
+| 06 | 0.05 | 0.93 | 0.024 | 0.021 | 0.020 | 0.026 | 1.0% |
+| 07 | 0.08 | 1.02 | 0.020 | 0.025 | 0.025 | 0.032 | 5.7% |
+| 08 | 0.03 | 0.98 | 0.020 | 0.024 | 0.018 | 0.022 | 4.9% |
+| 09 | 0.10 | 1.04 | 0.033 | 0.045 | 0.042 | 0.053 | 5.3% |
+| 10 | 0.07 | 1.12 | 0.022 | 0.030 | 0.026 | 0.035 | 1.4% |
 <!-- bench:gap-planning:end -->
 
 ## Where the time goes
@@ -90,35 +90,35 @@ the median of the `EXPLAIN (ANALYZE)` runs with the server's parallel settings (
 <!-- bench:gap-profile:begin (generated by `bench/steps/gap.py render`; do not edit by hand) -->
 #### 1,000,000 orders (ms)
 
-A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes 0.02 ms with 0 workers launched and 0.03 ms without: that difference is the cost of starting the workers, and the second number is the executor start-up and finalization.
+A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes 0.02 ms with 0 workers launched and 0.02 ms without: that difference is the cost of starting the workers, and the second number is the executor start-up and finalization.
 
 | q | `sift_col` median (bench) | EXPLAIN execution | without workers | workers launched | units (pruned) | rows scanned | groups | instructions per row | cycles per row | top symbols (one backend, no workers) |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 01 | 0.212 | 0.00 | 0.00 | n/a | n/a | n/a | n/a | 0.1 | 0.1 | `ReleasePredicateLocks` 79%<br>`add_path` 16%<br>`0x00000000006fff6a` 4% |
-| 02 | 0.815 | 0.27 | 0.23 | n/a | 52 (0) | 0 | 30 | 2.2 | 1.0 | `unit_parse.part.0` 24%<br>`AllocSetAlloc` 10%<br>`ot_id` 9% |
-| 03 | 0.797 | 0.24 | 0.23 | n/a | 52 (0) | 0 | 36 | 2.5 | 1.2 | `0x00000000001b7cfd` 8%<br>`unit_parse.part.0` 7%<br>`SearchCatCache1` 6% |
-| 04 | 0.852 | 0.29 | 0.26 | n/a | 52 (0) | 0 | 40 | 2.7 | 1.3 | `0x0000000000a1d8d3` 14%<br>`preagg_add` 13%<br>`core_yylex` 11% |
-| 05 | 1.96 | 0.86 | 0.89 | n/a | 52 (0) | 1,000,000 | 1 | 11.3 | 7.6 | `unpack_range32_avx512` 10%<br>`ResourceOwnerForget` 10%<br>`LWLockRelease` 7% |
-| 06 | 5.21 | 5.00 | 5.07 | n/a | 52 (0) | 1,000,000 | 36 | 68.6 | 21.8 | `dist_update` 43%<br>`gather_u32_avx512` 20%<br>`agg_chunk` 7% |
-| 07 | 1.46 | 0.57 | 0.57 | n/a | 52 (0) | 1,000,000 | 1 | 7.1 | 3.0 | `bits_to_idx_avx512` 14%<br>`unpack_range32_avx512` 13%<br>`LWLockRelease` 8% |
-| 08 | 0.613 | 0.10 | 0.11 | n/a | n/a | n/a | n/a | 1.6 | 0.8 | `gr_seek` 42%<br>`0x000000000099e313` 15%<br>`0x0000000000733694` 12% |
-| 09 | 1.94 | 1.00 | 1.09 | n/a | 52 (0) | 7,143 | 40 | 1833.5 | 772.9 | `sift_iter_next` 10%<br>`unpack_range32_avx512` 8%<br>`gr_seek` 8% |
-| 10 | 4.6 | 1.35 | 1.33 | n/a | n/a | n/a | n/a | 21.8 | 11.6 | `LWLockRelease` 19%<br>`ResourceOwnerForget` 11%<br>`scan_next` 9% |
+| 01 | 0.209 | 0.00 | 0.00 | n/a | n/a | n/a | n/a | 0.2 | 0.1 | `LWLockRelease` 71%<br>`standard_planner` 16%<br>`shared_cte_walker` 11% |
+| 02 | 0.793 | 0.24 | 0.23 | n/a | 52 (0) | 0 | 30 | 2.2 | 1.1 | `0x00000000001b7cef` 16%<br>`unit_parse.part.0` 15%<br>`LWLockRelease` 14% |
+| 03 | 0.823 | 0.22 | 0.23 | n/a | 52 (0) | 0 | 36 | 2.7 | 1.2 | `sift_col_next` 13%<br>`preagg_add` 11%<br>`0x000000000006cc03` 10% |
+| 04 | 0.789 | 0.23 | 0.21 | n/a | 52 (0) | 0 | 40 | 2.8 | 1.3 | `ResourceOwnerForget` 12%<br>`LWLockRelease` 9%<br>`decode_dim.constprop.0` 8% |
+| 05 | 1.75 | 0.84 | 0.81 | n/a | 52 (0) | 1,000,000 | 1 | 11.5 | 4.6 | `unpack_range32_avx512` 19%<br>`for_i64_u32_avx512` 9%<br>`LWLockRelease` 7% |
+| 06 | 5.05 | 3.98 | 4.17 | n/a | 52 (0) | 1,000,000 | 36 | 68.7 | 21.4 | `dist_update` 45%<br>`gather_u32_avx512` 20%<br>`agg_chunk` 6% |
+| 07 | 1.44 | 0.69 | 0.57 | n/a | 52 (0) | 1,000,000 | 1 | 7.3 | 3.4 | `unpack_range32_avx512` 13%<br>`bits_to_idx_avx512` 11%<br>`0x00000000001b7cc6` 10% |
+| 08 | 0.689 | 0.11 | 0.10 | n/a | n/a | n/a | n/a | 1.7 | 1.0 | `gr_seek` 43%<br>`join_quals` 28%<br>`subquery_planner` 15% |
+| 09 | 1.91 | 1.05 | 1.00 | n/a | 52 (0) | 7,143 | 40 | 1940.7 | 813.6 | `nd_get` 9%<br>`and2_v` 7%<br>`select_page` 7% |
+| 10 | 4.56 | 1.26 | 1.26 | n/a | n/a | n/a | n/a | 21.9 | 7.6 | `LWLockRelease` 22%<br>`scan_next` 9%<br>`ResourceOwnerForget` 8% |
 
 What ClickHouse and Elasticsearch spend on the same questions (their own accounting):
 
 | q | ClickHouse rows read | bytes read | memory | peak threads | duration (query_log) | clickhouse-client --time | Elasticsearch `took` |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 01 | 17,512 | 555.1 KiB | 5.3 MiB | 8 | 3 ms | 4 ms | 2 ms |
-| 02 | 1,000,000 | 987.4 KiB | 5.3 MiB | 8 | 3 ms | 17 ms | 3 ms |
-| 03 | 1,000,000 | 11.4 MiB | 6.7 MiB | 8 | 5 ms | 24 ms | 42 ms |
-| 04 | 1,000,000 | 8.6 MiB | 5.3 MiB | 8 | 5 ms | 6 ms | 37 ms |
-| 05 | 147,456 | 2.0 MiB | 5.4 MiB | 8 | 5 ms | 26 ms | 10 ms |
-| 06 | 1,000,000 | 7.6 MiB | 15.5 MiB | 8 | 10 ms | 11 ms | 72 ms |
-| 07 | 52,089 | 610.4 KiB | 5.2 MiB | 5 | 2 ms | 3 ms | 5 ms |
-| 08 | 36 | 576 B | 5.3 MiB | 8 | 2 ms | 3 ms | 1 ms |
-| 09 | 1,000,000 | 10.5 MiB | 5.6 MiB | 8 | 12 ms | 13 ms | 5 ms |
-| 10 | 1,035,705 | 11.8 MiB | 5.5 MiB | 8 | 9 ms | 8 ms | 5 ms |
+| 01 | 17,512 | 555.1 KiB | 5.3 MiB | 8 | 2 ms | 4 ms | 1 ms |
+| 02 | 1,000,000 | 987.4 KiB | 5.3 MiB | 8 | 3 ms | 15 ms | 2 ms |
+| 03 | 1,000,000 | 11.4 MiB | 6.7 MiB | 8 | 5 ms | 23 ms | 45 ms |
+| 04 | 1,000,000 | 8.6 MiB | 5.3 MiB | 8 | 4 ms | 5 ms | 20 ms |
+| 05 | 147,456 | 2.0 MiB | 5.4 MiB | 8 | 3 ms | 23 ms | 9 ms |
+| 06 | 1,000,000 | 7.6 MiB | 15.5 MiB | 8 | 8 ms | 9 ms | 134 ms |
+| 07 | 52,089 | 610.4 KiB | 5.2 MiB | 5 | 2 ms | 3 ms | 4 ms |
+| 08 | 36 | 576 B | 5.3 MiB | 8 | 1 ms | 3 ms | 1 ms |
+| 09 | 1,000,000 | 10.5 MiB | 5.6 MiB | 8 | 11 ms | 12 ms | 9 ms |
+| 10 | 1,035,705 | 12.2 MiB | 5.5 MiB | 8 | 8 ms | 8 ms | 6 ms |
 <!-- bench:gap-profile:end -->
 
 ## Reading of the 3.1.0 tables

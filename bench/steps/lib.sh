@@ -266,6 +266,36 @@ perf_hold() { # one run at a time on the machine: the run holds the perf lock un
 # capped CMD...: the standing caps of the work on a PostgreSQL that is not in a container: a memory cap with no swap (a runaway query dies alone), nice, and a CPU quota when CAP_CPU is set
 capped() { systemd-run --user --scope -q -p MemoryMax="${CAP_MEM:-${GAP_MEM:-12G}}" -p MemorySwapMax=0 -p OOMPolicy=continue ${CAP_CPU:+-p CPUQuota="$CAP_CPU"} nice "$@"; }
 docker_caps() { printf '%s\n' --cpus "$1" --memory "$2" --memory-swap "$2"; }   # CPUS MEMORY: the quota (never a pinning) and the memory limit without swap of every container
+# The same flags for all the PostgreSQL containers of the store and duckdb benchmarks. The parallel pool (max_worker_processes, max_parallel_workers) is far above the budget and the cost
+# knobs are low, so that nothing but max_parallel_workers_per_gather (N - 1) decides how many processes a scan uses.
+PG_FLAGS=(-c shared_buffers=2GB -c effective_cache_size=6GB -c work_mem=64MB -c maintenance_work_mem=512MB -c max_wal_size=8GB -c jit=off
+          -c max_worker_processes=16 -c max_parallel_workers=16 -c parallel_setup_cost=100 -c parallel_tuple_cost=0.01
+          -c min_parallel_table_scan_size=1MB -c min_parallel_index_scan_size=64kB)
+pull_missing() { docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1" >/dev/null; }
+pg_mount() { # IMAGE: the directory the image declares for its data (the official image: /var/lib/postgresql, PGDATA below it)
+  local d; d=$(docker image inspect -f '{{range $k, $_ := .Config.Volumes}}{{println $k}}{{end}}' "$1" | head -1)
+  [[ -n $d ]] || die "the image $1 declares no volume for its data"
+  echo "$d"
+}
+# sift_image TAG BASE: the image TAG, the official PostgreSQL image BASE plus pg_sift built from the tracked files of this checkout (as scripts/replication.sh); built again only when they changed
+sift_image() {
+  local ctx key
+  ctx=$(scratch store-image)
+  (cd "$REPO" && git ls-files -z Makefile pg_sift.control 'sql/pg_sift--*.sql' src scripts/harden.mk | tar --null -T - -cf -) | tar -xf - -C "$ctx"
+  key=$(tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C "$ctx" . | sha256sum | cut -c1-12)
+  if [[ $(docker image inspect -f '{{index .Config.Labels "sift-store-key"}}' "$1" 2>/dev/null) == "$key" ]]; then log "image $1 is up to date"; rm -rf "$ctx"; return; fi
+  pull_missing "$2"
+  cat >"$ctx/Dockerfile" <<EOF
+FROM $2
+LABEL sift-store-key=$key
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev postgresql-server-dev-\$PG_MAJOR
+COPY . /src
+RUN nice make -C /src -j${IMAGE_JOBS:-4} USE_PGXS=1 install && rm -rf /src
+EOF
+  log "building $1 from $2"
+  nice docker build -q -t "$1" "$ctx" >/dev/null
+  rm -rf "$ctx"
+}
 fingerprint() { python3 -I "$STEPS/benchlib.py" fingerprint --id; }              # the host: CPU, threads, memory, kernel, docker, governor (steps/benchlib.py)
 code_key() { # what a result depends on besides the host: the pg_sift sources under test and the harness (scripts, SQL, adapters, pins; not the documentation)
   { git -C "$REPO" ls-files -z Makefile pg_sift.control 'sql/pg_sift--*.sql' src scripts/harden.mk | (cd "$REPO" && xargs -0 sha256sum)

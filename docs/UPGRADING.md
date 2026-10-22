@@ -6,6 +6,7 @@ first release that reads each are in [FORMATS.md](FORMATS.md).
 | Change | What happens to the files | Steps |
 |---|---|---|
 | a newer pg_sift (patch or minor) | the new library reads the files of the older ones; it writes its own format from the next write on | [preflight](#1-preflight), [install and update](#2-install-and-update) |
+| 3.2.1 to 3.2.2 | library only: the extension SQL stays at 3.2, no format changes | install the files and restart the server (an open session keeps the old library, and pg_sift in `shared_preload_libraries` is read at start only); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back to 3.2.1 needs nothing ([notes](releases/v3.2.2.md)) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -189,9 +190,9 @@ An existing index or table keeps what it holds; the new default applies to the u
 
 Up to 3.2 a role needed `GRANT USAGE ON SCHEMA sift` before it could call any `sift.*` function or read a `sift.*` view (`permission denied for schema sift`). The install and `ALTER EXTENSION pg_sift UPDATE` to 3.3 grant it to `PUBLIC`: the grants of a DBA stay and are no longer needed, and nothing else is granted (the functions check the table or index they read, `sift.table_paths` is not readable). A database that does not want it runs `REVOKE USAGE ON SCHEMA sift FROM PUBLIC` after the update; the next update grants it again. PostgreSQL creates the schema named in the control file but does not make it a member of the extension (`ALTER EXTENSION pg_sift ADD SCHEMA sift` is refused), so `DROP EXTENSION` leaves it empty, as in 3.2, with the privileges it had; `CREATE EXTENSION` then gives the objects and privileges of a fresh install again, and `DROP SCHEMA sift` removes it.
 
-## Known issue of 3.2.0 and 3.2.1: a role cannot drop anything
+## Known issue of 3.2.0, 3.2.1 and 3.2.2: a role cannot drop anything
 
-In 3.2.0 and 3.2.1 the event trigger function `sift.table_paths_drop()` is not `SECURITY DEFINER`, so a `DROP` by a role that is neither a superuser nor the owner of the extension fails with `permission denied for schema sift` (any table, index or schema, also one without pg_sift). `ALTER EXTENSION pg_sift UPDATE` to 3.3 fixes it. Until then, run once in each database with the extension, as a superuser (and again after a restore from a dump, which creates the extension from the 3.2 script):
+In 3.2.0, 3.2.1 and 3.2.2 the event trigger function `sift.table_paths_drop()` is not `SECURITY DEFINER`, so a `DROP` by a role that is neither a superuser nor the owner of the extension fails with `permission denied for schema sift` (any table, index or schema, also one without pg_sift). `ALTER EXTENSION pg_sift UPDATE` to 3.3 fixes it. Until then, run once in each database with the extension, as a superuser (and again after a restore from a dump, which creates the extension from the 3.2 script):
 
 ```sql
 ALTER FUNCTION sift.table_paths_drop() SECURITY DEFINER SET search_path = pg_catalog, pg_temp;

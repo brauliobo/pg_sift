@@ -6,6 +6,18 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extensi
 
 ## Unreleased
 
+## 3.2.2
+
+- Rebuilt with the PostgreSQL release 3.2.2.
+
+## 3.2.1
+
+- Rebuilt with the PostgreSQL release 3.2.1.
+
+## 3.2.0
+
+- Rebuilt with the PostgreSQL release 3.2.0.
+
 ## 3.1.0
 
 - No change to the index format (2) or the SQL files: an index of 3.0.2 opens as it is, and this extension still writes BM25 segment format 1. The library is rebuilt with the PostgreSQL release 3.1.0 and `sift_version()` reports pages 1.3 (what the build reads: the segment format 3 that PostgreSQL 3.1 writes is read by the shared core, which this extension never writes).
