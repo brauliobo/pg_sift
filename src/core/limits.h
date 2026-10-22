@@ -54,9 +54,9 @@
 	X(spine_rows, "SPINE_MAX_ROWS", "agg/plan_two.c", 10000, "rows", \
 	  "rows of a spine joined to the arms of a two-level scan", "normal plan (slug spine_rows)", "-", 0) \
 	X(topn_rows, "SIFT_TOPN_MAX_ROWS", "agg/topn.h", SIFT_TOPN_MAX_ROWS, "rows", \
-	  "LIMIT + OFFSET of a top-N scan", "normal plan (slug topn_shape)", "-", 0) \
+	  "LIMIT + OFFSET a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
 	X(topn_keys, "SIFT_TOPN_MAX_KEYS", "agg/topn.h", SIFT_TOPN_MAX_KEYS, "columns", \
-	  "ORDER BY columns of a top-N scan", "normal plan (slug topn_shape)", "-", 0) \
+	  "ORDER BY columns a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
 	X(first_keys, "FIRST_MAX_KEYS", "agg/plan_order.c", 4, "columns", \
 	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
 	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec.h", SIFT_AGG_MAX_FORD, "columns", \
