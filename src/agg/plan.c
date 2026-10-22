@@ -257,6 +257,7 @@ agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *f
 	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
 	c->planned = planned;
+	agg_refuse_retry();
 	*fs = (FromScan) {.ok = true, .flip = true};
 	return agg_base(c, root, input_rel, fs);
 }
@@ -978,7 +979,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 				outer_usable = agg_index_usable;
 	AggStage	st;
 
-	agg_stage_begin(&st, root->query_level);
+	agg_stage_begin(&st, root);
 	agg_index_usable = 0;
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{

@@ -106,6 +106,7 @@ jobs:
       - run: scripts/gen-reference.sh --check
       - run: scripts/check-errors.sh
       - run: scripts/gen-refusals.sh --check
+      - run: scripts/coverage.sh --docs
       - run: scripts/ci.sh --selftest
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
