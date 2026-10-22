@@ -126,6 +126,7 @@ typedef struct AggCtx
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
+	double		path_rows;		/* the groups of the rows the lookup lists can pass, 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
@@ -351,7 +352,7 @@ extern double preagg_share(AggCtx *c, SiftAggSpec *s);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
-extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
+extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double agg_share_rows(AggCtx *c);
 
