@@ -1,4 +1,4 @@
--- The per-row aggregates of an outer aggregate (UNION ALL arms grouped by a row id) read joined tables: a VALUES list of periods, a table
+-- The per-row aggregates of an outer aggregate (UNION ALL arms grouped by a row id) read joined tables: a VALUES list of spans, a table
 -- joined by a key, and a LIMIT 1 lookup. The joins are the scan's, not a plan of their own level that the node could not run. Every query
 -- runs as the two-level scan, as the arms alone (sift.agg_two_level off) and as the normal plan; the answers must be the same.
 CREATE EXTENSION pg_sift;
@@ -27,39 +27,39 @@ VACUUM (FREEZE, ANALYZE) lookup;
 ANALYZE lookup_empty;
 ANALYZE lookup_alt;
 
--- the outer aggregate over arms per row and category, and per row; scoped is the rows with their periods and parent, the lookup is LIMIT 1
-CREATE FUNCTION report(lk text DEFAULT 'lookup', periods text DEFAULT $p$(VALUES ('current', daterange('2025-07-01', '2026-01-31', '[]')),
-                       ('previous', daterange('2025-01-01', '2025-06-30', '[]'))) p(period, range)$p$,
+-- the outer aggregate over arms per row and category, and per row; scoped is the rows with their spans and parent, the lookup is LIMIT 1
+CREATE FUNCTION report(lk text DEFAULT 'lookup', spans text DEFAULT $p$(VALUES ('span_a', daterange('2025-07-01', '2026-01-31', '[]')),
+                       ('span_b', daterange('2025-01-01', '2025-06-30', '[]'))) p(span, range)$p$,
                        parent_join text DEFAULT 'JOIN items pa ON pa.id = e.parent_id AND pa.enabled', lk2 text DEFAULT NULL) RETURNS text LANGUAGE sql AS $$
-	SELECT format($q$WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.parent_id, e.doc, e.kind, p.period FROM events e JOIN %s ON e.ts <@ p.range %s),
+	SELECT format($q$WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.parent_id, e.doc, e.kind, p.span FROM events e JOIN %s ON e.ts <@ p.range %s),
 	  flag_a AS (
-	    SELECT s.id, s.parent_id, s.period, rm.derived_cat AS category, avg(o.score) AS score, count(s.id) AS n
+	    SELECT s.id, s.parent_id, s.span, rm.derived_cat AS category, avg(o.score) AS score, count(s.id) AS n
 	    FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8)
 	    LEFT JOIN LATERAL (SELECT derived_cat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
-	    WHERE rm.derived_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.period, rm.derived_cat
+	    WHERE rm.derived_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.span, rm.derived_cat
 	    UNION ALL
-	    SELECT s.id, s.parent_id, s.period, NULL::text, avg(o.score), count(s.id)
+	    SELECT s.id, s.parent_id, s.span, NULL::text, avg(o.score), count(s.id)
 	    FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8)
 	    LEFT JOIN LATERAL (SELECT derived_cat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
-	    WHERE rm.derived_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.period)
-	  SELECT coalesce(category, 'mhead') AS category, period, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n,
+	    WHERE rm.derived_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.span)
+	  SELECT coalesce(category, 'all_cats') AS category, span, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n,
 	         count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
-	  FROM flag_a GROUP BY category, period ORDER BY 1, 2$q$, periods, parent_join, lk, coalesce(lk2, lk))
+	  FROM flag_a GROUP BY category, span ORDER BY 1, 2$q$, spans, parent_join, lk, coalesce(lk2, lk))
 $$;
 
--- the periods alone, no lookup: a row in two overlapping periods is two cells of each arm
+-- the spans alone, no lookup: a row in two overlapping spans is two cells of each arm
 CREATE FUNCTION overlapping() RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH scoped AS NOT MATERIALIZED (
-	    SELECT e.id, e.parent_id, e.doc, p.period
-	    FROM events e JOIN (VALUES ('a', daterange('2025-01-01', '2025-09-30', '[]')), ('b', daterange('2025-06-01', '2026-01-31', '[]'))) p(period, range)
+	    SELECT e.id, e.parent_id, e.doc, p.span
+	    FROM events e JOIN (VALUES ('a', daterange('2025-01-01', '2025-09-30', '[]')), ('b', daterange('2025-06-01', '2026-01-31', '[]'))) p(span, range)
 	         ON e.ts <@ p.range)
-	  SELECT period, category, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
-	  FROM (SELECT s.id, s.parent_id, s.period, o.cat AS category, avg(o.score) AS score, count(*) AS n
-	        FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8) GROUP BY s.id, s.parent_id, s.period, o.cat
+	  SELECT span, category, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	  FROM (SELECT s.id, s.parent_id, s.span, o.cat AS category, avg(o.score) AS score, count(*) AS n
+	        FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8) GROUP BY s.id, s.parent_id, s.span, o.cat
 	        UNION ALL
-	        SELECT s.id, s.parent_id, s.period, NULL::text, avg(o.score), count(*)
-	        FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8) GROUP BY s.id, s.parent_id, s.period) t
-	  GROUP BY period, category ORDER BY 1, 2$q$)
+	        SELECT s.id, s.parent_id, s.span, NULL::text, avg(o.score), count(*)
+	        FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8) GROUP BY s.id, s.parent_id, s.span) t
+	  GROUP BY span, category ORDER BY 1, 2$q$)
 $$;
 
 -- the plan reads the joins in the scan and has neither the grouping of PostgreSQL nor the node that groups rows
@@ -92,12 +92,12 @@ BEGIN
 	RETURN a = 0 AND b = 0 AND (n > 0) <> empty AND (NOT scan OR pushed(q));
 END $$;
 
--- the periods, the table joined by its key and the lookup
-SELECT same(report()) AS periods_parent_lookup;
+-- the spans, the table joined by its key and the lookup
+SELECT same(report()) AS spans_parent_lookup;
 -- without the table joined by its key: the NULL parents are no value of count(DISTINCT parent_id)
-SELECT same(report(parent_join => '')) AS periods_lookup;
--- overlapping periods: the row of both counts in each
-SELECT same(overlapping()) AS overlapping_periods;
+SELECT same(report(parent_join => '')) AS spans_lookup;
+-- overlapping spans: the row of both counts in each
+SELECT same(overlapping()) AS overlapping_spans;
 -- a lookup without a row: no arm row, no group
 SELECT same(report('lookup_empty'), true) AS empty_lookup;
 
