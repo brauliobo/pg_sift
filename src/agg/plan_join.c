@@ -679,9 +679,12 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
-		ap->correlated = lappend(ap->correlated, jc->j.params != NIL ? ((SubqueryScanPath *) jc->cpath)->subpath : NULL);
-		ap->subroots = lappend(ap->subroots, jc->subroot);
-		if (jc->cpath != NULL && jc->j.params == NIL)
+		/* a path of c->root cannot be planned as a child of the node, which PostgreSQL does with the root of the statement: it is a sub-plan of its own level */
+		bool		own_level = jc->cpath != NULL && jc->j.params == NIL && c->detached;
+
+		ap->correlated = lappend(ap->correlated, jc->j.params != NIL ? ((SubqueryScanPath *) jc->cpath)->subpath : own_level ? jc->cpath : NULL);
+		ap->subroots = lappend(ap->subroots, own_level ? c->root : jc->subroot);
+		if (jc->cpath != NULL && jc->j.params == NIL && !own_level)
 			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
 	}
 	add_path(output_rel, &cp->path);
