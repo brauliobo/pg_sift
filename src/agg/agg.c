@@ -889,6 +889,7 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 	{
 		cc->units_pruned += c->par->cc.units_pruned;
 		cc->units_set_pruned += c->par->cc.units_set_pruned;
+		cc->units_search_pruned += c->par->cc.units_search_pruned;
 		cc->rows_vetted += c->par->cc.rows_vetted;
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
@@ -911,7 +912,9 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_SCANS, 1);
 	sift_stat_add(SIFT_STAT_WORKERS, c->par ? c->par->nlaunched : 0);
 	sift_stat_add(SIFT_STAT_UNITS, c->n_units);
-	sift_stat_add(SIFT_STAT_UNITS_PRUNED, cc.units_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_ZONE, cc.units_pruned - cc.units_set_pruned - cc.units_search_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SET, cc.units_set_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SEARCH, cc.units_search_pruned);
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);

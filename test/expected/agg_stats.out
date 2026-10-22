@@ -15,14 +15,15 @@ DECLARE l text; e jsonb := '{}';
 BEGIN
 	PERFORM sift.stats_reset();
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s*(Units|Units Pruned|Units From Pre-aggregates|Rows Scanned|Workers Launched|Rows Vetted By Heap): ' THEN
+		IF l ~ '^\s*(Units|Units Pruned|Units Pruned By Set Summary|Units From Pre-aggregates|Rows Scanned|Workers Launched|Rows Vetted By Heap): ' THEN
 			e := e || jsonb_build_object(trim(split_part(l, ':', 1)), trim(split_part(l, ':', 2))::int);
 		END IF;
 	END LOOP;
 	RETURN QUERY VALUES
 		('scans', stat('scans') = 1),
 		('units', stat('units') = (e->>'Units')::int),
-		('units_pruned', stat('units_pruned') = (e->>'Units Pruned')::int),
+		('units_pruned', stat('units_pruned_zone') + stat('units_pruned_set') + stat('units_pruned_search') = (e->>'Units Pruned')::int),
+		('units_pruned_set', stat('units_pruned_set') = coalesce((e->>'Units Pruned By Set Summary')::int, 0)),
 		('units_preagg', stat('units_preagg') = coalesce((e->>'Units From Pre-aggregates')::int, 0)),
 		('rows_decoded', stat('rows_decoded') = (e->>'Rows Scanned')::int),
 		('workers_launched', stat('workers_launched') = coalesce((e->>'Workers Launched')::int, 0));
@@ -34,10 +35,11 @@ SELECT * FROM compare('SELECT grp, count(*), sum(amount) FROM ev GROUP BY grp');
  scans            | t
  units            | t
  units_pruned     | t
+ units_pruned_set | t
  units_preagg     | t
  rows_decoded     | t
  workers_launched | t
-(6 rows)
+(7 rows)
 
 SELECT stat('units_preagg') > 0 AS from_preagg;
  from_preagg 
@@ -51,15 +53,16 @@ SELECT * FROM compare('SELECT grp, count(*) FROM ev WHERE id BETWEEN 20000 AND 3
  scans            | t
  units            | t
  units_pruned     | t
+ units_pruned_set | t
  units_preagg     | t
  rows_decoded     | t
  workers_launched | t
-(6 rows)
+(7 rows)
 
-SELECT stat('units_pruned') > 0 AS pruned;
- pruned 
---------
- t
+SELECT stat('units_pruned_zone') > 0 AS pruned_by_zone, stat('units_pruned_set') = 0 AS none_by_set, stat('units_pruned_search') = 0 AS none_by_search;
+ pruned_by_zone | none_by_set | none_by_search 
+----------------+-------------+----------------
+ t              | t           | t
 (1 row)
 
 SELECT * FROM compare('SELECT grp, sum(amount) FROM ev WHERE amount % 3 = 0 GROUP BY grp');
@@ -68,10 +71,11 @@ SELECT * FROM compare('SELECT grp, sum(amount) FROM ev WHERE amount % 3 = 0 GROU
  scans            | t
  units            | t
  units_pruned     | t
+ units_pruned_set | t
  units_preagg     | t
  rows_decoded     | t
  workers_launched | t
-(6 rows)
+(7 rows)
 
 SELECT stat('units_preagg') = 0 AS not_from_preagg, stat('rows_decoded') > 0 AS decoded;
  not_from_preagg | decoded 
@@ -113,7 +117,7 @@ SELECT sift.stats_reset();
 SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats();
  nonzero | counters 
 ---------+----------
-       0 |       13
+       0 |       15
 (1 row)
 
 -- the workers' share reaches the leader's figures
@@ -124,10 +128,11 @@ SELECT * FROM compare('SELECT grp, sum(amount) FROM ev WHERE amount % 3 = 0 GROU
  scans            | t
  units            | t
  units_pruned     | t
+ units_pruned_set | t
  units_preagg     | t
  rows_decoded     | t
  workers_launched | t
-(6 rows)
+(7 rows)
 
 SET max_parallel_workers_per_gather = 0;
 -- the scans the pre-aggregates did not answer, by reason: a shape they cannot answer is not fixable by the index

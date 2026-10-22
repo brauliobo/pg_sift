@@ -768,6 +768,7 @@ tbl_counters(const void *impl, SiftSrcCounters *c)
 		c->rows_vetted += cc->rows_vetted;
 		c->heap_pages += cc->heap_pages;
 	}
+	c->units_search_pruned = t->sel.units_skipped;
 	c->units_pruned += t->sel.units_skipped;
 }
 

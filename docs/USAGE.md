@@ -432,6 +432,13 @@ EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM plain_table GROUP BY 1;
 
 A sub-select is planned in its own query level and its arms are named `L2:single`, and the plan of a statement with its shared CTE inlined, `inline:single`.
 
+`sift.explain_why(query)` gives the same as rows without running the query or setting anything: it plans one `SELECT` (the privileges to read its tables are checked) and returns one row per arm with
+`used` (the arm is in the plan), `slug` and `reason` (why it gave up, NULL when used) and `scan_cost` and `normal_cost` (the path that was built and the normal plan it was compared with, NULL without such a path).
+
+```sql
+SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_table GROUP BY 1');
+```
+
 | slug | arm | the query kept the normal plan because |
 |---|---|---|
 | `other` | any | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded |
@@ -536,7 +543,9 @@ them with `auto_explain`). A scan adds its numbers once, when it ends, from the 
 | `scans` | `Custom Scan (SiftAgg)` scans that ended (the arms of one fused pass are one) |
 | `workers_launched` | parallel workers those scans launched |
 | `units` | units the scans read or answered (not the pruned ones) |
-| `units_pruned` | units skipped before they were read: their zone maps, or a set or search selection, hold no match |
+| `units_pruned_zone` | units skipped before they were read: their zone maps hold no match |
+| `units_pruned_set` | units skipped before they were read: only their small-set summary (`set_columns`) holds no match |
+| `units_pruned_search` | units skipped before they were read: none of their rows is in the search selection |
 | `units_preagg` | of the units, those answered from their pre-aggregates |
 | `rows_decoded` | rows of the units that were scanned |
 | `rows_vetted` | rows checked against the heap for visibility |

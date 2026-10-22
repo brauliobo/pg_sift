@@ -197,6 +197,28 @@ SELECT sift.col_verify('ss_on', true);
  
 (1 row)
 
+-- sift.stats() splits the units a scan skipped: the ones only a summary cleared are units_pruned_set, the figure EXPLAIN gives, and the sum is Units Pruned
+CREATE FUNCTION ss_split(q text, OUT set_is_explain bool, OUT parts_add_up bool, OUT set_skips bool, OUT zone_skips bool) LANGUAGE plpgsql AS $$
+DECLARE u record;
+BEGIN
+	PERFORM sift.stats_reset();
+	SELECT * INTO u FROM ss_units(q);
+	SELECT coalesce(sum(value) FILTER (WHERE name = 'units_pruned_set'), 0) = u.by_set,
+		   sum(value) FILTER (WHERE name LIKE 'units_pruned_%') = u.pruned,
+		   sum(value) FILTER (WHERE name = 'units_pruned_set') > 0,
+		   sum(value) FILTER (WHERE name = 'units_pruned_zone') > 0
+	INTO set_is_explain, parts_add_up, set_skips, zone_skips FROM sift.stats();
+END $$;
+SELECT 'point' AS shape, * FROM ss_split('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)
+UNION ALL SELECT 'zone and set', * FROM ss_split('SELECT count(*) FROM ss WHERE id < 3000 AND kind = ' || :k1)
+UNION ALL SELECT 'dense id', * FROM ss_split('SELECT count(*) FROM ss WHERE id = 12345');
+    shape     | set_is_explain | parts_add_up | set_skips | zone_skips 
+--------------+----------------+--------------+-----------+------------
+ point        | t              | t            | t         | f
+ zone and set | t              | t            | t         | t
+ dense id     | t              | t            | f         | t
+(3 rows)
+
 -- the planner prices the skipped units: a point lookup is planned cheaper with the summaries than without them (a shape the pre-aggregates cannot answer, so the
 -- scan is priced), an IN list of 50 values, which keeps every unit, gets no credit, and the plans give the same rows
 ANALYZE ss;
@@ -250,6 +272,12 @@ SELECT ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :
  parallel_point | parallel_low | parallel_text 
 ----------------+--------------+---------------
              19 |           14 |             4
+(1 row)
+
+SELECT 'parallel point' AS shape, * FROM ss_split('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1);
+     shape      | set_is_explain | parts_add_up | set_skips | zone_skips 
+----------------+----------------+--------------+-----------+------------
+ parallel point | t              | t            | t         | f
 (1 row)
 
 SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;

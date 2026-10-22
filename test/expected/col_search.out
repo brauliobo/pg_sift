@@ -197,6 +197,27 @@ FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$ AS q) x;
  t
 (1 row)
 
+-- sift.stats() counts them as the search selection's, not the zones'
+SELECT sift.stats_reset();
+ stats_reset 
+-------------
+ 
+(1 row)
+
+SELECT cs_stat($q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$, 'Units Pruned') > 0 AS pruned;
+ pruned 
+--------
+ t
+(1 row)
+
+SELECT (SELECT value FROM sift.stats() WHERE name = 'units_pruned_search') > 0 AS pruned_by_search,
+       (SELECT value FROM sift.stats() WHERE name = 'units_pruned_zone') = 0 AS none_by_zone,
+       (SELECT value FROM sift.stats() WHERE name = 'units_pruned_set') = 0 AS none_by_set;
+ pruned_by_search | none_by_zone | none_by_set 
+------------------+--------------+-------------
+ t                | t            | t
+(1 row)
+
 BEGIN;
 SELECT cs_mode(true);
  cs_mode 

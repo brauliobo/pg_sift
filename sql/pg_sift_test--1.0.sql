@@ -346,8 +346,3 @@ CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
 -- the same for a record of inline_len bytes that ends `over` bytes past the end of the page's data (0: the largest record a page holds)
 CREATE FUNCTION sift._test_tbl_page_rec_end(inline_len int4, over int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec_end' LANGUAGE C STRICT;
-
--- Aggregate pushdown (src/agg/refuse.c): why each arm of the planner kept the normal plan for a SELECT, planned and not run
-CREATE FUNCTION sift._test_explain_why(query text, OUT arm text, OUT used bool, OUT slug text, OUT reason text, OUT scan_cost float8, OUT normal_cost float8)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_agg_explain_why' LANGUAGE C STRICT;

@@ -414,10 +414,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 		prune_zone(src, seg, &zones[i], c->keep, &pr);
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
-	/* the units the summaries cleared that no other test keeps (an OR's other arm may) */
-	for (uint32 u = c->cur; u < c->end; u++)
-		src->cnt.units_set += sift_col_bit_test(pr.setcut, u) && !sift_col_bit_test(c->keep, u);
-	pfree(pr.setcut);
+	c->setcut = pr.setcut;
 }
 
 void
@@ -457,6 +454,8 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 	while (c->cur < c->end && !sift_col_bit_test(c->keep, c->cur))
 	{
 		src->cnt.units_pruned++;
+		/* a unit the summaries cleared that no other test keeps (an OR's other arm may) */
+		src->cnt.units_set += sift_col_bit_test(c->setcut, c->cur);
 		c->cur++;
 	}
 	if (c->cur >= c->end)

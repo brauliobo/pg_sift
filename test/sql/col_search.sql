@@ -113,6 +113,12 @@ SELECT cs_stat(q, 'Units') > 1 AS units, cs_stat(q, 'Units Pruned') AS pruned_no
 FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'wire'$q$ AS q) x;
 SELECT cs_stat(q, 'Units Pruned') > 0 AS units_without_matches_skipped
 FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$ AS q) x;
+-- sift.stats() counts them as the search selection's, not the zones'
+SELECT sift.stats_reset();
+SELECT cs_stat($q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$, 'Units Pruned') > 0 AS pruned;
+SELECT (SELECT value FROM sift.stats() WHERE name = 'units_pruned_search') > 0 AS pruned_by_search,
+       (SELECT value FROM sift.stats() WHERE name = 'units_pruned_zone') = 0 AS none_by_zone,
+       (SELECT value FROM sift.stats() WHERE name = 'units_pruned_set') = 0 AS none_by_set;
 
 BEGIN;
 SELECT cs_mode(true);
