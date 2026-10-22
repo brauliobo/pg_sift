@@ -51,6 +51,8 @@ LANES = {
     'pg':         ('PostgreSQL', 'pg', 0, 'store'),
     'sift':       ('pg_sift `sift_col`', 'sift', 1, 'store_col'),
     'sift_table': ('pg_sift `sift_table`', 'sift', 1, 'store_tbl'),
+    'sift_maint': ('pg_sift `sift_col`, maintenance on', 'sift', 1, 'store_col_maint'),
+    'sift_table_maint': ('pg_sift `sift_table`, maintenance on', 'sift', 1, 'store_tbl_maint'),
     'es':         ('Elasticsearch', 'es', 2, None),
     'es_cached':  ('Elasticsearch, request cache on', 'es', 2, None),
     'ch':         ('ClickHouse', 'ch', 3, None),
@@ -64,10 +66,18 @@ LANES = {
 DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch', 'citus']
 
 
-PG_ENGINES = ['pg', 'sift', 'sift_table', 'citus', *COMPRESSION]
+PG_ENGINES = ['pg', 'sift', 'sift_table', 'sift_maint', 'sift_table_maint', 'citus', *COMPRESSION]
 
 
-UPDATE_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'ch', 'ch_mut', 'ch_rmt']
+UPDATE_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint', 'es', 'ch', 'ch_mut', 'ch_rmt']
+
+
+MODES = {'pg': 'commit', 'sift': 'commit', 'sift_maint': 'commit', 'sift_table': 'commit', 'sift_table_maint': 'commit', 'es': 'default', 'ch': 'lightweight', 'ch_mut': 'mutation', 'ch_rmt': 'insert'}   # the write mode whose acknowledgement and visibility are shown
+
+
+# the lanes that are a sift lane with the background rewrite switched on in their database (ALTER DATABASE ... SET): the update, delete and VACUUM cells show
+# the defaults next to the automatic maintenance; the switch is the setting that turns it on for that layout
+MAINT = {'sift_maint': ('sift', 'sift.col_auto_merge'), 'sift_table_maint': ('sift_table', 'sift.table_auto_defrag')}
 
 
 CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
@@ -79,7 +89,7 @@ is_ch = lambda eid: eid in CH_TABLE
 is_es = lambda eid: eid in ('es', 'es_cached')
 
 
-DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
+DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'sift_maint': 'sift.sql', 'sift_table_maint': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
 
 
 def die(msg):

@@ -368,6 +368,9 @@ Steps, in order: update 1% of the rows (`id % 100 = 0`: status becomes `refunded
 | rows/s the update load actually reached (asked 1,000) | 1,007 | 1,007 | 1,006 | 1,008 | 1,004 | n/a | 982 |
 | revenue per month while 10,000 rows/s are updated: p50 / p95 (ms) | 167 / 197 | 34.6 / 44.4 | 53.4 / 62.4 | **8.17 / 34.8** | 27.3 / 71.8 | n/a | 73.2 / 86.6 |
 | rows/s the update load actually reached (asked 10,000) | 10,002 | 10,006 | 9,966 | 8,669 | 1,346 | n/a | 1,123 |
+| revenue per month, fresh table: p50 (ms) | 179 | **0.301** | 4.32 | 15.3 | 5.64 | 4.94 | 5.74 |
+| revenue per month, after the changes: p50 (ms) | 164 | 35.6 | 54.2 | 14.6 | 18.4 | **4.71** | 26 |
+| revenue per month, after VACUUM / merge / OPTIMIZE: p50 (ms) | 175 | 13.2 | **4.03** | 10.4 | 4.88 | 4.81 | 8.44 |
 | size before | 159 MiB | 143 MiB | 193 MiB (150 free) | 112 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
 | size after the changes | 176 MiB | 168 MiB | 198 MiB (134 free) | 138 MiB | 39 MiB | **36 MiB** | 41 MiB |
 | size after VACUUM / merge / OPTIMIZE | 176 MiB | 176 MiB | 56 MiB (8 free) | 138 MiB | **37 MiB** | **36 MiB** | 39 MiB |

@@ -8,7 +8,7 @@ from store_common import difference, marker_path, percentile, write
 from store_data import Rows, effective, mib
 from stats import summary
 from store_engine import Client, Http, Window, es_text, gate, server_log
-from store_lib import CH_AUTH, CH_TABLE, LANES, LOAD_QUERIES, LOAD_QUERY, NOISY, PG_ENGINES, TOL, UPDATE_ENGINES, container, is_ch, load_queries, log, read, sections
+from store_lib import CH_AUTH, CH_TABLE, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, NOISY, PG_ENGINES, TOL, UPDATE_ENGINES, container, is_ch, load_queries, log, read, sections
 
 
 UPDATE_SET = "status = 'refunded', amount = amount - 1"
@@ -102,7 +102,7 @@ class Writer:
 
     def free_mib(self):
         """sift_table: the free blocks inside the table file (None for the others)"""
-        if self.eid != 'sift_table':
+        if self.eid not in ('sift_table', 'sift_table_maint'):
             return None
         return mib(int(self.c.psql.run("SELECT free_blocks FROM sift.table_space('orders')", True)[0]) * 8192)
 
@@ -215,7 +215,7 @@ def with_load(w, q, args, rows, rate):
 
 
 def read_after_write(w, args, rows):
-    modes = {'pg': ['commit'], 'sift': ['commit'], 'sift_table': ['commit'], 'es': ['default', 'wait_for'], 'ch': ['lightweight'], 'ch_mut': ['mutation'], 'ch_rmt': ['insert']}[w.eid]
+    modes = {'es': ['default', 'wait_for']}.get(w.eid) or [MODES[w.eid]]
     k0 = 0
     for mode in modes:
         ack, vis = [], []

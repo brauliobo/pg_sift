@@ -43,6 +43,7 @@ sift_dirty() {
 fetch_sift() {
   local src=$BUILD/sift
   rm -rf "$src" "$SIFT_ROOT"; mkdir -p "$src"
+  SIFT_SRC=${SIFT_SRC:-}
   case ${SIFT_SRC:-worktree} in
     head) git -C "$REPO" archive HEAD | tar -x -C "$src" ;;
     ref:*) git -C "$REPO" archive "${SIFT_SRC#ref:}" | tar -x -C "$src" ;;

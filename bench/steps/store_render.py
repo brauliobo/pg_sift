@@ -3,7 +3,7 @@ import benchlib
 import json
 import os
 import re
-from store_lib import CHUNK, LANES, LOAD_QUERIES, LOAD_QUERY, PG_ENGINES, UPDATE_ENGINES, load_queries
+from store_lib import CHUNK, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, PG_ENGINES, UPDATE_ENGINES, load_queries
 
 
 class Results:
@@ -416,11 +416,12 @@ def benchmarks_block(R):
     return out
 
 
-UPD_LABELS = {'pg': 'PostgreSQL', 'sift': 'pg_sift `sift_col`', 'sift_table': 'pg_sift `sift_table`', 'es': 'Elasticsearch', 'ch': 'ClickHouse, lightweight UPDATE',
+UPD_LABELS = {'pg': 'PostgreSQL', 'sift': 'pg_sift `sift_col`', 'sift_maint': LANES['sift_maint'][0], 'sift_table': 'pg_sift `sift_table`', 'sift_table_maint': LANES['sift_table_maint'][0], 'es': 'Elasticsearch', 'ch': 'ClickHouse, lightweight UPDATE',
               'ch_mut': 'ClickHouse, ALTER UPDATE', 'ch_rmt': 'ClickHouse, ReplacingMergeTree + FINAL'}
 
 
 UPD_PATH = {'pg': '`UPDATE` / `DELETE` ... `WHERE id IN (...)`, 1,000 ids per statement', 'sift': 'the same statements; the heap is updated, the `sift_col` index follows',
+            'sift_maint': 'the same, in a database with `sift.col_auto_merge = on`', 'sift_table_maint': 'the same, in a database with `sift.table_auto_defrag = on`',
             'sift_table': 'the same statements on the column-format table', 'es': '`_bulk` `update` (script) and `delete` actions, 1,000 per request, default refresh',
             'ch': '`UPDATE` / `DELETE FROM` ... `WHERE id IN (...)` (patch parts), 1,000 ids per statement',
             'ch_mut': 'one `ALTER TABLE ... UPDATE` / `DELETE` with the predicate of the rows, `mutations_sync = 1`',
@@ -467,7 +468,7 @@ def upd_rows(R, tier, engines, detail):
     for v, label in (('update 1%', 'update 1% of the rows (rows/s, higher is better)'), ('update 10%', 'update 10% of the rows (rows/s)'), ('delete 5%', 'delete 5% of the rows (rows/s)')):
         vals = [g(e, v, 'phase_rows_s') for e in engines]
         out.append([label] + best_high(vals, [rate(x) for x in vals]))
-    modes = {'pg': 'commit', 'sift': 'commit', 'sift_table': 'commit', 'es': 'default', 'ch': 'lightweight', 'ch_mut': 'mutation', 'ch_rmt': 'insert'}
+    modes = MODES
     ack = [g(e, modes[e], 'ack_ms') for e in engines]
     vis = [g(e, modes[e], 'visible_ms') for e in engines]
     out.append(['single-row change: acknowledged after (ms)'] + best_bold(ack, [ms(x) for x in ack]))
@@ -484,6 +485,9 @@ def upd_rows(R, tier, engines, detail):
         if r:
             ach = [g(e, v, 'updates_rows_s') for e in engines]
             out.append([f'rows/s the update load actually reached (asked {r:,})'] + [rate(x) if x is not None else 'n/a' for x in ach])
+    for v, label in (('baseline', 'fresh table'), ('after churn', 'after the changes'), ('after maintenance', 'after VACUUM / merge / OPTIMIZE')):
+        vals = [g(e, v, 'latency_ms', LOAD_QUERY) for e in engines]
+        out.append([f'revenue per month, {label}: p50 (ms)'] + best_bold(vals, [ms(x) for x in vals]))
     for v, label in (('before', 'size before'), ('after churn', 'size after the changes'), ('after maintenance', 'size after VACUUM / merge / OPTIMIZE')):
         vals = [g(e, v, 'size_mib') for e in engines]
         out.append([label] + best_bold(vals, [size(x, g(e, v, 'free_mib')) for e, x in zip(engines, vals)]))
@@ -502,16 +506,18 @@ def upd_read_rows(R, tier, engines):
 
 
 def upd_losses(R, tier, engines):
-    mine = [e for e in ('sift', 'sift_table') if e in engines]
-    others = [e for e in engines if e not in ('sift', 'sift_table')]
+    sift = ('sift', 'sift_table', 'sift_maint', 'sift_table_maint')
+    mine = [e for e in sift if e in engines]
+    others = [e for e in engines if e not in sift]
     out = []
-    for v, label in (('update 1%', 'updating 1% of the rows'), ('update 10%', 'updating 10% of the rows'), ('delete 5%', 'deleting 5% of the rows')):
-        m = {e: R.num(tier, e, '-', v, 'phase_rows_s') for e in mine}
-        o = {e: R.num(tier, e, '-', v, 'phase_rows_s') for e in others}
-        m, o = {e: x for e, x in m.items() if x}, {e: x for e, x in o.items() if x}
-        if m and o and max(o.values()) > max(m.values()) * 1.05:
-            a, b = max(m, key=m.get), max(o, key=o.get)
-            out.append(f'{label}: {UPD_LABELS[b]} {ratio(o[b], m[a])} faster than {UPD_LABELS[a]} ({rate(o[b])} against {rate(m[a])} rows/s)')
+    for group in (('sift', 'sift_table'), ('sift_maint', 'sift_table_maint')):   # the defaults and the automatic maintenance are judged apart: a win of the second does not hide a loss of the first
+        for v, label in (('update 1%', 'updating 1% of the rows'), ('update 10%', 'updating 10% of the rows'), ('delete 5%', 'deleting 5% of the rows')):
+            m = {e: R.num(tier, e, '-', v, 'phase_rows_s') for e in group if e in engines}
+            o = {e: R.num(tier, e, '-', v, 'phase_rows_s') for e in others}
+            m, o = {e: x for e, x in m.items() if x}, {e: x for e, x in o.items() if x}
+            if m and o and max(o.values()) > max(m.values()) * 1.05:
+                a, b = max(m, key=m.get), max(o, key=o.get)
+                out.append(f'{label}: {UPD_LABELS[b]} {ratio(o[b], m[a])} faster than {UPD_LABELS[a]} ({rate(o[b])} against {rate(m[a])} rows/s)')
     for e in mine:
         for r in (1000, 10000):
             v = f'load {r}/s'
@@ -530,11 +536,11 @@ def upd_sentences(R, tier, engines):
     """the claims of the README, each computed from the rows of the tier"""
     g = lambda e, v, m, c='-': R.num(tier, e, c, v, m)
     out = []
-    mine = [e for e in ('sift', 'sift_table') if e in engines]
+    mine = [e for e in ('sift', 'sift_table', 'sift_maint', 'sift_table_maint') if e in engines]
     ranked = sorted(((g(e, 'update 10%', 'phase_rows_s'), e) for e in engines if g(e, 'update 10%', 'phase_rows_s')), reverse=True)
     if ranked:
         out.append('Updating 10% of the rows, in rows per second: ' + ', '.join(f'{UPD_LABELS[e]} {rate(v)}' for v, e in ranked) + '.')
-    vis = {e: g(e, {'es': 'default'}.get(e, {'pg': 'commit', 'sift': 'commit', 'sift_table': 'commit', 'ch': 'lightweight', 'ch_mut': 'mutation', 'ch_rmt': 'insert'}.get(e)), 'visible_ms') for e in engines}
+    vis = {e: g(e, {'es': 'default'}.get(e, MODES.get(e)), 'visible_ms') for e in engines}
     es_v, pg_v, mut_v = vis.get('es'), vis.get('pg'), vis.get('ch_mut')
     parts = []
     if es_v is not None:

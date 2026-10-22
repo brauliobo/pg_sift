@@ -207,6 +207,9 @@ On the 1,000,000-order table, after the read tests, each system changes its rows
 | revenue per month while 0 rows/s are updated: p50 (ms) | 170 | 31 | 53.6 | **6.41** | 7.23 | n/a | 26.2 |
 | revenue per month while 1,000 rows/s are updated: p50 (ms) | 169 | 34 | 53.2 | **7.11** | 28.9 | n/a | 77.8 |
 | revenue per month while 10,000 rows/s are updated: p50 (ms) | 167 | 34.6 | 53.4 | **8.17** | 27.3 | n/a | 73.2 |
+| revenue per month, fresh table: p50 (ms) | 179 | **0.301** | 4.32 | 15.3 | 5.64 | 4.94 | 5.74 |
+| revenue per month, after the changes: p50 (ms) | 164 | 35.6 | 54.2 | 14.6 | 18.4 | **4.71** | 26 |
+| revenue per month, after VACUUM / merge / OPTIMIZE: p50 (ms) | 175 | 13.2 | **4.03** | 10.4 | 4.88 | 4.81 | 8.44 |
 | size before | 159 MiB | 143 MiB | 193 MiB (150 free) | 112 MiB | **38 MiB** | **38 MiB** | **38 MiB** |
 | size after the changes | 176 MiB | 168 MiB | 198 MiB (134 free) | 138 MiB | 39 MiB | **36 MiB** | 41 MiB |
 | size after VACUUM / merge / OPTIMIZE | 176 MiB | 176 MiB | 56 MiB (8 free) | 138 MiB | **37 MiB** | **36 MiB** | 39 MiB |
