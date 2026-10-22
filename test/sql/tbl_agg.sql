@@ -6,24 +6,7 @@ SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE agg_t (id int, g int, k text, v bigint, f float8, t timestamptz, d date, b bool, n numeric(10,2), c text, ch char(6), w8 numeric) USING sift_table;
 
--- the rows of the query's result as text, in a fixed order, and whether the plan is a SiftAgg
-CREATE FUNCTION agg_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-
-CREATE FUNCTION agg_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_rows_helpers.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES
