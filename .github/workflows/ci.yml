@@ -18,6 +18,9 @@ on:
         description: Also run the full tier (make check-full)
         type: boolean
         default: false
+      versions:
+        description: 'The PostgreSQL majors of the quick tier, e.g. 18 for a branch with a large diff'
+        default: '17 18 19'
 
 permissions:
   contents: read
@@ -74,16 +77,18 @@ jobs:
           PG: ${{ steps.scope.outputs.pg }}
           JOBS: ${{ steps.scope.outputs.jobs }}
           FAST: ${{ steps.scope.outputs.fast }}
+          VERSIONS: ${{ inputs.versions }}
           EVENT: ${{ github.event_name }}
           HEAVY: ${{ github.event_name == 'schedule' || inputs.heavy == true }}
         run: |
           # a pull request: one PostgreSQL 18 job, the regression tests of the diff and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
-          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg event "$EVENT" '
+          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg event "$EVENT" --arg versions "$VERSIONS" '
             if $event == "pull_request" then (if $pg == "true" then [{pg: 18, shard: 1, n: 1, tier: "fast", jobs: $jobs, only: $fast}] else [] end) else
             (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}] else [] end)
-            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end end' |
+            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end end
+            | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
   # no PostgreSQL: the syntax of every script, the portable core, the map of areas against the tests, the workflows
