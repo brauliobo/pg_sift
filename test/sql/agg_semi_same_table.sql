@@ -1,7 +1,7 @@
 -- Two EXISTS (or IN) over one table, on the same unique key and with different conditions. PostgreSQL 18 merges them into one scan of the table
 -- (self-join elimination) that has both conditions, and moves them off the FROM tree the scan reads, so the scan used to apply one of them
 -- (`kind = 'k1'` and `kind = 'k4'` on a table that holds one kind per id counted the rows of the first). Such a query keeps the normal plan on
--- PostgreSQL 18; one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
+-- PostgreSQL 18 (PostgreSQL 19 keeps the relation and the scan reads both conditions: the rows are the same, pushed or not); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -35,18 +35,18 @@ BEGIN
 END $$;
 
 -- the shapes PostgreSQL 18 merges: a second condition of the same table, a condition on another column, IN lists, in a group, with the table's columns read
-SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 AS normal_plan_when_merged FROM check_same($q$
   SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
     AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k4')$q$);
-SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 AS normal_plan_when_merged FROM check_same($q$
   SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
     AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.id < 300)$q$);
-SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 AS normal_plan_when_merged FROM check_same($q$
   SELECT count(amount) FROM events e WHERE e.parent_id IN (SELECT id FROM items WHERE kind = 'k1') AND e.parent_id IN (SELECT id FROM items WHERE grp = 2)$q$);
-SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 AS normal_plan_when_merged FROM check_same($q$
   SELECT e.kind, count(*), sum(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.grp < 3)
     AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.grp > 1) GROUP BY e.kind$q$);
-SELECT differences, NOT pushed OR current_setting('server_version_num')::int < 180000 AS normal_plan_when_merged FROM check_same($q$
+SELECT differences, NOT pushed OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 AS normal_plan_when_merged FROM check_same($q$
   SELECT count(*) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
     AND EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind <> 'k1')$q$);
 
