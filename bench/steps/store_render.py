@@ -110,7 +110,7 @@ def size_rows(R, tier, engines):
     total = [size(v) + (f' ({f:,.0f} free, {v - f:,.0f} live)' if f else '') for v, f in zip(disk, free)]
     return [['size: heap and primary key'] + [f'{h:.1f} MiB' if h else 'n/a' for h, _ in split],
             ['size: index or columnar data (without heap and primary key)'] + best_bold([sum(p) for _, p in split], [parts_cell(p) for _, p in split]),
-            ['size on disk, total (free blocks inside the file in parentheses)'] + best_bold(disk, total)]
+            ['size on disk, total'] + best_bold(disk, total)]
 
 
 LIKE_FOR_LIKE = ('the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema '
@@ -129,7 +129,8 @@ def size_note(R, tier, engines, page='docs/BENCHMARKS.md'):
                  + [f'`sift_col` the column index and the BM25 title index ({plus("sift")} MiB)'] * ('sift' in engines)
                  + [f'`sift_table` the live bytes of its columns plus the title index ({plus("sift_table")} MiB)'] * ('sift_table' in engines)
                  + ['Elasticsearch the index'] * ('es' in engines) + ['ClickHouse the table with its text index'] * ('ch' in engines) + ['Citus the columnar table'] * ('citus' in engines)))
-            + f'. {join_and(own)} store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. '
+            + f'. {join_and(own)} store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes, the one number that compares across systems (the parts above add up to it within rounding)'
+            + '; the free blocks of `sift_table` left inside its file after the load are shown in parentheses' * any(R.num(tier, e, variant='free', metric='size_mib') for e in engines) + '. '
             f'Like for like, {LIKE_FOR_LIKE.format(page=page, where='docs/BENCHMARKS.md' if page else 'Size against ClickHouse')}.')
 
 
