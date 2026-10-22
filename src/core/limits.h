@@ -128,6 +128,8 @@
 	  "distinct keys of a set column a unit keeps exactly (default)", "no pruning by the set", "set_limit option", 0) \
 	X(set_keys_max, "SIFT_CSET_LIMIT_MAX", "col/setsum.h", SIFT_CSET_LIMIT_MAX, "keys", \
 	  "largest value of the set_limit option", "option rejected at CREATE or ALTER INDEX", "set_limit option", 0) \
+	X(super_fan_max, "SIFT_SUPER_MAX_FAN", "col/preagg.h", SIFT_SUPER_MAX_FAN, "units", \
+	  "largest value of the superunit option: units in one group summary", "option rejected at CREATE or ALTER INDEX", "superunit option", 0) \
 	X(shred_spec_bytes, "SIFT_SHRED_MAX_SPEC_BYTES", "col/shred.h", SIFT_SHRED_MAX_SPEC_BYTES, "bytes", \
 	  "size of a jsonb shredding spec", "ERROR at CREATE INDEX", "-", 0) \
 	X(shred_leaves, "SIFT_SHRED_MAX_COLS", "col/shred.h", SIFT_SHRED_MAX_COLS, "leaves", \
