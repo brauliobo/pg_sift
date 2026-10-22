@@ -385,20 +385,25 @@ dict_code(const SiftSrcDict *d, const char *key)
 	return PG_UINT32_MAX;
 }
 
-/* the value of the element of each row that eq marks, esz bytes of it (a constant at the callers) */
+/* the value of the element of each row that eq marks, esz bytes of it (a constant at the callers): the marked elements are walked, the row of one found by the offsets */
 static pg_attribute_always_inline void
 vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, const uint32 *offs, int nrow, size_t esz)
 {
-	for (int r = 0; r < nrow; r++)
-	{
-		int64		e = last_bit(eq, offs[r], offs[r + 1]);
+	const uint32 m = offs[nrow];
+	int			r = 0;
 
-		if (e >= 0)
+	for (uint32 w = 0; w * 64 < m; w++)
+		for (uint64 b = eq[w]; b; b &= b - 1)
 		{
+			uint32		e = w * 64 + pg_rightmost_one_pos64(b);
+
+			if (e >= m)
+				return;
+			while (offs[r + 1] <= e)
+				r++;
 			memcpy(data + (size_t) r * esz, (const char *) val->data + (size_t) e * esz, esz);
 			isnull[r] = val->isnull ? val->isnull[e] : 0;
 		}
-	}
 }
 
 /* the elements of the unit whose key is the one of vleaf j; a row owns at most one (the member names of an object are distinct). *offs: the elements of each row */
