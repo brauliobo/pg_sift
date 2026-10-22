@@ -1,0 +1,100 @@
+-- The aggregate pushdown answers a role what the normal plan answers: a role with SELECT on the columns a query reads but not on the table,
+-- or on a view and not on its table, and a role that reads a table with row-level security through a view of its owner. PostgreSQL checks
+-- the privileges of the role (or of the view's owner) before the scan starts; the scan adds none of its own.
+CREATE EXTENSION pg_sift;
+\set VERBOSITY terse
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+DROP ROLE IF EXISTS ap_col, ap_view, ap_rls, ap_none;
+CREATE ROLE ap_col;
+CREATE ROLE ap_view;
+CREATE ROLE ap_rls;
+CREATE ROLE ap_none;
+
+CREATE TABLE docs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO docs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
+CREATE INDEX docs_col ON docs USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) docs;
+CREATE VIEW docs_v AS SELECT g, v FROM docs;
+GRANT SELECT (id, g) ON docs TO ap_col;
+GRANT SELECT ON docs_v TO ap_view;
+
+CREATE TABLE pdocs (id int, g int, v int) PARTITION BY RANGE (id);
+CREATE TABLE pdocs_a PARTITION OF pdocs FOR VALUES FROM (1) TO (2501) WITH (autovacuum_enabled = false);
+CREATE TABLE pdocs_b PARTITION OF pdocs FOR VALUES FROM (2501) TO (5001) WITH (autovacuum_enabled = false);
+INSERT INTO pdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
+CREATE INDEX pdocs_col ON pdocs USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) pdocs;
+GRANT SELECT (id, g) ON pdocs TO ap_col;
+
+CREATE TABLE rdocs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO rdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
+CREATE INDEX rdocs_col ON rdocs USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) rdocs;
+ALTER TABLE rdocs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rdocs_all ON rdocs USING (true);
+CREATE VIEW rdocs_v AS SELECT g, v FROM rdocs;
+GRANT SELECT ON rdocs_v TO ap_rls;
+
+-- the plan of the query has the scan
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
+	END LOOP;
+	RETURN scan;
+END $$;
+
+-- the rows of the query with the pushdown off and on: the same, or the error of either
+CREATE FUNCTION answers(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plain text; scan text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (%s) t', q) INTO plain;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE format('SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (%s) t', q) INTO scan;
+	RETURN CASE WHEN plain IS NOT DISTINCT FROM scan THEN 'same: ' || left(plain, 40) ELSE 'DIFFERENT: ' || left(plain, 40) || ' / ' || left(scan, 40) END;
+END $$;
+
+-- the roles can run the helpers; the first checks are the superuser's, with the scan on the table
+GRANT EXECUTE ON FUNCTION pushed(text), answers(text) TO ap_col, ap_view, ap_rls, ap_none;
+SELECT pushed('SELECT g, count(*) FROM docs GROUP BY g') AS scan;
+SELECT answers('SELECT g, count(*), sum(v) FROM docs GROUP BY g');
+
+-- SELECT on two columns: a query on them has the scan and the answer; a column beyond them is refused by PostgreSQL with and without the scan
+SET ROLE ap_col;
+SELECT pushed('SELECT g, count(*) FROM docs GROUP BY g') AS scan;
+SELECT answers('SELECT g, count(*) FROM docs GROUP BY g');
+SELECT answers('SELECT g, count(*), max(id) FROM docs WHERE id > 100 GROUP BY g');
+SELECT answers('SELECT g, sum(v) FROM docs GROUP BY g');
+-- the same on a partitioned table: the privileges of the parent are the ones PostgreSQL checks
+SELECT pushed('SELECT g, count(*) FROM pdocs GROUP BY g') AS scan;
+SELECT answers('SELECT g, count(*) FROM pdocs GROUP BY g');
+RESET ROLE;
+
+-- SELECT on a view: the view's owner reads the table
+SET ROLE ap_view;
+SELECT pushed('SELECT g, count(*), sum(v) FROM docs_v GROUP BY g') AS scan;
+SELECT answers('SELECT g, count(*), sum(v) FROM docs_v GROUP BY g');
+SELECT answers('SELECT g, count(*) FROM docs GROUP BY g');
+RESET ROLE;
+
+-- a table with row-level security read through a view of its owner (who is exempt): the scan does not apply policies, so the normal plan answers
+SET ROLE ap_rls;
+SELECT pushed('SELECT g, count(*), sum(v) FROM rdocs_v GROUP BY g') AS scan;
+SELECT answers('SELECT g, count(*), sum(v) FROM rdocs_v GROUP BY g');
+RESET ROLE;
+
+-- a role without any privilege is refused by both
+SET ROLE ap_none;
+SELECT answers('SELECT g, count(*) FROM docs GROUP BY g');
+RESET ROLE;
+
+DROP FUNCTION pushed(text), answers(text);
+DROP TABLE docs, pdocs, rdocs CASCADE;
+DROP OWNED BY ap_col, ap_view, ap_rls, ap_none;
+DROP ROLE ap_col, ap_view, ap_rls, ap_none;
+DROP EXTENSION pg_sift;

@@ -4,6 +4,18 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 3.2.2
+
+- Rebuilt with the PostgreSQL release 3.2.2.
+
+## 3.2.1
+
+- Rebuilt with the PostgreSQL release 3.2.1.
+
+## 3.2.0
+
+- Rebuilt with the PostgreSQL release 3.2.0.
+
 ## 3.1.0
 
 - No change to the index format (2) or the SQL files: an index of 3.0.2 opens as it is, and this extension still writes BM25 segment format 1. The library is rebuilt with the PostgreSQL release 3.1.0 and `sift_version()` reports pages 1.3 (what the build reads: the segment format 3 that PostgreSQL 3.1 writes is read by the shared core, which this extension never writes).

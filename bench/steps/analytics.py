@@ -182,7 +182,8 @@ class Postgres:
         return self.run(sql, capture=True)[0]
 
     def settings(self, names):
-        return {n for n in names if self.scalar(f"SELECT count(*) FROM pg_settings WHERE name = '{n}'") == '1'}
+        """the names this server accepts; a library's setting (`sift.x`) is in pg_settings only after the library loaded, but SET takes it before"""
+        return {n for n in names if '.' in n or self.scalar(f"SELECT count(*) FROM pg_settings WHERE name = '{n}'") == '1'}
 
     def close(self):
         self.p.stdin.close()

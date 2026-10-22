@@ -151,7 +151,7 @@ def main():
     r.add_argument('--readme')
     r.add_argument('--benchmarks')
     r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store-compression.json'))
-    r.add_argument('--updates', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'updates.json'), help='the update, delete and VACUUM section (store.py section): when it exists it is the README block bench:updates and the chart')
+    r.add_argument('--updates', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'updates.json'), help='the update, delete and VACUUM section (store.py section): when it exists it is the README block bench:store-updates, the block bench:updates of docs/BENCHMARKS.md and the chart')
     r.add_argument('--img', help='where the chart of the section is written')
     r.add_argument('--stdout', action='store_true')
     for name in ('table', 'gap'):

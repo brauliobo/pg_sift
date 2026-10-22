@@ -5,7 +5,7 @@
 #
 # It does not run the test matrix again: GitHub CI is the gate. In this order, stopping at the first failure:
 #   preflight  clean tree on main, equal to origin/main; the notes (docs/releases/vVERSION.md), CHANGELOG, control and SQL scripts are in place
-#   checks     at once: ci (a green run of the workflow `ci` with "Full scope" on a commit whose build inputs are HEAD's: waited for when it runs,
+#   checks     at once: ci (a green run of the workflow `ci` with "Full scope" on any ref whose commit has HEAD's build inputs: waited for when it runs,
 #              dispatched when none exists), upgrade (the previous release's library writes a BM25 index, a sift_col index and a sift_table, this
 #              tree takes them over, ALTER EXTENSION UPDATE, verify, REINDEX; then the previous library reads what this one writes in the previous
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
@@ -30,7 +30,7 @@ fi
 
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
-# the build inputs of the shipped files: a commit that changes none of them is covered by the CI run of the one before (notes, versions and docs are not)
+# the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs)
 GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 die() { echo "release: $*" >&2; exit 1; }
@@ -70,42 +70,41 @@ preflight() {
 	[[ -f $R/$notes ]] || soft "write $notes first (docs/releases/TEMPLATE.md)"
 	! grep -qsE 'X\.Y\.Z|<one line|<feature>' "$R/$notes" || soft "$notes still has template text"
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
-	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep -q '^- ' || soft "CHANGELOG.md has nothing under Unreleased"
+	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
 	[[ $pm == "$MM" ]] || [[ -f $R/sql/pg_sift--$pm--$MM.sql ]] || die "sql/pg_sift--$pm--$MM.sql is missing: the upgrade from $PREV has no script"
-	# the guarded tree: the last commit that changed a build input; CI evidence is any run on it or on a later commit
-	GCOMMIT=$(g log -1 --format=%H -- "${GUARDED[@]}")
 }
 
 # ---------- the checks
-# ci_runs: the runs of the workflow ci on the guarded commit and the ones after it: id, status, conclusion, event (a run on an older commit is not evidence)
-ci_runs() {
-	local shas; shas=" $(g rev-list "$GCOMMIT^..HEAD" | tr '\n' ' ') "
-	gh run list --workflow ci.yml --branch main --limit 100 --json databaseId,headSha,status,conclusion,event |
-		jq -r --arg shas "$shas" '.[] | .headSha as $h | select($shas | contains(" " + $h + " ")) | [.databaseId, .status, .conclusion, .event, .headSha] | @tsv'
-}
+# ci: evidence is by content, not by commit: a green run of the workflow ci on any ref but a pull request (main, a dispatch of a branch, the nightly) whose "Full scope" step ran and whose
+# commit has the build inputs of HEAD (a rebase merge, a revert or a docs commit after it change no input). A run in progress on such a commit is waited for; with none, one is dispatched.
 check_ci() {
-	local id st concl ev sha wait='' dispatched='' n
-	for n in 1 2 3 4 5 6; do
+	local id sha st wait prev latest dispatched='' n
+	latest() { gh run list --workflow ci.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'; }
+	while :; do
 		wait=
-		while IFS=$'\t' read -r id st concl ev sha; do
-			if [[ $st == completed && $concl == success ]]; then
-				gh run view "$id" --json jobs --jq '[.jobs[] | select(.name == "changes") | .steps[] | select(.name == "Full scope" and .conclusion == "success")] | length' | grep -qx 1 || continue
-				echo "ci: run $id ($ev, ${sha:0:7}) is green with full scope"; return 0
-			elif [[ $st != completed && $ev != schedule ]]; then wait=$id; fi
-		done < <(ci_runs)
-		if [[ -n $wait ]]; then echo "ci: waiting for run $wait"; gh run watch "$wait" --exit-status >/dev/null 2>&1 || echo "ci: run $wait did not pass"; continue; fi
-		[[ -z $dispatched ]] || { echo "ci: the full run is not green: gh run list --workflow ci.yml"; return 1; }
-		if [[ -n $DRY ]]; then echo "ci: no green full-scope run on ${GCOMMIT:0:7} or later: a release dispatches one now (gh workflow run ci.yml --ref main)"; return 0; fi
-		[[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || { echo "ci: no green full-scope run, and HEAD is not origin/main to dispatch one"; return 1; }
-		gh workflow run ci.yml --ref main >/dev/null && dispatched=1
-		for id in $(seq 12); do sleep 5; [[ -z $(ci_runs | awk -F'\t' '$2 != "completed"') ]] || break; done
+		while IFS=$'\t' read -r id sha st; do
+			g cat-file -e "$sha^{commit}" 2>/dev/null || g fetch -q origin "$sha" 2>/dev/null || continue
+			g diff --quiet "$sha" HEAD -- "${GUARDED[@]}" || continue
+			if [[ $st != completed ]]; then wait=$id; continue; fi
+			gh run view "$id" --json jobs --jq '[.jobs[] | select(.name == "changes") | .steps[] | select(.name == "Full scope" and .conclusion == "success")] | length' | grep -qx 1 || continue
+			echo "ci: run $id (${sha:0:7}) is green with full scope on the build inputs of HEAD"; return 0
+		done < <(gh run list --workflow ci.yml --limit 100 --json databaseId,headSha,status,conclusion,event --jq '.[] |
+			select(.event != "pull_request" and ((.status == "completed" and .conclusion == "success") or (.status != "completed" and .event != "schedule"))) | [.databaseId, .headSha, .status] | @tsv')
+		if [[ -z $wait ]]; then
+			[[ -z $dispatched ]] || { echo "ci: the full run is not green: gh run list --workflow ci.yml"; return 1; }
+			if [[ -n $DRY ]]; then echo "ci: no green full-scope run on the build inputs of HEAD: a release dispatches one now (gh workflow run ci.yml --ref main)"; return 0; fi
+			[[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || { echo "ci: no green full-scope run, and HEAD is not origin/main to dispatch one"; return 1; }
+			prev=$(latest) && gh workflow run ci.yml --ref main >/dev/null || return 1
+			dispatched=1
+			for n in $(seq 36); do sleep 5; wait=$(latest); [[ $wait != "$prev" ]] && break; done
+		fi
+		echo "ci: waiting for run $wait"; gh run watch "$wait" --exit-status >/dev/null 2>&1 || echo "ci: run $wait did not pass"
 	done
-	echo "ci: no green full-scope run on the guarded commit ${GCOMMIT:0:7} or later"; return 1
 }
 
 DATA="CREATE EXTENSION pg_sift;
@@ -195,7 +194,7 @@ checks() {
 # ---------- the bump
 bump() {
 	local old date oldre f; old=$(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") date=$(date +%F) oldre=${old//./\\.}
-	[[ $(g log -1 --format=%s) == "release: $VERSION"* ]] && return 0
+	[[ $(g log -1 --format=%s) == "release: $VERSION" ]] && return 0
 	sed -i "s/^## Unreleased\$/## Unreleased\n\n## $VERSION - $date/" "$R/CHANGELOG.md"
 	for f in sqlite mariadb; do
 		[[ -f $R/$f/VERSION ]] || continue
@@ -256,7 +255,7 @@ aur() {
 
 preflight
 T0=$SECONDS
-step checks "$GCOMMIT" checks || exit 1
+step checks "$(g log -1 --format=%H -- "${GUARDED[@]}")" checks || exit 1
 step bump "$VERSION" bump || exit 1
 step publish "$VERSION" publish || exit 1
 step workflow "$VERSION" workflow || exit 1
