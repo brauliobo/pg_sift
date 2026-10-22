@@ -42,6 +42,10 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2090-01-01'' + (current_date - current_date) GROUP BY g');
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < DATE ''2020-01-01'' + (current_date - current_date) GROUP BY g');
+-- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
+RESET seq_page_cost; RESET random_page_cost;
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a generic plan
 SET plan_cache_mode = force_generic_plan;
 PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
