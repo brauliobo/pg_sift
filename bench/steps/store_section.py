@@ -92,7 +92,7 @@ def window(eid, rows, args, name, script, read=None):
 
 def cmd_section(args):
     rows, ref = Rows(args.tier), {}
-    args.threads = effective(args)
+    args.threads = effective(args, plan=False)   # the tables do not exist yet
     lanes = [e for e in SECTION_LANES if e in args.engines]
     gate('section', [])   # no lane has its database yet: each is dropped and loaded below
     read = load_queries(['03'])[0]
