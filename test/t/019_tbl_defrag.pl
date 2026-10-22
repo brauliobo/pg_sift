@@ -113,6 +113,10 @@ subtest 'a worker killed in the middle of a pass' => sub {
 	ok($primary->poll_query_until('postgres', "SELECT count(*) > 0 FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND wait_event = 'VacuumDelay'"),
 		'a worker is in its pass, waiting for the cost delay');
 	my $pid = $primary->safe_psql('postgres', "SELECT pid FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND wait_event = 'VacuumDelay' LIMIT 1");
+	# a write appends a tombstone and the pass holds the table's worker lock for its whole length: the two must not wait for each other
+	both('k', "SET lock_timeout = '1s'; UPDATE TBL SET v = v + 5 WHERE id = 3; DELETE FROM TBL WHERE id = 5");
+	$before = digest($primary, 'k');
+	same('k', 'with the writes made during the pass');
 	kill_expected($pid);
 	ok($primary->wait_for_log(qr/database system is ready to accept connections/, $offset), 'the server recovered');
 	$primary->safe_psql('postgres', "ALTER SYSTEM RESET sift.table_auto_defrag_delay; ALTER SYSTEM RESET vacuum_cost_limit; SELECT pg_reload_conf()");

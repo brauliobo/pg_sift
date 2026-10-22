@@ -66,6 +66,14 @@ extern void sift_maint_replace(Relation index, const uint64 *old, int nold, cons
 /* Registers a dynamic background worker running function in pg_sift for this index */
 extern bool sift_maint_request_worker(Relation index, const char *function);
 
+/*
+ * Are more than max_active client backends of this database running a statement (0: no limit, never busy); and the wait of a worker, with no
+ * transaction (so no snapshot that holds the horizon back), until they are not: it looks again after sift.maintenance_naptime, then twice as late
+ * each time, 8 times. False: it stayed busy.
+ */
+extern bool sift_maint_busy(int max_active);
+extern bool sift_maint_wait_quiet(int max_active);
+
 /* The common start of a worker: context of its errors, signals, connection to the database of the request; returns the index OID */
 extern Oid	sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx);
 

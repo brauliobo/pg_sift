@@ -35,6 +35,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/seg.h"
+#include "core/cmp.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
@@ -440,7 +441,57 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 	return n;
 }
 
-/* The next merge: segments of the same tier, else the most dead segment, else the smallest ones when the directory has too many */
+static int
+cmp_sb_lo(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const SiftSegEntry *) a)->sb_lo, ((const SiftSegEntry *) b)->sb_lo);
+}
+
+/*
+ * The groups next to the one a rewrite picked (n = 1), or a run of them (n = 0), join it when they are small: a group a rewrite left
+ * behind, or one a closed buffer made, costs an entry, a header and a zone array to every scan, and its neighbours in the key order are
+ * the ones whose union stays one tight range. Small is under half the write buffer limit, and the groups added are at most that much.
+ */
+static int
+merge_adjacent(Relation rel, SiftTblRel *st, SiftSegEntry *sel, int n)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+	uint64		small = (uint64) sift_tbl_write_buffer_limit * 1024 / 2,
+				room = 2 * small;
+	SiftSegEntry *all = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
+	int			na = 0,
+				lo = -1,
+				hi;
+
+	for (int i = 0; i < st->dir.nsegs; i++)
+		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir.segs[i])->hash == l->schema->hash)
+			all[na++] = st->dir.segs[i];
+	qsort(all, na, sizeof(SiftSegEntry), cmp_sb_lo);
+	for (int i = 0; i < na && lo < 0; i++)
+		if (n == 1 ? all[i].gen == sel[0].gen : all[i].bytes < small && i + 1 < na && all[i + 1].bytes < small)
+			lo = i;
+	if (lo >= 0)
+	{
+		hi = lo;
+		if (n == 0)
+			room -= all[lo].bytes;
+		while (hi + 1 < na && hi - lo + 1 < SIFT_MERGE_FANIN && all[hi + 1].bytes < small && all[hi + 1].bytes <= room)
+			room -= all[++hi].bytes;
+		while (lo > 0 && hi - lo + 1 < SIFT_MERGE_FANIN && all[lo - 1].bytes < small && all[lo - 1].bytes <= room)
+			room -= all[--lo].bytes;
+		if (hi > lo)
+		{
+			n = hi - lo + 1;
+			memcpy(sel, all + lo, n * sizeof(SiftSegEntry));
+		}
+	}
+	pfree(all);
+	return n;
+}
+
+bool		sift_tbl_coalesce = false;
+
+/* The next merge: segments of the same tier, else the most dead segment, else the smallest ones when the directory has too many; a worker's pass then adds the small neighbours */
 static int
 merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
@@ -449,6 +500,8 @@ merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 
 	if (n == 0)
 		n = merge_most_dead(rel, st, sel);
+	if (n <= 1 && sift_tbl_coalesce)
+		n = merge_adjacent(rel, st, sel, n);
 	return n > 0 || !dir_pressure(st) ? n : merge_smallest(rel, st, sel);
 }
 
