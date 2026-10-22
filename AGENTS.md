@@ -31,7 +31,7 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 
 Any change to what is stored needs a reader for the old and the new format, an upgrade test (`test/t/extension_lifecycle.sh`, `test/t/compat_2x_fixture.sh`)
 and the format number in `src/core/sift.h` (BM25: major 1, minor 2) or `src/col/col.h` (column: major 1, minor 3), in DESIGN.md "Versioning" or docs/COL.md section 2,
-and in CHANGELOG.md.
+in CHANGELOG.md, and, for a column format, the table of the first release that reads it in `scripts/upgrade_check.sql`.
 
 ## Documentation
 

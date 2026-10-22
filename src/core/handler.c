@@ -66,6 +66,7 @@ PG_FUNCTION_INFO_V1(sift_verify);
 PG_FUNCTION_INFO_V1(sift_facet_counts);
 PG_FUNCTION_INFO_V1(sift_version);
 PG_FUNCTION_INFO_V1(sift_index_info);
+PG_FUNCTION_INFO_V1(sift_index_format);
 PG_FUNCTION_INFO_V1(sift_col_handler);
 PG_FUNCTION_INFO_V1(sift_col_index_info);
 PG_FUNCTION_INFO_V1(sift_col_segments);
