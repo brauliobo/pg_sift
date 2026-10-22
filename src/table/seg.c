@@ -246,6 +246,9 @@ PG_FUNCTION_INFO_V1(sift_table_ddl_check);
  * The event trigger after ALTER TABLE: a column added, a column's type changed or a column renamed (declared paths follow the name of a
  * jsonb column) fails with the message of CREATE TABLE when the sift_table, or a partition of it, would hold more leaves than a segment,
  * instead of at its next write. DROP COLUMN is not checked, so that a table made too wide by 3.2 can be narrowed.
+ *
+ * Before CREATE TRIGGER: pg_repack's first step on a table is the trigger repack.repack_trigger. It copies the rows into a heap table and
+ * swaps the files, which would replace the column segments of a sift_table with heap pages and lose the table, so the trigger is refused.
  */
 Datum
 sift_table_ddl_check(PG_FUNCTION_ARGS)
@@ -264,6 +267,24 @@ sift_table_ddl_check(PG_FUNCTION_ARGS)
 	}
 	else if (IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)
 		rv = ((RenameStmt *) stmt)->relation;
+	else if (IsA(stmt, CreateTrigStmt))
+	{
+		CreateTrigStmt *ts = (CreateTrigStmt *) stmt;
+
+		if (list_length(ts->funcname) > 0 && strcmp(strVal(llast(ts->funcname)), "repack_trigger") == 0)
+		{
+			Oid			relid = RangeVarGetRelid(ts->relation, AccessShareLock, true);
+			Relation	rel = OidIsValid(relid) ? relation_open(relid, NoLock) : NULL;
+
+			if (rel && sift_tbl_is_table(rel))
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								errmsg("pg_repack cannot rewrite the sift_table \"%s\"", RelationGetRelationName(rel)),
+								errdetail("pg_repack copies the rows into a heap table and swaps the files, which would destroy the column segments."),
+								errhint("Use CLUSTER ... USING <index> or VACUUM FULL, which rewrite a sift_table; pg_repack --only-indexes is fine.")));
+			if (rel)
+				relation_close(rel, NoLock);
+		}
+	}
 	if (rv)
 	{
 		Oid			relid = RangeVarGetRelid(rv, NoLock, true);

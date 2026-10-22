@@ -54,6 +54,19 @@ VACUUM wide127;
 SELECT count(*), sum(c1) FROM wide127;
 SELECT vblocks_left > 4000000000 AS tids_left FROM sift.table_space('wide127');
 
+-- pg_repack swaps a heap copy into the table: its trigger is refused on a sift_table, not on a heap table
+CREATE SCHEMA repack;
+CREATE FUNCTION repack.repack_trigger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+CREATE FUNCTION repack.other_trigger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+CREATE TABLE repack_heap (id int);
+CREATE TABLE repack_tbl (id int) USING sift_table;
+CREATE TRIGGER repack_trigger AFTER INSERT ON repack_heap FOR EACH ROW EXECUTE FUNCTION repack.repack_trigger();
+CREATE TRIGGER repack_trigger AFTER INSERT ON repack_tbl FOR EACH ROW EXECUTE FUNCTION repack.repack_trigger();
+CREATE TRIGGER other_trigger AFTER INSERT ON repack_tbl FOR EACH ROW EXECUTE FUNCTION repack.other_trigger();
+SELECT tgname, tgrelid::regclass FROM pg_trigger WHERE tgrelid IN ('repack_heap'::regclass, 'repack_tbl'::regclass) AND NOT tgisinternal ORDER BY 2, 1;
+DROP TABLE repack_heap, repack_tbl;
+DROP SCHEMA repack CASCADE;
+
 DROP TABLE wide127, wide_doc, wide_part;
 DROP FUNCTION make_wide(int), add_cols(regclass, int);
 DROP EXTENSION pg_sift;
