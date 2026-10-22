@@ -1,6 +1,6 @@
 -- The plan the planner picks on its own costs, for shapes where one plan is several times faster than the other at 200000 rows (the times are
 -- measured: the scan reads and groups at a fraction of the cost the operator counts gave it, and the normal plan of a free-key member, a
--- period list or an unnest is 8 to 35 times slower). The scan is chosen for the large scopes and the normal plan for a few rows of one parent, where
+-- span list or an unnest is 8 to 35 times slower). The scan is chosen for the large scopes and the normal plan for a few rows of one parent, where
 -- the btree plan reads them in a fraction of a millisecond. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -13,7 +13,7 @@ INSERT INTO cs_facts SELECT i, 1 + (i * 7919) % 60, date '2025-01-01' + (hashint
 			jsonb_build_object('kind', 'cat_' || chr(97 + i % 4), 'sub', 'catg_' || chr(97 + i % 6), 'dir_a', CASE WHEN i % 3 = 0 THEN 'neg' ELSE 'pos' END, 'score', 1 + (i * 3) % 10),
 			jsonb_build_object('kind', 'cat_' || chr(97 + (i + 1) % 4), 'sub', 'catg_' || chr(97 + (i + 2) % 6), 'dir_a', CASE WHEN i % 5 = 0 THEN 'neg' ELSE 'pos' END, 'score', 1 + (i * 7) % 10),
 			jsonb_build_object('kind', 'cat_' || chr(97 + (i + 2) % 4), 'sub', 'catg_' || chr(97 + (i + 4) % 6), 'dir_a', 'pos', 'score', 1 + (i * 11) % 10)),
-		'metrics', jsonb_build_object('mhead', 1 + (i * 13) % 10, 'catg_a', 1 + (i * 3) % 10, 'catg_b', 1 + (i * 5) % 10)) FROM generate_series(1, 200000) i;
+		'metrics', jsonb_build_object('m_a', 1 + (i * 13) % 10, 'catg_a', 1 + (i * 3) % 10, 'catg_b', 1 + (i * 5) % 10)) FROM generate_series(1, 200000) i;
 CREATE INDEX cs_facts_parent ON cs_facts (parent_id, ts, deleted_at);
 CREATE INDEX cs_facts_col ON cs_facts USING sift_col (id, parent_id, ts, kind, deleted_at, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{kind astext, sub astext, dir_a astext, score float8}');
 VACUUM (FREEZE, ANALYZE) cs_facts, cs_dims;
@@ -37,8 +37,8 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN NEXT;
 END $$;
--- a member of a free-key object by the month, over a joined parent table
-SELECT * FROM same($q$SELECT d.tier, date_trunc('month', f.ts)::date AS month, round(avg((f.doc->'metrics'->>'mhead')::float8)::numeric, 3) AS score, count(*) AS n
+-- a member of a free-key object by the bucket, over a joined parent table
+SELECT * FROM same($q$SELECT d.tier, date_trunc('month', f.ts)::date AS bucket, round(avg((f.doc->'metrics'->>'m_a')::float8)::numeric, 3) AS score, count(*) AS n
 FROM cs_facts f JOIN cs_dims d ON d.id = f.parent_id
 WHERE f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2026-03-01' GROUP BY 1, 2 ORDER BY 1, 2$q$);
   plan   | result_rows | vs_normal_plan 
@@ -46,10 +46,10 @@ WHERE f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2026-0
  SiftAgg |          36 |              0
 (1 row)
 
--- two periods from a VALUES list, the rows of the active parents
-SELECT * FROM same($q$WITH periods AS (SELECT * FROM (VALUES ('current', daterange('2025-03-01', '2026-02-28', '[]')), ('previous', daterange('2024-03-01', '2025-02-28', '[]'))) p(period, range))
-SELECT p.period, f.kind, count(*) AS n, round(avg((f.doc->'metrics'->>'mhead')::float8)::numeric, 3) AS score
-FROM cs_facts f JOIN periods p ON f.ts <@ p.range
+-- two spans from a VALUES list, the rows of the active parents
+SELECT * FROM same($q$WITH spans AS (SELECT * FROM (VALUES ('span_a', daterange('2025-03-01', '2026-02-28', '[]')), ('span_b', daterange('2024-03-01', '2025-02-28', '[]'))) p(span, range))
+SELECT p.span, f.kind, count(*) AS n, round(avg((f.doc->'metrics'->>'m_a')::float8)::numeric, 3) AS score
+FROM cs_facts f JOIN spans p ON f.ts <@ p.range
 WHERE f.parent_id IN (SELECT id FROM cs_dims WHERE active) AND f.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2$q$);
   plan   | result_rows | vs_normal_plan 
 ---------+-------------+----------------
@@ -65,7 +65,7 @@ WHERE f.parent_id IN (SELECT id FROM cs_dims WHERE active) AND f.deleted_at IS N
  SiftAgg |          24 |              0
 (1 row)
 
--- one parent, one month: the btree plan reads a few hundred rows
+-- one parent, one narrow range: the btree plan reads a few hundred rows
 SELECT * FROM same($q$SELECT p.kind, count(*) AS n, round(avg(p.score)::numeric, 3) AS score
 FROM cs_facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc->'parts') AS p(kind text, sub text, dir_a text, score float8)
 WHERE f.parent_id = 7 AND f.deleted_at IS NULL AND f.ts >= date '2025-03-01' AND f.ts < date '2025-04-01' GROUP BY 1 ORDER BY 1$q$);
