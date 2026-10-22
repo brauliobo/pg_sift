@@ -22,6 +22,19 @@ SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
 SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._test_col_dict_cache(true);
 RESET sift.test_limits;
 
+-- one dictionary may take up to a half of the cache: a third of it is kept, one over a half is parsed for every scan, the answers do not change
+REINDEX INDEX dc_idx;
+SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 3 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+SELECT rows FROM sift._test_col_counters('dc_idx', '3:eq:label 7');
+SELECT rows FROM sift._test_col_counters('dc_idx', '3:eq:label 7');
+SELECT loads = 1 AS parsed_once, hits = 1 AS found_again FROM sift._test_col_dict_cache(true);
+SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 1.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT rows FROM sift._test_col_counters('dc_idx', '4:eq:label 7');
+SELECT rows FROM sift._test_col_counters('dc_idx', '4:eq:label 7');
+SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
+RESET sift.test_limits;
+
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');

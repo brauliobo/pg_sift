@@ -6,7 +6,8 @@
  * A segment never changes, so its generation names the dictionary for good: it is kept, under the relation file, generation, header
  * block, rows and leaf, up to CDICT_CACHE_BYTES per backend. A segment pins the entries it uses until its memory context goes (a
  * callback), and eviction only takes unpinned ones, least recently used first. A dictionary that would not fit is parsed into the
- * memory of the scan, as before. Like the docmap directories of bm25/docdir.c.
+ * memory of the scan, as before. The limit of one entry is half of the budget: the dictionary of a free text leaf of 150,000 rows is 18 MB, and a
+ * backend that inflates it again for every statement spends most of its time there. Like the docmap directories of bm25/docdir.c.
  */
 #include "postgres.h"
 
@@ -166,7 +167,7 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	d = load(seg, col, cx);
 	size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
 	CDICT_STAT(loads);
-	if (size > CDICT_CACHE_BYTES / 4 || !dict_room(size))
+	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
 		return d;
 	MemoryContextSetParent(cx, cache_cx);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);
@@ -206,7 +207,7 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 
 	if (cache == NULL)
 		cache_init();
-	if (size > CDICT_CACHE_BYTES / 4 || !dict_room(size))
+	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
 		return;
 	dict_key(&k, seg, col, unit);
 	cx = AllocSetContextCreate(cache_cx, "sift cache segment lengths", ALLOCSET_SMALL_SIZES);

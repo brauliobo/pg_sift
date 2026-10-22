@@ -110,7 +110,7 @@
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
-	  "the least recently used unpinned dictionary is dropped; one over a quarter of it is kept for its scan only and searched entry by entry", "-", 1) \
+	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry", "-", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
 	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
