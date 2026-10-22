@@ -6,7 +6,7 @@ repro replayed on the fixed code, or the source read); the conversion of the dec
 that crashed a harness is CONFIRMED with a repro; an audit-only one is SUSPECT (not run).
 
 Replay: `nice make -j4 -C test/fuzz OUT=/tmp/x all`, write the hex with `xxd -r -p > f`, run `/tmp/x/TARGET f`. For the UBSan
-findings add `UBSAN_OPTIONS=suppressions=/dev/null` (scripts/fuzz.sh passes test/fuzz/ubsan.supp, which hides F-BM25-1).
+findings add `UBSAN_OPTIONS=suppressions=/dev/null` (scripts/fuzz.sh passes test/fuzz/ubsan.supp, which suppresses nothing now).
 
 The default `bm25` target runs the checked mode (`sift_blob_check` first, `FZ_MODE=1`) and is clean. The F-BM25 memory findings were in the
 raw mode (`bm25-raw`, opt-in): the query path `sift_post_open` with `verify=false` decodes blobs that `sift_blob_check` never saw. They are fixed
@@ -38,8 +38,8 @@ Replayed on the snapshot (`f0d985d`, ASan and UBSan, no suppressions) F-BM25-1, 
 on 3.0.2 (`a9fa19f`) all four inputs run clean, and `bm25-raw` ran 2,370,421 executions in 181 s (libFuzzer, seed 1, seeds of the writers, no
 suppressions) without a finding.
 
-F-BM25-1 stopped a fuzz run at the first hit, so scripts/fuzz.sh suppresses it (test/fuzz/ubsan.supp). The fix has landed; the entry there is now
-unneeded.
+F-BM25-1 stopped a fuzz run at the first hit, so scripts/fuzz.sh suppressed it until its entry in test/fuzz/ubsan.supp was removed (3.2); the fuzz
+lane runs without it.
 
 F-COL-1 is fixed: `chunk_lut` gives a table of at most 16 bits a bit for every code the width can hold, and checks the wider codes (FOR32, PACK
 above 16 bits, the codec's offsets in `cc_lut`) with `codes_below` before the LUT kernels read them (ERRCODE_DATA_CORRUPTED). The inputs of the
