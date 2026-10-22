@@ -67,6 +67,14 @@ rows were loaded, so a write that is in flight, committed or rolled back, a vacu
 yet visible to all (rows not vacuumed since a write), a condition that is not constant, a preserved side, a table of a plan or another access method and a parallel worker are never kept.
 Test `agg_lookup_cache`, isolation spec `agg_lookup_cache`.
 
+The rows can also be kept for the other backends (`sift.agg_lookup_shared_kb`, off by default, superuser): a backend that loads a table writes its rows in the flat form of a parallel scan into a
+dynamic shared memory segment and lists it in a directory of 64 entries that every backend reaches by name (the DSM registry: no restart, no preload). A backend that finds the entry of the
+key with the pages it sees now (the same LSNs, all visible, as above) attaches the segment and reads the rows in place, so a connection that lives for one query pays the attach, not the load.
+The segment holds the key and the pages and they are compared in full, the directory only has their hashes; the rows are per role, as in the cache of a backend. A write moves the LSNs, and the
+entry of the old state goes when the key is kept again. The entries together take up to the setting (the least recently used go first; a table of more than half of it is not kept) and a segment
+dropped from the directory stays until the backends that read it are done. A crash restart discards the registry and the segments. A backend that loads while others load the same table
+(a cold start) loads for itself, each one. Test `agg_lookup_shared`, isolation spec `agg_lookup_shared`, TAP test `018_lookup_shared`.
+
 ## Outer joins that keep the other table
 
 A `RIGHT JOIN` or `FULL JOIN` to a table, and a `LEFT JOIN` whose right side is the indexed table, aggregate over the table that keeps its rows (`EXPLAIN`
