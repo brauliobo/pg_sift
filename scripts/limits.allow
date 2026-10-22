@@ -1,7 +1,6 @@
 # Macros named *_MAX_* or *_LIMIT* that are not limits a user can reach, so they have no row in SIFT_LIMITS (src/core/limits.h).
 # NAME, a tab, the reason. scripts/gen-limits.sh --check fails for a macro that is neither here nor a row, and for a line whose macro is gone.
 # A bound that a user can reach gets a row, not a line here.
-AGG_MAX_ARMS	the same limit as arms (SIFT_AGG_MAX_ARMS), a second copy in plan_two.c
 CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
 COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect

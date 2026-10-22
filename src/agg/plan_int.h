@@ -8,6 +8,7 @@
 
 #include "agg/colsrc.h"
 #include "agg/refuse.h"
+#include "core/limits.h"
 #include "agg/search.h"
 #include "agg/spec.h"
 
@@ -22,6 +23,10 @@ typedef enum FuncKind
 } FuncKind;
 
 /* a table joined by equality to leaves (SiftAggJoin) and the combos that evaluate expressions of leaves and its columns (SiftAggCombo) */
+/* is a count of a shape at its limit (registry id lim, value sift_limit(lim, MACRO))? Then the refusal is noted (slug shape_width), naming what the query has more of */
+#define agg_width_hit(n, lim, value, what) \
+	((n) >= (value) && (agg_refused_limit(SHAPE_WIDTH, lim, value, "%d " what, (int) (n) + 1), true))
+
 typedef struct JoinCtx
 {
 	Index		rti;

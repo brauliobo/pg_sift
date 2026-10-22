@@ -32,7 +32,7 @@
 #define SIFT_AGG_INIT_PARAM	(1 << 24)	/* added to the id of an ARRAY sub-select's output Param in a lookup table expression (Param 0 is the leaf's value) */
 #define SIFT_AGG_MAX_COMBOS	16
 #define SIFT_AGG_MAX_JOINS	8
-#define SIFT_AGG_MAX_VLEAVES	8
+#define SIFT_AGG_MAX_VLEAVES	16
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
 /* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */
@@ -327,7 +327,7 @@ typedef struct SiftAggArm
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
 
-#define SIFT_AGG_MAX_ARMS	4
+#define SIFT_AGG_MAX_ARMS	16
 
 /*
  * The spine of a two level aggregate: the rows of a small plan (a VALUES list, a series, a table of buckets) that the arms are joined to

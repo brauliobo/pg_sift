@@ -97,7 +97,7 @@ join_col(JoinCtx *jc, Var *v)
 	for (int i = 0; i < j->ncol; i++)
 		if (j->colatt[i] == v->varattno)
 			return i;
-	if (j->ncol == SIFT_AGG_MAX_JCOLS)
+	if (agg_width_hit(j->ncol, join_cols, sift_limit(join_cols, SIFT_AGG_MAX_JCOLS), "columns of a joined table read by expressions"))
 		return -1;
 	j->colatt[j->ncol] = v->varattno;
 	j->coltype[j->ncol] = v->vartype;
