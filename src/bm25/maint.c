@@ -182,7 +182,7 @@ sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEnt
 	sift_log_maint(index, what, start, docs, neu ? neu->bytes : 0);
 }
 
-static int64
+int64
 backoff_ms(const SiftMetaPageData *meta)
 {
 	uint32		failures = meta->flags & SIFT_META_FAILURES_MASK;

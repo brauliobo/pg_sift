@@ -175,3 +175,24 @@ EXCEPTION WHEN OTHERS THEN
 	RAISE WARNING 'pg_sift 3.3: the check for indexes to REINDEX did not run (%): reconnect and run SELECT * FROM sift.reindex_needed()', SQLERRM;
 END
 $do$;
+
+-- Maintenance state of an index: segments and sealed write buffers waiting for promotion, running (a promotion, merge, VACUUM or verify holds
+-- the maintenance lock; NULL on a standby) and, when its last background step failed, the number of failures in a row, when, the earliest the
+-- background tries again, the SQLSTATE and the message (the log has them too, this keeps the last). NULL while a REINDEX holds the index.
+CREATE FUNCTION sift.worker_state(index regclass,
+								  OUT segments int4, OUT sealed int4, OUT running bool, OUT failures int4,
+								  OUT failed_at timestamptz, OUT next_retry timestamptz, OUT error_code text, OUT last_error text)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_worker_state' LANGUAGE C STRICT VOLATILE;
+
+-- One row per sift and sift_col index of the database whose table the caller can read; due: why a sift_col index would be rewritten now
+-- (sift.col_maintenance_due). A sift_col step that fails raises its error to the worker, which the log records: failures stay 0 for it.
+CREATE VIEW sift.workers AS
+	SELECT c.oid::regclass AS index, a.amname::text AS kind, w.segments, w.sealed, w.running, w.failures, w.failed_at, w.next_retry,
+		   w.error_code, w.last_error,
+		   CASE WHEN a.amname = 'sift_col' THEN sift.col_maintenance_due(c.oid) END AS due
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
+	JOIN pg_index i ON i.indexrelid = c.oid
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
