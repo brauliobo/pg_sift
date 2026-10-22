@@ -60,6 +60,7 @@ TESTING_REGRESS += col_topn_deep_limits col_topn_text col_topn_expr
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths
 TESTING_REGRESS += col_dict_cache col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build
 TESTING_REGRESS += col_preagg_super
+TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
