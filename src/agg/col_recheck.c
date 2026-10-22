@@ -277,6 +277,16 @@ col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows)
 }
 
 void
+recheck_unpin(ColRecheck *k)
+{
+	if (k->slot)
+	{
+		ExecClearTuple(k->slot);
+		table_index_fetch_reset(k->fetch);
+	}
+}
+
+void
 recheck_close(ColRecheck *k)
 {
 	if (k->slot)
