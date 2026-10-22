@@ -1,0 +1,237 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1run s2run s1run s2run
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s3begin s3upd s3ins s2run s3commit s1run s3vacuum s2run s1run s2run
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3begin: BEGIN;
+step s3upd: UPDATE iso_ls_dim SET country = 1 WHERE id = 3;
+step s3ins: INSERT INTO iso_ls_dim VALUES (2, 1, 'late');
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3commit: COMMIT;
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_ls_dim;
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s3begin s3ins s3del s3abort s2run s3vacuum s1run s2run
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3begin: BEGIN;
+step s3ins: INSERT INTO iso_ls_dim VALUES (2, 1, 'late');
+step s3del: DELETE FROM iso_ls_dim WHERE id = 5;
+step s3abort: ROLLBACK;
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_ls_dim;
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s3del s1run s3vacuum s2run s1run
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3del: DELETE FROM iso_ls_dim WHERE id = 5;
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_ls_dim;
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s2rr s3upd s3del s3vacuum s2run s1run s2end s2run s1run
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ls_dim;
+count
+-----
+   40
+(1 row)
+
+step s3upd: UPDATE iso_ls_dim SET country = 1 WHERE id = 3;
+step s3del: DELETE FROM iso_ls_dim WHERE id = 5;
+step s3vacuum: VACUUM iso_ls_dim;
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2end: COMMIT;
+step s2run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_ls_run();
+iso_ls_run                                                          
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1runt s2runt s3begin s3updt s2runt s3commit s1runt s3vacuum s2runt s1runt
+step s1runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s2runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3begin: BEGIN;
+step s3updt: UPDATE iso_ls_dim SET label = 'renamed', code = 'c4' WHERE id = 7;
+step s2runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3commit: COMMIT;
+step s1runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_ls_dim;
+step s2runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 0 cached tables, 0 differences from the normal plan
+(1 row)
+
+step s1runt: SELECT iso_ls_runt();
+iso_ls_runt                                                         
+--------------------------------------------------------------------
+1 SiftAgg nodes, 1 cached tables, 0 differences from the normal plan
+(1 row)
+
