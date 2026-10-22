@@ -1,0 +1,158 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3p s1q s3r s1r
+col_promote
+-----------
+          1
+(1 row)
+
+step s3p: SELECT remaining AS stale FROM sift.col_refresh('iso_rf_idx', 0);
+stale
+-----
+    3
+(1 row)
+
+step s1q: SELECT pre < units AS some_scanned, agree FROM iso_rf_q();
+some_scanned|agree
+------------+-----
+t           |t    
+(1 row)
+
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        3|        0
+(1 row)
+
+step s1r: SELECT pre = units AS all_from_groups, agree FROM iso_rf_q();
+all_from_groups|agree
+---------------+-----
+t              |t    
+(1 row)
+
+
+starting permutation: s1b s1a s3r s1a s1c s1r
+col_promote
+-----------
+          1
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1a: SELECT agree FROM iso_rf_q();
+agree
+-----
+t    
+(1 row)
+
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        3|        0
+(1 row)
+
+step s1a: SELECT agree FROM iso_rf_q();
+agree
+-----
+t    
+(1 row)
+
+step s1c: COMMIT;
+step s1r: SELECT pre = units AS all_from_groups, agree FROM iso_rf_q();
+all_from_groups|agree
+---------------+-----
+t              |t    
+(1 row)
+
+
+starting permutation: s1q s2b s2i s3r s2c s1d
+col_promote
+-----------
+          1
+(1 row)
+
+step s1q: SELECT pre < units AS some_scanned, agree FROM iso_rf_q();
+some_scanned|agree
+------------+-----
+t           |t    
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_rf SELECT g, g % 6, g, repeat('p', 100) FROM generate_series(24001, 24500) g;
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        3|        0
+(1 row)
+
+step s2c: COMMIT;
+step s1d: SELECT pre < units AS some_scanned, pre > 0 AS some_from_groups, agree FROM iso_rf_q();
+some_scanned|some_from_groups|agree
+------------+----------------+-----
+t           |t               |t    
+(1 row)
+
+
+starting permutation: s1q s2b s2u s3r s2c s1d
+col_promote
+-----------
+          1
+(1 row)
+
+step s1q: SELECT pre < units AS some_scanned, agree FROM iso_rf_q();
+some_scanned|agree
+------------+-----
+t           |t    
+(1 row)
+
+step s2b: BEGIN;
+step s2u: UPDATE iso_rf SET val = val + 1 WHERE id <= 1000;
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        3|        0
+(1 row)
+
+step s2c: COMMIT;
+step s1d: SELECT pre < units AS some_scanned, pre > 0 AS some_from_groups, agree FROM iso_rf_q();
+some_scanned|some_from_groups|agree
+------------+----------------+-----
+t           |t               |t    
+(1 row)
+
+
+starting permutation: s3o s1d s3r s1r s3r
+col_promote
+-----------
+          1
+(1 row)
+
+step s3o: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx', 1);
+refreshed|remaining
+---------+---------
+        1|        2
+(1 row)
+
+step s1d: SELECT pre < units AS some_scanned, pre > 0 AS some_from_groups, agree FROM iso_rf_q();
+some_scanned|some_from_groups|agree
+------------+----------------+-----
+t           |t               |t    
+(1 row)
+
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        2|        0
+(1 row)
+
+step s1r: SELECT pre = units AS all_from_groups, agree FROM iso_rf_q();
+all_from_groups|agree
+---------------+-----
+t              |t    
+(1 row)
+
+step s3r: SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx');
+refreshed|remaining
+---------+---------
+        0|        0
+(1 row)
+

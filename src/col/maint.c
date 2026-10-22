@@ -45,6 +45,7 @@
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic_armed = 0;
 bool		sift_test_col_merge_panic = false;
+int			sift_test_col_refresh_sleep_armed = 0;
 #endif
 
 #define WHY_BUFFER	"write buffer rows"
@@ -224,6 +225,8 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 #ifdef SIFT_TESTING
 	if (sift_test_col_rollup_panic_armed || sift_test_col_merge_panic)
 		elog(PANIC, "sift test: the merge stops before the new segment replaces the old ones");
+	if (sift_test_col_refresh_sleep_armed > 0)
+		pg_usleep(sift_test_col_refresh_sleep_armed * 1000L);
 #endif
 	sift_maint_replace(index, mi.gens, n, w ? &neu : NULL, mi.release, mi.nrelease,
 					   psprintf("merged %d column segments of", n), start, w ? neu.ndocs : 0);

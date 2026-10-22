@@ -42,6 +42,8 @@ extern bool sift_col_rollup_request(Relation index, uint64 gen);
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
+extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
+extern int	sift_test_col_refresh_sleep_armed;
 #endif
 
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */

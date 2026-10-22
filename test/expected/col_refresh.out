@@ -1,4 +1,4 @@
--- sift.col_refresh (docs/COL-PREAGG.md section 8): a change of the options that decide the pre-aggregates (cube_minmax, preagg, rollup) takes effect for
+-- sift.col_refresh (docs/COL-PREAGG.md section 7): a change of the options that decide the pre-aggregates (cube_minmax, preagg, rollup) takes effect for
 -- the units written afterwards; the refresh rewrites the segments written before, one at a time, with the same rows and the same answers. The planner prices
 -- the index for the units that hold the section: the share of them that have it is a counter read by sift._test_col_pre_stats. Read back by sift.col_verify; the damaged-blob
 -- regress of the census it takes is in col_preagg_minmax.
