@@ -422,7 +422,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
  * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
  * (sift_aggspec_parallel_ok).
  */
-static int
+int
 parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */

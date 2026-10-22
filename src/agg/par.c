@@ -85,9 +85,32 @@
 #define MORSEL_SBS	2
 
 Size
-shared_size(const SiftAggSpec *s)
+shared_size(const SiftAggSpec *s, uint32 norder)
 {
-	return offsetof(ScanShared, partoff) + (s->nparts + 1) * sizeof(uint32);
+	return offsetof(ScanShared, partoff) + (s->nparts + 1 + norder) * sizeof(uint32);
+}
+
+uint32 *
+shared_order(ScanShared *sh, const SiftAggSpec *s)
+{
+	return sh->partoff + s->nparts + 1;
+}
+
+/*
+ * A top-N takes windows of superblocks in the visit order the leader's probes chose: one superblock each in the walk's order (norder
+ * superblocks, copied), else the superblocks of a match set's chunk (the set is made for a chunk), else one, from the last when the sort
+ * column grows toward it.
+ */
+static void
+topn_shared_init(ScanShared *sh, AggExec *ex)
+{
+	sh->topn_reverse = sift_topn_reverse(ex->topn);
+	sh->topn_walk = ex->nvorder > 0;
+	sh->topn_item = ex->search ? sift_search_chunk_sbs : 1;
+	sh->nitems = sh->topn_walk ? sh->nsb : (sh->nsb + sh->topn_item - 1) / sh->topn_item;
+	sift_topn_bound_init(&sh->topn_bound);
+	if (sh->topn_walk)
+		memcpy(shared_order(sh, ex->spec), ex->vorder, ex->nvorder * sizeof(uint32));
 }
 
 void
@@ -100,6 +123,8 @@ shared_init(ScanShared *sh, AggExec *ex)
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
 	pg_atomic_init_u32(&sh->next, 0);
+	if (ex->topn)
+		topn_shared_init(sh, ex);
 }
 
 void
@@ -161,7 +186,7 @@ scan_item(AggExec *ex, uint32 item)
 		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));
 }
 
-static bool
+bool
 take_item(AggExec *ex, uint32 *item)
 {
 	*item = pg_atomic_fetch_add_u32(&ex->shared->next, 1);
@@ -240,6 +265,7 @@ typedef struct WorkerDone
 	int64		n_tuples;
 	int64		n_dense;
 	int64		n_matches;
+	int64		n_skipped;
 	SiftSrcCounters cc;
 } WorkerDone;
 
@@ -327,10 +353,26 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_open(ex, snap, RestoreParamList(&params));
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
+	if (ex->topn)
+	{
+		sift_topn_share(ex->topn, &sh->topn_bound);
+		sift_topn_visit(ex->topn, sh->nsb, sh->topn_reverse);
+	}
 	scan_buffers(ex);
 	table_init(ex);
-	scan_items(ex);
-	if (!sh->ordered)
+	if (ex->topn)
+	{
+		StringInfoData b;
+
+		topn_items(ex);
+		initStringInfo(&b);
+		sift_topn_export(ex->topn, &b);
+		send_blob(ex->mqh, b.data, b.len);
+		done.n_skipped = sift_topn_skipped(ex->topn);
+	}
+	else
+		scan_items(ex);
+	if (!sh->ordered && !ex->topn)
 	{
 		StringInfoData b;
 
@@ -390,7 +432,7 @@ par_launch(AggExec *ex)
 		return;
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
-	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec));
+	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec, ex->nvorder));
 	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
@@ -406,7 +448,7 @@ par_launch(AggExec *ex)
 		ExitParallelMode();
 		return;
 	}
-	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec));
+	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
 	shared_init(ps, ex);
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
 	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
@@ -472,6 +514,8 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		ex->n_dense += d->n_dense;
+		if (ex->topn)
+			sift_topn_add_skipped(ex->topn, d->n_skipped);
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
@@ -482,6 +526,8 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
 	}
+	else if (ex->topn)
+		sift_topn_import(ex->topn, data, len);
 	else if (ex->shared->ordered)
 	{
 		const BlobHdr *h = (const BlobHdr *) data;

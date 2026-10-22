@@ -1,0 +1,93 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1plan s1decl s2write s1got s1same s1end
+step s1plan: SELECT iso_tp_plan() AS plan;
+plan          
+--------------
+parallel top-N
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT id, k FROM iso_tp ORDER BY k DESC NULLS LAST, id LIMIT 15;
+step s2write: UPDATE iso_tp SET k = 1000000 WHERE id IN (3000, 5000);
+		  UPDATE iso_tp SET k = 0 WHERE id = 18;
+		  DELETE FROM iso_tp WHERE id IN (19, 20);
+		  INSERT INTO iso_tp (id, k) VALUES (100001, 2000000), (100002, NULL);
+step s1got: CREATE TEMP TABLE got AS SELECT iso_tp_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_tp_normal() AS same, (SELECT r FROM got) <> '' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1plan s1decl s2begin s2write s1got s1same s2commit s1end
+step s1plan: SELECT iso_tp_plan() AS plan;
+plan          
+--------------
+parallel top-N
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT id, k FROM iso_tp ORDER BY k DESC NULLS LAST, id LIMIT 15;
+step s2begin: BEGIN;
+step s2write: UPDATE iso_tp SET k = 1000000 WHERE id IN (3000, 5000);
+		  UPDATE iso_tp SET k = 0 WHERE id = 18;
+		  DELETE FROM iso_tp WHERE id IN (19, 20);
+		  INSERT INTO iso_tp (id, k) VALUES (100001, 2000000), (100002, NULL);
+step s1got: CREATE TEMP TABLE got AS SELECT iso_tp_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_tp_normal() AS same, (SELECT r FROM got) <> '' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1plan s1decl s2begin s2write s2abort s1got s1same s1end
+step s1plan: SELECT iso_tp_plan() AS plan;
+plan          
+--------------
+parallel top-N
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT id, k FROM iso_tp ORDER BY k DESC NULLS LAST, id LIMIT 15;
+step s2begin: BEGIN;
+step s2write: UPDATE iso_tp SET k = 1000000 WHERE id IN (3000, 5000);
+		  UPDATE iso_tp SET k = 0 WHERE id = 18;
+		  DELETE FROM iso_tp WHERE id IN (19, 20);
+		  INSERT INTO iso_tp (id, k) VALUES (100001, 2000000), (100002, NULL);
+step s2abort: ROLLBACK;
+step s1got: CREATE TEMP TABLE got AS SELECT iso_tp_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_tp_normal() AS same, (SELECT r FROM got) <> '' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
+
+starting permutation: s1plan s2write s1decl s1got s1same s1end
+step s1plan: SELECT iso_tp_plan() AS plan;
+plan          
+--------------
+parallel top-N
+(1 row)
+
+step s2write: UPDATE iso_tp SET k = 1000000 WHERE id IN (3000, 5000);
+		  UPDATE iso_tp SET k = 0 WHERE id = 18;
+		  DELETE FROM iso_tp WHERE id IN (19, 20);
+		  INSERT INTO iso_tp (id, k) VALUES (100001, 2000000), (100002, NULL);
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT id, k FROM iso_tp ORDER BY k DESC NULLS LAST, id LIMIT 15;
+step s1got: CREATE TEMP TABLE got AS SELECT iso_tp_fetch('c') AS r;
+step s1same: SELECT (SELECT r FROM got) = iso_tp_normal() AS same, (SELECT r FROM got) <> '' AS rows;
+same|rows
+----+----
+t   |t   
+(1 row)
+
+step s1end: COMMIT; DROP TABLE got;
