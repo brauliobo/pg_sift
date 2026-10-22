@@ -4,5 +4,5 @@
 -- key: 1
 -- scenario: yes
 SELECT p.label, count(*) AS n, count(p.range) AS placed
-FROM orders o LEFT JOIN periods p ON o.placed_at <@ p.range AND p.label IN ('cur', 'prev', 'open')
+FROM orders o LEFT JOIN spans p ON o.placed_at <@ p.range AND p.label IN ('span_a', 'span_b', 'open')
 GROUP BY p.label ORDER BY 1 NULLS FIRST

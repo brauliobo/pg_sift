@@ -17,7 +17,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
 VACUUM (FREEZE, ANALYZE) facts;
 
--- the spine has a period no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
+-- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
 CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
 	                  cells AS (SELECT f.id, f.dim_a_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big

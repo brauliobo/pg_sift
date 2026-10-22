@@ -13,7 +13,7 @@ INSERT INTO ents SELECT i, (ARRAY['site', 'cat_c', 'cat_a', 'cat_b'])[1 + i % 4]
 CREATE FUNCTION op_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN i % 301 = 0 THEN '[]'::jsonb ELSE jsonb_build_object('lang', (ARRAY['en', 'de', 'fr'])[1 + i % 3], 'parts', (
 		SELECT coalesce(jsonb_agg(jsonb_build_object(
-			'category', (ARRAY['aspect_j', 'aspect_d', 'aspect_m', 'aspect_h'])[1 + (i * j) % 4],
+			'category', (ARRAY['catg_j', 'catg_d', 'catg_m', 'catg_h'])[1 + (i * j) % 4],
 			'dir_a', (ARRAY['up', 'down', 'flat'])[1 + (i + j) % 3],
 			'score', CASE (i + j) % 11 WHEN 0 THEN to_jsonb('n/a'::text) WHEN 1 THEN to_jsonb(((i * j) % 10)::text) ELSE to_jsonb(((i * j) % 100) / 10.0) END) ORDER BY j), '[]')
 		FROM generate_series(1, i % 5) j)) END $$;
@@ -65,22 +65,22 @@ SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT
 
 -- EXISTS over the parts of an index expression, with the members of one element and the other elements not counting
 SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text, dir_a text)
-	WHERE o.category = 'aspect_j' AND o.dir_a = 'down')) AS aspect_j_negative, count(*) AS n FROM ev$$);
+	WHERE o.category = 'catg_j' AND o.dir_a = 'down')) AS catg_j_negative, count(*) AS n FROM ev$$);
 SELECT * FROM same($$SELECT op_txt(doc) ->> 'lang' AS lang, count(*) AS n FROM ev
-	WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category IN ('aspect_m', 'aspect_h')) GROUP BY 1$$);
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category = 'aspect_d')$$);
+	WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category IN ('catg_m', 'catg_h')) GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category = 'catg_d')$$);
 -- nested jsonpath tests over the parts
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.parts[*] ? (@.category == "aspect_j" && @.dir_a == "down")')$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.parts[*] ? (@.category == "catg_j" && @.dir_a == "down")')$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.parts[*] ? (@.dir_a != "flat")'$$);
 -- a score is text in the leaf: a number literal is not the text of a string score, so the comparison keeps the normal plan
 SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.parts[*] ? (@.score == 7)')$$) AS number_against_text_leaf;
 -- a strict path raises for a document that has no such key: the heap raises, the scan must not answer instead
-SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), 'strict $.parts[*] ? (@.category == "aspect_d")')$$) AS strict_path;
+SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), 'strict $.parts[*] ? (@.category == "catg_d")')$$) AS strict_path;
 
 -- per-item arms under an outer aggregate over a text leaf with the cast in the aggregate (guarded: a score may be text): one fused scan
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, CASE WHEN i.score ~ '^[0-9.]+$' THEN i.score::float8 END AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, sum(s) AS total
+	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, round(sum(s)::numeric, 6) AS total
 	FROM (SELECT rid, k, avg(n) AS a, sum(n) AS s FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n), sum(n) FROM b GROUP BY rid) x GROUP BY k$$);
 -- the arms share a WHERE that keeps the cast off the text scores: it is the scan's own, and the scan casts only what passes it
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
@@ -92,7 +92,7 @@ SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS 
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
 	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid, k
-		  UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' AND k <> 'aspect_m' GROUP BY rid) x GROUP BY k$$);
+		  UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' AND k <> 'catg_m' GROUP BY rid) x GROUP BY k$$);
 -- the plain cast raises for a text score, in both plans
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)

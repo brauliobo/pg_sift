@@ -50,9 +50,9 @@ SELECT g.id, p.tenant_id, p.customer_id, 'R' || lpad(g.id::text, 9, '0'), p.plac
        (SELECT coalesce(jsonb_agg(jsonb_build_object('type', n1.type, 'author_kind', n2.role,
                                                       'text', k.sentences[1 + (hashint8extended(g.id, 650 + j) & 7)::int]) ORDER BY j), '[]'::jsonb)
           FROM generate_series(0, p.nn - 1) j
-          CROSS JOIN LATERAL (SELECT CASE WHEN bench_u(g.id, 660 + j) < 0.4 THEN 'comment' WHEN bench_u(g.id, 660 + j) < 0.7 THEN 'reply' ELSE 'internal' END AS type) n1
-          CROSS JOIN LATERAL (SELECT CASE n1.type WHEN 'comment' THEN 'customer' WHEN 'internal' THEN 'staff'
-                                     ELSE CASE WHEN bench_u(g.id, 670 + j) < 0.8 THEN 'staff' ELSE 'system' END END AS role) n2),
+          CROSS JOIN LATERAL (SELECT CASE WHEN bench_u(g.id, 660 + j) < 0.4 THEN 'kind_b' WHEN bench_u(g.id, 660 + j) < 0.7 THEN 'kind_a' ELSE 'internal' END AS type) n1
+          CROSS JOIN LATERAL (SELECT CASE n1.type WHEN 'kind_b' THEN 'type_b' WHEN 'internal' THEN 'type_a'
+                                     ELSE CASE WHEN bench_u(g.id, 670 + j) < 0.8 THEN 'type_a' ELSE 'system' END END AS role) n2),
        p.placed_at::timestamp + (hashint8extended(g.id, 23) & 86399) * interval '1 second',
        p.placed_at::timestamp + (hashint8extended(g.id, 23) & 86399) * interval '1 second' + interval '1 hour',
        CASE WHEN p.deleted THEN timestamp '2025-11-01 00:00:00' END

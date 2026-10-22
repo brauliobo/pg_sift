@@ -5,8 +5,8 @@
 -- key: -
 -- scenario: yes
 SELECT coalesce(mm.derived_metric, split_part(kv.key, '_', 1)) AS metric,
-       coalesce(mm.mapped_aspect, nullif(split_part(kv.key, '_', 2), '')) AS aspect,
-       {period(o.placed_at)} AS period,
+       coalesce(mm.derived_part, nullif(split_part(kv.key, '_', 2), '')) AS part,
+       {span(o.placed_at)} AS span,
        avg((kv.value #>> '{}')::float8) AS avg_value,
        count(DISTINCT o.id) AS orders,
        count(DISTINCT o.id) FILTER (WHERE (kv.value #>> '{}')::float8 >= 4) AS high

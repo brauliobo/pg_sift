@@ -15,6 +15,6 @@ CREATE TABLE metrics_tuned (
   tenant_id UInt32, customer_id UInt32, source LowCardinality(String), placed_at Date, order_id UInt32, country_code LowCardinality(String),
   lang LowCardinality(String), metric_key LowCardinality(String), value Float32, deleted UInt8
 ) ENGINE = MergeTree ORDER BY (tenant_id, placed_at, order_id);
-CREATE TABLE metrics_map (source String, metric_key String, derived_metric String, mapped_aspect String) ENGINE = MergeTree ORDER BY (source, metric_key);
+CREATE TABLE metrics_map (source String, metric_key String, derived_metric String, derived_part String) ENGINE = MergeTree ORDER BY (source, metric_key);
 CREATE TABLE categories_map (category String, derived_category String) ENGINE = MergeTree ORDER BY category;
 CREATE TABLE kinds_map (kind String, derived_kind String) ENGINE = MergeTree ORDER BY kind;

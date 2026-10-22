@@ -39,7 +39,7 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
--- the units of one window, and of two (a period and the same one a year later): the second adds its own units, and the ones between are pruned
+-- the units of one window, and of two (a range and the same one a year later): the second adds its own units, and the ones between are pruned
 SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31'$$);
 SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2020-09-01' AND day <= '2020-09-30'$$);
 SELECT * FROM same($$(day >= '2020-03-01' AND day <= '2020-03-31') OR (day >= '2020-09-01' AND day <= '2020-09-30') OR (day >= '2021-01-01' AND day < '2021-01-15')$$);

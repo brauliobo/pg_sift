@@ -67,13 +67,13 @@ CREATE FUNCTION coldiff.iso(txt text) RETURNS text IMMUTABLE LANGUAGE sql AS $$
 	SELECT coalesce(coldiff.header(txt) ->> 'isolation', 'read committed') $$;
 
 -- The macros of bench/sql/analytics/queries (expand() of bench/steps/analytics.py is the reference): {stores} the members of the set
--- of analytics_sets, {sources} the quoted members of the set 'sources', {period(col)} the label of the period, {range(col)} both periods.
+-- of analytics_sets, {sources} the quoted members of the set 'sources', {span(col)} the label of the range, {range(col)} both ranges.
 CREATE FUNCTION coldiff.expand(q text, setname text) RETURNS text STABLE LANGUAGE plpgsql AS $$
 BEGIN
 	q := replace(q, '{tenants}', (SELECT coalesce(string_agg(member, ',' ORDER BY member::int), '-1') FROM analytics_sets WHERE set_name = setname));
 	q := replace(q, '{sources}', (SELECT coalesce(string_agg(quote_literal(member), ',' ORDER BY member), '''''') FROM analytics_sets WHERE set_name = 'sources'));
-	q := regexp_replace(q, '\{period\(([^)]*)\)\}', 'CASE WHEN \1 >= ''2024-11-01'' AND \1 <= ''2025-10-31'' THEN ''current'' '
-						'WHEN \1 >= ''2023-11-01'' AND \1 <= ''2024-10-31'' THEN ''current-1'' ELSE NULL END', 'g');
+	q := regexp_replace(q, '\{span\(([^)]*)\)\}', 'CASE WHEN \1 >= ''2024-11-01'' AND \1 <= ''2025-10-31'' THEN ''span_a'' '
+						'WHEN \1 >= ''2023-11-01'' AND \1 <= ''2024-10-31'' THEN ''span_b'' ELSE NULL END', 'g');
 	RETURN regexp_replace(q, '\{range\(([^)]*)\)\}', '\1 >= ''2023-11-01'' AND \1 <= ''2025-10-31''', 'g');
 END $$;
 

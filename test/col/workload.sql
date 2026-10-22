@@ -28,8 +28,8 @@ CREATE OR REPLACE FUNCTION coldiff.wl_metrics(id bigint, seed int) RETURNS jsonb
 	SELECT coalesce(jsonb_object_agg(k, coldiff.wl_value(id, 100 + n::int, seed)) FILTER (WHERE coldiff.u(id, 90 + n::int, seed) < p), '{}')
 	FROM unnest(ARRAY['m_total', 'catg_j', 'catg_b', 'catg_e', 'value', 'unmapped_key'], ARRAY[0.95, 0.7, 0.7, 0.6, 0.4, 0.1]) WITH ORDINALITY t(k, p, n) $$;
 
-CREATE OR REPLACE FUNCTION coldiff.wl_comments(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'type_a', 'type_b'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'comment', 'c' || j) ORDER BY j), '[]')
+CREATE OR REPLACE FUNCTION coldiff.wl_notes(id bigint, seed int) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+	SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['general', 'type_a', 'type_b'])[1 + floor(coldiff.u(id, 110 + j, seed) * 3)::int], 'kind_b', 'c' || j) ORDER BY j), '[]')
 	FROM generate_series(1, floor(coldiff.u(id, 109, seed) * 3)::int) j $$;
 
 -- one part: a category, a val (empty, NULL or a name), a sign (0.9% a JSON null, the number 1 or true) and a score that is a number, or (3%) a number written as a string, or (0.5%) text
@@ -108,7 +108,7 @@ CREATE OR REPLACE FUNCTION coldiff.fx_wl(first_id int, last_id int, seed int DEF
 			   CASE WHEN coldiff.u(i, 12, seed) < 0.05 THEN NULL ELSE (ARRAY['US', 'GB', 'DE', 'FR', 'ES', 'IT', 'NL', 'BR', 'JP', 'CA'])[1 + floor(coldiff.u(i, 13, seed) ^ 2 * 10)::int] END,
 			   CASE WHEN coldiff.u(i, 14, seed) < 0.1 THEN NULL ELSE (ARRAY['solo', 'couple', 'family', 'group', 'business', 'other'])[1 + floor(coldiff.u(i, 15, seed) * 6)::int] END,
 			   CASE WHEN coldiff.u(i, 16, seed) < 0.2 THEN NULL ELSE (ARRAY['leisure', 'work', 'event', 'transit', 'other'])[1 + floor(coldiff.u(i, 17, seed) * 5)::int] END,
-			   coldiff.wl_metrics(i, seed), coldiff.wl_comments(i, seed), coldiff.wl_doc(i, seed), 't' || i % 50
+			   coldiff.wl_metrics(i, seed), coldiff.wl_notes(i, seed), coldiff.wl_doc(i, seed), 't' || i % 50
 		FROM generate_series(first_id, last_id) i RETURNING 1)
 	SELECT count(*) FROM ins $$;
 SELECT coldiff.fx_wl(1, :n);
