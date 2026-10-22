@@ -452,7 +452,7 @@ sift_mops_sql_promote(const SiftMaintOps *ops, Relation index)
 	return n;
 }
 
-/* Runs merge steps until the policy asks for none; force merges all immutable segments into one */
+/* Runs merge steps until the policy asks for none; force merges all immutable segments into one (and, if the kind says so, those of the open write buffer too) */
 int
 sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 {
@@ -460,7 +460,7 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 	int			n = 0;
 
 	sift_maint_lock(index, true);
-	promote_locked(ops, index, false, true);
+	promote_locked(ops, index, force && ops->force_seals, true);
 	while (ops->merge_next(index, force && n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
 	{
 		n++;

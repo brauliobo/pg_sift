@@ -97,6 +97,7 @@ typedef struct SiftMaintOps
 	LOCKMODE	step_lock;			/* the maintenance lock taken for room, promotion and merge steps */
 	bool		vacuum_to_fixed_point;	/* VACUUM merges until the policy asks for no more, else one merge */
 	bool		vacuum_budget;	/* ... but stops starting merges once sift.vacuum_rewrite_limit megabytes were rewritten (the first merge always runs) */
+	bool		force_seals;	/* a forced SQL merge first seals the open write buffer, so its rows are in the one segment it makes */
 	bool		(*is_index) (Relation index);
 	uint64		(*seal) (Relation index, bool force);
 	SiftStepResult (*promote_next) (Relation index, bool propagate, uint64 *busy);
