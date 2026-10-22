@@ -106,6 +106,14 @@ class Writer:
             return None
         return mib(int(self.c.psql.run("SELECT free_blocks FROM sift.table_space('orders')", True)[0]) * 8192)
 
+    def table_parts(self):
+        """PostgreSQL servers: (MiB of the table, {index: MiB}) read as the load reads them (pg_table_size, pg_relation_size per index); None for the others"""
+        if self.eid not in PG_ENGINES:
+            return None
+        run = lambda sql: self.c.psql.run(sql, True)
+        return (mib(run("SELECT pg_table_size('orders')")[0]),
+                {n: mib(s) for n, s in (l.split('|') for l in run("SELECT indexrelid::regclass || '|' || pg_relation_size(indexrelid) FROM pg_index WHERE indrelid = 'orders'::regclass ORDER BY 1"))})
+
     def size_mib(self):
         if self.eid in PG_ENGINES:
             self.c.psql.run('CHECKPOINT')
@@ -240,7 +248,16 @@ def update_engine(eid, args, rows, ref):
     n = args.rows
     for q in [] if reference else qs.values():
         read_latency(w, q, args, rows, 'baseline')
-    point = lambda v: (rows.add(eid, '-', v, 'size_mib', 'MiB', value=w.size_mib()), w.free_mib() is not None and rows.add(eid, '-', v, 'free_mib', 'MiB', value=w.free_mib()))
+    def point(v):
+        rows.add(eid, '-', v, 'size_mib', 'MiB', value=w.size_mib())
+        free, parts = w.free_mib(), w.table_parts()
+        if free is not None:
+            rows.add(eid, '-', v, 'free_mib', 'MiB', value=free)
+        if parts:
+            rows.add(eid, '-', v, 'table_mib', 'MiB', value=parts[0])
+            for name, size in parts[1].items():
+                rows.add(eid, name, v, 'index_mib', 'MiB', value=size)
+
     if not reference:
         point('before')
     for name, kind, pred, test in PHASES:

@@ -88,29 +88,50 @@ def bench_table(R, tier, engines, labels, detail=False, variant='warm'):
 HEAP = ('pg', 'sift')   # the systems whose table is a heap; the others hold the rows in their own format
 
 
-def size_split(R, tier, e):
-    """MiB of a system: (heap and primary key, [the parts of the index or columnar data]); None for the first where there is no such part (the system holds everything itself)"""
-    idx = {r['variant'][6:]: r['value'] for r in R.rows if (r['tier'], r['engine'], r['metric']) == (tier, e, 'size_mib') and r['variant'].startswith('index ')}
-    table, free = R.num(tier, e, variant='table', metric='size_mib'), R.num(tier, e, variant='free', metric='size_mib') or 0
+def split_parts(e, total, table, free, idx):
+    """MiB of a system: (heap and primary key, [the parts of the index or columnar data]); None for the first where there is no such part (the system holds everything itself).
+    total, table (pg_table_size), free blocks inside it and the size of each index, as the load and the updates measure them"""
     if table is None:
-        return None, [R.num(tier, e, metric='size_mib')]
+        return None, [total]
     pk = idx.pop('orders_pkey')
     return (table + pk, list(idx.values())) if e in HEAP else (pk, [table - free, *idx.values()])
+
+
+def size_split(R, tier, e):
+    idx = {r['variant'][6:]: r['value'] for r in R.rows if (r['tier'], r['engine'], r['metric']) == (tier, e, 'size_mib') and r['variant'].startswith('index ')}
+    return split_parts(e, R.num(tier, e, metric='size_mib'), R.num(tier, e, variant='table', metric='size_mib'), R.num(tier, e, variant='free', metric='size_mib') or 0, idx)
+
+
+def upd_split(R, tier, e, v):
+    """size_split at one point of the updates (before, after churn, after maintenance)"""
+    idx = {r['class']: r['value'] for r in R.rows if (r['tier'], r['engine'], r['variant'], r['metric']) == (tier, e, v, 'index_mib')}
+    return split_parts(e, R.num(tier, e, '-', v, 'size_mib'), R.num(tier, e, '-', v, 'table_mib'), R.num(tier, e, '-', v, 'free_mib') or 0, idx)
 
 
 def parts_cell(parts):
     return f'{sum(parts):.1f} MiB' + (' (' + ' + '.join(f'{p:.1f}' for p in parts) + ')') * (len(parts) > 1)
 
 
+def size_cells(labels, split, disk, total, parts=None):
+    """the three size rows: heap and primary key, index or columnar data, total on disk (the cells of the total, and of the parts when not `parts_cell`, as the caller writes them)"""
+    return [[labels[0]] + [f'{h:.1f} MiB' if h else 'n/a' for h, _ in split],
+            [labels[1]] + best_bold([sum(p) for _, p in split], parts or [parts_cell(p) for _, p in split]),
+            [labels[2]] + best_bold(disk, total)]
+
+
+def col_cell(split, engines):
+    """the `sift_col` cell of the index row: its own size, the heap it shares with PostgreSQL's table noted beside it (the heap of both is the same table)"""
+    heap, parts = split[engines.index('sift')]
+    pg = split[engines.index('pg')][0]
+    return f'{sum(parts):.1f} MiB (+ heap {heap:.1f}, ' + ('same as PostgreSQL' if abs(pg - heap) < 0.05 else f'PostgreSQL {pg:.1f}') + ')'
+
+
 def size_rows(R, tier, engines):
-    """the three size rows: heap and primary key, index or columnar data, total on disk (the free blocks inside the file and what is live)"""
-    split = [size_split(R, tier, e) for e in engines]
+    """the three size rows of the load (the total shows the free blocks inside the file and what is live)"""
     disk = [R.num(tier, e, metric='size_mib') for e in engines]
     free = [R.num(tier, e, variant='free', metric='size_mib') for e in engines]
     total = [size(v) + (f' ({f:,.0f} free, {v - f:,.0f} live)' if f else '') for v, f in zip(disk, free)]
-    return [['size: heap and primary key'] + [f'{h:.1f} MiB' if h else 'n/a' for h, _ in split],
-            ['size: index or columnar data (without heap and primary key)'] + best_bold([sum(p) for _, p in split], [parts_cell(p) for _, p in split]),
-            ['size on disk, total'] + best_bold(disk, total)]
+    return size_cells(['size: heap and primary key', 'size: index or columnar data (without heap and primary key)', 'size on disk, total'], [size_split(R, tier, e) for e in engines], disk, total)
 
 
 LIKE_FOR_LIKE = ('the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema '
@@ -487,7 +508,10 @@ def upd_rows(R, tier, engines, detail):
             out.append([f'rows/s the update load actually reached (asked {r:,})'] + [rate(x) if x is not None else 'n/a' for x in ach])
     for v, label in (('before', 'size before'), ('after churn', 'size after the changes'), ('after maintenance', 'size after VACUUM / merge / OPTIMIZE')):
         vals = [g(e, v, 'size_mib') for e in engines]
-        out.append([label] + best_bold(vals, [size(x, g(e, v, 'free_mib')) for e, x in zip(engines, vals)]))
+        split = [upd_split(R, tier, e, v) for e in engines]
+        parts = [col_cell(split, engines) if e == 'sift' and s[0] else parts_cell(s[1]) for e, s in zip(engines, split)]
+        out += size_cells([f'{label}: heap and primary key', f'{label}: index or columnar data', f'{label}, total'], split, vals,
+                          [size(x, g(e, v, 'free_mib')) for e, x in zip(engines, vals)], parts)
     return out
 
 
@@ -587,6 +611,8 @@ def updates_benchmarks(R):
             f'{t.get("load_seconds", "?")} s under 0, 1,000 and 10,000 updated rows per second (a second connection sends batches of 100 rows, `amount = amount + 1`, ids drawn from the live rows), '
             'then a maintenance step per system. After each of the first three steps the state (rows and sum of the amount per status) is compared with PostgreSQL\'s; the run stops on a difference. '
             'Rows per second is the rows of the step over the wall time until the last statement was acknowledged.', '']
+    if part.get('sizes'):   # a later run of the same steps that also read the table and each index
+        out += [f'The size rows (split as in the load table; the table and each index are read in that run only) are from a second run of the same steps, {part["sizes"]["date"]}, {host_noise(part["sizes"])} at the start; every other row is from the run above.', '']
     out += md_table(['{:,} orders'.format(t['rows'])] + [dagger(R, tier, UPD_LABELS)[e] for e in engines], upd_rows(R, tier, engines, True)) + [''] + cache_note(R, tier) + [''] * bool(cache_note(R, tier))
     out += ['The three reads, before the changes, after them (before maintenance) and after the maintenance step (milliseconds, median of the runs):', '']
     out += md_table(['query'] + [dagger(R, tier, UPD_LABELS)[e] for e in engines], upd_read_rows(R, tier, engines)) + ['']
