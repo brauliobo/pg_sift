@@ -27,8 +27,7 @@ bench/bench du                     # what the work directory and the store hold;
 
 **An equal CPU budget for every server** (the final pass of 3.1.0): `SERVER_BUDGET=3 SERVER_CPUS=0-3,8-11 ES_SHARDS=3 ES_PROCESSORS=3 taskset -c 4-7,12-15 bench/bench all --docs --workers 2`. Every server the harness starts (a PostgreSQL lane, the Elasticsearch process) runs through `server_run` (`steps/lib.sh`): a systemd scope of the slice `sift-bench` with `CPUQuota=300%` pinned to `SERVER_CPUS` (four physical cores and their siblings), while the harness, `pgbench`, `cell.py` and the load generator run outside the cap on the cores of the outer `taskset`; `--workers 2` gives PostgreSQL 2 parallel and 2 build workers and `pgbench` 2 threads, `ES_PROCESSORS` sets `node.processors` and the JVM's processor count, `ES_SHARDS` the shards (each merged to one segment). Without `SERVER_BUDGET` nothing is capped, as before. The noise of a batch is the host's other work in its window (`sentinel_*` in `steps/lib.sh`), flagged in `noisy.txt`, never waited for.
 
-Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It keeps the ordering of the engines and
-most of the ratios of the full tier at a fraction of the time and disk. `--full` (or `--tier full`) uses all 218,058
+Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It is meant to keep the ordering of the engines of the full tier at a fraction of the time and disk (the full tier's results are not published; ratios move with the size). `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus.
 
@@ -60,7 +59,7 @@ blocks of the docs):
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory |
 
-The other commands: `charts`, `readme`, `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
+The other commands: `scaling`, `charts`, `readme`, `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
 oracle / pgx-bm25, every engine of `--engines` when none is named, pgx-bm25 included; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `shred` (documents per second of the sift_col jsonb shredder and elements per second of its SIMD kernels, docs/COL-SHRED.md), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
@@ -76,9 +75,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | about an hour, projected: the engines are measured one at a time, so the cells take the sum of the engines' times (the earlier method, all engines at once on shares of the CPUs, took 51 min for six engines with fixed-length cells, 18 min of cells that stop on their standard error) |
 
-Why 50,000 articles: at 25,000 documents the ratios of the full tier were not kept for the engines whose cost grows with the corpus (pg_textsearch, rum); 50,000 was the smallest size whose
-ratios were within noise of the full tier on the classes where sift leads, and 100,000 cost twice the time for no closer match.
-slim ratios with the full ones, class by class, from the committed rows.
+Why 50,000 articles: at 25,000 documents the engines whose cost grows with the corpus (pg_textsearch, rum) were too far from the full-tier ratios, and 100,000 cost twice the time for no closer match.
 
 The measurement takes as long as the sum of the engines' cells: seven engines one at a time take about seven times what one engine needs, which is the price of a method without CPU shares.
 

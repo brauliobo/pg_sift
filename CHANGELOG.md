@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- The store size rows show the index or columnar data with the heap beside it; README.md drops the places table, the Vulkan table and the rows that are sums of others.
+
 ## 3.2.1 - 2026-10-22
 
 - Added: bench: `bench/bench duckdb` measures pg_duckdb (the official release image, DuckDB reading the heap and a Parquet file it writes) against pg_sift and PostgreSQL on the store benchmark's orders and ten questions, in two containers with equal limits, warm and cold; the questions pg_duckdb cannot run are reported as not supported.
