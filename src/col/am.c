@@ -257,8 +257,8 @@ sift_col_init(void)
 					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
-					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default off)",
-					   false, ShareUpdateExclusiveLock);
+					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
+					   true, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_dims",
 						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...' (default off; the segments are column format minor 8)",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
@@ -275,8 +275,8 @@ sift_col_init(void)
 					  "Up to this many distinct values a unit keeps a column's small-set summary exactly, beyond it as a bloom filter",
 					  SIFT_CSET_LIMIT, 2, SIFT_CSET_LIMIT_MAX, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "superunit",
-					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256)",
-					  0, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
+					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
+					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
@@ -313,7 +313,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }

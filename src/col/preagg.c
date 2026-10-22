@@ -113,6 +113,7 @@ typedef struct DimBuild
 	int			nm;					/* measures in the blob */
 	Size		cut[SIFT_PAGG_MAX_MEAS + 1];	/* offset in the blob after the first i measure leaves (cut[0]: after the flags) */
 	Size		tail[SIFT_PAGG_MAX_MEAS + 1];	/* offset after the counts (tail[0]) and after each measure's sums */
+	Size		mmb[SIFT_PAGG_MAX_MEAS + 1];	/* bytes of the minima and maxima in the first i measures (cube_minmax): the byte budget does not count them, or the option would cost the dims it makes room for */
 	bool		ok;
 	bool		keep;
 	int			grain;				/* a calendar dim: the grain of its cells (SIFT_CAL_*), else 0 */
@@ -387,8 +388,12 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 	for (uint32 i = 0; i < ng; i++)
 		put_u(out, cnt[ord[i].g]);
 	b->tail[0] = out->len;
+	b->mmb[0] = 0;
 	for (int m = 0; m < nm; m++)
 	{
+		Size		mm_at,
+					mm_bytes = 0;
+
 		const SiftCPaggCol *mc = &cols[mm[m]];
 		bool		fl = s->cols[mm[m]].store == SIFT_COLS_F4 || s->cols[mm[m]].store == SIFT_COLS_F8;
 		double	   *sf = sc->sf;
@@ -440,11 +445,14 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 				put_u(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
+			mm_at = out->len;
 			for (int pass = 0; sc->minmax && pass < 2; pass++)
 				for (uint32 i = 0; i < ng; i++)
 					if (nn[ord[i].g] > 0)
 						put_zz(out, pass ? mx[ord[i].g] : mn[ord[i].g]);
+			mm_bytes = out->len - mm_at;
 		}
+		b->mmb[m + 1] = b->mmb[m] + mm_bytes;
 		b->tail[m + 1] = out->len;
 	}
 	return true;
@@ -478,7 +486,7 @@ dim_bytes(const SiftCPaggDim *sd, const DimBuild *b)
 {
 	int			lean = sd->lean > 0 ? Min(sd->lean, b->nm) : b->nm;
 
-	return b->ok && lean < b->nm ? b->cut[lean] + b->tail[lean] - b->cut[b->nm] : b->blob.len;
+	return (b->ok && lean < b->nm ? b->cut[lean] + b->tail[lean] - b->cut[b->nm] : b->blob.len) - (b->ok ? b->mmb[lean] : 0);
 }
 
 /*

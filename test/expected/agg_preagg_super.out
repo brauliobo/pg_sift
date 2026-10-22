@@ -112,12 +112,12 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_two;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_big;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_old;
 -- groups of 4 units; no option; groups of 2; groups of 256 (more than the units: one group); an index built under minor 7, which has no block
-CREATE INDEX su_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4);
-CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096);
-CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 2);
-CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 256);
+CREATE INDEX su_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
+CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 2, cube_minmax = false);
+CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 256, cube_minmax = false);
 SET sift.col_format_minor = 7;
-CREATE INDEX su_old_col ON su_old USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4);
+CREATE INDEX su_old_col ON su_old USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
 RESET sift.col_format_minor;
 SELECT 'su' AS tbl, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_col') WHERE kind = 'immutable'
 UNION ALL SELECT 'su_off', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_off_col') WHERE kind = 'immutable'
@@ -308,7 +308,7 @@ SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segmen
 -- 6. a parallel build lays the rows out in other units from run to run; whatever it does, the summaries agree with the units
 SET max_parallel_maintenance_workers = 2;
 SET min_parallel_table_scan_size = 0;
-CREATE INDEX su_par_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 3);
+CREATE INDEX su_par_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
 SELECT sift.col_verify('su_par_col', true);
  col_verify 
 ------------
@@ -324,12 +324,12 @@ SELECT queries, differ FROM pa_sum('su');
 
 RESET max_parallel_maintenance_workers;
 -- the option is a number from 2 to 256, or 0
-CREATE INDEX su_bad1 ON su USING sift_col (id, kind) WITH (superunit = 1);
+CREATE INDEX su_bad1 ON su USING sift_col (id, kind) WITH (superunit = 1, cube_minmax = false);
 ERROR:  superunit must be 0 or between 2 and 256
-CREATE INDEX su_bad2 ON su USING sift_col (id, kind) WITH (superunit = 257);
+CREATE INDEX su_bad2 ON su USING sift_col (id, kind) WITH (superunit = 257, cube_minmax = false);
 ERROR:  value 257 out of bounds for option "superunit"
 DETAIL:  Valid values are between "0" and "256".
-CREATE INDEX su_bad3 ON su USING sift_col (id, kind) WITH (superunit = 'many');
+CREATE INDEX su_bad3 ON su USING sift_col (id, kind) WITH (superunit = 'many', cube_minmax = false);
 ERROR:  invalid value for integer option "superunit": many
 DROP TABLE su, su_off, su_two, su_big, su_old, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text);

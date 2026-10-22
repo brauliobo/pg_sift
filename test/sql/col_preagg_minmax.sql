@@ -12,12 +12,12 @@ SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN N
 FROM generate_series(1, 30000) g;
 
 -- the minor of the segments of an index: 6 without the option, under the setting 6 with it, 7 with both
-CREATE INDEX cm_off ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096);
+CREATE INDEX cm_off ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 6;
-CREATE INDEX cm_six ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true);
+CREATE INDEX cm_six ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 RESET sift.col_format_minor;
-CREATE INDEX cm_on ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true);
-CREATE INDEX cm_nocube ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, preagg = 'off');
+CREATE INDEX cm_on ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+CREATE INDEX cm_nocube ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, preagg = 'off', superunit = 0);
 SELECT 'cm_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('cm_off')
 UNION ALL SELECT 'cm_six', array_agg(DISTINCT format) FROM sift._test_col_formats('cm_six')
 UNION ALL SELECT 'cm_on', array_agg(DISTINCT format) FROM sift._test_col_formats('cm_on')
@@ -73,7 +73,7 @@ SELECT blobs > 0 AS has_cubes, with_minmax = blobs AS all_with_minmax FROM sift.
 SELECT sift.col_verify('cm_on', true);
 
 -- the option is a boolean
-CREATE INDEX cm_bad ON cm USING sift_col (id, kind, val) WITH (cube_minmax = 'maybe');
+CREATE INDEX cm_bad ON cm USING sift_col (id, kind, val) WITH (cube_minmax = 'maybe', superunit = 0);
 
 DROP TABLE cm;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

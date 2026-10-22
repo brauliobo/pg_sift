@@ -98,7 +98,7 @@ BM25 results and scores, the column aggregates and the `sift_table` contents are
 
 ## 4. An older release
 
-An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint (`old_lib_refusal`). 3.3 writes at `sift.col_format_minor = 12` by default, so a 3.2 library cannot read a `sift_table` with a date or timestamp column, or an index with `cube_minmax`, `rollup_dims`, `set_columns` or `superunit`, written after the update, unless the setting is lowered to 6 before they are written. Ask the preflight what the target release can read:
+An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint (`old_lib_refusal`). 3.3 writes at `sift.col_format_minor = 12` by default, so a 3.2 library cannot read a `sift_table` with a date or timestamp column, or a `sift_col` index (`cube_minmax` and `superunit` are on by default; `rollup_dims` and `set_columns` are options), written after the update, unless the setting is lowered to 6 before they are written (`SET sift.col_format_minor = 6` makes `cube_minmax` and `superunit` no-ops). Ask the preflight what the target release can read:
 
 ```
 scripts/upgrade-check.sh --to 3.1 app
@@ -113,6 +113,15 @@ Every `blocker` row says how to write what that release reads:
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
 A standby that stays on the older release needs the same: its primary writes the formats the standby reads while `sift.col_format_minor` is set.
+
+## Defaults changed in 3.3
+
+An existing index or table keeps what it holds; the new default applies to the units written after the update (promotion, merge, `REINDEX`), and `sift.upgrade_commands()` lists the `REINDEX` that gives older units the new sections. To keep the 3.2 behavior set the value named in the last column.
+
+| Setting | 3.2 | 3.3 | Measured (200,000 rows, 53 units) | To keep the 3.2 behavior |
+|---|---|---|---|---|
+| `sift_col` option `cube_minmax` | off | on | `GROUP BY` with `min`/`max` of an integer 5.5 -> 0.34 ms; index +0.17% | `WITH (cube_minmax = false)` |
+| `sift_col` option `superunit` | 0 | 16 | whole-table aggregates 4 to 7 times faster; index +1.0% | `WITH (superunit = 0)` |
 
 ## 5. First release that reads each format
 

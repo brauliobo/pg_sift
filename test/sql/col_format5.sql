@@ -27,23 +27,23 @@ INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 
 
 -- narrow only (numeric(18, 2) is one INT leaf): the setting's minor, as in 3.1
 SET sift.col_format_minor = 3;
-CREATE INDEX g_narrow ON g USING sift_col (id, grp, p);
+CREATE INDEX g_narrow ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow');
 RESET sift.col_format_minor;
-CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p);
+CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow4');
 -- each wide type alone, under either setting
 SET sift.col_format_minor = 3;
-CREATE INDEX g_w ON g USING sift_col (w);
-CREATE INDEX g_m ON g USING sift_col (m);
-CREATE INDEX g_iv ON g USING sift_col (iv);
-CREATE INDEX g_n ON g USING sift_col (any_n);
+CREATE INDEX g_w ON g USING sift_col (w) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_m ON g USING sift_col (m) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_iv ON g USING sift_col (iv) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_n ON g USING sift_col (any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
 RESET sift.col_format_minor;
 DROP INDEX g_w, g_m, g_iv, g_n;
 
 -- a narrow index grows nothing of the wide minor; a mixed one is wide as a whole
-CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n);
+CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_all');
 SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('g_all')) = fmt('g_all') AS hook_agrees;
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true), sift.col_verify('g_narrow4', true);

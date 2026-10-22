@@ -38,7 +38,9 @@ sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
 check "the 3.0.1 library wrote segments of minor 3 or below" test "$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == t
 verify() { test -z "$(sql legacy "SELECT sift.col_verify('items_idx', true)" 2>&1)"; }
 check "the new library reads the 3.0.1 index: verify and the answer are the heap's" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$Q")" == "ok|$want"
-check "its options and its segments agree: nothing is stale" test "$(sql legacy "SELECT remaining FROM sift.col_refresh('items_idx', 0)")" == 0
+check "the defaults of 3.3 (cube_minmax, superunit) leave the segments of 3.0.1 stale" test "$(sql legacy "SELECT remaining FROM sift.col_refresh('items_idx', 0)")" -ge 1
+sql legacy "ALTER INDEX items_idx SET (cube_minmax = false, superunit = 0)" >/dev/null
+check "with both off its options and its segments agree: nothing is stale" test "$(sql legacy "SELECT remaining FROM sift.col_refresh('items_idx', 0)")" == 0
 
 # at the lowest setting a changed option reaches the old segments and the minor stays 3
 sql legacy "ALTER INDEX items_idx SET (preagg = 'cube(kind: val, amt; grp: val)')" >/dev/null

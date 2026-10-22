@@ -14,7 +14,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE items (id int, kind int, grp text, val bigint, amt numeric(10,2), pad text)" \
 	"INSERT INTO items SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
 		((g * 91) % 20000) / 100.0 - 50, repeat('p', 100) FROM generate_series(1, $ROWS / 2) g" \
-	"CREATE INDEX items_idx ON items USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096)" >/dev/null || bail "setup failed"
+	"CREATE INDEX items_idx ON items USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0)" >/dev/null || bail "setup failed"
 for i in 1 2 3 4; do
 	sql primary "INSERT INTO items SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), (g * 977) % 100000 - 50000, ((g * 91) % 20000) / 100.0 - 50, repeat('p', 100)
 		FROM generate_series($ROWS / 2 + ($i - 1) * $ROWS / 8 + 1, $ROWS / 2 + $i * $ROWS / 8) g" "SELECT sift.col_promote('items_idx')" >/dev/null || bail "promote $i failed"

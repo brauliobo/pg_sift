@@ -51,7 +51,7 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('wt_col') ORDER BY leaf;
 SELECT format FROM sift.col_segments('wt_col') WHERE kind = 'immutable';
  format 
 --------
-      5
+     12
 (1 row)
 
 -- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)
