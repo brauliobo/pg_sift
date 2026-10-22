@@ -64,6 +64,15 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < 
  SiftAgg |              1201 |               1200 |           7 |              0
 (1 row)
 
+-- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
+RESET seq_page_cost; RESET random_page_cost;
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+--------+-------------------+--------------------+-------------+----------------
+ normal |                 0 |                  0 |           7 |              0
+(1 row)
+
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a generic plan
 SET plan_cache_mode = force_generic_plan;
 PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
