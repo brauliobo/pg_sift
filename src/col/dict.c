@@ -3,8 +3,6 @@
  */
 #include "core/host.h"
 
-#include "port/pg_bswap.h"
-
 #include "col/enc.h"
 #include "col/enc_int.h"
 #include "core/cmp.h"
