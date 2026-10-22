@@ -92,7 +92,7 @@ SELECT * FROM chk('new index');
 -- the table is rewritten with another type of an indexed column (no column the queries return) and the index is built again
 ALTER TABLE events ALTER COLUMN kind TYPE varchar(20);
 SELECT * FROM chk('table rewrite');
--- the rewrite left no page all-visible: the pushdown of the shared CTE, whose inline plan has to cost half of the other, waits for VACUUM
+-- the rewrite left no page all-visible: the scans check the rows of their pages in the heap, and are still the cheaper plan of the shared CTE
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM chk('vacuum after rewrite');
 

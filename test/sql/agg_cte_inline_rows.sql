@@ -1,7 +1,9 @@
 -- A CTE that three aggregates read (the arms of a UNION ALL, each over the elements of a jsonb array, the rows then counted DISTINCT above a spine) is planned
--- inline when the scan makes that cheaper: the plan keeps the three SiftAgg arms below one SiftAggRows node, which costs far less than the arms added up
--- (the node reads the table once). The choice weighs the cost of the scans in the inline plan against what the shared plan costs for them, so it must
--- take the cost of the SiftAggRows node, not the sum of the arms it fused, or a plan that is a third of the shared one stays on the shared CTE.
+-- inline when the scans take over the work of the shared CTE for less than it costs. The plan keeps the three SiftAgg arms below one SiftAggRows node, which
+-- costs far less than the arms added up (the node reads the table once), so the choice takes the cost of the node, not the sum of the arms it fused.
+-- It compares the scans with what the shared plan spends on the same work, not the totals of the two plans: the plan above them (a join of the arms to the
+-- spine on an expression key, a window) is priced from the rows each plan expects of the arms, and the inline plan expects more. At 100,000 rows the
+-- totals alone keep the shared CTE, which takes three times as long.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, removed_at timestamptz, payload jsonb);
@@ -10,7 +12,7 @@ SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), CASE WHEN g % 97 = 0
        CASE WHEN g % 13 = 0 THEN NULL
             ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || chr(97 + (g + j) % 4), 'asp', 'asp_' || chr(97 + (g * j) % 5), 'sign', CASE WHEN (g + j) % 3 = 0 THEN 'pos' WHEN (g + j) % 3 = 1 THEN 'neg' ELSE 'zero' END, 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 4) j))
                  || CASE WHEN g % 5 = 0 THEN jsonb_build_object('mapped', true) ELSE '{}' END END
-FROM generate_series(1, 30000) g;
+FROM generate_series(1, 100000) g;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, ts, removed_at, payload) WITH (paths = 'payload.mapped astext, payload.parts[]{cat astext, asp astext, sign astext, score float8}');
 CREATE TABLE dims (id int PRIMARY KEY, kind text NOT NULL);
 INSERT INTO dims SELECT g, 'kind_' || chr(97 + g % 3) FROM generate_series(1, 50) g;
