@@ -8,6 +8,7 @@
 
 #include "bm25/query.h"
 #include "bm25/query_int.h"
+#include "core/limits.h"
 
 #define WORD_SPECIALS		"(){}\"^~/\\*?:"
 
@@ -597,12 +598,13 @@ sift_query_parse(const char *src, int len)
 {
 	QParser		p = {.src = src,.len = len,.cpos = 1};
 	SiftQuery  *q = palloc0(sizeof(SiftQuery));
+	int64_t		max_bytes = sift_limit(query_bytes, SIFT_QUERY_MAX_BYTES);
 
-	if (len > SIFT_QUERY_MAX_BYTES)
+	if (len > max_bytes)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift query is too long"),
-				 errdetail("The query has %d bytes, the maximum is %d.", len, SIFT_QUERY_MAX_BYTES)));
+				 errdetail("The query has %d bytes, the maximum is %d.", len, (int) max_bytes)));
 	pg_verify_mbstr(GetDatabaseEncoding(), src, len, false);
 	next_token(&p);
 	if (p.tok.kind == T_EOF)

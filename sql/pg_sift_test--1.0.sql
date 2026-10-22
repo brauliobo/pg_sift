@@ -1,5 +1,9 @@
 \echo Use "CREATE EXTENSION pg_sift_test" to load this file. \quit
 
+-- The limit registry (src/core/limits.h): each limit with its default and the value sift.test_limits gives it in this session.
+CREATE FUNCTION sift._test_limits(OUT id text, OUT macro text, OUT dflt int8, OUT effective int8, OUT hooked bool)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_limits' LANGUAGE C STRICT;
+
 -- Store module (src/core/store_test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.
 CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler

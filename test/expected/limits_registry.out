@@ -1,0 +1,102 @@
+-- the limit registry (src/core/limits.h): sift._test_limits() lists it, sift.test_limits lowers a hooked limit and refuses the rest
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_limits() ORDER BY id;
+      id       |        macro         |    dflt    | unchanged | hooked 
+---------------+----------------------+------------+-----------+--------
+ combo_entries | -                    |   16777216 | t         | f
+ combos        | SIFT_AGG_MAX_COMBOS  |         16 | t         | f
+ joins         | SIFT_AGG_MAX_JOINS   |          8 | t         | f
+ max_segments  | SIFT_MAX_SEGMENTS    |        128 | t         | f
+ partitions    | SIFT_AGG_MAX_PARTS   |       4096 | t         | f
+ phrase_terms  | SIFT_MAX_PHRASE      |        128 | t         | t
+ query_bytes   | SIFT_QUERY_MAX_BYTES |     262144 | t         | t
+ spine_rows    | SPINE_MAX_ROWS       |      10000 | t         | f
+ string_bytes  | SIFT_COL_MAX_VALUE   | 1073741823 | t         | f
+ topn_keys     | SIFT_TOPN_MAX_KEYS   |          4 | t         | f
+ topn_rows     | SIFT_TOPN_MAX_ROWS   |     100000 | t         | f
+ unit_bytes    | -                    | 2147483647 | t         | f
+(12 rows)
+
+-- a hooked limit is lowered for the session and comes back with RESET
+SET sift.test_limits = 'query_bytes=64, phrase_terms=3';
+SELECT id, dflt, effective FROM sift._test_limits() WHERE effective <> dflt ORDER BY id;
+      id      |  dflt  | effective 
+--------------+--------+-----------
+ phrase_terms |    128 |         3
+ query_bytes  | 262144 |        64
+(2 rows)
+
+CREATE TABLE items (id int, body text);
+INSERT INTO items SELECT i, 'alpha beta gamma delta epsilon w' || i % 7 FROM generate_series(1, 300) i;
+CREATE INDEX items_idx ON items USING sift (body);
+SELECT count(*) FROM items WHERE body @@> 'alpha';
+ count 
+-------
+   300
+(1 row)
+
+SELECT count(*) FROM items WHERE body @@> repeat('alpha ', 20);
+ERROR:  sift query is too long
+DETAIL:  The query has 120 bytes, the maximum is 64.
+SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma"';
+ count 
+-------
+   300
+(1 row)
+
+SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma delta"';
+ERROR:  sift query: phrase longer than 3 terms at position 1
+RESET sift.test_limits;
+SELECT count(*) FROM items WHERE body @@> repeat('alpha ', 20);
+ count 
+-------
+   300
+(1 row)
+
+SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma delta"';
+ count 
+-------
+   300
+(1 row)
+
+SELECT count(*) FROM sift._test_limits() WHERE effective <> dflt;
+ count 
+-------
+     0
+(1 row)
+
+-- the setting rejects what would pass a test for the wrong reason
+SET sift.test_limits = 'no_such_limit=1';
+ERROR:  unknown limit "no_such_limit" in sift.test_limits
+HINT:  The ids are the first column of SIFT_LIMITS in src/core/limits.h.
+SET sift.test_limits = 'partitions=1';
+ERROR:  limit "partitions" cannot be lowered by sift.test_limits: no code reads it through sift_limit() yet
+HINT:  Wire the site and set hooked to 1 in its row of src/core/limits.h.
+SET sift.test_limits = 'query_bytes=-1';
+ERROR:  invalid value "-1" for limit "query_bytes"
+HINT:  A value is a number from 0 to the default, 262144.
+SET sift.test_limits = 'query_bytes=9999999';
+ERROR:  invalid value "9999999" for limit "query_bytes"
+HINT:  A value is a number from 0 to the default, 262144.
+SET sift.test_limits = 'query_bytes';
+ERROR:  invalid item "query_bytes" in sift.test_limits
+HINT:  Use id=value, separated by commas.
+SET sift.test_limits = 'query_bytes=12x';
+ERROR:  invalid value "12x" for limit "query_bytes"
+HINT:  A value is a number from 0 to the default, 262144.
+SHOW sift.test_limits;
+ sift.test_limits 
+------------------
+ 
+(1 row)
+
+-- 0 is a value: a query of any length is too long
+SET sift.test_limits = 'query_bytes=0';
+SELECT count(*) FROM items WHERE body @@> 'alpha';
+ERROR:  sift query is too long
+DETAIL:  The query has 5 bytes, the maximum is 0.
+RESET sift.test_limits;
+DROP TABLE items;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
