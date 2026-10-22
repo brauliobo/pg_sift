@@ -45,7 +45,7 @@ sift.async_maintenance = off'
 	node_stop legacy
 	use_root "$newroot"
 	node_start legacy || bail 'cannot start new library'
-	sql legacy "ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null || bail 'SQL update'
+	sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail 'SQL update'
 	if [[ $ref == v3.1.0 ]]; then
 		sql legacy "SELECT sift.table_set_paths('oldtbl','items','items[]{s text}')" \
 			"SELECT sift.table_set_paths('oldtbl','attr','attr->a astext')" >/dev/null || bail 'declare upgraded paths'
