@@ -92,6 +92,10 @@ sift_tbl_define_gucs(void)
 							"0 (off): a writer waits only when the directory is nearly full. Above 50, the percent of the entries.",
 							&sift_tbl_backpressure, 0, 0, 99,
 							PGC_USERSET, 0, backpressure_check_hook, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_async_promote",
+							 "A backend that closes a write buffer of a sift_table asks a background worker to promote it, where it promotes it itself.",
+							 "Needs sift.async_maintenance and sift.table_inline_promote. From half of the directory on the writer promotes and merges itself.",
+							 &sift_tbl_async_promote, false, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
 							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
 							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
