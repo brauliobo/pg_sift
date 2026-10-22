@@ -267,6 +267,16 @@ The reference run is `off`: `sift.enable_agg = off`, `max_parallel_workers_per_g
 `off-par` checks the tolerance below against PostgreSQL's own parallel plans. A variant is also run through `EXPLAIN (COSTS OFF)`: the plan
 has `Custom Scan (SiftAgg)` or not, and `Gather` or not.
 
+### Random queries (`test/fuzz/diff_fuzz.py`)
+
+A seed gives a small database (`test/fuzz/diff_fuzz_data.sql`: NULLs, duplicates, a `sift_col` index on each fact table, a hash partitioned table, lookup tables) and
+a script of episodes: a few `UPDATE`, `DELETE`, `INSERT` and `VACUUM` statements (dirty rows, write-buffer rows), then random queries of the pushdown
+shapes: first-row lookups, two-level aggregates with spines, partition pruning, pre-aggregates (`FILTER` on a cube dimension, `int8` arithmetic, per-group
+`min`/`max`), jsonb member casts, `EXISTS` over element lists and `jsonb_each` members, `UNION ALL` arms, top-N, and several lookups of one table in every join kind.
+Each query runs as the reference and as variants (the pre-aggregates, the scan alone, the arms alone, parallel workers, scalar SIMD, no lookup pushdown) and
+the rows are compared with the contract below. A divergence is shrunk (the query parts, then the statements before it) to a reproducer file; a worker or
+backend that dies is reported with its query. `scripts/ci.sh` runs fixed seeds (`difftest-fuzz`, seconds); `test/fuzz/diff_fuzz_search.sh` runs a long search in capped slices.
+
 ### The comparison contract
 
 Each result is materialized in a temporary table and compared by `coldiff.compare` (`test/col/run.sql`):
