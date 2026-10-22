@@ -558,6 +558,7 @@ The notice names the arm in its detail; the detail of the reason names the leaf,
 `sift.explain_why(query)` gives the same as rows without running the query or setting anything: it plans one `SELECT` (the privileges to read its tables are checked) and returns one row per arm with
 `used` (the arm is in the plan), `slug` and `reason` (why it gave up, NULL when used) and `scan_cost` and `normal_cost` (the path that was built and the normal plan it was compared with, NULL without such a path).
 A `cost` refusal that the heap check decided says so: `the scan costs 705, the normal plan 658; 100% of the heap pages are not all-visible, which adds 163 to the scan: VACUUM (ANALYZE) the table` (a rewrite by `CLUSTER`, `VACUUM FULL` or `pg_repack` leaves the visibility map empty).
+A `cte_cost` refusal says the same when the heap check of the inlined scans is what keeps the shared CTE (`inline costs 1654 (the scans 1654), the shared CTE 1740 (the work the scans replace 1740); 100% of the heap pages are not all-visible, which adds 547 to the scans: VACUUM (ANALYZE) the table`): it is said only when the inlined plan would win without that charge in both plans.
 
 ```sql
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_table GROUP BY 1');

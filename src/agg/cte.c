@@ -162,6 +162,8 @@ typedef struct ScanArms
 {
 	double		total;
 	double		first;			/* the dearest arm */
+	double		vet;			/* of total, what the arms pay to check the heap for the pages that are not all-visible */
+	double		vet_pct;		/* and the largest share of the pages that are not */
 	int			n;
 } ScanArms;
 
@@ -177,19 +179,27 @@ sift_agg_arms(Plan *plan, ScanArms *a)
 		return;
 	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
 	{
+		double		pct = 0;
+
 		a->total += plan->total_cost;
 		a->first = Max(a->first, plan->total_cost);
+		a->vet += agg_vet_of(plan->total_cost, &pct);
+		a->vet_pct = Max(a->vet_pct, pct);
 		a->n++;
 		return;
 	}
 	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_rows_plan_methods)
 	{
 		ScanArms	below = {0};
+		double		fused;
 
 		foreach_ptr(Plan, p, ((CustomScan *) plan)->custom_plans)
 			sift_agg_arms(p, &below);
-		a->total += below.total - (below.total - below.first) * (1.0 - AGG_FUSED_ARM);
+		fused = below.total - (below.total - below.first) * (1.0 - AGG_FUSED_ARM);
+		a->total += fused;
 		a->first = Max(a->first, below.first);
+		a->vet += below.total > 0 ? below.vet * fused / below.total : 0;
+		a->vet_pct = Max(a->vet_pct, below.vet_pct);
 		a->n += below.n;
 		return;
 	}
@@ -453,13 +463,19 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
  * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
  * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
  * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
+ * vet and shared_vet: the heap check taken off the inline plan's scans and off the SiftAgg nodes of the shared plan (both 0 for the choice).
  */
 static bool
-inline_wins(const CteVariants *v)
+inline_wins(const CteVariants *v, double vet, double shared_vet)
 {
-	return v->scans.n > 0 && (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * v->scans.total < v->work && v->inlined->planTree->total_cost < CTE_INLINE_ABOVE * v->plain_cost :
-							  (CTE_INLINE_MARGIN * v->scans.total < v->work && v->inlined->planTree->total_cost < CTE_INLINE_TOTALS * v->plain_cost) ||
-							  v->scans.total < v->plain_cost - v->inlined->planTree->total_cost);
+	double		scans = v->scans.total - vet,
+				inline_cost = v->inlined->planTree->total_cost - vet,
+				plain_cost = v->plain_cost - shared_vet,
+				work = v->work - shared_vet;
+
+	return v->scans.n > 0 && (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
+							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
+							  scans < plain_cost - inline_cost);
 }
 
 /*
@@ -484,7 +500,7 @@ inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
 
 			sift_plan_scale = saved * (i == 0 ? sqrt(horizon) : horizon);
 			plan_variants(SIFT_PLANNER_ARGS(copyObject(parse)), copyObject(pristine_inline), names, &v);
-			wins = inline_wins(&v);
+			wins = inline_wins(&v, 0, 0);
 			discard_plan(v.plain_cx);
 			discard_plan(v.inlined_cx);
 		}
@@ -511,6 +527,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
+	agg_vet_forget();
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
@@ -519,7 +536,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		pristine_inline = copyObject(inline_parse);
 	}
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
-	if (inline_wins(&v) ||
+	if (inline_wins(&v, 0, 0) ||
 		(pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names)))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
@@ -529,8 +546,17 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		return v.inlined;
 	}
 	if (sift_explain_refusals && v.scans.n > 0)
-		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
-				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work), false);
+	{
+		ScanArms	shared = {0};
+		const char *detail = psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work);
+
+		sift_agg_arms(v.plain->planTree, &shared);
+		sift_agg_arms_list(v.plain->subplans, &shared);
+		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
+		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
+			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false);
+	}
 	discard_plan(v.inlined_cx);
 	*cx = v.plain_cx;
 	return v.plain;

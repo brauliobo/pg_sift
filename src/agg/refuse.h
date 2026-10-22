@@ -79,6 +79,8 @@ extern void agg_arm_candidate(void);
 extern void agg_arm_spill(double cost, double groups, double bytes);
 extern void agg_arm_vet(double cost, double pct);
 extern void agg_arm_path(Path *p);
+extern double agg_vet_of(double total_cost, double *pct);
+extern void agg_vet_forget(void);
 extern void agg_arm_end(void);
 extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used);
 extern const char *agg_variant_push(const char *v);

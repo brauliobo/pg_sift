@@ -13,6 +13,9 @@ ANALYZE ordered;
 CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
 	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
 $$;
+CREATE FUNCTION cte_why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
+	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q) WHERE arm = 'cte_inline'
+$$;
 -- what the empty map adds to the scan is bounded by the pages of the units the zones keep: a tenth of the table (k < 20 keeps 10% of the units)
 -- charges less than half of what the whole table (k < 300) does
 CREATE TABLE costs AS
@@ -40,7 +43,27 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
  f    | cost | t
 (1 row)
 
+-- the same for a shared CTE that two aggregates read: the inlined scans pay the heap check and lose to the shared plan
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+ used |   slug   |                                                                                                                            reason                                                                                                                            
+------+----------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ f    | cte_cost | the shared CTE plan is estimated cheaper than the plan with the CTE inlined (inline costs N (the scans N), the shared CTE N (the work the scans replace N); N% of the heap pages are not all-visible, which adds N to the scans: VACUUM (ANALYZE) the table)
+(1 row)
+
+-- no way out is promised when the shared plan pays the heap check too: a VACUUM would cut both
+SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');
+ used |   slug   |                                                                           reason                                                                            
+------+----------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+ f    | cte_cost | the shared CTE plan is estimated cheaper than the plan with the CTE inlined (inline costs N (the scans N), the shared CTE N (the work the scans replace N))
+(1 row)
+
 VACUUM ordered;
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+ used | slug | reason 
+------+------+--------
+ t    |      | 
+(1 row)
+
 CREATE TABLE charges AS
 SELECT k_below, c.empty_cost - (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))) AS charge
 FROM costs c;
@@ -63,6 +86,6 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
  f    | cost | t
 (1 row)
 
-DROP FUNCTION why(text);
+DROP FUNCTION why(text), cte_why(text);
 DROP TABLE ordered, costs, charges;
 DROP EXTENSION pg_sift;
