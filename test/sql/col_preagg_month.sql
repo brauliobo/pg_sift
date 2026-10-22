@@ -72,4 +72,4 @@ SELECT blobs > 0 AS has_cubes, intact = blobs AS intact_decodes FROM sift._test_
 
 DROP TABLE cmo, cmo_nots, cmo_seven;
 DROP FUNCTION cmo_fill(regclass, int, int);
-DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

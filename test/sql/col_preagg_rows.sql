@@ -102,4 +102,4 @@ ALTER INDEX cr_on SET (rollup_dims = 'off');
 SELECT sift.col_verify('cr_on', true);
 
 DROP TABLE cr;
-DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

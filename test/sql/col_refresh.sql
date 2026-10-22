@@ -153,4 +153,4 @@ SELECT sift.col_refresh(NULL);
 
 DROP TABLE rf, rfl;
 DROP FUNCTION rf_q(text);
-DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
