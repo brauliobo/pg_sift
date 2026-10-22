@@ -11,6 +11,8 @@
 #define SIFT_TOPN_H
 
 #include "access/tableam.h"
+#include "lib/stringinfo.h"
+#include "port/atomics.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
@@ -85,6 +87,20 @@ extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *u
 
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
+/*
+ * Parallel scan (agg/par.c): the participants take windows of superblocks in the leader's visit order from a shared counter, each keeps the
+ * heap of its rows and publishes the first-key rank of its n-th row, so that every participant leaves out the units and rows that rank
+ * excludes; the leader merges the heaps (keys and TIDs, ties by TID as in one process) and fetches the rows. A top-N that sorts is serial.
+ */
+extern bool sift_topn_parallel_ok(const SiftTopN *t);
+extern void sift_topn_bound_init(pg_atomic_uint64 *bound);
+extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
+extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
+extern const uint32 *sift_topn_walk_order(const SiftTopN *t);
+extern void sift_topn_add_skipped(SiftTopN *t, int64 n);
+extern void sift_topn_export(const SiftTopN *t, StringInfo b);
+extern void sift_topn_import(SiftTopN *t, const char *data, Size len);
+
 extern bool sift_topn_next(SiftTopN *t, TupleTableSlot *slot);
 extern void sift_topn_rewind(SiftTopN *t);
 

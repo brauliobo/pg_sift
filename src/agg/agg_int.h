@@ -141,6 +141,8 @@ typedef struct AggExec
 	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
 	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
+	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
+	uint32		nvorder;
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts: the integer leaves they compare (nprune), then the ORs of such tests (up to nzone) */
 	int			nprune;
 	int			nzone;
@@ -286,6 +288,7 @@ void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
 void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
 void engine_close(AggExec *ex);
+void topn_items(AggExec *ex);
 
 #pragma GCC visibility pop
 

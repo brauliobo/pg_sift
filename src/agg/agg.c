@@ -291,7 +291,7 @@ run_scan(AggExec *ex)
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
-		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec));
+		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, 0));
 		shared_init(ex->shared, ex);
 	}
 	/* a join without a row to match leaves no tuple: no item of work to take */
@@ -544,6 +544,70 @@ agg_test_wait(void)
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);
 }
+
+/*
+ * The items of a parallel top-N, taken from the shared counter by the leader and the workers: a window of superblocks of the leader's visit
+ * order, left out when the zones of its units cannot beat the n-th row of any participant (the bound they share, agg/topn.h)
+ */
+void
+topn_items(AggExec *ex)
+{
+	ScanShared *sh = ex->shared;
+	TopnChunk	ch = {0, 0, NULL};
+	uint32		item;
+
+	while (take_item(ex, &item))
+	{
+		uint32		lo,
+					hi;
+
+		if (sh->topn_walk)
+		{
+			lo = shared_order(sh, ex->spec)[item];
+			hi = lo + 1;
+		}
+		else if (sh->topn_reverse)
+		{
+			hi = sh->nsb - item * sh->topn_item;
+			lo = hi > sh->topn_item ? hi - sh->topn_item : 0;
+		}
+		else
+		{
+			lo = item * sh->topn_item;
+			hi = Min(lo + sh->topn_item, sh->nsb);
+		}
+		if (sift_topn_wants_zones(ex->topn) && !topn_window_viable(ex, lo, hi))
+		{
+			/* the walk gives the best bound first: the superblocks after this one are no better, whatever bound the others reach */
+			if (sh->topn_walk)
+			{
+				pg_atomic_write_u32(&sh->next, sh->nitems);
+				break;
+			}
+			continue;
+		}
+		topn_scan(ex, lo, hi, sh->nsb, &ch);
+	}
+}
+
+/* The workers and the leader take the items; the heaps of the workers go into the leader's, which is the result as one process finds it */
+static void
+topn_parallel(AggExec *ex)
+{
+	par_launch(ex);
+	if (ex->shared == NULL)
+	{
+		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, ex->nvorder));
+		shared_init(ex->shared, ex);
+	}
+	sift_topn_share(ex->topn, &ex->shared->topn_bound);
+	if (ex->par == NULL || parallel_leader_participation)
+		topn_items(ex);
+	if (ex->par)
+		par_finish(ex);
+	sift_topn_finish(ex->topn);
+}
+
 static void
 topn_run(AggExec *ex)
 {
@@ -554,6 +618,7 @@ topn_run(AggExec *ex)
 				best;
 	SiftSrcZone z;
 	TopnChunk	ch = {0, 0, NULL};
+	bool		parallel;
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
@@ -569,6 +634,7 @@ topn_run(AggExec *ex)
 			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
 				sift_topn_probe(t, ex->unit.sb, &z);
 	sift_topn_start(t, nsb);
+	parallel = ex->spec->nworkers > 0 && sift_topn_parallel_ok(t);
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
 	{
 		/* the match set of a search restarts when it is asked for superblocks it has passed: only the scans without one are walked */
@@ -580,9 +646,21 @@ topn_run(AggExec *ex)
 			sift_topn_walk_add(t, sb, units, &z);
 		}
 		sift_topn_walk_sort(t);
+		if (parallel)
+		{
+			ex->vorder = (uint32 *) sift_topn_walk_order(t);
+			ex->nvorder = nsb;
+			topn_parallel(ex);
+			return;
+		}
 		while (sift_topn_walk_next(t, &lo))
 			scan_units(ex, lo, lo + 1);
 		sift_topn_finish(t);
+		return;
+	}
+	if (parallel)
+	{
+		topn_parallel(ex);
 		return;
 	}
 	while (sift_topn_next_window(t, &lo, &hi, &best))
