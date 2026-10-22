@@ -229,6 +229,19 @@ sift_col_init(void)
 							 "The rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
 							 "when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. Set it for the server or the database: the worker reads no session setting.",
 							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_auto_vacuum",
+							 "A background worker vacuums the heap table of a sift_col index that churn has made its scans check in the heap row by row.",
+							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
+							 "and the index answers none of its units from their pre-aggregates. A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table "
+							 "once per sift.maintenance_naptime and starts the worker when sift.col_auto_vacuum_churn_pct is crossed. It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
+							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. Needs sift.async_maintenance. "
+							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
+							 "Set it for the server or the database: the worker reads no session setting.",
+							 &sift_col_auto_vacuum, false, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_vacuum_churn_pct",
+							 "Percent of the rows of a table, dead or written since its last VACUUM, from which sift.col_auto_vacuum vacuums it.",
+							 "At least 50 rows. autovacuum starts at 20; 0.1 is a row changed per page of a thousand rows, which is enough to send every row of the table to the heap check.",
+							 &sift_col_auto_vacuum_churn_pct, 0.1, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
 							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
 							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
@@ -983,6 +996,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	MemoryContextReset(r->rowcxt);
 	if (crossed)
 		sift_col_maint_after_seal(index);
+	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0);
 	return false;
 }
 
