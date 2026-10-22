@@ -582,11 +582,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				break;
 			case SAA_O_SUM_I64:
 				acc->n[t] += ba->a.n[r];
-				if (pg_add_s64_overflow(acc->i[t], ba->a.i[r], &acc->i[t]))
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
-							 errhint("Set sift.enable_agg to off for this query.")));
+				acc->w[t] += ba->a.w[r];
 				break;
 			case SAA_O_SUM_F64:
 			case SAA_O_AVG_F64:

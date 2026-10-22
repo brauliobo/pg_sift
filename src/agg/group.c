@@ -127,7 +127,7 @@ acc_alloc(AggExec *ex, uint32 cap)
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				break;
 			case SAA_O_SUM_I64:
-				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
+				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
 				break;
 			case SAA_M_PG:
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);

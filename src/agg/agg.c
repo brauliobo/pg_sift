@@ -418,7 +418,7 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 			return *isnull ? (Datum) 0 : acc->v[g];
 		case SAA_O_SUM_I64:
 			*isnull = acc->n[g] == 0;
-			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
+			return scaled_numeric(acc->w[g], 0);
 		case SAA_O_SUM_F64:
 			*isnull = acc->n[g] == 0;
 			if (isinf(acc->d[g]) && !acc->nf[g])
