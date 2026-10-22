@@ -138,7 +138,7 @@
 	X(shred_key_bytes, "SIFT_SHRED_MAX_KEY_BYTES", "col/shred.h", SIFT_SHRED_MAX_KEY_BYTES, "bytes", \
 	  "a key of a jsonb wildcard object", "the value is OVERFLOW (read from the heap)", "-", 0) \
 	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
-	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap)", "-", 0) \
+	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE)", "-", 1) \
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of an index or sift_table", "writers merge, then ERROR 54000", "-", 0) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
