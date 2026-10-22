@@ -112,7 +112,10 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   (`cannot cast jsonb string to type double precision`, `22023`), kept for the row. The row raises it where it reaches the aggregate, after
   its lookups, as the cast does in the normal plan, and not at all when a conjunct or a join drops it first. The plan stays normal when the
   cast is evaluated for some members only (a `FILTER`, a `CASE` branch: no aggregate evaluates it for all of them), when a conjunct reads
-  the member or the key of the member, and for the member of one key (`LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`), whose error
+  the member of a key taken from the leaf, or tests the member together with another test of the members, a join or a conjunct that may raise
+  (the planner decides which runs first). A comparison, `IN` list or `IS NULL` test of the member alone (`WHERE CAST(e.value AS float8) > 3`)
+  is the cast of every member of a row that reaches it, so the row raises before the test, whatever the test says, as the normal plan does.
+  The plan stays normal for the member of one key (`LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`), whose error
   would be the row's, not the key's. Malformed documents that no unit flags (a JSON `null` list, a scalar element) are read by the clean path of the scan
   as before.
 - **A text path.** A path read only as `doc ->> 'k'` (an `astext` or `text` leaf) is read again like a recordset column: a container is the JSON text `->>` gives it, a key of a document that is an array or a scalar is NULL. The text of a value cannot raise, so there is no order of errors to keep and a conjunct or a key may read the path. The plan stays normal when anything else reads the leaf, such as a `jsonb_typeof` test of the same path (a row read again has the type of its text).
