@@ -265,6 +265,10 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.table_inline_promote` | on | a `sift_table` promotes its closed write buffers into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
 | `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings ([Limits](#limits)) |
 | `sift.table_dead_rewrite_pct` | 30 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
+| `sift.table_auto_defrag` | off | the backend that closes a write buffer of a `sift_table` asks a background worker (with `sift.async_maintenance`) to clear the dead rows, rewrite the mostly dead segments and give the free space back without VACUUM, when the tombstones reach `sift.table_dead_rewrite_pct` of the rows or the free blocks reach `sift.table_auto_defrag_free_pct`; it stays a few seconds and passes again while the writer's rows settle |
+| `sift.table_auto_defrag_indexes` | on | that worker runs a whole VACUUM (index cleanup, tombstone rewrite) when the dead rows reach the threshold; off: only what needs no index, and a VACUUM has to follow for the indexes and the tombstone log |
+| `sift.table_auto_defrag_free_pct` | 25 | 1-100: percent of the file that is free blocks from which that worker gathers and returns them |
+| `sift.table_auto_defrag_delay` | 10 ms | the cost delay of that worker's index cleanup and its pause after each segment it rewrites (0: none) |
 
 Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 

@@ -74,6 +74,22 @@ sift_tbl_define_gucs(void)
 							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_auto_defrag",
+							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
+							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
+							 &sift_tbl_auto_defrag, false, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_free_pct",
+							"Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them.",
+							NULL, &sift_tbl_auto_defrag_free_pct, 25, 1, 100,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_delay",
+							"Milliseconds the background pass of a sift_table waits after each segment it rewrites.",
+							"0 never waits.", &sift_tbl_auto_defrag_delay, 10, 0, 10000,
+							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_auto_defrag_indexes",
+							 "The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included.",
+							 "Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM.",
+							 &sift_tbl_auto_defrag_indexes, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
