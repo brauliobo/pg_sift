@@ -1,6 +1,6 @@
--- trap: nine lookup joins, one more than the limit: the normal plan
--- shape: trap
--- expect: plain
+-- nine lookup joins: one more than j_joins_8, the same result as the normal plan
+-- shape: join
+-- expect: agg
 -- sets: K400
 -- key: -
 SELECT s.kind, ds.region, dl.family, dc.continent, count(*) AS n, sum(o.total) AS revenue, count(DISTINCT dd.quarter) AS quarters, max(dcu.segment) AS segment,
