@@ -89,9 +89,49 @@ SELECT rls_plan('SELECT count(*) FROM rls_v WHERE body @@> ''needle''') ~ 'Sift'
 (1 row)
 
 RESET ROLE;
+-- a partition and an inheritance child carry the parent's policy in their restrictions, not in their range table entry: a word that
+-- only the hidden rows hold must estimate as a word that no row holds, and a score is refused for them as for any table under a policy
+CREATE TABLE rls_pt (id int, owner text, body text) PARTITION BY RANGE (id);
+CREATE TABLE rls_pt1 PARTITION OF rls_pt FOR VALUES FROM (0) TO (2000);
+CREATE TABLE rls_pt2 PARTITION OF rls_pt FOR VALUES FROM (2000) TO (4000);
+CREATE TABLE rls_inh (id int, owner text, body text);
+CREATE TABLE rls_inh_c () INHERITS (rls_inh);
+INSERT INTO rls_pt SELECT i, (ARRAY['sift_t_rls', 'hidden'])[1 + i % 2], 'needle visible ' || i FROM generate_series(1, 3999) i;
+INSERT INTO rls_pt SELECT 2000 + i, 'hidden', 'zebrazebra zebrazebra' FROM generate_series(1, 1500) i;
+INSERT INTO rls_inh_c SELECT i, (ARRAY['sift_t_rls', 'hidden'])[1 + i % 2], 'needle visible ' || i FROM generate_series(1, 2000) i;
+INSERT INTO rls_inh_c SELECT i, 'hidden', 'zebrazebra zebrazebra' FROM generate_series(2001, 3500) i;
+CREATE INDEX rls_pt1_idx ON rls_pt1 USING sift (body);
+CREATE INDEX rls_pt2_idx ON rls_pt2 USING sift (body);
+CREATE INDEX rls_inh_c_idx ON rls_inh_c USING sift (body);
+ANALYZE rls_pt, rls_inh, rls_inh_c;
+GRANT SELECT ON rls_pt, rls_inh TO sift_t_rls;
+ALTER TABLE rls_pt ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rls_inh ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON rls_pt USING (owner = current_user);
+CREATE POLICY own ON rls_inh USING (owner = current_user);
+SET ROLE sift_t_rls;
+SELECT replace(rls_plan('SELECT id FROM rls_pt WHERE body @@> ''zebrazebra'''), 'zebrazebra', 'x')
+	 = replace(rls_plan('SELECT id FROM rls_pt WHERE body @@> ''qwertyuiop'''), 'qwertyuiop', 'x') AS partitions_estimate_the_same_word_held_by_no_visible_row;
+ partitions_estimate_the_same_word_held_by_no_visible_row 
+----------------------------------------------------------
+ t
+(1 row)
+
+SELECT replace(rls_plan('SELECT id FROM rls_inh WHERE body @@> ''zebrazebra'''), 'zebrazebra', 'x')
+	 = replace(rls_plan('SELECT id FROM rls_inh WHERE body @@> ''qwertyuiop'''), 'qwertyuiop', 'x') AS inheritance_children_the_same;
+ inheritance_children_the_same 
+-------------------------------
+ t
+(1 row)
+
+SELECT id FROM rls_pt WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() is not available on "rls_pt1" while row-level security or a security barrier view applies
+SELECT id FROM rls_inh WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() is not available on "rls_inh" while row-level security or a security barrier view applies
+RESET ROLE;
 DROP VIEW rls_v;
 DROP FUNCTION rls_plan(text);
-DROP TABLE rls_a, rls_b;
+DROP TABLE rls_a, rls_b, rls_pt, rls_inh, rls_inh_c;
 DROP OWNED BY sift_t_rls;
 DROP ROLE sift_t_rls;
 DROP EXTENSION pg_sift;
