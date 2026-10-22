@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 42
+plan 49
 node_init uc 21
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
@@ -73,16 +73,29 @@ check "cube_minmax set after the build warns that the old units scan, with the R
 check "set_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +set_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
 check "rollup_dims set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_dims with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
 check "an index built with set_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
-check "sift.reindex_needed gives the same indexes, one command each" test "$(q clean "SELECT string_agg(command, ' ' ORDER BY command) FROM sift.reindex_needed()")" == \
-	"REINDEX INDEX CONCURRENTLY public.facts_late; REINDEX INDEX CONCURRENTLY public.facts_late_roll; REINDEX INDEX CONCURRENTLY public.facts_late_set;"
+check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
+	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
+	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 check "the deprecated mutable_limit warns" grep -q -E '^warn +facts_old_opt +option +mutable_limit' <<<"$out"
 check "a warning alone exits 0, and 1 with --strict" test "$(uc clean >/dev/null; echo $?)$(uc --strict clean >/dev/null; echo $?)" == 01
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n)" "ALTER INDEX scat_late SET (set_columns = 'k')" >/dev/null
-check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.reindex_needed() WHERE index = 'scat_late'::regclass")" == 1
+check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1
 q clean "REINDEX INDEX CONCURRENTLY public.scat_late" >/dev/null
-check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.reindex_needed() WHERE index = 'scat_late'::regclass")" == 0
-q clean "DROP INDEX facts_late, facts_old_opt, facts_late_set, facts_late_roll, scat_late" "DROP TABLE scat" >/dev/null
+check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 0
+# a text index is listed whatever its data (a word over 255 bytes is stored differently since 3.3), a keyword index never; a sift_table below the format of its schema
+q clean "CREATE INDEX docs_kw ON docs USING sift (body) WITH (analyzer = keyword)" "SET sift.col_format_minor = 6" "CREATE TABLE months_old (id int, at timestamp) USING sift_table" \
+	"INSERT INTO months_old SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM months_old" >/dev/null
+check "a text index is required, a keyword index is not listed" test "$(q clean "SELECT string_agg(object::text, ',' ORDER BY object::text) FROM sift.upgrade_commands() WHERE required")" == docs_idx,facts_old_opt
+check "a sift_table written below column format 8 is listed with a VACUUM FULL" test "$(q clean "SELECT kind || ' ' || command FROM sift.upgrade_commands() WHERE object = 'months_old'::regclass")" == "rewrite VACUUM FULL public.months_old;"
+check "the table written by this library with a timestamp column is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'months'::regclass")" == 0
+out=$(uc clean)
+check "the preflight warns with the VACUUM FULL and its lock" grep -q -E '^warn +months_old +table +column format 4 .*ACCESS EXCLUSIVE.*VACUUM FULL public\.months_old;' <<<"$out"
+check "the preflight does not warn about the text index" test -z "$(grep -E '^warn +docs_idx ' <<<"$out")"
+q clean "VACUUM FULL months_old" >/dev/null
+check "after the VACUUM FULL the table leaves the list" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'months_old'::regclass")" == 0
+check "the table is in column format 8" test "$(q clean "SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('months_old') WHERE kind = 'columns'")" == 8
+q clean "DROP INDEX facts_late, facts_old_opt, facts_late_set, facts_late_roll, scat_late, docs_kw" "DROP TABLE scat, months_old" >/dev/null
 
 # settings and test objects outside the code. A new session has not loaded the library, so ALTER DATABASE takes a name it does not define.
 q cfg "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int)" >/dev/null

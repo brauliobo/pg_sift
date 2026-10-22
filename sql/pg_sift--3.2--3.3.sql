@@ -23,19 +23,34 @@ CREATE FUNCTION sift.col_clustering(index regclass, width_pct float8 DEFAULT 1,
 	AS 'MODULE_PATHNAME', 'sift_col_clustering' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.col_clustering(regclass, float8) IS 'How well the rows of a sift_col index are ordered for its zone maps, one row per leaf: the units an equality or a range touches, the correlation and a verdict (clustered, partial or scattered).';
 
--- The sift_col indexes that a REINDEX would improve, one row per reason: an option (cube_minmax, JSON paths, rollup_dims, set_columns) that only the
--- units written after it follow, set on an index whose older units lack the section (docs/UPGRADING.md). detected: the option and the oldest column
--- format; advice: what the REINDEX changes; command: the statement to run (REINDEX CONCURRENTLY cannot run in a transaction block). Reads the catalogs
--- and the metapages, changes nothing, and gives up on an index that is locked at once (lock_timeout) or that this library refuses (sift.upgrade_check
--- reports those); a library that cannot be loaded is an error. ALTER EXTENSION pg_sift UPDATE to 3.3 prints this list.
-CREATE FUNCTION sift.reindex_needed(OUT index regclass, OUT detected text, OUT advice text, OUT command text)
+-- What an update to 3.3 leaves to do, one row per command, the ones that cost least first (a REINDEX CONCURRENTLY before a VACUUM FULL, and what queries
+-- need before what they only gain from). kind: reindex or rewrite; object: the index or table; reason: what the command changes; command: the statement;
+-- required: queries miss rows until it runs (a word over 255 bytes is stored as its start and a hash since 3.3, and a text index of an older release holds
+-- it cut at 255 bytes; the index does not say whether it holds one, so every text index except analyzer = keyword is listed, and stays listed after its
+-- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax, JSON paths, rollup_dims, set_columns) that only the units written after
+-- it follow, set on an index whose older units lack the section; a sift_table (it cannot be reindexed) whose segments are below the column format its
+-- schema is written in now (calendar cells for date and timestamp columns, minor 8; complete JSON kinds for declared paths, minor 6). A VACUUM FULL takes
+-- an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it. Reads the catalogs and the metapages, changes
+-- nothing, and gives up on a relation that is locked at once (lock_timeout) or that this library refuses (sift.upgrade_check reports those); a library
+-- that cannot be loaded is an error. ALTER EXTENSION pg_sift UPDATE to 3.3 prints this list.
+CREATE FUNCTION sift.upgrade_commands(OUT kind text, OUT object regclass, OUT reason text, OUT command text, OUT required bool)
 	RETURNS SETOF record
 	LANGUAGE plpgsql SET lock_timeout = '100ms' AS $fn$
 DECLARE
 	r record;
-	o record;
 	lo int;
+	why text;
 BEGIN
+	kind := 'reindex'; required := true;
+	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE am.amname = 'sift' AND c.relkind = 'i' AND 'analyzer=keyword' <> ALL (coalesce(c.reloptions, '{}')) ORDER BY n.nspname, c.relname
+	LOOP
+		object := r.relid; command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
+		reason := 'long words (over 255 bytes) are found only after REINDEX: an index built before 3.3 holds such a word cut at 255 bytes, so a query for it finds nothing';
+		RETURN NEXT;
+	END LOOP;
+	required := false;
 	FOR r IN SELECT c.oid AS relid, c.reloptions AS opts, format('%I.%I', n.nspname, c.relname) AS name
 			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
 			 WHERE am.amname = 'sift_col' AND c.relkind = 'i' AND c.reloptions IS NOT NULL ORDER BY n.nspname, c.relname
@@ -48,26 +63,49 @@ BEGIN
 		END;
 		CONTINUE WHEN lo IS NULL;
 		-- a segment is minor 9 or 10 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13)
-		FOR o IN SELECT * FROM (VALUES
-					('^paths=', 6, 'JSON paths',
-					 'segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan, and a REINDEX writes them'),
-					('^cube_minmax=(true|on)$', 7, 'cube_minmax',
-					 'the units written before the option scan; a REINDEX writes the minimum and maximum of every unit'),
-					('^rollup_dims=.', 9, 'rollup_dims',
-					 'the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); a REINDEX writes it where it fits'),
-					('^set_columns=.', 10, 'set_columns',
-					 'the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); a REINDEX writes it where it helps')
-				 ) v(pat, minor, what, why)
-				 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) ORDER BY v.minor
-		LOOP
-			index := r.relid; detected := format('%s with column format %s', o.what, lo); advice := o.why;
-			command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
-			RETURN NEXT;
-		END LOOP;
+		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
+				('^paths=', 6, 'JSON paths',
+				 'segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan, and a REINDEX writes them'),
+				('^cube_minmax=(true|on)$', 7, 'cube_minmax',
+				 'the units written before the option scan; a REINDEX writes the minimum and maximum of every unit'),
+				('^rollup_dims=.', 9, 'rollup_dims',
+				 'the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); a REINDEX writes it where it fits'),
+				('^set_columns=.', 10, 'set_columns',
+				 'the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); a REINDEX writes it where it helps')
+			 ) v(pat, minor, what, why)
+			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat);
+		CONTINUE WHEN why IS NULL;
+		object := r.relid; reason := why; command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
+		RETURN NEXT;
+	END LOOP;
+	kind := 'rewrite';
+	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name,
+					EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+							AND a.atttypid IN ('date'::regtype, 'timestamp'::regtype, 'timestamptz'::regtype)) AS calendar,
+					EXISTS (SELECT 1 FROM sift.table_paths p WHERE p.relid = c.oid) AS paths
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE am.amname = 'sift_table' AND c.relkind IN ('r', 'm') ORDER BY n.nspname, c.relname
+	LOOP
+		BEGIN
+			SELECT min(s.format) INTO lo FROM sift.table_segments(r.relid) s WHERE s.kind = 'columns';
+		EXCEPTION WHEN OTHERS THEN
+			IF SQLSTATE IN ('42883', '58P01', '55P03') THEN RAISE; END IF;
+			CONTINUE;
+		END;
+		-- the segments of a table with declared paths are never minor 8 (src/col/seg_write.c)
+		why := concat_ws('; ',
+				CASE WHEN r.calendar AND NOT r.paths AND lo < 8 THEN
+					format('column format %s: the segments have no calendar cells of the date and timestamp columns, so a GROUP BY on a day or a month of them reads the rows', lo) END,
+				CASE WHEN r.paths AND lo < 6 THEN
+					format('column format %s: the segments may lack the kinds of a JSON null or of a type of the declared paths, and a predicate that needs them uses the normal plan', lo) END);
+		CONTINUE WHEN why = '';
+		object := r.relid; reason := why || '. It takes an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it';
+		command := format('VACUUM FULL %s;', r.name);
+		RETURN NEXT;
 	END LOOP;
 END
 $fn$;
-COMMENT ON FUNCTION sift.reindex_needed() IS 'The sift_col indexes that a REINDEX would improve (an option that only the units written after it follow), with the statement to run; changes nothing.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
 
 -- What the Custom Scan (SiftAgg) scans of this session did (docs/USAGE.md "Session statistics"): one row per counter, and one per refusal
 -- slug recorded (sift.explain_refusals). The counters are in the memory of the backend: no shared memory, no shared_preload_libraries, so the
@@ -192,28 +230,6 @@ CREATE FUNCTION sift.table_ddl_check() RETURNS event_trigger
 
 CREATE EVENT TRIGGER sift_table_ddl_check ON ddl_command_end WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION sift.table_ddl_check();
 
--- The indexes this update leaves for a REINDEX, printed once; sift.reindex_needed() lists them again. The last step of every update path to 3.3, so it
--- covers the indexes that 3.0, 3.1 and 3.2 wrote. It only reads, and never fails the update: a library that does not answer (an older one loaded in this
--- session, an index locked by another session) gets a warning that says to run the function after reconnecting. An extension script runs with
--- client_min_messages at warning or above, so what asks for an action is a warning, and the all-clear lowers it to notice for itself (undone with the script).
-DO $do$
-DECLARE
-	cmds text[];
-	n int;
-BEGIN
-	SELECT array_agg(command ORDER BY command), count(*) INTO cmds, n FROM (SELECT DISTINCT command FROM sift.reindex_needed()) s;
-	IF n = 0 THEN
-		PERFORM set_config('client_min_messages', 'notice', true);
-		RAISE NOTICE 'pg_sift 3.3: no index needs a REINDEX after this update';
-	ELSE
-		RAISE WARNING 'pg_sift 3.3: REINDEX is worth it for % sift_col index(es) after this update', n
-			USING DETAIL = concat(array_to_string(cmds[1:20], E'\n'), CASE WHEN n > 20 THEN format(E'\nand %s more', n - 20) END),
-				  HINT = 'The older units stay readable until then. REINDEX CONCURRENTLY cannot run in a transaction block. SELECT * FROM sift.reindex_needed() gives the reason for each index.';
-	END IF;
-EXCEPTION WHEN OTHERS THEN
-	RAISE WARNING 'pg_sift 3.3: the check for indexes to REINDEX did not run (%): reconnect and run SELECT * FROM sift.reindex_needed()', SQLERRM;
-END
-$do$;
 
 -- Maintenance state of an index: segments and sealed write buffers waiting for promotion, running (a promotion, merge, VACUUM or verify holds
 -- the maintenance lock; NULL on a standby) and, when its last background step failed, the number of failures in a row, when, the earliest the
@@ -272,3 +288,36 @@ $fn$;
 
 CREATE EVENT TRIGGER sift_publication_check ON ddl_command_end WHEN TAG IN ('CREATE PUBLICATION', 'ALTER PUBLICATION')
 	EXECUTE FUNCTION sift.publication_check();
+
+-- What this update leaves to do, printed once; sift.upgrade_commands() lists it again. The last step of every update path to 3.3, so it covers what 3.0,
+-- 3.1 and 3.2 wrote. It only reads, and never fails the update: a library that does not answer (an older one loaded in this session, a relation locked by
+-- another session) gets a warning that says to run the function after reconnecting. An extension script runs with client_min_messages at warning or
+-- above, so what asks for an action is a warning, and the all-clear lowers it to notice for itself (undone with the script). The text indexes are a
+-- warning of their own: a query for a word over 255 bytes misses rows in them until the REINDEX.
+DO $do$
+DECLARE
+	g record;
+	listed bool := false;
+	msg text[] := ARRAY['pg_sift 3.3: REINDEX is needed for %s text index(es): a query for a word over 255 bytes finds nothing in an index built before this release',
+						'pg_sift 3.3: REINDEX is worth it for %s sift_col index(es) after this update',
+						'pg_sift 3.3: a rewrite is worth it for %s sift_table table(s) after this update'];
+	hint text[] := ARRAY['Such words were cut at 255 bytes, and the index does not say whether it holds one, so every text index (analyzer other than keyword) is listed. REINDEX CONCURRENTLY cannot run in a transaction block. SELECT * FROM sift.upgrade_commands() lists them again.',
+						 'The older units stay readable until then. REINDEX CONCURRENTLY cannot run in a transaction block. SELECT * FROM sift.upgrade_commands() gives the reason for each index.',
+						 'The older segments stay readable until then. VACUUM FULL takes an ACCESS EXCLUSIVE lock and rewrites the table: schedule it. SELECT * FROM sift.upgrade_commands() gives the reason for each table.'];
+BEGIN
+	FOR g IN SELECT grp, count(*) AS n, array_agg(command ORDER BY ord) AS cmds
+			 FROM (SELECT CASE WHEN required THEN 1 WHEN kind = 'reindex' THEN 2 ELSE 3 END AS grp, row_number() OVER () AS ord, command
+				   FROM sift.upgrade_commands()) s GROUP BY grp ORDER BY grp
+	LOOP
+		listed := true;
+		RAISE WARNING '%', format(msg[g.grp], g.n)
+			USING DETAIL = concat(array_to_string(g.cmds[1:20], E'\n'), CASE WHEN g.n > 20 THEN format(E'\nand %s more', g.n - 20) END), HINT = hint[g.grp];
+	END LOOP;
+	IF NOT listed THEN
+		PERFORM set_config('client_min_messages', 'notice', true);
+		RAISE NOTICE 'pg_sift 3.3: nothing to REINDEX or rewrite after this update';
+	END IF;
+EXCEPTION WHEN OTHERS THEN
+	RAISE WARNING 'pg_sift 3.3: the check for what to REINDEX or rewrite did not run (%): reconnect and run SELECT * FROM sift.upgrade_commands()', SQLERRM;
+END
+$do$;

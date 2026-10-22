@@ -89,6 +89,7 @@ sift.async_maintenance = off'
 		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 12000) i" \
 		"CREATE INDEX docs_idx ON docs USING sift (body)" "CREATE INDEX docs_col ON docs USING sift_col (id, g, n)" \
 		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 3 || ' beta' || i % 7 FROM generate_series(12001, 12600) i" \
+		"CREATE TABLE lw (id int, body text)" "INSERT INTO lw VALUES (1, repeat('x', 300))" "CREATE INDEX lw_idx ON lw USING sift (body)" \
 		"CREATE TABLE jt (id int, items jsonb, attr jsonb)" \
 		"INSERT INTO jt SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END),
 		 CASE i % 5 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"a\":null}'::jsonb WHEN 2 THEN '{\"a\":true}'::jsonb WHEN 3 THEN '{\"a\":1}'::jsonb ELSE '{\"a\":\"1\"}'::jsonb END
@@ -97,7 +98,9 @@ sift.async_maintenance = off'
 		"INSERT INTO jt SELECT i, '[{\"s\":\"gift\"}]', '{\"a\":null}' FROM generate_series(3001, 3300) i" >/dev/null || bail "$ref setup"
 	if [[ $hastbl == yes ]]; then
 		q "CREATE TABLE tbl (id int, g int, n int) USING sift_table" "INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 12000) i" "VACUUM tbl" \
-			"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(12001, 12600) i" "CREATE TABLE tbl_h AS TABLE tbl" >/dev/null || bail "$ref table setup"
+			"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(12001, 12600) i" "CREATE TABLE tbl_h AS TABLE tbl" \
+			"CREATE TABLE tbl_ts (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ts SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" \
+			"VACUUM tbl_ts" >/dev/null || bail "$ref table setup"
 	fi
 	q "VACUUM docs, jt" >/dev/null
 	a=$(ans IDX "" "${what}b"); plain=$(ans PLAIN "" "${what}b")
@@ -110,20 +113,24 @@ sift.async_maintenance = off'
 	node_start mx || bail "cannot start this tree on $ref data"
 	upd=$(LC_ALL=C q "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 	check "$ref: ALTER EXTENSION UPDATE" test $rc -eq 0
-	# the JSON paths index of a release before column format 6 is named with its command; the one of 3.2.0 and the others need none
-	if ((newest < 6)); then
-		check "$ref: the update names the index to REINDEX and only that one" test "$(grep -c 'REINDEX INDEX CONCURRENTLY' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public.jt_col;' <<<"$upd")" == 1/1
-	else
-		check "$ref: the update says that no index needs a REINDEX" grep -qF "no index needs a REINDEX" <<<"$upd"
-	fi
+	# the text index is always named (a word over 255 bytes), the JSON paths index of a release before column format 6 too, and a sift_table without calendar cells
+	check "$ref: the update names the text indexes, and the JSON paths index when it is before column format 6" test \
+		"$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public' <<<"$upd")" == "1/$((2 + (newest < 6)))"
+	check "$ref: the update names the VACUUM FULL of the timestamp sift_table when the release has one" test "$(grep -c 'VACUUM FULL public.tbl_ts;' <<<"$upd")/$(grep -c 'VACUUM FULL public' <<<"$upd")" == "$([[ $hastbl == yes ]] && echo 1/1 || echo 0/0)"
 	check "$ref: the extension is at the version of this tree" test "$(q "SELECT extversion = default_version FROM pg_extension, pg_available_extensions WHERE extname = 'pg_sift' AND name = 'pg_sift'")" == t
 	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
-		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'reindex_needed')")" == 7
+		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')")" == 7
 	agree "$ref: answers after the update equal what $ref answered" "$(ans IDX "" "${what}b")" "$a"
 	agree "$ref: answers after the update equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 	check "$ref: sift.verify and sift.col_verify are clean" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"
 	[[ $hastbl == no ]] || check "$ref: the sift_table is its heap twin" twin_same
-	check "$ref: REINDEX" q "REINDEX INDEX docs_idx" "REINDEX INDEX docs_col" "REINDEX INDEX jt_col"
+	# the index of the release holds the word cut at 255 bytes: it finds nothing until the REINDEX the update printed
+	LONGQ="SELECT count(*) FROM lw WHERE body @@> repeat('x', 300)"
+	check "$ref: the index written by the release does not find a word of 300 bytes" test "$(q "SET enable_seqscan = off" "$LONGQ" | tail -n 1)" == 0
+	check "$ref: REINDEX" q "REINDEX INDEX docs_idx" "REINDEX INDEX docs_col" "REINDEX INDEX jt_col" "REINDEX INDEX CONCURRENTLY public.lw_idx"
+	check "$ref: after the REINDEX the index finds the word of 300 bytes" test "$(q "SET enable_seqscan = off" "$LONGQ" | tail -n 1)" == 1
+	[[ $hastbl == no ]] || check "$ref: VACUUM FULL of the timestamp sift_table writes column format 8 and leaves the list" test "$(q "SELECT count(*) FROM tbl_ts" \
+		"VACUUM FULL tbl_ts" "SELECT string_agg(DISTINCT format::text, ',') || ':' || (SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'tbl_ts'::regclass) FROM sift.table_segments('tbl_ts') WHERE kind = 'columns'" | tr '\n' ' ')" == "3000 8:0 "
 	check "$ref: verify after REINDEX" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"
 	agree "$ref: answers after REINDEX equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 	# writes with this tree on what the release wrote
