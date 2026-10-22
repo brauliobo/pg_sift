@@ -288,7 +288,7 @@ sift_image() {
   cat >"$ctx/Dockerfile" <<EOF
 FROM $2
 LABEL sift-store-key=$key
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev postgresql-server-dev-\$PG_MAJOR
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev libicu-dev postgresql-server-dev-\$PG_MAJOR
 COPY . /src
 RUN nice make -C /src -j${IMAGE_JOBS:-4} USE_PGXS=1 install && rm -rf /src
 EOF
