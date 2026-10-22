@@ -73,6 +73,7 @@ preflight() {
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
+	# every speed claim of Unreleased has a case in bench/cases.tsv, or a reasoned line in scripts/bench-cases.allow: the number of lines left is the one to watch
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
