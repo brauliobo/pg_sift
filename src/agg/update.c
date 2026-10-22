@@ -614,7 +614,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			direct_update(ex, ai, u.ok, nsel);
 			break;
 		default:
-			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
+			SIFT_INVARIANT(false, "sift: aggregate kind %d is not a scan aggregate", a->kind);
 	}
 }
 
