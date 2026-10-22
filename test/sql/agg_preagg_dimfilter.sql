@@ -68,7 +68,7 @@ INSERT INTO pa_q VALUES
 	(27, 'measure not stored', 'SELECT sum(small) FROM %s WHERE kind = 3'),
 	(28, 'other key: scan',   'SELECT grp, count(*) FROM %s WHERE kind = 3 GROUP BY grp'),
 	(29, 'the key is the dim', 'SELECT kind, count(*), sum(val) FROM %s WHERE kind = 3 GROUP BY kind'),
-	(30, 'FILTER: scan',      'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
+	(30, 'FILTER on the dim',      'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
 	(31, 'no rows',           'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id > 100000000'),
 	(32, 'the dim and its text', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND grp = ''g05''');
 
