@@ -484,6 +484,13 @@ zones_end(const SiftColSegment *seg)
 	return at;
 }
 
+/* Do off, then a bytes, then b bytes lie inside room bytes: the stored offsets and sizes are 64 bit, their sum may wrap */
+static bool
+within(uint64 room, uint64 off, uint64 a, uint64 b)
+{
+	return off <= room && a <= room - off && b <= room - off - a;
+}
+
 static const PaggHeader *
 pagg_header(SiftColSegment *seg)
 {
@@ -506,12 +513,12 @@ pagg_header(SiftColSegment *seg)
 			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units; a segment of column format 1.%d has version %d.",
 					h->magic, h->version, h->ncols, h->nsb, seg->entry.format, ver);
 		for (int c = 0; c < ncols; c++)
-			if (h->lagg_off[c] % 8 != 0 || (h->lagg_off[c] && end + h->lagg_off[c] + lagg_block_size(seg->nsb) > s->len))
+			if (h->lagg_off[c] % 8 != 0 || (h->lagg_off[c] && !within(s->len - end, h->lagg_off[c], lagg_block_size(seg->nsb), 0)))
 				corrupt(seg, "The sums of leaf %d lie outside the section.", c);
-		if (h->cubedir_off && (h->cubedir_off % 8 != 0 || end + h->cubedir_off + (seg->nsb + 1) * sizeof(uint64) + h->cube_bytes > s->len))
+		if (h->cubedir_off && (h->cubedir_off % 8 != 0 || !within(s->len - end, h->cubedir_off, (seg->nsb + 1) * sizeof(uint64), h->cube_bytes)))
 			corrupt(seg, "The cubes (%llu bytes at %llu) lie outside the section.", ULL(h->cube_bytes), ULL(h->cubedir_off));
 		if (ver > 1 && PAGG_ECUBEDIR(h) &&
-			(PAGG_ECUBEDIR(h) % 8 != 0 || end + PAGG_ECUBEDIR(h) + (seg->nsb + 1) * sizeof(uint64) + PAGG_ECUBE_BYTES(h) > s->len))
+			(PAGG_ECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_ECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_ECUBE_BYTES(h))))
 			corrupt(seg, "The element cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_ECUBE_BYTES(h)), ULL(PAGG_ECUBEDIR(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
