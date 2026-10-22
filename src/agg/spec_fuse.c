@@ -125,7 +125,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 		}
 	if (u == NULL)
 	{
-		if (f->u.njoin == SIFT_AGG_MAX_JOINS)
+		if (f->u.njoin == sift_limit(joins, SIFT_AGG_MAX_JOINS))
 			return false;
 		arm->join[j] = f->u.njoin;
 		u = &f->u.join[f->u.njoin++];
@@ -145,7 +145,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 			at++;
 		if (at == u->ncol)
 		{
-			if (u->ncol == SIFT_AGG_MAX_JCOLS)
+			if (u->ncol == sift_limit(join_cols, SIFT_AGG_MAX_JCOLS))
 				return false;
 			u->colatt[at] = mj->colatt[c];
 			u->coltype[at] = mj->coltype[c];
@@ -227,7 +227,7 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 		at++;
 	if (at == f->u.ncombo)
 	{
-		if (at == SIFT_AGG_MAX_COMBOS)
+		if (at == sift_limit(combos, SIFT_AGG_MAX_COMBOS))
 			return false;
 		f->u.combo[f->u.ncombo++] = x;
 		f->u.combo[at].nslots = 0;
@@ -775,12 +775,20 @@ fuse_joined(const Fuse *f)
 static bool
 fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 {
+	int			nj = 0,
+				nc = 0;
+
 	f->n = n;
 	f->owners = NIL;
 	f->arm = palloc0(n * sizeof(FuseArm));
 	memset(&f->u, 0, sizeof(f->u));
-	f->u.join = palloc0(SIFT_AGG_MAX_JOINS * sizeof(SiftAggJoin));
-	f->u.combo = palloc0(SIFT_AGG_MAX_COMBOS * sizeof(SiftAggCombo));
+	for (int i = 0; i < n; i++)
+	{
+		nj += m[i]->njoin;
+		nc += m[i]->ncombo;
+	}
+	f->u.join = palloc0(Max(Min(nj, sift_limit(joins, SIFT_AGG_MAX_JOINS)), 1) * sizeof(SiftAggJoin));
+	f->u.combo = palloc0(Max(Min(nc, sift_limit(combos, SIFT_AGG_MAX_COMBOS)), 1) * sizeof(SiftAggCombo));
 	if (!fuse_leaves(m, n, &f->u))
 		return false;
 	for (int i = 0; i < n; i++)

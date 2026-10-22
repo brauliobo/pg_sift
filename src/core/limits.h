@@ -58,7 +58,7 @@
 	X(first_keys, "FIRST_MAX_KEYS", "agg/plan_order.c", 4, "columns", \
 	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
 	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec.h", SIFT_AGG_MAX_FORD, "columns", \
-	  "ORDER BY columns of a first-row lookup child", "normal plan", "-", 0) \
+	  "ORDER BY columns of a first-row lookup child", "the sub-select runs once per key, as a lookup subquery", "-", 1) \
 	X(first_out_cols, "SIFT_AGG_MAX_FOUT", "agg/spec.h", SIFT_AGG_MAX_FOUT, "columns", \
 	  "output columns of a first-row lookup child that map to the table", "normal plan", "-", 0) \
 	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec.h", SIFT_AGG_MAX_KEYS, "keys", \

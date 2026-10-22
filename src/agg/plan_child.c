@@ -409,7 +409,7 @@ first_order(Query *q, SiftAggFirst *f)
 					rt;
 		int			cmp = builtin_cmp(sgc->sortop, &lt, &rt);
 
-		if (f->nord == SIFT_AGG_MAX_FORD || !IsA(v, Var) || v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 ||
+		if (f->nord >= sift_limit(first_order_cols, SIFT_AGG_MAX_FORD) || !IsA(v, Var) || v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 ||
 			(cmp != SCMP_LT && cmp != SCMP_GT) || lt != v->vartype || rt != v->vartype || v->vartype == BOOLOID ||
 			!sift_aggspec_integer_type(v->vartype))
 			return false;

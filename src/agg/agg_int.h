@@ -84,10 +84,10 @@ typedef struct AggExec
 	FmgrInfo  **xcmp;			/* SAA_X_MIN, SAA_X_MAX: the comparison of the type, and the length and pass-by-value of the aggregate's type */
 	int16	   *xlen;
 	bool	   *xbyval;
-	int			clbase[SIFT_AGG_MAX_COMBOS];	/* per combo: its first dictionary map slot (after the keys and aggregates) */
+	int		   *clbase;	/* per combo: its first dictionary map slot (after the keys and aggregates) */
 	int			ncl;
 	int			nj;				/* join combos, in the order the stages apply them */
-	int			jcombo[SIFT_AGG_MAX_JOINS];
+	int		   *jcombo;
 	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
 	SpineSt    *spine;			/* the rows of the arms' spine (SiftAggSpec.spine) */
@@ -204,19 +204,20 @@ typedef struct AggExec
 	int64	   *hist2;			/* the scratch of a second one */
 	/* the tuples being aggregated (the arrays of cur) */
 	Tup			t0;				/* the chunk's selection */
-	Tup			stage[SIFT_AGG_MAX_JOINS];	/* the output of each join stage that repeats or drops tuples */
+	Tup		   *stage;			/* the output of each join stage that repeats or drops tuples */
 	Tup		   *cur;
 	int			cstart;			/* the chunk: [cstart, cstart + cn) of the unit's rows / elements */
 	int			cn;
 	uint32	   *sel;
 	uint32	   *tidx;
 	uint32	   *ridx;
-	uint32	   *seid[SIFT_AGG_MAX_JOINS];	/* the entries of the tuples a stage that repeats them is working on */
-	uint32	   *xcout[SIFT_AGG_MAX_COMBOS];	/* per combo a scoped combo reads the output of: that row, repeated for the elements it resolves (elem_exists) */
+	uint32	 ***alcout;			/* per stage: the outputs of the tuples it passes on as they are, plus its own */
+	uint32	  **seid;			/* the entries of the tuples a stage that repeats them is working on */
+	uint32	  **xcout;			/* per combo a scoped combo reads the output of: that row, repeated for the elements it resolves (elem_exists) */
 	/* scratch of combos */
 	uint64	   *cvid[SIFT_AGG_MAX_CLEAVES];
-	uint32	   *cfree[SIFT_AGG_MAX_COMBOS];	/* output row per tuple of a combo without a join */
-	bool		cfree_ok[SIFT_AGG_MAX_COMBOS];
+	uint32	  **cfree;			/* output row per tuple of a combo without a join */
+	bool	   *cfree_ok;
 	uint32	   *peid;
 	uint32	   *pti;
 	uint32	   *pri;

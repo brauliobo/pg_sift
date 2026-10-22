@@ -11,7 +11,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  col_leaves          | SIFT_COL_MAX_COLS               |        128 | t         | t
  combo_entries       | COMBO_MAX_ENTRIES               |   16777216 | t         | t
  combo_leaves        | SIFT_AGG_MAX_CLEAVES            |          8 | t         | f
- combos              | SIFT_AGG_MAX_COMBOS             |         16 | t         | t
+ combos              | SIFT_AGG_MAX_COMBOS             |        128 | t         | t
  cube_dims           | SIFT_PAGG_MAX_DIMS              |         16 | t         | f
  cube_groups         | SIFT_PAGG_DEF_GROUPS            |        256 | t         | f
  cube_measures       | SIFT_PAGG_MAX_MEAS              |          8 | t         | f
@@ -23,7 +23,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  fields              | SIFT_MAX_FIELDS                 |         14 | t         | f
  filter_set          | FILTER_MAX_SET                  |          8 | t         | f
  first_keys          | FIRST_MAX_KEYS                  |          4 | t         | f
- first_order_cols    | SIFT_AGG_MAX_FORD               |          3 | t         | f
+ first_order_cols    | SIFT_AGG_MAX_FORD               |          8 | t         | t
  first_out_cols      | SIFT_AGG_MAX_FOUT               |         16 | t         | f
  float_ops           | SIFT_AGG_MAX_VX                 |         16 | t         | f
  generic_args        | SIFT_AGG_MAX_GARGS              |        100 | t         | f
@@ -31,10 +31,10 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  group_keys          | SIFT_AGG_MAX_KEYS               |         32 | t         | t
  hash_part_combos    | HASH_MAX_COMBOS                 |    1048576 | t         | t
  int_digits          | SIFT_COL_MAX_SCALE              |         18 | t         | f
- join_cols           | SIFT_AGG_MAX_JCOLS              |          6 | t         | t
+ join_cols           | SIFT_AGG_MAX_JCOLS              |         16 | t         | t
  join_index_eqs      | SIFT_AGG_MAX_JIDX               |          3 | t         | f
  join_keys           | SIFT_AGG_MAX_JKEYS              |          3 | t         | f
- joins               | SIFT_AGG_MAX_JOINS              |          8 | t         | t
+ joins               | SIFT_AGG_MAX_JOINS              |         32 | t         | t
  layout_leaves       | SIFT_COLSRC_MAX_LEAVES          |        128 | t         | f
  lookup_kb           | -                               |     262144 | t         | f
  lookup_shared_bytes | SHARE_MAX                       | 1073741824 | t         | f

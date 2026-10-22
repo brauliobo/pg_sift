@@ -619,14 +619,11 @@ elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
 	const uint32 *offs = elem_offs(ex, p->leaf2);
 	uint32		r = t->ridx[j],
 				ref[SIFT_AGG_MAX_CLEAVES] = {0};
-	Tup			xt = {0};
+	Tup			xt = {.cout = ex->xcout};
 
 	for (int k = 0; k < cb->nleaves; k++)
 		if (cb->leaf[k] < 0)
-		{
 			ref[k] = t->cout[cb->refcombo[k]][j];
-			xt.cout[cb->refcombo[k]] = ex->xcout[cb->refcombo[k]];
-		}
 	if (st->rowmask_ok && st->memo_row == r && memcmp(ref, st->memo_ref, sizeof(ref)) == 0)
 		return st->memo_res;
 	if (p->pass_poison)
