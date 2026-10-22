@@ -70,7 +70,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, int nout, const int *attno, int flags, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, int nout, const int *attno, int flags, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
@@ -78,6 +78,7 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 	{
 		l = lappend_int(lappend_int(l, leaf[j]), (desc[j] ? 1 : 0) | (nulls_first[j] ? 2 : 0));
 		l = lappend_int(lappend_int(lappend_int(l, (int) sortop[j]), (int) cmp[j]), (int) collid[j]);
+		l = lappend_int(lappend_int(lappend_int(lappend_int(l, xf[j].kind), (int) (uint32) xf[j].c), (int) (uint32) ((uint64) xf[j].c >> 32)), (int) xf[j].coll);
 	}
 	l = lappend_int(l, nout);
 	for (int c = 0; c < nout; c++)
@@ -105,6 +106,13 @@ sift_topn_limit_text(Node *spec)
 	return psprintf("by parameter%s", how);
 }
 
+/* The bytes of a dictionary entry, copied out of the unit: what a heap entry holds for a key of byte strings (kept at int64 in TopEnt.k) */
+typedef struct KeyBlob
+{
+	uint32		len;
+	char		data[FLEXIBLE_ARRAY_MEMBER];
+} KeyBlob;
+
 typedef struct TopKey
 {
 	int			leaf;
@@ -118,19 +126,20 @@ typedef struct TopKey
 	Oid			sortop;
 	Oid			collid;
 	FmgrInfo   *cmp;			/* BK_FMGR: the btree comparison function of the type */
+	int			xk;				/* TXK_*: what the key does to its leaf's value (agg/topn.h) */
+	int64		xc;				/* TXK_COALESCE: the constant */
+	Oid			xcoll;			/* TXK_LOWER, TXK_UPPER: the collation of the call */
+	FmgrInfo   *xfn;
+	KeyBlob   **xmemo;			/* TXK_LOWER, TXK_UPPER: the result for each code of the dictionary (xid, xbytes, xn) once it is known (NULL: not yet) */
+	const void *xid;
+	const char *xbytes;
+	uint32		xn;
 } TopKey;
 
 #define BK_TEXT		0			/* the bytes of a text: varstr_cmp under the collation of the query (byte order under C, strcoll then byte order else) */
 #define BK_UUID		1			/* 16 bytes: memcmp, as uuid_cmp */
 #define BK_BYTEA	2			/* the varlena image: memcmp of the contents, then the length, as byteacmp */
 #define BK_FMGR		3			/* any other datum image (inet): the type's own comparison function, on an aligned copy */
-
-/* The bytes of a dictionary entry, copied out of the unit: what a heap entry holds for a key of byte strings (kept at int64 in TopEnt.k) */
-typedef struct KeyBlob
-{
-	uint32		len;
-	char		data[FLEXIBLE_ARRAY_MEMBER];
-} KeyBlob;
 
 #define KEY_BLOB(v)		((const KeyBlob *) (uintptr_t) (v))
 
@@ -331,8 +340,18 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 					cmp = (Oid) list_nth_int(l, i++),
 					collid = (Oid) list_nth_int(l, i++);
 		TopKey	   *k = &t->key[j];
+		int			xk = list_nth_int(l, i++);
+		uint32		xlo = (uint32) list_nth_int(l, i++),
+					xhi = (uint32) list_nth_int(l, i++);
+		Oid			xcoll = (Oid) list_nth_int(l, i++);
 
-		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = lay->leaf[leaf].vtype};
+		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = lay->leaf[leaf].vtype,
+			.xk = xk, .xc = (int64) (((uint64) xhi << 32) | xlo), .xcoll = xcoll};
+		if (xk == TXK_LOWER || xk == TXK_UPPER)
+		{
+			k->xfn = palloc0(sizeof(FmgrInfo));
+			fmgr_info(xk == TXK_LOWER ? F_LOWER_TEXT : F_UPPER_TEXT, k->xfn);
+		}
 		if (k->vtype == SCV_CODE)
 		{
 			k->blob = true;
@@ -572,7 +591,10 @@ static inline bool
 row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 {
 	if (v->isnull && v->isnull[i])
-		return false;
+	{
+		*out = k->xc;
+		return k->xk == TXK_COALESCE;
+	}
 	switch (k->vtype)
 	{
 		case SCV_I32:
@@ -599,10 +621,34 @@ row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 	return true;
 }
 
-/* The entry `code` of a dictionary as the bytes of the key: a datum image (bytea, inet) is stored padded, the length the key means is its varlena header's */
-static inline void
-key_entry(const TopKey *k, const SiftSrcDict *d, uint32 code, const char **p, uint32 *len)
+static KeyBlob *blob_new(MemoryContext cxt, const char *p, uint32 len);
+
+/* the string through lower() or upper() as the call of the query does it: a copy in the arena of the unit */
+static KeyBlob *
+xform_blob(SiftTopN *t, const TopKey *k, const char *p, uint32 len)
 {
+	MemoryContext old = MemoryContextSwitchTo(t->ucxt);
+	struct varlena *in = palloc(VARHDRSZ + len),
+			   *out;
+	KeyBlob    *b;
+
+	SET_VARSIZE(in, VARHDRSZ + len);
+	memcpy(VARDATA(in), p, len);
+	out = (struct varlena *) DatumGetPointer(FunctionCall1Coll(k->xfn, k->xcoll, PointerGetDatum(in)));
+	b = blob_new(t->ucxt, VARDATA_ANY(out), VARSIZE_ANY_EXHDR(out));
+	MemoryContextSwitchTo(old);
+	return b;
+}
+
+/*
+ * The entry `code` of a dictionary as the bytes of key j: a datum image (bytea, inet) is stored padded, the length the key means is its varlena
+ * header's; a lower() or upper() key is the call's result, evaluated once for an entry of a unit
+ */
+static inline void
+key_entry(SiftTopN *t, int j, const SiftSrcDict *d, uint32 code, const char **p, uint32 *len)
+{
+	TopKey	   *k = &t->key[j];
+
 	*p = d->bytes + d->off[code];
 	*len = d->off[code + 1] - d->off[code];
 	if (k->bkind == BK_BYTEA || k->bkind == BK_FMGR)
@@ -611,6 +657,22 @@ key_entry(const TopKey *k, const SiftSrcDict *d, uint32 code, const char **p, ui
 
 		memcpy(&h, *p, sizeof(uint32));
 		*len = VARSIZE_4B(&h);
+	}
+	if (k->xfn)
+	{
+		KeyBlob    *b;
+
+		if (k->xid != d->id || k->xbytes != d->bytes || k->xn != d->n)
+		{
+			k->xmemo = MemoryContextAllocZero(t->ucxt, Max(d->n, 1) * sizeof(KeyBlob *));
+			k->xid = d->id;
+			k->xbytes = d->bytes;
+			k->xn = d->n;
+		}
+		if ((b = k->xmemo[code]) == NULL)
+			b = k->xmemo[code] = xform_blob(t, k, *p, *len);
+		*p = b->data;
+		*len = b->len;
 	}
 }
 
@@ -626,7 +688,7 @@ blob_new(MemoryContext cxt, const char *p, uint32 len)
 
 /* the key j of row i of v, of any key type: a byte string is a copy in the arena of the unit */
 static bool
-row_val(const SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out)
+row_val(SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out)
 {
 	const char *p;
 	uint32		len;
@@ -635,7 +697,7 @@ row_val(const SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out)
 		return row_key(&t->key[j], v, i, out);
 	if (v->isnull && v->isnull[i])
 		return false;
-	key_entry(&t->key[j], v->dict, ((const uint32 *) v->data)[i], &p, &len);
+	key_entry(t, j, v->dict, ((const uint32 *) v->data)[i], &p, &len);
 	*out = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
 	return true;
 }
@@ -1012,7 +1074,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 
 /* The sign of a row of the first key (a NULL, or the entry `code` of dictionary d) against the entry bar, by the first key alone: < 0 before it, > 0 after it */
 static int
-vs_bar(const SiftTopN *t, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
+vs_bar(SiftTopN *t, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
 {
 	const TopKey *k = &t->key[0];
 	bool		bn = bar->nul & 1;
@@ -1024,14 +1086,14 @@ vs_bar(const SiftTopN *t, const SiftSrcDict *d, bool isnull, uint32 code, const 
 		return isnull == k->nulls_first ? -1 : 1;
 	if (isnull)
 		return 0;
-	key_entry(k, d, code, &p, &len);
+	key_entry(t, 0, d, code, &p, &len);
 	c = bytes_cmp(k, p, len, KEY_BLOB(bar->k[0])->data, KEY_BLOB(bar->k[0])->len);
 	return k->desc ? -c : c;
 }
 
 /* Is the row strictly after the bar? The bar only moves toward the front, so an entry that was after it stays after it: worse[code] remembers it, and a unit of few distinct strings compares each once */
 static bool
-after_bar(const SiftTopN *t, uint8 *worse, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
+after_bar(SiftTopN *t, uint8 *worse, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
 {
 	if (isnull)
 		return vs_bar(t, d, true, 0, bar) > 0;
@@ -1274,7 +1336,8 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	const TopKey *k0 = &t->key[0];
 	RunTrunc   *rt = NULL;
 
-	if (!sift_topn_runs || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
+	/* the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
+	if (!sift_topn_runs || k0->xk != TXK_NONE || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
 		return false;
 	if (t->revisit)
 	{
@@ -1387,7 +1450,7 @@ unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 				const char *p;
 				uint32		len;
 
-				key_entry(&t->key[0], key0->dict, code[i], &p, &len);
+				key_entry(t, 0, key0->dict, code[i], &p, &len);
 				e.k[0] = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
 			}
 			heap_push(t, t->lh, &t->ln, &e);
@@ -1409,7 +1472,7 @@ unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 			const char *p;
 			uint32		len;
 
-			key_entry(&t->key[0], key0->dict, t->ck[q], &p, &len);
+			key_entry(t, 0, key0->dict, t->ck[q], &p, &len);
 			e->k[0] = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
 		}
 		nc++;
@@ -1429,7 +1492,7 @@ sift_topn_run_budget(SiftTopN *t, uint32 units)
 {
 	int			b;
 
-	if (!sift_topn_runs || t->all || t->sort || t->limit <= 0 || units < 8)
+	if (!sift_topn_runs || t->key[0].xk != TXK_NONE || t->all || t->sort || t->limit <= 0 || units < 8)
 		return;
 	b = Max(2, (int) (((uint64) t->limit * 2 + units - 1) / units));
 	if (b * 2 < t->limit)
@@ -1491,7 +1554,11 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 				nc = 0;
 
 	if (t->ucxt)
+	{
 		MemoryContextReset(t->ucxt);
+		for (int j = 0; j < t->nkey; j++)
+			t->key[j].xid = NULL;
+	}
 	if (t->all)
 	{
 		sort_unit(t, src, unit, key0, rmask, nrow);
@@ -1557,6 +1624,25 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		finish_unit(t, src, unit, nc);
 }
 
+/* The zone of the key's values from the zone of its leaf: coalesce(x, c) is c where x is NULL */
+static SiftSrcZone
+key_zone(const TopKey *k, const SiftSrcZone *z)
+{
+	SiftSrcZone o = *z;
+
+	if (k->xk != TXK_COALESCE || z->inexact || z->nnull == 0)
+		return o;
+	if (z->nnull == z->nvals)
+		o.min = o.max = k->xc;
+	else
+	{
+		o.min = Min(z->min, k->xc);
+		o.max = Max(z->max, k->xc);
+	}
+	o.nnull = 0;
+	return o;
+}
+
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
@@ -1569,9 +1655,11 @@ sift_topn_wants_zones(const SiftTopN *t)
  * counts the dead rows too: it only ever says "no" for a unit that has nothing better.
  */
 bool
-sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
+sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *zone)
 {
 	const TopKey *k = &t->key[0];
+	SiftSrcZone zk = key_zone(k, zone);
+	const SiftSrcZone *z = &zk;
 	Rank		bar,
 				best;
 
@@ -1588,8 +1676,11 @@ sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
 
 /* The zone of the unit of superblock sb, probed before the scan; it may be passed in any order */
 void
-sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z)
+sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *zone)
 {
+	SiftSrcZone zk = key_zone(&t->key[0], zone);
+	const SiftSrcZone *z = &zk;
+
 	if (t->nprobe < TOPN_PROBES && !z->inexact && z->nnull < z->nvals)
 	{
 		t->probe[t->nprobe].sb = sb;
@@ -1698,8 +1789,11 @@ sift_topn_walk_keys(const SiftTopN *t)
 
 /* The best rank key j can have in a unit with this zone: before every rank when the zone is not exact, a NULL first under NULLS FIRST, else the bound of the values (NULLs last when there are no values) */
 static Rank
-zone_best(const TopKey *k, const SiftSrcZone *z)
+zone_best(const TopKey *k, const SiftSrcZone *zone)
 {
+	SiftSrcZone zk = key_zone(k, zone);
+	const SiftSrcZone *z = &zk;
+
 	if (z->inexact)
 		return (Rank) {-1, 0};
 	if (z->nnull == z->nvals || (z->nnull > 0 && k->nulls_first))

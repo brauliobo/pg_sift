@@ -18,6 +18,7 @@ CREATE INDEX t_int_col ON t_int USING sift_col (id, grp, i4, i8);
 CREATE INDEX t_num_col ON t_num USING sift_col (id, grp, n2, n0, n6);
 CREATE INDEX t_float_col ON t_float USING sift_col (id, grp, f4, f8);
 CREATE INDEX t_text_col ON t_text USING sift_col (id, grp, t, vc);
+CREATE INDEX t_coal_col ON t_coal USING sift_col (id, grp, s2, i4, i8, d, ts, tz);
 CREATE INDEX t_jp_col ON t_jp USING sift_col (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}');
 CREATE INDEX t_eo_col ON t_eo USING sift_col (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}');
 CREATE INDEX t_rc_col ON t_rc USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}');
