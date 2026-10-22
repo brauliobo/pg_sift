@@ -603,7 +603,7 @@ vec_datum(const SiftColDef *d, const SiftColVec *v, uint32 k)
 		case SIFT_COLT_NUMERIC:
 			return sift_col_key_numeric(d->scale, v->i[k]);
 		default:
-			elog(ERROR, "sift_col: no value of type %d to return", d->type);
+			SIFT_INVARIANT(false, "sift_col: no value of type %d to return", d->type);
 			return (Datum) 0;
 	}
 }
@@ -645,9 +645,9 @@ col_fill_batch(IndexScanDesc scan)
 				so->nulls[k * so->natts + a - 1] = isnull && !ovf;
 				if (ovf)
 				{
-					/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN, stored as a NULL with the overflow flag */
-					if (so->defs[so->first[a]].type != SIFT_COLT_NUMERIC)
-						elog(ERROR, "sift_col: a value of column %d overflowed the index and cannot be returned from it", a);
+					/* the only value a returnable column cannot hold is the NaN of a numeric(p <= 18, s), stored as a NULL with the overflow flag */
+					SIFT_INVARIANT(so->defs[so->first[a]].type == SIFT_COLT_NUMERIC,
+								   "sift_col: a value of column %d overflowed the index and cannot be returned from it", a);
 					so->vals[k * so->natts + a - 1] = DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 				}
 				else if (!isnull)
