@@ -318,6 +318,19 @@ CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
 CREATE FUNCTION sift._test_tbl_hold_maint(tbl regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_hold_maint' LANGUAGE C STRICT;
 
+-- Table module (src/table/funcs.c): the cube blob of the first units of a sift_table decoded as stored, cut and damaged (as _test_col_cube_damage); with_month: blobs with a month dim
+CREATE FUNCTION sift._test_tbl_cube_damage(tbl regclass, units int4, OUT blobs int8, OUT intact int8, OUT with_month int8, OUT cut int8, OUT cut_accepted int8,
+										   OUT damaged int8, OUT accepted int8, OUT unsound int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_cube_damage' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the bytes of the pre-aggregates of the column segments of a sift_table
+CREATE FUNCTION sift._test_tbl_preagg_bytes(tbl regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_preagg_bytes' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the checks of sift.col_verify on every column segment of a sift_table: its live rows, an error on damage
+CREATE FUNCTION sift._test_tbl_verify(tbl regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_verify' LANGUAGE C STRICT;
+
 -- Table module (src/table/funcs.c): the column groups of a sift_table that still carry their writer (rows that are not final)
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_tagged' LANGUAGE C STRICT;

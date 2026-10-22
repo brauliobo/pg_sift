@@ -171,7 +171,8 @@ preagg_zones(AggExec *ex)
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
-		if (z->leaf != ex->pa.dim &&
+		/* the groups of a month dim do not test the timestamp's own comparisons: the zone does */
+		if ((z->leaf != ex->pa.dim || ex->pa.month) &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
 	}
@@ -236,6 +237,8 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 	bool		wide = ex->lay->leaf[ex->pa.dim].vtype == SCV_I64,
 				bound = false;
 
+	if (ex->pa.month)
+		return NULL;			/* the planner gave a month dim no test on its leaf but zone comparisons */
 	for (int i = 0; i < s->npred + s->naggs; i++)
 	{
 		int			ai = i - s->npred;
@@ -294,6 +297,18 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 		/* the program of one leaf: the ids of its values, as the scan gives them */
 		for (int j = 0; j < nkept; j++)
 			ids[j] = PA_NULL(kept[j]) ? 0 : idmap_id(&k->im, key[kept[j]]);
+		return;
+	}
+	if (k->bucket)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+
+		/* a month dim: its keys are the bucket numbers (days since 2000-01-01) of a calendar key, whose expression is evaluated once for each month */
+		if (!k->wcap)
+			ident_go_wide(ex, k);
+		for (int j = 0; j < nkept; j++)
+			ids[j] = PA_NULL(kept[j]) ? key_null_id(ex, ki) : ident_wide_id(ex, k, key[kept[j]]);
+		MemoryContextSwitchTo(old);
 		return;
 	}
 	if (dict)
@@ -388,7 +403,7 @@ preagg_hist(AggExec *ex)
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
-	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim, &h))
+	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim + (ex->pa.month ? SIFT_SRC_MONTH : 0), &h))
 		return false;
 	for (int ai = 0; ai < s->naggs; ai++)
 	{

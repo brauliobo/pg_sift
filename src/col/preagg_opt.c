@@ -121,6 +121,24 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 		}
 }
 
+void
+sift_cpagg_spec_months(const SiftColSchema *s, SiftCPaggSpec *spec)
+{
+	for (int c = 0; c < s->ncols; c++)
+	{
+		SiftCPaggDim *sd;
+
+		if (s->cols[c].type != SIFT_COLT_TIMESTAMP || s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !depth1(s, &s->cols[c]) ||
+			!plain_type(&s->cols[c]) || spec->ndims == SIFT_PAGG_MAX_DIMS)
+			continue;
+		sd = &spec->dim[spec->ndims++];
+		sd->leaf = c;
+		sd->month = true;
+		sd->nmeas = default_meas(s, c, sd->meas);
+		sd->lean = SIFT_PAGG_DEF_MEAS;
+	}
+}
+
 typedef struct OptCur
 {
 	const char *p;

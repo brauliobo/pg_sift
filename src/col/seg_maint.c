@@ -312,7 +312,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 		else
 			pfree(vals);
 	}
-	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format >= SIFT_COL_FORMAT_MINMAX))
+	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])

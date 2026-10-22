@@ -211,4 +211,25 @@ extern uint64 sift_cseg_verify(SiftColSegment *seg);
 extern SiftColSource *sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnapshot *dir, const SiftColVisibility *vis,
 										  uint32 heap_sbs, MemoryContext mcxt);
 
+#ifdef SIFT_TESTING
+/* The counts of sift_test_cube_damage (col/test.c) over the cube blobs it was given */
+typedef struct SiftTestDamage
+{
+	int64		blobs,
+				intact,
+				minmax,
+				month,
+				cut,
+				cut_accepted,
+				damaged,
+				accepted,
+				unsound,
+				census_cut_odd,
+				census_odd;
+} SiftTestDamage;
+
+extern void sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+								  MemoryContext cx, SiftTestDamage *r);
+#endif
+
 #endif							/* SIFT_COL_SEG_H */

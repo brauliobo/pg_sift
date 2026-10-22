@@ -460,6 +460,7 @@ typedef struct BucketUnit
 	int			secs;			/* the step the result changes on */
 	double		len;			/* average seconds of a unit */
 	int			cycle;			/* extract: the values it repeats after, 0: it does not */
+	bool		mon;			/* a month, a quarter or a longer unit: the same for every instant of a calendar month */
 } BucketUnit;
 
 #define DAY_SECS		86400
@@ -468,16 +469,16 @@ typedef struct BucketUnit
 
 /* date_trunc units (a week, month and longer ones change on a day) */
 static const BucketUnit trunc_units[] = {{"second", 1, 1, 0}, {"minute", 60, 60, 0}, {"hour", 3600, 3600, 0}, {"day", DAY_SECS, DAY_SECS, 0},
-	{"week", DAY_SECS, 7 * DAY_SECS, 0}, {"month", DAY_SECS, MONTH_SECS, 0}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 0},
-	{"year", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
-	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+	{"week", DAY_SECS, 7 * DAY_SECS, 0}, {"month", DAY_SECS, MONTH_SECS, 0, true}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 0, true},
+	{"year", DAY_SECS, YEAR_SECS, 0, true}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0, true}, {"century", DAY_SECS, 100 * YEAR_SECS, 0, true},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0, true}, {NULL, 0, 0, 0}};
 
 /* extract fields that are whole numbers of a step (second, epoch and julian have fractions of a second) */
 static const BucketUnit field_units[] = {{"minute", 60, 60, 60}, {"hour", 3600, 3600, 24}, {"day", DAY_SECS, DAY_SECS, 31},
 	{"dow", DAY_SECS, DAY_SECS, 7}, {"isodow", DAY_SECS, DAY_SECS, 7}, {"doy", DAY_SECS, DAY_SECS, 366}, {"week", DAY_SECS, 7 * DAY_SECS, 53},
-	{"month", DAY_SECS, MONTH_SECS, 12}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 4}, {"year", DAY_SECS, YEAR_SECS, 0},
-	{"isoyear", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
-	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+	{"month", DAY_SECS, MONTH_SECS, 12, true}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 4, true}, {"year", DAY_SECS, YEAR_SECS, 0, true},
+	{"isoyear", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0, true}, {"century", DAY_SECS, 100 * YEAR_SECS, 0, true},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0, true}, {NULL, 0, 0, 0}};
 
 /* the unit of a date_trunc, date_part or extract of a timestamp; NULL for another call, or a unit this does not know */
 static const BucketUnit *
@@ -562,6 +563,38 @@ bucket_groups(AggCtx *c, Node *e, double span)
 	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP)
 		return Min(bucket_groups(c, linitial(((FuncExpr *) e)->args), span), span / DAY_SECS + 1);
 	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
+}
+
+/* the timestamp itself (Param 0 once the key is compiled), or cut to a second, minute, hour or day, or cast: it stays in its calendar month */
+static bool
+within_month(Node *e)
+{
+	const BucketUnit *u;
+
+	if (IsA(e, Param))
+		return true;
+	if (IsA(e, RelabelType))
+		return within_month((Node *) ((RelabelType *) e)->arg);
+	if (!IsA(e, FuncExpr))
+		return false;
+	if ((u = bucket_unit(e)) != NULL)
+		return ((FuncExpr *) e)->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP && u->len <= DAY_SECS && within_month(lsecond(((FuncExpr *) e)->args));
+	return (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP || ((FuncExpr *) e)->funcid == F_TIMESTAMP_DATE) &&
+		within_month(linitial(((FuncExpr *) e)->args));
+}
+
+/* does the expression of a calendar key (Param 0 the timestamp) take one value over a whole calendar month? Then the groups of the months give its groups */
+bool
+sift_aggkey_month(const SiftAggKey *k)
+{
+	Node	   *e = k->expr;
+	const BucketUnit *u;
+
+	if (k->kind != SAK_LUT || k->bucket != DAY_SECS || e == NULL)
+		return false;
+	while (IsA(e, RelabelType) || (IsA(e, FuncExpr) && (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP || ((FuncExpr *) e)->funcid == F_TIMESTAMP_DATE)))
+		e = IsA(e, RelabelType) ? (Node *) ((RelabelType *) e)->arg : linitial(((FuncExpr *) e)->args);
+	return (u = bucket_unit(e)) != NULL && u->mon && within_month(lsecond(((FuncExpr *) e)->args));
 }
 
 /* the groups of a bucket key from the statistics of its column; 0: unknown */
