@@ -67,6 +67,7 @@ join_shell(const SiftAggJoin *j)
 	x.ncol = 0;
 	x.subplan = 0;
 	x.params = NIL;
+	x.first.use = false;
 	x.fslot = -1;
 	x.desc = NULL;
 	return sift_aggspec_pack(&t);
@@ -747,6 +748,7 @@ fuse_children(Fuse *f)
 				{
 					u->subplan = mj->subplan;
 					u->params = mj->params;
+					u->first = mj->first;
 					found = true;
 				}
 			}

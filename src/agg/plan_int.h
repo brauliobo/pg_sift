@@ -33,6 +33,7 @@ typedef struct JoinCtx
 	List	   *args;			/* parent expressions passed to a correlated native child */
 	PlannerInfo *subroot;		/* the query level its native plan was made in */
 	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
+	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
 } JoinCtx;
 
 typedef struct SlotReq

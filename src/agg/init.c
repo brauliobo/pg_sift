@@ -299,6 +299,7 @@ register_combos(AggExec *ex)
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	bool		preserved = false;
 
+	join_first_rows(ex);
 	for (int j = 0; j < s->njoin; j++)
 		preserved |= sift_aggjoin_preserves(s->join[j].kind);
 
