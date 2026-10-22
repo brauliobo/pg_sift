@@ -130,13 +130,13 @@ group_parent(AggExec *ex, int group)
  * evaluates an expression for a row that an earlier condition (a guard against a zero divisor) or its snapshot leaves out.
  */
 static void
-apply_late(AggExec *ex, uint64 *mask, int total)
+apply_late(AggExec *ex, uint64 *mask, int total, int qlevel)
 {
 	for (int i = 0; i < ex->spec->npred; i++)
 	{
 		SiftAggPred *p = ex->spec->pred[i];
 
-		if (!p->late)
+		if (!p->late || p->level > qlevel)
 			continue;
 		for (int st = 0; st < total; st += VEC)
 		{
@@ -144,7 +144,7 @@ apply_late(AggExec *ex, uint64 *mask, int total)
 			uint64		t[VECW + PADW];
 
 			ex->alive = mask + st / 64;
-			eval_pred(ex, p, ex->qlevel, st, n, t);
+			eval_pred(ex, p, qlevel, st, n, t);
 			ex->alive = NULL;
 			sift_colk->bits_and(mask + st / 64, t, (n + 63) / 64);
 		}
@@ -231,15 +231,16 @@ leaf_rechecked(const SiftAggSpec *s, int leaf)
  * read their values from one of its leaves (the value column of a member of an object, the array of a length): theirs count too.
  */
 static uint64 *
-overflow_rows(AggExec *ex, bool rechecked)
+overflow_rows(AggExec *ex, bool rechecked, bool lists_only)
 {
 	SiftAggSpec *s = ex->spec;
 	uint64	   *rows = NULL;
 
 	for (int i = 0; i < s->nleaves; i++)
-		if (s->leaves[i] < ex->nbase && s->recheck[i] != SRK_RECORDSET_LAZY && (s->recheck[i] != SRK_NONE) == rechecked)
+		if (s->leaves[i] < ex->nbase && s->recheck[i] != SRK_RECORDSET_LAZY && (s->recheck[i] != SRK_NONE) == rechecked &&
+			(s->recheck[i] == SRK_RECORDSET ? lists_only || !ex->recheck_after_late : !lists_only))
 			leaf_overflow_rows(ex, s->leaves[i], &rows);
-	for (int j = 0; j < s->nvleaf; j++)
+	for (int j = 0; j < s->nvleaf && !lists_only; j++)
 	{
 		if (s->vleaf[j].types)
 			continue;
@@ -265,7 +266,7 @@ static pg_noinline void
 check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 {
 	int			nrw = (ex->unit.nrow + 63) / 64;
-	uint64	   *rows = overflow_rows(ex, rechecked);
+	uint64	   *rows = overflow_rows(ex, rechecked, false);
 
 	if (!rows)
 		return;
@@ -275,6 +276,30 @@ check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 		return;
 	if (rechecked)
 		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
+	overflow_error();
+}
+
+/*
+ * check_overflow of the lists a row reads again, for the rows the conjuncts that may raise (SiftAggPred.late) keep: PostgreSQL evaluates them
+ * with the scan of the rows, before the call that reads the list, so a row they drop or raise for never raises the error of its list.
+ */
+static pg_noinline void
+check_overflow_after_late(AggExec *ex, const uint64 *live)
+{
+	int			nrow = ex->unit.nrow,
+				nrw = (nrow + 63) / 64;
+	uint64	   *rows = overflow_rows(ex, true, true);
+
+	if (!rows)
+		return;
+	sift_colk->bits_and(rows, live, nrw);
+	sift_colsrc_vet(ex->src, &ex->unit, rows);
+	if (sift_colk->bits_count(rows, nrw) == 0)
+		return;
+	apply_late(ex, rows, nrow, 0);
+	if (sift_colk->bits_count(rows, nrw) == 0)
+		return;
+	sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
 	overflow_error();
 }
 
@@ -381,6 +406,8 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 			cand_conjunct(ex, cand, p, row_bitmap(ex, p), nrw);
 	}
 	ex->qlevel = s->group >= 0;
+	if (ex->recheck_after_late && sift_colk->bits_count(rmask, nrw) > 0)
+		check_overflow_after_late(ex, rmask);
 	if (ex->recheck && !ex->recheck_late && sift_colk->bits_count(rmask, nrw) > 0)
 		check_overflow(ex, rmask, true);
 }
@@ -390,7 +417,7 @@ static void
 unit_rows(AggExec *ex, uint64 *rmask, int nrow)
 {
 	sift_colsrc_vet(ex->src, &ex->unit, rmask);
-	apply_late(ex, rmask, nrow);
+	apply_late(ex, rmask, nrow, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow(ex, rmask, true);
 	if (ex->topn)
@@ -470,7 +497,7 @@ unit_elems(AggExec *ex, uint64 *rmask, int nrow)
 	m = ex->nelem;
 	em = elems_kept(ex, rmask, nrow);
 	elems_vet(ex, em, nrow);
-	apply_late(ex, em, m);
+	apply_late(ex, em, m, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow_elems(ex, em);
 	for (int st = 0; st < m; st += VEC)
