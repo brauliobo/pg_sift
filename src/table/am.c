@@ -105,9 +105,9 @@ sift_tbl_define_gucs(void)
 							 "On by default. Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
 							 &sift_tbl_bulk_groups, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
-							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
-							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
-							 &sift_tbl_auto_defrag, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "A backend that closes a write buffer of a sift_table, or deletes, updates or reads it, asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
+							 "Needs sift.async_maintenance. With sift.table_auto_defrag_indexes the worker runs a whole VACUUM when the dead rows reach sift.table_auto_defrag_dead_pct; without it the worker clears no index entry and VACUUM still has to run for those.",
+							 &sift_tbl_auto_defrag, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_free_pct",
 							"Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them.",
 							NULL, &sift_tbl_auto_defrag_free_pct, 25, 1, 100,
