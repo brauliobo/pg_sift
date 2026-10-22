@@ -48,6 +48,11 @@ extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use 
 builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`)
 unmodified against the host implementation in `sqlite/host/`.
 
+**Errors say what to do.** An ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) carries an `errhint` or an `errdetail`; no ERROR is
+XX000: a condition the code rules out is `SIFT_INVARIANT(cond, "text")` (`core/host.h`, an `Assert` in an assert build), anything a user or the data can reach is an `ereport`
+with its own errcode (XX001/XX002 for damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the lint job and in `scripts/ci.sh`; a test-only hook
+outside a `*_test.c` file says `check-errors: allow` in a comment on the call.
+
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
 `src/core/host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `core/host.h` (documented at the top of that file) and, when
 it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
