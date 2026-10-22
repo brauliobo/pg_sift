@@ -12,10 +12,19 @@ setup
 	CREATE INDEX iso_pp_col ON iso_pp USING sift_col (id, g, d, v);
 	CREATE TABLE iso_pp_n (LIKE iso_pp INCLUDING DEFAULTS) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_pp_n SELECT 10000 + i, i % 5, DATE '2024-07-01' + i % 90, i FROM generate_series(1, 500) i;
+	-- split by hash: the remainders of the values of a statement decide the partitions its scan reads
+	CREATE TABLE iso_ph (id int, k int, v int) PARTITION BY HASH (k);
+	CREATE TABLE iso_ph_0 PARTITION OF iso_ph FOR VALUES WITH (MODULUS 4, REMAINDER 0) WITH (autovacuum_enabled = off);
+	CREATE TABLE iso_ph_1 PARTITION OF iso_ph FOR VALUES WITH (MODULUS 4, REMAINDER 1) WITH (autovacuum_enabled = off);
+	CREATE TABLE iso_ph_2 PARTITION OF iso_ph FOR VALUES WITH (MODULUS 4, REMAINDER 2) WITH (autovacuum_enabled = off);
+	CREATE TABLE iso_ph_3 PARTITION OF iso_ph FOR VALUES WITH (MODULUS 4, REMAINDER 3) WITH (autovacuum_enabled = off);
+	INSERT INTO iso_ph SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE i % 60 END, i FROM generate_series(1, 3000) i;
+	CREATE INDEX iso_ph_col ON iso_ph USING sift_col (id, k, v);
 }
 
 setup		{ VACUUM (FREEZE, ANALYZE) iso_pp; }
 setup		{ VACUUM (FREEZE, ANALYZE) iso_pp_n; }
+setup		{ VACUUM (FREEZE, ANALYZE) iso_ph; }
 
 setup
 {
@@ -46,7 +55,8 @@ setup
 teardown
 {
 	DROP FUNCTION iso_pp_run(text, text);
-	DROP TABLE iso_pp, iso_pp_n;
+	DROP TABLE iso_pp, iso_pp_n, iso_ph;
+	DROP TABLE IF EXISTS iso_ph_3;
 }
 
 session s1
@@ -57,6 +67,10 @@ step s1win	{ SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp
 step s1prep	{ SET plan_cache_mode = force_generic_plan;
 		  PREPARE iso_pp_p (date) AS SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= $1 GROUP BY g; }
 step s1gen	{ SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g'); }
+step s1hprep	{ SET plan_cache_mode = force_generic_plan;
+		  PREPARE iso_ph_p (int[]) AS SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY ($1); }
+step s1hgen	{ SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])'); }
+step s1hrr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ph; }
 step s1rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp; }
 step s1end	{ COMMIT; }
 
@@ -64,6 +78,10 @@ session s2
 step s2attach	{ ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01'); }
 step s2detach	{ ALTER TABLE iso_pp DETACH PARTITION iso_pp_n; }
 step s2detachc	{ ALTER TABLE iso_pp DETACH PARTITION iso_pp_n CONCURRENTLY; }
+step s2hdetach	{ ALTER TABLE iso_ph DETACH PARTITION iso_ph_3; }
+step s2hdetachc	{ ALTER TABLE iso_ph DETACH PARTITION iso_ph_3 CONCURRENTLY; }
+step s2hattach	{ ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3); }
+step s2hmove	{ UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0; }
 step s2begin	{ BEGIN; }
 step s2move	{ UPDATE iso_pp SET d = CASE WHEN d >= DATE '2024-04-01' THEN d - 91 ELSE d + 91 END WHERE id % 7 = 0; }
 step s2commit	{ COMMIT; }
@@ -82,3 +100,13 @@ permutation s2begin s2move s1run s2abort s1run
 permutation s1rr s2move s1run s1end s1run
 # a prepared statement planned before the partition changed
 permutation s1prep s1gen s2attach s1gen s2detach s1gen
+
+# split by hash: the partitions the remainders of the values leave, with a partition detached (also concurrently) and attached again;
+# a prepared statement made before the partition went is planned again
+permutation s1hprep s1hgen s2hdetach s1hgen s2hattach s1hgen
+permutation s1hrr s2hdetach s1hgen s1end s1hgen s2hattach s1hgen
+permutation s1hrr s2hdetachc s1hgen s1end s1hgen s2hattach s1hgen
+# rows moved to other remainders: in flight, committed, rolled back, and under an older snapshot
+permutation s2begin s2hmove s1hgen s2commit s1hgen
+permutation s2begin s2hmove s1hgen s2abort s1hgen
+permutation s1hrr s2hmove s1hgen s1end s1hgen
