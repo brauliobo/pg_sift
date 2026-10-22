@@ -296,6 +296,8 @@ run_scan(AggExec *ex)
 	ex->lane_serial = ordered && ex->par == NULL;
 	ex->lanes = ordered && !ex->lane_serial;
 	table_init(ex);
+	if (ex->spec->spine)
+		spine_load(ex);
 	ex->gtab = ex->lanes ? result_view(ex) : ex;
 	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
 	if (ex->par == NULL || parallel_leader_participation)
@@ -335,8 +337,14 @@ list_groups(AggExec *ex)
 Datum
 key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 {
+	return key_id_datum(ex, j, key_id(ex, j, g), isnull);
+}
+
+/* the value of id `id` of key j */
+Datum
+key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull)
+{
 	KeyState   *k = &ex->ks[j];
-	uint32		id = key_id(ex, j, g);
 
 	*isnull = id == 0;
 	if (id == 0)

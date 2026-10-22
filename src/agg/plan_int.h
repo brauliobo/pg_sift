@@ -135,6 +135,7 @@ typedef struct AggCtx
 	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 	bool		detached;		/* root is a query level below the one being planned (the arms of a two level aggregate): its paths are planned there */
+	Path	   *spine;			/* the plan of the spine's rows (SiftAggSpine): the only child of the path */
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -257,6 +258,7 @@ extern int match_leaf(AggCtx *c, Node *e);
 extern Node *normalize_expr(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
+extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);
 extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
