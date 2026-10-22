@@ -39,6 +39,7 @@
 #   --keep              keeps the databases (sift_coldiff_fix, sift_coldiff_ana) and the scripts in $SIFT_TMP/coldiff
 # Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT). Exit 1 on a failure: a result that differs, a
 # reference run that fails, a query without a result (and, with --strict-shape, a shape expectation that does not hold).
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

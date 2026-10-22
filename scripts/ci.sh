@@ -45,6 +45,7 @@
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
 # server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
 # recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }   # first: bash 3.2 (stock macOS) fails on the syntax below and exits 0
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -95,13 +96,13 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col'; fi
 	done
 	case $OUT in
-		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication; do echo "gh:$f $(flag $f)"; done ;;
+		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos; do echo "gh:$f $(flag $f)"; done ;;
 		github)
 			echo "jobs=$RE"
 			echo "fast=$FAST"
 			echo "fastjobs=$FASTRE"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
-			for f in sqlite mariadb replication; do echo "$f=$(flag $f)"; done
+			for f in sqlite mariadb replication macos; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
 			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
 		pick) "$REPO/scripts/check-neutral.sh" || exit 1   # a change of any file: the wording guard is not a job of the map
@@ -156,6 +157,19 @@ if [[ $MODE == --selftest ]]; then
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
+	# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message
+	b4='declare -A|local -A|local -n|declare -n|mapfile|readarray|\[\[ -v |\$\{[A-Za-z_]+(,,|\^\^)\}|wait -n|EPOCHSECONDS|EPOCHREALTIME|printf .%\(|&>>|\|&|coproc|;;&|read -[a-zA-Z]*N'
+	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
+		! grep -qE "$b4" "$REPO/$f" || grep -q 'needs bash 4+' "$REPO/$f" || { echo "FAIL: $f uses bash 4 and lacks the first-line check of scripts/ci.sh"; bad=1; }
+	done
+	# the loud failures: bash older than 4 (the check made to fail), and a run that selects no job, stop before anything is built
+	t=$(mktemp)
+	sed 's/>= 4/>= 99/' "$0" >"$t"
+	out=$(bash "$t" quick 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
+	[[ $out == *'needs bash 4+'* ]] || { echo "FAIL: ci.sh does not say it needs bash 4+: $out"; bad=1; }
+	out=$(SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
+	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
+	rm -f "$t"
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
 	exit $bad
 fi
@@ -164,7 +178,7 @@ PLAN=
 [[ $MODE == quick || $MODE == full ]] || { sed -n '2,27p' "$0"; exit 1; }
 [[ -n $PLAN ]] || renice -n 19 $$ >/dev/null
 S=$REPO/scripts
-CORES=$(nproc 2>/dev/null || echo 4)
+CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 [[ $(pg_config --version 2>/dev/null) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
 PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
@@ -327,6 +341,8 @@ if [[ -n $PLAN ]]; then
 	for id in "${J_ID[@]}"; do echo "$id ${J_SUITE[$id]} $([[ -v J_AFTER[$id] ]] && echo after || echo pool) ${J_CMD[$id]}"; done
 	exit 0
 fi
+# a run that selects no job would build, run the harness and exit 0 with no test run (a shard may be empty and still builds)
+(( ${#J_ID[@]} || ${NSHARDS:-1} > 1 )) || { echo "ci: no test job selected (SIFT_CI_JOBS='${SIFT_CI_JOBS:-}' SIFT_CI_AFFECTED='${SIFT_CI_AFFECTED:-}')" >&2; exit 1; }
 
 # tidy ID: the data of a job that passed goes at once, so that the scratch directory holds only what runs: its databases in the
 # lane's cluster, or its directory after the leak gate scanned it (a finding keeps the directory for the scan of the whole run)
@@ -336,10 +352,16 @@ tidy() {
 }
 
 # claim: sets CLAIMED to the first job of the queue that nobody has claimed and whose estimate fits the budget with the ones
-# running (the first job always fits); returns 1 when the queue is empty, 2 when nothing fits yet
+# running (the first job always fits); returns 1 when the queue is empty, 2 when nothing fits yet. The lock is a directory: macOS has no flock
 claim() {
+	local rc
+	until mkdir "$BASE/claim.lock" 2>/dev/null; do sleep 0.02; done
+	claim_locked && rc=0 || rc=$?
+	rmdir "$BASE/claim.lock"
+	return $rc
+}
+claim_locked() {
 	local id est used=0 left=0 f
-	flock 9
 	for f in "$BASE"/running/*; do [[ ! -e $f ]] || used=$((used + $(<"$f"))); done
 	for id in "${J_ID[@]}"; do
 		[[ ! -d $BASE/claims/$id && ! -v J_AFTER[$id] ]] || continue
@@ -353,7 +375,7 @@ claim() {
 		return 0
 	done
 	return $(( left ? 2 : 1 ))
-} 9>"$BASE/claim.lock"
+}
 
 # run_job ID: the job with its output in logs/ID.log (a job without the lane's cluster gets a directory of its own)
 run_job() {
