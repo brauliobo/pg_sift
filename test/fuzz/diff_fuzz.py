@@ -340,7 +340,7 @@ def gen_topn(r, ctx):
     order = [f"e.{k} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     grouped_ = r.random() < 0.25
     return dict(order=order, limit=r.choice([1, 5, 10, 50, 300]), offset=r.choice([0, 0, 3, 40]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
-                grouped=grouped_, keys=[], aggs=[], having=[], ordered=True, gkeys=keys(r, 'e', cols, 2), gagg=aggs(r, 'e', cols, 1))
+                grouped=grouped_, keys=[], aggs=[], having=[], ordered=True, gkeys=keys(r, 'e', cols, 2), gagg=[r.choice(['count(*)', 'sum(e.amount)', 'max(e.amount)', 'count(DISTINCT e.grp)', 'min(e.big)', 'sum(e.big)'])])  # not a float: ties within the tolerance would order differently
 
 
 def render_topn(p):
@@ -576,12 +576,12 @@ def gen_query(seed, i, ctx, only):
     return fam, parts, variants(r, fam), r.random() < 0.3
 
 
-def episodes(seed, nq, ctx, only):
+def episodes(seed, nq, ctx, only, dmls=4):
     """[(dml statements, [query entries])]: 4-10 queries after 0-4 statements."""
     r = random.Random(seed * 7919 + 1)
     done, eps = 0, []
     while done < nq:
-        st = [dml(r, ctx) for _ in range(r.choice([0, 1, 2, 3, 4]))]
+        st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)
@@ -740,6 +740,7 @@ def main():
     ap.add_argument('--out', default='')
     ap.add_argument('--no-shrink', action='store_true')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
     ap.add_argument('--show', action='store_true', help='print every query')
     a = ap.parse_args()
@@ -759,7 +760,7 @@ def main():
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
         ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000}
-        eps = episodes(seed, a.queries, ctx, only)
+        eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)
         hist = []
