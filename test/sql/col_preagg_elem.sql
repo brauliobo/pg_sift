@@ -146,7 +146,7 @@ DELETE FROM pe WHERE id % 89 = 0 AND id < 20000;
 SELECT what, checked, bad FROM pe_battery('pe_col');
 SELECT count(*) FILTER (WHERE NOT exact) > 0 AS some_inexact, count(*) FILTER (WHERE exact) > 0 AS some_exact FROM sift.col_unit_agg('pe_col', 'id');
 -- VACUUM makes the pages all-visible again but the units still hold the dead rows: still inexact where dirty
-VACUUM (DISABLE_PAGE_SKIPPING) pe;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT what, checked, bad FROM pe_battery('pe_col');
 SELECT count(*) FILTER (WHERE NOT exact) > 0 AS dirty_inexact FROM sift.col_unit_agg('pe_col', 'id');
 -- promotion and a merge rewrite the units: the dead rows are gone and the new units carry new element cubes

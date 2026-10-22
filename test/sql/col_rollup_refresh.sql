@@ -66,7 +66,7 @@ SELECT count(*) AS indexes FROM pg_class WHERE relname = 'rr_bad';
 
 -- no rollup at all: nothing to answer from, nothing to ask for
 CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', write_buffer_limit = 4096, rollup = 'off');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) rr;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) rr;
 SELECT units > 2 AS units FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
 SELECT (SELECT requested FROM rr_state) AS requested, (SELECT count(*) FROM rr_requests) AS queued;
 

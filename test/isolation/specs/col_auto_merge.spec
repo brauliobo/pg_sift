@@ -13,7 +13,7 @@ setup
 
 setup
 {
-	VACUUM (DISABLE_PAGE_SKIPPING) iso_am;
+	VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) iso_am;
 }
 
 setup
@@ -25,7 +25,7 @@ setup
 
 setup
 {
-	VACUUM (DISABLE_PAGE_SKIPPING) iso_am;
+	VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) iso_am;
 }
 
 setup
