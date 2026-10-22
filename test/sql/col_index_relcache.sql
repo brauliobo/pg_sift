@@ -72,6 +72,18 @@ SET sift.test_col_rel_inval = on;
 SELECT rb_q(true) = :'answer' AS same_with_it;
 RESET sift.test_col_rel_inval;
 
+-- A row that holds a value the index cannot store (a string in a float8 path) flags the leaf in the directory, which reloads the entry:
+-- the insert went on to read and write the hint it kept there. The rows are all in the index afterwards
+CREATE TABLE rw (id int, doc jsonb) WITH (autovacuum_enabled = off);
+CREATE INDEX rw_col ON rw USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
+SET sift.test_col_rel_inval = on;
+INSERT INTO rw SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', CASE WHEN i % 5 = 0 THEN to_jsonb('8.5'::text) ELSE to_jsonb(i) END)))
+FROM generate_series(1, 50) i;
+INSERT INTO rw SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'b', 'score', i))) FROM generate_series(51, 100) i;
+RESET sift.test_col_rel_inval;
+SELECT sum(rows) = (SELECT count(*) FROM rw) AS all_rows, col_verified('rw_col') AS verified FROM sift.col_segments('rw_col');
+DROP TABLE rw;
+
 DROP TABLE rb;
 DROP FUNCTION rb_norm(jsonb);
 DROP EXTENSION pg_sift_test;
