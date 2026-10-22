@@ -56,6 +56,8 @@ Commands
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
   resume     `resume [ID]`: continue the unfinished run (the latest, or ID) from what is done: results of the same key are kept, the rest is measured; exit status 75 means a run was interrupted
   compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
+  kit        the laptop kit: PostgreSQL with pg_sift in one docker container (packaging/docker), 100,000 orders of the store data, the ten questions with
+             and without the aggregate pushdown, every answer compared; docker is the only requirement: `kit [--rows N] [--pg MAJOR] [--runs N] [--cpus N] [--image I] [--keep]`
   sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
              parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
@@ -647,7 +649,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store sets compare final resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets compare final resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -666,6 +668,7 @@ case $cmd in
   -h|--help|help) usage; exit 0 ;;
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
+  kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac
 parse "$@"

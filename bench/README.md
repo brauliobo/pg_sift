@@ -22,6 +22,7 @@ only when the registry says so, Elasticsearch is in the default run.
 bench/bench all                    # setup + run + report on the slim tier (the default): about 10 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
+bench/bench kit                    # docker only: PostgreSQL + pg_sift, 100,000 orders, the ten store questions with and without the pushdown, answers compared: 10-15 minutes on a laptop
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
