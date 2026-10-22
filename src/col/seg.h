@@ -213,6 +213,15 @@ extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, ui
  * The small-set summary of the leaf alone (docs/COL.md 2.13) on the units [ulo, uhi): clears the units it shows cannot hold a match, and sets their bits in
  * setcut (nsb bits, NULL: not told), which sift_cseg_prune does for the tests it takes; the units the tests before it kept are those it can count as its own.
  */
+/*
+ * The rows of the segment, ascending, that the point directory of leaf col lists under a fingerprint of one of the nkeys keys (the keys of the stored
+ * values: the code of a dictionary leaf), palloc'd. The rows may hold other values; the caller checks them. False: the leaf has no directory in the
+ * segment, or the keys find more than SIFT_CPOINT_MAX_ROWS rows.
+ */
+extern bool sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys, uint32 **rows, uint32 *nrows);
+/* The rows the point directory of leaf col lists (0: it has none), and the check of the tables of every leaf: slots in range, as many as the records say */
+extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);
+extern void sift_cseg_verify_points(SiftColSegment *seg);
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);

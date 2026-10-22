@@ -99,6 +99,23 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 }
 
 bool
+sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used)
+{
+	int			skip = sift_col_point_sel(unit, sel),
+				n = 0;
+	SiftColPred *rest;
+
+	*used = skip >= 0;
+	if (skip < 0)
+		return sift_col_filter(unit, preds, npreds, sel);
+	rest = MemoryContextAlloc(unit->src->arena, Max(npreds, 1) * sizeof(SiftColPred));
+	for (int i = 0; i < npreds; i++)
+		if (i != skip)
+			rest[n++] = preds[i];
+	return sift_col_filter(unit, rest, n, sel);
+}
+
+bool
 sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 {
 	return chunk_filter(unit->priv, p, sel, NULL);
