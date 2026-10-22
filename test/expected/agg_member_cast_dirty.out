@@ -8,11 +8,8 @@ SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 \ir test/agg_helpers.sql
 \set ECHO none
-CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text := runq(q, false); b text := runq(q, true);
-BEGIN
-	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
-END $$;
+\ir test/agg_same_helpers.sql
+\set ECHO none
 -- a day is a unit apart: the dirty rows sit in days 900 and up, and in the days of the sources 7 and 8
 CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);
 INSERT INTO m_src VALUES (1, true), (2, true), (7, false), (8, true);
