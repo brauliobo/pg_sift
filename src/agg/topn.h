@@ -61,7 +61,7 @@ typedef struct SiftTopN SiftTopN;
  * are kept in a heap; NULL (all rows), more rows, more keys or an overflow keep every row that passes in a sort of keys and TIDs
  * (work_mem, then disk), which still fetches from the heap only the rows the Limit takes; nothing wanted (zero or negative) reads nothing.
  */
-extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
+extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
 

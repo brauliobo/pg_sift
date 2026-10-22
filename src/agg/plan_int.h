@@ -233,6 +233,8 @@ typedef struct FromScan
 	bool		ok;
 	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
 	bool		flippable;		/* a LEFT or FULL JOIN of two tables was met: the scan may be the other one */
+	int			skip;			/* the tables of the FROM list passed over before the scanned one: they are joined to it (inner joins only) */
+	int			ntables;		/* the tables the FROM list has */
 	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
 } FromScan;
 
