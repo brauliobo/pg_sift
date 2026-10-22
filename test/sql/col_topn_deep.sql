@@ -85,6 +85,22 @@ SELECT cd_plan('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000') A
 	   cd_plan('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10') AS small_limit,
 	   cd_plan('SELECT id FROM cd ORDER BY a, b, c, d, e, id LIMIT 30') AS five_keys;
 
+-- the planner's own choice (the normal paths stay on): the sort reads every key past the first at every row, and past hash_mem it spills, so
+-- six keys on this table cost more than the plain plan's bounded sort, with a deep offset too, while two keys win it. The costs are the
+-- model's, the same on every version: a margin of two to one, not a timing.
+CREATE FUNCTION cd_choice(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; line text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' ELSE 'native' END;
+END $$;
+SELECT cd_choice('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000') AS two_keys_deep,
+	   cd_choice('SELECT id FROM cd ORDER BY a, b, c, d, e, id LIMIT 30') AS six_keys,
+	   cd_choice('SELECT id FROM cd ORDER BY a, b, c, d, e, id LIMIT 30 OFFSET 150000') AS six_keys_deep,
+	   cd_choice('SELECT id, a, b, c, d, e, f, amount, ts, kind FROM cd ORDER BY a, b, c, d, e, f, id LIMIT 30 OFFSET 150000') AS six_keys_wide;
+
 -- workers allowed: a top-N that sorts every row that passes is one process (the heaps of the workers are what the leader merges)
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;

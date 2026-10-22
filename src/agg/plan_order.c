@@ -290,6 +290,22 @@ topn_heap_cost(double read, double n)
 }
 
 /*
+ * The sort reads the keys after the first at every row that passes (the scan reads the first anyway), by positions: a gather, dearer than
+ * the decode of a whole column. Measured on 200,000 rows of small integer keys, sorted in memory: 11 ms for each key past the first, where
+ * the plain plan's bounded sort of the same rows (cost 15,284) takes 70 ms in the same run, so the key is 0.157 * 15,284 = 2,400 units
+ * for 200,000 rows, 0.012 per row, 4.8 operators at the default cpu_operator_cost. The ratio to the plain plan cancels the speed of the host.
+ */
+#define TOPN_KEY_READ	4.8
+
+/*
+ * A tuplesort compares through the tuple comparator, which PostgreSQL's cost_sort prices at 2 * cpu_operator_cost a step, and pays it twice,
+ * forming the runs and merging them. Measured on the same rows, the sort that spills (4 keys, 4 MB) takes 172 ms more than the one in
+ * memory: 37,600 units on the same scale, 32,000 of them past the writes of the runs (cost_sort's model), against the 8,800 of one operator
+ * a step. 4 operators a step makes 35,200 units.
+ */
+#define TOPN_SPILL_STEP	4.0
+
+/*
  * Every row that passes, with its keys and TID: sorted in memory (the keys are compared once per step of a sort, as PostgreSQL's cost_sort
  * prices it, without the tuples) up to hash_mem, or, past it, by a tuplesort that writes runs to disk (cost_sort's model of it)
  */
@@ -298,14 +314,14 @@ topn_sort_cost(double rows, int nkey)
 {
 	double		budget = work_mem * 1024.0,
 				mem = rows * (nkey + (nkey + 63) / 64 + 1) * sizeof(int64),
-				cost = cpu_operator_cost * rows * (log2(Max(rows, 2.0)) + 1.0);
+				cost = cpu_operator_cost * rows * (log2(Max(rows, 2.0)) + 1.0 + TOPN_KEY_READ * (nkey - 1));
 
 	if (mem > Min((double) get_hash_memory_limit(), 512.0 * 1024 * 1024))
 	{
 		double		bytes = rows * (MAXALIGN((nkey + 1) * sizeof(int64)) + MAXALIGN(SizeofHeapTupleHeader)),
 					passes = Max(1.0, ceil(log(Max(bytes / budget, 2.0)) / log(6.0)));
 
-		cost += cpu_operator_cost * rows * log2(Max(rows, 2.0)) + 2.0 * (bytes / BLCKSZ) * passes * (seq_page_cost * 0.75 + random_page_cost * 0.25);
+		cost += TOPN_SPILL_STEP * cpu_operator_cost * rows * log2(Max(rows, 2.0)) + 2.0 * (bytes / BLCKSZ) * passes * (seq_page_cost * 0.75 + random_page_cost * 0.25);
 	}
 	return cost;
 }
