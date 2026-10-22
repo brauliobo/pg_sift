@@ -33,8 +33,9 @@
  * kept as written. Inputs are assumed NFC: decomposed sequences fold per code
  * point.
  *
- * Folded tokens are truncated to SIFT_MAX_TERM_BYTES at a character boundary,
- * then stemmed to a fixpoint. Tokens that fold to nothing are dropped and take
+ * A folded token over SIFT_MAX_TERM_BYTES is its first SIFT_TERM_HEAD bytes (cut at a character
+ * boundary), U+FFFF and a 64-bit hash of all of it, so tokens that share their start stay apart; it is not
+ * stemmed. Other folded tokens are stemmed to a fixpoint. Tokens that fold to nothing are dropped and take
  * no position.
  *
  * Invariant, for every configuration: each emitted token t analyzes to
@@ -51,6 +52,10 @@
 
 /* Bump on any change to tokenization, folding, stemming or hashing output */
 #define SIFT_ANALYZER_VERSION	2
+
+/* A term over SIFT_MAX_TERM_BYTES: SIFT_TERM_HEAD bytes of its start, then U+FFFF and 16 hex digits of a hash (SIFT_TERM_TAIL bytes) */
+#define SIFT_TERM_TAIL	(3 + 16)
+#define SIFT_TERM_HEAD	(SIFT_MAX_TERM_BYTES - SIFT_TERM_TAIL)
 
 typedef enum SiftStemmer
 {
