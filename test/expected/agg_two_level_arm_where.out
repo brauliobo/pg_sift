@@ -209,7 +209,7 @@ NOTICE:  SiftAgg not used: lateral_limit: a LATERAL sub-select with LIMIT 1 stay
 DETAIL:  arm: L2:lookup
 NOTICE:  SiftAgg not used: two_arms: the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id (arm 1 is not a plain aggregate (it has DISTINCT, ORDER BY, LIMIT, windows, grouping sets, a CTE list or no GROUP BY))
 DETAIL:  arm: L2:two_level
-NOTICE:  SiftAgg not used: cost: the normal plan is estimated cheaper than the scan (the scan costs 42108.94, the normal plan 31193.06)
+NOTICE:  SiftAgg not used: cost: the normal plan is estimated cheaper than the scan (the scan costs 42108.94, the normal plan 31193.06; 100% of the heap pages are not all-visible, which adds 41500.00 to the scan: VACUUM (ANALYZE) the table)
 DETAIL:  arm: L2:single
 NOTICE:  SiftAgg not used: two_arms: the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id (arm 2 does not read the scan of arm 1: its tables or joins differ)
 DETAIL:  arm: two_level

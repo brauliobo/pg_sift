@@ -497,6 +497,7 @@ The notice names the arm in its detail; the detail of the reason names the leaf,
 
 `sift.explain_why(query)` gives the same as rows without running the query or setting anything: it plans one `SELECT` (the privileges to read its tables are checked) and returns one row per arm with
 `used` (the arm is in the plan), `slug` and `reason` (why it gave up, NULL when used) and `scan_cost` and `normal_cost` (the path that was built and the normal plan it was compared with, NULL without such a path).
+A `cost` refusal that the heap check decided says so: `the scan costs 6421, the normal plan 1013; 100% of the heap pages are not all-visible, which adds 5890 to the scan: VACUUM (ANALYZE) the table` (a rewrite by `CLUSTER`, `VACUUM FULL` or `pg_repack` leaves the visibility map empty).
 
 ```sql
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_table GROUP BY 1');
