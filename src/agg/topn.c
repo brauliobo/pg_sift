@@ -34,6 +34,7 @@
 #define TOPN_PROBES		6
 
 bool		sift_topn_zone_keys = true;
+bool		sift_topn_runs = true;
 
 bool
 sift_topn_key_ok(const SiftSrcLeaf *lf)
@@ -192,6 +193,14 @@ struct SiftTopN
 	uint32	   *rows;
 	int64	   *skey;			/* sort: the keys of the rows of a unit, nkey for each row, and whether each is NULL */
 	bool	   *snull;
+	uint32	   *rwin;			/* a window of a sorted run (sift_topn_unit) */
+	int			budget;			/* rows a unit gives in the first pass of a walk through sorted runs (0: all it can), sift_topn_run_budget */
+	bool		revisit;		/* the second pass: only the units the first left unfinished */
+	bool		yielded;		/* trunc[rpos] was given out and is not yet done */
+	struct RunTrunc *trunc;
+	int			ntrunc,
+				captrunc,
+				rpos;
 	ItemPointerData *tids;		/* the TIDs of the rows of a unit (sort), or of the heap rows of a unit */
 	TopEnt	   *res;			/* after sift_topn_finish: the heap in order */
 	/* the visit order */
@@ -218,6 +227,7 @@ struct SiftTopN
 	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
+	int64		nrun;			/* units read through their sorted run */
 	int64		fetched;
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
 };
@@ -1033,6 +1043,283 @@ after_bar(const SiftTopN *t, uint8 *worse, const SiftSrcDict *d, bool isnull, ui
 	return true;
 }
 
+/* Entries of a sorted run are read in windows that double up to this many */
+#define RUN_WIN_MIN		32
+#define RUN_WIN_MAX		512
+
+/* A unit whose run the first pass left at the group of rank next: the rows before it are taken */
+typedef struct RunTrunc
+{
+	uint64		id;
+	uint32		sb;
+	Rank		next;
+	bool		done;
+} RunTrunc;
+
+typedef struct RunWalk
+{
+	SiftTopN   *t;
+	SiftSrcSource *src;
+	const SiftSrcUnit *unit;
+	const SiftSrcVec *key0;
+	const uint64 *rmask;
+	uint32		n;				/* rows of the unit: entries of the run */
+	uint32		lo,
+				hi;				/* the entries rwin holds */
+	uint32		win;
+	int			nc;				/* candidate rows in t->cand */
+	int			passing;		/* rows that pass in the groups taken so far */
+	Rank		bar;
+	bool		barred;
+	bool		have;			/* prev is the rank of the group before */
+	Rank		prev;
+	int			budget;			/* rows to take before leaving the rest of the unit to the second pass (0: no limit) */
+	bool		resumed;		/* the second pass of this unit: the groups before resume are taken */
+	Rank		resume;
+	bool		trunc;
+	Rank		next;			/* trunc: the rank of the first group left */
+} RunWalk;
+
+static void
+run_corrupt(RunWalk *w, const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg("sift_col sorted run is corrupted"),
+			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what)));
+}
+
+/* The row at position pos of the run; the window is read toward the direction of the walk */
+static uint32
+run_at(RunWalk *w, uint32 pos, bool back)
+{
+	if (pos < w->lo || pos >= w->hi)
+	{
+		uint32		cnt = back ? Min(w->win, pos + 1) : Min(w->win, w->n - pos),
+					lo = back ? pos + 1 - cnt : pos;
+
+		sift_colsrc_run_read(w->src, w->unit, w->t->key[0].leaf, lo, cnt, w->t->rwin);
+		w->lo = lo;
+		w->hi = lo + cnt;
+		w->win = Min(w->win * 2, RUN_WIN_MAX);
+	}
+	return w->t->rwin[pos - w->lo];
+}
+
+static void
+run_key(RunWalk *w, uint32 row, int64 *v)
+{
+	if (!row_key(&w->t->key[0], w->key0, row, v))
+		run_corrupt(w, "has a NULL row among those with a value");
+}
+
+/* The group of the run's positions [from, to): equal keys, the rows ascending; those that pass go to the candidates. rank: the group's rank, which must come after the group before */
+static void
+run_take(RunWalk *w, uint32 from, uint32 to, Rank rank)
+{
+	SiftTopN   *t = w->t;
+	uint32		prev = 0;
+
+	if (w->have && !rank_after(rank, w->prev))
+		run_corrupt(w, "is not in the order of its keys");
+	w->prev = rank;
+	w->have = true;
+	if (w->resumed && rank_after(w->resume, rank))
+		return;
+	for (uint32 pos = from; pos < to; pos++)
+	{
+		uint32		row = run_at(w, pos, false);
+
+		if (pos > from && row <= prev)
+			run_corrupt(w, "has the rows of equal keys out of order");
+		prev = row;
+		if (!(w->rmask[row >> 6] >> (row & 63) & 1))
+			continue;
+		t->cand[w->nc++] = row;
+		/* tied rows after the n-th come after it by TID: with one sort key they are not in the result */
+		if (++w->passing >= t->limit && t->nkey == 1)
+			break;
+	}
+	if (w->passing >= t->limit && (!w->barred || rank_after(w->bar, rank)))
+	{
+		w->bar = rank;
+		w->barred = true;
+	}
+}
+
+static bool
+run_stop(const RunWalk *w, Rank r)
+{
+	return w->barred && rank_after(r, w->bar);
+}
+
+/* The first pass has its rows: the group of rank r and the ones after are left to the second pass, which the heap's bar may spare */
+static bool
+run_cut(RunWalk *w, Rank r)
+{
+	if (w->budget == 0 || w->passing < w->budget)
+		return false;
+	w->trunc = true;
+	w->next = r;
+	return true;
+}
+
+/* The rows of the NULL group (positions [nvals, nvals + nnull)) */
+static void
+run_nulls(RunWalk *w, uint32 nvals, uint32 nnull)
+{
+	Rank		r = rank_of(&w->t->key[0], true, 0);
+
+	if (nnull > 0 && !run_stop(w, r))
+		run_take(w, nvals, nvals + nnull, r);
+}
+
+/* The groups of equal keys of the rows with a value, best first, until one cannot be in the result */
+static void
+run_values(RunWalk *w, uint32 nvals)
+{
+	const TopKey *k0 = &w->t->key[0];
+
+	if (!k0->desc)
+	{
+		for (uint32 pos = 0, q; pos < nvals; pos = q)
+		{
+			int64		v;
+			Rank		r;
+
+			run_key(w, run_at(w, pos, false), &v);
+			r = rank_of(k0, false, v);
+			if (run_stop(w, r))
+				return;
+			if (run_cut(w, r))
+				return;
+			for (q = pos + 1; q < nvals; q++)
+			{
+				int64		v2;
+
+				run_key(w, run_at(w, q, false), &v2);
+				if (v2 != v)
+					break;
+			}
+			run_take(w, pos, q, r);
+		}
+		return;
+	}
+	for (uint32 pos = nvals, s; pos > 0; pos = s)
+	{
+		int64		v;
+		Rank		r;
+
+		run_key(w, run_at(w, pos - 1, true), &v);
+		r = rank_of(k0, false, v);
+		if (run_stop(w, r))
+			return;
+		if (run_cut(w, r))
+			return;
+		for (s = pos - 1; s > 0; s--)
+		{
+			int64		v2;
+
+			run_key(w, run_at(w, s - 1, true), &v2);
+			if (v2 != v)
+				break;
+		}
+		run_take(w, s, pos, r);
+	}
+}
+
+/*
+ * The unit from its sorted run: the groups of equal first keys in the order of the sort, from the best, until one cannot be in the
+ * result, where the rows are read and tested one by one otherwise. The candidates are what the other loop finds: the rows that pass whose first key is
+ * not after the n-th of the unit's or the heap's, so the rest is the same. False: the unit has no run, or the rows that pass are too few for the walk
+ * to pay (it reads about n / share of the rows that pass) and the heap has no bar yet.
+ */
+static bool
+run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+{
+	RunWalk		w = {.t = t, .src = src, .unit = unit, .key0 = key0, .rmask = rmask, .n = nrow, .win = RUN_WIN_MIN};
+	uint32		nvals,
+				nnull,
+				npass = 0;
+	uint64		id;
+	int			m = 0;
+	const TopKey *k0 = &t->key[0];
+	RunTrunc   *rt = NULL;
+
+	if (!sift_topn_runs || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
+		return false;
+	if (t->revisit)
+	{
+		/* the units the first pass finished, or took no run of, are not read again */
+		for (int i = 0; i < t->ntrunc && rt == NULL; i++)
+			if (t->trunc[i].id == id && !t->trunc[i].done)
+				rt = &t->trunc[i];
+		if (rt == NULL)
+			return true;
+		rt->done = true;
+		w.resumed = true;
+		w.resume = rt->next;
+	}
+	else
+	{
+		for (int i = 0; i < (nrow + 63) / 64; i++)
+			npass += pg_popcount64(rmask[i]);
+		/* a unit with fewer rows than the walk would take for its own bar is read through the run only when the heap's bar already cuts it */
+		if ((uint64) (t->limit + 1) * 2 > npass && !bar_rank(t, &w.bar))
+			return false;
+		w.budget = t->budget;
+	}
+	grow_unit_buffers(t, nrow);
+	if (t->rwin == NULL)
+		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * sizeof(uint32));
+	w.barred = bar_rank(t, &w.bar);
+	if (rt && run_stop(&w, rt->next))
+		return true;
+	if (k0->nulls_first)
+		run_nulls(&w, nvals, nnull);
+	run_values(&w, nvals);
+	if (!k0->nulls_first && !w.trunc)
+		run_nulls(&w, nvals, nnull);
+	/* the rows whose value overflowed the leaf are tested one by one: the run does not order them */
+	for (uint32 pos = nvals + nnull; pos < (uint32) nrow && !w.resumed; pos++)
+	{
+		uint32		row = run_at(&w, pos, false);
+
+		if (rmask[row >> 6] >> (row & 63) & 1)
+			t->cand[w.nc++] = row;
+	}
+	qsort(t->cand, w.nc, sizeof(uint32), row_cmp);
+	for (int q = 0; q < w.nc; q++)
+	{
+		TopEnt	   *e = &t->ce[m];
+		int64		v = 0;
+		bool		isnull = !row_key(k0, key0, t->cand[q], &v);
+
+		if (q > 0 && t->cand[q] == t->cand[q - 1])
+			run_corrupt(&w, "names a row twice");
+		if (w.barred && rank_after(rank_of(k0, isnull, v), w.bar))
+			continue;
+		memset(e, 0, sizeof(TopEnt));
+		e->k[0] = v;
+		e->nul = isnull;
+		e->row = e->tie = t->cand[q];
+		t->cand[m++] = e->row;
+	}
+	t->nrun++;
+	if (w.trunc)
+	{
+		if (t->ntrunc == t->captrunc)
+		{
+			t->captrunc = Max(16, 2 * t->captrunc);
+			t->trunc = grow(t, t->trunc, t->captrunc * sizeof(RunTrunc));
+		}
+		t->trunc[t->ntrunc++] = (RunTrunc) {id, unit->sb, w.next, false};
+	}
+	if (m > 0)
+		finish_unit(t, src, unit, m);
+	return true;
+}
+
 /*
  * sift_topn_unit for a first key of byte strings, which has no rank to compare as a number: the bar is the heap's worst entry or the unit's
  * n-th so far (whichever sorts first), and the rows are compared with it by the entry of the dictionary, as the type's comparison says.
@@ -1104,13 +1391,68 @@ unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 }
 
 /*
+ * Sorted runs in a walk over the units: the first pass takes about 2 n / units rows of each (their best, so that together they hold the n best of all but
+ * for the odd unit with more), which fills the heap with a bar close to the last, and leaves the units that have more rows below it to a second pass,
+ * which reads only them (sift_topn_revisit_next) and takes the rows after the ones taken. One pass over the units, each at most as far as the n-th row
+ * of the heap in the end needs, where one unit after the other would take n / k rows of the k-th.
+ */
+void
+sift_topn_run_budget(SiftTopN *t, uint32 units)
+{
+	int			b;
+
+	if (!sift_topn_runs || t->all || t->sort || t->limit <= 0 || units < 8)
+		return;
+	b = Max(2, (int) (((uint64) t->limit * 2 + units - 1) / units));
+	if (b * 2 < t->limit)
+		t->budget = b;
+}
+
+static int
+trunc_cmp(const void *a, const void *b)
+{
+	const RunTrunc *x = a,
+			   *y = b;
+
+	return rank_after(x->next, y->next) ? 1 : rank_after(y->next, x->next) ? -1 : 0;
+}
+
+/* The superblock of the next unit the first pass left unfinished whose rest the bar does not exclude; false when there is none */
+bool
+sift_topn_revisit_next(SiftTopN *t, uint32 *sb)
+{
+	Rank		bar;
+
+	if (!t->revisit)
+	{
+		t->revisit = true;
+		t->rpos = 0;
+		if (t->ntrunc > 1)
+			qsort(t->trunc, t->ntrunc, sizeof(RunTrunc), trunc_cmp);
+	}
+	if (t->yielded)
+		t->trunc[t->rpos].done = true;
+	t->yielded = false;
+	while (t->rpos < t->ntrunc && t->trunc[t->rpos].done)
+		t->rpos++;
+	if (t->rpos >= t->ntrunc)
+		return false;
+	if (bar_rank(t, &bar) && rank_after(t->trunc[t->rpos].next, bar))
+		return false;
+	*sb = t->trunc[t->rpos].sb;
+	/* done when the next is asked for, whether the unit was read (it marks itself) or its zone could not beat the bar now */
+	t->yielded = true;
+	return true;
+}
+
+/*
  * The rows of the unit are cut in two steps, so that the leaves of the other sort keys are read for a handful of rows and not for all of
  * them. First the first key of every row that passes: a row strictly worse on it than the n-th of the heap, or than the n-th of the unit
  * so far, cannot be in the result whatever its other keys are. Then the others, for the rows that remain (the n best and those tied with
  * the n-th).
  */
 void
-sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, bool whole, const uint64 *rmask, int nrow)
 {
 	const TopKey *k0 = &t->key[0];
 	Rank		bar = {0, 0},
@@ -1132,6 +1474,15 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		unit_blob(t, src, unit, key0, rmask, nrow);
 		return;
 	}
+	/* the walk reads the key of rows the filters dropped, which a leaf read for the few rows that pass does not hold */
+	if (t->revisit)
+	{
+		if (whole)
+			(void) run_unit(t, src, unit, key0, rmask, nrow);
+		return;
+	}
+	if (whole && run_unit(t, src, unit, key0, rmask, nrow))
+		return;
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
 	barred = bar_rank(t, &bar);
@@ -1549,9 +1900,16 @@ sift_topn_walk_order(const SiftTopN *t)
 }
 
 void
-sift_topn_add_skipped(SiftTopN *t, int64 n)
+sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs)
 {
 	t->skipped += n;
+	t->nrun += runs;
+}
+
+int64
+sift_topn_runs_read(const SiftTopN *t)
+{
+	return t->nrun;
 }
 
 /* The heap of a worker, for the leader: the entries are the keys and the TID of the rows, not the rows */

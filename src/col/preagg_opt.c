@@ -26,6 +26,46 @@ sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
+/* 'a, b': the names of the leaves an option takes, each one ok(); empty or 'off': none. s NULL: the syntax only. Returns NULL, or why the option is not valid */
+const char *
+sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
+					 bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad)
+{
+	const char *p = opt;
+
+	while (*p == ' ')
+		p++;
+	if (*p == '\0' || strcmp(p, "off") == 0)
+		return NULL;
+	for (;;)
+	{
+		const char *end = strchr(p, ',');
+		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		int			c = -1;
+
+		while (len > 0 && p[len - 1] == ' ')
+			len--;
+		if (len == 0)
+			return "empty column name";
+		if (s != NULL)
+		{
+			for (int i = 0; i < s->ncols && c < 0; i++)
+				if (strlen(names[i]) == len && strncmp(names[i], p, len) == 0)
+					c = i;
+			if (c < 0)
+				return "unknown column";
+			if (!ok(s, &s->cols[c]))
+				return bad;
+			leaf[c] = true;
+		}
+		if (end == NULL)
+			return NULL;
+		p = end + 1;
+		while (*p == ' ')
+			p++;
+	}
+}
+
 /* a scalar INT or float leaf, not a date/time/bool, of the top level (parent < 0) or of the elements of the list parent */
 static bool
 meas_in(const SiftColSchema *s, const SiftColDef *m, int parent)

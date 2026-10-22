@@ -47,6 +47,7 @@ typedef struct SegSums
 	int64		zones;
 	int64		preagg;
 	int64		sets;
+	int64		runs;
 	int64		sbdir_schema;
 	int64		page_overhead;	/* page headers and the unused end of the last page of every stream */
 	int64		headers;		/* SEGHEADER and LIVE pages */
@@ -88,7 +89,8 @@ add_segment(Relation rel, SiftColSegment *seg, const SiftColSchema *sc, int64 *c
 	s->unit_dir += h->sections[SIFT_SEC_POSTINGS].len - chunk_total;
 	s->dict_other += h->sections[SIFT_SEC_DICT].len - dict_total;
 	s->sets += sift_cseg_set_bytes(seg);
-	s->zones += h->sections[SIFT_SEC_DICTIDX].len - sift_cseg_preagg_bytes(seg) - sift_cseg_set_bytes(seg);
+	s->runs += sift_cseg_run_bytes(seg);
+	s->zones += h->sections[SIFT_SEC_DICTIDX].len - sift_cseg_preagg_bytes(seg) - sift_cseg_set_bytes(seg) - sift_cseg_run_bytes(seg);
 	s->sbdir_schema += h->sections[SIFT_SEC_DOCMAP].len;
 	s->page_overhead += (int64) stream_pages * BLCKSZ - (int64) (h->sections[SIFT_SEC_DOCMAP].off + h->sections[SIFT_SEC_DOCMAP].len);
 	s->headers += (int64) (1 + h->live_npages) * BLCKSZ;
@@ -145,6 +147,8 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	put_row(&r, "preagg", NULL, s.preagg);
 	if (s.sets > 0)
 		put_row(&r, "sets", NULL, s.sets);
+	if (s.runs > 0)
+		put_row(&r, "runs", NULL, s.runs);
 	put_row(&r, "sbdir_schema", NULL, s.sbdir_schema);
 	put_row(&r, "page_overhead", NULL, s.page_overhead);
 	put_row(&r, "headers", NULL, s.headers);

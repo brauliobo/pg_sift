@@ -104,6 +104,7 @@ typedef struct SiftCPaggSpec
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that get a small-set summary in every unit (option set_columns, column format minor 8; col/setsum.h) */
 	uint16		set_limit;				/* up to this many distinct keys a unit keeps exactly, a filter beyond */
 	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
+	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;
@@ -117,6 +118,9 @@ typedef struct SiftCPaggSpec
  * or float leaf, not a date/time/bool, of the same list or the top level)
  */
 extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
+/* The leaf names of an option that lists columns ('a, b', empty or off for none): sets leaf[c] for each, checked by ok (false: the message bad); s NULL checks the syntax only */
+extern const char *sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
+										bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);
 
 /*

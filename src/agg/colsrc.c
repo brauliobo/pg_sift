@@ -272,6 +272,18 @@ sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
 }
 
+bool
+sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
+}
+
+void
+sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
+{
+	src->prov->run_read(src->impl, unit, leaf, pos, cnt, rows);
+}
+
 void
 sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
 {

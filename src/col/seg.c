@@ -12,6 +12,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/runs.h"
 #include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
@@ -604,6 +605,9 @@ pagg_header(SiftColSegment *seg)
 			corrupt(seg, "The superunit block (%llu bytes at %llu) lies outside the section.", ULL(PAGG_SUPER_BYTES(h)), ULL(PAGG_SUPERDIR(h)));
 		if (ver > 3 && !PAGG_SUPERDIR(h) && PAGG_SUPER_BYTES(h))
 			corrupt(seg, "The superunit block has %llu bytes and no offset.", ULL(PAGG_SUPER_BYTES(h)));
+		if (ver > 4 && PAGG_RUNS(h) &&
+			(PAGG_RUNS(h) % 8 != 0 || PAGG_RUNS_BYTES(h) < sizeof(RunsHeader) + sizeof(RunsLeaf) || !within(s->len - end, PAGG_RUNS(h), PAGG_RUNS_BYTES(h), 0)))
+			corrupt(seg, "The sorted runs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_RUNS_BYTES(h)), ULL(PAGG_RUNS(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -865,10 +869,18 @@ sift_cseg_set_bytes(SiftColSegment *seg)
 }
 
 uint64
+sift_cseg_run_bytes(SiftColSegment *seg)
+{
+	const PaggHeader *h = pagg_header(seg);
+
+	return h->version > 4 ? PAGG_RUNS_BYTES(h) : 0;
+}
+
+uint64
 sift_cseg_preagg_bytes(SiftColSegment *seg)
 {
 	pagg_header(seg);
-	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg);
+	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg) - sift_cseg_run_bytes(seg);
 }
 
 /* ---------- small-set summaries ---------- */
@@ -934,6 +946,164 @@ sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 
 	*len = 0;
 	return sl ? unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
+}
+
+/* ---------- sorted runs ---------- */
+
+/* The record of leaf col in the section, read and checked with the whole section on first use; NULL when the leaf has no run in any unit */
+static const RunsLeaf *
+run_leaf(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h;
+	int			ncols = seg->schema->ncols;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_RUNS)
+		return NULL;
+	h = pagg_header(seg);
+	if (h->version < 5 || !PAGG_RUNS(h))
+		return NULL;
+	if (pv->runs == NULL)
+	{
+		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
+		uint64		at = s->off + pv->pagg_end + PAGG_RUNS(h),
+					room = PAGG_RUNS_BYTES(h),
+					lowest;
+		RunsHeader	rh;
+		RunsLeaf   *rec,
+				   *runs;
+		int			prev = -1;
+
+		seg_read(seg, at, sizeof(rh), &rh);
+		if (rh.magic != RUNS_MAGIC || rh.version != 1 || rh.nsb != seg->nsb || rh.nleaves < 1 || rh.nleaves > (uint32) ncols ||
+			sizeof(rh) + (uint64) rh.nleaves * sizeof(RunsLeaf) > room)
+			corrupt(seg, "The sorted runs start with 0x%08x, version %u, %u leaves, %u units.", rh.magic, rh.version, rh.nleaves, rh.nsb);
+		rec = palloc(rh.nleaves * sizeof(RunsLeaf));
+		seg_read(seg, at + sizeof(rh), rh.nleaves * sizeof(RunsLeaf), rec);
+		lowest = PAGG_RUNS(h) + sizeof(rh) + rh.nleaves * sizeof(RunsLeaf);
+		runs = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(RunsLeaf));
+		for (uint32 i = 0; i < rh.nleaves; i++)
+		{
+			const RunsLeaf *r = &rec[i];
+			uint64		rel = r->dir_off - PAGG_RUNS(h);
+
+			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(RUNS_ORD | RUNS_IDENT)) || !sift_crun_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
+				corrupt(seg, "The sorted-run record %u names leaf %u, which cannot have one.", i, r->leaf);
+			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
+				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
+				corrupt(seg, "The sorted runs of leaf %u (%llu bytes at %llu) lie outside the section.", r->leaf, ULL(r->bytes), ULL(r->dir_off));
+			lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
+			prev = r->leaf;
+			runs[r->leaf] = *r;
+		}
+		pfree(rec);
+		pv->rundir = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
+		pv->runs = runs;
+	}
+	return pv->runs[col].dir_off ? &pv->runs[col] : NULL;
+}
+
+bool
+sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at)
+{
+	const RunsLeaf *rl = run_leaf(seg, col);
+	SegPriv    *pv = PRIV(seg);
+	uint64		base,
+				b0,
+				b1;
+	uint8		hdr[SIFT_CRUN_HDR];
+
+	if (rl == NULL)
+		return false;
+	base = sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + rl->dir_off;
+	if (pv->rundir[col] == NULL)
+	{
+		uint64	   *dir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
+
+		seg_read(seg, base, (seg->nsb + 1) * sizeof(uint64), dir);
+		for (uint32 i = 0; i < seg->nsb; i++)
+			if (dir[i] > dir[i + 1] || dir[i + 1] > rl->bytes)
+				corrupt(seg, "The sorted-run directory of leaf %d is out of order at unit %u.", col, i);
+		pv->rundir[col] = dir;
+	}
+	b0 = pv->rundir[col][u];
+	b1 = pv->rundir[col][u + 1];
+	if (b1 == b0)
+		return false;
+	*at = base + (seg->nsb + 1) * sizeof(uint64) + b0;
+	if (b1 - b0 > UINT32_MAX)
+		corrupt(seg, "The sorted run of leaf %d in unit %u is %llu bytes.", col, u, ULL(b1 - b0));
+	seg_read(seg, *at, SIFT_CRUN_HDR < b1 - b0 ? SIFT_CRUN_HDR : b1 - b0, hdr);
+	if (!sift_crun_head(hdr, (uint32) (b1 - b0), seg->sbdir[u].nrows, r))
+		corrupt(seg, "The sorted run of leaf %d in unit %u is malformed.", col, u);
+	return true;
+}
+
+uint32
+sift_cseg_run_kinds(SiftColSegment *seg, int col)
+{
+	const RunsLeaf *rl = run_leaf(seg, col);
+
+	return rl ? rl->flags : 0;
+}
+
+#ifdef SIFT_TESTING
+/* The span of the sorted runs in the stream and, for each byte of it, 2 when it is structure (header, records, directories, the head of a run), 1 when it is an entry of a run and 0 for the padding between blocks */
+bool
+sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used)
+{
+	const PaggHeader *h = pagg_header(seg);
+	RunsHeader	rh;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_RUNS || h->version < 5 || !PAGG_RUNS(h))
+		return false;
+	*off = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_RUNS(h);
+	*len = PAGG_RUNS_BYTES(h);
+	seg_read(seg, *off, sizeof(rh), &rh);
+	*used = palloc0(*len);
+	memset(*used, 2, sizeof(rh) + (uint64) rh.nleaves * sizeof(RunsLeaf));
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		const RunsLeaf *rl = run_leaf(seg, c);
+		uint64		dir = rl ? rl->dir_off - PAGG_RUNS(h) : 0;
+
+		if (rl == NULL)
+			continue;
+		memset(*used + dir, 2, (uint64) (seg->nsb + 1) * sizeof(uint64));
+		memset(*used + dir + (uint64) (seg->nsb + 1) * sizeof(uint64), 1, rl->bytes);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			SiftCRun	r;
+			uint64		at;
+
+			if (sift_cseg_run(seg, c, u, &r, &at))
+				memset(*used + (at - *off), 2, SIFT_CRUN_HDR);
+		}
+	}
+	return true;
+}
+#endif
+
+void
+sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst)
+{
+	seg_read(seg, at, sift_crun_bytes(r->kind, r->n), dst);
+}
+
+void
+sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out)
+{
+	uint8	   *buf = NULL;
+
+	if (r->kind == SIFT_CRUN_ORD)
+	{
+		buf = palloc((Size) cnt * r->width + 1);
+		seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, buf);
+	}
+	if (!sift_crun_entries(r, buf, pos, cnt, out))
+		corrupt(seg, "The sorted run entries %u to %u are not rows of its unit of %u.", pos, pos + cnt, r->n);
+	if (buf)
+		pfree(buf);
 }
 
 #define SET_PROBE_KEYS	64				/* a LUT of more matches is tested through the summaries that list their keys, not probed key by key */

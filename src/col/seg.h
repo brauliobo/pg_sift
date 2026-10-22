@@ -13,6 +13,7 @@
 
 #include "col/enc.h"
 #include "col/preagg.h"
+#include "col/runs.h"
 #include "core/store.h"
 
 #define SIFT_COL_SEG_MAGIC_UNIT		0x554C4F43	/* "COLU" */
@@ -181,6 +182,7 @@ extern void sift_cseg_verify_super(SiftColSegment *seg);
 extern uint64 sift_test_seg_flip_at;
 extern uint8 sift_test_seg_flip_mask;
 extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
+extern bool sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 #endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
@@ -199,6 +201,18 @@ extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, ui
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
+/* The bytes the sorted runs of the segment take */
+extern uint64 sift_cseg_run_bytes(SiftColSegment *seg);
+/* The kinds (RUNS_ORD, RUNS_IDENT) the record of the leaf says some unit has; 0 when the leaf has no run */
+extern uint32 sift_cseg_run_kinds(SiftColSegment *seg, int col);
+/*
+ * The sorted run of leaf col in unit u (col/runs.h): its header in r and where its bytes start in at; false when the unit has none. Then the entries
+ * [pos, pos + cnt) of it as the ordinals of rows (sift_cseg_run_read), each checked to be a row of the unit.
+ */
+extern bool sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at);
+extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out);
+/* The whole stored run, sift_crun_bytes(r->kind, r->n) bytes (the verifier) */
+extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
 extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);
 

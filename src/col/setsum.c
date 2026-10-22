@@ -70,55 +70,16 @@ sift_cset_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 		(d->kind == SIFT_COLK_SCALAR && d->parent < 0 && d->store == SIFT_COLS_STR && d->type == SIFT_COLT_UUID);
 }
 
-/* 'a, b': the names of the leaves; empty or 'off': none */
-static const char *
-spec_walk(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
-{
-	const char *p = opt;
-
-	while (*p == ' ')
-		p++;
-	if (*p == '\0' || strcmp(p, "off") == 0)
-		return NULL;
-	for (;;)
-	{
-		const char *end = strchr(p, ',');
-		size_t		len = end ? (size_t) (end - p) : strlen(p);
-		int			c = -1;
-
-		while (len > 0 && p[len - 1] == ' ')
-			len--;
-		if (len == 0)
-			return "empty column name";
-		if (s != NULL)
-		{
-			for (int i = 0; i < s->ncols && c < 0; i++)
-				if (strlen(names[i]) == len && strncmp(names[i], p, len) == 0)
-					c = i;
-			if (c < 0)
-				return "unknown column";
-			if (!sift_cset_leaf_ok(s, &s->cols[c]))
-				return "not a plain integer, text or uuid column";
-			leaf[c] = true;
-		}
-		if (end == NULL)
-			return NULL;
-		p = end + 1;
-		while (*p == ' ')
-			p++;
-	}
-}
-
 const char *
 sift_cset_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
 {
-	return spec_walk(opt, s, names, leaf);
+	return sift_cpagg_leaf_list(opt, s, names, leaf, sift_cset_leaf_ok, "not a plain integer, text or uuid column");
 }
 
 const char *
 sift_cset_syntax(const char *opt)
 {
-	return spec_walk(opt, NULL, NULL, NULL);
+	return sift_cpagg_leaf_list(opt, NULL, NULL, NULL, NULL, NULL);
 }
 
 uint32

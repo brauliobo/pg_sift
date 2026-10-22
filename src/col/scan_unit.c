@@ -189,6 +189,37 @@ unit_group(ColUnit *cu, int group)
 	return g;
 }
 
+bool
+sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->seg == NULL)
+		return false;
+	if (!cu->run.known || cu->run.col != col)
+	{
+		cu->run.col = col;
+		cu->run.known = true;
+		cu->run.found = sift_cseg_run(cu->seg, col, cu->u, &cu->run.r, &cu->run.at);
+	}
+	if (cu->run.found)
+	{
+		*nvals = cu->run.r.nvals;
+		*nnull = cu->run.r.nnull;
+		*id = cu->seg->entry.gen << 28 | cu->u;
+	}
+	return cu->run.found;
+}
+
+void
+sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords)
+{
+	ColUnit    *cu = unit->priv;
+
+	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run read without its info");
+	sift_cseg_run_read(cu->seg, cu->run.at, &cu->run.r, pos, cnt, ords);
+}
+
 void
 sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 {

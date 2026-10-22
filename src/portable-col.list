@@ -29,6 +29,7 @@ col/ver.c
 col/preagg.c
 col/preagg_opt.c
 col/preagg_read.c
+col/runs.c
 col/setsum.c
 col/wide.c
 col/shred.c
@@ -49,6 +50,7 @@ col/enc.h
 col/enc_int.h
 col/seg.h
 col/seg_int.h
+col/runs.h
 col/setsum.h
 col/ver.h
 col/preagg.h

@@ -224,6 +224,9 @@ CREATE FUNCTION sift._test_col_set_damage(index regclass, units int4, OUT blobs 
 
 CREATE FUNCTION sift._test_col_super_damage(index regclass, OUT supers int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_super_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_run_damage(index regclass, units int4, OUT blobs int8, OUT ord int8, OUT ident int8, OUT intact int8, OUT matching int8, OUT cut int8,
+										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_run_damage' LANGUAGE C STRICT;
 
 -- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
@@ -364,3 +367,5 @@ CREATE FUNCTION sift._test_tbl_ovf_piece(piece int4, flags int4) RETURNS int4
 -- the same for a record of inline_len bytes that ends `over` bytes past the end of the page's data (0: the largest record a page holds)
 CREATE FUNCTION sift._test_tbl_page_rec_end(inline_len int4, over int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec_end' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_run_file_damage(index regclass, stride int4, OUT runs int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_run_file_damage' LANGUAGE C STRICT;
