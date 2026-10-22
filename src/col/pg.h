@@ -12,9 +12,7 @@
 
 #include "col/col.h"
 
-/* The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map) */
-extern SiftColIndexMeta *sift_col_index_meta(Relation index);
-/* Per leaf (ncols entries, memoized per backend, valid until a call for a ninth index): what the zones and dictionaries of the immutable segments say, no chunk read */
+/* Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read */
 extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
 extern const SiftColZones *sift_col_zones(Relation index);
@@ -31,6 +29,18 @@ typedef struct SiftColPreStats
 	double		roll[SIFT_COL_MAX_COLS];
 } SiftColPreStats;
 extern const SiftColPreStats *sift_col_pre_stats(Relation index);
+/* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the three functions above for the directory it read */
+typedef struct SiftColLeafMemo
+{
+	const SiftColLeafStats *leaves;
+	const SiftColZones *zones;
+	const SiftColPreStats *pre;
+} SiftColLeafMemo;
+/*
+ * The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map).
+ * With memo, the leaf statistics, zones and pre-aggregate counts of the same directory read come with it.
+ */
+extern SiftColIndexMeta *sift_col_index_meta(Relation index, SiftColLeafMemo *memo);
 /* A hash of what decides the sections a unit is written with: the options preagg, rollup and cube_minmax, and sift.col_format_minor */
 extern uint32 sift_col_pagg_hash(Relation index);
 

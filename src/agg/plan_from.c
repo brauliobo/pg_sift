@@ -44,9 +44,11 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
@@ -248,8 +250,8 @@ typedef struct PartCand
 {
 	Oid			indexoid;
 	SiftSrcLayout *lay;
-	SiftSrcStats stats;
-	SiftSrcPreagg pa;
+	const SiftSrcStats *stats;
+	const SiftSrcPreagg *pa;
 } PartCand;
 
 typedef struct PartVars
@@ -287,6 +289,79 @@ part_vars_mutator(Node *n, PartVars *pv)
 	return (Node *) v;
 }
 
+/*
+ * The layout, statistics and pre-aggregates of a partition's index are read once for a plan, however many arms and CTEs scan the table: the
+ * planner hook opens a memo (sift_agg_memo_begin) that its plans share and deletes it when the last of them is made.
+ */
+typedef struct PartMemo
+{
+	Oid			indexoid;
+	PartCand   *pc;
+} PartMemo;
+
+static MemoryContext part_memo_cx;
+static HTAB *part_memo;
+
+MemoryContext
+sift_agg_memo_begin(void)
+{
+	if (part_memo_cx != NULL)
+		return NULL;
+	part_memo_cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan memo", ALLOCSET_DEFAULT_SIZES);
+	return part_memo_cx;
+}
+
+void
+sift_agg_memo_end(MemoryContext cx)
+{
+	if (cx == NULL)
+		return;
+	part_memo_cx = NULL;
+	part_memo = NULL;
+	MemoryContextDelete(cx);
+}
+
+/* what is read of a partition's index, in the memo when there is one; its layout's expressions are those of the partition and nothing of it is to be changed */
+static const PartCand *
+part_index_facts(Oid indexoid)
+{
+	PartMemo   *m = NULL;
+	PartCand   *pc;
+	SiftSrcStats *stats;
+	SiftSrcPreagg *pa;
+	MemoryContext old;
+	Relation	rel;
+
+	if (part_memo_cx != NULL)
+	{
+		bool		found;
+
+		if (part_memo == NULL)
+		{
+			HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(PartMemo), .hcxt = part_memo_cx};
+
+			part_memo = hash_create("sift plan memo", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		}
+		m = hash_search(part_memo, &indexoid, HASH_ENTER, &found);
+		if (found)
+			return m->pc;
+	}
+	old = MemoryContextSwitchTo(part_memo_cx ? part_memo_cx : CurrentMemoryContext);
+	pc = palloc0(sizeof(PartCand));
+	pc->indexoid = indexoid;
+	rel = index_open(indexoid, AccessShareLock);
+	pc->lay = sift_colsrc_layout(rel);
+	pc->stats = stats = palloc(sizeof(SiftSrcStats));
+	sift_colsrc_stats(rel, stats);
+	pc->pa = pa = palloc(sizeof(SiftSrcPreagg));
+	sift_colsrc_preagg(rel, pa);
+	index_close(rel, AccessShareLock);
+	MemoryContextSwitchTo(old);
+	if (m != NULL)
+		m->pc = pc;
+	return pc;
+}
+
 /* The candidates of a leaf partition: its sift_col indexes, with the layouts in the terms of the partitioned table; none when it cannot be read */
 static List *
 part_candidates(AggCtx *c, RelOptInfo *leaf)
@@ -298,21 +373,19 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 		return NIL;
 	foreach_node(IndexOptInfo, ii, leaf->indexlist)
 	{
+		const PartCand *facts;
 		PartCand   *pc;
 		PartVars	pv = {c->root, leaf->relid, c->relid, true};
-		Relation	rel;
 		List	   *exprs = NIL;
 
 		if (!sift_colsrc_can_part(ii->relam) || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 			continue;
-		pc = palloc0(sizeof(PartCand));
-		pc->indexoid = ii->indexoid;
-		rel = index_open(ii->indexoid, AccessShareLock);
-		pc->lay = sift_colsrc_layout(rel);
-		sift_colsrc_stats(rel, &pc->stats);
-		sift_colsrc_preagg(rel, &pc->pa);
-		index_close(rel, AccessShareLock);
-		foreach_ptr(Node, e, pc->lay->attexprs)
+		facts = part_index_facts(ii->indexoid);
+		pc = palloc(sizeof(PartCand));
+		*pc = *facts;
+		pc->lay = palloc(sizeof(SiftSrcLayout));
+		*pc->lay = *facts->lay;
+		foreach_ptr(Node, e, facts->lay->attexprs)
 			exprs = lappend(exprs, part_vars_mutator(e, &pv));
 		pc->lay->attexprs = exprs;
 		if (pv.ok)
@@ -474,7 +547,7 @@ part_source(AggCtx *c)
 			PartCand   *m = NULL;
 
 			foreach_ptr(PartCand, pc, part_candidates(c, list_nth_node(RelOptInfo, leaves, i)))
-				if (sift_aggpart_same_layout(f->lay, pc->lay) && memcmp(&f->pa, &pc->pa, sizeof(f->pa)) == 0)
+				if (sift_aggpart_same_layout(f->lay, pc->lay) && memcmp(f->pa, pc->pa, sizeof(*f->pa)) == 0)
 				{
 					m = pc;
 					break;
@@ -495,10 +568,10 @@ part_source(AggCtx *c)
 			c->partheap[i] = planner_rt_fetch(leaf->relid, c->root)->relid;
 			c->partindex[i] = pc->indexoid;
 			c->part_pages += leaf->pages;
-			sift_aggpart_add_stats(&c->stats, &pc->stats);
+			sift_aggpart_add_stats(&c->stats, pc->stats, f->lay->nleaves);
 		}
 		c->lay = f->lay;
-		c->pa = f->pa;
+		c->pa = *f->pa;
 		c->indexoid = f->indexoid;
 		return true;
 	}

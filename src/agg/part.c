@@ -973,7 +973,7 @@ sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b)
 
 /* the number of a leaf's values is a lower bound over several sources (the distinct values of a leaf may repeat among them), its range the union */
 void
-sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
+sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s, int nleaves)
 {
 	double		w = tot->nrows + s->nrows;
 
@@ -982,7 +982,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
 		tot->allvisible_frac = (tot->allvisible_frac * tot->nrows + s->allvisible_frac * s->nrows) / w;
 		tot->exact_frac = (tot->exact_frac * tot->nrows + s->exact_frac * s->nrows) / w;
 	}
-	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
+	for (int i = 0; i < Min(nleaves, SIFT_COLSRC_MAX_LEAVES); i++)
 	{
 		if (w > 0)
 		{

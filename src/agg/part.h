@@ -45,6 +45,6 @@ extern void sift_aggpart_set_offsets(SiftSrcSource *src, const uint32 *off);
 extern bool sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b);
 
 /* Planner: the statistics of the sources together (tot starts zeroed) */
-extern void sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s);
+extern void sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s, int nleaves);
 
 #endif							/* SIFT_AGGPART_H */
