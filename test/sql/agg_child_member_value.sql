@@ -36,7 +36,7 @@ SELECT * FROM check_query('jsonb', $q$
  SELECT c.v, count(*) FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON true
  JOIN LATERAL (SELECT r.value AS v UNION ALL SELECT '1'::jsonb) c ON true GROUP BY 1
 $q$);
--- the same through the member a LEFT JOIN picks (PostgreSQL 18 runs it in the scan; the results agree whatever the version)
+-- the same through the member a LEFT JOIN picks (the scan runs it; the results agree whatever the version)
 SELECT same FROM check_query('keyed numeric cast', $q$
  SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'k'
  JOIN LATERAL (SELECT r.value::numeric AS v UNION ALL SELECT 1) c ON true GROUP BY 1
