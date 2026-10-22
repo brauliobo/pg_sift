@@ -161,7 +161,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/sift/old-lib/*/root
-          key: old-lib-${{ runner.os }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/old_lib_refusal.sh') }}
+          key: old-lib-${{ runner.os }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/compat_matrix.sh', 'test/t/old_lib_refusal.sh') }}
 
       - name: Build
         run: |
