@@ -36,22 +36,22 @@ BEGIN
   DROP TABLE r_off, r_on;
   RETURN NEXT;
 END $$;
--- The dimension of the day's facts as a JSON value, NULL for a country outside the list (and for a day without facts).
+-- The attribute of the day's facts as a JSON value, NULL for a country outside the list (and for a day without facts).
 SELECT * FROM check_query($q$
- SELECT d.day, f.dimension, count(f.id) AS n, sum(f.amount) AS total
- FROM dates d LEFT JOIN (SELECT id, day, amount, CASE WHEN country IN (SELECT iso FROM countries) THEN jsonb_build_object('iso2', country, 'type', 'country') ELSE NULL END AS dimension FROM facts) f ON f.day = d.day
+ SELECT d.day, f.attribute, count(f.id) AS n, sum(f.amount) AS total
+ FROM dates d LEFT JOIN (SELECT id, day, amount, CASE WHEN country IN (SELECT iso FROM countries) THEN jsonb_build_object('iso2', country, 'type', 'country') ELSE NULL END AS attribute FROM facts) f ON f.day = d.day
  GROUP BY 1, 2
 $q$);
 -- The list holds a NULL: IN is NULL, not false, for the countries it lacks.
 SELECT * FROM check_query($q$
- SELECT d.day, f.dimension, count(f.id) AS n
- FROM dates d LEFT JOIN (SELECT id, day, CASE WHEN country IN (SELECT iso FROM countries_null) THEN 'listed' WHEN country NOT IN (SELECT iso FROM countries_null) THEN 'other' ELSE 'unknown' END AS dimension FROM facts) f ON f.day = d.day
+ SELECT d.day, f.attribute, count(f.id) AS n
+ FROM dates d LEFT JOIN (SELECT id, day, CASE WHEN country IN (SELECT iso FROM countries_null) THEN 'listed' WHEN country NOT IN (SELECT iso FROM countries_null) THEN 'other' ELSE 'unknown' END AS attribute FROM facts) f ON f.day = d.day
  GROUP BY 1, 2
 $q$);
 -- Without the calendar the key is the plain expression of one column.
 SELECT * FROM check_query($q$
- SELECT dimension, count(*) AS n
- FROM (SELECT CASE WHEN country IN (SELECT iso FROM countries) THEN jsonb_build_object('iso2', country, 'type', 'country') ELSE NULL END AS dimension FROM facts) f
+ SELECT attribute, count(*) AS n
+ FROM (SELECT CASE WHEN country IN (SELECT iso FROM countries) THEN jsonb_build_object('iso2', country, 'type', 'country') ELSE NULL END AS attribute FROM facts) f
  GROUP BY 1
 $q$);
 DROP FUNCTION check_query(text);
