@@ -279,7 +279,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->cxt = mcxt;
 	t->snapshot = RegisterSnapshot(snapshot);
 	t->last = -1;
-	sift_aggsel_init(&t->sel, mcxt);
+	sift_aggsel_init(&t->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&t->pre, mcxt);
 	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);

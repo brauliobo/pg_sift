@@ -303,7 +303,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
 	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
 	src->ugen = 1;
-	sift_aggsel_init(&src->sel, mcxt);
+	sift_aggsel_init(&src->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;

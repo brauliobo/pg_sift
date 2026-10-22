@@ -390,10 +390,10 @@ INSERT INTO e_q (q) VALUES
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''n'') <> ''number'' OR grp = 1'),
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'' OR jsonb_typeof(attrs->''b'') IS NULL');
 SELECT n, t_check(q) FROM e_q ORDER BY n;
- n  |                                        t_check                                        
-----+---------------------------------------------------------------------------------------
-  1 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
-  2 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22P02
+ n  |                                                                                         t_check                                                                                         
+----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
+  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
   3 | same
   4 | same
   5 | same
@@ -408,7 +408,7 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  14 | same
  15 | same
  16 | same
- 17 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
+ 17 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
  18 | same
  19 | same
  20 | same
@@ -445,10 +445,10 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
 
 UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |                                        t_check                                        
-----+---------------------------------------------------------------------------------------
+ n  |                                                                                         t_check                                                                                         
+----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   1 | same
-  2 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22P02
+  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
   3 | same
   8 | same
  12 | same
@@ -459,9 +459,9 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
 
 INSERT INTO e VALUES (7003, 2, '{"m": 1e999}');
 SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
- n |                                        t_check                                        
----+---------------------------------------------------------------------------------------
- 1 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
+ n |                                                                                         t_check                                                                                         
+---+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
 (1 row)
 
 DELETE FROM e WHERE id IN (7002, 7003);

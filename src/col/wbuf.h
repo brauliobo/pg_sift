@@ -30,6 +30,9 @@ typedef struct SiftCWbufHint
  */
 extern uint32 sift_cwbuf_overflow(const SiftDirSnapshot *dir);
 
+/* The cached plans of the table are invalid in every session at once (a scan that met a value its plan did not know of calls it too) */
+extern void sift_cwbuf_invalidate_plans(Oid heapoid);
+
 /* The leaves a write buffer holds a JSON null of (SIFT_COL_OVF_BIT), in the sum_dl word of its directory entry, kept as the overflow mask is; only a cast of it before PostgreSQL 18 needs it */
 extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
 
