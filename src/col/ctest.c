@@ -583,9 +583,7 @@ istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
 
 	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || !istr_split(c, &pre, &prelen, &strs, &strslen))
 		return NULL;
-	cc = sift_cc_open(CurrentMemoryContext, pre, prelen, false);
-	if (sift_cc_nrows(cc) != c->n)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the prefix blob has %u values, the chunk %u", sift_cc_nrows(cc), c->n)));
+	cc = sift_cc_open_rows(CurrentMemoryContext, pre, prelen, false, c->n);
 	cand = palloc0(nw * sizeof(uint64));
 	k = p->nvals > 0 ? sift_col_str_prefix(p->vals[0].v.s, p->vals[0].len) : 0;
 	switch (op)
