@@ -6,7 +6,7 @@ CREATE TABLE pg_items AS
 SELECT o.id AS order_id, (i.ord - 1)::int AS idx, o.store_id, o.customer_id, o.source, o.placed_at, o.country_code, o.lang,
        o.attributes->>'channel' AS channel, (o.attributes->>'normalized') IS NOT NULL AS normalized, i.v->>'category' AS category,
        i.v->>'sku' AS sku, i.v->>'kind' AS kind, (i.v->>'qty')::int AS qty, (i.v->>'price')::float8 AS price,
-       (i.v->>'discount')::float8 AS discount, (o.metrics->>'overall')::float8 AS overall, o.deleted_at
+       (i.v->>'discount')::float8 AS discount, (o.metrics->>'p_total')::float8 AS p_total, o.deleted_at
 FROM orders o, jsonb_array_elements(o.items) WITH ORDINALITY AS i(v, ord);
 CREATE TABLE pg_metrics AS
 SELECT o.id AS order_id, o.store_id, o.customer_id, o.source, o.placed_at, o.country_code, o.lang, kv.key AS metric_key,

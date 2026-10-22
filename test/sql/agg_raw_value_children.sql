@@ -5,8 +5,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb, comments jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"overall": 8}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
-                  WHEN 4 THEN NULL ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"p_total": 8}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"p_total": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL ELSE jsonb_build_object('p_total', i % 10, 'other', i % 3) END,
        CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"role_a"}]'::jsonb ELSE '[{"type":"role_c"},{"type":"role_a"}]'::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, metrics, comments) WITH (paths = 'metrics.* float8, comments[]{type text}');
@@ -35,7 +35,7 @@ END $$;
 -- A UNION arm casts the value of the member the join kept: numbers round as PostgreSQL's cast does (6.5).
 SELECT * FROM check_query('union', $q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids
- FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+ FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION (SELECT CASE WHEN CAST(r.value AS integer) > 6 THEN 'high' ELSE 'low' END)) c ON true
  GROUP BY 1
 $q$);
@@ -43,13 +43,13 @@ SELECT * FROM check_query('union all, filter, key', $q$
  SELECT c.category, f.entity_id % 3 AS k, count(*) AS n
  FROM facts f CROSS JOIN LATERAL jsonb_each(f.metrics) r
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
- WHERE f.entity_id < 30 AND r.key = 'overall'
+ WHERE f.entity_id < 30 AND r.key = 'p_total'
  GROUP BY 1, 2
 $q$);
 -- a cast to numeric keeps the scale the document wrote, which the stored float does not: the normal plan (agg_child_member_value)
 SELECT * FROM check_query('numeric', $q$
  SELECT c.v, count(*) AS n
- FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+ FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
  JOIN LATERAL (SELECT r.value::numeric AS v UNION ALL SELECT r.value::numeric + 1) c ON true
  GROUP BY 1
 $q$);
@@ -64,27 +64,27 @@ SELECT * FROM check_query('is true, unnest', $q$
  FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other' GROUP BY 1
 $q$);
 -- Error timing: a member that cannot be cast raises only for the rows that reach the cast, with PostgreSQL's SQLSTATE and message.
-INSERT INTO facts VALUES (20001, 1, '{"overall": 3000000000}', NULL), (20002, 2, '{"overall": 1e30}', NULL);
+INSERT INTO facts VALUES (20001, 1, '{"p_total": 3000000000}', NULL), (20002, 2, '{"p_total": 1e30}', NULL);
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('excluded row', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id < 20000 GROUP BY 1$q$);
 SELECT * FROM check_query('other key', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'other'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    GROUP BY 1$q$);
-SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20001 GROUP BY 1$q$);
-SELECT * FROM check_query('bigint out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('bigint out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::bigint > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20002 GROUP BY 1$q$);
 -- A member the index cannot hold as a number (a string, an object) keeps the query native, which raises the same errors.
-INSERT INTO facts VALUES (20003, 3, '{"overall": "abc"}', NULL), (20004, 4, '{"overall": {"a": 1}}', NULL);
+INSERT INTO facts VALUES (20003, 3, '{"p_total": "abc"}', NULL), (20004, 4, '{"p_total": {"a": 1}}', NULL);
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('string member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('string member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20003 GROUP BY 1$q$);
-SELECT * FROM check_query('object member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+SELECT * FROM check_query('object member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20004 GROUP BY 1$q$);
 DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);

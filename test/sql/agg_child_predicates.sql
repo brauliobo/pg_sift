@@ -5,9 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, day date, metrics jsonb);
 INSERT INTO events
 SELECT i, date '2024-01-01' + i % 60,
-       CASE WHEN i % 11 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('overall', i % 11) END
+       CASE WHEN i % 11 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('p_total', i % 11) END
 FROM generate_series(1, 50000) i;
-INSERT INTO events VALUES (50001, NULL, '{"overall":8}');
+INSERT INTO events VALUES (50001, NULL, '{"p_total":8}');
 CREATE INDEX events_col ON events USING sift_col (id, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) events;
 CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
@@ -51,7 +51,7 @@ SELECT * FROM check_query($q$
    SELECT e.id, e.day, r.key, r.value::float8 AS value
    FROM events e CROSS JOIN LATERAL jsonb_each(e.metrics) r
  )
- SELECT d.day, coalesce(p.key, 'overall') AS category, count(*) AS n,
+ SELECT d.day, coalesce(p.key, 'p_total') AS category, count(*) AS n,
         count(DISTINCT p.id) AS ids, avg(p.value) AS value,
         count(DISTINCT p.id) FILTER (WHERE p.value >= 8) AS promoters
  FROM (VALUES (date '2024-01-01'), (date '2024-01-02'),
@@ -61,7 +61,7 @@ SELECT * FROM check_query($q$
 $q$);
 -- Filters in the nullable input affect matches; they must retain the empty bucket.
 SELECT * FROM check_query($q$
- SELECT d.day, coalesce(p.key, 'overall') AS category, count(*) AS n,
+ SELECT d.day, coalesce(p.key, 'p_total') AS category, count(*) AS n,
         count(DISTINCT p.id) AS ids, avg(p.value) AS value
  FROM (VALUES (date '2024-01-01'), (date '2024-01-02'), (date '2024-05-01')) d(day)
  LEFT JOIN (
@@ -76,7 +76,7 @@ CREATE TABLE entities (id int, label text);
 INSERT INTO entities SELECT i, 'g' || i % 3 FROM generate_series(0, 99) i;
 INSERT INTO entities VALUES (1, 'duplicate');
 CREATE TABLE labels (key text, category text);
-INSERT INTO labels VALUES ('overall', 'quality'), ('overall', 'quality'), ('unused', NULL);
+INSERT INTO labels VALUES ('p_total', 'quality'), ('p_total', 'quality'), ('unused', NULL);
 ANALYZE entities; ANALYZE labels;
 SELECT * FROM check_query($q$
  WITH parsed AS (
@@ -87,7 +87,7 @@ SELECT * FROM check_query($q$
    LEFT JOIN labels m ON m.key = r.key
    WHERE f.id < 40000 AND e.label <> 'g2'
  )
- SELECT d.day, p.label, coalesce(p.category, 'overall') AS category,
+ SELECT d.day, p.label, coalesce(p.category, 'p_total') AS category,
         count(*) AS n, count(DISTINCT p.id) AS ids, avg(p.value) AS value,
         count(*) FILTER (WHERE p.category IS NULL) AS empty_inputs,
         count(DISTINCT p.id) FILTER (WHERE p.label = 'g1') AS selected_ids

@@ -2,6 +2,6 @@
 -- shape: S3
 -- expect: plain
 -- key: -
-SELECT (metrics->>'overall')::float8 AS overall, count(*) AS orders
+SELECT (metrics->>'p_total')::float8 AS p_total, count(*) AS orders
 FROM orders WHERE id < 40 AND deleted_at IS NULL
 GROUP BY 1 ORDER BY 1
