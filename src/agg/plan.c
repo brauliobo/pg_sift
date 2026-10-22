@@ -517,6 +517,8 @@ reads_json_null_cast(AggCtx *c)
 bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
+	double		lists;
+
 	if (c->other_group || types_guard_reads(c))
 		return false;
 	share_ordered(s);
@@ -539,6 +541,13 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return false;
 	finish_combos(c, s);
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
+	/*
+	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of all the rows
+	 * the lists can pass: a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
+	 * again for each row, while a count that is too large only makes it hash or materialize.
+	 */
+	lists = lookup_set_ratio(c, s, input_rel, true);
+	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists) : 0;
 	if (c->search)
 		s->search = c->search->spec;
 
@@ -634,7 +643,7 @@ row_scan_of(Path *p)
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel);
+	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false);
 
 	if (f <= 1.0)
 		return;

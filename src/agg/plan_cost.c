@@ -671,10 +671,11 @@ column_skew(AggCtx *c, Var *v)
  * is then priced for a handful of keys, though the lists the queries pass hold a good share of the table's distinct values. The keys
  * are taken as the geometric mean of the rows PostgreSQL expects and the distinct values of the scanned column (as child_rows does for
  * the rows of a set-returning function). A lookup PostgreSQL has statistics for keeps its estimate of the keys, and the rows of each are priced
- * by the skew of the column (column_skew, sift.agg_key_skew).
+ * by the skew of the column (column_skew, sift.agg_key_skew). With groups set (the rows the path reports, spec_finish) the keys are all the
+ * distinct values and the skew is not counted: the groups are the keys' own.
  */
 double
-lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 {
 	double		f = 1.0;
 
@@ -708,11 +709,11 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 		/* a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's */
 		if (lookup_counted(c, jc))
 		{
-			if (sift_agg_key_skew)
+			if (sift_agg_key_skew && !groups)
 				f *= sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
 		}
 		else if (nd > keys)
-			f *= sqrt(nd / keys);
+			f *= groups ? nd / keys : sqrt(nd / keys);
 	}
 	/* the normal plan reads no more than the rows the table's own filters keep, whatever the keys */
 	return Min(f, Max(c->rel->rows / Max(input_rel->rows, 1.0), 1.0));
@@ -1205,5 +1206,6 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the rows of a top-N are fetched from the heap, one page each */
 	if (s->topn)
 		p->total_cost += k.rows_out * random_page_cost * 0.5;
-	p->rows = k.rows_out;
+	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
+	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 }
