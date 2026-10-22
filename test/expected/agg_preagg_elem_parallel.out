@@ -24,7 +24,7 @@ CREATE INDEX p_col ON p_t USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
 CREATE INDEX p_dcol ON p_d USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) p_t;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) p_t;
 ANALYZE p_d;
 SELECT units > 8 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('p_col');
  units | all_with_cube 
@@ -132,7 +132,7 @@ SELECT sift.col_merge('p_col', true) >= 0 AS merged;
  t
 (1 row)
 
-VACUUM (index_cleanup on, disable_page_skipping) p_t;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) p_t;
 SET seq_page_cost = 10000;
 SELECT n, mode, pre, same, same_scan FROM p_compare('p_t') WHERE n IN (1, 3, 9);
  n |  mode  | pre  | same | same_scan 

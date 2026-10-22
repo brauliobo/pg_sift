@@ -74,7 +74,7 @@ CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, n8, m8) WITH (write_buf
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096);
 CREATE INDEX eo_col ON eo USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
 SELECT sift.col_verify('ec_col', true);
 
 -- 1. built, every page all-visible
@@ -97,7 +97,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) ec, ed;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
 SELECT * FROM pa_check('ec');
 
 -- 4. rows in the write buffer (a kind no unit holds), then sealed
@@ -106,12 +106,12 @@ FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ec');
 SELECT kind, sum(n8 + 1), sum(n8 * 3) FROM ec WHERE kind >= 7 GROUP BY kind ORDER BY kind;
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT * FROM pa_check('ec');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT sift.col_verify('ec_col', true);
 SELECT * FROM pa_check('ec');
 

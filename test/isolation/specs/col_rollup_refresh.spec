@@ -16,7 +16,7 @@ setup
 
 setup
 {
-	VACUUM (DISABLE_PAGE_SKIPPING) iso_ru;
+	VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) iso_ru;
 }
 
 setup
