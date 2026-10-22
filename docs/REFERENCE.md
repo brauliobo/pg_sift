@@ -2,7 +2,7 @@
 
 Generated from `sql/pg_sift--3.3.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
 
-Schema `sift`: 47 functions, 3 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
+Schema `sift`: 47 functions, 4 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
 
 Settings (`sift.*`) are in the table of [Maintenance and operations](USAGE.md#maintenance-and-operations); the fixed limits are in [LIMITS.md](LIMITS.md).
 
@@ -56,6 +56,7 @@ The `sift_table` access method.
 | Object | Kind | Returns | Since | Description |
 |---|---|---|---|---|
 | `sift.table_paths` | table |  | 3.2 | The declared JSON paths of the jsonb columns of sift_table tables (one row per table and column), dumped with the extension. |
+| `sift.table_paths_maintained` | view |  | 3.3 | The declared JSON paths of the sift_tables the caller owns or may maintain (relid, attname, spec); sift.table_paths lists every table and is for superusers. |
 | `sift.table_segments(tbl regclass)` | function | `setof (gen int8, kind text, rows int8, bytes int8, sb_lo int4, sb_hi int4, units int4, dead_rows int8, format int4, unfrozen bool, min_xid xid, max_xid xid)` | 3.0 | One row per segment of a sift_table: write buffers, sealed buffers, column segments (rows, units, dead rows, format, unfrozen) and tombstones. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.table_set_paths(tbl regclass, col name, spec text)` | function | `void` | 3.2 | Declares the JSON paths of a jsonb column of a sift_table, in the grammar of the paths option of sift_col; an empty spec removes it. |
 | `sift.table_space(tbl regclass)` | function | `(relation_blocks int8, high_water int8, free_blocks int8, reusable_blocks int8, free_extents int8, vblocks_left int8)` | 3.0 | Space of a sift_table: file blocks, free list, reusable blocks and the virtual TID blocks left. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
@@ -93,7 +94,7 @@ Session statistics, why a query kept the normal plan, what an upgrade leaves to 
 | `sift.refusal_slugs()` | function | `setof (slug text, class text, reason text)` | 3.3 | The slugs that sift.explain_why and sift.stats() name, with their class (limit: the query has more of something than a fixed limit of the extension allows; semantic: otherwise) and the reason. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.stats()` | function | `setof (name text, value int8)` | 3.3 | What the aggregate pushdown (Custom Scan (SiftAgg)) scans of this session did: one row per counter and per refusal slug. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.stats_reset()` | function | `void` | 3.3 | Resets the session counters that sift.stats() reports. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
-| `sift.upgrade_commands()` | function | `setof (kind text, object regclass, reason text, command text, required bool)` | 3.3 | What an update leaves to do, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing. |
+| `sift.upgrade_commands()` | function | `setof (kind text, object regclass, reason text, command text, required bool)` | 3.3 | What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing. |
 | `sift.version()` | function | `text` | 1.2 | Version of the loaded library (the installed extension version is in pg_extension). See [Maintenance and operations](USAGE.md#maintenance-and-operations). |
 
 ## Internal

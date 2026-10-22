@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((71 + $(wc -w <<<"$DBS") + (PG_MAJOR >= 18 ? 7 : 0)))
+plan $((75 + $(wc -w <<<"$DBS") + (PG_MAJOR >= 18 ? 7 : 0)))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -185,6 +185,20 @@ if (( PG_MAJOR >= 18 )); then
 	check "a VACUUM FULL under sift.col_format_minor = 6 writes format 4" test "$(q life upg32 "SET sift.col_format_minor = 6" "VACUUM FULL tbl32_new" \
 		"SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32_new') WHERE kind = 'columns'")" == 4
 	check "3.2 updated to 3.3 has the objects of a fresh 3.3 install" test "$(q life upg32 "$MEMBERS")" == "$(q life fresh33 "$MEMBERS")"
+	# the schema is made by the server from the control file and is not a member of the extension (ALTER EXTENSION ADD SCHEMA refuses it), as in 3.2:
+	# DROP EXTENSION empties it and keeps its privileges, and CREATE EXTENSION gives the objects and privileges of a fresh install again
+	ACLS="SELECT string_agg(x, ' ' ORDER BY x) FROM (SELECT 'schema ' || coalesce(nspacl::text, '') x FROM pg_namespace WHERE nspname = 'sift'
+		UNION ALL SELECT 'relation ' || oid::regclass || ' ' || relacl FROM pg_class WHERE relnamespace = 'sift'::regnamespace AND relacl IS NOT NULL
+		UNION ALL SELECT 'function ' || oid::regprocedure || ' ' || proacl FROM pg_proc WHERE pronamespace = 'sift'::regnamespace AND proacl IS NOT NULL) s"
+	check "the privileges of the schema sift and its objects after each update path are those of a fresh 3.3 install" test "$(for d in upg upg31 upg32; do q life $d "$ACLS"; done | sort -u)" == "$(q life fresh33 "$ACLS")"
+	check "a fresh 3.3 install gives PUBLIC USAGE on the schema sift" test "$(q life fresh33 "SELECT has_schema_privilege('public', 'sift', 'USAGE')")" == t
+	q life postgres "CREATE DATABASE again33" >/dev/null
+	q life again33 "CREATE EXTENSION pg_sift" >/dev/null
+	again_members=$(q life again33 "$MEMBERS"); again_acls=$(q life again33 "$ACLS")
+	q life again33 "DROP EXTENSION pg_sift" >/dev/null
+	check "DROP EXTENSION leaves the schema sift empty" test "$(q life again33 "SELECT (SELECT count(*) FROM pg_namespace WHERE nspname = 'sift') || '/' || (SELECT count(*) FROM pg_class WHERE relnamespace = 'sift'::regnamespace) || '/' || (SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace)")" == 1/0/0
+	q life again33 "REVOKE USAGE ON SCHEMA sift FROM PUBLIC" "CREATE EXTENSION pg_sift" >/dev/null
+	check "CREATE EXTENSION after DROP EXTENSION gives the objects and privileges of a fresh install, also when PUBLIC lost the schema meanwhile" test "$(q life again33 "$MEMBERS")|$(q life again33 "$ACLS")" == "$again_members|$again_acls"
 	check "the functions added in 3.3 exist after a fresh 3.3 install and after each update path" test "$(for d in fresh33 upg upg31 upg32; do q life $d "$NEWFN"; done | sort -u)" == "col_clustering,col_refresh,col_rollup_misses,explain_why,stats,stats_reset,upgrade_commands"
 	check "the functions added in 3.3 run on an index written before the update" test "$(q life upg32 "SELECT sift.stats_reset()" \
 		"SELECT remaining FROM sift.col_refresh('items_col', 0)" "SELECT count(*) > 0 FROM sift.col_clustering('items_col')" \

@@ -407,7 +407,7 @@ COMMENT ON FUNCTION sift.cluster_advice(regclass, int8) IS 'Which physical order
 -- it follow, set on an index whose older units lack the section; a sift_table (it cannot be reindexed) whose segments are below the column format its
 -- schema is written in now (calendar cells for date and timestamp columns, minor 8; complete JSON kinds for declared paths, minor 6). A VACUUM FULL takes
 -- an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it. Reads the catalogs and the metapages, changes
--- nothing, and gives up on a relation that is locked at once (lock_timeout) or that this library refuses (sift.upgrade_check reports those); a library
+-- nothing, lists the indexes and tables the caller owns or may maintain (the privilege REINDEX and VACUUM FULL ask for; all of them for a superuser), and gives up on a relation that is locked at once (lock_timeout) or that this library refuses (sift.upgrade_check reports those); a library
 -- that cannot be loaded is an error. ALTER EXTENSION pg_sift UPDATE to 3.3 prints this list.
 CREATE FUNCTION sift.upgrade_commands(OUT kind text, OUT object regclass, OUT reason text, OUT command text, OUT required bool)
 	RETURNS SETOF record
@@ -419,8 +419,8 @@ DECLARE
 BEGIN
 	kind := 'reindex'; required := true;
 	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name
-			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
-			 WHERE am.amname = 'sift' AND c.relkind = 'i' AND 'analyzer=keyword' <> ALL (coalesce(c.reloptions, '{}')) ORDER BY n.nspname, c.relname
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_index i ON i.indexrelid = c.oid
+			 WHERE am.amname = 'sift' AND c.relkind = 'i' AND has_table_privilege(i.indrelid, 'MAINTAIN') AND 'analyzer=keyword' <> ALL (coalesce(c.reloptions, '{}')) ORDER BY n.nspname, c.relname
 	LOOP
 		object := r.relid; command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
 		reason := 'long words (over 255 bytes) are found only after REINDEX: an index built before 3.3 holds such a word cut at 255 bytes, so a query for it finds nothing';
@@ -428,8 +428,8 @@ BEGIN
 	END LOOP;
 	required := false;
 	FOR r IN SELECT c.oid AS relid, c.reloptions AS opts, format('%I.%I', n.nspname, c.relname) AS name
-			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
-			 WHERE am.amname = 'sift_col' AND c.relkind = 'i' AND c.reloptions IS NOT NULL ORDER BY n.nspname, c.relname
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_index i ON i.indexrelid = c.oid
+			 WHERE am.amname = 'sift_col' AND c.relkind = 'i' AND has_table_privilege(i.indrelid, 'MAINTAIN') AND c.reloptions IS NOT NULL ORDER BY n.nspname, c.relname
 	LOOP
 		BEGIN
 			SELECT min((to_jsonb(s)->>'format')::int) INTO lo FROM sift.col_segments(r.relid) s;
@@ -460,9 +460,9 @@ BEGIN
 	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name,
 					EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
 							AND a.atttypid IN ('date'::regtype, 'timestamp'::regtype, 'timestamptz'::regtype)) AS calendar,
-					EXISTS (SELECT 1 FROM sift.table_paths p WHERE p.relid = c.oid) AS paths
+					EXISTS (SELECT 1 FROM sift.table_paths_maintained p WHERE p.relid = c.oid) AS paths
 			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
-			 WHERE am.amname = 'sift_table' AND c.relkind IN ('r', 'm') ORDER BY n.nspname, c.relname
+			 WHERE am.amname = 'sift_table' AND c.relkind IN ('r', 'm') AND has_table_privilege(c.oid, 'MAINTAIN') ORDER BY n.nspname, c.relname
 	LOOP
 		BEGIN
 			SELECT min(s.format) INTO lo FROM sift.table_segments(r.relid) s WHERE s.kind = 'columns';
@@ -483,7 +483,7 @@ BEGIN
 	END LOOP;
 END
 $fn$;
-COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
 
 -- What the Custom Scan (SiftAgg) scans of this session did (docs/USAGE.md "Session statistics"): one row per counter, and one per refusal
 -- slug recorded (sift.explain_refusals). The counters are in the memory of the backend: no shared memory, no shared_preload_libraries, so the
@@ -795,6 +795,12 @@ CREATE FUNCTION sift.field_query(query text, fields text, index regclass DEFAULT
 -- written afterwards (promotion, merge, VACUUM FULL); until every segment has the paths a query reads the column as before.
 CREATE TABLE sift.table_paths (relid regclass NOT NULL, attname name NOT NULL, spec text NOT NULL, PRIMARY KEY (relid, attname));
 SELECT pg_catalog.pg_extension_config_dump('sift.table_paths', '');
+-- The declared paths of the sift_tables the caller may maintain (owner or MAINTAIN): sift.table_paths is for superusers and the extension's owner, and an
+-- owner could not read the paths of its own table. The view runs with the rights of its owner, so a condition of a query is checked after the filter.
+CREATE VIEW sift.table_paths_maintained WITH (security_barrier = true) AS
+	SELECT p.relid, p.attname, p.spec FROM sift.table_paths p WHERE has_table_privilege(p.relid, 'MAINTAIN');
+COMMENT ON VIEW sift.table_paths_maintained IS 'The declared JSON paths of the sift_tables the caller owns or may maintain (relid, attname, spec); sift.table_paths lists every table and is for superusers.';
+GRANT SELECT ON sift.table_paths_maintained TO PUBLIC;
 
 -- Checks that the table can hold the paths and rebuilds its layout (C).
 CREATE FUNCTION sift.table_paths_check(tbl regclass, col name, spec text) RETURNS void
