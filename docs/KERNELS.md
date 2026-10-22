@@ -53,6 +53,8 @@ The harness checks this on 10 M random documents with 1..256 terms, and on up to
 
 Zen 5 (Ryzen 7 9700X), single thread, GCC 16, `-O2 -march=x86-64 -ffp-contract=off`, best of 300 batches under heavy unrelated host load (load average ~47 on 16 threads): treat absolute numbers as lower bounds. A block is 16 pages of 30 tuples; a term matches each tuple with probability d.
 
+The AVX-512 rows, including every rejected design (`alt.c` of the two bench tools), were measured on that host; the benches compile them everywhere and print a "not run" line on a host without AVX-512. The scalar and AVX2 rows can be run anywhere.
+
 bm25_accum, ns per 16-page call (pairs per call in parentheses):
 
 | Design | d = 1 (480) | d = 0.25 (122) | d = 0.03 (10) | 291 tup/pg, d = 0.5 (2319) |
@@ -95,7 +97,7 @@ Other kernels, ns per 16-page call, 30 tuples per page, d = 1 (480 slots) / 291 
 ## Verification
 
 - `tools/kernels/test`: random equivalence of every table against scalar (`make test N=5`), the exhaustive tf x dl grid, double-precision error, bound coverage, tf stream round trips at random positions and piece sizes, top-k against a sort. ASan + UBSan: `make SANITIZE=1 test`.
-- `tools/kernels/bench`: throughput per level. The rejected designs in the table above were measured once; their code is not kept.
+- `tools/kernels/bench`: throughput per level and the rejected designs (`tools/kernels/alt.c`).
 - `kernels_simd` regress test (`test/sql/kernels_simd.sql`, needs `SIFT_TESTING`): the same digest at every `sift.simd` level, per-case equivalence of every supported level, the float4 SQL formula, bound spot checks.
 
 # Aggregation operators (sift_aggkern)
@@ -139,7 +141,7 @@ AMD Ryzen 7 9700X (Zen 5), single thread pinned to one core, GCC 16, `-O2 -march
 - **Where the factor comes from.** Predicates and the bitmap kernels are compare-and-mask-extract: the scalar loop is 0.4 to 0.8 ns per row, AVX2 handles 4 to 32 rows per instruction (MOVMSK), AVX-512 writes the compare mask straight into a mask register. Reductions go 3x to 25x faster unmasked, 2x to 10x under a 50 % mask.
 - **Gathers do not beat scalar loads on Zen 5.** `VPGATHERDD` / `VPGATHERQQ` take about as long as the loads they replace. Measured in four runs: AVX2 `gather_u32` 0.8x to 1.1x, AVX2 `gid_code` / `gid_i32` 0.9x to 1.2x, AVX2 and AVX-512 `gather_u64` 0.6x to 1.5x: those slots are the scalar functions. AVX-512 `gather_u32` (1.2x to 1.7x in those runs, 0.8x in the latest: it depends on the sibling thread; now `SiftColKernels.gather_u32`) and `gid_code` / `gid_i32` (1.2x to 1.4x) are kept. `lut` (the column table's), `lut_i32` and `gather_bits` are gathers too but replace a load plus a test plus a store of a bit, hence their 2x. A CPU with fast gathers (recent Intel server parts) would do better; not measured here.
 - **`count_gid`, `sum_gid_*`** are per-group scatters: row order is the contract (a float group sum is sequential), the only exact speedups would need the group count, which the contract does not carry. Every level shares the scalar loop (the 0.8x to 1.1x in the table is noise).
-- **`bits_to_idx`** (the selection vector of a bitmap; the column table's slot, it was this table's `mask_sel`). One expansion per nonzero word costs about 4 ns (AVX2: eight byte-table stores; AVX-512: one `VPCOMPRESSB` and masked stores of the positions), a bit-by-bit walk about 0.45 ns per set bit plus a mispredicted loop exit. A sparse word is faster walked: up to 8 bits on AVX2 (`SIFT_COLK_SEL_SPARSE_AVX2`), up to 2 on AVX-512 (`SIFT_COLK_SEL_SPARSE_AVX512`), where the compress beats the walk from a handful of bits on (10 % mask: 74 ns compressed against 136 ns with an 8 bit walk). The AVX2 level stores whole vectors, so the output has `SIFT_COL_IDXPAD` entries of room after the last position; the AVX-512 level is exact. `VPCOMPRESSB` of the 64 bit positions is 15 % faster than four `VPCOMPRESSD` of 16 row numbers on dense words. Designs measured on masks of 1 / 10 / 50 / 100 % density (scalar walk: 50 / 193 / 944 / 1900; the candidates are in the history of this file):
+- **`bits_to_idx`** (the selection vector of a bitmap; the column table's slot, it was this table's `mask_sel`). One expansion per nonzero word costs about 4 ns (AVX2: eight byte-table stores; AVX-512: one `VPCOMPRESSB` and masked stores of the positions), a bit-by-bit walk about 0.45 ns per set bit plus a mispredicted loop exit. A sparse word is faster walked: up to 8 bits on AVX2 (`SIFT_COLK_SEL_SPARSE_AVX2`), up to 2 on AVX-512 (`SIFT_COLK_SEL_SPARSE_AVX512`), where the compress beats the walk from a handful of bits on (10 % mask: 74 ns compressed against 136 ns with an 8 bit walk). The AVX2 level stores whole vectors, so the output has `SIFT_COL_IDXPAD` entries of room after the last position; the AVX-512 level is exact. `VPCOMPRESSB` of the 64 bit positions is 15 % faster than four `VPCOMPRESSD` of 16 row numbers on dense words. Designs measured on masks of 1 / 10 / 50 / 100 % density (scalar walk: 50 / 193 / 944 / 1900; the candidates of `tools/aggkern/alt.c` are in the history of this file):
 
 | bits_to_idx design | 1 % | 10 % | 50 % | 100 % |
 |---|---|---|---|---|
@@ -192,7 +194,7 @@ Ns per call, one vector of 4096 rows (a bitmap of 64 words), same host and condi
 ## Verification
 
 - `tools/aggkern/test`: every slot of every level against scalar, bit for bit (`make test N=20`, N thousand random cases per thread plus a grid of every length 0..300 and every multiple of 64 and its neighbours up to 4096). A case (`src/agg/kern_cases.h`) draws the data per type: int32 and int64 small, full range and extremes (`INT_MIN`, `INT_MAX`, around 2^31 and 2^32); doubles from normal values, small integers with both zeros, `NaN` (several payloads, signalling), `Inf`, subnormals and the extremes; dictionary codes uniform, in runs, sorted and at the top of the LUT; masks empty, full, 1 % to 99 %, in runs, one bit, alternating; thresholds at the data, at its neighbours and at the type's bounds. The padding after every input is random garbage and every output is poisoned before the call. The inputs are allocated at their exact size, so the ASan build (`make SANITIZE=1 test`, with UBSan) catches a read past the padding or a write past an output. The scalar table is also checked against values written out by hand (float order, zeros, NaN, the sum order, `count_changes`).
-- `tools/aggkern/bench`: the table above (`make bench`). The moved operators are benchmarked by `tools/kernels` (`make bench-col`) and tested by the `col_kernels_simd` regression test.
+- `tools/aggkern/bench`: the table above (`make bench`) and the rejected float sum selections of `tools/aggkern/alt.c`. The moved operators are benchmarked by `tools/kernels` (`make bench-col`) and tested by the `col_kernels_simd` regression test.
 - `aggkern_simd` regression test (`test/sql/aggkern_simd.sql`, needs `SIFT_TESTING`): the same random cases inside the backend; the digest of every operator's output is the same at `sift.simd` = scalar, avx2, avx512 and auto, and every level the CPU supports equals scalar case by case.
 
 # Overlaps between the kernel families
