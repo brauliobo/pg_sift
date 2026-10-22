@@ -30,6 +30,11 @@ lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys, SiftShredRecheck *rc
 		if (getKeyJsonValueFromContainer(c, key, len, &v) == NULL)
 			continue;
 		sift_shred_key(sh, key, len);
+		if (rc != NULL)
+		{
+			rc->key = key;
+			rc->keylen = len;
+		}
 		walk_value(sh, &v, rc);
 	}
 }
@@ -56,6 +61,11 @@ walk_object(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 		JsonbIteratorNext(&it, &v, true);	/* WJB_VALUE */
 		if (act == SIFT_SHRED_SKIP)
 			continue;
+		if (rc != NULL)
+		{
+			rc->key = k.val.string.val;
+			rc->keylen = k.val.string.len;
+		}
 		walk_value(sh, &v, rc);
 		if (act == SIFT_SHRED_STOP)
 		{

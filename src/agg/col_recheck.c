@@ -58,7 +58,7 @@ recheck_init(ColSource *src)
 }
 
 void
-col_set_recheck(void *impl, int leaf, int mode)
+col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	ColSource  *src = impl;
 	ColRecheck *k = src->rck ? src->rck : recheck_init(src);
@@ -67,7 +67,13 @@ col_set_recheck(void *impl, int leaf, int mode)
 
 	if (mode == SRK_NONE)
 		return;
-	sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
+	if (key != NULL)
+		sift_col_shred_recheck_member(k->rc, r->shred, att, leaf - r->first[att], key, cast);
+	else
+		sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
+	for (int i = 0; i < k->nleaf; i++)
+		if (k->leaf[i] == leaf)
+			return;
 	k->leaf[k->nleaf++] = leaf;
 }
 
