@@ -335,6 +335,40 @@ post_pred(AggCtx *c, Node *q)
 	return IsA(q, SubPlan) ? compile_exists_post(c, (SubPlan *) q) : compile_combo_pred(c, normalize_expr(c, q));
 }
 
+typedef struct MissingCol
+{
+	AggCtx	   *c;
+	AttrNumber	att;
+} MissingCol;
+
+/* the first column of the scanned table that a condition reads and the index does not hold */
+static bool
+missing_column_walker(Node *n, MissingCol *m)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var) && ((Var *) n)->varno == m->c->relid && ((Var *) n)->varlevelsup == 0)
+	{
+		foreach_ptr(Node, a, m->c->attexpr)
+			if (a && IsA(a, Var) && ((Var *) a)->varattno == ((Var *) n)->varattno)
+				return false;
+		m->att = ((Var *) n)->varattno;
+		return true;
+	}
+	return expression_tree_walker(n, missing_column_walker, m);
+}
+
+/* the refusal of a condition the scan cannot test: it names the column of the table that the index lacks, when that is why */
+static bool
+where_refused(AggCtx *c, Node *q)
+{
+	MissingCol	m = {c, InvalidAttrNumber};
+
+	if (sift_explain_refusals && missing_column_walker(q, &m) && m.att > 0)
+		return agg_refuse_f(WHERE, "the index does not hold the column \"%s\"", get_attname(planner_rt_fetch(c->relid, c->root)->relid, m.att, false));
+	return agg_refuse(WHERE);
+}
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -363,7 +397,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		if (p == NULL)
 			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(c, q))
-			return agg_refuse(WHERE);
+			return where_refused(c, q);
 		if (p->level > 1)
 			s->post[s->npost++] = p;
 		else
@@ -375,7 +409,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return agg_refuse(WHERE);
+			return where_refused(c, q);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
@@ -385,7 +419,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return agg_refuse(WHERE);
+			return where_refused(c, q);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
