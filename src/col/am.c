@@ -119,6 +119,11 @@ sift_col_init(void)
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.enable_col_scan",
+							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
+							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
+							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
+	sift_col_scan_init();
 	DefineCustomBoolVariable("sift.col_rollup_on_demand",
 							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
 							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",
@@ -776,54 +781,25 @@ col_amvalidate(Oid opclassoid)
 	return true;
 }
 
-static void
-col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost,
-						Cost *indexTotalCost, Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
-{
-	/* the operator class has no operators, so no index path exists; the column scans use the index through col/col.h */
-	*indexStartupCost = *indexTotalCost = 1.0e30;
-	*indexSelectivity = 1.0;
-	*indexCorrelation = 0.0;
-	*indexPages = 1.0;
-}
-
-static IndexScanDesc
-col_ambeginscan(Relation index, int nkeys, int norderbys)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift_col indexes cannot be scanned as ordinary indexes"),
-			 errhint("They serve the column scans of the planner, not index scans.")));
-	return NULL;
-}
-
-static void
-col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
-{
-}
-
-static void
-col_amendscan(IndexScanDesc scan)
-{
-}
-
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = sift_am_routine(0, 1, true);
+	IndexAmRoutine *am = sift_am_routine(5, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
 	am->aminsert = sift_col_aminsert;
 	am->ambulkdelete = sift_col_ambulkdelete;
 	am->amvacuumcleanup = sift_col_amvacuumcleanup;
-	am->amcostestimate = col_amcostestimate;
+	am->amcostestimate = sift_col_amcostestimate;
 	am->amoptions = col_amoptions;
 	am->ambuildphasename = sift_col_ambuildphasename;
 	am->amvalidate = col_amvalidate;
-	am->ambeginscan = col_ambeginscan;
-	am->amrescan = col_amrescan;
-	am->amendscan = col_amendscan;
+	am->ambeginscan = sift_col_ambeginscan;
+	am->amrescan = sift_col_amrescan;
+	am->amgetbitmap = sift_col_amgetbitmap;
+	am->amendscan = sift_col_amendscan;
+	am->amsearcharray = am->amsearchnulls = true;
 
 	PG_RETURN_POINTER(am);
 }
