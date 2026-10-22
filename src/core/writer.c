@@ -300,7 +300,7 @@ bulk_put_meta(SiftWriteTarget *wt)
 
 	sift_page_init(page, SIFT_PT_META, 0);
 	*META(page) = wt->meta;
-	SiftPageSetUsed(page, sizeof(SiftMetaPageData));
+	SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
 	wt_put(wt, SIFT_METAPAGE_BLKNO, page);
 	page = wt_page(wt, NULL);
 	sift_page_init(page, SIFT_PT_DIRECTORY, 0);

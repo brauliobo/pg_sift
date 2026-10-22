@@ -44,6 +44,16 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
+-- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note and the 272 with it are read, others are not
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 40, 2);
+SELECT expect($$ SELECT sift._test_check('t_idx') $$);
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 300, 2);
+SELECT expect($$ SELECT sift._test_check('t_idx') $$);
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 272, 2);
+SELECT sift._test_check('t_idx') >= 0 AS note_size_is_read;
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
