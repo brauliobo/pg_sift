@@ -101,14 +101,17 @@ DROP INDEX d_col;
 -- what the definition refuses
 CREATE INDEX ON d USING sift_colstub (id) WHERE id > 0;
 ERROR:  sift_colstub does not support partial indexes
+HINT:  Create the index without a WHERE clause.
 CREATE INDEX ON d USING sift_colstub (id) INCLUDE (store_id);
 ERROR:  access method "sift_colstub" does not support included columns
 CREATE UNIQUE INDEX ON d USING sift_colstub (id);
 ERROR:  access method "sift_colstub" does not support unique indexes
 CREATE INDEX ON d USING sift_colstub (n);
 ERROR:  sift_colstub does not support the type numeric of index column 1
+HINT:  Use int4, int8, float8, bool, date, timestamp or text.
 CREATE INDEX ON d USING sift_colstub (id, (ARRAY[id]));
 ERROR:  sift_colstub does not support the type integer[] of index column 2
+HINT:  Use int4, int8, float8, bool, date, timestamp or text.
 CREATE INDEX ON d USING sift_colstub (metrics);
 ERROR:  sift_colstub index column 1 is jsonb: declare its paths in the "paths" option of the index
 HINT:  Only a plain column can have paths.
@@ -164,6 +167,7 @@ SELECT 'CREATE INDEX ON d USING sift_colstub (details) WITH (paths = ''details: 
 	string_agg('k' || i || ' int4', ', ') || ''')' AS ddl FROM generate_series(1, 129) i \gexec
 CREATE INDEX ON d USING sift_colstub (details) WITH (paths = 'details: k1 int4, k2 int4, k3 int4, k4 int4, k5 int4, k6 int4, k7 int4, k8 int4, k9 int4, k10 int4, k11 int4, k12 int4, k13 int4, k14 int4, k15 int4, k16 int4, k17 int4, k18 int4, k19 int4, k20 int4, k21 int4, k22 int4, k23 int4, k24 int4, k25 int4, k26 int4, k27 int4, k28 int4, k29 int4, k30 int4, k31 int4, k32 int4, k33 int4, k34 int4, k35 int4, k36 int4, k37 int4, k38 int4, k39 int4, k40 int4, k41 int4, k42 int4, k43 int4, k44 int4, k45 int4, k46 int4, k47 int4, k48 int4, k49 int4, k50 int4, k51 int4, k52 int4, k53 int4, k54 int4, k55 int4, k56 int4, k57 int4, k58 int4, k59 int4, k60 int4, k61 int4, k62 int4, k63 int4, k64 int4, k65 int4, k66 int4, k67 int4, k68 int4, k69 int4, k70 int4, k71 int4, k72 int4, k73 int4, k74 int4, k75 int4, k76 int4, k77 int4, k78 int4, k79 int4, k80 int4, k81 int4, k82 int4, k83 int4, k84 int4, k85 int4, k86 int4, k87 int4, k88 int4, k89 int4, k90 int4, k91 int4, k92 int4, k93 int4, k94 int4, k95 int4, k96 int4, k97 int4, k98 int4, k99 int4, k100 int4, k101 int4, k102 int4, k103 int4, k104 int4, k105 int4, k106 int4, k107 int4, k108 int4, k109 int4, k110 int4, k111 int4, k112 int4, k113 int4, k114 int4, k115 int4, k116 int4, k117 int4, k118 int4, k119 int4, k120 int4, k121 int4, k122 int4, k123 int4, k124 int4, k125 int4, k126 int4, k127 int4, k128 int4, k129 int4')
 ERROR:  sift_colstub: an index has at most 128 leaves
+HINT:  Leave out the columns and paths the queries do not read.
 -- values the index would refuse, found by CREATE INDEX
 CREATE TABLE dv (id int, s text, details jsonb);
 INSERT INTO dv VALUES (1, repeat('x', 255), '{"k": 1}'), (2, 'short', '{"k": "2"}');
