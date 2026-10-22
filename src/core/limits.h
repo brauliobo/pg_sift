@@ -45,14 +45,12 @@
 	  "columns of the joined table that expressions read", "normal plan", "-", 0) \
 	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec.h", SIFT_AGG_MAX_JIDX, "equalities", \
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
-	X(lookup_rows, "-", "agg/agg.c", 1000000, "rows", \
-	  "estimated rows of a lookup table", "normal plan (slug join_child)", "sift.agg_lookup_max_rows", 0) \
+	X(lookup_kb, "-", "agg/plan.c", 262144, "kB", \
+	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
 	X(lookup_shared_bytes, "SHARE_MAX", "agg/par.c", 1073741824, "bytes", \
 	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
 	X(lookup_shared_slots, "LOOKSHM_SLOTS", "agg/lookshm.c", 64, "tables", \
 	  "lookup tables shared through DSM at one time", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
-	X(spine_rows, "SPINE_MAX_ROWS", "agg/plan_two.c", 10000, "rows", \
-	  "rows of a spine joined to the arms of a two-level scan", "normal plan (slug spine_rows)", "-", 0) \
 	X(topn_rows, "SIFT_TOPN_MAX_ROWS", "agg/topn.h", SIFT_TOPN_MAX_ROWS, "rows", \
 	  "LIMIT + OFFSET a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
 	X(topn_keys, "SIFT_TOPN_MAX_KEYS", "agg/topn.h", SIFT_TOPN_MAX_KEYS, "columns", \

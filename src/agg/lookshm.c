@@ -17,15 +17,37 @@
 #include "miscadmin.h"
 #include "storage/dsm.h"
 #include "storage/dsm_registry.h"
+#include "storage/latch.h"
+#include "storage/procarray.h"
 #include "storage/spin.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
+#include "utils/wait_classes.h"
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 
-int			sift_agg_lookup_shared_kb = 0;
-#define LOOKSHM_BYTES		((Size) sift_agg_lookup_shared_kb * 1024)
+int			sift_agg_lookup_shared_kb = -1;
 #define LOOKSHM_SLOTS		64
+/* loads in progress; a backend that finds none free loads without a claim */
+#define LOOKSHM_CLAIMS		16
+/* a backend that finds its table loaded by another waits this long at most, then loads it itself */
+#define LOOKSHM_WAIT_MS		30000
+#define LOOKSHM_POLL_MS		5
+
+/* set when the segment of a table could not be created (no room in /dev/shm): the automatic budget is off for the backend */
+static bool shm_failed;
+
+/* the budget in bytes: the setting, or when it is -1 the smaller of the cache of a backend and a twentieth of shared_buffers */
+Size
+lookshm_bytes(void)
+{
+	if (sift_agg_lookup_shared_kb >= 0)
+		return (Size) sift_agg_lookup_shared_kb * 1024;
+	if (shm_failed)
+		return 0;
+	return Min((Size) sift_agg_lookup_cache_kb * 1024, (Size) NBuffers * BLCKSZ / 20);
+}
 
 typedef struct LookShmEnt
 {
@@ -37,12 +59,20 @@ typedef struct LookShmEnt
 	uint64		used;
 } LookShmEnt;
 
+/* a backend loading the rows of a key: the others that want them wait for it */
+typedef struct LookShmClaim
+{
+	uint64		key;
+	int			pid;			/* 0: free */
+} LookShmClaim;
+
 typedef struct LookShm
 {
 	slock_t		mutex;
 	Size		bytes;
 	uint64		clock;
 	LookShmEnt	ent[LOOKSHM_SLOTS];
+	LookShmClaim claim[LOOKSHM_CLAIMS];
 } LookShm;
 
 /* the start of a segment; the offsets are from the start of the segment */
@@ -179,7 +209,7 @@ lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCol
 	const LookShmHead *hd;
 
 	have->n = 0;
-	if (sift_agg_lookup_shared_kb <= 0)
+	if (lookshm_bytes() == 0)
 		return NULL;
 	s = shm_get();
 	SpinLockAcquire(&s->mutex);
@@ -228,6 +258,36 @@ shm_evict(LookShm *s, dsm_handle *drop, int *ndrop)
 }
 
 /*
+ * A segment of `size` bytes, NULL when there is no room for it. With the budget on its own (-1) a segment that cannot be made, for the
+ * file system of the segments is full or small (a container's /dev/shm), does not fail the query: the backend loads its tables as it did and
+ * does not try again.
+ */
+static dsm_segment *
+segment_create(Size size)
+{
+	dsm_segment *seg = NULL;
+	MemoryContext old = CurrentMemoryContext;
+
+	if (sift_agg_lookup_shared_kb >= 0)
+		return dsm_create(size, DSM_CREATE_NULL_IF_MAXSEGMENTS);
+	PG_TRY();
+	{
+		seg = dsm_create(size, DSM_CREATE_NULL_IF_MAXSEGMENTS);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(old);
+		FlushErrorState();
+		shm_failed = true;
+		ereport(NOTICE,
+				(errmsg("sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %zu bytes", size),
+				 errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set sift.agg_lookup_shared_kb to 0.")));
+	}
+	PG_END_TRY();
+	return seg;
+}
+
+/*
  * Keeps the rows m of a table with the pages of f for the other backends, in place of the entry of the key. False when they are not kept; *large
  * is then whether they take more than half of the budget (or the budget is 0), the rows no state of the table would fit.
  */
@@ -246,15 +306,16 @@ lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *co
 				map = lsn + MAXALIGN(f->nblocks * sizeof(XLogRecPtr)),
 				size;
 	uint64		kh = key_hash(key);
+	Size		budget = lookshm_bytes();
 
 	*large = true;
-	if (sift_agg_lookup_shared_kb <= 0)
+	if (budget == 0)
 		return false;
 	size = map + map_share_size(m, NULL, &l);
-	if (size > LOOKSHM_BYTES / 2)
+	if (size > budget / 2)
 		return false;
 	*large = false;
-	if ((seg = dsm_create(size, DSM_CREATE_NULL_IF_MAXSEGMENTS)) == NULL)
+	if ((seg = segment_create(size)) == NULL)
 		return false;
 	s = shm_get();
 	hd = dsm_segment_address(seg);
@@ -280,7 +341,7 @@ lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *co
 			s->bytes -= s->ent[i].size;
 			s->ent[i].h = DSM_HANDLE_INVALID;
 		}
-	while (s->bytes + size > LOOKSHM_BYTES && shm_evict(s, drop, &ndrop))
+	while (s->bytes + size > budget && shm_evict(s, drop, &ndrop))
 		;
 	for (;;)
 	{
@@ -308,4 +369,105 @@ lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *co
 		dsm_unpin_segment(dsm_segment_handle(seg));
 	dsm_detach(seg);
 	return at != NULL;
+}
+
+typedef struct LookShmRelease
+{
+	MemoryContextCallback cb;
+	uint64		key;
+} LookShmRelease;
+
+static void
+claim_drop(uint64 kh)
+{
+	LookShm    *s = shm_get();
+
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
+		if (s->claim[i].pid == MyProcPid && s->claim[i].key == kh)
+			s->claim[i].pid = 0;
+	SpinLockRelease(&s->mutex);
+}
+
+/* the statement ended, or failed, while the claim was held */
+static void
+claim_release(void *arg)
+{
+	claim_drop(((LookShmRelease *) arg)->key);
+}
+
+/* the rows of the key are loaded (kept or not): the backends that wait for them look again */
+void
+lookshm_unclaim(const char *key)
+{
+	if (lookshm_bytes() != 0)
+		claim_drop(key_hash(key));
+}
+
+/* the pid that is loading the rows of the key, 0 when none is (a claim of a backend that is gone is dropped) */
+static int
+claim_holder(LookShm *s, uint64 kh)
+{
+	int			pid = 0;
+
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
+		if (s->claim[i].pid != 0 && s->claim[i].pid != MyProcPid && s->claim[i].key == kh)
+			pid = s->claim[i].pid;
+	SpinLockRelease(&s->mutex);
+	if (pid != 0 && BackendPidGetProc(pid) == NULL)
+	{
+		SpinLockAcquire(&s->mutex);
+		for (int i = 0; i < LOOKSHM_CLAIMS; i++)
+			if (s->claim[i].pid == pid)
+				s->claim[i].pid = 0;
+		SpinLockRelease(&s->mutex);
+		pid = 0;
+	}
+	return pid;
+}
+
+/*
+ * The backend is about to load the rows of a key that nobody has kept. Many sessions that run the same query at once would each load a copy;
+ * the first to ask claims the load, until mcxt goes, and the others wait for it (at most LOOKSHM_WAIT_MS) to find its rows in the shared
+ * memory. True when this backend waited and should look for the rows again; false when it loads them (it has the claim, or there is no
+ * claim to take, or the other backend took too long).
+ */
+bool
+lookshm_claim(const char *key, MemoryContext mcxt)
+{
+	LookShm    *s;
+	uint64		kh = key_hash(key);
+	TimestampTz start = GetCurrentTimestamp();
+	bool		waited = false;
+
+	if (lookshm_bytes() == 0)
+		return false;
+	s = shm_get();
+	while (claim_holder(s, kh) != 0)
+	{
+		if (TimestampDifferenceExceeds(start, GetCurrentTimestamp(), LOOKSHM_WAIT_MS))
+			return false;
+		waited = true;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, LOOKSHM_POLL_MS, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+	if (waited)
+		return true;
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
+		if (s->claim[i].pid == 0)
+		{
+			LookShmRelease *r = MemoryContextAlloc(mcxt, sizeof(LookShmRelease));
+
+			s->claim[i].pid = MyProcPid;
+			s->claim[i].key = kh;
+			r->cb = (MemoryContextCallback) {claim_release, r, NULL};
+			r->key = kh;
+			MemoryContextRegisterResetCallback(mcxt, &r->cb);
+			break;
+		}
+	SpinLockRelease(&s->mutex);
+	return false;
 }

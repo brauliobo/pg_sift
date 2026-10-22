@@ -27,7 +27,7 @@
 int			sift_agg_lookup_cache_kb = 256 * 1024;
 #define LOOKCACHE_BYTES		((Size) sift_agg_lookup_cache_kb * 1024)
 /* what the pages of a table are weighed against: the larger of the caches that are on */
-#define LOOKCACHE_BUDGET	((Size) Max(sift_agg_lookup_cache_kb, sift_agg_lookup_shared_kb) * 1024)
+#define LOOKCACHE_BUDGET	Max(LOOKCACHE_BYTES, lookshm_bytes())
 /* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget */
 #define LOOKCACHE_MAX_BLOCKS	(Min(LOOKCACHE_BUDGET / 2, MaxAllocSize) / sizeof(XLogRecPtr))
 /* tables whose rows did not fit, by key: they are not fingerprinted again while the file is no smaller and the budget no larger */
@@ -253,7 +253,7 @@ lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookC
 				look_drop(other);
 			return e->map;
 		}
-	if (sift_agg_lookup_shared_kb > 0)
+	if (lookshm_bytes() > 0)
 	{
 		LookCols	shared;
 		MapTab	   *m = lookshm_find(key, f, need, &shared, mcxt);

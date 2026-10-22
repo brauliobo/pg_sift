@@ -450,7 +450,7 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		return;
 	rte = linitial_node(RangeTblEntry, q->rtable);
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL ||
-		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || brel->tuples > sift_agg_lookup_max_rows)
+		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || !agg_lookup_fits(brel->tuples, brel->reltarget->width))
 		return;
 	conj = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
 	foreach_ptr(Node, qual, conj)
@@ -717,7 +717,7 @@ child_rows_fit(AggCtx *c, JoinCtx *jc)
 {
 	double		reach = child_reach(c, jc);
 
-	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach) <= sift_agg_lookup_max_rows;
+	return agg_lookup_fits(jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach), jc->cpath->pathtarget->width);
 }
 
 static Node *

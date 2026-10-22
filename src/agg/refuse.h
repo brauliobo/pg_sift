@@ -41,7 +41,7 @@
 	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by") \
 	X(TWO_AGGS, "two_aggs", "an aggregate over the arms is not one the two level scan computes") \
 	X(SPINE_SHAPE, "spine_shape", "the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms") \
-	X(SPINE_ROWS, "spine_rows", "the spine has more than 10,000 rows") \
+	X(SPINE_ROWS, "spine_rows", "the rows of the spine are estimated above sift.agg_lookup_max_kb") \
 	X(ROWS_SHAPE, "rows_shape", "the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group") \
 	X(TOPN_SHAPE, "topn_shape", "the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests") \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan") \

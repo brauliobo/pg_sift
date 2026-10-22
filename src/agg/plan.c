@@ -588,7 +588,23 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
  * has. A custom plan sees the array and needs none of this.
  */
 int			sift_agg_param_set_size = 1000;
-int			sift_agg_lookup_max_rows = 1000000;
+int			sift_agg_lookup_max_rows = -1;
+int			sift_agg_lookup_max_kb = 256 * 1024;
+
+/* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
+#define AGG_LOOKUP_ROW_OVERHEAD	64
+
+/*
+ * Do `rows` rows of `width` bytes fit the lookup tables the scan loads when it starts? A rows limit that was set (the older form of
+ * sift.agg_lookup_max_kb) is compared with the rows alone.
+ */
+bool
+agg_lookup_fits(double rows, int width)
+{
+	if (sift_agg_lookup_max_rows >= 0)
+		return rows <= sift_agg_lookup_max_rows;
+	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) sift_agg_lookup_max_kb * 1024;
+}
 
 static double
 param_set_ratio(AggCtx *c)

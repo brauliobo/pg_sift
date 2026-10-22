@@ -13,7 +13,7 @@ A `UNION ALL` or `UNION` of sub-selects, a sub-select of a statement-level CTE a
 The same holds for a `WITH` of a derived table (a ranked top-N over an aggregate): its CTEs are lookup plans while the derived table reads nothing of the queries around it, and a CTE of it that several aggregates read is planned inline like the statement's own (the cheaper plan wins). A lateral sub-select that reads the row around it keeps the normal plan. Test `agg_nested_ctes`, fixtures `nf_nested_cte_*`, row J32.
 
 The normal plan stays when the right side reads a volatile function, the join has no condition (`ON true`) and is not lateral, the right side is
-estimated above `sift.agg_lookup_max_rows` rows (a lateral one: its rows for each distinct input of the scanned table, together), or its plan (an `Append`) outputs only the relation's columns and a
+estimated above `sift.agg_lookup_max_kb` of memory (rows times their width; a lateral one: its rows for each distinct input of the scanned table, together), or its plan (an `Append`) outputs only the relation's columns and a
 condition reads another. A scan with such a join runs without workers.
 
 A lateral right side that reads the joined row (`LEFT JOIN LATERAL (SELECT .. LIMIT 1)`, a `UNION` or `UNION ALL` of arms, `generate_series`, `unnest` of
@@ -67,7 +67,7 @@ rows were loaded, so a write that is in flight, committed or rolled back, a vacu
 yet visible to all (rows not vacuumed since a write), a condition that is not constant, a preserved side, a table of a plan or another access method and a parallel worker are never kept.
 Test `agg_lookup_cache`, isolation spec `agg_lookup_cache`.
 
-The rows can also be kept for the other backends (`sift.agg_lookup_shared_kb`, off by default, superuser): a backend that loads a table writes its rows in the flat form of a parallel scan into a
+The rows can also be kept for the other backends (`sift.agg_lookup_shared_kb`, on by default: -1 is the smaller of `sift.agg_lookup_cache_kb` and 5% of `shared_buffers`, 0 turns it off; superuser): a backend that loads a table writes its rows in the flat form of a parallel scan into a
 dynamic shared memory segment and lists it in a directory of 64 entries that every backend reaches by name (the DSM registry: no restart, no preload). A backend that finds the entry of the
 key with the pages it sees now (the same LSNs, all visible, as above) attaches the segment and reads the rows in place, so a connection that lives for one query pays the attach, not the load.
 The segment holds the key and the pages and they are compared in full, the directory only has their hashes; the rows are per role, as in the cache of a backend. A write moves the LSNs, and the

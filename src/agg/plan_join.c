@@ -133,7 +133,7 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 		return false;
 	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
 		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
-	if ((jc->cpath = child_path(rel, false)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
+	if ((jc->cpath = child_path(rel, false)) == NULL || !agg_lookup_fits(jc->cpath->rows, jc->cpath->pathtarget->width))
 		return false;
 	jc->j.child = 0;
 	foreach_ptr(JoinCtx, o, c->joins)

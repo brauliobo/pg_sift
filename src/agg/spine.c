@@ -9,6 +9,57 @@
 
 #include "agg/agg_int.h"
 
+/* the group of the spine rows whose join values are ids, or PG_UINT32_MAX */
+static uint32
+spine_group(const SpineSt *sp, int npair, const uint32 *ids)
+{
+	for (uint32 h = ids_hash(ids, npair, sp->nslot); sp->gslot[h]; h = (h + 1) & (sp->nslot - 1))
+		if (memcmp(&sp->jid[(Size) sp->grep[sp->gslot[h] - 1] * npair], ids, npair * sizeof(uint32)) == 0)
+			return sp->gslot[h] - 1;
+	return PG_UINT32_MAX;
+}
+
+/* Groups the rows by their join values, so that the cells of an arm find the rows they join by a lookup, not by a pass over the spine. */
+static void
+spine_index(SpineSt *sp, int npair)
+{
+	uint32	   *rgrp = palloc(Max(sp->nrow, 1) * sizeof(uint32)),
+			   *pos;
+
+	sp->nslot = 16;
+	while (sp->nslot < sp->nrow * 2)
+		sp->nslot <<= 1;
+	sp->gslot = palloc0(sp->nslot * sizeof(uint32));
+	sp->grep = palloc(Max(sp->nrow, 1) * sizeof(uint32));
+	sp->gfirst = palloc0((sp->nrow + 2) * sizeof(uint32));
+	sp->grow = palloc(Max(sp->nrow, 1) * sizeof(uint32));
+	for (uint32 r = 0; r < sp->nrow; r++)
+	{
+		const uint32 *ids = &sp->jid[(Size) r * npair];
+		uint32		g = spine_group(sp, npair, ids),
+					h;
+
+		if (g == PG_UINT32_MAX)
+		{
+			g = sp->ngrp++;
+			sp->grep[g] = r;
+			for (h = ids_hash(ids, npair, sp->nslot); sp->gslot[h]; h = (h + 1) & (sp->nslot - 1))
+				;
+			sp->gslot[h] = g + 1;
+		}
+		rgrp[r] = g;
+		sp->gfirst[g + 1]++;
+	}
+	for (uint32 g = 0; g < sp->ngrp; g++)
+		sp->gfirst[g + 1] += sp->gfirst[g];
+	pos = palloc(Max(sp->ngrp, 1) * sizeof(uint32));
+	memcpy(pos, sp->gfirst, sp->ngrp * sizeof(uint32));
+	for (uint32 r = 0; r < sp->nrow; r++)
+		sp->grow[pos[rgrp[r]]++] = r;
+	pfree(pos);
+	pfree(rgrp);
+}
+
 /* The rows of the spine's plan, once when the scan starts: their join values and the ids of the columns the query groups by. */
 void
 spine_load(AggExec *ex)
@@ -68,6 +119,7 @@ spine_load(AggExec *ex)
 		sp->nrow++;
 	}
 	sp->hit = palloc0(Max(sp->nrow, 1));
+	spine_index(sp, sa->npair);
 	MemoryContextSwitchTo(caller);
 	/* the ids of the spine's columns are all known: the groups of the direct table have room for them */
 	for (int o = 0; !ex->hash && o < sa->nout; o++)
@@ -108,6 +160,7 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 	MemoryContext caller;
 	uint32		h,
 				e,
+				g,
 				want[SIFT_AGG_MAX_JKEYS];
 	bool		dead = false;
 
@@ -121,7 +174,7 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 		if (memcmp(&m->ids[(Size) (m->slot[h] - 1) * sa->npair], ids, sa->npair * sizeof(uint32)) == 0)
 		{
 			e = m->slot[h] - 1;
-			*rows = sp->match + m->first[e];
+			*rows = sp->grow + m->first[e];
 			return m->count[e];
 		}
 	caller = MemoryContextSwitchTo(ex->cxt);
@@ -142,20 +195,9 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 	}
 	e = m->n++;
 	memcpy(&m->ids[(Size) e * sa->npair], ids, sa->npair * sizeof(uint32));
-	m->first[e] = sp->nmatch;
-	m->count[e] = 0;
-	for (uint32 r = 0; !dead && r < sp->nrow; r++)
-	{
-		if (memcmp(&sp->jid[(Size) r * sa->npair], want, sa->npair * sizeof(uint32)) != 0)
-			continue;
-		if (sp->nmatch == sp->cmatch)
-		{
-			sp->cmatch = sp->cmatch ? sp->cmatch * 2 : 64;
-			sp->match = sp->match ? repalloc(sp->match, sp->cmatch * sizeof(uint32)) : palloc(sp->cmatch * sizeof(uint32));
-		}
-		sp->match[sp->nmatch++] = r;
-		m->count[e]++;
-	}
+	g = dead ? PG_UINT32_MAX : spine_group(sp, sa->npair, want);
+	m->first[e] = g == PG_UINT32_MAX ? 0 : sp->gfirst[g];
+	m->count[e] = g == PG_UINT32_MAX ? 0 : sp->gfirst[g + 1] - sp->gfirst[g];
 	if (m->n * 2 > m->nslot)
 		memo_grow(m, sa->npair);
 	else
@@ -165,6 +207,6 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 		m->slot[h] = e + 1;
 	}
 	MemoryContextSwitchTo(caller);
-	*rows = sp->match + m->first[e];
+	*rows = sp->grow + m->first[e];
 	return m->count[e];
 }
