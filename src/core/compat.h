@@ -21,6 +21,13 @@
 #include "commands/explain_format.h"
 #endif
 
+/* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
+#if PG_VERSION_NUM >= 190000
+#define sift_fallthrough	pg_fallthrough
+#else
+#define sift_fallthrough	__attribute__((fallthrough))
+#endif
+
 /* Table AM scan flags (19): the plain heap scan options */
 #if PG_VERSION_NUM >= 190000
 #define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key, SO_NONE)
