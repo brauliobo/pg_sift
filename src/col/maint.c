@@ -312,6 +312,7 @@ static const SiftMaintOps col_ops = {
 	.step_lock = ExclusiveLock,
 	.vacuum_to_fixed_point = true,
 	.vacuum_budget = true,
+	.force_seals = true,
 	.vacuum_truncate = vacuum_truncates,
 	.vacuum_seal = sift_cwbuf_seal_vacuum,
 	.is_index = is_col,
