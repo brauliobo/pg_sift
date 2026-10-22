@@ -279,7 +279,7 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 			}
 #ifdef SIFT_TESTING
 			if (sift_test_space_error && e->kind == SIFT_SEG_WBUF_OPEN && !(e->flags & SIFT_TBL_SEG_TOMB))
-				elog(ERROR, "sift test: error after open buffer relocation publication (header %u to %u)", e->header_blk, move.header);
+				elog(ERROR, "sift test: error after open buffer relocation publication (header %u to %u)", e->header_blk, move.header);	/* check-errors: allow */
 #endif
 			SIFT_SPACE_TEST_POINT(2);
 			budget -= move.written;

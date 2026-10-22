@@ -618,7 +618,8 @@ open_index(Oid oid)
 	if (!index->rd_index->indisvalid)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" is not valid", RelationGetRelationName(index))));
+				 errmsg("index \"%s\" is not valid", RelationGetRelationName(index)),
+				 errhint("Wait for its CREATE INDEX CONCURRENTLY to finish, or REINDEX it.")));
 	return index;
 }
 
@@ -629,7 +630,8 @@ check_indexes(Facets *f)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("indexes \"%s\" and \"%s\" are on different tables",
-						RelationGetRelationName(f->index), RelationGetRelationName(f->findex))));
+						RelationGetRelationName(f->index), RelationGetRelationName(f->findex)),
+				 errhint("Create the keyword index on the table of the main index.")));
 	if (sift_index_options(f->findex)->analyzer != SIFT_ANALYZER_KEYWORD)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -639,14 +641,16 @@ check_indexes(Facets *f)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("index \"%s\" is a partial index", RelationGetRelationName(f->findex)),
-				 errdetail("Rows outside its predicate would be counted as having no value.")));
+				 errdetail("Rows outside its predicate would be counted as having no value."),
+				 errhint("Create the keyword index without a predicate and filter in the query.")));
 	if (pg_class_aclcheck(RelationGetRelid(f->heap), GetUserId(), ACL_SELECT) != ACLCHECK_OK)
 		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(f->heap->rd_rel->relkind),
 					   RelationGetRelationName(f->heap));
 	if (check_enable_rls(RelationGetRelid(f->heap), InvalidOid, false) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.facets does not support tables with row-level security")));
+				 errmsg("sift.facets does not support tables with row-level security"),
+				 errhint("Use sift.facet_counts, which has no such limit.")));
 }
 
 static void

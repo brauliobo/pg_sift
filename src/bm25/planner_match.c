@@ -364,8 +364,7 @@ add_key(KeyedOrder *ko, PathKey *pk, EquivalenceMember *em)
 {
 	Oid			sortop = sift_pathkey_sortop(pk, em->em_datatype);
 
-	if (!OidIsValid(sortop))
-		elog(ERROR, "sift: missing ordering operator for type %u in operator family %u", em->em_datatype, pk->pk_opfamily);
+	SIFT_INVARIANT(OidIsValid(sortop), "sift: missing ordering operator for type %u in operator family %u", em->em_datatype, pk->pk_opfamily);
 	ko->exprs = lappend(ko->exprs, em->em_expr);
 	ko->keyops = list_concat(ko->keyops,
 							 list_make3(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(sortop), false, true),

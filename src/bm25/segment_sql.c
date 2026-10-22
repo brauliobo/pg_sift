@@ -158,8 +158,7 @@ sift_index_info(PG_FUNCTION_ARGS)
 	Datum		v[10];
 	bool		nulls[10] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
@@ -193,8 +192,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 	uint32		failures;
 	int			sealed = 0;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	if (!ConditionalLockRelationOid(relid, AccessShareLock))
 		PG_RETURN_NULL();
 	index = try_index_open(relid, NoLock);
@@ -251,8 +249,7 @@ sift_index_format(PG_FUNCTION_ARGS)
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);
 	v[1] = Int32GetDatum(snap->meta.format_minor);
@@ -778,8 +775,7 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 	Datum		v[5];
 	bool		nulls[5] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -839,8 +835,7 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	memcpy(blob, VARDATA_ANY(b), len);
 	pc = sift_post_open_blob(&info, blob, CurrentMemoryContext);
 	cur = sift_post_cursor(pc);
@@ -850,7 +845,9 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 
 		/* a cursor ends after at most one group per posting and per group number: a damaged blob must not keep it running */
 		if (n > SIFT_GRP_MAXTIDS || ++groups > Min(info.df, 1 << 24))
-			elog(ERROR, "cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups)));
 		CHECK_FOR_INTERRUPTS();
 		sift_post_group_tf(pc, tf);
 		for (uint64 i = 0; i < n; i++)

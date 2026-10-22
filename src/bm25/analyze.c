@@ -180,7 +180,8 @@ sift_analyzer_create(const SiftAnalyzerConfig *cfg, MemoryContext mcxt)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift requires a UTF8 or SQL_ASCII database, not %s",
-						GetDatabaseEncodingName())));
+						GetDatabaseEncodingName()),
+				 errhint("Create a database with ENCODING 'UTF8' and restore the data into it.")));
 	a = MemoryContextAllocZero(mcxt, sizeof(SiftAnalyzer));
 	a->cfg = *cfg;
 	a->mcxt = mcxt;
