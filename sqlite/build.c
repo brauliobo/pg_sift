@@ -187,12 +187,6 @@ find_doc(const SqInv *inv, SiftKey key)
 }
 
 bool
-sq_inv_has(const SqInv *inv, SiftKey key)
-{
-	return find_doc(inv, key) >= 0;
-}
-
-bool
 sq_inv_remove(SqInv *inv, SiftKey key)
 {
 	int64		ord = find_doc(inv, key);
