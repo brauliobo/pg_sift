@@ -1,0 +1,310 @@
+-- sift.table_bulk_groups: COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups
+-- (no write buffer, nothing to promote). Every load is compared with a heap twin, and the segments say which path wrote it.
+CREATE EXTENSION pg_sift;
+SET sift.table_write_buffer_limit = 2048;
+SET sift.table_max_segments = 24;
+CREATE FUNCTION digest(tbl regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || $q$:$q$ || sum(id) || $q$:$q$ || md5(string_agg(grp::text || v || pad, $q$,$q$ ORDER BY id)) FROM %s', tbl) INTO r;
+	RETURN r;
+END $$;
+-- 'groups' only: no write buffer was ever created for the table
+CREATE FUNCTION load_path(tbl regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE WHEN count(*) FILTER (WHERE kind LIKE '%buffer') > 0 THEN 'write buffers'
+				WHEN count(*) FILTER (WHERE kind = 'columns') > 0 THEN 'groups' ELSE 'empty' END
+	FROM sift.table_segments(tbl) $$;
+CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 300, '0') AS pad FROM generate_series(1, 40000) g;
+CREATE TABLE t (id int, grp int, v text, pad text) USING sift_table;
+CREATE INDEX t_grp ON t (grp);
+CREATE INDEX t_v ON t USING sift (v);
+-- off (the default): the write buffers
+COPY t FROM PROGRAM 'seq 1 2000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('t');
+   load_path   
+---------------
+ write buffers
+(1 row)
+
+TRUNCATE t;
+-- COPY in a transaction: the groups, the rows of the transaction its own, the same rows as the twin
+SET sift.table_bulk_groups = on;
+BEGIN;
+COPY t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('t'), count(*) FILTER (WHERE unfrozen) > 0 AS carry_their_writer, count(*) FILTER (WHERE kind = 'columns') > 1 AS several FROM sift.table_segments('t');
+ load_path | carry_their_writer | several 
+-----------+--------------------+---------
+ groups    | t                  | t
+(1 row)
+
+SELECT digest('t') = digest('twin') AS same_rows, count(*) = count(DISTINCT ctid) AS tids_unique FROM t;
+ same_rows | tids_unique 
+-----------+-------------
+ t         | t
+(1 row)
+
+COMMIT;
+SELECT digest('t') = digest('twin') AS same_rows_after_commit;
+ same_rows_after_commit 
+------------------------
+ t
+(1 row)
+
+-- the indexes of the table (a btree and a BM25 index) hold every row, by their TIDs
+SET enable_seqscan = off;
+SELECT (SELECT count(*) FROM t WHERE grp = 3) = (SELECT count(*) FROM twin WHERE grp = 3) AS btree_agrees;
+ btree_agrees 
+--------------
+ t
+(1 row)
+
+SELECT id FROM t WHERE v @@> '31337';
+  id   
+-------
+ 31337
+(1 row)
+
+RESET enable_seqscan;
+VACUUM t;
+SELECT digest('t') = digest('twin') AS same_rows_after_vacuum, load_path('t');
+ same_rows_after_vacuum | load_path 
+------------------------+-----------
+ t                      | groups
+(1 row)
+
+-- rolled back: nothing, and VACUUM leaves nothing of it
+BEGIN;
+COPY t FROM PROGRAM 'seq 50001 52000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT count(*) FROM t;
+ count 
+-------
+ 42000
+(1 row)
+
+ROLLBACK;
+SELECT count(*) FROM t;
+ count 
+-------
+ 40000
+(1 row)
+
+VACUUM t;
+SELECT digest('t') = digest('twin') AS same_rows_after_rollback;
+ same_rows_after_rollback 
+--------------------------
+ t
+(1 row)
+
+-- a savepoint that is rolled back takes its rows only
+TRUNCATE t;
+BEGIN;
+COPY t FROM PROGRAM 'seq 1 3000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SAVEPOINT s;
+COPY t FROM PROGRAM 'seq 3001 6000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT count(*) FROM t;
+ count 
+-------
+  6000
+(1 row)
+
+ROLLBACK TO s;
+SELECT count(*) FROM t;
+ count 
+-------
+  3000
+(1 row)
+
+COPY t FROM PROGRAM 'seq 6001 7000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+COMMIT;
+SELECT count(*), sum(id) FROM t;
+ count |   sum    
+-------+----------
+  4000 | 11002000
+(1 row)
+
+SELECT count(*), sum(id) FROM t WHERE id <= 3000 OR id > 6000;
+ count |   sum    
+-------+----------
+  4000 | 11002000
+(1 row)
+
+-- an error in the middle of the load leaves the table as it was
+TRUNCATE t;
+COPY t FROM PROGRAM 'seq 1 4000 | awk ''{ if ($1 == 3500) print "bad\tx\ty\tz"; else printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+ERROR:  invalid input syntax for type integer: "bad"
+CONTEXT:  COPY t, line 3500, column id: "bad"
+SELECT count(*) FROM t;
+ count 
+-------
+     0
+(1 row)
+
+-- CREATE TABLE AS and a materialized view, the refresh included
+CREATE TABLE ctas USING sift_table AS SELECT * FROM twin;
+SELECT load_path('ctas'), digest('ctas') = digest('twin') AS same_rows;
+ load_path | same_rows 
+-----------+-----------
+ groups    | t
+(1 row)
+
+CREATE MATERIALIZED VIEW mv USING sift_table AS SELECT * FROM twin WITH NO DATA;
+REFRESH MATERIALIZED VIEW mv;
+SELECT load_path('mv'), digest('mv') = digest('twin') AS same_rows;
+ load_path | same_rows 
+-----------+-----------
+ groups    | t
+(1 row)
+
+REFRESH MATERIALIZED VIEW mv;
+SELECT load_path('mv'), digest('mv') = digest('twin') AS same_rows_again;
+ load_path | same_rows_again 
+-----------+-----------------
+ groups    | t
+(1 row)
+
+-- COPY FREEZE: the rows have no writer
+BEGIN;
+CREATE TABLE fz (LIKE twin) USING sift_table;
+COPY fz FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''' WITH (FREEZE);
+SELECT load_path('fz'), count(*) FILTER (WHERE unfrozen) AS carry_their_writer FROM sift.table_segments('fz');
+ load_path | carry_their_writer 
+-----------+--------------------
+ groups    |                  0
+(1 row)
+
+COMMIT;
+SELECT digest('fz') = digest('twin') AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+-- the rewrite of ALTER TABLE ... SET ACCESS METHOD, a temporary and an unlogged table
+CREATE TABLE rewritten AS SELECT * FROM twin;
+ALTER TABLE rewritten SET ACCESS METHOD sift_table;
+SELECT load_path('rewritten'), digest('rewritten') = digest('twin') AS same_rows;
+ load_path | same_rows 
+-----------+-----------
+ groups    | t
+(1 row)
+
+CREATE TEMP TABLE tmp_t (id int, grp int, v text, pad text) USING sift_table;
+COPY tmp_t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('tmp_t'), digest('tmp_t') = digest('twin') AS same_rows;
+ load_path | same_rows 
+-----------+-----------
+ groups    | t
+(1 row)
+
+CREATE UNLOGGED TABLE unl_t (id int, grp int, v text, pad text) USING sift_table;
+COPY unl_t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('unl_t'), digest('unl_t') = digest('twin') AS same_rows;
+ load_path | same_rows 
+-----------+-----------
+ groups    | t
+(1 row)
+
+DROP TABLE rewritten, tmp_t, unl_t;
+-- a partitioned table loads into its partitions
+CREATE TABLE parted (LIKE twin) PARTITION BY HASH (id);
+CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 0) USING sift_table;
+CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1) USING sift_table;
+COPY parted FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('parted_0'), load_path('parted_1'), digest('parted') = digest('twin') AS same_rows;
+ load_path | load_path | same_rows 
+-----------+-----------+-----------
+ groups    | groups    | t
+(1 row)
+
+-- a table that something reads while the load runs keeps the write buffers and behaves as it always did:
+-- a unique index still rejects a duplicate of the same load, a volatile function of the user still sees the rows inserted before it
+CREATE TABLE pk (id int PRIMARY KEY, grp int, v text, pad text) USING sift_table;
+COPY pk FROM PROGRAM 'seq 1 1000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
+SELECT load_path('pk'), count(*) FROM pk;
+   load_path   | count 
+---------------+-------
+ write buffers |  1000
+(1 row)
+
+COPY pk FROM PROGRAM 'seq 2000 2010 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }; END { printf "%d\t0\tdup\tx\n", 2005 }''';
+ERROR:  duplicate key value violates unique constraint "pk_pkey"
+DETAIL:  Key (id)=(2005) already exists.
+CONTEXT:  COPY pk, line 12
+SELECT count(*) FROM pk;
+ count 
+-------
+  1000
+(1 row)
+
+CREATE FUNCTION seen(tbl regclass) RETURNS int LANGUAGE plpgsql VOLATILE AS $$
+DECLARE n int;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %s', tbl) INTO n;
+	RETURN n;
+END $$;
+CREATE TABLE sees_heap (id int, seen int DEFAULT seen('sees_heap')) WITH (autovacuum_enabled = false);
+CREATE TABLE sees_sift (id int, seen int DEFAULT seen('sees_sift')) USING sift_table;
+COPY sees_heap (id) FROM PROGRAM 'seq 1 5';
+COPY sees_sift (id) FROM PROGRAM 'seq 1 5';
+SELECT sees_sift.seen = sees_heap.seen AS same_as_the_heap, sees_sift.seen FROM sees_sift JOIN sees_heap USING (id) ORDER BY id;
+ same_as_the_heap | seen 
+------------------+------
+ t                |    0
+ t                |    1
+ t                |    2
+ t                |    3
+ t                |    4
+(5 rows)
+
+-- many loads in one transaction do not run the directory out: the groups merge as the loads go, with and without backpressure
+TRUNCATE t;
+CREATE PROCEDURE many_loads(n int) LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1 .. n LOOP
+		EXECUTE format('COPY t FROM PROGRAM $p$seq %s %s | awk ''{ printf "%%d\t%%d\trow %%d\t%%0300d\n", $1, $1 %% 7, $1, $1 }''$p$', (i - 1) * 700 + 1, i * 700);
+	END LOOP;
+END $$;
+BEGIN;
+CALL many_loads(60);
+SELECT count(*), sum(id) FROM t;
+ count |    sum    
+-------+-----------
+ 42000 | 882021000
+(1 row)
+
+SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('t');
+ within_the_limit 
+------------------
+ t
+(1 row)
+
+COMMIT;
+SELECT count(*), sum(id) FROM t;
+ count |    sum    
+-------+-----------
+ 42000 | 882021000
+(1 row)
+
+TRUNCATE t;
+SET sift.table_backpressure = 75;
+BEGIN;
+CALL many_loads(60);
+SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('t');
+ within_the_limit 
+------------------
+ t
+(1 row)
+
+COMMIT;
+SELECT count(*), sum(id) FROM t;
+ count |    sum    
+-------+-----------
+ 42000 | 882021000
+(1 row)
+
+RESET sift.table_backpressure;
+DROP PROCEDURE many_loads(int);
+DROP MATERIALIZED VIEW mv;
+DROP TABLE t, twin, ctas, fz, parted, pk, sees_heap, sees_sift;
+DROP FUNCTION seen(regclass), digest(regclass), load_path(regclass);
+DROP EXTENSION pg_sift;

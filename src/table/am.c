@@ -96,6 +96,10 @@ sift_tbl_define_gucs(void)
 							 "A backend that closes a write buffer of a sift_table asks a background worker to promote it, where it promotes it itself.",
 							 "Needs sift.async_maintenance and sift.table_inline_promote. From half of the directory on the writer promotes and merges itself.",
 							 &sift_tbl_async_promote, false, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_bulk_groups",
+							 "COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups, with no write buffer to promote.",
+							 "Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
+							 &sift_tbl_bulk_groups, false, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
 							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
 							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
@@ -192,10 +196,34 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions opt
 	pgstat_count_heap_insert(rel, 1);
 }
 
+/* A row of COPY, CREATE TABLE AS or REFRESH MATERIALIZED VIEW (they pass a bulk insert state) goes into a column group when sift.table_bulk_groups says so */
+static bool
+insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
+{
+	SiftTblRel *st;
+	MinimalTuple mtup;
+
+	if (bistate == NULL || !sift_tbl_bulk_groups)
+		return false;
+	st = sift_tbl_rel(rel);
+	sift_tbl_ensure_init(rel);
+	sift_tbl_layout_ready(rel, st);
+	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
+		return false;
+	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
+	mtup = form_mtuple(rel, slot);
+	sift_tbl_load_row(rel, st, mtup, cid, &slot->tts_tid);
+	slot->tts_tableOid = RelationGetRelid(rel);
+	heap_free_minimal_tuple(mtup);
+	pgstat_count_heap_insert(rel, 1);
+	return true;
+}
+
 static void
 tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
-	insert_one(rel, slot, cid, options, 0);
+	if (!insert_bulk(rel, slot, cid, options, bistate))
+		insert_one(rel, slot, cid, options, 0);
 }
 
 static void
@@ -227,7 +255,8 @@ static void
 tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	for (int i = 0; i < nslots; i++)
-		insert_one(rel, slots[i], cid, options, 0);
+		if (!insert_bulk(rel, slots[i], cid, options, bistate))
+			insert_one(rel, slots[i], cid, options, 0);
 }
 
 /*
@@ -444,6 +473,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 static void
 tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
+	sift_tbl_load_finish(rel);
 }
 
 static void

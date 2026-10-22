@@ -100,6 +100,7 @@ checks() { # LOG of the older server
 	expect_refused "... by a fetch of one row" "SELECT * FROM unf LIMIT 1"
 	expect_refused "... by an INSERT" "INSERT INTO unf VALUES (0, 'x')"
 	expect_refused "... by VACUUM" "VACUUM unf"
+	expect_refused "a table loaded by COPY into column groups is refused by a scan" "SELECT count(*) FROM unf_b"
 	expect_refused "a table whose unfrozen groups were frozen is refused as well (the format is never lowered)" "SELECT count(*) FROM unf_v"
 	expect_rows "a table rewritten by VACUUM FULL is read again" "SELECT count(*) || ':' || sum(id) FROM unf_f" "$want"
 	query "SELECT 1"
@@ -131,6 +132,11 @@ run() {
 	load_table unf
 	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf') > 0") == t ]]; then pass "the loop left a table with unfrozen groups"
 	else fail "the loop left a table with unfrozen groups"; echo "tables not written by the new write path: nothing to refuse"; return 1; fi
+	# a table loaded by COPY into column groups carries the same unfrozen groups
+	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "SET sift.table_bulk_groups = on" -c "CREATE TABLE unf_b (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
+		-c "COPY unf_b FROM PROGRAM 'seq 1 2000 | sed ''s/.*/&\trow &/'''" >/dev/null
+	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf_b') > 0") == t ]]; then pass "a COPY into column groups left a table with unfrozen groups"
+	else fail "a COPY into column groups left a table with unfrozen groups"; fi
 	load_table unf_v
 	load_table unf_f
 	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "SET sift.col_format_minor = 3" -c "VACUUM (FULL) unf_f" >/dev/null

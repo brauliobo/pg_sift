@@ -28,6 +28,20 @@ CREATE TABLE fk_parent (id int PRIMARY KEY, v text) USING sift_table;
 CREATE TABLE heap_child (id int, parent int REFERENCES fk_parent (id));
 CREATE TABLE fk_self (id int PRIMARY KEY, up int REFERENCES fk_self (id)) USING sift_table;
 
+-- the expressions the executor evaluates for every row: the built-in functions cannot read the table, the ones the user wrote can
+CREATE FUNCTION user_f(int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS 'BEGIN RETURN $1; END';
+CREATE DOMAIN positive AS int CHECK (VALUE > 0);
+CREATE TABLE builtin_exprs (id serial, at timestamptz DEFAULT now(), r float8 DEFAULT random(), n int CHECK (n > 0), g int GENERATED ALWAYS AS (n * 2) STORED)
+	USING sift_table;
+CREATE TABLE user_default (id int, v int DEFAULT user_f(1)) USING sift_table;
+CREATE TABLE user_check (id int CHECK (user_f(id) > 0)) USING sift_table;
+CREATE TABLE user_generated (id int, g int GENERATED ALWAYS AS (user_f(id)) STORED) USING sift_table;
+CREATE TABLE domain_col (id positive) USING sift_table;
+CREATE TABLE user_index (id int) USING sift_table;
+CREATE INDEX user_index_expr ON user_index (user_f(id));
+CREATE TABLE user_partial (id int) USING sift_table;
+CREATE INDEX user_partial_id ON user_partial (id) WHERE user_f(id) > 0;
+
 SELECT c.relname, sift._test_tbl_bulk_refusal(c.oid) AS refusal
 FROM pg_class c JOIN pg_am a ON a.oid = c.relam
 WHERE a.amname = 'sift_table' AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace
@@ -38,7 +52,9 @@ DROP TRIGGER trig_row_before ON trig_row;
 DROP TABLE heap_child;
 SELECT relname, sift._test_tbl_bulk_refusal(relname::regclass) AS refusal FROM (VALUES ('trig_row'), ('fk_parent')) t(relname);
 
-DROP TABLE plain, indexed, with_bm25, pk, uniq, uniq_partial, excl, trig_row, trig_stmt, fk_child, fk_parent, fk_self, heap_parent;
+DROP TABLE builtin_exprs, user_default, user_check, user_generated, domain_col, user_index, user_partial, plain, indexed, with_bm25, pk, uniq, uniq_partial, excl, trig_row, trig_stmt, fk_child, fk_parent, fk_self, heap_parent;
 DROP FUNCTION nothing();
+DROP DOMAIN positive;
+DROP FUNCTION user_f(int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
