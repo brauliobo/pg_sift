@@ -5,6 +5,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## Unreleased
 
 - Fixed: pg_sift: a session that read a new `sift_table` while its first writer was between writing the metapage and the tombstone segment cached the table as laid out; its own first write then added a write buffer to a directory that was never flagged as a `sift_table`, and every later read of the table failed with "The metapage does not carry the sift_table flag". The first write now checks that the segment exists, not only that the table was read.
+- Fixed: pg_sift: an `ORDER BY .. LIMIT` read from the column units no longer fails with `sift: top-N row (p,o) is not in the heap` after an `UPDATE` that leaves every indexed value as it was (a HOT update): the index entry names the root of the HOT chain, and the scan now reads the row as an index scan does, through the chain. Test `col_topn_hot`.
 
 ## 3.2.0 - 2026-10-22
 

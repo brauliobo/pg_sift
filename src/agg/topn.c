@@ -20,6 +20,7 @@
 
 #include "agg/topn.h"
 #include "core/cmp.h"
+#include "core/compat.h"
 
 /* Superblocks per window of the visit order at most: the zones are looked at again, and the match set is asked for, once per window */
 #define TOPN_WINDOW		8
@@ -138,9 +139,9 @@ struct SiftTopN
 	uint32	   *wunits;
 	uint32	   *word;
 	uint32		wpos;
-	Relation	rel;
 	Snapshot	snap;
 	TupleTableSlot *fslot;
+	IndexFetchTableData *fetch;	/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
 	int64		fetched;
 };
@@ -228,9 +229,9 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 		t->rows = palloc(t->limit * sizeof(uint32));
 		t->tids = palloc(t->limit * sizeof(ItemPointerData));
 	}
-	t->rel = heap;
 	t->snap = snapshot;
 	t->fslot = table_slot_create(heap, NULL);
+	t->fetch = sift_table_index_fetch_begin(heap);
 	MemoryContextSwitchTo(old);
 	return t;
 }
@@ -240,6 +241,8 @@ sift_topn_close(SiftTopN *t)
 {
 	if (t->fslot)
 		ExecDropSingleTupleTableSlot(t->fslot);
+	if (t->fetch)
+		table_index_fetch_end(t->fetch);
 	if (t->sort)
 	{
 		ExecDropSingleTupleTableSlot(t->sin);
@@ -838,10 +841,13 @@ bool
 sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 {
 	ItemPointerData tid;
+	bool		call_again = false,
+				all_dead;
 
 	if (!next_tid(t, &tid))
 		return false;
-	if (!table_tuple_fetch_row_version(t->rel, &tid, t->snap, t->fslot))
+	/* the TID is the root of a HOT chain when the row was updated without a new index entry: the fetch follows the chain to the visible version */
+	if (!table_index_fetch_tuple(t->fetch, &tid, t->snap, t->fslot, &call_again, &all_dead))
 		elog(ERROR, "sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
 	t->fetched++;
 	ExecClearTuple(slot);
