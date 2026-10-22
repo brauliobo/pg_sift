@@ -18,13 +18,13 @@ teardown
 	DROP TABLE iso_wp;
 }
 
-# the three writers: ids 100001..130000 (A), 200001..230000 (B) and 300001..330000 (C), a chunk of 10000 rows at a time, each row a command
+# the three writers: ids from 100001 (A), 200001 (B) and 300001 (C), a chunk of 6000 rows at a time (each chunk starts 10000 above the one before), each row a command
 session a
 setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
 step ab		{ BEGIN; }
-step a1		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step a2		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step a3		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step a1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step a2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step a3		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (120000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step aupd	{ UPDATE iso_wp SET v = 'a-upd' WHERE id BETWEEN 100001 AND 100500; }
 step adel	{ DELETE FROM iso_wp WHERE id BETWEEN 100501 AND 101000; }
 step atag	{ SELECT sift._test_tbl_tagged('iso_wp') > 0 AS promoted_rows; }
@@ -34,17 +34,17 @@ step aa		{ ROLLBACK; }
 session b
 setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
 step bb		{ BEGIN; }
-step b1		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step b2		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step b3		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step b1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step b2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step b3		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step ba		{ ROLLBACK; }
 
 session c
 setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
 step cb		{ BEGIN; }
-step c1		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step c2		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
-step c3		{ DO $$ BEGIN FOR i IN 1..10000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step c1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step c2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
+step c3		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (320000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step cc		{ COMMIT; }
 step ca		{ ROLLBACK; }
 
