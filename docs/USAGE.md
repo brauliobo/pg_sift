@@ -247,6 +247,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
 | `sift.enable_col` | on | use `sift_col` indexes for column scans |
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
+| `sift.agg_preagg_distinct` | on | with `sift.agg_preagg`, `count(DISTINCT col)` of a 32-bit or text column the cube stores a histogram of is answered from the groups of the units whose rows are all visible; `off` scans those units ([docs/COL-PREAGG.md](COL-PREAGG.md)) |
 | `sift.agg_preagg` | on | answer the units of a `SiftAgg` scan whose rows are all visible from the sums and group counts the `sift_col` index stored with them (`Units From Pre-aggregates` in `EXPLAIN ANALYZE`); `off` scans every unit |
 | `sift.agg_rollup_cost` | 1 | scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit with a rollup is answered from it only when that costs less (0: always, large: never) |
 | `sift.enable_topn` | on | push `WHERE ... [col @@> q] ORDER BY <index columns> LIMIT n` down to `sift_col` indexes (`Custom Scan (SiftAgg)` with `Top-N`, [docs/COL-SEARCH.md](COL-SEARCH.md)); needs `sift.enable_agg` |

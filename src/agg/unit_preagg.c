@@ -100,6 +100,8 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 		case SAA_COUNT_STAR:
 			acc->n[g] += v->rows;
 			break;
+		case SAA_COUNT_DISTINCT:		/* its values are added by the histogram's fold (preagg_hist) */
+			break;
 		case SAA_COUNT:
 			acc->n[g] += v->nn;
 			break;
@@ -402,7 +404,7 @@ preagg_hist(AggExec *ex)
 			return false;
 		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf, true))
 			return false;
-		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa.dim ? -2 : m;
+		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? -3 : leaf == ex->pa.dim ? -2 : m;
 	}
 	keep = preagg_keep(ex, &h, fkeep);
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
@@ -421,6 +423,19 @@ preagg_hist(AggExec *ex)
 			int			m = slot[ai];
 
 			v[ai].rows = v[ai].nn = h.count[kept[j]];
+			if (m == -3)
+			{
+				/* the group is one value: a NULL group adds none, any other adds its id (the value for a 32-bit leaf, the id over all dictionaries for text) */
+				if (kept[j] < h.ngroups - h.has_null)
+				{
+					uint32		id = h.dict ? dict_amap(ex, dict_slot(ex, h.dict), h.dict, ai)[(uint32) h.key[kept[j]]] : (uint32) h.key[kept[j]];
+
+					if (dist_add(ex, ex->dist[ai], gid[j], id))
+						ex->acc[ai].n[gid[j]]++;
+				}
+				v[ai] = (PaVal) {0};
+				continue;
+			}
 			if (m == -2)
 				v[ai].nn = kept[j] < h.ngroups - h.has_null ? h.count[kept[j]] : 0;
 			else if (m >= 0)

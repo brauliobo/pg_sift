@@ -12,7 +12,7 @@
 #include "agg/dense_int.h"
 
 /* the id (1..) over all dictionaries of each entry of d, for the values count(DISTINCT) of aggregate ai counts */
-static uint32 *
+uint32 *
 dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 {
 	SiftAggAgg *a = &ex->spec->agg[ai];
