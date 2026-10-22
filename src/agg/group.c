@@ -121,7 +121,7 @@ acc_alloc(AggExec *ex, uint32 cap)
 			case SAA_AVG_F64:
 				if (ex->lane_serial)
 					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				/* fall through */
+				sift_fallthrough;
 			case SAA_O_SUM_F64:
 			case SAA_O_AVG_F64:
 				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
@@ -141,12 +141,12 @@ acc_alloc(AggExec *ex, uint32 cap)
 					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 					a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
 				}
-				/* fall through */
+				sift_fallthrough;
 			case SAA_M_SUM:
 			case SAA_M_AVG:
 				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				/* fall through */
+				sift_fallthrough;
 			case SAA_M_MIN:
 			case SAA_M_MAX:
 			case SAA_X_MIN:
