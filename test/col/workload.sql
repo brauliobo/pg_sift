@@ -1,5 +1,5 @@
--- A synthetic event analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of feedback items with jsonb metrics
--- (numbers, and dirty values: numbers as strings, JSON nulls, text), a jsonb comments array and a document with a nested array of parts and the flags
+-- A synthetic event analytics workload for the column index (docs/AGG.md, "Workload shapes"): a fact table of event items with jsonb metrics
+-- (numbers, and dirty values: numbers as strings, JSON nulls, text), a jsonb notes array and a document with a nested array of parts and the flags
 -- of a mapping, dimension tables of entities (typed), sources and mappings, dates and a soft-delete column. Included by fixture.sql (small) and
 -- usable alone for a larger table:
 --
