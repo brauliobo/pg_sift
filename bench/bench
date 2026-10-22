@@ -58,6 +58,7 @@ Commands
   compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
   sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
              parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
+  scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
@@ -668,6 +669,7 @@ case $cmd in
   -h|--help|help) usage; exit 0 ;;
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
+  scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac
