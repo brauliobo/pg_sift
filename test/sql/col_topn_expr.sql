@@ -118,17 +118,13 @@ SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'upper_desc', 'int
 VACUUM tc;
 SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'date_desc', 'lower', 'upper_desc') ORDER BY tag COLLATE "C";
 
--- the expressions that stay with the normal plan, each by a named refusal: CASE (a later step), do not give one column's value (coalesce of two columns, a
--- concatenation, a function of a function) or are not of the types above (a bigint constant for an integer column). Arithmetic and casts are col_topn_arith.
+-- the expressions that stay with the normal plan, each by a named refusal: a string result of a function (a concatenation, a function of a function; a later step).
+-- Arithmetic and casts are col_topn_arith, CASE, coalesce of several columns and the tests col_topn_case.
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
 SELECT k, w.used, w.slug, substr(w.reason, 1, 400) AS reason
-FROM (VALUES ('case',          $q$SELECT id, a FROM tc ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$),
-			 ('two columns',   $q$SELECT id, a FROM tc ORDER BY coalesce(a, g), id LIMIT 5$q$),
-			 ('wide constant', $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5000000000), id LIMIT 5$q$),
-			 ('concatenation', $q$SELECT id, s FROM tc ORDER BY lower(s || v), id LIMIT 5$q$),
+FROM (VALUES ('concatenation', $q$SELECT id, s FROM tc ORDER BY lower(s || v), id LIMIT 5$q$),
 			 ('nested',        $q$SELECT id, s FROM tc ORDER BY lower(upper(s)), id LIMIT 5$q$),
-			 ('length',        $q$SELECT id, s FROM tc ORDER BY length(s), id LIMIT 5$q$),
 			 ('allowed',       $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5), id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";

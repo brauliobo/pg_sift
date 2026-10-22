@@ -1,0 +1,273 @@
+-- ORDER BY <CASE, coalesce of several columns, NULLIF, GREATEST/LEAST, a boolean expression, IN, a string test> LIMIT n: the scan runs the expression with PostgreSQL's own
+-- expression machinery (the lazy order of CASE and coalesce, the NULL rules of three-valued logic, the comparison and collation of strings) for every row that passes
+-- the WHERE. Every query runs twice, the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows are compared in order: asc and desc, NULLs
+-- first and last, ties, strings under a collation, several keys, the heap, the sort of every row, workers, rows in the write buffer. Errors: the same SQLSTATE in both
+-- plans, and none for a branch the CASE does not take.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+CREATE TABLE tb (id int PRIMARY KEY, g int, a int, b bigint, c smallint, f float8, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text, v varchar(12));
+INSERT INTO tb
+SELECT i, i % 7,
+	CASE WHEN i % 4000 < 900 THEN NULL WHEN i = 17000 THEN 2147483647 WHEN i = 21000 THEN -2147483648 ELSE i / 3 END,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN 9223372036854775807 WHEN i % 991 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 1000003 - 500000 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 101 = 0 THEN 32767 WHEN i % 103 = 0 THEN -32768 ELSE (i * 37) % 2000 - 1000 END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 1009 = 0 THEN 'NaN' WHEN i % 1013 = 0 THEN 'Infinity' WHEN i % 1021 = 0 THEN '-0' ELSE ((i * 7919) % 20001 - 10000) / 7.0 END,
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 997 = 0 THEN 9999999999.99 ELSE ((i * 37) % 4001 - 2000) / 7.0 END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 1000003::bigint) % 100000 - 50000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 5003 = 0 THEN 'infinity' ELSE DATE '2020-01-01' + (i / 40) END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + (i % 7000) * interval '29 minutes' END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 23 = 0 THEN ''
+		ELSE (ARRAY['Zed','apple','Apple','banana','éclair','Ärger','b','B','a b','a-b','z','10','9','ß','ss','日本','é日','_x','  ','İstanbul'])[1 + i % 20] || (i % 211) END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE 'V' || (i % 53) END
+FROM generate_series(1, 30000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
+RESET sift.test_limits;
+VACUUM (ANALYZE) tb;
+CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
+CREATE FUNCTION tb_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tb_a, tb_b;
+	PERFORM tb_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tb_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM tb_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE tb_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tb_a EXCEPT ALL SELECT pos, r FROM tb_b) UNION ALL (SELECT pos, r FROM tb_b EXCEPT ALL SELECT pos, r FROM tb_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ ', sorted' THEN '+sorted' ELSE '' END || ' ' || (SELECT count(*) FROM tb_b);
+END $$;
+CREATE TABLE tb_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO tb_q VALUES
+	('case_null_zero',    $q$SELECT id, a FROM tb WHERE a < 2147483647 ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 25$q$),
+	('case_no_else',      $q$SELECT id, a FROM tb ORDER BY CASE WHEN a > 3000 THEN a END DESC NULLS FIRST, id LIMIT 25$q$),
+	('case_simple',       $q$SELECT id, g FROM tb ORDER BY CASE g WHEN 1 THEN 10 WHEN 2 THEN 5 WHEN 3 THEN 5 ELSE 0 END, id DESC LIMIT 40$q$),
+	('case_lazy_div',     $q$SELECT id, c FROM tb WHERE c <> 0 ORDER BY CASE WHEN c > 0 THEN 1000 / c ELSE -1000 / c END, id LIMIT 25$q$),
+	('case_guarded',      $q$SELECT id, c FROM tb ORDER BY CASE WHEN c IS NULL OR c = 0 THEN 0 ELSE 1000 / c END, id LIMIT 25$q$),
+	('case_nested',       $q$SELECT id, a, c FROM tb WHERE a BETWEEN -1000000 AND 1000000 ORDER BY CASE WHEN a IS NULL THEN CASE WHEN c IS NULL THEN 0 ELSE c END ELSE a * 2 END DESC, id LIMIT 25$q$),
+	('case_mixed_ints',   $q$SELECT id, c, b FROM tb WHERE b BETWEEN -1000000 AND 1000000 ORDER BY CASE WHEN c > 0 THEN c ELSE b END, id LIMIT 25$q$),
+	('case_float',        $q$SELECT id, f FROM tb ORDER BY CASE WHEN f > 0 THEN f ELSE -f END DESC, id LIMIT 25$q$),
+	('case_numeric',      $q$SELECT id, n FROM tb ORDER BY CASE WHEN n < 0 THEN n * 2 ELSE n END, id LIMIT 25$q$),
+	('case_date',         $q$SELECT id, d FROM tb ORDER BY CASE WHEN d IS NULL THEN DATE '2024-02-01' ELSE d END DESC, id LIMIT 25$q$),
+	('case_text',         $q$SELECT id, s FROM tb ORDER BY CASE WHEN s IS NULL THEN '' WHEN length(s) > 6 THEN 'long' ELSE s END, id LIMIT 25$q$),
+	('case_text_test',    $q$SELECT id, s FROM tb ORDER BY CASE WHEN s = 'z' THEN 0 WHEN s < 'B' THEN 1 ELSE 2 END, id LIMIT 40$q$),
+	('case_in_arith',     $q$SELECT id, a FROM tb WHERE a BETWEEN -1000000 AND 1000000 ORDER BY 2 * CASE WHEN a > 100 THEN a ELSE 100 END + 1, id LIMIT 25$q$),
+	('coalesce_ints',     $q$SELECT id, a, c FROM tb ORDER BY coalesce(a, c), id LIMIT 25$q$),
+	('coalesce_three',    $q$SELECT id, c, a, b FROM tb WHERE b BETWEEN -1000000 AND 1000000 ORDER BY coalesce(c, a, b, 0) DESC, id LIMIT 25$q$),
+	('coalesce_wide',     $q$SELECT id, a FROM tb ORDER BY coalesce(a, 5000000000), id LIMIT 25$q$),
+	('coalesce_float',    $q$SELECT id, f FROM tb ORDER BY coalesce(f, 0) DESC, id LIMIT 25$q$),
+	('coalesce_numeric',  $q$SELECT id, n FROM tb ORDER BY coalesce(n, 0), id LIMIT 25$q$),
+	('coalesce_numeric2', $q$SELECT id, n, m FROM tb ORDER BY coalesce(n, m) DESC, id LIMIT 25$q$),
+	('coalesce_dates',    $q$SELECT id, t, d FROM tb ORDER BY coalesce(t, d), id LIMIT 25$q$),
+	('coalesce_texts',    $q$SELECT id, s, v FROM tb ORDER BY coalesce(s, v, 'zzz'), id LIMIT 25$q$),
+	('coalesce_texts_c',  $q$SELECT id, s, v FROM tb ORDER BY coalesce(s, v, 'zzz') COLLATE "C" DESC, id LIMIT 25$q$),
+	('coalesce_arith',    $q$SELECT id, a, c FROM tb WHERE a < 2147483647 ORDER BY coalesce(a, c, 0) + 1, id LIMIT 25$q$),
+	('nullif_int',        $q$SELECT id, g FROM tb ORDER BY nullif(g, 2) NULLS FIRST, id LIMIT 40$q$),
+	('nullif_text',       $q$SELECT id, s FROM tb ORDER BY nullif(s, '') DESC NULLS LAST, id LIMIT 25$q$),
+	('greatest',          $q$SELECT id, a, c FROM tb ORDER BY greatest(a, c), id LIMIT 25$q$),
+	('least_date',        $q$SELECT id, d FROM tb ORDER BY least(d, DATE '2021-02-01') DESC, id LIMIT 25$q$),
+	('greatest_text',     $q$SELECT id, s, v FROM tb ORDER BY greatest(s, v), id LIMIT 25$q$),
+	('bool_and',          $q$SELECT id, a, c FROM tb ORDER BY a > 100 AND c < 0, id LIMIT 40$q$),
+	('bool_or_null',      $q$SELECT id, a, c FROM tb ORDER BY a IS NULL OR c IS NULL, a > 100 OR c > 0 NULLS FIRST, id LIMIT 40$q$),
+	('bool_test',         $q$SELECT id, a, c FROM tb ORDER BY (a > 100) IS NOT TRUE, a IS DISTINCT FROM c DESC, id LIMIT 40$q$),
+	('in_list',           $q$SELECT id, a, g FROM tb ORDER BY a IN (1, 2, 3, 500), g IN (1, 2) DESC, id LIMIT 40$q$),
+	('in_list_text',      $q$SELECT id, s FROM tb ORDER BY s IN ('z', 'B', 'Zed') DESC, id LIMIT 25$q$),
+	('string_length',     $q$SELECT id, s FROM tb ORDER BY length(s) DESC NULLS LAST, id LIMIT 25$q$),
+	('string_compare',    $q$SELECT id, s, v FROM tb ORDER BY s < v, s = v, id LIMIT 40$q$),
+	('string_strpos',     $q$SELECT id, s FROM tb ORDER BY strpos(s, 'a'), id LIMIT 25$q$),
+	('two_exprs',         $q$SELECT id, a, c FROM tb ORDER BY CASE WHEN c > 0 THEN 1 ELSE 0 END, coalesce(a, c) DESC, id LIMIT 40$q$),
+	('expr_then_col',     $q$SELECT id, a, g FROM tb ORDER BY coalesce(a, g), g DESC, id LIMIT 25$q$),
+	('six_keys',          $q$SELECT id, a FROM tb ORDER BY g, CASE WHEN a IS NULL THEN 0 ELSE 1 END, coalesce(c, a), nullif(g, 3), greatest(c, g), id LIMIT 30$q$),
+	('window_total',      $q$SELECT id, a, count(*) OVER () AS total FROM tb WHERE g IN (1, 2) ORDER BY CASE WHEN a IS NULL THEN 0 ELSE 1 END, id LIMIT 10$q$),
+	('deep_page',         $q$SELECT id, a FROM tb ORDER BY coalesce(a, c) DESC, id LIMIT 20 OFFSET 20000$q$),
+	('all_rows',          $q$SELECT id, a FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE 1 END, id LIMIT 200000$q$);
+SELECT tag, tb_check(q) FROM tb_q ORDER BY tag COLLATE "C";
+NOTICE:  table "tb_a" does not exist, skipping
+NOTICE:  table "tb_b" does not exist, skipping
+        tag        |        tb_check        
+-------------------+------------------------
+ all_rows          | same+topn+sorted 30000
+ bool_and          | same+topn 40
+ bool_or_null      | same+topn 40
+ bool_test         | same+topn 40
+ case_date         | same+topn 25
+ case_float        | same+topn 25
+ case_guarded      | same+topn 25
+ case_in_arith     | same+topn 25
+ case_lazy_div     | same+topn 25
+ case_mixed_ints   | same+topn 25
+ case_nested       | same+topn 25
+ case_no_else      | same+topn 25
+ case_null_zero    | same+topn 25
+ case_numeric      | same+topn 25
+ case_simple       | same+topn 40
+ case_text         | same+topn 25
+ case_text_test    | same+topn 40
+ coalesce_arith    | same+topn 25
+ coalesce_dates    | same+topn 25
+ coalesce_float    | same+topn 25
+ coalesce_ints     | same+topn 25
+ coalesce_numeric  | same+topn 25
+ coalesce_numeric2 | same+topn 25
+ coalesce_texts    | same+topn 25
+ coalesce_texts_c  | same+topn 25
+ coalesce_three    | same+topn 25
+ coalesce_wide     | same+topn 25
+ deep_page         | same+topn 20
+ expr_then_col     | same+topn 25
+ greatest          | same+topn 25
+ greatest_text     | same+topn 25
+ in_list           | same+topn 40
+ in_list_text      | same+topn 25
+ least_date        | same+topn 25
+ nullif_int        | same+topn 40
+ nullif_text       | same+topn 25
+ six_keys          | same+topn+sorted 30
+ string_compare    | same+topn 40
+ string_length     | same+topn 25
+ string_strpos     | same+topn 25
+ two_exprs         | same+topn 40
+ window_total      | same+topn 10
+(42 rows)
+
+-- workers: each keeps a heap of the keys it saw, the leader merges them
+SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('case_null_zero', 'case_simple', 'case_text', 'coalesce_ints', 'coalesce_texts', 'nullif_int', 'greatest', 'bool_or_null', 'in_list_text', 'six_keys') ORDER BY tag COLLATE "C";
+      tag       |      tb_check       
+----------------+---------------------
+ bool_or_null   | same+topn 40
+ case_null_zero | same+topn 25
+ case_simple    | same+topn 40
+ case_text      | same+topn 25
+ coalesce_ints  | same+topn 25
+ coalesce_texts | same+topn 25
+ greatest       | same+topn 25
+ in_list_text   | same+topn 25
+ nullif_int     | same+topn 40
+ six_keys       | same+topn+sorted 30
+(10 rows)
+
+-- the sort of every row that passes spills (work_mem), and a deep page
+SET work_mem = '64kB';
+SELECT tb_check($q$SELECT id, s, v FROM tb ORDER BY coalesce(s, v, 'zzz'), id LIMIT 20 OFFSET 20000$q$) AS spilled_texts,
+	   tb_check($q$SELECT id, a, c FROM tb ORDER BY CASE WHEN c > 0 THEN 1 ELSE 0 END, coalesce(a, c) DESC, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
+    spilled_texts    | spilled_two_keys 
+---------------------+------------------
+ same+topn+sorted 20 | same+topn 30
+(1 row)
+
+RESET work_mem;
+-- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
+INSERT INTO tb SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, NULL, 12.5 * i, NULL, DATE '2019-12-31' - i % 5, NULL,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE '!Ǆ' || i || 'zz' END, 'w' || i
+FROM generate_series(1, 700) i;
+UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
+UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
+DELETE FROM tb WHERE id % 83 = 0;
+SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('case_null_zero', 'case_text', 'coalesce_ints', 'coalesce_texts', 'coalesce_dates', 'nullif_int', 'greatest', 'bool_or_null', 'two_exprs', 'deep_page') ORDER BY tag COLLATE "C";
+      tag       |   tb_check   
+----------------+--------------
+ bool_or_null   | same+topn 40
+ case_null_zero | same+topn 25
+ case_text      | same+topn 25
+ coalesce_dates | same+topn 25
+ coalesce_ints  | same+topn 25
+ coalesce_texts | same+topn 25
+ deep_page      | same+topn 20
+ greatest       | same+topn 25
+ nullif_int     | same+topn 40
+ two_exprs      | same+topn 40
+(10 rows)
+
+SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('case_null_zero', 'coalesce_texts', 'two_exprs') ORDER BY tag COLLATE "C";
+      tag       |   tb_check   
+----------------+--------------
+ case_null_zero | same+topn 25
+ coalesce_texts | same+topn 25
+ two_exprs      | same+topn 40
+(3 rows)
+
+VACUUM tb;
+SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('case_null_zero', 'coalesce_ints', 'coalesce_texts', 'greatest') ORDER BY tag COLLATE "C";
+      tag       |   tb_check   
+----------------+--------------
+ case_null_zero | same+topn 25
+ coalesce_ints  | same+topn 25
+ coalesce_texts | same+topn 25
+ greatest       | same+topn 25
+(4 rows)
+
+-- an expression that raises raises the same SQLSTATE in both plans, and the branch of a CASE or the later argument of a coalesce that is not taken is not evaluated
+CREATE FUNCTION tb_error(q text, pushed bool) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM tb_mode(pushed, 0);
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE;
+END $$;
+CREATE FUNCTION tb_scan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; plan text := '';
+BEGIN
+	PERFORM tb_mode(true, 0);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'topn' ELSE 'plain' END;
+END $$;
+SELECT tag, tb_error(q, true) = tb_error(q, false) AS same_error, tb_error(q, true) AS sqlstate, tb_scan(q) AS pushed
+FROM (VALUES ('case_div_taken',   $q$SELECT id FROM tb ORDER BY CASE WHEN c IS NOT NULL THEN 1000 / (c - 37) ELSE 0 END, id LIMIT 5$q$),
+			 ('case_div_skipped', $q$SELECT id FROM tb ORDER BY CASE WHEN c IS NOT NULL AND c <> 37 THEN 1000 / (c - 37) ELSE 0 END, id LIMIT 5$q$),
+			 ('case_overflow',    $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NOT NULL THEN a + 1 ELSE 0 END, id LIMIT 5$q$),
+			 ('case_overflow_ok', $q$SELECT id FROM tb ORDER BY CASE WHEN a < 2147483647 THEN a + 1 ELSE 0 END, id LIMIT 5$q$),
+			 ('coalesce_div',     $q$SELECT id FROM tb ORDER BY coalesce(a, 1 / (g - g)), id LIMIT 5$q$),
+			 ('coalesce_div_ok',  $q$SELECT id FROM tb WHERE a IS NOT NULL ORDER BY coalesce(a, 1 / (g - g)), id LIMIT 5$q$),
+			 ('nullif_div',       $q$SELECT id FROM tb ORDER BY 100 / nullif(g, 0), id LIMIT 5$q$),
+			 ('nullif_div_taken', $q$SELECT id FROM tb ORDER BY 100 / nullif(g, 3), id LIMIT 5$q$),
+			 ('greatest_overflow',$q$SELECT id FROM tb ORDER BY greatest(a, c) + 1, id LIMIT 5$q$),
+			 ('in_cast',          $q$SELECT id FROM tb ORDER BY b::int IN (1, 2, 3), id LIMIT 5$q$)) v(tag, q)
+ORDER BY tag COLLATE "C";
+        tag        | same_error | sqlstate | pushed 
+-------------------+------------+----------+--------
+ case_div_skipped  | t          | no error | topn
+ case_div_taken    | t          | 22012    | topn
+ case_overflow     | t          | 22003    | topn
+ case_overflow_ok  | t          | no error | topn
+ coalesce_div      | t          | 22012    | topn
+ coalesce_div_ok   | t          | no error | topn
+ greatest_overflow | t          | 22003    | topn
+ in_cast           | t          | 22003    | topn
+ nullif_div        | t          | no error | topn
+ nullif_div_taken  | t          | 22012    | topn
+(10 rows)
+
+-- what stays with the normal plan, each by a named refusal
+SET sift.enable_agg = on;
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
+SELECT k, w.used, w.slug, w.reason
+FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5$q$),
+			 ('stable',      $q$SELECT id FROM tb ORDER BY CASE WHEN d > current_date THEN 1 ELSE 0 END, id LIMIT 5$q$),
+			 ('volatile',    $q$SELECT id FROM tb ORDER BY CASE WHEN random() > 2 THEN 1 ELSE g END, id LIMIT 5$q$),
+			 ('text result', $q$SELECT id FROM tb ORDER BY CASE WHEN s IS NULL THEN '' ELSE left(s, 3) END, id LIMIT 5$q$),
+			 ('allowed',     $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$)) q(k, q),
+	 LATERAL sift.explain_why(q.q) w
+ORDER BY k COLLATE "C";
+      k      | used |    slug    |                                                                                    reason                                                                                     
+-------------+------+------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ allowed     | t    |            | 
+ stable      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ sub-select  | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a construct the scan does not evaluate)
+ text result | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function or operator whose result is not a number)
+ volatile    | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
+(5 rows)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
