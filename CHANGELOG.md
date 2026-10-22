@@ -6,6 +6,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Changed: pg_sift: an index scan of `sift_col` that selects a few rows of a unit (a point lookup, an `IN` of a few values) decodes the TIDs of those rows only (the pages that hold them), not of all the 4,352 rows of the unit: a random-int equality on 1,000,000 rows takes 0.62 ms (was 1.10) and 0.21 ms with `set_columns` (was 0.39), the instructions of the scan half. No format change.
 - Fixed: pg_sift: a delete or an update of a `sift_table` no longer waits for the background pass: the lock a writer takes to append a tombstone and the one the pass holds for its whole length were the same page lock (stalls of up to a quarter of a second at a 10% threshold under sustained churn).
 - Added: pg_sift: `sift.table_auto_defrag_max_active` (0, never waits) and `sift.table_auto_defrag_wal_rate` (kB of WAL a second, 0 for no limit): the background pass of a `sift_table` waits for a quieter moment, between its merges as well, and keeps to a WAL rate; `sift.col_auto_merge_max_active` shares the wait. The pass is asked for only when tombstones older than every snapshot reach the threshold, where a long transaction made it read the table to remove nothing, and it merges the small groups next to the one it rewrites (`sift.table_auto_defrag_coalesce`).
 - Changed: pg_sift: the table `VACUUM` merges until it finds nothing left to merge, where it stopped after 16 merges; a background pass still stops at `sift.table_auto_defrag_budget`.
