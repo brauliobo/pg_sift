@@ -100,14 +100,16 @@ unit_of(void *impl)
 	return &ps_of(impl)->cunit;
 }
 
-/* what PostgreSQL checks for a query on a partitioned table: its privileges and row security, not the partitions' */
+/*
+ * What PostgreSQL checks for a query on a partitioned table: row security of the table, not the partitions'. Its privileges were checked by the
+ * executor for the columns the query reads, as the role or as the owner of the view the table is read through: a check here for the invoking role on
+ * the whole table refused a role with column privileges or a view the plain plan answers.
+ */
 static void
 check_access(Relation parent)
 {
 	Oid			relid = RelationGetRelid(parent);
 
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLE, RelationGetRelationName(parent));
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
