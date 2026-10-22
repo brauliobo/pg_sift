@@ -15,6 +15,7 @@
 
 #include "bm25/analyze.h"
 #include "col/kern.h"
+#include "core/limits.h"
 #include "col/shred_int.h"
 
 #define IS_NUMERIC(t)	((t) >= SIFT_SHRED_INT2 && (t) <= SIFT_SHRED_FLOAT8)
@@ -178,7 +179,7 @@ sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool
 	sh->spec = spec;
 	sh->limits.max_elems = limits && limits->max_elems ? limits->max_elems : SIFT_SHRED_DEFAULT_ELEMS;
 	sh->limits.max_bytes = limits && limits->max_bytes ? limits->max_bytes : SIFT_SHRED_DEFAULT_BYTES;
-	sh->limits.max_keys = limits && limits->max_keys ? limits->max_keys : SIFT_SHRED_DEFAULT_KEYS;
+	sh->limits.max_keys = limits && limits->max_keys ? limits->max_keys : sift_limit(shred_keys, SIFT_SHRED_DEFAULT_KEYS);
 	sh->doc.col = palloc0(spec->ncols * sizeof(SiftShredCol));
 	sh->doc.grp = palloc0(spec->ngroups * sizeof(SiftShredGroup));
 	sh->frames = palloc(MAX_FRAMES * sizeof(SiftShredFrame));
