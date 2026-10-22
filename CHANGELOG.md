@@ -1,6 +1,7 @@
 # Changelog
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
+- Fixed: pg_sift: every query on a table with a `sift` index scanned `pg_opclass` several times while it was planned (3.2.0): the check of a `sift.score(ctid) > c` cutoff read the operator class of `float8` before it looked at the operands of each clause. A short ranked query cost 6% to 23% more user instructions than in 3.1.0 (20,000 rows in one segment: `and` 1.23x, `phrase` 1.19x, `count` 1.14x, `rank` 1.11x, `or` 1.07x; 61 segments 1.01x to 1.03x), the loss of queries per second the 3.2.0 benchmark saw on `phrase` and `and`; now 1.00x to 1.02x (`bench/steps/cpu_gate.sh`). Test `rank_score_filter`.
 
 ## 3.2 Unreleased
 

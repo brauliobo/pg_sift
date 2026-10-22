@@ -318,6 +318,17 @@ UPDATE r SET grp = grp WHERE body @@> 'dog' AND sift.score(ctid) > 1;
 -- the same through a subquery filters, as the hint says
 SELECT count(*) AS n FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'dog' OFFSET 0) q WHERE s > 1;
 
+-- a clause without sift.score is turned down before the planner reads the catalog for the float8 operator class: planning a query with no cutoff scans no
+-- index of pg_opclass (it cost 3% to 20% of a short query, in instructions)
+SELECT length(sf_plan($$SELECT id FROM r WHERE body @@> 'dog' AND grp = 1 ORDER BY sift.score(ctid) DESC LIMIT 10$$)) > 0 AS warm;
+SELECT pg_stat_force_next_flush();
+SELECT sum(idx_scan) FROM pg_stat_sys_indexes WHERE relname LIKE 'pg_opclass%' \g /dev/null
+SELECT pg_stat_force_next_flush();
+SELECT coalesce(sum(idx_scan), 0) AS before FROM pg_stat_sys_indexes WHERE relname LIKE 'pg_opclass%' \gset
+SELECT length(sf_plan($$SELECT id FROM r WHERE body @@> 'dog' AND grp = 1 ORDER BY sift.score(ctid) DESC LIMIT 10$$)) > 0 AS planned;
+SELECT pg_stat_force_next_flush();
+SELECT coalesce(sum(idx_scan), 0) - :before AS opclass_scans FROM pg_stat_sys_indexes WHERE relname LIKE 'pg_opclass%';
+
 DROP TABLE pt, jg;
 DROP TABLE r;
 DROP FUNCTION sf_prepared(text, text);
