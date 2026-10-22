@@ -1,7 +1,7 @@
 # Gap report: pg_sift against ClickHouse and Elasticsearch on the store questions
 
 Internal tooling. The aim is for pg_sift to be faster than ClickHouse and Elasticsearch on the quick aggregation questions of the
-online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)). This file says where it is not, where its time goes, and the
+online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#aggregates-an-online-store)). This file says where it is not, where its time goes, and the
 single change that would move each question the most. The tables below are generated; the text under "Reading of the 3.1.0 tables" was written from them and the
 text under "Findings (history)" from an earlier profile, so the second is a baseline and not a description of the current build.
 
