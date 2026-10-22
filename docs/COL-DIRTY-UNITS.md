@@ -98,11 +98,11 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
   column is stored as 0 (a leaf never holds -0): the scan raises its generic `0A000` error only for a value written after the plan was made
   and for a list or a text beyond those limits. A result that is all zeros prints the sign of the zero the scan accumulates, not of the `-0` SQL gives.
   A filter or a key on the member of one key of a map leaf (`jsonb_extract_path(doc, 'k')`) next to a `jsonb_each` cast reads the rows read again like the others: a dirty value of another key
-  raises nothing for the rows that filter drops, as the normal plan. A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is `AGG_RECHECK_FRAC` (2%) of the
-  rows of the units the leaf flags (the share of units whose zone carries the overflow flag, from the zones the planner reads anyway; one row
-  for each flagged unit at least) at `AGG_RECHECK_ROW` (60) operator costs, so a few dirty rows in one unit cost one unit's rows, not 2% of the
-  table. The per-leaf count of flagged slots (`n_ovf`) is not kept, a format change that would make the price exact and was not needed for the numbers
-  below. `EXPLAIN ANALYZE` shows `Units Read Again From The Heap` (the stored units that had flagged rows, of `Units`) and `Rows Read Again From The Heap`.
+  raises nothing for the rows that filter drops, as the normal plan. A string `NaN` or `Infinity` converts, as the input function of the column gives it. The price is the rows the scan reads again at `AGG_RECHECK_ROW` operators each: the share of units whose zone carries the overflow flag (from the zones the planner reads anyway, one row
+  for each flagged unit at least) times the share of a flagged unit's slots that overflowed. That share is counted in a sample of the flagged units (four a segment, one chunk
+  read of each, when the statistics of the index are made, `SiftColLeafStats.ovf_slots` / `ovf_vals`: no format change, nothing kept in the index), scaled by the elements of a row for an element leaf,
+  and is `AGG_RECHECK_FRAC` (2%) where none could be sampled. So a few dirty rows in one unit cost one unit's rows, and a table with half its documents dirty keeps the normal plan,
+  which is cheaper there. `EXPLAIN ANALYZE` shows `Units Read Again From The Heap` (the stored units that had flagged rows, of `Units`) and `Rows Read Again From The Heap`.
 - **Leaves after the source's.** `(doc -> 'm' ->> 'k')::float8` of an object leaf with free keys and `jsonb_array_length(doc -> 'l')` of an
   array leaf take their values from a column of the index (the `value` column of the members, the array itself): `reads_overflow` follows
   them to it, so a flagged column keeps the normal plan (a numeric string converts, anything else raises PostgreSQL's error), and the scan
@@ -129,4 +129,16 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
 - **EXISTS over a list with a lookup per element.** `EXISTS (SELECT .. FROM jsonb_to_recordset(doc -> 'l') p(..) LEFT JOIN LATERAL (lookup of one row) m ON true WHERE ..)` tests the joined tuples, after their joins, so it raises the error of a row's list itself when it reaches that row (a row a join or another conjunct drops raises nothing), instead of passing it to the error of the rows. The unnest of the same list in the FROM keeps the error of the rows.
 - **A conjunct that may raise next to an unnest of the list.** The integer cast of a member (`CAST(doc -> 'k' AS integer) = 3`) is applied to the rows that passed the other conjuncts before the error of a list is raised: a row it drops raises nothing, a row it fails for raises its own error, as the normal plan, which evaluates it with the scan of the rows before the call that reads the list.
 - **A scalar path read as a cast.** A path of the document declared `float8`, `int4`, `int8` or `bool` that the query reads only as `(doc ->> 'k')::T` is read again like a record column: the text of the scalar through the input function of `T`, so a numeric string converts and a text that is no number raises `22P02`, a container and a boolean in a number path raise the same way. For `float8` the cast of the jsonb value, `(doc -> 'k')::float8`, is read the same way (a number as the cast gives it, any other JSON type the error the cast raises, `22023`). The read is an argument of an aggregate or a grouping expression, which PostgreSQL evaluates for every row that reaches the aggregates, so a row raises where it reaches the aggregate, after its conjuncts, and never when a conjunct on another column drops it. The plan stays normal when anything else reads the path (a conjunct, a join, a sub-select, a function in the `FROM`), when the cast is evaluated for some rows only (a `CASE` branch, a `FILTER`), when the path is read both ways, and for a query with an unnest or a lookup join. The key of an array or scalar document is NULL, a JSON `null` NULL (the cast of a jsonb `null` raises before PostgreSQL 18, as the normal plan does).
+- **When the recheck is dearer than the normal plan.** Measured on 100,000 items of three parts (2026-10-22, PostgreSQL 18.6, serial, median of 3, a 32-core development host under a load of about 25, so the figures are noisy), the aggregate of `(doc ->> 'score')::float8` by a key, with every k-th item holding its scores as strings:
+
+  | rows read again | scan | normal plan | the planner takes |
+  | --- | --- | --- | --- |
+  | 0.1% | 2.4 ms | 31.0 ms | the scan |
+  | 3% | 8.7 ms | 28.1 ms | the scan |
+  | 10% | 28.0 ms | 34.4 ms | the scan |
+  | 20% | 47.3 ms | 37.7 ms | the normal plan |
+  | 33% | | 36.7 ms | the normal plan |
+  | 50% | 83.0 ms | 27.3 ms | the normal plan |
+
+  The two plans take the same time at about 14% of the rows read again (a row read again costs about 1.6 microseconds, the heap fetch by TID and the walk of the document; the scan of the same data with no value dirty takes 1.0 ms for 100,000 items, so a dirty table is never within a small factor of a clean one: the heap fetch has no vectorised form). At 200,000 items and 3%: 28.7 ms with the recheck, 118.9 ms the normal plan, 2.5 ms on data that holds no dirty value.
 - **Left to the normal plan.** A list that is a JSON `null` or holds a scalar is flagged by no unit, so the scan answers where the normal plan raises, with or without this.

@@ -213,6 +213,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 
 		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
 		st->ovf_units[i] = st->ovf[i] ? Max(ls[i].novf, 1.0) / Max(ls[i].nunits, 1.0) : 0;
+		st->ovf_frac[i] = ls[i].ovf_vals > 0 ? ls[i].ovf_slots / ls[i].ovf_vals : -1;
 		st->nokinds[i] = ls[i].nokinds;
 		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
 		if (def->kind == SIFT_COLK_GROUP)
@@ -235,7 +236,10 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->max[i] = (double) ls[i].max;
 			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / ((double) ls[i].max - (double) ls[i].min + 1.0), 1.0);
 		}
-	}
+	}	/* an element that overflowed has its row read again: the share of rows is the elements' times those of a row */
+	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (cols[i].parent >= 0 && st->ovf_frac[i] > 0)
+			st->ovf_frac[i] = Min(1.0, st->ovf_frac[i] * Max(st->elems_per_row[cols[i].parent], 1.0));
 }
 
 /* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide */

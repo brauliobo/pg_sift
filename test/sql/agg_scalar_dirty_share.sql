@@ -69,6 +69,13 @@ INSERT INTO shapes VALUES
 
 SELECT k AS every, s.n, pushed(format(s.q, k)) AS pushed, reread(format(s.q, k)) AS reread, same(format(s.q, k)) AS result
 FROM unnest(ARRAY[1000, 33, 2]) k, shapes s ORDER BY k DESC, s.n;
+-- at the server's own costs the plan follows the share: the scan while the rows it reads again cost less than the normal plan does, the normal plan
+-- (and its answer) past a share the statistics' sample of the flagged units tells
+RESET seq_page_cost;
+RESET random_page_cost;
+SELECT k AS every, pushed(format(s.q, k)) AS pushed, same(format(s.q, k)) AS result
+FROM unnest(ARRAY[1000, 33, 2]) k, (SELECT q FROM shapes WHERE n = 'scalar avg') s ORDER BY k DESC;
+
 DROP TABLE shapes, items_1000, items_33, items_2;
 DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
