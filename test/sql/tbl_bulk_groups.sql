@@ -21,7 +21,8 @@ CREATE TABLE t (id int, grp int, v text, pad text) USING sift_table;
 CREATE INDEX t_grp ON t (grp);
 CREATE INDEX t_v ON t USING sift (v);
 
--- off (the default): the write buffers
+-- off: the write buffers
+SET sift.table_bulk_groups = off;
 COPY t FROM PROGRAM 'seq 1 2000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
 SELECT load_path('t');
 TRUNCATE t;
