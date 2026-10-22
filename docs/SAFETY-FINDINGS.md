@@ -115,9 +115,9 @@ session's `VACUUM` or `ANALYZE` makes) is where a pending invalidation is accept
 | F-AMC-2 | src/col/build.c (serial and parallel build), src/agg/col_recheck.c `recheck_batch` | the same, kept for the whole heap scan (a worker crashed a `CREATE INDEX`) | fixed: #143, test `col_index_relcache` |
 | F-AMC-3 | src/agg/col.c `col_layout` | `natts` and `ncols` read from the embedded definitions after each index expression, whose parse looks up catalog rows | fixed: the definitions are copied first; the hook of `sift_col_att_expr` makes `col_index_relcache` plan the pushdown under the invalidation |
 
-Audit of the other holders (`rd_amcache`, `sift_col_rel(`, `sift_col_index_defs(`), read site by site: the schema, the policy and the shredder are
-allocated apart in `rd_indexcxt` and survive a reload of an open index; only the fields embedded in the state (`meta`, `pagg`, `hint`) and the state itself
-are freed.
+Audit of the other holders (`rd_amcache`, `sift_col_rel(`, `sift_col_index_defs(`), read site by site. `build_rel` allocates the schema, the policy, the
+shredder, `first`, `nleaves`, `json`, `name` and `rowcxt` apart in `rd_indexcxt`, and they survive a reload of an open index; what is freed is the
+`SiftColRel` itself, so a pointer to it or to a field embedded in it (`meta`, `pagg`, `hint`) must not be kept.
 
 - src/bm25/wbuf.c `WbufHint`, held by `sift_wbuf_append`: the calls under it take buffer, page and relation-extension locks only; none accepts invalidations. Fine.
 - src/col/maint.c `promote_one`, `merge_next`, src/col/rollup.c `refresh_segment`: `&rel->pagg` is copied by `sift_colw_set_preagg` after segment reads and a
