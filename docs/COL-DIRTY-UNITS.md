@@ -80,6 +80,9 @@ selection, group ids, accumulators, the cell path, parallel workers and partitio
 
 - **Fetch.** `table_index_fetch_tuple` with the scan's snapshot (a HOT chain followed, a version the snapshot does not see gives no
   row), the index expressions evaluated with `FormIndexDatum`, the document shredded again by the walk of `col/shred_recheck.c`.
+- **Which rows.** The rows a unit's flag takes out are only candidates: the scan tests them with the conditions on the columns the stored unit holds (the
+  source's filters, text tests, and the comparison, IN and NULL conjuncts of a row; a row with no stored value of a conjunct's leaf passes it) and fetches those
+  left. A condition of another shape, or on a column a candidate cannot store, keeps the row.
 - **Semantics.** The scalar under a declared column goes through the input function of the column's type as its text (`"8.5"` into
   `float8`, `12` into `text`, `true` into `text`), a container into a `text` column as its JSON text, a key of an array or of a scalar is
   NULL. Errors are those of `jsonb_to_recordset` (a string that is no number `22P02`, `cannot call jsonb_to_recordset on a non-array`
