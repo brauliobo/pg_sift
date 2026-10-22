@@ -12,6 +12,11 @@
 # cycle (1) or only the first and last (0). An arm may have index options (ARM_OPTS_<arm>, e.g. "merge_fanin = 4") and session settings for its
 # VACUUM and maintenance steps (ARM_GUC_<arm>, e.g. "sift.col_auto_merge_dirty_pct=10 sift.maintenance_cost_delay=2").
 #
+# CHURN_LOG: the server log file of a cluster started with sift.log_min_duration = 0; with it each step also records how many merge steps it ran and the
+# longest (churn.log merges, max_merge_ms): a step holds the maintenance lock for its merge, so that is how long VACUUM and the writers waited at most.
+# HOT=100:10 puts all the updates and deletes in the newest 10% of the ids (a retention window), the case of a rewrite by range
+# (ARM_GUC_<arm>="sift.col_auto_merge_partition_kb=256").
+#
 # arms: none = VACUUM only (the built-in policy); worker = VACUUM + the automatic rewrite of sift.col_auto_merge (the session runs the rule the server's own
 # worker applies, sift.col_maintenance_due(index, true), then the work, sift.col_maintain); force = VACUUM + sift.col_promote + sift.col_merge(index, true)
 # every cycle; bgw = VACUUM and the server's own worker (set sift.col_auto_merge and sift.async_maintenance for the database, ALTER DATABASE: the worker reads no
@@ -30,15 +35,20 @@ arm_psql() { local a=$1; shift; local g="ARM_GUC_$a" o=""; for kv in ${!g:-}; do
 # step ARM CYCLE NAME SQL: runs it, logs seconds, WAL bytes, the bytes of the segments it wrote and the load
 step() {
 	local a=$1 c=$2 name=$3; shift 3
-	local ix=ev_${a}_col l0 l1 g0 t0 t1
+	local ix=ev_${a}_col l0 l1 g0 t0 t1 lg0=0 merges=null maxms=null
 	l0=$(q -c "select pg_current_wal_lsn()")
 	g0=$(q -c "select coalesce(max(gen), 0) from sift.col_segments('$ix')" 2>/dev/null || echo 0)
+	[[ -z ${CHURN_LOG:-} ]] || lg0=$(stat -c %s "$CHURN_LOG")
 	t0=$(date +%s.%N)
 	arm_psql "$a" "$*"
 	t1=$(date +%s.%N)
 	l1=$(q -c "select pg_current_wal_lsn()")
+	if [[ -n ${CHURN_LOG:-} ]]; then
+		read -r merges maxms < <(tail -c +$((lg0 + 1)) "$CHURN_LOG" | grep -E "sift: merged .* of index \"$ix\" in [0-9]+ ms" | sed -E 's/.* in ([0-9]+) ms.*/\1/' |
+			awk 'BEGIN { n = 0; m = 0 } { n++; if ($1 > m) m = $1 } END { print n, m }')
+	fi
 	q -c "insert into churn.log values ('$SCN','$a',$c,'$name',$(echo "$t1 - $t0" | bc -l),(select pg_wal_lsn_diff('$l1','$l0')::int8),
-		(select coalesce(sum(bytes), 0)::int8 from sift.col_segments('$ix') where gen > $g0),$(cut -d' ' -f1 /proc/loadavg))"
+		(select coalesce(sum(bytes), 0)::int8 from sift.col_segments('$ix') where gen > $g0),$(cut -d' ' -f1 /proc/loadavg),$merges,$maxms)"
 }
 
 # maintenance of an arm after its VACUUM

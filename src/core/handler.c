@@ -89,6 +89,7 @@ bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
 int			sift_maintenance_cost_delay = 0;
+int			sift_maintenance_wal_rate = 0;
 int			sift_vacuum_rewrite_limit = 128;
 
 static relopt_kind sift_relopt_kind;
@@ -145,6 +146,12 @@ define_gucs(void)
 							"Milliseconds the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, 0 to run them at full speed.",
 							NULL, &sift_maintenance_cost_delay, 0, 0, 100,
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.maintenance_wal_rate",
+							"Kilobytes of WAL per second the merges of the maintenance worker may write, 0 for no limit.",
+							"A merge waits before the page that would pass the rate, so that its WAL leaves room for the writes of the queries and inserts and for the standbys "
+							"to replay it; it adds to sift.maintenance_cost_delay.",
+							&sift_maintenance_wal_rate, 0, 0, 1048576,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.vacuum_rewrite_limit",
 							"Megabytes of segments a column VACUUM may rewrite to merge (past the first merge step), with a separate equal allowance to copy the end of the file into free blocks below it, "
 							"which holds the table or index under an exclusive lock; 0 keeps the one merge step and moves nothing.",

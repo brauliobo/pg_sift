@@ -40,6 +40,9 @@ struct SiftWriteTarget
 	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
 	int			delay_ms;		/* sift_wt_throttle: sleep per THROTTLE_PAGES charged, 0 = none */
 	uint64		charged;		/* pages charged since the last sleep */
+	int			wal_kbps;		/* sift_wt_wal_rate: kB of WAL this backend may write per second since wal_t0, 0 = no limit */
+	uint64		wal_base;		/* the WAL bytes of the backend (pgWalUsage) at wal_t0 */
+	TimestampTz wal_t0;
 #ifdef SIFT_TESTING
 	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
 #endif
