@@ -35,6 +35,7 @@
 	X(GROUPING_SETS, "grouping_sets", "the arm does not group by grouping sets") \
 	X(DIRTY_UNITS, "dirty_units", "some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does") \
 	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate") \
+	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill") \
 	X(LATERAL_LIMIT, "lateral_limit", "a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties") \
 	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id") \
 	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by") \
@@ -62,6 +63,7 @@ extern const char *agg_variant;
 extern bool agg_refuse_note(AggRefusal why, const char *detail);
 extern void agg_arm_begin(const char *name, bool candidate);
 extern void agg_arm_candidate(void);
+extern void agg_arm_spill(double cost, double groups, double bytes);
 extern void agg_arm_path(Path *p);
 extern void agg_arm_end(void);
 extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used);
