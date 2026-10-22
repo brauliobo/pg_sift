@@ -178,3 +178,7 @@ SELECT * FROM chk('rollback');
  rollback | SiftAgg     |           0 | SiftAgg   |         0 | SiftAgg     |           0
 (1 row)
 
+
+DROP FUNCTION chk(text), diff_of(text), plan_of(text);
+DROP TABLE events, dims;
+DROP EXTENSION pg_sift;
