@@ -51,13 +51,14 @@ SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm
 !SELECT sift.table_set_paths('rm.facts', 'doc', 'doc->a int4')
 $$);
 
--- the diagnostics: counters of the session, the indexes the role can read, why a query was not pushed down
+-- the diagnostics: counters of the session, the indexes the role can read, why a query was not pushed down; what an update leaves to do and the
+-- declared paths are listed for the tables the role owns or may maintain, and for no other
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm_non', 'rm_nos'], $$
 SELECT sift.version()
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
-!SELECT * FROM sift.upgrade_commands()
+SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1
 !SELECT * FROM sift.col_rollup_counters()
 !SELECT * FROM sift.col_rollup_queue()
 !SELECT * FROM sift.col_rollup_misses()
@@ -80,6 +81,7 @@ SELECT index::text, kind FROM sift.workers ORDER BY 1
 !SELECT * FROM sift.table_space('rm.facts')
 !SELECT * FROM sift.col_sections('rm.facts')
 !SELECT * FROM sift.table_paths
+SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1
 !SELECT sift.tokenize('Hello World')
 !SELECT sift.parse_query('alpha beta')
 !SELECT sift.highlight('alpha beta', 'alpha')
@@ -97,7 +99,7 @@ $$);
 REVOKE USAGE ON SCHEMA sift FROM rm_own;
 GRANT USAGE ON SCHEMA sift TO PUBLIC;
 
--- what a role that owns and may read nothing can do with the relations of the schema sift: read the three views and nothing else
+-- what a role that owns and may read nothing can do with the relations of the schema sift: read the four views and nothing else
 SELECT c.relname, c.relkind, has_table_privilege('rm_nos', c.oid, 'SELECT') AS can_select
 	FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
 	  AND has_table_privilege('rm_nos', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') ORDER BY 1;
