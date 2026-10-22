@@ -56,6 +56,7 @@ $$;
 -- a read of the leaf that the scan cannot make again keeps the normal plan
 SELECT pushed('SELECT kind, sum((payload ->> $$asp_a$$)::float8) FROM events GROUP BY kind') AS plain_member_pushed;
 SELECT same('SELECT kind, sum((payload ->> $$asp_b$$)::float8) FROM events WHERE id < 90 GROUP BY kind') AS plain_member_same;
+-- a conjunct on the member of a key keeps the normal plan: the row read again would raise the error of the cast of the aggregate, not of the conjunct's own type
 SELECT pushed(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS key_filter_pushed;
 SELECT same(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8 AND id < 3000')) AS key_filter_cast;
 SELECT same(eq('(t.payload -> $$score$$)::float8 = 8 AND id < 3000')) AS key_filter_jsonb;
@@ -64,7 +65,7 @@ SELECT same(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) >= 8 A
 SELECT same(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8 AND id < 3000', 'count(*), sum(CAST(e.value AS float8)), min(CAST(e.value AS float8))', 't.kind, e.key')) AS grouped;
 SELECT same(eq('id < 3000', 'avg(CAST(e.value AS float8)), sum(CAST(jsonb_extract_path(t.payload, $$score$$) AS float8))')) AS key_aggregate;
 SELECT same(eq('id < 3000', 'count(*), avg(CAST(e.value AS float8))', 'CAST(jsonb_extract_path(t.payload, $$score$$) AS integer)')) AS key_group;
--- a row whose filtered key is the dirty one: the normal plan raises where it evaluates the cast, the scan answers or raises, never a wrong number
+-- a row whose filtered key is the dirty one: the normal plan raises where it evaluates the cast, and so does the query
 SELECT answers(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS whole_table;
 SELECT answers(eq('id BETWEEN 3000 AND 3002 AND CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS dirty_key_rows;
 -- every row that holds a dirty value has the other key's cast raise: both plans do

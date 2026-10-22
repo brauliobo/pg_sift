@@ -59,10 +59,11 @@ SELECT same('SELECT kind, sum((payload ->> $$asp_b$$)::float8) FROM events WHERE
  same
 (1 row)
 
+-- a conjunct on the member of a key keeps the normal plan: the row read again would raise the error of the cast of the aggregate, not of the conjunct's own type
 SELECT pushed(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS key_filter_pushed;
  key_filter_pushed 
 -------------------
- t
+ f
 (1 row)
 
 SELECT same(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8 AND id < 3000')) AS key_filter_cast;
@@ -107,17 +108,17 @@ SELECT same(eq('id < 3000', 'count(*), avg(CAST(e.value AS float8))', 'CAST(json
  same
 (1 row)
 
--- a row whose filtered key is the dirty one: the normal plan raises where it evaluates the cast, the scan answers or raises, never a wrong number
+-- a row whose filtered key is the dirty one: the normal plan raises where it evaluates the cast, and so does the query
 SELECT answers(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS whole_table;
-           whole_table            
-----------------------------------
- answers (the normal plan raises)
+ whole_table 
+-------------
+ same
 (1 row)
 
 SELECT answers(eq('id BETWEEN 3000 AND 3002 AND CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS dirty_key_rows;
-          dirty_key_rows          
-----------------------------------
- answers (the normal plan raises)
+ dirty_key_rows 
+----------------
+ same
 (1 row)
 
 -- every row that holds a dirty value has the other key's cast raise: both plans do
