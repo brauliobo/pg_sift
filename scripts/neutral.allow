@@ -21,3 +21,4 @@
 ^<(commit|pr)>$	(?i)\b(code review|review (pass|round|comments?|findings?|feedback)|post-review|coderabbit( reviews?)?)\b	code review of the change itself
 ^scripts/check-neutral\.sh$	code review of the plan	the sample of the self test
 ^(docs/|test/|CHANGELOG\.md$)	\b(10\.0\.0\.[0-9]{1,3}|10\.0\.249\.1|10\.9\.9\.9|192\.168\.(0\.0|1\.[0-9]{1,3}))\b	addresses and networks that are the data of the inet and cidr tests
+^docs/COL-TAM\.md$	^\| topic \| decision \|	the header of the decision table
