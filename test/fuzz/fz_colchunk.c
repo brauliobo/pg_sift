@@ -281,7 +281,17 @@ unit_run(void *a)
 	SiftCUnitView v;
 
 	if (!sift_cunit_parse(j->p, (uint32) j->len, schema, &v))
+	{
+		/* a stored unit is parsed by its head and its chunks one by one as they are read: a bad chunk is a corruption error there too */
+		if (sift_cunit_parse_head(j->p, (uint32) j->len, (uint32) j->len, schema, &v))
+			for (int col = 0; col < schema->ncols; col++)
+			{
+				SiftCChunk	c;
+
+				sift_cunit_chunk(&v, col, &c);
+			}
 		return;
+	}
 	j->digest = mix(j->digest, v.nrows);
 	if (v.nrows > SIFT_COL_UNIT_MAX_ROWS || v.npages > SIFT_SB_PAGES)
 		fz_bad("sift_cunit_parse accepted a unit of %u rows, %u pages", v.nrows, v.npages);
