@@ -113,11 +113,13 @@ BEGIN
 		END IF;
 	END LOOP;
 
-	-- options that only the units written afterwards follow (the extension of 3.3 on has the function; an older one gets these rows after its update)
-	IF to_regprocedure('sift.reindex_needed()') IS NOT NULL THEN
+	-- what the units written before an option, or the segments of a sift_table below the column format of its schema, lack (the extension of 3.3 on has the
+	-- function; an older one gets these rows after its update)
+	IF to_regprocedure('sift.upgrade_commands()') IS NOT NULL THEN
 		BEGIN
-			FOR r IN SELECT * FROM sift.reindex_needed() LOOP
-				object := r.index::text; kind := 'option'; detected := r.detected; status := 'warn'; advice := r.advice || '; ' || r.command;
+			FOR r IN SELECT * FROM sift.upgrade_commands() WHERE NOT required LOOP
+				object := r.object::text; kind := CASE r.kind WHEN 'rewrite' THEN 'table' ELSE 'option' END; status := 'warn';
+				detected := split_part(r.reason, ': ', 1); advice := substr(r.reason, length(detected) + 3) || '; ' || r.command;
 				RETURN NEXT;
 			END LOOP;
 		EXCEPTION WHEN undefined_function OR undefined_file OR lock_not_available THEN NULL;

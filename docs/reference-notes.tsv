@@ -54,7 +54,7 @@ explain_why	diag
 stats	diag		
 stats_reset	diag		
 col_rollup_misses	diag		
-reindex_needed	diag		
+upgrade_commands	diag		
 worker_state	maint		
 workers	maint		
 col_refresh	maint		
