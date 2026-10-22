@@ -177,6 +177,7 @@ score_operand(Node *arg, Index relid)
 bool
 score_cutoff(Node *clause, Index relid, bool *lower)
 {
+	static Oid	float_family;	/* a system catalog row: the lookup scans pg_opclass, and this runs for every clause of every partition */
 	OpExpr	   *op;
 	Node	   *cutoff;
 	int			strategy;
@@ -184,7 +185,9 @@ score_cutoff(Node *clause, Index relid, bool *lower)
 
 	if (!IsA(clause, OpExpr) || list_length((op = (OpExpr *) clause)->args) != 2)
 		return false;
-	strategy = get_op_opfamily_strategy(op->opno, get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID)));
+	if (!OidIsValid(float_family))
+		float_family = get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID));
+	strategy = get_op_opfamily_strategy(op->opno, float_family);
 	if (strategy == 0 || strategy == BTEqualStrategyNumber)
 		return false;
 	score_left = score_operand(linitial(op->args), relid);

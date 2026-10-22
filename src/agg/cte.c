@@ -265,8 +265,18 @@ plan_flat(SIFT_PLANNER_PARAMS)
 static PlannedStmt *
 sift_planner(SIFT_PLANNER_PARAMS)
 {
-	PlannedStmt *stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+	MemoryContext memo = sift_agg_memo_begin();
+	PlannedStmt *stmt;
 
+	PG_TRY();
+	{
+		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+	}
+	PG_FINALLY();
+	{
+		sift_agg_memo_end(memo);
+	}
+	PG_END_TRY();
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 		stmt->jitFlags = PGJIT_NONE;
 	return stmt;
