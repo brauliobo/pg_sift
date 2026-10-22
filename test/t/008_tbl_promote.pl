@@ -88,6 +88,13 @@ subtest 'the aggregate scan sees what the snapshot sees across a promotion and a
 
 subtest 'VACUUM cuts the free end of the file under a writer that cached a page there, and the standby follows' => sub {
 	my $xid = 'SELECT pg_current_xact_id()';
+	# The earlier subtests need autovacuum; this one runs its own VACUUMs, and a VACUUM removes only what no snapshot of the database can still see. A worker
+	# busy with another table holds one, and across the DELETE and both VACUUMs it leaves the dead rows and the file at 116 blocks until a later VACUUM
+	# (it gives the space back once the snapshot is gone). So: no more workers, and wait until no other session holds an xmin.
+	$primary->append_conf('postgresql.conf', 'autovacuum = off');
+	$primary->reload;
+	ok($primary->poll_query_until('postgres', 'SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid())'),
+		'no other session holds the xmin horizon');
 	$primary->safe_psql('postgres', 'CREATE TABLE t (id int PRIMARY KEY, note text) USING sift_table WITH (autovacuum_enabled = false);'
 		. 'INSERT INTO t SELECT g, repeat($$t$$, 60) FROM generate_series(1, 20000) g; VACUUM t');
 	# the writer's pages are taken at the end of the file, since what the VACUUM released is not reusable yet
@@ -118,6 +125,27 @@ subtest 'VACUUM cuts the free end of the file under a writer that cached a page 
 		'the standby has the same rows');
 	is($standby->safe_psql('postgres', 'SELECT pg_relation_size($$t$$)'), $primary->safe_psql('postgres', 'SELECT pg_relation_size($$t$$)'),
 		'and the same file');
+};
+
+subtest 'a snapshot older than a DELETE keeps its rows through the VACUUMs, and the first VACUUM after it ends gives the space back' => sub {
+	my $blocks = 'SELECT relation_blocks FROM sift.table_space($$u$$)';
+	$primary->safe_psql('postgres', 'CREATE TABLE u (id int, note text) USING sift_table WITH (autovacuum_enabled = false);'
+		. 'INSERT INTO u SELECT g, repeat($$u$$, 60) FROM generate_series(1, 20000) g; VACUUM u');
+	my $full = $primary->safe_psql('postgres', $blocks);
+	my $reader = $primary->background_psql('postgres');
+	$reader->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+	is($reader->query_safe('SELECT count(*) FROM u'), 20000, 'the snapshot sees every row');
+	$primary->safe_psql('postgres', 'DELETE FROM u WHERE id > 1000; VACUUM u; VACUUM u');
+	is($reader->query_safe('SELECT count(*) FROM u'), 20000, 'still, after the DELETE and two VACUUMs');
+	my $held = $primary->safe_psql('postgres', $blocks);
+	$reader->query_safe('COMMIT');
+	$reader->quit;
+	$primary->safe_psql('postgres', 'VACUUM u; VACUUM u');
+	my $cut = $primary->safe_psql('postgres', $blocks);
+	cmp_ok($held, '>', $full, "the snapshot keeps the file: $full to $held blocks");
+	cmp_ok($cut, '<', $held, "and the VACUUMs after it ended give the space back: $held to $cut blocks");
+	cmp_ok($cut, '<=', $full, "no more than it took ($full blocks)");
+	is($primary->safe_psql('postgres', 'SELECT count(*) FROM u'), 1000, 'the rows that stay');
 };
 
 subtest 'a standby reads the promoted tables' => sub {
