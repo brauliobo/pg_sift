@@ -3,6 +3,8 @@
 -- (sift.agg_rows off: PostgreSQL's sort and GroupAggregate over the same scans) and without the pushdown, and the answers must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
+SET sift.agg_two_level = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 CREATE TABLE facts (id int PRIMARY KEY, entity_id int, bucket int, doc jsonb) WITH (autovacuum_enabled = false);
