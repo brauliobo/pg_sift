@@ -23,16 +23,7 @@ VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ev;
 CREATE TABLE ev_dim AS SELECT 'k' || k AS kind, 'L' || (k % 2) AS label FROM generate_series(0, 4) k;
 ANALYZE ev_dim;
 
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+\ir test/agg_preagg_helpers.sql
 
 -- the units of the SiftAgg node, those it answered from the rollups, and the line of the verbose plan that names why it did not (NULL: no SiftAgg node)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT why text) LANGUAGE plpgsql AS $$
