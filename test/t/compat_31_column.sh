@@ -62,7 +62,7 @@ sift.async_maintenance = off'
 	check "$ref promotion preserves uncertain astext kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
 	check "$ref promotion does not claim minor 6" test "$(sql legacy "SELECT max(format) < 6 FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == t
 	sql legacy "REINDEX INDEX oldcol_idx" >/dev/null || bail 'reindex'
-	check "$ref REINDEX writes minor 6" test "$(sql legacy "SELECT min(format) FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == 6
+	check "$ref REINDEX writes minor 12 (the complete kinds, with the sections that are on by default)" test "$(sql legacy "SELECT min(format) FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == 12
 	check "$ref rewritten null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
 	check "$ref rewritten astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
 	if [[ $ref == v3.1.0 ]]; then
@@ -72,7 +72,7 @@ sift.async_maintenance = off'
 			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (set_columns = 'k')" "RESET sift.col_format_minor" \
 			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (set_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
 		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
-		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 10)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:10
+		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 12, with the sections that are on by default)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:12
 		# the sorted run (minor 13, opt-in): the setting 4 writes no run, the default one writes what 3.1 refuses
 		ORDQ="SELECT string_agg(id::text, ',' ORDER BY k, id) FROM (SELECT id, k FROM ordlow ORDER BY k, id LIMIT 50) x"
 		sql legacy "CREATE TABLE ordlow AS SELECT i AS id, i * 7919 % 5000 AS k FROM generate_series(1, 3000) i" "CREATE TABLE ordhigh AS TABLE ordlow" \
@@ -85,12 +85,12 @@ sift.async_maintenance = off'
 		node_start legacy || bail 'cannot restart 3.1'
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('oldcol_idx', false)" 2>&1)
 		diag "3.1 refusal: $err"
-		check '3.1 refuses a minor 6 index with a format error and REINDEX hint' test "$(grep -c 'format 1.6\|REINDEX' <<<"$err")" -ge 2
+		check '3.1 refuses a minor 12 index (complete kinds and the default sections) with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
 		err=$(sql legacy "SELECT count(*) FROM oldtbl" 2>&1)
 		check '3.1 refuses minor 6 table groups' grep -q 'format 1.6' <<<"$err"
 		check '3.1 reads an index written with set_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('sethigh_idx', false)" 2>&1)
-		check '3.1 refuses a minor 10 index with a format error and REINDEX hint' test "$(grep -c 'format 1.10\|REINDEX' <<<"$err")" -ge 2
+		check '3.1 refuses a minor 12 set summary index with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
 		check '3.1 reads an index written with order_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('ordlow_idx', true)" "SET sift.enable_agg = on" "$ORDQ" | tail -n 1)" == "$ordwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('ordhigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 13 index with a format error and REINDEX hint' test "$(grep -c 'format 1.13\|REINDEX' <<<"$err")" -ge 2

@@ -44,7 +44,7 @@ CREATE FUNCTION unit_kinds(idx regclass, OUT buffered_known bool, OUT segment_kn
 $$ SELECT coalesce(bool_or(in_wbuf AND novf > 0 AND known), false), coalesce(bool_or(NOT in_wbuf AND novf > 0 AND known), false),
 	coalesce(bool_or(NOT in_wbuf AND NOT known), false) FROM sift._test_col_types(idx, 1, 62, 2) $$;
 -- minor 4: the leaves id (0), doc.m float8 (1), doc.n int4 (2), doc.s text (3), doc.b bool (4), doc.o.v int4 (5), doc.a astext (6)
-CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext');
+CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext', cube_minmax = false, superunit = 0);
 SELECT fmt('d_col');
  fmt 
 -----
@@ -107,7 +107,7 @@ SELECT sift.col_verify('d_col', true);
 -- minor 3 writes no tags: the stored values still count, an overflow value has no type
 DROP INDEX d_col;
 SET sift.col_format_minor = 3;
-CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext');
+CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext', cube_minmax = false, superunit = 0);
 SELECT fmt('d_col');
  fmt 
 -----
@@ -210,9 +210,9 @@ $$ SELECT t.name, sum(u.matched)::int8, bool_and(u.known)
 	FROM (VALUES ('number', 2), ('none', 6), ('null', 7)) t(name, tag), LATERAL sift._test_col_types(idx, 0, 1 << t.tag, 2) u
 	GROUP BY t.name, t.tag ORDER BY t.tag $$;
 SET sift.col_format_minor = 3;
-CREATE INDEX z3_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4');
+CREATE INDEX z3_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
-CREATE INDEX z4_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4');
+CREATE INDEX z4_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
 SELECT * FROM z_types('z3_col');
   type  | idx_rows | known 
 --------+----------+-------
@@ -241,7 +241,7 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), ''), '[0-9]+', 'N', 'g');
 END $$;
 CREATE TABLE w (id int, doc jsonb);
-CREATE INDEX w_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8');
+CREATE INDEX w_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
 INSERT INTO w VALUES (1, '{"m": "str"}');
 CREATE TABLE pages AS SELECT b AS blk, pg.type, pg.lower FROM generate_series(0, pg_relation_size('w_idx') / 8192 - 1) b, LATERAL sift._test_page('w_idx', b) pg;
 -- the first record of the buffer: its head follows the page head at 32, its first flag byte is at 44 (3: null and overflow, the type in the high nibble)
@@ -314,7 +314,7 @@ SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
 (1 row)
 
 SET sift.col_format_minor = 3;
-CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8');
+CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
 SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
  _test_poke 

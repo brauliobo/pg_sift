@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE rf (id int, kind int, grp text, val bigint, amt numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
 INSERT INTO rf SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
                       ((g * 91) % 20000) / 100.0 - 50, repeat('p', 100) FROM generate_series(1, 20000) g;
-CREATE INDEX rf_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096);
+CREATE INDEX rf_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 -- four segments: the build and three promotions
 INSERT INTO rf SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), (g * 977) % 100000 - 50000, ((g * 91) % 20000) / 100.0 - 50, repeat('p', 100) FROM generate_series(20001, 25000) g;
 SELECT sift.col_promote('rf_idx') >= 0 AS promoted;
@@ -94,7 +94,7 @@ SET sift.col_format_minor = 4;
 SELECT * FROM sift.col_refresh('rf_idx', 0);
 SET sift.col_format_minor = 3;
 SELECT * FROM sift.col_refresh('rf_idx');
-CREATE INDEX rf3_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096);
+CREATE INDEX rf3_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('rf3_idx');
 ALTER INDEX rf3_idx SET (preagg = 'cube(kind: val)');
 SELECT (SELECT remaining FROM sift.col_refresh('rf3_idx', 0)) > 0 AS stale;

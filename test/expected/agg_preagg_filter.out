@@ -122,7 +122,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | all  | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -130,7 +130,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      33 |      0 |      24 |        1 |      2
+      33 |      0 |      25 |        1 |      2
 (1 row)
 
 SELECT * FROM pa_sum('eo');
@@ -221,7 +221,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | some | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -229,7 +229,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      33 |      0 |       0 |       25 |      2
+      33 |      0 |       0 |       26 |      2
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -267,7 +267,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | some | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -309,7 +309,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | some | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -360,7 +360,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | some | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -412,7 +412,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | all  | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -462,7 +462,7 @@ SELECT * FROM pa_check('ec');
  28 | other key: scan            | -    | t
  29 | filter on a measure: scan  | -    | t
  30 | measure not stored: scan   | -    | t
- 31 | min, max: scan             | -    | t
+ 31 | min, max: scan             | all  | t
  32 | distinct: scan             | -    | t
  33 | where on another dim: scan | none | t
 (33 rows)
@@ -475,7 +475,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('ec');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      33 |      0 |       0 |       23 |      3
+      33 |      0 |       0 |       24 |      3
 (1 row)
 
 SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre

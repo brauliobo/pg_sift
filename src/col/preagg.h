@@ -201,6 +201,7 @@ extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, c
  */
 #define SIFT_SUPER_MIN_FAN		2
 #define SIFT_SUPER_MAX_FAN		256
+#define SIFT_SUPER_DEFAULT_FAN	16			/* the default of the reloption superunit: +1.0% of the index, a whole-table aggregate 4 to 7 times faster, and the groups stay small enough for a range to cut few of them */
 #define SIFT_SUPER_LEAF_OK		0x2			/* in SiftCSuperLeaf.flags, above SIFT_CAGG_SUMSQ_OVF: the leaf is summarised for this group */
 
 /* One INT or text leaf of one group of units, 64 bytes as stored (a text leaf has no sums, and its min and max are bounds of the codes) */

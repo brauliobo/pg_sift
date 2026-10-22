@@ -358,6 +358,8 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `dead_rewrite_pct` | 50 (`sift_col`: 10) | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
 | `vacuum_truncate` | true |  | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
+| `cube_minmax` | true |  | `sift_col`: the cube of every unit also holds the minimum and maximum of each integer measure per group, so `min`/`max` of it per group is read from the cube (column format 7; [docs/COL-PREAGG.md](COL-PREAGG.md) section 2) |
+| `superunit` | 16 | 0, 2-256 | `sift_col`: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged: a scan no predicate cuts through reads one summary per group (column format 12; [docs/COL-PREAGG.md](COL-PREAGG.md) section 10); 0 writes none |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 
 `vacuum_segments` is the number of directory entries (the write buffer included) that `VACUUM`, autovacuum and the maintenance worker's

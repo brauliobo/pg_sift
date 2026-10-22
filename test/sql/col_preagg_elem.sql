@@ -89,7 +89,7 @@ $$;
 -- explicit cubes (no byte budget): every histogram the battery reads is in every unit that can hold it
 CREATE INDEX pe_col ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
-        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)');
+        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)', cube_minmax = false, superunit = 0);
 SELECT fmt('pe_col');
 SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
@@ -114,8 +114,8 @@ CREATE TABLE pc (id int, items jsonb, pad text);
 INSERT INTO pc SELECT g, jsonb_build_array(jsonb_build_object('k', CASE WHEN g <= 3000 THEN 'u' || lpad(g::text, 5, '0') ELSE 'k' || g % 5 END, 't', 't' || g % 3)),
        repeat('x', 300) FROM generate_series(1, 12000) g;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pc;
-CREATE INDEX pc_col ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}');
-CREATE INDEX pc_cube ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', preagg = 'rollup(items[].k)');
+CREATE INDEX pc_col ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', cube_minmax = false, superunit = 0);
+CREATE INDEX pc_cube ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', preagg = 'rollup(items[].k)', cube_minmax = false, superunit = 0);
 SELECT (SELECT count(DISTINCT sb) FROM sift.col_unit_agg('pc_col', 'id')) AS units,
        (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('pc_col', 'items[].k')) AS units_with_k,
        (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('pc_col', 'items[].t')) AS units_with_t,
@@ -192,7 +192,7 @@ SELECT what, checked, bad FROM pe_battery('pe_col');
 SET sift.col_format_minor = 3;
 CREATE INDEX pe_col3 ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
-        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)');
+        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
 SELECT fmt('pe_col3');
 SELECT sift.col_verify('pe_col3', true);
@@ -210,7 +210,7 @@ DROP INDEX pe_col3;
 -- the default: the cube and the rollups of a unit share the byte budget (2% of the unit, at least 2 kB), the cube first, a rollup drops its dimension of the most distinct values until it fits, and
 -- the same bytes come out every time
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX pe_def ON pe USING sift_col (id, grp, items, tags, m) WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4');
+CREATE INDEX pe_def ON pe USING sift_col (id, grp, items, tags, m) WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4', cube_minmax = false, superunit = 0);
 SELECT sift.col_verify('pe_def', true);
 SELECT what, checked, bad FROM pe_battery('pe_def');
 SELECT preagg_bytes AS def_bytes FROM sift.col_index_info('pe_def') \gset
@@ -229,14 +229,14 @@ DROP INDEX pe_def;
 RESET max_parallel_maintenance_workers;
 
 -- options: the names of the lists' leaves, a measure of another list, a list inside a list
-CREATE INDEX pe_bad1 ON pe USING sift_col (id, items, tags) WITH (paths = 'items[]{k text, x float8}, tags[] text', preagg = 'rollup(items[].k: tags[])');
-CREATE INDEX pe_bad2 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(id: items[].x)');
-CREATE INDEX pe_bad3 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].x)');
-CREATE INDEX pe_bad4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].nosuch)');
-CREATE INDEX pe_bad5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[]: items[].x)');
+CREATE INDEX pe_bad1 ON pe USING sift_col (id, items, tags) WITH (paths = 'items[]{k text, x float8}, tags[] text', preagg = 'rollup(items[].k: tags[])', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_bad2 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(id: items[].x)', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_bad3 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].x)', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_bad4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].nosuch)', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_bad5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[]: items[].x)', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_bad6 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].k: ');
 -- a list inside a list is not an index (the cubes are depth 1 because the index is)
-CREATE INDEX pe_nest ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, sub[]{z int4}}');
+CREATE INDEX pe_nest ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, sub[]{z int4}}', cube_minmax = false, superunit = 0);
 
 DROP TABLE pe;
 DROP FUNCTION pe_hist(regclass, regclass, text, text, text, text, text, bool), pe_battery(regclass), units_with(regclass, text, text),

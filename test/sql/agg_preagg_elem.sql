@@ -151,14 +151,14 @@ FROM ae WHERE id <= 14000;
 INSERT INTO ac SELECT * FROM ae;
 INSERT INTO ao SELECT * FROM ae;
 INSERT INTO a3 SELECT * FROM ae;
-CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
+CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096,
-	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
-CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
-CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off');
+	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])', cube_minmax = false, superunit = 0);
+CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 3;
-CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
+CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
@@ -184,7 +184,7 @@ SET sift.col_rollup_on_demand = off;
 CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
 FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
-CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}');
+CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
 SELECT count(*) = 4 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 2 AS nums
 FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);

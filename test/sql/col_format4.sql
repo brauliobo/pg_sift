@@ -23,7 +23,7 @@ SET sift.col_format_minor = 5;
 CREATE TABLE f (id int, grp int, v numeric(10,2));
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 30000) g;
 SET sift.col_format_minor = 3;
-CREATE INDEX f_col ON f USING sift_col (id, grp, v);
+CREATE INDEX f_col ON f USING sift_col (id, grp, v) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('f_col');
 RESET sift.col_format_minor;
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(30001, 60000) g;

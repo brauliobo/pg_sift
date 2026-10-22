@@ -46,7 +46,7 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('nt_col') ORDER BY leaf;
 SELECT format FROM sift.col_segments('nt_col') WHERE kind = 'immutable';
  format 
 --------
-      5
+     12
 (1 row)
 
 -- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)
@@ -240,7 +240,7 @@ CREATE INDEX ot_col ON ot USING sift_col (id, grp, v);
 SELECT format FROM sift.col_segments('ot_col') WHERE kind = 'immutable';
  format 
 --------
-      4
+     12
 (1 row)
 
 CREATE TABLE tt (id int, ip inet, cd cidr, mac macaddr, mac8 macaddr8, tz timetz, b bit(8), vb varbit) USING sift_table;
