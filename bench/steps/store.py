@@ -85,7 +85,7 @@ def main():
                        'off unless named, and its result is kept in the cache once per version of the engine')
         p.add_argument('--load-seconds', type=int, default=int(os.environ.get('STORE_LOAD_SECONDS', 15)), help='updates: how long a query is timed under each update rate')
         p.add_argument('--probes', type=int, default=20, help='updates: single-row changes timed until a query sees them')
-        p.add_argument('--rates', type=lambda s: [int(x) for x in s.split(',')], default=[0, 1000, 10000], help='updates: the update rates (rows/s) the query is timed under')
+        p.add_argument('--rates', type=lambda s: [int(x) for x in s.split(',') if x], default=[0, 1000, 10000], help='updates: the update rates (rows/s) the query is timed under')
         p.add_argument('--compression', action='store_true', help='load: also the size of each system with its other compression settings')
         p.add_argument('--no-resume', action='store_true', help='measure a part again even when its file holds the key of this command (resume skips it)')
         p.add_argument('--keep-going', action='store_true', help='go on after a result that differs from PostgreSQL\'s (the exit status is still 3)')

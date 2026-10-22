@@ -33,7 +33,7 @@ most of the ratios of the full tier at a fraction of the time and disk. `--full`
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus.
 
-**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "search store"`: articles and places, the online store with its updates; about 40 minutes
+**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "updates search store"`: the update, delete and VACUUM section, articles and places, the online store; about 75 minutes
 at the published size) and rewrites their blocks. It is resumable (a stage that finished with the same code, settings and host is skipped; `bench resume` continues an interrupted run), holds `SIFT_BENCH_HOST_LOCK` (a lock shared with the
 other benchmarks of the host) for the run, and says in the header of each block the version, date, host and load it was measured at. `--calm` is for a timer: it measures only when the pressure of the host stays below the quiet gate
 `bench/refresh.service` and `bench/refresh.timer` are a
@@ -284,6 +284,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 | `refresh.sh` | `bench/bench refresh`: `final --docs` for the stages of the README (search, store) behind the host lock and the quiet gate; `--pr` opens the pull request |
 | `final.sh`, `gap.sh`, `gap.py` |  |
+| `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README: PostgreSQL, `sift_col`, `sift_table` and the same two layouts with the automatic maintenance on (lanes `sift_maint`, `sift_table_maint`: `ALTER DATABASE ... |
 | `store.sh`, `store.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
