@@ -789,7 +789,7 @@ col_amvalidate(Oid opclassoid)
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = sift_am_routine(5, 1, true);
+	IndexAmRoutine *am = sift_am_routine(8, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
@@ -803,6 +803,8 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->ambeginscan = sift_col_ambeginscan;
 	am->amrescan = sift_col_amrescan;
 	am->amgetbitmap = sift_col_amgetbitmap;
+	am->amgettuple = sift_col_amgettuple;
+	am->amcanreturn = sift_col_amcanreturn;
 	am->amendscan = sift_col_amendscan;
 	am->amsearcharray = am->amsearchnulls = true;
 
