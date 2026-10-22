@@ -151,7 +151,7 @@ SELECT * FROM check_query($q$SELECT f.day, count(*) FROM facts f WHERE NOT EXIST
 SELECT * FROM check_query($q$SELECT s.day, count(f.id), sum(f.amount) FROM spine s LEFT JOIN (SELECT f.id, f.day, f.amount FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none') f ON f.day = s.day GROUP BY s.day$q$);
  n  | diff | units 
 ----+------+-------
- 14 |    0 |     1
+ 14 |    0 |     0
 (1 row)
 
 DROP FUNCTION check_query(text);
