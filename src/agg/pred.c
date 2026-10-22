@@ -658,6 +658,25 @@ elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
 	return st->memo_res;
 }
 
+/*
+ * A cast of the leaf (SRK_CAST, SRK_IOCAST) in a condition of the rows or in the FILTER of an aggregate: a row whose value SQL cannot convert passes
+ * the test and goes on, and raises where the rows that the conditions keep reach the aggregates (check_overflow)
+ */
+static void
+or_poison(AggExec *ex, const SiftAggPred *p, int start, int n, uint64 *out)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->poison_ok)
+	{
+		st->poison = NULL;
+		leaf_overflow_rows(ex, p->leaf, &st->poison);
+		st->poison_ok = true;
+	}
+	for (int w = 0; st->poison && w < (n + 63) / 64; w++)
+		out[w] |= st->poison[start / 64 + w];
+}
+
 /* the bitmap of a row level predicate over the unit's rows, computed once */
 uint64 *
 row_bitmap(AggExec *ex, SiftAggPred *p)
@@ -674,15 +693,6 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 		else
 			for (int s = 0; s < nrow; s += VEC)
 				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
-		/* a cast of the leaf that raises for the row: the row goes on to the other conditions, and to the error if they keep it */
-		if (p->pass_poison && p->kind != SAP_ANY_ELEM)
-		{
-			uint64	   *bad = NULL;
-
-			leaf_overflow_rows(ex, p->leaf, &bad);
-			for (int w = 0; bad && w < (nrow + 63) / 64; w++)
-				st->rowmask[w] |= bad[w];
-		}
 		st->rowmask_ok = true;
 	}
 	return st->rowmask;
@@ -781,4 +791,6 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_ELEM_EXISTS:
 			SIFT_INVARIANT(false, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
 	}
+	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT))
+		or_poison(ex, p, start, n, out);
 }

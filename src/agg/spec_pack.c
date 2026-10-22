@@ -354,6 +354,8 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	{
 		put_int(p, s->leaves[i]);
 		put_int(p, s->recheck[i]);
+		put_int(p, (int) (s->gate[i] & PG_UINT32_MAX));
+		put_int(p, (int) (s->gate[i] >> 32));
 	}
 	put_int(p, s->npred);
 	for (int i = 0; i < s->npred; i++)
@@ -761,10 +763,13 @@ sift_aggspec_unpack(const List *items)
 	s->nleaves = get_int(u);
 	s->leaves = palloc(Max(s->nleaves, 1) * sizeof(int));
 	s->recheck = palloc0(Max(s->nleaves, 1));
+	s->gate = palloc0(Max(s->nleaves, 1) * sizeof(uint64));
 	for (int i = 0; i < s->nleaves; i++)
 	{
 		s->leaves[i] = get_int(u);
 		s->recheck[i] = get_int(u);
+		s->gate[i] = (uint32) get_int(u);
+		s->gate[i] |= (uint64) (uint32) get_int(u) << 32;
 	}
 	s->npred = get_int(u);
 	s->pred = palloc(Max(s->npred, 1) * sizeof(SiftAggPred *));

@@ -23,6 +23,8 @@ setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET 
 step s1prep	{ BEGIN;
 		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
 		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE wh;
@@ -30,6 +32,8 @@ step s1prep	{ BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE jc; }
 step s1wh	{ EXECUTE wh; }
 step s1whg	{ EXECUTE whg; }
+step s1ga	{ EXECUTE ga; }
+step s1fl	{ EXECUTE fl; }
 step s1io	{ EXECUTE io; }
 step s1jc	{ EXECUTE jc; }
 step s1end	{ ROLLBACK; DEALLOCATE ALL; }
@@ -43,7 +47,10 @@ step s2abort	{ ROLLBACK; }
 # committed after the plan was made, before the statement: the statement sees the row
 permutation s1prep s2num s1io s1wh s1whg s1jc s1end
 permutation s1prep s2text s1io s1end
-# the row is dropped by another condition (grp <> 0) before it could raise; the condition alone raises
+# the row is dropped by another condition (grp <> 0) before it could raise; the condition alone raises. The same for the FILTER of an aggregate: the cast in
+# the argument of ga runs for the rows of grp 1 only, the FILTER of fl casts every row
+permutation s1prep s2text s1ga s1fl s1end
+permutation s1prep s2num s1ga s1fl s1end
 permutation s1prep s2text s1whg s1wh s1end
 # in flight, then rolled back: the statement does not see it
 permutation s1prep s2begin s2text s1io s1jc s1wh s2abort s1io s1wh s1end
