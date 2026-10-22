@@ -29,8 +29,12 @@ CREATE TABLE dims_id (id int, a int, b int, label text, score int);
 INSERT INTO dims_id SELECT row_number() OVER (), a, b, label, score FROM dims;
 CREATE UNIQUE INDEX dims_id_key ON dims_id (id);
 CREATE INDEX dims_id_ab ON dims_id (a, b);
+-- three times the rows of the distinct inputs: reading the table once costs less than a run of the child for each input
+CREATE TABLE dims_wide (a int, b int, label text, score int);
+INSERT INTO dims_wide SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 599) x, generate_series(0, 100) y;
+CREATE UNIQUE INDEX dims_wide_key ON dims_wide (a, b);
 VACUUM (FREEZE, ANALYZE) facts;
-ANALYZE dims, dims_text, dims3, dims_dup, dims_id;
+ANALYZE dims, dims_text, dims3, dims_dup, dims_id, dims_wide;
 -- whether the query is pushed to the scan, the rows it differs by from the plan without it, and the tables the scan read as first-row lookups
 CREATE FUNCTION check_first(q text) RETURNS TABLE (pushed bool, differences bigint, lookups int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -71,6 +75,10 @@ $q$);
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims3 x WHERE x.a = f.a AND x.b = f.b AND x.t = f.t LIMIT 1) d ON true GROUP BY 1
+$q$);
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims_wide x WHERE x.a = f.a AND x.b = f.b LIMIT 1) d ON true GROUP BY 1
 $q$);
 -- the rows the lookups return
 SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
@@ -130,5 +138,5 @@ SELECT * FROM explain_first($q$
 $q$);
 DROP FUNCTION explain_first(text);
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide;
 DROP EXTENSION pg_sift;
