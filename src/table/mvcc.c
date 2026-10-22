@@ -78,7 +78,7 @@ sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead
 			*dead = true;
 			return false;
 		default:
-			elog(ERROR, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
+			SIFT_INVARIANT(false, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}
 	return false;
 }
@@ -108,7 +108,7 @@ tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 		case SNAPSHOT_NON_VACUUMABLE:
 			return TransactionIdDidCommit(e->xid) && sift_vis_removable_xid(snapshot->vistest, e->xid);
 		default:
-			elog(ERROR, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
+			SIFT_INVARIANT(false, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}
 	return false;
 }

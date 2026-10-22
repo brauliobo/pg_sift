@@ -293,8 +293,8 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 				tmfd->xmax = InvalidTransactionId;
 				return TM_Deleted;
 			}
-			elog(ERROR, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
-				 ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
+			SIFT_INVARIANT(false, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
+						   ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
 		}
 		sift_tbl_free_row(&rv);
 		sift_tbl_del_state(st, rv.key, del);
@@ -307,7 +307,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 				UnlockTuple(rel, tid, ExclusiveLock);
 				if (del->cid >= cid || locking)
 					return TM_SelfModified;
-				elog(ERROR, "attempted to modify a tuple deleted by an earlier command of \"%s\"", RelationGetRelationName(rel));
+				SIFT_INVARIANT(false, "attempted to modify a tuple deleted by an earlier command of \"%s\"", RelationGetRelationName(rel));
 				break;
 			case SIFT_TBL_DEL_DELETED:
 				UnlockTuple(rel, tid, ExclusiveLock);
@@ -346,7 +346,10 @@ log_old_row(Relation rel, SiftTblRel *st, SiftTblOp op, ItemPointer otid, Minima
 	SiftTblRowVer rv;
 
 	if (!sift_tbl_fetch_row(rel, st, otid, &rv))
-		elog(ERROR, "could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	sift_tbl_log_change(rel, op, newrow, rv.tuple);
 	heap_freetuple(rv.tuple);
 }
@@ -473,7 +476,10 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
-			elog(ERROR, "could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
+			ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 		sift_tbl_store(slot, rv.tuple);
 		return TM_Ok;
 	}
@@ -494,7 +500,9 @@ tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator
 	if (BLCKSZ != 8192)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_table needs BLCKSZ 8192")));
+				 errmsg("sift_table needs BLCKSZ 8192"),
+				 errdetail("This server has BLCKSZ %d.", BLCKSZ),
+				 errhint("Use a PostgreSQL build with the default 8 kB block size.")));
 	sift_tbl_layout_check(rel);
 	*freezeXid = RecentXmin;
 	*minmulti = GetOldestMultiXactId();
