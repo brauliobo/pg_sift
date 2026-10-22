@@ -360,6 +360,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `cube_minmax` | true |  | `sift_col`: the cube of every unit also holds the minimum and maximum of each integer measure per group, so `min`/`max` of it per group is read from the cube (column format 7; [docs/COL-PREAGG.md](COL-PREAGG.md) section 2) |
 | `superunit` | 16 | 0, 2-256 | `sift_col`: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged: a scan no predicate cuts through reads one summary per group (column format 12; [docs/COL-PREAGG.md](COL-PREAGG.md) section 10); 0 writes none |
+| `key_presence` | none | column names | `sift_col`: every unit written afterwards keeps the distinct values of these top-level `int2`, `int4` and `date` columns as a bitmap, so a flat `count(DISTINCT col)` ORs the bitmaps of the units and reads no key chunk when the unit is exact and every filter holds for the whole of it. The sections take 2.5% of the index at 8,130 rows a unit and 1.0% at 20,000; a unit whose bitmap would take more than 3% of its bytes (near-unique keys, or keys over a wide range) gets none and is scanned |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 
 `vacuum_segments` is the number of directory entries (the write buffer included) that `VACUUM`, autovacuum and the maintenance worker's

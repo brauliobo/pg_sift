@@ -121,6 +121,16 @@ pa_dim(const SiftSrcPreagg *pa, int dim)
 	return -1;
 }
 
+/* does the index keep the presence of the integer leaf in its units (key_presence) */
+static bool
+pa_pres(const SiftSrcPreagg *pa, int leaf)
+{
+	for (int p = 0; p < pa->npres; p++)
+		if (pa->pres[p] == leaf)
+			return true;
+	return false;
+}
+
 /* the histogram of the calendar cells of the date or timestamp leaf in pa, -1 if the index writes none */
 static int
 pa_cal(const SiftSrcPreagg *pa, int leaf)
@@ -288,7 +298,7 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 	SiftPaWhy	why;
 
 	if (distinct_leaf(a, lay))
-		return d >= 0 && a->leaf == pa->dim[d].leaf ? SPW_OK : SPW_AGG_DISTINCT;
+		return (d >= 0 && a->leaf == pa->dim[d].leaf) || (d < 0 && pa_pres(pa, a->leaf)) ? SPW_OK : SPW_AGG_DISTINCT;
 	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);
 
 	if (why != SPW_OK || leaf < 0 || d < 0)
@@ -575,6 +585,9 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	for (int i = 0; i < s->naggs; i++)
 		if (distinct_leaf(&s->agg[i], lay))
 		{
+			/* without a key, the units of a leaf with key_presence give its values as a bitmap each (preagg_presence) */
+			if (s->nkeys == 0 && pa_pres(pa, s->agg[i].leaf))
+				continue;
 			if (cleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))
 				return SPW_AGG_DISTINCT;
 			dim = s->agg[i].leaf;

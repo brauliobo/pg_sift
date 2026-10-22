@@ -622,6 +622,12 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, h);
 }
 
+static bool
+col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	return sift_col_unit_presence(&((ColSource *) impl)->unit, leaf, &p->wbase, &p->nwords, &p->words);
+}
+
 /* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */
 
 static bool
@@ -778,6 +784,7 @@ static const SiftSrcProvider col_provider = {
 	.unit_exact = col_unit_exact,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
+	.unit_presence = col_unit_presence,
 	.gpu_unit = col_gpu_unit,
 	.gpu_dense = col_gpu_dense,
 	.gpu_chunk = col_gpu_chunk,

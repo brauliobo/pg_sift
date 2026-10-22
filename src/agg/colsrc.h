@@ -290,6 +290,14 @@ typedef struct SiftSrcUnitAgg
 	bool		is_const;		/* every non-NULL value equal */
 } SiftSrcUnitAgg;
 
+/* The distinct non-NULL values of a leaf in one unit as a bitmap: bit i of word w (little endian, not aligned) is the value 64 * (wbase + w) + i */
+typedef struct SiftSrcPresence
+{
+	int64		wbase;
+	uint64		nwords;
+	const uint8 *words;
+} SiftSrcPresence;
+
 /* GROUP BY dim over one unit: count of rows per group and, per stored measure, the non-NULL count and the sum. The NULL group, when there is one, is last */
 typedef struct SiftSrcHist
 {
@@ -358,6 +366,8 @@ typedef struct SiftSrcRollupNeed
 typedef struct SiftSrcPreagg
 {
 	bool		aggs;
+	int			npres;			/* the integer leaves whose units keep every distinct value as a bitmap (key_presence), answered by unit_presence */
+	int			pres[SIFT_SRC_MAX_DIMS];
 	int			ndims;
 	struct
 	{
@@ -509,6 +519,8 @@ typedef struct SiftSrcProvider
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+	/* Optional (NULL: none): the presence of an exact unit's leaf of SiftSrcPreagg.pres, valid until the next call; false when the unit has none */
+	bool		(*unit_presence) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p);
 	uint32		(*unit_rollup_tuples) (void *impl, const SiftSrcUnit *unit, int list);
 	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
@@ -712,6 +724,12 @@ static inline bool
 sift_colsrc_unit_agg(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
 	return src->prov->unit_agg != NULL && src->prov->unit_agg(src->impl, unit, leaf, agg);
+}
+
+static inline bool
+sift_colsrc_unit_presence(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	return src->prov->unit_presence != NULL && src->prov->unit_presence(src->impl, unit, leaf, p);
 }
 
 static inline bool

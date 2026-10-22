@@ -20,7 +20,7 @@ END $$;
 SET sift.col_format_minor = 5;
 ERROR:  invalid value for parameter "sift.col_format_minor": 5
 DETAIL:  Column format minor 5 is written for wide leaves only, whatever the setting.
-HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13 or 14.
+HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13, 14 or 15.
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
 	   CASE WHEN i % 11 = 0 THEN 'NaN' ELSE i / 3.0 END FROM generate_series(1, 30000) i;
