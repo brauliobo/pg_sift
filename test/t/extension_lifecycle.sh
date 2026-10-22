@@ -200,7 +200,8 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE none32" >/dev/null
 	q life none32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"CREATE INDEX f_1 ON f USING sift_col (id, g)" >/dev/null
-	check "an update with nothing to do says so" grep -qF "nothing to REINDEX or rewrite" <<<"$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)"
+	upd32=$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	check "an update with nothing to do says so, and that a 3.2 library cannot read what 3.3 writes next" test "$(grep -cF -e "nothing to REINDEX or rewrite" -e "a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6" <<<"$upd32")" == 2
 	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (set_columns = 'g')" >/dev/null
 	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &

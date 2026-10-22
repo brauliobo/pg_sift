@@ -180,8 +180,8 @@ sift_col_init(void)
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 12, 10, 9, 8, 7, 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
-							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
+							"Column format minor of the segments written (12, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
+							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
 							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);

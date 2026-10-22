@@ -289,6 +289,15 @@ $fn$;
 CREATE EVENT TRIGGER sift_publication_check ON ddl_command_end WHEN TAG IN ('CREATE PUBLICATION', 'ALTER PUBLICATION')
 	EXECUTE FUNCTION sift.publication_check();
 
+-- 3.3 writes column formats up to 12 by default (sift.col_format_minor), which a 3.2 library refuses; said plainly once, as a warning because the script
+-- runs at warning level and the user decides whether a standby or a rollback still needs 3.2.
+DO $do$
+BEGIN
+	RAISE WARNING 'pg_sift 3.3: a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6 first'
+		USING HINT = 'The default is 12 in 3.3. Set 6 (3.2), 4 (3.1) or 3 (3.0) for a standby or a rollback that stays on an older release; SELECT * FROM sift.upgrade_check(''3.2'') lists what it cannot read (docs/UPGRADING.md section 4).';
+END
+$do$;
+
 -- What this update leaves to do, printed once; sift.upgrade_commands() lists it again. The last step of every update path to 3.3, so it covers what 3.0,
 -- 3.1 and 3.2 wrote. It only reads, and never fails the update: a library that does not answer (an older one loaded in this session, a relation locked by
 -- another session) gets a warning that says to run the function after reconnecting. An extension script runs with client_min_messages at warning or

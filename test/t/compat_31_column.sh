@@ -72,7 +72,7 @@ sift.async_maintenance = off'
 			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (set_columns = 'k')" "RESET sift.col_format_minor" \
 			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (set_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
 		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
-		check 'the setting 4 writes no summary and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:8
+		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 10)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:10
 		node_stop legacy
 		use_root "$oldroot"
 		node_start legacy || bail 'cannot restart 3.1'
