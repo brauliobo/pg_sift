@@ -914,13 +914,42 @@ recordset_columns(AggCtx *c, int grp)
 	return cols;
 }
 
-/* does the expression evaluate the cast of a member's jsonb value to float8 for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only */
-static bool
-unconditional_cast(Node *n, AggCtx *c)
+typedef struct Unconditional
 {
+	AggCtx	   *c;
+	int			leaf;			/* the scalar leaf whose read (leaf_read) is looked for; -1: the cast of a member's jsonb value to c->cast_want */
+	bool		as_text;		/* leaf_read: `(doc ->> 'k')::T`, else the cast of the jsonb value `(doc -> 'k')::T` */
+	int			nread;			/* count_leaf_reads: the reads it found */
+} Unconditional;
+
+/* is the node the read of the scalar leaf: the cast of `doc -> 'k'` or `doc ->> 'k'` to the leaf's type, the path of the leaf? */
+static bool
+leaf_read(Node *n, const Unconditional *u)
+{
+	const SiftSrcLeaf *l = leaf_of(u->c, u->leaf);
+	JsonRef		r = {0};
+	Node	   *arg;
+
+	if (u->as_text && IsA(n, CoerceViaIO))
+		arg = (Node *) ((CoerceViaIO *) n)->arg;
+	else if (!u->as_text && IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid)
+		arg = linitial(((FuncExpr *) n)->args);
+	else
+		return false;
+	return exprType(n) == l->typid && json_access(u->c, arg, &r) && r.att == l->attno && r.as_text == u->as_text && paths_equal(r.path, l->path);
+}
+
+/* does the expression evaluate what u looks for, for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only */
+static bool
+unconditional(Node *n, Unconditional *u)
+{
+	AggCtx	   *c = u->c;
+
 	if (n == NULL)
 		return false;
-	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) == c->cast_want)
+	if (u->leaf >= 0 && leaf_read(n, u))
+		return true;
+	if (u->leaf < 0 && IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) == c->cast_want)
 	{
 		Node	   *arg = strip_relabel(linitial(((FuncExpr *) n)->args));
 
@@ -933,19 +962,42 @@ unconditional_cast(Node *n, AggCtx *c)
 		if (a->aggfilter != NULL)
 			return false;
 		foreach_ptr(Node, x, list_concat_copy(a->aggdirectargs, a->args))
-			if (unconditional_cast(IsA(x, TargetEntry) ? (Node *) ((TargetEntry *) x)->expr : x, c))
+			if (unconditional(IsA(x, TargetEntry) ? (Node *) ((TargetEntry *) x)->expr : x, u))
 				return true;
 		return false;
 	}
 	if (IsA(n, CaseExpr))
-		return unconditional_cast((Node *) ((CaseExpr *) n)->arg, c);
+		return unconditional((Node *) ((CaseExpr *) n)->arg, u);
 	if (IsA(n, CoalesceExpr))
-		return unconditional_cast(linitial(((CoalesceExpr *) n)->args), c);
+		return unconditional(linitial(((CoalesceExpr *) n)->args), u);
 	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop != NOT_EXPR)
-		return unconditional_cast(linitial(((BoolExpr *) n)->args), c);
+		return unconditional(linitial(((BoolExpr *) n)->args), u);
 	if (IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, WindowFunc) || IsA(n, GroupingFunc))
 		return false;
-	return expression_tree_walker(n, unconditional_cast, c);
+	return expression_tree_walker(n, unconditional, u);
+}
+
+/* counts the reads of the leaf in the tree, a sub-select's and a function's arguments too */
+static bool
+count_leaf_reads(Node *n, Unconditional *u)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+		/* PostgreSQL 18 keeps the grouping expressions in an entry of the range table too: the same ones the targets have */
+		return query_tree_walker((Query *) n, count_leaf_reads, u,
+#if PG_VERSION_NUM >= 180000
+								 QTW_IGNORE_GROUPEXPRS
+#else
+								 0
+#endif
+			);
+	if (leaf_read(n, u))
+	{
+		u->nread++;
+		return false;
+	}
+	return expression_tree_walker(n, count_leaf_reads, u);
 }
 
 /* does a conjunct of the rows read the leaf, directly or in an expression of a combo? */
@@ -1027,12 +1079,13 @@ cast_recheck_ok(AggCtx *c, int m)
 {
 	Query	   *q = c->root->parse;
 	MemberCasts w = {c, InvalidOid, false, false};
+	Unconditional u = {c, -1};
 
 	c->cast_want = FLOAT8OID;
 	/* a leaf of the index, not the member of one key (a virtual leaf): the source reads the rows with a bad value in any member again, and the error is the row's, not the key's */
-	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && leaf_of(c, m)->typid == FLOAT8OID &&
-		!c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
-		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c)) &&
+	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && leaf_of(c, m)->parent >= 0 && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) &&
+		leaf_of(c, m)->typid == FLOAT8OID && !c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
+		(unconditional((Node *) q->targetList, &u) || unconditional(q->havingQual, &u)) &&
 		!member_casts((Node *) q, &w) && !w.mixed && w.to == FLOAT8OID;
 }
 
@@ -1049,6 +1102,7 @@ member_recheck(AggCtx *c, const SiftAggSpec *s, int j)
 				src = vleaf_source(c, j);
 	Query	   *q = c->root->parse;
 	MemberCasts w = {c, InvalidOid, false, false};
+	Unconditional u = {c, -1};
 
 	if (!sift_aggvleaf_member(&c->vleaf[j]) || src < 0 || c->func_kind != FK_EACH || c->func_key == NULL || c->vleaf[j].obj != c->func_obj ||
 		bms_is_member(src, c->used) || leaf_of(c, v)->typid != FLOAT8OID || c->search || !OidIsValid(c->indexoid) ||
@@ -1061,7 +1115,7 @@ member_recheck(AggCtx *c, const SiftAggSpec *s, int j)
 		if (s->pred[i]->level != 0 || pred_reads_leaf(c, s->pred[i], v))
 			return InvalidOid;
 	c->cast_want = w.to;
-	if (!unconditional_cast((Node *) q->targetList, c) && !unconditional_cast(q->havingQual, c))
+	if (!unconditional((Node *) q->targetList, &u) && !unconditional(q->havingQual, &u))
 		return InvalidOid;
 	return w.to;
 }
@@ -1160,13 +1214,73 @@ leaf_test(const SiftAggPred *p, int leaf)
 	return p->level == 1 && !p->late && p->nchild == 0 && p->leaf == leaf && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL);
 }
 
+/* the types of a scalar path whose rows are read again through the input function of the type (the narrower float and integer types are not tested with the read) */
+static bool
+scalar_text_type(Oid typid)
+{
+	return typid == BOOLOID || typid == INT4OID || typid == INT8OID || typid == FLOAT8OID;
+}
+
+/*
+ * Can leaf m, a number or boolean path of the document that the query reads only as `(doc ->> 'k')::T` (SRK_IOCAST) or, for float8, as the
+ * cast of `doc -> 'k'` (SRK_CAST), be read again from the heap? A row whose value the leaf cannot store is read as SQL reads it: the text of the
+ * scalar through the input function of T, or the number of the jsonb value, and the error SQL raises for another value is raised where the row
+ * reaches the aggregate (recheck_late), which is where PostgreSQL evaluates the argument of an aggregate or a grouping expression. So every
+ * read of the leaf is that one cast, in a key or an aggregate that every row reaching it evaluates and nowhere else (no conjunct, join or
+ * sub-select: a row they drop first must not raise), and nothing the rows go through before the aggregates may drop a row after PostgreSQL has
+ * evaluated the cast, which a function in the FROM or a join could.
+ */
+static SiftSrcRecheck
+scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
+{
+	const SiftSrcLeaf *l;
+	Query	   *q = c->root->parse;
+	Unconditional u = {c, m};
+	Unconditional all;
+	SiftSrcRecheck kind;
+	Bitmapset  *read;
+
+	if (m >= c->lay->nleaves - c->nvleaf || c->group >= 0 || c->func_rti != 0 || c->joins != NIL || c->search || !OidIsValid(c->indexoid) ||
+		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+		return SRK_NONE;
+	l = leaf_of(c, m);
+	if (l->kind != SCL_SCALAR || l->parent >= 0 || l->path == NIL || l->wide)
+		return SRK_NONE;
+	if (bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && l->typid == FLOAT8OID)
+		kind = SRK_CAST;
+	else if (bms_is_member(m, c->io_ok) && !bms_is_member(m, c->io_bad) && scalar_text_type(l->typid))
+	{
+		kind = SRK_IOCAST;
+		u.as_text = true;
+	}
+	else
+		return SRK_NONE;
+	read = bms_make_singleton(m);
+	for (int i = 0; i < s->npred; i++)
+		if (pred_reads_set(c, s->pred[i], read))
+			return SRK_NONE;
+	if (!unconditional((Node *) q->targetList, &u) && !unconditional(q->havingQual, &u))
+		return SRK_NONE;
+	/* every read is in the targets: the one the walk found is in the same tree as the others */
+	all = u;
+	all.nread = 0;
+	count_leaf_reads((Node *) q, &all);
+	u.nread = 0;
+	count_leaf_reads((Node *) q->targetList, &u);
+	count_leaf_reads(q->havingQual, &u);
+	return all.nread == u.nread ? kind : SRK_NONE;
+}
+
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns (it may drop a row that the error would reach first) */
 SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	Bitmapset  *list = NULL;
 	int			grp;
+	SiftSrcRecheck scalar = scalar_recheck(c, s, m);
 
+	if (scalar != SRK_NONE)
+		return scalar;
 	if (leaf_recheck(c, m) == SRK_NONE)
 		return SRK_NONE;
 	/*

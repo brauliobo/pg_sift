@@ -256,7 +256,7 @@ INSERT INTO e_q (q) VALUES
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'' OR jsonb_typeof(attrs->''b'') IS NULL');
 SELECT n, t_check(q) FROM e_q ORDER BY n;
 
--- a read of the leaf that no type filter guards keeps the normal plan
+-- a read of the leaf that no type filter guards: the rows that hold a value it cannot store are read again from the heap (agg_scalar_dirty)
 SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS unguarded,
        t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string''') AS other_leaf;
 

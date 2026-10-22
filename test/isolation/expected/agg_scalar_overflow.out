@@ -1,0 +1,126 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1prep s2num s1io s1jc s1end
+step s1prep: BEGIN;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5'));
+step s1io: EXECUTE io;
+grp|     s
+---+------
+  0|3010.5
+  1|  3000
+  2|  2997
+(3 rows)
+
+step s1jc: EXECUTE jc;
+ERROR:  cannot cast jsonb string to type double precision
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2text s1io s1end
+step s1prep: BEGIN;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+step s1io: EXECUTE io;
+ERROR:  invalid input syntax for type double precision: "x"
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2begin s2text s1io s1jc s2abort s1io s1end
+step s1prep: BEGIN;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+QUERY PLAN                           
+-------------------------------------
+Sort                                 
+  Sort Key: grp                      
+  ->  Custom Scan (SiftAgg)          
+        Index: iso_sc_col            
+        Group Keys: grp              
+        Pushed Aggregates: sum(doc.v)
+(6 rows)
+
+step s2begin: BEGIN;
+step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x'));
+step s1io: EXECUTE io;
+grp|   s
+---+----
+  0|3003
+  1|3000
+  2|2997
+(3 rows)
+
+step s1jc: EXECUTE jc;
+grp|   s
+---+----
+  0|3003
+  1|3000
+  2|2997
+(3 rows)
+
+step s2abort: ROLLBACK;
+step s1io: EXECUTE io;
+grp|   s
+---+----
+  0|3003
+  1|3000
+  2|2997
+(3 rows)
+
+step s1end: ROLLBACK; DEALLOCATE ALL;

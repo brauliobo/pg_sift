@@ -112,6 +112,9 @@ typedef struct AggCtx
 	Bitmapset  *cast_bad;		/* ... and the leaves read in any other way */
 	Oid			cast_want;		/* unconditional_cast: the type of the cast it looks for */
 	int			txt_pending;	/* 1 + the text leaf match_leaf just resolved from `doc ->> 'k'` (0: none), which the use_leaf that follows takes */
+	int			io_pending;		/* 1 + the leaf match_leaf just resolved from `(doc ->> 'k')::T` (0: none), which the use_leaf that follows takes */
+	Bitmapset  *io_ok;			/* leaves read only through such a cast ... */
+	Bitmapset  *io_bad;			/* ... and the leaves read in any other way */
 	Bitmapset  *txt_ok;			/* text leaves read only as `doc ->> 'k'` ... */
 	Bitmapset  *txt_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */

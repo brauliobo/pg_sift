@@ -420,12 +420,12 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  26 | same
 (26 rows)
 
--- a read of the leaf that no type filter guards keeps the normal plan
+-- a read of the leaf that no type filter guards: the rows that hold a value it cannot store are read again from the heap (agg_scalar_dirty)
 SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS unguarded,
        t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string''') AS other_leaf;
- unguarded  | other_leaf 
-------------+------------
- not pushed | not pushed
+ unguarded | other_leaf 
+-----------+------------
+ same      | same
 (1 row)
 
 -- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
