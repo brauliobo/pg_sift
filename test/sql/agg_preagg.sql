@@ -121,7 +121,7 @@ CREATE INDEX ac_col ON ac USING sift_col (id, grp, cat, d, amt, qty, big, huge, 
 	WITH (write_buffer_limit = 4096, preagg = 'cube(grp: amt, qty, huge; cat: amt; d: amt; qty: amt)');
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ap, ac, ao;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap, ac, ao;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ac_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');
 
@@ -144,7 +144,7 @@ SELECT * FROM pa_sum('ap');
 SELECT * FROM pa_sum('ao');
 
 -- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) ac, ap, ao;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac, ap, ao;
 SELECT * FROM pa_check('ac');
 
 -- 4. rows in the write buffer, then sealed
@@ -152,12 +152,12 @@ INSERT INTO ac SELECT g, CASE WHEN g % 5 = 0 THEN NULL ELSE 'g' || (g % 40) END,
 FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ac');
 SELECT sift.col_promote('ac_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ac;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
 SELECT * FROM pa_check('ac');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ac_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ac;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
 SELECT sift.col_verify('ac_col', true);
 SELECT * FROM pa_check('ac');
 
@@ -199,7 +199,7 @@ SELECT * FROM pa_sum('ao');
 CREATE TABLE an (id int, grp text, amt numeric(10, 2), qty int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO an SELECT g, 'g' || g % 5, CASE WHEN g % 1000 = 0 THEN 'NaN'::numeric ELSE g % 100 END, g % 3, repeat('p', 200) FROM generate_series(1, 30000) g;
 CREATE INDEX an_col ON an USING sift_col (id, grp, amt, qty) WITH (preagg = 'cube(grp: amt, qty; qty: amt)');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) an;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) an;
 SELECT * FROM pa_check('an', 22, 26);
 
 -- the switches

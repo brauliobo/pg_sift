@@ -157,7 +157,7 @@ CREATE INDEX rx_col ON rx USING sift_col (id, grp, lines, tags, attrs)
 	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096,
 	      preagg = 'rollup(lines[].a, lines[].b: lines[].q, lines[].w, lines[].amt)');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
 SELECT sift.col_verify('rl_col', true), sift.col_verify('rd_col', true), sift.col_verify('rx_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('rl_col');
 
@@ -176,7 +176,7 @@ SELECT * FROM pa_check('rl');
 SELECT * FROM pa_sum('rd');
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) rl, rd;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl, rd;
 SELECT * FROM pa_sum('rl');
 
 -- 4. rows in the write buffer, then sealed
@@ -184,12 +184,12 @@ INSERT INTO rl SELECT g, g % 7, jsonb_build_array(jsonb_build_object('a', 'ab', 
        '["t1", null]', '{"m1": 2.5, "m7": null}', repeat('p', 200) FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_sum('rl');
 SELECT sift.col_promote('rl_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) rl;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
 SELECT * FROM pa_sum('rl');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('rl_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) rl;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
 SELECT sift.col_verify('rl_col', true);
 SELECT * FROM pa_check('rl');
 
