@@ -31,7 +31,7 @@ in `deleted_at`) and four jsonb columns:
 | column | shape |
 |---|---|
 | `attributes` | object: `locale`, `channel`, `device`, and `normalized: true` on the orders whose items already carry canonical names |
-| `metrics` | object with dynamic keys and float values, 1 to 6 of 12 keys (`overall` always): `{"overall": 4.5, "delivery_speed": 3.0}` |
+| `metrics` | object with dynamic keys and float values, 1 to 6 of 12 keys (`p_total` always): `{"p_total": 4.5, "delivery_speed": 3.0}` |
 | `items` | array of objects `[{category, sku, kind, qty, price, discount}]`, 0 to 8 (mean 3.2) |
 | `notes` | array of objects `[{type, author_role, text}]`, 0 to 3 |
 
@@ -59,7 +59,7 @@ Every S query filters by store set, sources, `deleted_at IS NULL` and the two pe
 |---|---|
 | S1 | metrics summary per mapped metric, aspect and period: `jsonb_each(metrics)`, avg, count distinct orders, three `FILTER`ed distincts |
 | S2 | item summary at three rollup levels (category + kind, category, all): per-order pre-aggregation of `jsonb_to_recordset(items)`, then average and distinct counts over orders; categories and kinds mapped |
-| S3 | blend of S1 and S2: revenue of the items and the `overall` metric of their orders per mapped category and period |
+| S3 | blend of S1 and S2: revenue of the items and the `p_total` metric of their orders per mapped category and period |
 | S4 | time series of orders, units and revenue at four granularities (day, week, month, quarter) over one expansion of the items |
 | S5 | per-store rows: the top 3 categories of each store by revenue with their orders and customers (window function) |
 | S6 | orders with a staff reply among `notes` (`jsonb_path_exists`) per country and language, with their total |

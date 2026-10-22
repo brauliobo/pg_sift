@@ -70,7 +70,7 @@ CREATE FUNCTION coldiff.fx_orders(first_id int, last_id int, seed int DEFAULT 0)
 								  'device', (ARRAY['desktop','phone','tablet','kiosk'])[1 + floor(coldiff.u(g.id, 21, seed) * 4)::int], 'locale', p.lang)
 				 || CASE WHEN p.normalized THEN '{"normalized": true}'::jsonb ELSE '{}'::jsonb END || coldiff.fx_mixed(g.id, seed),
 			   CASE WHEN coldiff.u(g.id, 22, seed) < 0.03 THEN '{}'::jsonb ELSE
-				   (SELECT jsonb_object_agg((ARRAY['overall','delivery_speed','packaging','support','value','quality','size_fit','accuracy',
+				   (SELECT jsonb_object_agg((ARRAY['p_total','delivery_speed','packaging','support','value','quality','size_fit','accuracy',
 												   'returns_ease','checkout','communication','freshness'])[1 + (p.rs + i) % 12],
 											round((1 + 4 * sqrt(coldiff.u(g.id, 100 + i, seed)))::numeric, 1))
 					FROM generate_series(0, p.nr - 1) i) END,
@@ -152,7 +152,7 @@ CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped
 INSERT INTO metrics_map
 SELECT s, key, initcap(split_part(key, '_', 1)), nullif(initcap(split_part(key, '_', 2)), '')
 FROM unnest(ARRAY['web','ios','android','pos','phone'] || ARRAY(SELECT 'marketplace_' || lpad(i::text, 2, '0') FROM generate_series(1, 25) i)) s,
-	 unnest(ARRAY['overall','delivery_speed','packaging','support','value','quality','size_fit','accuracy','returns_ease','checkout','communication','freshness']) key
+	 unnest(ARRAY['p_total','delivery_speed','packaging','support','value','quality','size_fit','accuracy','returns_ease','checkout','communication','freshness']) key
 WHERE hashint8extended(length(s) * 100 + length(key), 31) % 7 <> 0;
 CREATE TABLE categories_map (category text NOT NULL, mapped_category text NOT NULL);
 INSERT INTO categories_map SELECT lower(c), CASE WHEN c IN ('Pet', 'Auto') THEN '' ELSE c END
@@ -485,7 +485,7 @@ CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
 CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET store_id = 1 + (store_id * 7) % 400, placed_at = placed_at + 1 + id % 3, source = 'web', country_code = 'ZZ'
 			   WHERE coldiff.sample(id, 901, frac) RETURNING 1),
-		 j AS (UPDATE orders SET metrics = metrics || '{"overall": 1.5, "extra_key": 2.5}', items = items || '[{"category": "Toys", "kind": "gift", "qty": 2, "price": 9.9, "discount": 0}]'
+		 j AS (UPDATE orders SET metrics = metrics || '{"p_total": 1.5, "extra_key": 2.5}', items = items || '[{"category": "Toys", "kind": "gift", "qty": 2, "price": 9.9, "discount": 0}]'
 			   WHERE coldiff.sample(id, 902, frac) RETURNING 1),
 		 m AS (UPDATE categories_map SET mapped_category = CASE WHEN mapped_category = '' THEN 'Other' ELSE initcap(reverse(mapped_category)) END RETURNING 1),
 		 t AS (UPDATE map_dup SET tag = tag || '2' WHERE category = 'Apparel' RETURNING 1),

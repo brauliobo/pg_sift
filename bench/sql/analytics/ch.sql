@@ -9,7 +9,7 @@ DROP TABLE IF EXISTS kinds_map;
 CREATE TABLE items_tuned (
   store_id UInt32, customer_id UInt32, source LowCardinality(String), placed_at Date, order_id UInt32, idx UInt8, country_code LowCardinality(String),
   lang LowCardinality(String), channel LowCardinality(String), normalized UInt8, category LowCardinality(String), sku String,
-  kind LowCardinality(String), qty UInt8, price Float32, discount Float32, overall Float32, deleted UInt8
+  kind LowCardinality(String), qty UInt8, price Float32, discount Float32, p_total Float32, deleted UInt8
 ) ENGINE = MergeTree ORDER BY (store_id, placed_at, order_id, idx);
 CREATE TABLE metrics_tuned (
   store_id UInt32, customer_id UInt32, source LowCardinality(String), placed_at Date, order_id UInt32, country_code LowCardinality(String),

@@ -4,8 +4,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb, comments jsonb);
 INSERT INTO facts
 SELECT i, i % 40,
-       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"overall": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"overall": 6.5, "other": 9}'::jsonb
-                  WHEN 4 THEN NULL ELSE jsonb_build_object('overall', i % 10, 'other', i % 3) END,
+       CASE i % 9 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"p_total": null}'::jsonb WHEN 2 THEN '{"other": 3}'::jsonb WHEN 3 THEN '{"p_total": 6.5, "other": 9}'::jsonb
+                  WHEN 4 THEN NULL ELSE jsonb_build_object('p_total', i % 10, 'other', i % 3) END,
        CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '[]'::jsonb WHEN 2 THEN '[{"type":"role_a"}]'::jsonb ELSE '[{"type":"role_c"},{"type":"role_a"}]'::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, metrics, comments) WITH (paths = 'metrics.* float8, comments[]{type text}');
@@ -33,7 +33,7 @@ BEGIN
 END $$;
 SELECT * FROM check_query('left join, on', $q$
  SELECT count(*) AS n, count(r.key) AS members, count(DISTINCT f.id) AS ids
- FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+ FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
 $q$);
 SELECT * FROM check_query('left join, true', $q$
  SELECT r.key, count(*) AS n FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON true GROUP BY 1
@@ -43,7 +43,7 @@ SELECT * FROM check_query('left join, array', $q$
  FROM facts f LEFT JOIN LATERAL jsonb_array_elements(f.comments) e ON e->>'type' = 'role_a'
 $q$);
 SELECT * FROM check_query('inner join, on', $q$
- SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'overall'
+ SELECT count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
 $q$);
 DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
 DROP TABLE facts;
