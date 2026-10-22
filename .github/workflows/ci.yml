@@ -104,6 +104,7 @@ jobs:
       - run: scripts/gen-limits.sh --check
       - run: scripts/gen-reference.sh --check
       - run: scripts/check-errors.sh
+      - run: scripts/check-bench-fresh.sh
       - run: scripts/gen-refusals.sh --check
       - run: scripts/coverage.sh --docs
       - run: scripts/ci.sh --selftest

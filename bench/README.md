@@ -33,6 +33,13 @@ most of the ratios of the full tier at a fraction of the time and disk. `--full`
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus.
 
+**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "search store"`: articles and places, the online store with its updates; about 40 minutes
+at the published size) and rewrites their blocks. It is resumable (a stage that finished with the same code, settings and host is skipped; `bench resume` continues an interrupted run), holds `SIFT_BENCH_HOST_LOCK` (a lock shared with the
+other benchmarks of the host) for the run, and says in the header of each block the version, date, host and load it was measured at. `--calm` is for a timer: it measures only when the pressure of the host stays below the quiet gate
+`bench/refresh.service` and `bench/refresh.timer` are a
+user unit and a weekly timer (Sunday 03:00, a random delay of up to an hour) that run `refresh --calm --pr`; the header of the service says what to install (a clone of its own, the environment file); nothing installs them. The cheap gate
+another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them.
+
 **One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
 only those two files from the committed rows, without measuring). Nothing in them is typed by hand: `steps/readme.py` takes every figure from the rows, the engine list from the registry, and the
 wall time of the session and the size of the corpus from the `wall_s` and `corpus` rows.
@@ -275,6 +282,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch; speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `refresh.sh` | `bench/bench refresh`: `final --docs` for the stages of the README (search, store) behind the host lock and the quiet gate; `--pr` opens the pull request |
 | `final.sh`, `gap.sh`, `gap.py` |  |
 | `store.sh`, `store.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
