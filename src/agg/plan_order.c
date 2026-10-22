@@ -61,6 +61,7 @@
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/plan_int.h"
+#include "agg/lookup_int.h"
 
 #define FIRST_MAX_KEYS		4		/* sort columns after the DISTINCT ON columns */
 #define FIRST_GROUP_BYTES	96		/* what a group of a DISTINCT ON column keeps besides its values: the best row's header, the state and the result */
@@ -357,13 +358,65 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
 	return true;
 }
 
+/* Does the table of the join have a unique index on the join column alone (no two of its rows have the same key, a NULL key matches nothing)? */
+static bool
+topn_unique_key(AggCtx *c, JoinCtx *jc)
+{
+	RelOptInfo *dim = c->root->simple_rel_array[jc->rti];
+
+	if (dim == NULL)
+		return false;
+	foreach_node(IndexOptInfo, ii, dim->indexlist)
+		if (ii->unique && ii->immediate && ii->indpred == NIL && ii->indexprs == NIL && ii->nkeycolumns == 1 && ii->indexkeys[0] == jc->j.keyatt[0])
+			return true;
+	return false;
+}
+
+/*
+ * The joins a top-N takes (agg/init_table.c, join_filters): the keys of the loaded table are a conjunct of the scan, `key IN (keys)`, which the rows of
+ * the heap hold exactly, so nothing is left to join and no row can match twice. That is an inner join of a table with a unique index on its column,
+ * by one integer column of the scanned table, whose ON clause and WHERE read the table's columns alone. The table adds no column to the result (the
+ * columns the query reads are those of the scanned table, topn_columns).
+ */
+static bool
+topn_joins_ok(AggCtx *c, SiftAggSpec *s)
+{
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		const SiftAggCombo *cb = &s->combo[ci];
+		const SiftAggJoin *j;
+		JoinCtx    *jc;
+		const SiftSrcLeaf *lf;
+
+		if (cb->join < 0)
+			continue;
+		j = &s->join[cb->join];
+		jc = list_nth(c->joins, cb->join);
+		if (j->kind != SJ_INNER || j->params != NIL || j->child >= 0 || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
+			cb->nleaves != 1 || cb->leaf[0] < 0 || cb->leaf[0] >= c->lay->nleaves || cb->nslots != (j->fslot >= 0 ? 1 : 0) ||
+			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
+			return false;
+		lf = &c->lay->leaf[cb->leaf[0]];
+		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || !topn_unique_key(c, jc))
+			return false;
+	}
+	return true;
+}
+
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
 topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int64 rows, int nworkers)
 {
-	CustomPath *cp = makeNode(CustomPath);
+	SiftAggPath *ap = (SiftAggPath *) newNode(sizeof(SiftAggPath), T_CustomPath);
+	CustomPath *cp = &ap->path;
 
 	s->nworkers = nworkers;
+	/* the joins are tables read by the scan itself: no child plan in a query level of its own */
+	for (int i = 0; i < list_length(c->joins); i++)
+	{
+		ap->correlated = lappend(ap->correlated, NULL);
+		ap->subroots = lappend(ap->subroots, NULL);
+	}
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
 	cp->path.pathtarget = root->upper_targets[UPPERREL_ORDERED];
@@ -402,10 +455,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
 	agg_arm_candidate();
-	c->joinless = true;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
-	if (c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
+	if (c->nparts > 0 || c->func_rti != 0 || fs.lefts != NIL ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 	{
 		agg_refused(TOPN_SHAPE);
@@ -440,6 +492,11 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	}
 	if (!spec_finish(c, s, root, input_rel, NIL))
 		return;
+	if (!topn_joins_ok(c, s))
+	{
+		agg_refused(TOPN_SHAPE);
+		return;
+	}
 	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
 								 leaf[0], input_rel->rows, rows);
 	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, copyObject(parse->limitCount), copyObject(parse->limitOffset));
@@ -448,7 +505,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	s->desc_topn = txt.data;
 
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
-	nworkers = parallel_workers(c, s, input_rel, output_rel);
+	/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
+	nworkers = c->joins == NIL ? parallel_workers(c, s, input_rel, output_rel) : 0;
 	if (nworkers > 0)
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 }
