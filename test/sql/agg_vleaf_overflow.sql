@@ -76,7 +76,7 @@ INSERT INTO l_t SELECT id, 0, jsonb_build_object('l', val) FROM list_kinds;
 SELECT k.id, k.kind, same(q[1]) AS length_sum, same(q[2]) AS length_filter FROM list_kinds k, LATERAL l_q(k.id) q ORDER BY k.id;
 SELECT pushed((l_q(1))[1]) AS dirty_length_pushed, same('SELECT grp, sum(jsonb_array_length(doc -> $$l$$)) FROM l_t GROUP BY grp') AS dirty_length_same;
 
--- a scalar leaf: the same casts of a path declared float8
+-- a scalar leaf: the same casts of a path declared float8; the scan takes the query and reads the rows that hold such a value from the heap
 CREATE TABLE s_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO s_t SELECT i, i % 5, jsonb_build_object('k', i % 10) FROM generate_series(1, 3000) i;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.k float8');
