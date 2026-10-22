@@ -12,6 +12,7 @@ INSERT INTO ev
 SELECT i, date '2020-01-01' + i / 300, (i / 10000) * 1000 + i % 100, i % 50, abs(hashint4(i)) % 100000, 'k' || i % 7, repeat('x', 1000)
 FROM generate_series(0, 59999) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, day, blk, grp, rnd, lbl);
+SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) ev;
 
 SELECT leaf, path, units > 20 AS several_units, zoned_units = units AS all_zoned, round(useful_pct::numeric) AS useful_pct,
@@ -67,6 +68,7 @@ CREATE INDEX evs_col ON evs USING sift_col (grp, rnd);
 CREATE TABLE evo (id int, day date, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO evo SELECT i, date '2020-01-01' + i / 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX evo_col ON evo USING sift_col (id, day);
+SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) evs, evo;
 SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
 FROM sift.cluster_advice('ev', 10000);
