@@ -282,6 +282,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->last = -1;
 	sift_aggsel_init(&t->sel, mcxt);
 	sift_aggpre_init(&t->pre, mcxt);
+	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));

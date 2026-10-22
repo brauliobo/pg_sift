@@ -352,7 +352,7 @@ exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
 
 **Merge** (`sift_tbl_merge`, VACUUM: up to 16 steps): the tiered policy of `sift_merge_pick` over the segments of the current layout (fan-in 8)
-plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 30 (a `sift_col` index has 10: a unit with dead rows is scanned instead of answered from its pre-aggregates, and a table keeps its segments until a third is dead, so its file stays near 1.4 times its live rows),
+plus "mostly dead" (a segment more than `sift.table_dead_rewrite_pct` percent dead, default 30 (a `sift_col` index has 10: a unit with dead rows is scanned instead of answered from its pre-aggregates, and a table keeps its segments until a third is dead, so its file stays near 1.4 times its live rows),
 is rewritten alone; 100 never); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
 input so that free space left by earlier merges is reused instead of extending the file. A segment of an older layout is not rewritten.
 Unfrozen groups merge with everything: the output keeps the version vectors of the rows it holds (`sift_cbatch_merge` carries them) and is frozen outright when every row it keeps is committed and older than the horizon (the freeze callback of `sift_col_merge_segments`); the rows of an aborted writer are not dropped by the merge but by the VACUUM that cleared their liveness. Under directory pressure `merge_smallest` merges the smallest immutable segments of the current layout, unfrozen ones included, so that the directory keeps shrinking while the load goes on.
@@ -408,15 +408,19 @@ shortens; the rows of an aborted writer are left to it too (only the live bits s
 lock only if they are free (`busy` in the result otherwise), the file's lock as VACUUM does (`ConditionalLockRelation`, given up at once), never waits for a reader or a writer, and
 refuses a read-only transaction, a standby and a role without `MAINTAIN`. It writes only what VACUUM writes (liveness pages, directory switches, free list, truncation: same crash points).
 
-*Background pass* (`sift.table_auto_defrag`, off by default for 3.2, needs `sift.async_maintenance`). The backend that closes a write buffer (every `sift.table_write_buffer_limit`
-of writes, where the inline promotion runs; not inside a VACUUM) asks for a worker, `sift_maint_request_worker` as for the indexes (at most one request per `sift.maintenance_naptime` of a table, backing
-off after failures; one worker of a table at a time), when (1) the tombstone entries are at least `sift.table_dead_rewrite_pct` percent of the rows of the column segments and have
-grown by half of that since this backend asked last (the exact percent of a segment is known once its bits are cleared), or (2) the free blocks of the file are at least
-`sift.table_auto_defrag_free_pct` percent of it, worth the exclusive lock by VACUUM's rule (1000 blocks or a 16th of the file) and grown by a 32nd of it since the last request. For (1) the worker runs
-the whole table VACUUM (`sift.table_auto_defrag_indexes`, on: without the index cleanup the tombstone log, which every scan reads and which holds the file above the live rows, cannot shrink; with it off the pass is `sift.table_maintain`),
-for (2) `sift.table_maintain`, in transactions of its own with no snapshot, the page accesses of the index cleanup charged to `sift.table_auto_defrag_delay` as a cost delay and at most 32 MB copied under the table lock.
-The request comes while the writer is still at work (its rows are not final and the lock of the end of the file is not free), so the worker stays and passes again every fourth of `sift.maintenance_naptime` while a pass finds something to do (two in a row that do not end it, 20 at most).
-A workload that only deletes closes no write buffer and asks for nothing: autovacuum, or `sift.table_maintain` from a scheduler, covers it. With `sift.table_auto_defrag_indexes` off the tombstones outlive the pass until a VACUUM.
+*Background pass* (`sift.table_auto_defrag`, off by default for 3.2, needs `sift.async_maintenance`). A backend asks for a worker, `sift_maint_request_worker` as for the indexes (at most one request per
+`sift.maintenance_naptime` of a table, backing off after failures; one worker of a table at a time), when (1) the tombstone entries are at least `sift.table_auto_defrag_dead_pct` percent (20, the autovacuum scale factor) of the rows of the column
+segments and have grown by half of that since this backend asked last (the exact percent of a segment is known once its bits are cleared), or (2) the free blocks of the file are at least
+`sift.table_auto_defrag_free_pct` percent of it, worth the exclusive lock by VACUUM's rule (1000 blocks or a 16th of the file) and grown by a 32nd of it since the last request. The backends that look are those that
+close a write buffer (every `sift.table_write_buffer_limit` of writes, where the inline promotion runs; not inside a VACUUM) and, at most once per `sift.maintenance_naptime` each, those that delete, update, lock or
+read the table (a scan, an index fetch, SiftAgg): a table of small writes, or one that only deletes, closes no write buffer for a long time, and nobody sees a table nobody uses. The check reads no page of a table that was never written.
+For (1) the worker runs the whole table VACUUM (`sift.table_auto_defrag_indexes`, on: without the index cleanup the tombstone log, which every scan reads and which holds the file above the live rows, cannot shrink; with it off the pass is `sift.table_maintain`),
+for (2) `sift.table_maintain`, in transactions of its own with no snapshot, at most 32 MB copied under the table lock. The merge steps of a pass rewrite at most `sift.table_auto_defrag_budget` MB (the segments mostly dead
+first, the most dead of them first: what a rewrite frees per byte it copies is its dead share), and the worker passes again while the budget was what stopped the last one. Every pass pays a cost delay as autovacuum does: the page accesses are charged
+(`vacuum_cost_limit`), and `sift.table_auto_defrag_delay` is the sleep, at a point after each page of a write buffer VACUUM judges and after each merge step; the table VACUUM of autovacuum is charged the same way.
+The request may come while the writer is still at work (its rows are not final and the lock of the end of the file is not free), so the worker stays and passes again every fourth of `sift.maintenance_naptime` while a pass finds something to do (two in a row that do not end it, 20 at most).
+With `sift.table_auto_defrag_indexes` off the tombstones outlive the pass until a VACUUM. Autovacuum is the other trigger and needs none of this: its dead-row threshold is 20% of the rows and its naptime a minute; the worker answers in `sift.maintenance_naptime`
+and also covers the free space, which autovacuum's counters do not see.
 
 **ANALYZE** (section 4): statistics columns as PostgreSQL computes them from the sample; jsonb shredded paths are not statistics targets.
 

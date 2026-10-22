@@ -200,9 +200,10 @@ typedef struct SiftTblRel
 	Relation	curvers_rel;
 	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
-	/* what this backend saw when it last asked for the background pass (sift_tbl_auto_defrag_check) */
+	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
 	int64		defrag_free;
+	int64		defrag_at;
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
@@ -527,8 +528,8 @@ extern void sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *
 extern int	sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st);
 /* The rows of the groups that count as live for the statistics: not those of a writer that is still running or aborted */
 extern double sift_tbl_group_live_rows(Relation rel, SiftTblRel *st);
-/* One merge step over the column segments (the maintenance lock held); true when it merged. Rows that committed before oldest become frozen. Segments of another column layout are left alone. */
-extern bool sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* One merge step over the column segments (the maintenance lock held); the bytes of the segments it merged, 0 when it did nothing. Rows that committed before oldest become frozen. Segments of another column layout are left alone. */
+extern uint64 sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest);
 /* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
 extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 
@@ -579,14 +580,13 @@ extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 /* The default of sift.table_dead_rewrite_pct: segments kept up to a third dead hold the file near 1.4 times its live size */
 #define SIFT_TBL_DEAD_PCT	30
 
-/* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone */
-extern bool sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e);
+/* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone, the most dead first */
 extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
 
 /*
  * Space maintenance without VACUUM (table/vacuum.c, docs/COL-TAM.md section 7): sift_tbl_maintain is VACUUM's work on the column segments
  * and the file minus what needs the indexes (their cleanup, and so the tombstone rewrite). The background pass is requested by the backend
- * that closes a write buffer when sift_tbl_auto_defrag_check finds the table worth it.
+ * that closes a write buffer, deletes or reads when sift_tbl_auto_defrag_tick finds the table worth it.
  */
 typedef struct SiftTblMaintain
 {
@@ -600,7 +600,8 @@ typedef struct SiftTblMaintain
 
 /* The caller holds ShareUpdateExclusiveLock on rel. background: a worker (throttled, short exclusive window); clear: also clears the dead rows */
 extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r);
-extern void sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st);
+/* Asks for the pass when the table is worth it; at most once per sift.maintenance_naptime of a backend. Called where rows are deleted and read as well as where a write buffer closes: a table of small writes may close none */
+extern void sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st);
 extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_tbl_maint_clear_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_tbl_settle_worker_main(Datum main_arg);
@@ -610,6 +611,8 @@ extern PGDLLIMPORT bool sift_tbl_async_promote;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_dead_pct;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_indexes;
 
 #endif							/* SIFT_TABLE_H */
