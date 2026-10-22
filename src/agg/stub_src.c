@@ -77,8 +77,7 @@ stub_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, 
 	StubSource *src = palloc0(sizeof(StubSource));
 	int			natts;
 
-	if (!index)
-		elog(ERROR, "sift_colstub: a source needs a sift_colstub index");
+	SIFT_INVARIANT(index != NULL, "sift_colstub: a source needs a sift_colstub index");
 	src->cxt = cxt;
 	src->heap = heap;
 	src->index = index;

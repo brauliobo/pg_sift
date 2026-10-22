@@ -420,8 +420,7 @@ wide_init(AggExec *ex)
 			wide_operand(ex, s->pred[i], &t[n++]);
 			ex->pushed[i] = true;
 		}
-	if (n > 0 && sift_colsrc_set_wide(ex->src, t, n) != n)
-		elog(ERROR, "sift: the source did not take the conjuncts on wide leaves");
+	SIFT_INVARIANT(n == 0 || sift_colsrc_set_wide(ex->src, t, n) == n, "sift: the source did not take the conjuncts on wide leaves");
 	ex->nwide = n;
 	MemoryContextSwitchTo(old);
 }

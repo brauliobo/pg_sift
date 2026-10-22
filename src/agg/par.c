@@ -282,7 +282,10 @@ static void
 send_blob(shm_mq_handle *mqh, const void *data, Size len)
 {
 	if (shm_mq_send(mqh, len, data, false, true) != SHM_MQ_SUCCESS)
-		ereport(ERROR, (errmsg("sift: the leader of a parallel aggregate went away")));
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("sift: the leader of a parallel aggregate went away"),
+				 errhint("More details may be available in the server log.")));
 }
 
 /* the table of the lane just scanned, as a blob: kept in order here, sent by a worker */
@@ -556,8 +559,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 	{
 		const BlobHdr *h = (const BlobHdr *) data;
 
-		if (h->magic != BLOB_MAGIC)
-			elog(ERROR, "sift: bad message of a parallel aggregate");
+		SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad message of a parallel aggregate");
 		lanes_put(ex, h->lane, data, len);
 	}
 	else
@@ -581,7 +583,10 @@ par_receive(AggExec *ex)
 			if (r == SHM_MQ_WOULD_BLOCK)
 				break;
 			if (r == SHM_MQ_DETACHED)
-				ereport(ERROR, (errmsg("sift: a worker of a parallel aggregate stopped without its result")));
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("sift: a worker of a parallel aggregate stopped without its result"),
+						 errhint("More details may be available in the server log.")));
 			par_message(ex, w, data, len);
 			any = true;
 		}

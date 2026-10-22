@@ -624,8 +624,7 @@ rows_begin(CustomScanState *node, EState *estate, int eflags)
 		RegProcedure lhs,
 					rhs;
 
-		if (!get_op_hash_functions(s->eqop[j], &lhs, &rhs))
-			elog(ERROR, "sift: no hash function for the grouping operator %u", s->eqop[j]);
+		SIFT_INVARIANT(get_op_hash_functions(s->eqop[j], &lhs, &rhs), "sift: no hash function for the grouping operator %u", s->eqop[j]);
 		fmgr_info_cxt(lhs, &ex->hash[j], ex->cxt);
 		fmgr_info_cxt(get_opcode(s->eqop[j]), &ex->eq[j], ex->cxt);
 		get_typlenbyval(exprType((Node *) ((TargetEntry *) list_nth(cs->custom_scan_tlist, j))->expr), &ex->klen[j], &ex->kbyval[j]);
