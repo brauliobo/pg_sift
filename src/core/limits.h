@@ -34,7 +34,7 @@
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
 	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan.c", 32, "times hash memory", \
-	  "estimated group table of a scan that cannot spill (a two level aggregate, count(DISTINCT), ordered and generic aggregates), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
+	  "estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
 	  "normal plan (slug group_memory, the detail names the groups and the limit)", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
