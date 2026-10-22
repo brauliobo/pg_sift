@@ -243,6 +243,15 @@ same_scan(PlannerInfo *a, PlannerInfo *b)
 	return true;
 }
 
+/* grouping sets null a column in the sets that lack it: PostgreSQL marks the columns of a pulled up sub-select with a placeholder, in the joins too */
+static Node *
+strip_ph(Node *n)
+{
+	while (IsA(n, PlaceHolderVar))
+		n = (Node *) ((PlaceHolderVar *) n)->phexpr;
+	return n;
+}
+
 static bool
 null_const(Node *e)
 {
@@ -267,8 +276,8 @@ cond_split(Node *q, Node **operand, SiftAggCond *out)
 	op = (OpExpr *) q;
 	if ((cmp = builtin_cmp(op->opno, &lt, &rt)) < 0)
 		return false;
-	l = strip_relabel(linitial(op->args));
-	r = strip_relabel(lsecond(op->args));
+	l = strip_relabel(strip_ph(linitial(op->args)));
+	r = strip_relabel(strip_ph(lsecond(op->args)));
 	if (IsA(r, Const))
 	{
 		*operand = l;
@@ -512,7 +521,7 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 	{
 		if (list_length(oa->args) != 1)
 			return false;
-		arg = strip_relabel((Node *) linitial_node(TargetEntry, oa->args)->expr);
+		arg = strip_relabel(strip_ph((Node *) linitial_node(TargetEntry, oa->args)->expr));
 		if (!IsA(arg, Var) || ((Var *) arg)->varno != srti || ((Var *) arg)->varlevelsup != 0)
 			return false;
 		v = (Var *) arg;
@@ -829,7 +838,8 @@ arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
 		if (null_const(x))
 			continue;
 		if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
-			return agg_refuse_f(TWO_KEYS, "output column %d of arm %d is not an expression every arm groups by (or NULL)", col + 1, k + 1);
+			return agg_refuse_f(TWO_KEYS, "output column %d of arm %d is not an expression every arm groups by (or NULL)%s", col + 1, k + 1,
+								contain_subplans(x) ? ": it holds a sub-select, which each arm plans on its own" : "");
 		def = x;
 		t->arms[k].used = lappend(t->arms[k].used, x);
 		t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
@@ -858,9 +868,10 @@ two_keys(TwoLevel *t)
 	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
-		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, t->root->processed_tlist);
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, t->root->processed_tlist),
+				   *x = strip_ph(e);
 
-		if (!(spine_var(t, e) ? spine_key(t, sgc, (Var *) e, &s->key[s->nkeys]) : arm_key(t, sgc, e, &s->key[s->nkeys])))
+		if (!(spine_var(t, x) ? spine_key(t, sgc, (Var *) x, &s->key[s->nkeys]) : arm_key(t, sgc, x, &s->key[s->nkeys])))
 			return false;
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
 		t->ow.keys = lappend(t->ow.keys, e);
@@ -891,7 +902,8 @@ two_aggs(TwoLevel *t, RelOptInfo *output_rel, GroupPathExtraData *gextra)
 	{
 		if (!(IsA(a, GroupingFunc) ? compile_grouping(t->root->parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
 			  IsA(a, Aggref) && outer_agg(&t->ctx, s, (Aggref *) a, t->srti, t->arms, t->narms, &s->agg[s->naggs])))
-			return false;
+			return IsA(a, Aggref) ? agg_refuse_f(TWO_AGGS, "%s(%s) over the arms%s is not one the two level scan computes", get_func_name(((Aggref *) a)->aggfnoid),
+												  ((Aggref *) a)->aggdistinct ? "DISTINCT .." : "..", ((Aggref *) a)->aggfilter ? " with a FILTER" : "") : false;
 		t->scan_tlist = lappend(t->scan_tlist, makeTargetEntry((Expr *) a, list_length(t->scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
@@ -953,8 +965,6 @@ two_from(TwoLevel *t)
 		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY &&
 			spine_where(t->root, spine) && outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
 		{
-			if (parse->groupingSets != NIL)
-				return agg_refuse(GROUPING_SETS);
 			t->join = j;
 			t->srti = ((RangeTblRef *) a)->rtindex;
 			t->spine_rti = spine;
@@ -1001,8 +1011,8 @@ static bool
 spine_eq(TwoLevel *t, Oid opno, Node *a, Node *b, bool nullsafe)
 {
 	struct SiftAggSpinePair *q;
-	Node	   *x = strip_relabel(a),
-			   *y = strip_relabel(b);
+	Node	   *x = strip_relabel(strip_ph(a)),
+			   *y = strip_relabel(strip_ph(b));
 	TypeCacheEntry *tc;
 
 	if (!arm_var(t, x))
@@ -1074,9 +1084,9 @@ two_spine(TwoLevel *t)
 
 	foreach_ptr(Node, q, t->join->quals == NULL ? NIL : IsA(t->join->quals, List) ? (List *) t->join->quals : list_make1(t->join->quals))
 		if (!spine_conjunct(t, q))
-			return false;
+			return agg_refuse_on(SPINE_SHAPE, "a condition of the join is no equality of an arm column and a spine column or constant");
 	if (sp->npair == 0)
-		return false;
+		return agg_refuse_on(SPINE_SHAPE, "the join has no condition");
 	for (int i = 0; i < sp->npair; i++)
 		for (int k = 0; k < t->narms; k++)
 		{
@@ -1084,15 +1094,15 @@ two_spine(TwoLevel *t)
 
 			sp->pair[i].key[k] = null_const(x) ? -1 : arm_key_of(&t->arms[k], x);
 			if (sp->pair[i].key[k] < 0 && !null_const(x))
-				return false;
+				return agg_refuse_f(SPINE_SHAPE, "the join column %d of arm %d is not a key the arm groups by", i + 1, k + 1);
 		}
 	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || !bms_is_empty(rel->lateral_relids) || rel->cheapest_total_path == NULL ||
 		t->spine_cols == NIL)
-		return false;
+		return agg_refuse_on(SPINE_SHAPE, "the spine is not a relation the scan can read once (lateral, or no column of it is read)");
 	/* the rows are read once, when the scan starts: a condition of the spine that changes between rescans cannot be */
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 		if (contain_volatile_functions((Node *) rinfo->clause) || has_exec_param_walker((Node *) rinfo->clause, NULL))
-			return false;
+			return agg_refuse_on(SPINE_SHAPE, "a condition of the spine is volatile or changes between rescans");
 	switch (e->rtekind)
 	{
 		case RTE_RELATION:
@@ -1106,7 +1116,7 @@ two_spine(TwoLevel *t)
 				for (Index up = e->ctelevelsup; up > 0; up--)
 					owner = owner->parent_root;
 				if (e->self_reference || cte_owner_correlated(owner))
-					return false;
+					return agg_refuse_on(SPINE_SHAPE, "the spine is a CTE that changes between rescans");
 			}
 			break;
 		case RTE_VALUES:
@@ -1114,10 +1124,10 @@ two_spine(TwoLevel *t)
 		case RTE_SUBQUERY:
 			if (reads_outer(&outer, e, 1) || contain_volatile_functions(e->rtekind == RTE_VALUES ? (Node *) e->values_lists :
 																		 e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery))
-				return false;
+				return agg_refuse_on(SPINE_SHAPE, "the spine reads the query's other tables or calls a volatile function");
 			break;
 		default:
-			return false;
+			return agg_refuse_on(SPINE_SHAPE, "the spine is not a table, VALUES list, function, sub-select or CTE");
 	}
 	foreach_ptr(Var, v, t->spine_cols)
 		add_column_to_pathtarget(target, (Expr *) v, 0);

@@ -99,7 +99,7 @@ INSERT INTO shapes VALUES
  ('spine', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k')),
  ('spine join', 'two_level', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
  ('spine rows', 'two_level', spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')),
- ('spine grouping sets', 'two_level', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
+ ('spine grouping sets', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
  ('rows', 'rows', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
  ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
  ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
