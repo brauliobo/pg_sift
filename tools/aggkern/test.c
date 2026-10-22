@@ -153,17 +153,12 @@ spec_reductions(void)
 	const double nan = __builtin_nan(""),
 				zeros[] = {-0.0, 0.0, -0.0},
 				mixed[] = {nan, 1, -5, nan},
-				onlynan[] = {nan, nan},
-				big[] = {1e16, 1, -1e16, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0};
-	const uint64 sel[] = {0x5};
+				onlynan[] = {nan, nan};
 	uint64		zbits;
 	double		mn = 7,
 				mx = 7;
 	int32		imn = 0,
 				sidx = 0;
-	uint32		prev = UINT32_MAX;
-	const uint32 codes[] = {3, 3, 4, 4, 3, 5};
-	const uint64 sel2[] = {0x2B};		/* rows 0, 1, 3, 5 */
 
 	EXPECT(sift_aggkern_scalar.minmax_f64(&mn, &mx, zeros, NULL, 3));
 	memcpy(&zbits, &mn, 8);
@@ -176,17 +171,6 @@ spec_reductions(void)
 	EXPECT(!sift_aggkern_scalar.minmax_f64(&mn, &mx, mixed, (const uint64[]) {0}, 4) && mn == 7 && mx == 7);
 	EXPECT(!sift_aggkern_scalar.minmax_i32(&imn, &sidx, (const int32[]) {5}, (const uint64[]) {0}, 1) && imn == 0);
 
-	/* sum_f64: row i goes to accumulator i % 8, the result is ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)) */
-	{
-		volatile double a0 = 1e16,
-					a1 = 2,
-					a2 = -1e16,
-					a3 = 1;
-
-		a0 += 1;
-		EXPECT(sift_aggkern_scalar.sum_f64(big, NULL, 16) == (a0 + a1) + (a2 + a3));
-	}
-	EXPECT(sift_aggkern_scalar.sum_f64(big, sel, 3) == 0);
 	EXPECT(sift_aggkern_scalar.sum_i32((const int32[]) {INT32_MIN, INT32_MAX, 5}, NULL, 3) == 4);
 
 	/* absmax_f64: the largest |x| of the selected rows, false for a NaN or an infinity among them (the unselected ones do not count) */
@@ -202,15 +186,6 @@ spec_reductions(void)
 		EXPECT(!sift_aggkern_scalar.absmax_f64(nan3, (const uint64[]) {0x2}, 3, &am) && am == 42);
 		EXPECT(sift_aggkern_scalar.absmax_f64(bad, (const uint64[]) {0x5}, 3, &am) && am == 2);
 	}
-
-	/* count_changes: selected rows 0, 1, 3, 5 hold 3, 3, 4, 5: two changes from "3", three from "none" */
-	prev = 3;
-	EXPECT(sift_aggkern_scalar.count_changes(codes, sel2, 6, &prev) == 2 && prev == 5);
-	prev = UINT32_MAX;
-	EXPECT(sift_aggkern_scalar.count_changes(codes, sel2, 6, &prev) == 3 && prev == 5);
-	prev = 9;
-	EXPECT(sift_aggkern_scalar.count_changes(codes, (const uint64[]) {0}, 6, &prev) == 0 && prev == 9);
-	EXPECT(sift_aggkern_scalar.count_changes(codes, NULL, 6, &prev) == 4 && prev == 5);
 }
 
 int

@@ -5,8 +5,7 @@
  * (x - lo) <= span unsigned is !((x - lo') > span') signed. A 64-element word comes out of movemasks (u16 and u32 compare results
  * are packed to bytes first). The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use gathers; unpack cuts 8 values per step
  * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount; bits_to_idx
- * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table (also the aggregation
- * operators' count_changes). The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
+ * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
  * replace. The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */

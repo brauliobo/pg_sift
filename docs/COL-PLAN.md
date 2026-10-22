@@ -180,7 +180,7 @@ Listed once, with the reason:
 
 One unit at a time (the rows of a segment inside one superblock), through the seam of `src/agg/colsrc.h`:
 
-1. row predicates to a bitmap with the kernel tables (integer comparisons are `range` and dictionary lookups `lut` of the column table, `cmp_f64` / `between_f64` / `lut_i32` of the aggregation table; bitmap operations are the column table's `bits_*`); dictionary predicates are evaluated once per distinct value of the unit's dictionary;
+1. row predicates to a bitmap with the kernel tables (integer comparisons are `range` and dictionary lookups `lut` of the column table, `cmp_f64` / `lut_i32` of the aggregation table; bitmap operations are the column table's `bits_*`); dictionary predicates are evaluated once per distinct value of the unit's dictionary;
 2. with an unnest, element predicates in vectors of 4096 elements, the row bitmap lifted to the elements through their parent ordinals;
 3. `sift_colsrc_live` and `sift_colsrc_vet`: dead rows out, then, after the value filters, the rows that the snapshot does not see (all-visible pages pass, the others are read in the heap; a `sift_table` table has nothing to check);
 4. group ids: dictionary codes and integer values map to dense key ids through tables built once per dictionary / value range; ids combine into a direct array (up to 2^20 groups) or a hash table beyond;

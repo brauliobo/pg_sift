@@ -77,7 +77,7 @@ sift_colk_zero_pad(uint64 *bits, uint32 from, uint32 n)
 	static void bits_andnot_##sfx(uint64 *dst, const uint64 *src, uint32 nwords) { (tab).vop(dst, dst, src, nwords, SIFT_VOP_ANDNOT); } \
 	SIFT_COLK_BITS_COUNT(sfx, tab)
 
-/* The positions of the set bits of a byte, lane j of row b (0 past the last): the AVX2 expansion of bits_to_idx and count_changes */
+/* The positions of the set bits of a byte, lane j of row b (0 past the last): the AVX2 expansion of bits_to_idx */
 extern const uint8 sift_colk_lut_pos[256][8];
 
 /* The scalar kernels the AVX2 kernels finish with (the tail of an array) */
