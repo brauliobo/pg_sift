@@ -184,11 +184,12 @@ score_cutoff(Node *clause, Index relid, bool *lower)
 
 	if (!IsA(clause, OpExpr) || list_length((op = (OpExpr *) clause)->args) != 2)
 		return false;
-	strategy = get_op_opfamily_strategy(op->opno, get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID)));
-	if (strategy == 0 || strategy == BTEqualStrategyNumber)
-		return false;
+	/* before the opclass lookup, a scan of the catalog that every clause of every query would pay */
 	score_left = score_operand(linitial(op->args), relid);
 	if (!score_left && !score_operand(lsecond(op->args), relid))
+		return false;
+	strategy = get_op_opfamily_strategy(op->opno, get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID)));
+	if (strategy == 0 || strategy == BTEqualStrategyNumber)
 		return false;
 	cutoff = score_left ? lsecond(op->args) : linitial(op->args);
 	if (contain_var_clause(cutoff) || contain_volatile_functions(cutoff) || contain_subplans(cutoff))
