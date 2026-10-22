@@ -58,6 +58,8 @@ extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
 #define TXK_COALESCE	1
 #define TXK_LOWER		2
 #define TXK_UPPER		3
+/* the key is a sort expression of PostgreSQL's own evaluator over the leaves of the row (exprs of sift_topn_spec); c: its number, coll: the type of its result */
+#define TXK_EXPR		4
 
 typedef struct SiftTopXform
 {
@@ -66,7 +68,8 @@ typedef struct SiftTopXform
 	Oid			coll;
 } SiftTopXform;
 
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, int nout, const int *attno, int flags, Node *count, Node *offset);
+/* exprs: the sort expressions of the TXK_EXPR keys (Vars of varno 1, varattno the leaf + 1), each a list member in the order of the keys; nout the number of output attributes */
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
@@ -120,9 +123,11 @@ extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
 /*
- * The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows (read for the rows of rmask at least); the others are read for the few rows that need them
+ * The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows (read for the rows of rmask at least); the others are read for the few rows that need them.
+ * leaf(ctx, n): the decoded vector of leaf n, for the leaves a sort expression reads (evaluated here for every row of rmask, as the plan's sort would)
  */
-extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
+typedef const SiftSrcVec *(*SiftTopLeaf) (void *ctx, int leaf);
+extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, SiftTopLeaf leaf, void *ctx);
 
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
