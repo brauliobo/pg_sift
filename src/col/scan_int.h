@@ -121,7 +121,6 @@ struct SiftColSource
 	Snapshot	snap;
 	uint32		flags;
 	const SiftColSchema *schema;
-	SiftDirSnapshot dir;
 	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
 	bool		dir_current;
 	SiftVis		vis;
@@ -140,9 +139,11 @@ struct SiftColSource
 	ColUnit		cu;
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
 	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
-	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
+	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
+	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
+	SiftDirSnapshot dir;
 };
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
