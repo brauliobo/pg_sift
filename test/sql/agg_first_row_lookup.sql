@@ -50,8 +50,11 @@ CREATE TABLE vers_dup (id int, a int NOT NULL, b int NOT NULL, ts int NOT NULL, 
 INSERT INTO vers_dup SELECT id, a, b, ts, label, score FROM vers;
 INSERT INTO vers_dup SELECT id + 100000, a, b, ts, 'again', score + 1000 FROM vers WHERE a < 20 AND ts = 3;
 CREATE INDEX vers_dup_key ON vers_dup (a, b, ts);
+CREATE TABLE dims_label (label text, score int);
+INSERT INTO dims_label SELECT label, score FROM dims;
+CREATE UNIQUE INDEX dims_label_key ON dims_label (label);
 VACUUM (FREEZE, ANALYZE) facts;
-ANALYZE dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
+ANALYZE dims_label, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
 -- whether the query is pushed to the scan, the rows it differs by from the plan without it, and the tables the scan read as first-row lookups
 CREATE FUNCTION check_first(q text) RETURNS TABLE (pushed bool, differences bigint, lookups int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -146,6 +149,12 @@ SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts, x.dt, x.id, x.score LIMIT 1) d ON true GROUP BY 1
 $q$);
+-- laterals one after the other, the second keyed by a column of the first's row: two lookup tables
+SELECT * FROM check_first($q$
+ SELECT e.score % 10 AS g, count(*) AS n, sum(e.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true
+ LEFT JOIN LATERAL (SELECT score FROM dims_label WHERE dims_label.label = d.label LIMIT 1) e ON true GROUP BY 1
+$q$);
 -- the rows the lookups return
 SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1 ORDER BY 1;
@@ -232,5 +241,5 @@ SELECT * FROM explain_first($q$
 $q$);
 DROP FUNCTION explain_first(text);
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, dims_label;
 DROP EXTENSION pg_sift;
