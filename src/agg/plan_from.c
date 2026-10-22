@@ -71,6 +71,18 @@ right_table(Node *n)
 	return IsA(n, RangeTblRef) ? (RangeTblRef *) n : NULL;
 }
 
+/* a condition that reads no column of the preserved table rti, and no sub-select or volatile function */
+static bool
+right_only(Node *q, Index rti)
+{
+	if (checkExprHasSubLink(q) || contain_volatile_functions(q))
+		return false;
+	foreach_ptr(Var, v, pull_var_clause(q, PVC_RECURSE_PLACEHOLDERS))
+		if (v->varno == rti)
+			return false;
+	return true;
+}
+
 /*
  * A LEFT JOIN with the scanned table on its right (the left side is preserved: flip), or a FULL JOIN of two tables: the table that is
  * not scanned is the join, with all of its rows kept. The ON clause is the join's; whatever the WHERE says of the scanned table is not.
@@ -103,6 +115,21 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	lj->kind = full ? SJ_FULL : SJ_RIGHT;
 	lj->rti = dim;
 	lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+	/*
+	 * PostgreSQL moves the WHERE of a sub-select on the nullable side into the ON clause: what does not read the preserved table filters the
+	 * nullable input before the match, like the conditions inside it (a lookup whose filter matches nothing then ends the scan).
+	 */
+	if (!full)
+	{
+		List	   *on = NIL;
+
+		foreach_ptr(Node, q, lj->quals)
+			if (right_only(q, dim))
+				f->scan_quals = lappend(f->scan_quals, q);
+			else
+				on = lappend(on, q);
+		lj->quals = on;
+	}
 	/* Filter the nullable input before matching; these conditions never test its preserved NULL rows. */
 	f->scan_quals = list_concat(f->scan_quals, right.quals);
 	f->lefts = list_concat(f->lefts, right.lefts);
