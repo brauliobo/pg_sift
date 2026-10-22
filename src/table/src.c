@@ -722,7 +722,10 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	}
 	ords = stored_ords(t, rows, n);
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
-	fill_vec(t, leaf, &v, vec);
+	if (t->lay->leaf[leaf].wide)
+		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
+	else
+		fill_vec(t, leaf, &v, vec);
 	pfree(ords);
 }
 

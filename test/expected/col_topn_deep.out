@@ -69,7 +69,7 @@ NOTICE:  table "cd_b" does not exist, skipping
  filter        | same+topn 10
  filter_past   | same+topn 10
  five_keys     | same+topn 30
- five_keys_mix | same 10
+ five_keys_mix | same+topn 10
  limit_150k    | same+topn 150000
  nulls_first   | same+topn 20
  nulls_last    | same+topn 20

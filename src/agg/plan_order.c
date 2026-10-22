@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/nbtree.h"
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
@@ -282,11 +283,18 @@ topn_bounds(Query *parse, PlannerInfo *root, double *count, double *offset)
 /* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
 #define TOPN_SORT_ROWS	1024
 
-/* the heap of n rows takes the rows read: each is compared with the n-th and the better ones sift down, log2(n) steps (a heap of a page is the baseline) */
+/*
+ * the heap of n rows takes the rows read: each is compared with the n-th and the better ones sift down, log2(n) steps (a heap of a page is the baseline).
+ * cmpx: what a compare of byte strings costs besides an integer's: every row is compared once, and the rows that enter the heap (about n for
+ * every doubling of the rows read) sift down log2(n) steps
+ */
 static Cost
-topn_heap_cost(double read, double n)
+topn_heap_cost(double read, double n, double cmpx)
 {
-	return n <= TOPN_SORT_ROWS ? 0 : 4.0 * cpu_operator_cost * read * log2(n / TOPN_SORT_ROWS);
+	double		pushes = n * (1.0 + log(Max(read / Max(n, 1.0), 1.0)));
+
+	return (n <= TOPN_SORT_ROWS ? 0 : 4.0 * cpu_operator_cost * read * log2(n / TOPN_SORT_ROWS)) +
+		cmpx * cpu_operator_cost * (read + pushes * log2(Max(n, 2.0)));
 }
 
 /*
@@ -310,15 +318,16 @@ topn_heap_cost(double read, double n)
  * prices it, without the tuples) up to hash_mem, or, past it, by a tuplesort that writes runs to disk (cost_sort's model of it)
  */
 static Cost
-topn_sort_cost(double rows, int nkey)
+topn_sort_cost(double rows, int nkey, double keybytes, double cmpx)
 {
 	double		budget = work_mem * 1024.0,
-				mem = rows * (nkey + (nkey + 63) / 64 + 1) * sizeof(int64),
-				cost = cpu_operator_cost * rows * (log2(Max(rows, 2.0)) + 1.0 + TOPN_KEY_READ * (nkey - 1));
+				mem = rows * ((nkey + (nkey + 63) / 64 + 1) * sizeof(int64) + keybytes),
+				cost = cpu_operator_cost * rows * ((log2(Max(rows, 2.0)) + 1.0) * (1.0 + cmpx) + TOPN_KEY_READ * (nkey - 1));
 
-	if (mem > Min((double) get_hash_memory_limit(), 512.0 * 1024 * 1024))
+	/* byte strings do not fit the array: the rows go to a tuplesort at once, which spills past work_mem */
+	if (mem > (keybytes > 0 ? budget : Min((double) get_hash_memory_limit(), 512.0 * 1024 * 1024)))
 	{
-		double		bytes = rows * (MAXALIGN((nkey + 1) * sizeof(int64)) + MAXALIGN(SizeofHeapTupleHeader)),
+		double		bytes = rows * (MAXALIGN((nkey + 1) * sizeof(int64)) + MAXALIGN(SizeofHeapTupleHeader) + keybytes),
 					passes = Max(1.0, ceil(log(Max(bytes / budget, 2.0)) / log(6.0)));
 
 		cost += TOPN_SPILL_STEP * cpu_operator_cost * rows * log2(Max(rows, 2.0)) + 2.0 * (bytes / BLCKSZ) * passes * (seq_page_cost * 0.75 + random_page_cost * 0.25);
@@ -326,11 +335,31 @@ topn_sort_cost(double rows, int nkey)
 	return cost;
 }
 
-/* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator */
+/*
+ * What a compare of two entries of a key of byte strings costs besides an integer's, in operators, as the scan does it: each row is compared with
+ * the n-th best (a dictionary entry once, then it is remembered). Measured on 200,000 random strings of 8 to 15 bytes, LIMIT 10, serial, median of
+ * 5: 14.8 ms under the C collation, 25.8 under en_US.utf8 and 22.1 under ICU: 11 ms more is 2,400 units on the scale of TOPN_KEY_READ (1 ms is about
+ * 218 units), 0.012 a row, 4.8 operators; the byte order and the datum compares count as one.
+ */
+#define TOPN_CMP_BYTES	1.0
+#define TOPN_CMP_LOCALE	5.0
+
+/* The bytes a key of byte strings holds in an entry of the heap or a row of the sort: the column's average width, a header and the allocation's */
+static double
+topn_key_width(AggCtx *c, Node *e, Oid typid)
+{
+	Node	   *x = strip_relabel(e);
+	int32		w = IsA(x, Var) ? get_attavgwidth(c->heapoid, ((Var *) x)->varattno) : 0;
+
+	return (w > 0 ? w : get_typavgwidth(typid, -1)) + sizeof(uint32) + 16;
+}
+
+/* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */
 static bool
-topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
+topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid)
 {
 	Node	   *e = (Node *) get_sortgroupclause_expr(sgc, c->root->processed_tlist);
+	const SiftSrcLeaf *lf;
 	Oid			opfamily,
 				opcintype;
 #if PG_VERSION_NUM >= 180000
@@ -344,9 +373,20 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
 	if (!get_ordering_op_properties(sgc->sortop, &opfamily, &opcintype, &strategy))
 		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
 	*leaf = match_leaf(c, normalize_expr(c, e));
-	if (*leaf < 0 || !sift_topn_key_ok(leaf_of(c, *leaf)) || opcintype != leaf_of(c, *leaf)->typid ||
+	lf = *leaf >= 0 ? leaf_of(c, *leaf) : NULL;
+	/* a varchar column sorts by the operators of text */
+	if (lf == NULL || !sift_topn_key_ok(lf) || (opcintype != lf->typid && !(lf->typid == VARCHAROID && opcintype == TEXTOID)) ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
 		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, or its operator is not the default btree one of its type");
+	*cmp = *collid = InvalidOid;
+	if (lf->vtype == SCV_CODE)
+	{
+		*cmp = get_opfamily_proc(opfamily, opcintype, opcintype, BTORDER_PROC);
+		*collid = exprCollation(e);
+		/* strings that are equal under a nondeterministic collation (equal as the collation sees them, not as bytes) tie in an order the plan chooses */
+		if (opcintype == TEXTOID && (!OidIsValid(*collid) || !get_collation_isdeterministic(*collid)))
+			return agg_refuse_on(TOPN_SHAPE, "a text sort key has a nondeterministic collation: strings that are equal under it differ as bytes, and their order is the plan's");
+	}
 	*desc = strategy == TOPN_DESC;
 	appendStringInfo(txt, "%s%s%s", txt->len ? ", " : "", leaf_name(c, *leaf), *desc ? " DESC" : "");
 	if (sgc->nulls_first != *desc)
@@ -370,7 +410,8 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 	double		corr = 0,
 				nsb = Max(c->stats.nunits, 1.0);
 
-	if (!IsA(x, Var))
+	/* the zones are of integers: the strings of a unit are not bounded, the scan reads them all */
+	if (!IsA(x, Var) || leaf_of(c, leaf)->vtype == SCV_CODE)
 		return 1.0;
 	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tp))
@@ -487,7 +528,8 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.pathkeys = root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
-	extra = c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause)) : topn_heap_cost(matches * c->topn_frac, rows);
+	extra = c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
+		topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
@@ -534,6 +576,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	bool	   *desc,
 			   *nulls_first,
 				skip_offset = true;
+	Oid		   *sortop,
+			   *cmp,
+			   *collid;
 	double		count = 0,
 				offset = 0,
 				rows;
@@ -567,16 +612,29 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	leaf = palloc(nkey * sizeof(int));
 	desc = palloc(nkey * sizeof(bool));
 	nulls_first = palloc(nkey * sizeof(bool));
+	sortop = palloc(nkey * sizeof(Oid));
+	cmp = palloc(nkey * sizeof(Oid));
+	collid = palloc(nkey * sizeof(Oid));
+	c->topn_cmpx = c->topn_keybytes = 0;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
 		int			j = foreach_current_index(sgc);
 
-		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt))
+		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt, &cmp[j], &collid[j]))
 		{
 			agg_refused(TOPN_SHAPE);
 			return;
 		}
 		nulls_first[j] = sgc->nulls_first;
+		sortop[j] = sgc->sortop;
+		if (OidIsValid(cmp[j]))
+		{
+			Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
+			bool		locale = cmp[j] == F_BTTEXTCMP && collid[j] != C_COLLATION_OID;
+
+			c->topn_cmpx = Max(c->topn_cmpx, locale ? TOPN_CMP_LOCALE : TOPN_CMP_BYTES);
+			c->topn_keybytes += topn_key_width(c, e, exprType(e));
+		}
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
 	if (!topn_columns(c, target, &scan_tlist, attno))
@@ -601,12 +659,12 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	s->desc_topn = txt.data;
 
 	/* the heap holds the bound, or the scan sorts every row that passes: a heap of many rows costs more than the sort, so both are priced */
-	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS))
+	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
 		c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
 									 leaf[0], input_rel->rows, (int64) rows);
-		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
 								 copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
@@ -618,7 +676,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	}
 	c->topn_sorted = true;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
 							 copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 }

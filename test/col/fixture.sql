@@ -248,6 +248,12 @@ FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','
 -- strings longer than a dictionary entry (the engine stores them inline), repeated and distinct, with NULLs
 INSERT INTO t_text SELECT 100 + i, 1 + i % 3, CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 4), 250 + (i % 9) * 40) || (i % 5) END, 'lng'
 FROM generate_series(1, 90) i;
+-- many rows that share the strings above with a number behind them (ties on a prefix, accents, case, an empty string, multi-byte characters), a few units' worth
+INSERT INTO t_text SELECT 1000 + i, 1 + i % 3,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN ''
+		ELSE (ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','  ','日本','é日'])[1 + i % 25] || (i % 37) END,
+	'v' || (i % 11)
+FROM generate_series(1, greatest(:n - 4000, 800)) i;
 
 -- the wide leaves: numeric of 19..38 digits (two lanes), any other numeric (a canonical image: unconstrained, a negative
 -- scale, more than 38 digits), money and interval, with their traps: NaN and the infinities, the largest and smallest values, equal numbers of
@@ -291,6 +297,9 @@ FROM generate_series(1, greatest(:n - 4000, 400)) i;
 -- the other 3.2 leaf types: time, enum (a value added after the first ones, so that the OID order is not the sort order), uuid, bytea, arrays,
 -- ranges and a multirange, with NULLs, empty values and equal values spelled differently (the numeric elements 1.0 and 1.00)
 DROP TYPE IF EXISTS coldiff_lvl3 CASCADE;
+DROP COLLATION IF EXISTS coldiff_nd;
+-- a nondeterministic collation (case and accents equal): a top-N by a text key under it keeps the normal plan; without ICU the fixtures that need it are skipped
+DO $$ BEGIN CREATE COLLATION coldiff_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 CREATE TYPE coldiff_lvl3 AS ENUM ('lo', 'ok', 'hi');
 ALTER TYPE coldiff_lvl3 ADD VALUE 'meh' BEFORE 'ok';
 CREATE TABLE t_misc (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, t time, e coldiff_lvl3, u uuid, b bytea, ia integer[], ta text[], na numeric[],

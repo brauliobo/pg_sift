@@ -142,6 +142,8 @@ typedef struct AggCtx
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
 	double		topn_fetch;		/* ... the rows it reads from the heap */
+	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
+	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
