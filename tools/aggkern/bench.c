@@ -13,6 +13,11 @@
 
 #include "agg/kern_cases.h"
 
+extern double alt_sum_f64_a(const double *v, const uint64 *mask, int n);
+extern double alt_sum_f64_b(const double *v, const uint64 *mask, int n);
+extern double alt_sum_f64_c(const double *v, const uint64 *mask, int n);
+extern double alt_sum_f64_plain(const double *v, const uint64 *mask, int n);
+
 #define N			SIFT_AGG_VEC
 #define NW			SIFT_AGG_VECW
 
@@ -195,5 +200,12 @@ main(void)
 		ROW("count_changes 30 %", sink = k->count_changes(runs, mb, N, &prev));
 		ROW("count_changes 50 %", sink = k->count_changes(runs, m50, N, &prev));
 	}
+	if (sift_aggkern_for(SIFT_SIMD_AVX512) != sift_aggkern_for(SIFT_SIMD_AVX2))
+		printf("\n| sum_f64, AVX-512 selection | 50 %% | all rows |\n|---|---|---|\n| zeroing masked load | %.0f | |\n"
+			   "| load + zeroing move | %.0f | |\n| load + AND with a lane table | %.0f | |\n| plain loads | | %.0f |\n",
+			   BENCH(sink = (int64) alt_sum_f64_a(f64, m50, N)), BENCH(sink = (int64) alt_sum_f64_b(f64, m50, N)),
+			   BENCH(sink = (int64) alt_sum_f64_c(f64, m50, N)), BENCH(sink = (int64) alt_sum_f64_plain(f64, NULL, N)));
+	else
+		printf("\n(sum_f64 AVX-512 selections not run: this host has no AVX-512)\n");
 	return 0;
 }
