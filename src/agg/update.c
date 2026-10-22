@@ -640,6 +640,16 @@ post_holds(AggExec *ex, const SiftAggPred *p, const Tup *t, int j)
 	return cs->val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
 }
 
+static void
+tup_move(AggExec *ex, Tup *t, int to, int from, int stages)
+{
+	t->sel[to] = t->sel[from];
+	t->tidx[to] = t->tidx[from];
+	t->ridx[to] = t->ridx[from];
+	for (int x = 0; x < stages; x++)
+		t->cout[ex->jcombo[x]][to] = t->cout[ex->jcombo[x]][from];
+}
+
 /* the conjuncts over the joined rows [first, end) that apply to the set: the tuples that pass, moved to the front; the new count */
 static int
 post_filter(AggExec *ex, Tup *t, int first, int end, int stages, int set)
@@ -654,13 +664,22 @@ post_filter(AggExec *ex, Tup *t, int first, int end, int stages, int set)
 			keep = !post_applies(ex->spec, i, set) || post_holds(ex, ex->spec->post[i], t, j);
 		if (!keep)
 			continue;
-		t->sel[k] = t->sel[j];
-		t->tidx[k] = t->tidx[j];
-		t->ridx[k] = t->ridx[j];
-		for (int x = 0; x < stages; x++)
-			t->cout[ex->jcombo[x]][k] = t->cout[ex->jcombo[x]][j];
-		k++;
+		tup_move(ex, t, k++, j, stages);
 	}
+	return k;
+}
+
+/* the conjuncts of the set's arm that the pass does not apply (the rows of its chunk, as an aggregate's FILTER): the tuples that pass, moved to the front; the new count */
+static int
+set_filter(AggExec *ex, Tup *t, const SiftAggPred *p)
+{
+	uint64		pass[VECW + PADW];
+	int			k = 0;
+
+	eval_pred(ex, (SiftAggPred *) p, ex->qlevel, ex->cstart, ex->cn, pass);
+	for (int j = 0; j < t->n; j++)
+		if (sift_colsrc_bit(pass, t->sel[j]))
+			tup_move(ex, t, k++, j, ex->nj);
 	return k;
 }
 
@@ -686,12 +705,16 @@ set_tuples(AggExec *ex, const Tup *t, int set)
 	for (int x = 0; x < ex->nj; x++)
 		memcpy(own->cout[ex->jcombo[x]], t->cout[ex->jcombo[x]], t->n * sizeof(uint32));
 	own->n = post_filter(ex, own, ex->spec->nprepost, ex->spec->npost, ex->nj, set);
+	if (own->n > 0 && ex->spec->setpred && ex->spec->setpred[set])
+		own->n = set_filter(ex, own, ex->spec->setpred[set]);
 	return own;
 }
 
 static bool
 set_has_post(const SiftAggSpec *s, int set)
 {
+	if (s->setpred && s->setpred[set])
+		return true;
 	for (int i = s->nprepost; i < s->npost; i++)
 		if (post_applies(s, i, set))
 			return true;

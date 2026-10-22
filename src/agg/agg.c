@@ -97,6 +97,7 @@ int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
 bool		sift_agg_share_lookups = true;
+bool		sift_agg_fuse = true;
 bool		sift_enable_topn = true;
 bool		sift_topn_walk = true;
 static bool sift_test_agg_wait = false;
@@ -141,6 +142,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_share_lookups",
 							 "Lets the Custom Scan (SiftAgg) nodes of one statement that join the same table share the rows they load (UNION ALL arms).",
 							 NULL, &sift_agg_share_lookups, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_fuse",
+							 "Runs the UNION ALL arms that read the same rows in one pass over the index, as the grouping sets of one scan.",
+							 NULL, &sift_agg_fuse, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_cache_kb",
 							"Memory per backend that keeps the rows of the joined tables a scan loaded for the next query, while the table does not change (0: off).",
