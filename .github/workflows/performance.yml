@@ -112,6 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           started=$(date +%s)
+          # shellcheck disable=SC2317,SC2329  # the EXIT trap calls it; shellcheck loses that after the final exit
           finish_phase() { echo "driver-build-setup-measure-cleanup $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
           trap finish_phase EXIT
           [[ $TIER == nightly ]] && date +%s.%N > "$ARTIFACTS/budget-start"
