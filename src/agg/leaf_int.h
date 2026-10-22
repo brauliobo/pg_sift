@@ -79,6 +79,7 @@ bool eval_bool(AggExec *ex, ExprState *e, Datum in, bool in_null);
 DictSlot *dict_slot(AggExec *ex, const SiftSrcDict *d);
 uint32 key_value_id(AggExec *ex, int ki, Datum in, bool in_null);
 uint32 *dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki);
+uint32 *dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai);
 const SiftSrcVec *get_vec(AggExec *ex, int leaf);
 uint32 *elem_offs(AggExec *ex, int leaf);
 uint64 *member_elems(AggExec *ex, int j, const uint32 **offs);

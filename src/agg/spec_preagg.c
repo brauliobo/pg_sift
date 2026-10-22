@@ -226,12 +226,26 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 	return SPW_OK;
 }
 
+/* count(DISTINCT leaf) of a plain 32-bit or text leaf: the groups of its own histogram are its distinct values */
+static bool
+distinct_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay)
+{
+	return a->kind == SAA_COUNT_DISTINCT && sift_agg_preagg_distinct && !a->num.n && !a->filter && a->leaf >= 0 &&
+		lay->leaf[a->leaf].kind == SCL_SCALAR && (lay->leaf[a->leaf].vtype == SCV_I32 || lay->leaf[a->leaf].vtype == SCV_CODE);
+}
+
+bool		sift_agg_preagg_distinct = true;
+
 /* can the unit's histogram d of pa (or the sums of the leaves when d < 0) give aggregate a? */
 static SiftPaWhy
 cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int d)
 {
 	int			leaf;
-	SiftPaWhy	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);
+	SiftPaWhy	why;
+
+	if (distinct_leaf(a, lay))
+		return d >= 0 && a->leaf == pa->dim[d].leaf ? SPW_OK : SPW_AGG_DISTINCT;
+	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);
 
 	if (why != SPW_OK || leaf < 0 || d < 0)
 		return why;
@@ -467,6 +481,14 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	if (fdim == -2 || (fdim >= 0 && dim >= 0 && dim != fdim))
 		return SPW_AGG_FILTER;
 	dim = fdim >= 0 ? fdim : dim;
+	/* count(DISTINCT leaf) reads the groups of the histogram of the leaf itself */
+	for (int i = 0; i < s->naggs; i++)
+		if (distinct_leaf(&s->agg[i], lay))
+		{
+			if (dim >= 0 && dim != s->agg[i].leaf)
+				return SPW_AGG_DISTINCT;
+			dim = s->agg[i].leaf;
+		}
 	if (dim >= 0)
 	{
 		d = pa_dim(pa, dim);

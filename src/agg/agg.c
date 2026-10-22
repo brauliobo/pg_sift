@@ -123,6 +123,10 @@ sift_agg_init(void)
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_preagg_distinct",
+							 "Answers count(DISTINCT col) of a column the cube stores a histogram of from the groups of the histograms of the units whose rows are all visible, with sift.agg_preagg.",
+							 NULL, &sift_agg_preagg_distinct, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.agg_rollup_cost",
 							 "Scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit is answered from its rollup only when that costs less (0: always).",
 							 NULL, &sift_agg_rollup_cost, 1.0, 0.0, 1000.0,
