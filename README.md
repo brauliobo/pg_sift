@@ -91,7 +91,7 @@ Schema `sift` has 46 functions, 3 views, 1 table, 2 operator classes, 1 operator
 - **[Column index](docs/REFERENCE.md#column-index)**: `col_*_ops`, `col_clustering`, `col_index_info`, `col_leaves`, `col_ops`, `col_sections`, `col_segments`, `col_unit_agg`, `col_unit_hist`, `col_verify`
 - **[Tables](docs/REFERENCE.md#tables)**: `table_paths`, `table_segments`, `table_set_paths`, `table_space`
 - **[Maintenance and workers](docs/REFERENCE.md#maintenance-and-workers)**: `col_maintain`, `col_maintenance_due`, `col_merge`, `col_promote`, `col_refresh`, `col_rollup_counters`, `col_rollup_queue`, `col_rollup_refresh`, `col_rollup_requests`, `col_rollup_state`, `merge`, `promote`, `table_maintain`, `worker_state`, `workers`
-- **[Diagnostics and upgrade](docs/REFERENCE.md#diagnostics-and-upgrade)**: `col_rollup_misses`, `explain_why`, `refusal_slugs`, `stats`, `stats_reset`, `upgrade_commands`, `version`
+- **[Diagnostics and upgrade](docs/REFERENCE.md#diagnostics-and-upgrade)**: `col_rollup_misses`, `explain_why`, `refusal_slugs`, `reindex_needed`, `stats`, `stats_reset`, `version`
 
 Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-operations), fixed limits in [docs/LIMITS.md](docs/LIMITS.md).
 <!-- sift-reference:end -->
