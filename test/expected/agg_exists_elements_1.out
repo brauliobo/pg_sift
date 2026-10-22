@@ -47,7 +47,7 @@ BEGIN
   DROP TABLE r_off, r_on;
   RETURN NEXT;
 END $$;
--- The subject shape: a lookup per element chosen by the entity's kind, the unmapped category of a document that is not mapped, the element's own otherwise.
+-- The lookup-per-element shape: a lookup per element chosen by the entity's kind, the unmapped category of a document that is not mapped, the element's own otherwise.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n, avg(f.id) AS mean FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  WHERE EXISTS (SELECT 1 FROM LATERAL (

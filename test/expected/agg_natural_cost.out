@@ -36,8 +36,8 @@ BEGIN
 END $$;
 CREATE FUNCTION spine(scope text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 WITH ids AS MATERIALIZED (SELECT id FROM nc_entities WHERE id %s),
-periods AS (SELECT * FROM (VALUES ('current', daterange('2026-03-01', '2026-06-30', '[]'), interval '0 day'),
-	('previous', daterange('2025-03-01', '2025-06-30', '[]'), interval '1 year')) p(period, range, shift)),
+periods AS (SELECT * FROM (VALUES ('span_one', daterange('2026-03-01', '2026-06-30', '[]'), interval '0 day'),
+	('span_two', daterange('2025-03-01', '2025-06-30', '[]'), interval '1 year')) p(period, range, shift)),
 spine AS (SELECT period, (generate_series(date_trunc('month', lower(range))::date, date_trunc('month', upper(range) - 1)::date, interval '1 month') + shift)::date AS bucket FROM periods),
 scoped AS (SELECT r.*, p.period AS bucket_period, (date_trunc('month', r.day) + p.shift)::date AS bucket_date
 	FROM nc_rows r JOIN periods p ON r.day <@ p.range JOIN ids ON ids.id = r.dim_a_id

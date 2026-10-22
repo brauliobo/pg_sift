@@ -153,14 +153,14 @@ $q$);
 
 -- Constants projected inside the nullable input have no source leaf, but still have a nulling boundary.
 SELECT * FROM check_query($q$
- SELECT d.day, p.dimension, coalesce(p.bucket_kind, 'empty') AS kind,
+ SELECT d.day, p.attribute, coalesce(p.bucket_kind, 'empty') AS kind,
         count(*) AS n, count(DISTINCT p.id) AS ids
  FROM (VALUES (NULL::date), (date '2024-05-01'), (date '2024-01-01')) d(day)
  LEFT JOIN (
-   SELECT f.id, f.day, NULL::jsonb AS dimension, 'base'::text AS bucket_kind
+   SELECT f.id, f.day, NULL::jsonb AS attribute, 'base'::text AS bucket_kind
    FROM events f CROSS JOIN LATERAL jsonb_each(f.metrics) r
  ) p ON jsonb_build_array(p.day) = jsonb_build_array(d.day)
- GROUP BY d.day, p.dimension, p.bucket_kind
+ GROUP BY d.day, p.attribute, p.bucket_kind
 $q$);
  pushed | differences 
 --------+-------------
