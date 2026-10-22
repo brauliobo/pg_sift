@@ -321,3 +321,6 @@ EXCEPTION WHEN OTHERS THEN
 	RAISE WARNING 'pg_sift 3.3: the check for what to REINDEX or rewrite did not run (%): reconnect and run SELECT * FROM sift.upgrade_commands()', SQLERRM;
 END
 $do$;
+
+COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of one sift or sift_col index: directory entries, sealed write buffers, whether maintenance runs and, when the last background step failed, the failures in a row, when, the earliest retry, the SQLSTATE and the message. Read through sift.workers.';
+COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index whose table you can read: segments, sealed write buffers, whether maintenance runs, the failures in a row of the background, when, the next retry, the SQLSTATE and the last error, and why a sift_col index would be rewritten (due).';
