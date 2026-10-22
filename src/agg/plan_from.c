@@ -63,6 +63,7 @@
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/plan_int.h"
+#include "core/limits.h"
 
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
 static RangeTblRef *
@@ -535,7 +536,15 @@ part_source(AggCtx *c)
 		return false;
 	part_leaves(c->rel, &leaves);
 	n = list_length(leaves);
-	if (n == 0 || n > SIFT_AGG_MAX_PARTS || !part_prune_clauses(c))
+	if (n == 0)
+		return false;
+	if (n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
+	{
+		if (sift_explain_refusals)
+			agg_refused_on(PARTITION_COUNT, psprintf("%d partitions, up to %d", n, (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS)));
+		return false;
+	}
+	if (!part_prune_clauses(c))
 		return false;
 	first = part_candidates(c, linitial_node(RelOptInfo, leaves));
 	foreach_ptr(PartCand, f, first)

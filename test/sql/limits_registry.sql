@@ -24,7 +24,7 @@ SELECT count(*) FROM sift._test_limits() WHERE effective <> dflt;
 
 -- the setting rejects what would pass a test for the wrong reason
 SET sift.test_limits = 'no_such_limit=1';
-SET sift.test_limits = 'partitions=1';
+SET sift.test_limits = 'arms=1';
 SET sift.test_limits = 'query_bytes=-1';
 SET sift.test_limits = 'query_bytes=9999999';
 SET sift.test_limits = 'query_bytes';

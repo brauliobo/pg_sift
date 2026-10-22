@@ -14,9 +14,9 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
-| `partitions` | leaf partitions per SiftAgg scan | 4,096 | partitions | normal plan (slug partition_source) |  | `agg/part.h` `SIFT_AGG_MAX_PARTS` |  |
-| `hash_part_combos` | value combinations a hash partition is tested with for pruning | 4,096 | combinations | the partition is kept (not pruned) |  | `agg/part.c` `HASH_MAX_COMBOS` |  |
-| `part_key_tests` | keys times partitions a list of keys is tested against exactly | 20,000 | tests | only the range of the keys prunes |  | `agg/part.c` `KEYS_MAX_TESTS` |  |
+| `partitions` | leaf partitions per SiftAgg scan, after PostgreSQL's pruning | 32,768 | partitions | normal plan (slug partition_count, the detail has the count) |  | `agg/part.h` `SIFT_AGG_MAX_PARTS` | yes |
+| `hash_part_combos` | value combinations the remainders of a hash level are computed for (once per level) | 1,048,576 | combinations | the partitions of the level are kept (not pruned) |  | `agg/part.c` `HASH_MAX_COMBOS` | yes |
+| `part_key_tests` | keys times range or list partitions a list of keys is tested against exactly | 20,000 | tests | only the range of the keys prunes |  | `agg/part.c` `KEYS_MAX_TESTS` | yes |
 | `joins` | lookup-joined tables per scan | 8 | tables | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` |  |
 | `combos` | value combinations per scan | 16 | combinations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` |  |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |

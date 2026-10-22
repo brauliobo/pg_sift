@@ -33,6 +33,7 @@
 
 #include "agg/part.h"
 #include "core/cmp.h"
+#include "core/limits.h"
 
 #define PART_DICT_ID_BASE	UINT64CONST(0x6000000000000000)	/* no id of a provider has these bits: the engine's counters and pointers are below, its flags above */
 
@@ -138,8 +139,8 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	PartSource *ps = MemoryContextAllocZero(mcxt, sizeof(PartSource));
 	SiftSrcSource *out = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
-	if (n <= 0 || n > SIFT_AGG_MAX_PARTS)
-		elog(ERROR, "sift: %d partitions in a scan, from 1 to %d", n, SIFT_AGG_MAX_PARTS);
+	if (n <= 0 || n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
+		elog(ERROR, "sift: %d partitions in a scan, from 1 to %d", n, (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS));
 	check_access(parent);
 	ps->n = n;
 	ps->snapshot = snapshot;
@@ -372,28 +373,58 @@ key_vals(Node *cl)
 	return kv;
 }
 
-#define HASH_MAX_COMBOS		4096	/* the combinations of values a hash partition is tested with: a larger product keeps the partition */
+#define HASH_MAX_COMBOS		1048576	/* the combinations of values the remainders of one hash level are computed for: a larger product keeps the level's partitions */
+
+/* the remainders a hash level (its parent and modulus) gives the combinations of the values the conditions leave its key columns: NULL rem, every one */
+typedef struct HashLevel
+{
+	Oid			parent;
+	int			modulus;
+	int			nrem;
+	uint64	   *rem;			/* sorted, distinct */
+} HashLevel;
+
+static int
+cmp_u64(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
 
 /*
- * Can a row whose key columns take the values of the sets (KeyVals of the conditions) be in the partition of the hash level f
- * (satisfies_hash_partition(table, modulus, remainder, columns ..))? The remainder of each combination of values is computed as PostgreSQL
- * computes it for a row, with the support function of the level's partition key. A column without a set, or too many combinations: yes.
+ * The remainder of each combination of values the sets (KeyVals of the conditions) leave the key columns of the hash level f
+ * (satisfies_hash_partition(table, modulus, remainder, columns ..)), computed as PostgreSQL computes it for a row, with the support function of
+ * the level's partition key: once for the level, so that testing a partition is a search (O(values + partitions), not O(values x partitions)).
+ * A column without a set, or too many combinations: every remainder is possible (rem NULL).
  */
-static bool
-hash_may_hold(FuncExpr *f, List *sets)
+static const HashLevel *
+hash_level(FuncExpr *f, List *sets, List **levels)
 {
-	Relation	level = relation_open(DatumGetObjectId(((Const *) linitial(f->args))->constvalue), AccessShareLock);
-	PartitionKey key = RelationGetPartitionKey(level);
-	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue),
-				remainder = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
+	Oid			parent = DatumGetObjectId(((Const *) linitial(f->args))->constvalue);
+	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue);
+	Relation	level;
+	PartitionKey key;
 	KeyVals    *kv[PARTITION_MAX_KEYS] = {NULL};
 	int			idx[PARTITION_MAX_KEYS] = {0};
 	Datum		values[PARTITION_MAX_KEYS];
 	bool		isnull[PARTITION_MAX_KEYS] = {false};
 	uint64		combos = 1;
-	bool		known = true,
-				may;
+	bool		known = true;
+	HashLevel  *hl;
+	uint64	   *rem;
+	int			nrem = 0;
 
+	foreach_ptr(HashLevel, h, *levels)
+		if (h->parent == parent && h->modulus == modulus)
+			return h;
+	hl = palloc0(sizeof(HashLevel));
+	hl->parent = parent;
+	hl->modulus = modulus;
+	*levels = lappend(*levels, hl);
+	level = relation_open(parent, AccessShareLock);
+	key = RelationGetPartitionKey(level);
 	for (int j = 0; j < key->partnatts; j++)
 	{
 		Node	   *a = list_nth(f->args, 3 + j);
@@ -407,45 +438,63 @@ hash_may_hold(FuncExpr *f, List *sets)
 			known = false;
 		else if (kv[j]->n == 0)
 		{
-			relation_close(level, NoLock);
-			return false;
+			relation_close(level, NoLock);	/* a NULL or an empty list matches nothing: no remainder */
+			hl->rem = palloc(sizeof(uint64));
+			return hl;
 		}
-		else
+		else if (known)
+		{
 			combos *= kv[j]->n;
+			known = combos <= (uint64) sift_limit(hash_part_combos, HASH_MAX_COMBOS);
+		}
 	}
-	if (!known || combos > HASH_MAX_COMBOS)
+	if (!known)
 	{
 		relation_close(level, NoLock);
-		return true;
+		return hl;
 	}
-	may = false;
+	rem = palloc(combos * sizeof(uint64));
 	for (;;)
 	{
 		int			j;
 
 		for (j = 0; j < key->partnatts; j++)
 			values[j] = kv[j]->val[idx[j]];
-		if (compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus == remainder)
-		{
-			may = true;
-			break;
-		}
+		rem[nrem++] = compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus;
 		for (j = 0; j < key->partnatts && ++idx[j] == kv[j]->n; j++)
 			idx[j] = 0;
 		if (j == key->partnatts)
 			break;
 	}
 	relation_close(level, NoLock);
-	return may;
+	qsort(rem, nrem, sizeof(uint64), cmp_u64);
+	{
+		int			k = 0;
+
+		for (int i = 0; i < nrem; i++)
+			if (i == 0 || rem[i] != rem[i - 1])
+				rem[k++] = rem[i];
+		nrem = k;
+	}
+	hl->rem = rem;
+	hl->nrem = nrem;
+	return hl;
 }
 
 /* is the partition out of reach of the rows the sets of values describe: one of its hash levels has no remainder for them? */
 static bool
-hash_refuted(List *bound, List *sets)
+hash_refuted(List *bound, List *sets, List **levels)
 {
 	foreach_ptr(Node, q, bound)
-		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == F_SATISFIES_HASH_PARTITION && !hash_may_hold((FuncExpr *) q, sets))
-			return true;
+		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == F_SATISFIES_HASH_PARTITION)
+		{
+			FuncExpr   *f = (FuncExpr *) q;
+			const HashLevel *hl = hash_level(f, sets, levels);
+			uint64		r = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
+
+			if (hl->rem != NULL && bsearch(&r, hl->rem, hl->nrem, sizeof(uint64), cmp_u64) == NULL)
+				return true;
+		}
 	return false;
 }
 
@@ -534,6 +583,7 @@ static int
 prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 {
 	int			dropped = 0;
+	List	   *levels = NIL;
 
 	if (ps->opened)
 		return 0;				/* the partitions are read already: the keys came too late */
@@ -546,7 +596,7 @@ prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 		if (ps->skip[i])
 			continue;
 		b = none ? NULL : part_bound(ps->heap[i], parent);
-		if (none || (b->ok && b->bound != NIL && (predicate_refuted_by(b->bound, conds, false) || hash_refuted(b->bound, sets))))
+		if (none || (b->ok && b->bound != NIL && (predicate_refuted_by(b->bound, conds, false) || hash_refuted(b->bound, sets, &levels))))
 		{
 			ps->skip[i] = true;
 			dropped++;
@@ -637,7 +687,7 @@ sift_aggpart_prune_keys(SiftSrcSource *src, Oid parent, const Node *col, const i
 			foreach_ptr(OpExpr, op, conds)
 				set_opfuncid(op);
 		}
-		if ((uint64) nk * ps->n <= KEYS_MAX_TESTS)
+		if ((uint64) nk * ps->n <= (uint64) sift_limit(part_key_tests, KEYS_MAX_TESTS))
 		{
 			ScalarArrayOpExpr *any = makeNode(ScalarArrayOpExpr);
 

@@ -28,11 +28,11 @@
 
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
-	  "leaf partitions per SiftAgg scan", "normal plan (slug partition_source)", "-", 0) \
-	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part.c", 4096, "combinations", \
-	  "value combinations a hash partition is tested with for pruning", "the partition is kept (not pruned)", "-", 0) \
+	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
+	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part.c", 1048576, "combinations", \
+	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
-	  "keys times partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 0) \
+	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan", "-", 0) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \

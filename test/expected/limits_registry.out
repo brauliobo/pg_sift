@@ -27,7 +27,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  generic_args        | SIFT_AGG_MAX_GARGS              |        100 | t         | f
  generic_leaves      | SIFT_AGG_MAX_GLEAVES            |          4 | t         | f
  group_keys          | SIFT_AGG_MAX_KEYS               |         32 | t         | f
- hash_part_combos    | HASH_MAX_COMBOS                 |       4096 | t         | f
+ hash_part_combos    | HASH_MAX_COMBOS                 |    1048576 | t         | t
  int_digits          | SIFT_COL_MAX_SCALE              |         18 | t         | f
  join_cols           | SIFT_AGG_MAX_JCOLS              |          6 | t         | f
  join_index_eqs      | SIFT_AGG_MAX_JIDX               |          3 | t         | f
@@ -41,8 +41,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  max_segments        | SIFT_MAX_SEGMENTS               |        128 | t         | f
  month_groups        | SIFT_PAGG_MONTH_GROUPS          |       1024 | t         | f
  num_in_list         | AGG_MAX_NUM_IN                  |         64 | t         | f
- part_key_tests      | KEYS_MAX_TESTS                  |      20000 | t         | f
- partitions          | SIFT_AGG_MAX_PARTS              |       4096 | t         | f
+ part_key_tests      | KEYS_MAX_TESTS                  |      20000 | t         | t
+ partitions          | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
  phrase_terms        | SIFT_MAX_PHRASE                 |        128 | t         | t
  prefix_index        | SIFT_MAX_PREFIX_INDEX           |         15 | t         | f
  query_bytes         | SIFT_QUERY_MAX_BYTES            |     262144 | t         | t
@@ -131,8 +131,8 @@ SELECT count(*) FROM sift._test_limits() WHERE effective <> dflt;
 SET sift.test_limits = 'no_such_limit=1';
 ERROR:  unknown limit "no_such_limit" in sift.test_limits
 HINT:  The ids are the first column of SIFT_LIMITS in src/core/limits.h.
-SET sift.test_limits = 'partitions=1';
-ERROR:  limit "partitions" cannot be lowered by sift.test_limits: no code reads it through sift_limit() yet
+SET sift.test_limits = 'arms=1';
+ERROR:  limit "arms" cannot be lowered by sift.test_limits: no code reads it through sift_limit() yet
 HINT:  Wire the site and set hooked to 1 in its row of src/core/limits.h.
 SET sift.test_limits = 'query_bytes=-1';
 ERROR:  invalid value "-1" for limit "query_bytes"
