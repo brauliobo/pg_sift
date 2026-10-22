@@ -11,6 +11,7 @@
 # Components: pg_wal, base (table and index files), temp (pgsql_tmp), data (the rest of a data directory), logs, regress (output of
 # pg_regress), work (fuzz, difftest, soak, isolation, sanitizer reports), install (the staged build, the initdb templates), tap
 # (what else is in a job directory), other.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 BASE=$1
 declare -A peak lane_peak job_peak lane_size

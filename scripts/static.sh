@@ -10,6 +10,7 @@
 # SIFT_STATIC_STRICT=1 and there are new findings. --update-baseline rewrites the baseline to what was found now (review the diff:
 # a finding enters the baseline only when it is understood and accepted, or fixed in the phase-2 list of docs/SAFETY.md).
 # Runs at nice 19 with at most four processes; output and scratch files in $SIFT_TMP/static (default /tmp/sift-static-PID), removed at the end.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

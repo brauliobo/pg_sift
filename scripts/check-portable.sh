@@ -4,6 +4,7 @@
 # host header there means the core is no longer portable (CONTRIBUTING.md). Needs no PostgreSQL, no SQLite and no build.
 #
 #   scripts/check-portable.sh
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
