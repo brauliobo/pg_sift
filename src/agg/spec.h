@@ -630,6 +630,8 @@ typedef enum SiftPaWhy
 
 extern SiftPaWhy sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 extern const char *sift_pawhy_name(SiftPaWhy why);
+extern const char *sift_pawhy_slug(SiftPaWhy why);
+extern bool sift_pawhy_fixable(SiftPaWhy why);
 
 /*
  * What the two ways to answer a unit cost, in user instructions measured on the rollup benchmark (docs/COL-PREAGG.md section 6): *elem for an element of the
