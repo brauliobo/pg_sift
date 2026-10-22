@@ -4,7 +4,8 @@
 # scripts/ci.sh uses it for the per-job CPU column.
 import ctypes, os, resource, sys
 
-ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)   # PR_SET_CHILD_SUBREAPER
+if sys.platform == 'linux':   # no subreaper elsewhere (macOS): a daemonized postmaster is not counted there
+    ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)   # PR_SET_CHILD_SUBREAPER
 pid = os.fork()
 if pid == 0:
     os.execvp(sys.argv[2], sys.argv[2:])

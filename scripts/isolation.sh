@@ -9,6 +9,7 @@
 # SQL-reference matching; test/isolation/emulate.sql) to validate the specs,
 # their choreography and the expected output before the features land.
 # Results in $SIFT_TMP/isolation/<mode>. Exit 1 on any failure.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
