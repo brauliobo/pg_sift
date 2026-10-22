@@ -537,4 +537,6 @@ SELECT sift.col_verify('kb_idx', true);
  
 (1 row)
 
-DROP TABLE kb, ka, kp_q;
+DROP TABLE kb, ka, kp_q, kp, kp_b;
+DROP FUNCTION kp_rows(text, bool), kp_units(text), kp_check(text, text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
