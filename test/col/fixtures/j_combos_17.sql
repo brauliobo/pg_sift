@@ -1,6 +1,6 @@
--- trap: seventeen combos, one more than the limit (eight joins and nine filters over other leaves): the normal plan
--- shape: trap
--- expect: plain
+-- seventeen combos: one more than j_combos_16 (eight joins and nine filters over other leaves)
+-- shape: join
+-- expect: agg
 -- sets: K400
 -- key: -
 SELECT s.kind, ds.region, dl.family, dc.continent, count(*) AS n, sum(o.total) AS revenue, count(DISTINCT dd.quarter) AS quarters, max(dcu.segment) AS segment,
