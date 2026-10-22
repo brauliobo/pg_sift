@@ -1,0 +1,196 @@
+-- The element filters of a list that some documents hold dirty: an EXISTS over the elements with a lookup per element, and a conjunct that may
+-- raise next to an unnest of the list. A unit with a document its leaf cannot store keeps the scan, and the rows, or the error (message and
+-- SQLSTATE), are those of the normal plan: a dirty document that the query never reaches raises nothing, one it reaches raises what SQL does.
+-- A range never holds two rows that raise different errors: which one comes first is the plan's order, not the query's.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+
+CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the rows or the error must be the same, and the query is meant to be scanned
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, false); b text := runq(q, true);
+BEGIN
+	RETURN (CASE WHEN pushed(q) THEN '' ELSE 'NOT PUSHED: ' END) ||
+		CASE WHEN a = b THEN CASE WHEN a LIKE 'ERR%' THEN 'same ' || left(a, 90) ELSE 'same' END ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+
+CREATE TABLE dims (id int PRIMARY KEY, kind text);
+INSERT INTO dims SELECT i, 'cat_' || chr(97 + i % 3) FROM generate_series(0, 49) i;
+CREATE TABLE mappings (kind text, category text, val text, flag_a text);
+INSERT INTO mappings VALUES ('cat_a', 'cat_a', 'x', 'type_a'), ('cat_b', 'cat_a', 'x', 'type_b'), ('cat_c', 'cat_a', 'x', 'type_c'),
+ ('cat_a', 'cat_b', 'y', 'type_b'), ('cat_c', 'cat_b', 'y', 'type_a'), ('cat_b', 'cat_c', 'x', NULL);
+ANALYZE dims;
+ANALYZE mappings;
+
+CREATE TABLE facts (id int PRIMARY KEY, parent_id int, day int, doc jsonb, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, i % 50, i / 10,
+	jsonb_build_object('parts', jsonb_build_array(
+		jsonb_build_object('category', 'cat_' || chr(97 + i % 3), 'val', CASE WHEN i % 2 = 0 THEN 'x' ELSE 'y' END, 'kind', 'role_' || chr(97 + i % 4), 'score', i % 9),
+		jsonb_build_object('category', 'cat_' || chr(97 + (i + 1) % 3), 'val', 'x', 'kind', 'type_b', 'score', i % 4))),
+	jsonb_build_object('m_a', i % 5, 'm_b', i % 3)
+FROM generate_series(1, 3000) i;
+-- the lists and documents some rows hold: SQL raises for the first four, reads the next five as no elements
+UPDATE facts SET doc = '{"parts": "str"}' WHERE id = 100;
+UPDATE facts SET doc = jsonb_set(doc, '{parts,0}', '[1]') WHERE id = 400;
+UPDATE facts SET doc = jsonb_set(doc, '{parts,1,score}', '"x"') WHERE id = 500;
+UPDATE facts SET doc = jsonb_set(doc, '{parts,0,score}', '[1, [2]]') WHERE id = 510;
+UPDATE facts SET doc = jsonb_build_array(doc) WHERE id = 200;
+UPDATE facts SET doc = '"text"' WHERE id = 300;
+UPDATE facts SET doc = jsonb_set(doc, '{parts,0,score}', '"4"') WHERE id = 600;
+UPDATE facts SET doc = doc - 'parts' WHERE id = 700;
+UPDATE facts SET doc = '{"parts": []}' WHERE id = 800;
+UPDATE facts SET doc = NULL WHERE id = 900;
+UPDATE facts SET metrics = '{"m_a": 3}' WHERE id IN (100, 200, 300, 400, 500, 510, 600, 700, 800, 900);
+-- a list that raises in a row whose parent has no dims row; metrics that raise or hold no number (a member that is no number would keep the normal plan)
+UPDATE facts SET doc = '{"parts": "str"}', parent_id = 99 WHERE id = 1000;
+UPDATE facts SET metrics = '{"m_a": 1e12}' WHERE id = 1200;
+UPDATE facts SET metrics = '{}' WHERE id = 1300;
+UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 3}' WHERE id = 1400;
+UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1}' WHERE id = 1410;
+UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1e12}' WHERE id = 1420;
+CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, day, doc, metrics, jsonb_exists(doc, 'flag_a'))
+ WITH (paths = 'doc.parts[]{category astext, val astext, kind astext, score float8}, metrics.* float8');
+VACUUM ANALYZE facts;
+
+-- EXISTS over the elements, the category of an element as the lookup of its parent's kind maps it
+CREATE FUNCTION tq(rng text, cond text DEFAULT 'x.category IN ($$type_a$$, $$cat_c$$)', joinq text DEFAULT 'JOIN dims d ON d.id = f.parent_id') RETURNS text LANGUAGE sql AS $f$
+	SELECT 'SELECT d.kind, count(*), sum(f.id) FROM facts f ' || joinq || ' WHERE ' || rng || ' AND EXISTS (SELECT 1 FROM LATERAL (' ||
+	'SELECT (CASE WHEN jsonb_exists(f.doc, $$flag_a$$) THEN o.category ELSE mm.flag_a END) AS category ' ||
+	'FROM jsonb_to_recordset(f.doc -> $$parts$$) AS o(category text, val text, kind text, score float8) ' ||
+	'LEFT JOIN LATERAL (SELECT lm.flag_a FROM mappings lm WHERE lm.kind = d.kind AND lm.category = o.category AND lm.val = o.val AND lm.flag_a IS NOT NULL ' ||
+	'AND NOT jsonb_exists(f.doc, $$flag_a$$) LIMIT 1) mm ON true WHERE o.score IS NOT NULL) x WHERE ' || cond || ') GROUP BY d.kind'
+$f$;
+
+SELECT pushed(tq('f.id < 90')) AS lookup_exists_pushed;
+SELECT pushed(tq('f.id < 3000')) AS lookup_exists_over_dirty_pushed;
+SELECT r.name, same(tq(r.rng)) AS lookup_exists
+FROM (VALUES ('clean', 'f.id < 90'), ('list a string', 'f.id = 100'), ('element a list', 'f.id = 400'), ('score x', 'f.id = 500'), ('score nested', 'f.id = 510'),
+             ('document in an array', 'f.id = 200'), ('document a string', 'f.id = 300'), ('score string 4', 'f.id = 600'), ('no list', 'f.id = 700'),
+             ('empty list', 'f.id = 800'), ('document NULL', 'f.id = 900'), ('beyond', 'f.id > 2000')) r(name, rng)
+ORDER BY r.name;
+-- the test raises for the rows that reach it: a row the join or another conjunct drops raises nothing, in either plan
+SELECT same(tq('f.id = 1000')) AS raising_row_without_dims_row;
+SELECT same(tq('f.id BETWEEN 90 AND 110 AND f.id <> 100')) AS raising_row_dropped_by_id;
+SELECT same(tq('f.id BETWEEN 90 AND 110 AND d.kind <> $$cat_b$$')) AS raising_row_kept_by_kind;
+SELECT same(tq('f.id BETWEEN 90 AND 110 AND d.kind = $$cat_b$$')) AS raising_row_dropped_by_kind;
+SELECT same(tq('f.id BETWEEN 90 AND 110', 'x.category IS NULL')) AS other_condition;
+SELECT same(tq('f.id = 100', 'x.category IN ($$type_a$$)', 'LEFT JOIN dims d ON d.id = f.parent_id')) AS left_join_raising_row;
+
+-- a conjunct that may raise (the integer cast of a member) next to an unnest of the list: the error of a list is for the rows the conjunct keeps
+CREATE FUNCTION cq(rng text, cond text DEFAULT 'CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) = 3', sel text DEFAULT 'o.kind, count(*), sum(o.score)') RETURNS text LANGUAGE sql AS $f$
+	SELECT 'SELECT ' || sel || ' FROM facts f JOIN LATERAL jsonb_to_recordset(f.doc -> $$parts$$) AS o(category text, val text, kind text, score float8) ON true WHERE ' ||
+		rng || ' AND ' || cond || ' GROUP BY o.kind'
+$f$;
+
+SELECT pushed(cq('f.id < 90')) AS cast_unnest_pushed;
+SELECT pushed(cq('f.id < 1500')) AS cast_unnest_over_dirty_pushed;
+SELECT r.name, same(cq(r.rng)) AS cast_unnest
+FROM (VALUES ('clean', 'f.id < 90'), ('list a string', 'f.id = 100'), ('element a list', 'f.id = 400'), ('score x', 'f.id = 500'), ('score nested', 'f.id = 510'),
+             ('document in an array', 'f.id = 200'), ('document a string', 'f.id = 300'), ('score string 4', 'f.id = 600'), ('no list', 'f.id = 700'),
+             ('empty list', 'f.id = 800'), ('document NULL', 'f.id = 900'), ('member beyond integer', 'f.id = 1200'),
+             ('member missing', 'f.id = 1300'), ('kept: list a string, member 3', 'f.id = 1400'), ('dropped: list a string, member 1', 'f.id = 1410'),
+             ('cast fails first: list a string, member beyond integer', 'f.id = 1420')) r(name, rng)
+ORDER BY r.name;
+SELECT same(cq('f.id BETWEEN 90 AND 110')) AS list_error_kept_among_clean;
+SELECT same(cq('f.id BETWEEN 90 AND 110 AND f.id <> 100')) AS list_error_dropped_by_id;
+SELECT same(cq('f.id BETWEEN 1390 AND 1430 AND f.id <> 1400 AND f.id <> 1420')) AS list_error_dropped_by_cast;
+SELECT same(cq('f.id BETWEEN 1390 AND 1430 AND f.id <> 1420')) AS list_error_kept_by_cast;
+SELECT same(cq('f.id BETWEEN 1390 AND 1415', 'CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) > 1')) AS other_comparison;
+SELECT same(cq('f.id BETWEEN 190 AND 310', 'CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) = 3 AND f.parent_id < 40')) AS two_conjuncts;
+SELECT same(cq('f.id BETWEEN 1390 AND 1415', 'f.parent_id < 40 AND CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) = 3')) AS two_conjuncts_cast_second;
+SELECT same(cq('f.id BETWEEN 1390 AND 1415', 'CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) = 3 AND CAST(jsonb_extract_path(f.metrics, $$m_b$$) AS integer) = 1')) AS two_casts;
+-- both: an EXISTS over the list and an unnest of it
+SELECT same('SELECT o.kind, count(*) FROM facts f JOIN LATERAL jsonb_to_recordset(f.doc -> $$parts$$) AS o(category text, val text, kind text, score float8) ON true ' ||
+	'WHERE f.id BETWEEN 190 AND 310 AND CAST(jsonb_extract_path(f.metrics, $$m_a$$) AS integer) = 3 AND ' ||
+	'EXISTS (SELECT 1 FROM jsonb_to_recordset(f.doc -> $$parts$$) AS p(category text, val text, kind text, score float8) WHERE p.kind = $$type_a$$) GROUP BY o.kind') AS cast_unnest_and_exists;
+
+-- the writer's rows
+INSERT INTO facts VALUES (4001, 1, 1, '{"parts": [{"category": "cat_a", "val": "x", "kind": "type_a", "score": 1}]}', '{"m_a": 3}'),
+ (4002, 2, 1, '{"parts": "str"}', '{"m_a": 3}'), (4003, 3, 1, '[{"parts": []}]', '{"m_a": 3}'),
+ (4004, 4, 1, '{"parts": [{"category": "cat_a", "val": "x", "kind": "type_a", "score": "n/a"}]}', '{"m_a": 2}'),
+ (4005, 5, 1, '{"parts": "str"}', '{"m_a": 2}');
+SELECT same(tq('f.id = 4001')) AS buffer_clean;
+SELECT same(tq('f.id = 4002')) AS buffer_list_a_string;
+SELECT same(tq('f.id = 4003')) AS buffer_document_in_an_array;
+SELECT same(tq('f.id = 4004')) AS buffer_score_text;
+SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS buffer_raising_row_among_others;
+SELECT same(tq('f.id IN (4001, 4003, 4004)')) AS buffer_other_raising_row;
+SELECT same(tq('f.id IN (4001, 4003)')) AS buffer_without_the_raising_rows;
+SELECT same(cq('f.id = 4002')) AS cast_buffer_kept;
+SELECT same(cq('f.id = 4005')) AS cast_buffer_dropped;
+SELECT same(cq('f.id = 4004')) AS cast_buffer_dropped_score_text;
+SELECT same(cq('f.id = 4003')) AS cast_buffer_document_in_an_array;
+UPDATE facts SET doc = '{"parts": "str"}' WHERE id IN (150, 4001);
+UPDATE facts SET doc = '{"parts": []}' WHERE id = 100;
+SELECT same(tq('f.id BETWEEN 90 AND 160')) AS after_update;
+SELECT same(tq('f.id = 4001')) AS after_update_buffer;
+SELECT same(cq('f.id BETWEEN 90 AND 160')) AS cast_after_update;
+UPDATE facts SET doc = '{"parts": []}', metrics = '{"m_a": 3}' WHERE id IN (150, 4001);
+SELECT same(tq('f.id BETWEEN 90 AND 160')) AS healed;
+SELECT same(cq('f.id BETWEEN 90 AND 160')) AS cast_healed;
+SELECT sift.col_promote('facts_col') >= 0 AS promoted;
+SELECT same(tq('f.id BETWEEN 90 AND 160')) AS after_promotion;
+SELECT same(tq('f.id BETWEEN 395 AND 405')) AS after_promotion_element_a_list;
+SELECT same(tq('f.id BETWEEN 505 AND 515')) AS after_promotion_score_nested;
+SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS after_promotion_buffer;
+SELECT same(cq('f.id IN (4002, 4003, 4005)')) AS cast_after_promotion_buffer;
+SELECT same(cq('f.id BETWEEN 1390 AND 1430 AND f.id <> 1420')) AS cast_after_promotion_kept_by_cast;
+SELECT sift.col_merge('facts_col', true) >= 0 AS merged;
+SELECT same(tq('f.id BETWEEN 395 AND 405')) AS after_merge_element_a_list;
+SELECT same(tq('f.id BETWEEN 505 AND 515')) AS after_merge_score_nested;
+SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS after_merge_buffer;
+SELECT same(cq('f.id BETWEEN 1390 AND 1430 AND f.id <> 1420')) AS cast_after_merge_kept_by_cast;
+DELETE FROM facts WHERE id IN (500, 4002);
+VACUUM facts;
+SELECT same(tq('f.id BETWEEN 495 AND 520')) AS after_vacuum;
+SELECT same(tq('f.id IN (4001, 4003, 4004)')) AS after_vacuum_buffer;
+SELECT same(cq('f.id BETWEEN 495 AND 520')) AS cast_after_vacuum;
+
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT same(tq('f.id BETWEEN 495 AND 520')) AS workers_error;
+SELECT same(tq('f.id BETWEEN 190 AND 310')) AS workers_no_error;
+SELECT same(tq('f.id < 3000 AND f.id <> 400 AND f.id <> 510 AND f.id <> 1000 AND f.id NOT BETWEEN 1400 AND 1420')) AS workers_whole;
+SELECT same(cq('f.id BETWEEN 495 AND 520')) AS workers_cast_error;
+SELECT same(cq('f.id < 3000 AND f.id <> 400 AND f.id <> 510 AND f.id NOT BETWEEN 1400 AND 1420')) AS workers_cast_whole;
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+SET max_parallel_workers_per_gather = 0;
+
+DROP FUNCTION cq(text, text, text);
+DROP FUNCTION tq(text, text, text);
+DROP FUNCTION pushed(text);
+DROP FUNCTION same(text);
+DROP FUNCTION runq(text, bool);
+DROP TABLE facts;
+DROP TABLE mappings;
+DROP TABLE dims;
+DROP EXTENSION pg_sift;
