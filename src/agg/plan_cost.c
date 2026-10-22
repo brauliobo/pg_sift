@@ -101,8 +101,8 @@
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
-#define AGG_RECHECK_FRAC	0.02	/* share of the rows the source reads again from the heap when a leaf the scan rechecks is flagged (the index does not count them) */
-#define AGG_RECHECK_ROW		60.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes */
+#define AGG_RECHECK_FRAC	0.02	/* share of the rows of a flagged unit the source reads again from the heap when no sample of the unit's overflow slots says (statistics: ovf_frac) */
+#define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again (measured at 100,000 items of 3 parts, docs/COL-DIRTY-UNITS.md) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
@@ -1031,19 +1031,39 @@ typedef struct CostAcc
 	double		rows_out;
 } CostAcc;
 
-/* The rows read again from the heap: AGG_RECHECK_FRAC of the rows of the units a leaf the scan rechecks flags (the share of units the zones say), one row of each at least */
+/*
+ * The rows read again from the heap: of the rows of the units a leaf the scan rechecks flags (the share of units the zones say), the share of them that
+ * hold an overflow value (a sample of the flagged units says; AGG_RECHECK_FRAC where it could not be taken), one row of each unit at least. A table with
+ * half of its documents dirty reads half of them again: past a few percent the normal plan is the cheaper one.
+ */
 static double
 recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
-	double		flagged = 0;
+	double		rows = 0,
+				flagged = 0;
 
-	for (int i = 0; i < s->nleaves; i++)
-		if (s->recheck[i] != SRK_NONE)
-			flagged = Max(flagged, c->stats.ovf_units[s->leaves[i]]);
-	for (int j = 0; j < s->nvleaf; j++)
-		if (s->vleaf[j].recheck != SRK_NONE)
-			flagged = Max(flagged, c->stats.ovf_units[vleaf_source(c, j)]);
-	return Max(k->rows * flagged * AGG_RECHECK_FRAC, k->units * flagged) * AGG_RECHECK_ROW;
+	for (int i = 0; i < s->nleaves + s->nvleaf; i++)
+	{
+		int			leaf;
+		double		frac;
+
+		if (i < s->nleaves)
+		{
+			if (s->recheck[i] == SRK_NONE)
+				continue;
+			leaf = s->leaves[i];
+		}
+		else
+		{
+			if (s->vleaf[i - s->nleaves].recheck == SRK_NONE)
+				continue;
+			leaf = vleaf_source(c, i - s->nleaves);
+		}
+		frac = c->stats.ovf_frac[leaf] < 0 ? AGG_RECHECK_FRAC : c->stats.ovf_frac[leaf];
+		rows = Max(rows, k->rows * c->stats.ovf_units[leaf] * frac);
+		flagged = Max(flagged, c->stats.ovf_units[leaf]);
+	}
+	return Max(rows, k->units * flagged) * AGG_RECHECK_ROW;
 }
 
 /* is the leaf one the source tests on its stored values (a comparison, IN list or null test of the query's WHERE): decoded for every row of a unit */
@@ -1079,7 +1099,6 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	for (int i = 0; i < s->nvleaf; i++)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);
-	k->scan_cost += recheck_cost(c, s, k);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
 			k->scan_cost += k->rows * (AGG_WIDE_ROW + AGG_WIDE_ENTRY * leaf_distinct_frac(c, s->leaves[i], k->rows));
@@ -1202,6 +1221,8 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	for (int i = 0; i < s->npred; i++)
 		k->scan_cost += k->rows * pred_num_cost(s->pred[i]);
 	k->scan_cost = Max(k->scan_cost - plain_credit(c, s, k->agg_rows), k->scan_cost * 0.1);
+	/* after the credit, which prices what the normal plan under-estimates: the rows read again from the heap are work it does not do */
+	k->scan_cost += recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
 	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
 }
 

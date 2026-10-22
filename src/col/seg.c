@@ -15,6 +15,7 @@
 #include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
+#include "core/popcount.h"
 #include "core/cmp.h"
 
 static void
@@ -378,7 +379,44 @@ sift_cseg_kinds_exact(SiftColSegment *seg)
 }
 
 #define SET_STATS_UNITS	64				/* units of a segment the planner's statistics look at for a leaf's summaries */
+#define OVF_STATS_UNITS	4				/* units flagged with an overflow value of a leaf, of a segment, whose overflow slots the statistics count */
 static const SetsLeaf *set_leaf(SiftColSegment *seg, int col);
+
+/*
+ * The overflow slots among those of an even sample of the units the zones flag (a dead row's value counts until the segment is rewritten): the rows
+ * a scan that reads them again from the heap has to fetch. One chunk of each unit is read, once for the statistics the planner keeps.
+ */
+static void
+sample_overflow(SiftColSegment *seg, int col, const ZoneArrays *z, SiftColLeafStats *acc)
+{
+	uint32		flagged = 0,
+				stride,
+				k = 0;
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+		flagged += (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0;
+	stride = Max(flagged / OVF_STATS_UNITS, 1);
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCUnitView v;
+		SiftCChunk	c;
+		const uint8 *rec;
+		uint32		len,
+					avail;
+
+		if (!(z->flags[u] & SIFT_COLZ_OVERFLOW) || k++ % stride != 0)
+			continue;
+		rec = sift_cseg_unit_head(seg, u, &len, &avail);
+		if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &v) || v.chunk_len[col] == 0)
+			continue;
+		sift_cseg_unit_fill(seg, u, v.chunk_off[col], v.chunk_len[col]);
+		if (!sift_cunit_chunk(&v, col, &c))
+			continue;
+		acc->ovf_vals += c.n;
+		for (uint32 i = 0; c.ovf != NULL && i < (c.n + 63) / 64; i++)
+			acc->ovf_slots += sift_pc64(i == c.n / 64 ? c.ovf[i] & ((UINT64CONST(1) << (c.n % 64)) - 1) : c.ovf[i]);
+	}
+}
 
 void
 sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
@@ -415,6 +453,8 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		if (def->kind == SIFT_COLK_GROUP)
 			acc->sum += (double) z->sum[u];
 	}
+	if (z->any_ovf)
+		sample_overflow(seg, col, z, acc);
 	if (def->store == SIFT_COLS_STR)
 	{
 		acc->inl |= z->any_inl;

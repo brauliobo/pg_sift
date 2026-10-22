@@ -296,6 +296,8 @@ typedef struct SiftColLeafStats
 	double		nzone;			/* ... and the number of those units */
 	double		nunits;			/* the units of the leaf */
 	double		novf;			/* ... and the number flagged with an overflow value */
+	double		ovf_slots;		/* the overflow slots of a sample of those units (sift_cseg_leaf_stats) ... */
+	double		ovf_vals;		/* ... and the slots of the leaf in them, so ovf_slots / ovf_vals is the share of a flagged unit that a scan reads again from the heap */
 	double		set_sampled;	/* the units looked at for a small-set summary of the leaf (an even sample of each segment that has any) */
 	double		set_units;		/* ... the ones that have it, */
 	double		set_keys;		/* ... and the distinct keys they hold together */
