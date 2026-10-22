@@ -33,8 +33,25 @@ CREATE INDEX dims_id_ab ON dims_id (a, b);
 CREATE TABLE dims_wide (a int, b int, label text, score int);
 INSERT INTO dims_wide SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 599) x, generate_series(0, 100) y;
 CREATE UNIQUE INDEX dims_wide_key ON dims_wide (a, b);
+-- three versions of each (a, b), in no order, a unique index on the key and the version: the latest is the one row an ORDER BY returns
+CREATE TABLE vers (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, ts int NOT NULL, dt date NOT NULL, label text, score int);
+INSERT INTO vers SELECT row_number() OVER (), a, b, z, date '2020-01-01' + z, 'v' || a || '_' || b || '_' || z, a * 3 + b + z * 7
+ FROM (SELECT x AS a, y AS b, z FROM generate_series(0, 199) x, generate_series(0, 100) y, generate_series(1, 3) z ORDER BY (x * 131 + y * 17 + z * 7) % 1009) q;
+CREATE UNIQUE INDEX vers_key ON vers (a, b, ts);
+CREATE UNIQUE INDEX vers_dt ON vers (a, b, dt);
+-- the order column holds NULLs, the primary key breaks the ties; the same rows with a repeated version
+CREATE TABLE vers_null (id int PRIMARY KEY, a int, b int, ts int, label text, score int);
+INSERT INTO vers_null SELECT id, a, b, CASE WHEN ts >= 2 THEN NULL ELSE ts END, label, score FROM vers;
+CREATE INDEX vers_null_ab ON vers_null (a, b);
+CREATE TABLE vers_null_key (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, ts int, label text, score int);
+INSERT INTO vers_null_key SELECT * FROM vers_null;
+CREATE UNIQUE INDEX vers_null_key_ts ON vers_null_key (a, b, ts);
+CREATE TABLE vers_dup (id int, a int NOT NULL, b int NOT NULL, ts int NOT NULL, label text, score int);
+INSERT INTO vers_dup SELECT id, a, b, ts, label, score FROM vers;
+INSERT INTO vers_dup SELECT id + 100000, a, b, ts, 'again', score + 1000 FROM vers WHERE a < 20 AND ts = 3;
+CREATE INDEX vers_dup_key ON vers_dup (a, b, ts);
 VACUUM (FREEZE, ANALYZE) facts;
-ANALYZE dims, dims_text, dims3, dims_dup, dims_id, dims_wide;
+ANALYZE dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
 -- whether the query is pushed to the scan, the rows it differs by from the plan without it, and the tables the scan read as first-row lookups
 CREATE FUNCTION check_first(q text) RETURNS TABLE (pushed bool, differences bigint, lookups int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -108,6 +125,110 @@ $q$);
  pushed | differences | lookups 
 --------+-------------+---------
  t      |           0 |       1
+(1 row)
+
+-- ORDER BY .. LIMIT 1: the key's first row by the order, when a unique index holds the key and the order columns (NOT NULL), whichever way it is sorted
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f JOIN LATERAL (SELECT label FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.b = f.b AND x.a = f.a AND x.score > 100 ORDER BY x.dt DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order column is not in the output, the output is not the order column, a condition drops the latest row
+SELECT * FROM check_first($q$
+ SELECT d.ts, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT ts FROM vers x WHERE x.a = f.a AND x.b = f.b AND x.ts < 3 ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order column holds NULLs: the primary key is in the order, so there is no tie, and NULLs come where the sort puts them
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC, x.id DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts NULLS LAST, x.id LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order is not total: a NULL order column under a unique index that takes NULLs for different, a version some keys repeat, no unique index
+-- on the key and the order, a text or expression order, four order columns
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null_key x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_dup x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.label LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts + 1 DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts, x.dt, x.id, x.score LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
 (1 row)
 
 -- the rows the lookups return
@@ -293,5 +414,5 @@ $q$);
 
 DROP FUNCTION explain_first(text);
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
 DROP EXTENSION pg_sift;

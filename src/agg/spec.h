@@ -351,6 +351,7 @@ sift_aggjoin_preserves(SiftJoinKind kind)
 	return kind == SJ_RIGHT || kind == SJ_FULL;
 }
 
+#define SIFT_AGG_MAX_FORD	3		/* ORDER BY columns of a first-row child */
 #define SIFT_AGG_MAX_FOUT	16		/* output columns of a first-row child that can be mapped to the table's */
 
 /*
@@ -368,6 +369,11 @@ typedef struct SiftAggFirst
 	int			keyarg[SIFT_AGG_MAX_JKEYS];	/* position of the parameter, in the join's params and args */
 	int			ncol;			/* output columns of the child */
 	int			col[SIFT_AGG_MAX_FOUT];		/* the column of the table each is, 0 when it is not one */
+	int			nord;			/* the ORDER BY columns of the child: its row is the key's best by them (a unique index holds the key and these) */
+	int			ordatt[SIFT_AGG_MAX_FORD];	/* column of the table */
+	Oid			ordtype[SIFT_AGG_MAX_FORD];
+	bool		orddesc[SIFT_AGG_MAX_FORD];
+	bool		ordnullsfirst[SIFT_AGG_MAX_FORD];
 	List	   *qual;			/* what else the child tests of its row (comparisons of columns with constants, null tests), over the table's Vars: the lookup table holds the rows that pass */
 	List	   *params;			/* executor only: the child's parameters once the join is a lookup table (EXPLAIN names them) */
 } SiftAggFirst;

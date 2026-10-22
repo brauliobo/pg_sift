@@ -456,6 +456,93 @@ map_hash_ids(int nkey, const uint32 *kid)
 	return (uint32) (h >> 32);
 }
 
+/* the order columns of the rows of a first-row lookup: the value of each (NULL: 0 and isnull) */
+typedef struct FirstOrd
+{
+	MemoryContext cx;			/* where the values live, deleted once the rows are chosen */
+	int64	   *val;
+	bool	   *isnull;
+	uint32		cap;
+} FirstOrd;
+
+/* does the row a come before b in the child's ORDER BY? */
+static bool
+first_before(const SiftAggFirst *f, const FirstOrd *o, uint32 a, uint32 b)
+{
+	for (int i = 0; i < f->nord; i++)
+	{
+		size_t		x = (size_t) a * f->nord + i,
+					y = (size_t) b * f->nord + i;
+
+		if (o->isnull[x] != o->isnull[y])
+			return o->isnull[x] == f->ordnullsfirst[i];
+		if (!o->isnull[x] && o->val[x] != o->val[y])
+			return (o->val[x] < o->val[y]) != f->orddesc[i];
+	}
+	return false;
+}
+
+/* the order columns of the row just added to m */
+static void
+first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableSlot *slot)
+{
+	size_t		at = (size_t) (m->nrow - 1) * f->nord;
+
+	if (o->cx == NULL)
+		o->cx = AllocSetContextCreate(CurrentMemoryContext, "sift first-row order", ALLOCSET_DEFAULT_SIZES);
+	if (m->nrow > o->cap)
+	{
+		o->cap = Max(o->cap * 2, 1024);
+		o->val = o->val ? repalloc(o->val, o->cap * f->nord * sizeof(int64)) : MemoryContextAlloc(o->cx, o->cap * f->nord * sizeof(int64));
+		o->isnull = o->isnull ? repalloc(o->isnull, o->cap * f->nord) : MemoryContextAlloc(o->cx, o->cap * f->nord);
+	}
+	for (int i = 0; i < f->nord; i++)
+	{
+		Datum		d = slot_getattr(slot, f->ordatt[i], &o->isnull[at + i]);
+
+		o->val[at + i] = o->isnull[at + i] ? 0 : sift_aggspec_operand_int(f->ordtype[i], d);
+	}
+}
+
+/*
+ * A child `ORDER BY .. LIMIT 1` returns the first row of a key by its order; a unique index holds the key and the order columns, so there is no
+ * tie. The other rows of the key are out of the chains (a row with its first key id 0 is in none, map_index_rows).
+ */
+static void
+map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o)
+{
+	uint32		nslot = 64;
+	uint32	   *at;
+
+	while (nslot < 2 * m->nrow)
+		nslot *= 2;
+	at = palloc0(nslot * sizeof(uint32));
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		uint32	   *kid = m->kid + (size_t) r * m->nkey;
+		uint32		h;
+		bool		anynull = false;
+
+		for (int k = 0; k < m->nkey; k++)
+			anynull |= kid[k] == 0;
+		if (anynull)
+			continue;
+		for (h = map_hash_ids(m->nkey, kid) & (nslot - 1); at[h] != 0; h = (h + 1) & (nslot - 1))
+			if (memcmp(m->kid + (size_t) (at[h] - 1) * m->nkey, kid, m->nkey * sizeof(uint32)) == 0)
+				break;
+		if (at[h] == 0)
+			at[h] = r + 1;
+		else if (first_before(f, o, r, at[h] - 1))
+		{
+			m->kid[(size_t) (at[h] - 1) * m->nkey] = 0;
+			at[h] = r + 1;
+		}
+		else
+			kid[0] = 0;
+	}
+	pfree(at);
+}
+
 /* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match); the arrays are cut to the rows */
 static void
 map_index_rows(MapTab *m)
@@ -750,6 +837,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	SiftAggJoin lj = *j;
 	ExprState  *firstq = NULL;
 	ExprContext *firstcx = NULL;
+	FirstOrd	ord = {0};
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -823,9 +911,20 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 				ResetExprContext(firstcx);
 			}
 			if (pass)
+			{
+				uint32		n = m->nrow;
+
 				map_row(ex, m, slot, &lj, cb, own);
+				if (j->first.nord > 0 && m->nrow > n)
+					first_order_row(m, &j->first, &ord, slot);
+			}
 		}
 		table_endscan(scan);
+	}
+	if (ord.cx)
+	{
+		map_keep_first(m, &j->first, &ord);
+		MemoryContextDelete(ord.cx);
 	}
 	map_index_rows(m);
 	if (firstcx)
@@ -914,6 +1013,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
+	for (int i = 0; i < j->first.nord; i++)
+		appendStringInfo(&k, "|ord %d/%d/%d", j->first.ordatt[i], j->first.orddesc[i], j->first.ordnullsfirst[i]);
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
 		appendStringInfo(&k, "|%d/%u/%u/%d/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], j->idxany[i], nodeToString(j->idxval[i]));
 	return k.data;
