@@ -75,6 +75,8 @@ sift.col_auto_merge_min_churn_pct	sift_col	col-auto-merge					USAGE.md#maintenan
 sift.col_auto_merge_max_active	sift_col	col-auto-merge					USAGE.md#maintenance-and-operations
 sift.col_auto_merge_partition_kb	sift_col	col-auto-merge					USAGE.md#maintenance-and-operations
 sift.col_auto_merge_max_workers	sift_col	col-auto-merge					USAGE.md#maintenance-and-operations
+sift.col_auto_vacuum	sift_col	col-auto-vacuum			after churn spread over a table a worker vacuums it, so that a scan stops checking every row in the heap: the grouped sum after 16% churn 18.7 ms becomes 1.2 ms (0.6 ms with sift.col_auto_merge; 0.2 ms fresh)	a VACUUM every five naptimes while 0.1% of the rows keep changing, as autovacuum does at 20%: the WAL of the VACUUM moves into the churn (16-17 MB against 11.7 MB, 16.8 MB with the VACUUM after it)	USAGE.md#maintenance-and-operations
+sift.col_auto_vacuum_churn_pct	sift_col	col-auto-vacuum					USAGE.md#maintenance-and-operations
 sift.enable_agg	sift_col, sift_table				GROUP BY aggregates run as Custom Scan (SiftAgg) over the column index	none; off gives the plan PostgreSQL has without sift	USAGE.md#column-indexes-aggregates-and-sift_table
 sift.agg_preagg	sift_col, sift_table	agg-preagg			units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary	none on the index; off scans every unit	COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer
 sift.agg_preagg_distinct	sift_col, sift_table	agg-preagg					COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer

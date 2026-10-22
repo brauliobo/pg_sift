@@ -175,6 +175,12 @@ extern PGDLLIMPORT double sift_col_auto_merge_min_churn_pct;
 extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
+/* sift.col_auto_vacuum* (col/am.c): the VACUUM that churn, and scans that check many rows in the heap, ask a worker for (col/vacreq.c) */
+extern PGDLLIMPORT bool sift_col_auto_vacuum;
+extern PGDLLIMPORT double sift_col_auto_vacuum_churn_pct;
+extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);
+extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
 
 extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 
