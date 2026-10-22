@@ -45,21 +45,6 @@ agk_canon_minmax(double x)
 /* The lanes of a group of L (<= 32) rows that exist when r rows are left */
 #define AGK_LANES(r, L)	((r) >= (L) ? AGK_LOW(L) : AGK_LOW(r))
 
-/* The set bits of a mask byte, or of all rows when mask is NULL (the last group has the rows left) */
-#define AGK_SELBITS(mask, i, n, L) \
-	((mask) ? (uint32) (((mask)[(i) >> 6] >> ((i) & 63)) & AGK_LOW(L)) : (uint32) AGK_LANES((n) - (i), L))
-
-#define AGK_BY_OP(op, FN, ...) \
-	switch (op) \
-	{ \
-		case SCMP_EQ: FN(SCMP_EQ, __VA_ARGS__); break; \
-		case SCMP_NE: FN(SCMP_NE, __VA_ARGS__); break; \
-		case SCMP_LT: FN(SCMP_LT, __VA_ARGS__); break; \
-		case SCMP_LE: FN(SCMP_LE, __VA_ARGS__); break; \
-		case SCMP_GT: FN(SCMP_GT, __VA_ARGS__); break; \
-		default: FN(SCMP_GE, __VA_ARGS__); break; \
-	}
-
 /*
  * Writes the predicate bitmap of n rows, L rows per vector step: word w = (OR of (STEP) << j for the steps at rows I =
  * 64 w + j) ^ NEG, bits >= n cleared. STEP is an expression of the row number I giving L bits; TAIL replaces it in the

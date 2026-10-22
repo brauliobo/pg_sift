@@ -45,15 +45,6 @@ sift_cc_ld32(const uint32 *p)
 	return x;
 }
 
-static inline uint64
-sift_cc_ld64(const void *p)
-{
-	uint64		x;
-
-	memcpy(&x, p, sizeof(x));
-	return x;
-}
-
 /* The decimal exponents of the ALP node: 10^e exactly as double and float (e <= 18, resp. 10) */
 extern const double sift_cc_p10[19];
 extern const float sift_cc_p10f[11];
