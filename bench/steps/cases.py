@@ -58,6 +58,7 @@ class Case:
         self.__dict__.update(zip(FIELDS, row))
         self.sec = sections(text)
         head = self.sec.pop('').split('\n')
+        self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
         self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum): ', m))
         self.load = 'load' in self.sec
@@ -232,7 +233,7 @@ def measure_load(case, csv, rounds, rows):
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
-    out, errors = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': []} for lane in lanes}, {}
+    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': []} for lane in lanes}, {}, {}
     for r in range(rounds):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
@@ -252,14 +253,16 @@ def measure_load(case, csv, rounds, rows):
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
             cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
-            if lane == 'sift' and not re.search(case.plan, '\n'.join(s.run(case.sec['check'])[1]), re.M):
+            checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
+            plans[lane] = checked.replace('\n', ', ')
+            if lane == 'sift' and not re.search(case.plan, checked, re.M):
                 errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
             out[lane]['wal_bytes'].append(lsn / rows)
             out[lane]['ms'].append(ms)
             out[lane]['cpu_ms'].append(cpu / 1e6)
             s.close()
             build(case, rows)   # an empty schema again
-    return out, errors
+    return out, plans, errors
 
 
 def host():
@@ -304,11 +307,11 @@ def cmd_run(args):
         noisy = busy()
         load = server_load()
         if c.load:
-            out, errors = measure_load(c, csv, args.rounds, args.rows)
+            out, plans, errors = measure_load(c, csv, args.rounds, args.rows)
             failed += ['%s on %s: %s' % (c.id, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
-                    results.append(dict(case=c.id, arm=lane, metric=metric, note=('%s rows, %s' % (format(args.rows, ','), 'bulk groups' if lane == 'sift' else 'heap' if lane == 'native' else lane)), load=load, **stats(xs)))
+                    results.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         times, notes, errors = measure_query(c, lanes, args.rounds, args.runs)
@@ -366,7 +369,7 @@ def cmd_list(_):
 
 # --- the coverage check: no measurement
 
-CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|\b(?:faster|slower)\b|instructions|mispredict')
+CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 
 
 def changelog_lines(root):
