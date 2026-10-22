@@ -27,8 +27,8 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
 | `lookup_shared_slots` | lookup tables shared through DSM at one time | 64 | tables | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/lookshm.c` `LOOKSHM_SLOTS` |  |
 | `spine_rows` | rows of a spine joined to the arms of a two-level scan | 10,000 | rows | normal plan (slug spine_rows) |  | `agg/plan_two.c` `SPINE_MAX_ROWS` |  |
-| `topn_rows` | LIMIT + OFFSET of a top-N scan | 100,000 | rows | normal plan (slug topn_shape) |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` |  |
-| `topn_keys` | ORDER BY columns of a top-N scan | 4 | columns | normal plan (slug topn_shape) |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` |  |
+| `topn_rows` | LIMIT + OFFSET a top-N scan keeps in a heap | 100,000 | rows | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` | yes |
+| `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 4 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
 | `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/plan_order.c` `FIRST_MAX_KEYS` |  |
 | `first_order_cols` | ORDER BY columns of a first-row lookup child | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` |  |
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |

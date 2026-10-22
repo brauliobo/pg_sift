@@ -25,6 +25,7 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "executor/nodeHash.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -264,23 +265,49 @@ topn_value(PlannerInfo *root, Node *e, int64 unknown)
 }
 
 /*
- * LIMIT and OFFSET of the query: the rows the top-N must produce, as far as the planner knows them; 0 when there is no bound it can use.
- * A parameter of a generic plan is not known: the scan gets its value when it starts, and handles any (agg/topn.h), so the plan assumes
- * a few rows; a value the planner knows, past the cap, keeps the normal plan.
+ * LIMIT and OFFSET of the query, as far as the planner knows them; false when there is no bound it can use. A parameter of a generic plan
+ * is not known: the scan gets its value when it starts, and handles any (agg/topn.h), so the plan assumes a few rows. What the heap cannot
+ * hold (more rows than SIFT_TOPN_MAX_ROWS, more keys than it has) the scan sorts: the path is priced with that sort (topn_sort_cost).
  */
-static int64
-topn_rows(Query *parse, PlannerInfo *root)
+static bool
+topn_bounds(Query *parse, PlannerInfo *root, double *count, double *offset)
 {
-	int64		count,
-				offset;
-
 	if (parse->limitCount == NULL || parse->limitOption != LIMIT_OPTION_COUNT || !topn_bound_ok(parse->limitCount) || !topn_bound_ok(parse->limitOffset))
-		return 0;
-	count = topn_value(root, parse->limitCount, TOPN_ASSUMED_ROWS);
-	offset = parse->limitOffset ? topn_value(root, parse->limitOffset, 0) : 0;
-	if (count < 1 || offset < 0 || count > SIFT_TOPN_MAX_ROWS || offset > SIFT_TOPN_MAX_ROWS)
-		return 0;
-	return count + offset <= SIFT_TOPN_MAX_ROWS ? count + offset : 0;
+		return false;
+	*count = topn_value(root, parse->limitCount, TOPN_ASSUMED_ROWS);
+	*offset = parse->limitOffset ? topn_value(root, parse->limitOffset, 0) : 0;
+	return *count >= 1 && *offset >= 0;
+}
+
+/* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
+#define TOPN_SORT_ROWS	1024
+
+/* the heap of n rows takes the rows read: each is compared with the n-th and the better ones sift down, log2(n) steps (a heap of a page is the baseline) */
+static Cost
+topn_heap_cost(double read, double n)
+{
+	return n <= TOPN_SORT_ROWS ? 0 : 4.0 * cpu_operator_cost * read * log2(n / TOPN_SORT_ROWS);
+}
+
+/*
+ * Every row that passes, with its keys and TID: sorted in memory (the keys are compared once per step of a sort, as PostgreSQL's cost_sort
+ * prices it, without the tuples) up to hash_mem, or, past it, by a tuplesort that writes runs to disk (cost_sort's model of it)
+ */
+static Cost
+topn_sort_cost(double rows, int nkey)
+{
+	double		budget = work_mem * 1024.0,
+				mem = rows * (nkey + (nkey + 63) / 64 + 1) * sizeof(int64),
+				cost = cpu_operator_cost * rows * (log2(Max(rows, 2.0)) + 1.0);
+
+	if (mem > Min((double) get_hash_memory_limit(), 512.0 * 1024 * 1024))
+	{
+		double		bytes = rows * (MAXALIGN((nkey + 1) * sizeof(int64)) + MAXALIGN(SizeofHeapTupleHeader)),
+					passes = Max(1.0, ceil(log(Max(bytes / budget, 2.0)) / log(6.0)));
+
+		cost += cpu_operator_cost * rows * log2(Max(rows, 2.0)) + 2.0 * (bytes / BLCKSZ) * passes * (seq_page_cost * 0.75 + random_page_cost * 0.25);
+	}
+	return cost;
 }
 
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator */
@@ -423,10 +450,12 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
-topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int64 rows, int nworkers)
+topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, double rows, int nworkers)
 {
 	SiftAggPath *ap = (SiftAggPath *) newNode(sizeof(SiftAggPath), T_CustomPath);
 	CustomPath *cp = &ap->path;
+	double		matches = Max(c->rel->rows, 1.0);
+	Cost		extra;
 
 	s->nworkers = nworkers;
 	/* the joins are tables read by the scan itself: no child plan in a query level of its own */
@@ -441,7 +470,10 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.parallel_safe = false;
 	cp->path.pathkeys = root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
-	agg_cost(c, s, input_rel, &cp->path, Min((double) rows, Max(input_rel->rows, 1.0)));
+	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
+	extra = c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause)) : topn_heap_cost(matches * c->topn_frac, rows);
+	cp->path.startup_cost += extra;
+	cp->path.total_cost += extra;
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
 	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
@@ -460,15 +492,18 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	int			nworkers;
 	uint64		tlo,
 				thi;
-	int			leaf[SIFT_TOPN_MAX_KEYS];
-	bool		desc[SIFT_TOPN_MAX_KEYS],
-				nulls_first[SIFT_TOPN_MAX_KEYS];
-	int		   *attno;
-	int64		rows = topn_rows(parse, root);
+	int		   *leaf,
+			   *attno;
+	bool	   *desc,
+			   *nulls_first,
+				skip_offset = true;
+	double		count,
+				offset,
+				rows;
 	int			nkey = list_length(parse->sortClause);
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
 
-	if (!sift_enable_agg || !sift_enable_topn || rows == 0 || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || nkey > SIFT_TOPN_MAX_KEYS ||
+	if (!sift_enable_agg || !sift_enable_topn || !topn_bounds(parse, root, &count, &offset) || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 ||
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
@@ -491,6 +526,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		return;
 	}
 	initStringInfo(&txt);
+	leaf = palloc(nkey * sizeof(int));
+	desc = palloc(nkey * sizeof(bool));
+	nulls_first = palloc(nkey * sizeof(bool));
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
 		int			j = foreach_current_index(sgc);
@@ -515,16 +553,34 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
-	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
-								 leaf[0], input_rel->rows, rows);
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	rows = count + offset;
+	/* the Limit node throws the first OFFSET rows away unread: when the output is the scan tuple, they are not read from the heap */
+	foreach_ptr(Expr, e, target->exprs)
+		skip_offset &= IsA(e, Var);
+	c->topn_fetch = Min(skip_offset ? count : rows, Max(input_rel->rows, 1.0));
 	record_deps(root, parse->limitCount);
 	record_deps(root, parse->limitOffset);
 	s->desc_topn = txt.data;
 
+	/* the heap holds the bound, or the scan sorts every row that passes: a heap of many rows costs more than the sort, so both are priced */
+	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS))
+	{
+		c->topn_sorted = false;
+		c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
+									 leaf[0], input_rel->rows, (int64) rows);
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
+								 copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
+		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
+		nworkers = c->joins == NIL ? parallel_workers(c, s, input_rel, output_rel) : 0;
+		if (nworkers > 0)
+			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
+		if (rows <= TOPN_SORT_ROWS)
+			return;
+	}
+	c->topn_sorted = true;
+	c->topn_frac = 1.0;
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
+							 copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
-	/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
-	nworkers = c->joins == NIL ? parallel_workers(c, s, input_rel, output_rel) : 0;
-	if (nworkers > 0)
-		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 }
