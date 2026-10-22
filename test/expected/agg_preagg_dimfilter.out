@@ -64,7 +64,7 @@ INSERT INTO pa_q VALUES
 	(27, 'measure not stored', 'SELECT sum(small) FROM %s WHERE kind = 3'),
 	(28, 'other key: scan',   'SELECT grp, count(*) FROM %s WHERE kind = 3 GROUP BY grp'),
 	(29, 'the key is the dim', 'SELECT kind, count(*), sum(val) FROM %s WHERE kind = 3 GROUP BY kind'),
-	(30, 'FILTER: scan',      'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
+	(30, 'FILTER on the dim',      'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
 	(31, 'no rows',           'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id > 100000000'),
 	(32, 'the dim and its text', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND grp = ''g05''');
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
@@ -155,7 +155,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | all  | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -163,7 +163,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |      23 |        1 |      7
+      32 |      0 |      24 |        1 |      7
 (1 row)
 
 SELECT * FROM pa_sum('eo');
@@ -253,7 +253,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | some | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -261,7 +261,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |       0 |       23 |      8
+      32 |      0 |       0 |       24 |      8
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -298,7 +298,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | some | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -339,7 +339,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | some | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -389,7 +389,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | some | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | some | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -440,7 +440,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | all  | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -498,7 +498,7 @@ SELECT * FROM pa_check('ec');
  27 | measure not stored   | none | t
  28 | other key: scan      | none | t
  29 | the key is the dim   | all  | t
- 30 | FILTER: scan         | -    | t
+ 30 | FILTER on the dim    | all  | t
  31 | no rows              | none | t
  32 | the dim and its text | none | t
 (32 rows)
@@ -511,7 +511,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('ec');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      32 |      0 |       0 |       21 |     10
+      32 |      0 |       0 |       22 |     10
 (1 row)
 
 SELECT n, (u).workers > 0 AS workers, (u).pre > 0 AS some_pre
