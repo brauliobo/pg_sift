@@ -7,6 +7,7 @@
 
 #include "agg/wide.h"
 #include "agg/pred_in_int.h"
+#include "agg/unit_int.h"
 
 /* the row that owns each element of the array leaf in the unit */
 static const uint32 *
@@ -556,6 +557,15 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 			out[w] = ~out[w];
 		if (nrow & 63)
 			out[nw - 1] &= (UINT64CONST(1) << (nrow & 63)) - 1;
+	}
+	/* a list that raises when SQL reads it has no elements to test: its row goes on to the error, raised where the rows that keep it reach the aggregates */
+	if (p->pass_poison)
+	{
+		uint64	   *bad = NULL;
+
+		leaf_overflow_rows(ex, p->leaf, &bad);
+		for (int w = 0; bad && w < nw; w++)
+			out[w] |= bad[w];
 	}
 }
 

@@ -505,8 +505,12 @@ cmp_int(const void *a, const void *b)
 	return *(const int *) a - *(const int *) b;
 }
 
-static bool recordset_recheck_ok(AggCtx *c);
-static Bitmapset *recordset_columns(AggCtx *c);
+static Oid member_recheck(AggCtx *c, const SiftAggSpec *s, int j);
+static bool recordset_recheck_ok(AggCtx *c, int grp);
+static Bitmapset *recordset_columns(AggCtx *c, int grp);
+static List *recordset_funcs(AggCtx *c, int grp);
+static Bitmapset *function_columns(AggCtx *c, int grp, RangeTblFunction *f);
+static Bitmapset *recordset_groups(AggCtx *c);
 
 void
 finish_leaves(AggCtx *c, SiftAggSpec *s)
@@ -515,18 +519,19 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 				m = -1;
 
 	/* the columns of jsonb_to_recordset that nothing reads but a value they cannot store makes it raise: the source reads those rows again */
-	if (recordset_recheck_ok(c))
-	{
-		Bitmapset  *cols = recordset_columns(c);
+	for (int g = -1; (g = bms_next_member(recordset_groups(c), g)) >= 0;)
+		if (recordset_recheck_ok(c, g))
+		{
+			Bitmapset  *cols = recordset_columns(c, g);
 
-		while ((m = bms_next_member(cols, m)) >= 0)
-			if (c->stats.ovf[m])
-			{
-				c->used = bms_add_member(c->used, m);
-				c->rec_ok = bms_add_member(c->rec_ok, m);
-			}
-		m = -1;
-	}
+			for (m = -1; (m = bms_next_member(cols, m)) >= 0;)
+				if (c->stats.ovf[m])
+				{
+					c->used = bms_add_member(c->used, m);
+					c->rec_ok = bms_add_member(c->rec_ok, m);
+				}
+		}
+	m = -1;
 	s->leaves = palloc(Max(bms_num_members(c->used), 1) * sizeof(int));
 	while ((m = bms_next_member(c->used, m)) >= 0)
 		s->leaves[n++] = m;
@@ -535,6 +540,9 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 	s->recheck = palloc0(Max(n, 1));
 	for (int i = 0; i < n; i++)
 		s->recheck[i] = s->leaves[i] < c->lay->nleaves ? spec_recheck(c, s, s->leaves[i]) : SRK_NONE;
+	for (int j = 0; j < s->nvleaf; j++)
+		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && OidIsValid(s->vleaf[j].cast = member_recheck(c, s, j)))
+			s->vleaf[j].recheck = SRK_CAST;
 }
 
 /* can SQL read a leaf of this type from the text of a scalar through its input function (the leaf types of the shredder)? */
@@ -564,20 +572,67 @@ text_io_leaf(const SiftSrcLeaf *l)
  * read again by the source as the function reads it.
  */
 static bool
-recordset_recheck_ok(AggCtx *c)
+recordset_recheck_ok(AggCtx *c, int grp)
 {
 	int			m = -1;
 
-	if (c->func_kind != FK_RECORDSET || c->group < 0 || c->search || bms_is_member(c->group, c->rec_bad) ||
+	if (!bms_is_member(grp, recordset_groups(c)) || c->search || bms_is_member(grp, c->rec_bad) ||
 		!OidIsValid(c->indexoid) || !sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
 		return false;
 	for (int j = 0; j < c->nvleaf; j++)
-		if (c->vleaf[j].obj == c->group)	/* the length of the list: a row that raises has no length */
+		if (c->vleaf[j].obj == grp)	/* the length of the list: a row that raises has no length */
+			return false;
+	/* the error of a row is the list's, whichever call reads it: calls that declare other columns raise for other values */
+	foreach_ptr(RangeTblFunction, f, recordset_funcs(c, grp))
+		if (!bms_equal(function_columns(c, grp, f), function_columns(c, grp, linitial(recordset_funcs(c, grp)))))
 			return false;
 	while ((m = bms_next_member(c->used, m)) >= 0)
-		if (leaf_of(c, m)->parent == c->group && (!bms_is_member(m, c->rec_ok) || bms_is_member(m, c->rec_bad) || !text_io_leaf(leaf_of(c, m))))
+		if (leaf_of(c, m)->parent == grp && (!bms_is_member(m, c->rec_ok) || bms_is_member(m, c->rec_bad) || !text_io_leaf(leaf_of(c, m))))
 			return false;
 	return true;
+}
+
+/* the lists a jsonb_to_recordset unnests: the one of the FROM, and those the EXISTS tests of the query read */
+static Bitmapset *
+recordset_groups(AggCtx *c)
+{
+	Bitmapset  *groups = NULL;
+
+	if (c->func_kind == FK_RECORDSET && c->group >= 0)
+		groups = bms_add_member(groups, c->group);
+	foreach_ptr(RecFunc, rf, c->rec_funcs)
+		groups = bms_add_member(groups, rf->grp);
+	return groups;
+}
+
+/* the calls of jsonb_to_recordset that unnest list grp: the FROM's, and those of the EXISTS tests */
+static List *
+recordset_funcs(AggCtx *c, int grp)
+{
+	List	   *funcs = NIL;
+
+	if (c->func_kind == FK_RECORDSET && grp == c->group)
+		funcs = list_make1(c->func);
+	foreach_ptr(RecFunc, rf, c->rec_funcs)
+		if (rf->grp == grp)
+			funcs = lappend(funcs, rf->f);
+	return funcs;
+}
+
+/* the columns one call declares that have a leaf in the index */
+static Bitmapset *
+function_columns(AggCtx *c, int grp, RangeTblFunction *f)
+{
+	Bitmapset  *cols = NULL;
+
+	for (int i = 0; i < list_length(f->funccolnames); i++)
+	{
+		int			leaf = child_leaf(c, grp, strVal(list_nth(f->funccolnames, i)), list_nth_oid(f->funccoltypes, i));
+
+		if (leaf >= 0 && text_io_leaf(leaf_of(c, leaf)))
+			cols = bms_add_member(cols, leaf);
+	}
+	return cols;
 }
 
 /*
@@ -585,18 +640,12 @@ recordset_recheck_ok(AggCtx *c)
  * raises for a value its type does not take.
  */
 static Bitmapset *
-recordset_columns(AggCtx *c)
+recordset_columns(AggCtx *c, int grp)
 {
 	Bitmapset  *cols = NULL;
-	RangeTblFunction *f = c->func;
 
-	for (int i = 0; i < list_length(f->funccolnames); i++)
-	{
-		int			leaf = child_leaf(c, c->group, strVal(list_nth(f->funccolnames, i)), list_nth_oid(f->funccoltypes, i));
-
-		if (leaf >= 0 && text_io_leaf(leaf_of(c, leaf)))
-			cols = bms_add_member(cols, leaf);
-	}
+	foreach_ptr(RangeTblFunction, f, recordset_funcs(c, grp))
+		cols = bms_join(cols, function_columns(c, grp, f));
 	return cols;
 }
 
@@ -606,7 +655,7 @@ unconditional_cast(Node *n, AggCtx *c)
 {
 	if (n == NULL)
 		return false;
-	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) == FLOAT8OID)
+	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) == c->cast_want)
 	{
 		Node	   *arg = strip_relabel(linitial(((FuncExpr *) n)->args));
 
@@ -640,10 +689,109 @@ cast_recheck_ok(AggCtx *c, int m)
 {
 	Query	   *q = c->root->parse;
 
+	c->cast_want = FLOAT8OID;
 	/* a leaf of the index, not the member of one key (a virtual leaf): the source reads the rows with a bad value in any member again, and the error is the row's, not the key's */
 	return c->func_kind == FK_EACH && m < c->lay->nleaves - c->nvleaf && bms_is_member(m, c->cast_ok) && !bms_is_member(m, c->cast_bad) && leaf_of(c, m)->typid == FLOAT8OID &&
 		!c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) &&
 		(unconditional_cast((Node *) q->targetList, c) || unconditional_cast(q->havingQual, c));
+}
+
+/* does a conjunct of the rows read the leaf, directly or in an expression of a combo? */
+static bool
+pred_reads_leaf(AggCtx *c, const SiftAggPred *p, int leaf)
+{
+	if (p->kind == SAP_COMBO)
+	{
+		const ComboCtx *cb = list_nth(c->combos, p->leaf);
+
+		for (int k = 0; k < cb->nl; k++)
+			if (cb->leaf[k] == leaf)
+				return true;
+		return false;
+	}
+	if ((p->leaf >= 0 && p->leaf == leaf) || (p->leaf2 >= 0 && p->leaf2 == leaf))
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_reads_leaf(c, p->child[i], leaf))
+			return true;
+	return false;
+}
+
+typedef struct MemberCasts
+{
+	AggCtx	   *c;
+	Oid			to;				/* the type the value of the member is cast to */
+	bool		bad;			/* ... it is cast to two types, read bare, or read where the walk does not see */
+} MemberCasts;
+
+static bool
+is_member_value(Node *n, AggCtx *c)
+{
+	return IsA(n, Var) && ((Var *) n)->varno == c->func_rti && ((Var *) n)->varattno == 2;
+}
+
+/* the casts of the value column of the jsonb_each of the FROM, in the query and nowhere else: a sub-select could read it where the walk cannot tell */
+static bool
+member_casts(Node *n, MemberCasts *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+	{
+		Query	   *q = (Query *) n;
+
+		foreach_node(RangeTblEntry, rte, q->rtable)
+			if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE)
+				w->bad = true;
+		return query_tree_walker(q, member_casts, w, QTW_IGNORE_RT_SUBQUERIES);
+	}
+	if (IsA(n, SubLink) || IsA(n, SubPlan))
+	{
+		w->bad = true;
+		return false;
+	}
+	if (IsA(n, FuncExpr) && json_cast_target(((FuncExpr *) n)->funcid) != InvalidOid && is_member_value(strip_relabel(linitial(((FuncExpr *) n)->args)), w->c))
+	{
+		Oid			to = json_cast_target(((FuncExpr *) n)->funcid);
+
+		if (w->to != InvalidOid && w->to != to)
+			w->bad = true;
+		w->to = to;
+		return false;
+	}
+	if (is_member_value(n, w->c))
+		w->bad = true;
+	return expression_tree_walker(n, member_casts, w);
+}
+
+/*
+ * Can the member of one key (vleaf j: `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`) be read again from the heap, so that a row whose member of
+ * that key holds a value that is no number raises where the cast of PostgreSQL does, and a dirty member of another key raises nothing? The
+ * member is read only through casts to one type that every row reaching the aggregates evaluates, no conjunct reads it, and no other read of the
+ * value column of the object (all the members) shares the rows read again.
+ */
+static Oid
+member_recheck(AggCtx *c, const SiftAggSpec *s, int j)
+{
+	int			v = c->lay->nleaves - c->nvleaf + j,
+				src = vleaf_source(c, j);
+	Query	   *q = c->root->parse;
+	MemberCasts w = {c, InvalidOid, false};
+
+	if (!sift_aggvleaf_member(&c->vleaf[j]) || src < 0 || c->func_kind != FK_EACH || c->func_key == NULL || c->vleaf[j].obj != c->func_obj ||
+		bms_is_member(src, c->used) || leaf_of(c, v)->typid != FLOAT8OID || c->search || !OidIsValid(c->indexoid) ||
+		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+		return InvalidOid;
+	/* the integer casts start from the float8 member (jsonb_int_mutator): the message of the error names the type the query casts to */
+	if (member_casts((Node *) q, &w) || w.bad || (w.to != FLOAT8OID && w.to != INT4OID && w.to != INT8OID))
+		return InvalidOid;
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->level != 0 || pred_reads_leaf(c, s->pred[i], v))
+			return InvalidOid;
+	c->cast_want = w.to;
+	if (!unconditional_cast((Node *) q->targetList, c) && !unconditional_cast(q->havingQual, c))
+		return InvalidOid;
+	return w.to;
 }
 
 /* can leaf m, a text path read only as `doc ->> 'k'`, be read again from the heap? The text of a value cannot raise: a container where a scalar is, a document of another kind than an object (a key of an array or scalar is NULL) */
@@ -656,19 +804,29 @@ text_recheck_ok(AggCtx *c, int m)
 		l->path != NIL && l->typid == TEXTOID && !l->wide && !c->search && OidIsValid(c->indexoid) && sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true);
 }
 
+/* the list leaf m is, or is a column of; -1 when it is neither */
+static int
+recordset_group(AggCtx *c, int m)
+{
+	return bms_is_member(m, recordset_groups(c)) ? m : leaf_of(c, m)->parent;
+}
+
 /* How the query reads leaf m when the source holds a value it cannot store (SRK_NONE: it does not, such a value is an error for the scan); docs/COL-DIRTY-UNITS.md */
 static SiftSrcRecheck
 leaf_recheck(AggCtx *c, int m)
 {
+	int			grp;
+
 	if (cast_recheck_ok(c, m))
 		return SRK_CAST;
 	if (text_recheck_ok(c, m))
 		return SRK_TEXT;
-	if (!recordset_recheck_ok(c))
+	grp = recordset_group(c, m);
+	if (grp < 0 || !recordset_recheck_ok(c, grp))
 		return SRK_NONE;
-	if (m == c->group)
+	if (m == grp)
 		return SRK_RECORDSET;
-	return leaf_of(c, m)->parent == c->group && (bms_is_member(m, c->used) || bms_is_member(m, recordset_columns(c))) ? SRK_TEXT : SRK_NONE;
+	return bms_is_member(m, c->used) || bms_is_member(m, recordset_columns(c, grp)) ? SRK_TEXT : SRK_NONE;
 }
 
 /* does a conjunct of the rows read one of the leaves? Those rows would be dropped before the error of the list they hold is raised */
@@ -690,6 +848,7 @@ SiftSrcRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	Bitmapset  *list = NULL;
+	int			grp;
 
 	if (leaf_recheck(c, m) == SRK_NONE)
 		return SRK_NONE;
@@ -704,12 +863,14 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	/* no error to raise, so no order to keep: the rows read again give the text any conjunct and key reads */
 	if (leaf_of(c, m)->parent < 0 && leaf_recheck(c, m) == SRK_TEXT)
 		return SRK_TEXT;
-	list = bms_add_member(list, c->group);
+	grp = recordset_group(c, m);
+	list = bms_add_member(list, grp);
 	for (int i = 0; i < c->lay->nleaves; i++)
-		if (leaf_of(c, i)->parent == c->group)
+		if (leaf_of(c, i)->parent == grp)
 			list = bms_add_member(list, i);
+	/* an EXISTS over the list passes the row that raises: the other conjuncts decide whether it reaches the error */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 0 && (s->pred[i]->late || pred_reads_any(s->pred[i], list)))
+		if (s->pred[i]->level == 0 && (s->pred[i]->late || (pred_reads_any(s->pred[i], list) && !(s->pred[i]->pass_poison && s->pred[i]->leaf == grp))))
 			return SRK_NONE;
 	return leaf_recheck(c, m);
 }

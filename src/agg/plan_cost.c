@@ -916,6 +916,9 @@ recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 			flagged = Max(flagged, c->stats.ovf_units[s->leaves[i]]);
+	for (int j = 0; j < s->nvleaf; j++)
+		if (s->vleaf[j].recheck != SRK_NONE)
+			flagged = Max(flagged, c->stats.ovf_units[vleaf_source(c, j)]);
 	return Max(k->rows * flagged * AGG_RECHECK_FRAC, k->units * flagged) * AGG_RECHECK_ROW;
 }
 
