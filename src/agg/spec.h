@@ -58,7 +58,7 @@ typedef enum SiftAggNxOp
 	SNX_FLOOR,
 	SNX_CEIL,
 	SNX_CMP3,					/* left <=> right as -1, 0 or 1 (a, b as SNX_ADD align the scales); NaN equals NaN and is greater than every number */
-	SNX_INTCAST					/* numeric to an integer of a bytes (2, 4, 8): a NaN raises PostgreSQL's error; the value is the one rounded before */
+	SNX_INTCAST					/* numeric to an integer of a bytes (2, 4, 8): a NaN raises PostgreSQL's error; the value is the one rounded before; b = 1: a value outside int8 raises "bigint out of range" (the result of int8 arithmetic, a = 8) */
 } SiftAggNxOp;
 
 /* the value of a NaN in a program (numeric(p <= 18, s) columns hold it as a flag): greater than every number a program has */
@@ -580,6 +580,8 @@ extern double sift_agg_rollup_cost;
 #define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
+/* The leaf of a numeric program that is `leaf * mul + add` (a lone leaf, or int8 arithmetic with a constant that ends in the range-checked cast), -1 if it is more */
+extern int sift_aggnum_linear(const SiftAggNum *n, sift_i128 *mul, sift_i128 *add);
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);
 
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
