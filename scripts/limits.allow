@@ -16,7 +16,6 @@ SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a vers
 SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
 SIFT_CPOINT_MAX_KEYS	keys of one lookup that the point directory answers: a speed threshold, the answer is the same either way
 SIFT_CPOINT_MAX_ROWS	rows of one lookup that the point directory answers: a speed threshold, the answer is the same either way
-SIFT_CPOINT_MAX_RUN	rows crowding one position of a point directory above which a leaf gets no table: a speed threshold, no visible effect
 SIFT_FOLD_MAX_EXPAND	characters one character expands to in case folding: a property of the Unicode tables
 SIFT_MAX_EXTENTS	derived from the page layout (extents of a segment header)
 SIFT_MAX_OFF	width of a page bitmap: the layout of the postings

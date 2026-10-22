@@ -128,17 +128,35 @@ FROM sift._test_col_counters('pd_k', '2:eq:777', 8) p, sift._test_col_counters('
 SELECT n, pd_cmp('pd_k', preds, heapwhere), pd_cmp('pd_n', preds, heapwhere) FROM pd_qk ORDER BY n;
 DROP INDEX pd_n;
 
--- text and uuid leaves: the directory lists their codes (the zones of a leaf of codes may already cut units, and how many depends on the split of the segments, so the units
--- read are compared to those without the directory and to all the units), and a dictionary of many strings is stored for a lookup (minor 14 as well)
+-- text and uuid leaves: the directory lists their codes, and a dictionary of many strings is stored for a lookup (minor 14 as well). The parallel build splits the rows
+-- into segments by how its workers take the heap blocks, so the units of a lookup are bounded by the superblocks of the rows and by the rows (every unit read holds one);
+-- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
 CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
 	WITH (write_buffer_limit = 256, point_columns = 'k, s, u, v');
 SELECT sift.col_verify('pd_all', true);
 SELECT min(format) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
-SELECT p.units <= f.units AND p.units < (SELECT sum(units) FROM sift.col_segments('pd_all')) AS fewer_units_text, p.rows = f.rows AS same_rows
-FROM sift._test_col_counters('pd_all', '1:eq:s77', 8) p, sift._test_col_counters('pd_all', '1:eq:s77', 0) f;
-SELECT p.units <= f.units AND p.units < (SELECT sum(units) FROM sift.col_segments('pd_all')) AS fewer_units_uuid, p.rows = f.rows AS same_rows
-FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 8) p, sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 0) f;
+SELECT p.units BETWEEN sb.n AND p.rows AS units_hold_the_rows_text, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_all', '1:eq:s77', 8) p, sift._test_col_counters('pd_all', '1:eq:s77', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = 's77') sb;
+SELECT p.units BETWEEN sb.n AND p.rows AS units_hold_the_rows_uuid, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 8) p, sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE u = md5('1')::uuid) sb;
+
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 's, u, k');
+RESET max_parallel_maintenance_workers;
+SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
+SELECT p.units = sb.n AS exact_units_text, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '0:eq:s77', 8) p, sift._test_col_counters('pd_one', '0:eq:s77', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = 's77') sb;
+SELECT p.units = sb.n AS exact_units_uuid, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 8) p, sift._test_col_counters('pd_one', '1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE u = md5('1')::uuid) sb;
+SELECT p.units = sb.n AS exact_units_empty_string, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '0:eq:', 8) p, sift._test_col_counters('pd_one', '0:eq:', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = '') sb;
+DROP INDEX pd_one;
 
 -- the access method: the plans, and the rows of an index scan and a bitmap scan are the heap's
 CREATE TABLE pd_w (n serial, w text);
@@ -188,18 +206,29 @@ ALTER INDEX pd_all RESET (point_columns);
 REINDEX INDEX pd_all;
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 
--- a leaf that cannot be listed gets no table: a key in very many rows, a string kept inline
+-- a string kept inline cannot be listed: the leaf gets no table; a key in very many rows does not take the table of the other keys with it
 CREATE TABLE ph (id int, k int, s text, pad text DEFAULT repeat('x', 100));
 INSERT INTO ph SELECT i, CASE WHEN i % 10 = 0 THEN i ELSE 1 END, CASE WHEN i = 2500 THEN repeat('long', 3000) ELSE 's' || i % 700 END FROM generate_series(1, 9000) i;
 CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
 CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's');
-SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') < 14 AS hot_key_has_no_directory,
+SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') >= 14 AS hot_key_has_a_directory,
 	   (SELECT min(format) FROM sift.col_segments('ph_s') WHERE kind = 'immutable') < 14 AS inline_string_has_no_directory;
 SELECT sift.col_verify('ph_k', true), sift.col_verify('ph_s', true);
 SELECT (SELECT count(*) FROM sift._test_col_tids('ph_k', '0:eq:1', 8)) AS hot_key, (SELECT count(*) FROM ph WHERE k = 1) AS heap_hot_key,
 	   (SELECT count(*) FROM sift._test_col_tids('ph_k', '0:eq:30', 8)) AS cold_key, (SELECT count(*) FROM ph WHERE k = 30) AS heap_cold_key,
 	   (SELECT count(*) FROM sift._test_col_tids('ph_s', '0:eq:s7', 8)) AS text, (SELECT count(*) FROM ph WHERE s = 's7') AS heap_text;
 DROP TABLE ph;
+
+-- a key in more rows than a lookup takes (65,536) is answered by the units, and the other keys of the leaf are still answered by the directory, one unit for one row
+CREATE TABLE phb (id int, k int, pad text DEFAULT repeat('x', 20));
+INSERT INTO phb SELECT i, CASE WHEN i % 100 = 0 THEN i ELSE 1 END FROM generate_series(1, 70000) i;
+CREATE INDEX phb_k ON phb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+SELECT sift.col_verify('phb_k', true);
+SELECT p.units = f.units AS hot_key_read_by_the_units, p.rows = f.rows AS same_rows, p.rows AS rows
+FROM sift._test_col_counters('phb_k', '0:eq:1', 8) p, sift._test_col_counters('phb_k', '0:eq:1', 0) f;
+SELECT p.units = 1 AS cold_key_one_unit, p.rows = f.rows AS same_rows, p.rows AS rows
+FROM sift._test_col_counters('phb_k', '0:eq:3000', 8) p, sift._test_col_counters('phb_k', '0:eq:3000', 0) f;
+DROP TABLE phb;
 
 -- keys at the ends of the int8 range (infinity and -infinity of a timestamp are those of an int8): a range up to the largest key lists its keys without running past it
 CREATE TABLE px AS

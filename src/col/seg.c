@@ -240,20 +240,23 @@ points_read(SiftColSegment *seg)
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
 	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
 	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != SIFT_CPOINT_VERSION || hdr[2] > (uint32) seg->schema->ncols ||
-		foot[0] + sizeof(hdr) + (uint64) hdr[2] * 24 > s->len - sizeof(foot))
+		foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
 	for (uint32 i = 0; i < hdr[2]; i++)
 	{
-		uint32		rec[4];
+		uint32		rec[6];
 		uint64		at;
+		uint64		rat = s->off + foot[0] + sizeof(hdr) + (uint64) i * SIFT_CPOINT_RECLEN;
 
-		seg_read(seg, s->off + foot[0] + sizeof(hdr) + (uint64) i * 24, sizeof(rec), rec);
-		seg_read(seg, s->off + foot[0] + sizeof(hdr) + (uint64) i * 24 + sizeof(rec), sizeof(at), &at);
-		if (rec[0] >= (uint32) seg->schema->ncols || rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[2] == 0 || rec[2] > rec[1] ||
-			at < foot[0] + sizeof(hdr) + (uint64) hdr[2] * 24 || at + (uint64) rec[1] * sizeof(uint64) > s->len - sizeof(foot))
+		seg_read(seg, rat, sizeof(rec), rec);
+		seg_read(seg, rat + sizeof(rec), sizeof(at), &at);
+		if (rec[0] >= (uint32) seg->schema->ncols || rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[3] == 0 || rec[3] > rec[1] || rec[2] < rec[3] ||
+			rec[2] >= SIFT_CPOINT_SEG_ROWS || rec[4] > rec[2] + rec[3] ||
+			at < foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN ||
+			at + (uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32) > s->len - sizeof(foot))
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
-		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[2]};
+		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4]};
 	}
 	pv->dict_end = foot[0];
 	return pv->pt;
@@ -1586,61 +1589,166 @@ row_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
+/* The count of the list at word off of the leaf's lists, checked against the lists' words */
+static uint32
+point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off)
+{
+	uint32		cnt;
+
+	if (off >= pl->words)
+		corrupt(seg, "The point directory of leaf %d has a list at word %u of %u.", col, off, pl->words);
+	seg_read(seg, pl->at + (uint64) pl->nslots * sizeof(uint64) + (uint64) off * sizeof(uint32), sizeof(cnt), &cnt);
+	if (cnt < 2 || cnt > pl->count || (uint64) off + 1 + cnt > pl->words)
+		corrupt(seg, "The point directory of leaf %d has a list of %u rows at word %u of %u.", col, cnt, off, pl->words);
+	return cnt;
+}
+
+/* Calls fn(slot payload) for each slot of leaf pl whose fingerprint is that of key's hash: the slots from the position of the hash to the first empty one */
+static void
+point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*fn) (void *, uint32), void *arg)
+{
+	uint32		p = sift_cpoint_pos(h, pl->nslots);
+
+	for (uint32 steps = 0;; steps++)
+	{
+		uint64		win[8];
+		uint32		m = Min(8, pl->nslots - p);
+		uint32		j;
+
+		if (steps > pl->nslots / 8 + 1)
+			corrupt(seg, "The point directory of leaf %d has no empty slot.", col);
+		seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
+		for (j = 0; j < m && win[j] != SIFT_CPOINT_EMPTY; j++)
+			if (sift_cpoint_slot_is(win[j], h))
+				fn(arg, (uint32) win[j]);
+		if (j < m)
+			break;
+		p = (p + m) & (pl->nslots - 1);
+	}
+}
+
+typedef struct PointRows
+{
+	SiftColSegment *seg;
+	int			col;
+	const PointLeaf *pl;
+	uint32		total;
+	uint32	   *r;
+	uint32		n;
+	uint32		cap;
+	bool		over;			/* more rows than a point lookup takes */
+} PointRows;
+
+static void
+point_add_rows(void *arg, uint32 payload)
+{
+	PointRows  *pr = arg;
+	uint32		cnt = 1;
+
+	if (pr->over)
+		return;
+	if (payload & SIFT_CPOINT_LIST)
+		cnt = point_list_count(pr->seg, pr->col, pr->pl, payload & ~SIFT_CPOINT_LIST);
+	if (pr->n + cnt > SIFT_CPOINT_MAX_ROWS)
+	{
+		pr->over = true;
+		return;
+	}
+	if (pr->n + cnt > pr->cap)
+		pr->r = repalloc(pr->r, (pr->cap = Max(pr->cap * 2, pr->n + cnt)) * sizeof(uint32));
+	if (payload & SIFT_CPOINT_LIST)
+		seg_read(pr->seg, pr->pl->at + (uint64) pr->pl->nslots * sizeof(uint64) + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1) * sizeof(uint32), cnt * sizeof(uint32), pr->r + pr->n);
+	else
+		pr->r[0 + pr->n] = payload;
+	for (uint32 i = pr->n; i < pr->n + cnt; i++)
+		if (pr->r[i] >= pr->total)
+			corrupt(pr->seg, "The point directory of leaf %d lists row %u of %u.", pr->col, pr->r[i], pr->total);
+	pr->n += cnt;
+}
+
 bool
 sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys, uint32 **rows, uint32 *nrows)
 {
 	const PointLeaf *pl = points_read(seg);
-	uint32		cap = 16,
-				n = 0,
-				total,
-				u = 0;
-	uint32	   *r;
+	PointRows	pr = {.seg = seg,.col = col,.cap = 16};
+	uint32		u = 0;
 
 	if (pl == NULL || pl[col].nslots == 0)
 		return false;
-	pl += col;
-	total = seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows;
-	r = palloc(cap * sizeof(uint32));
-	for (int k = 0; k < nkeys; k++)
+	pr.pl = pl + col;
+	pr.total = seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows;
+	pr.r = palloc(pr.cap * sizeof(uint32));
+	for (int k = 0; k < nkeys && !pr.over; k++)
+		point_probe(seg, col, pr.pl, sift_cpoint_hash(keys[k]), point_add_rows, &pr);
+	if (pr.over)
 	{
-		uint64		h = sift_cpoint_hash(keys[k]);
-		uint32		p = sift_cpoint_pos(h, pl->nslots);
-
-		for (uint32 steps = 0;; steps++)
-		{
-			uint64		win[8];
-			uint32		m = Min(8, pl->nslots - p);
-			uint32		j;
-
-			if (steps > pl->nslots / 8 + 1)
-				corrupt(seg, "The point directory of leaf %d has no empty slot.", col);
-			seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
-			for (j = 0; j < m && win[j] != SIFT_CPOINT_EMPTY; j++)
-				if (sift_cpoint_slot_is(win[j], h))
-				{
-					if ((uint32) win[j] >= total)
-						corrupt(seg, "The point directory of leaf %d lists row %u of %u.", col, (uint32) win[j], total);
-					if (n == cap)
-						r = repalloc(r, (cap *= 2) * sizeof(uint32));
-					r[n++] = (uint32) win[j];
-					if (n > SIFT_CPOINT_MAX_ROWS)
-					{
-						pfree(r);
-						return false;
-					}
-				}
-			if (j < m)
-				break;
-			p = (p + m) & (pl->nslots - 1);
-		}
+		pfree(pr.r);
+		return false;
 	}
-	qsort(r, n, sizeof(uint32), row_cmp);
-	for (uint32 i = 0; i < n; i++)
-		if (u == 0 || r[u - 1] != r[i])
-			r[u++] = r[i];
-	*rows = r;
+	qsort(pr.r, pr.n, sizeof(uint32), row_cmp);
+	for (uint32 i = 0; i < pr.n; i++)
+		if (u == 0 || pr.r[u - 1] != pr.r[i])
+			pr.r[u++] = pr.r[i];
+	*rows = pr.r;
 	*nrows = u;
 	return true;
+}
+
+typedef struct PointHas
+{
+	SiftColSegment *seg;
+	int			col;
+	const PointLeaf *pl;
+	uint32		row;
+	bool		found;
+} PointHas;
+
+static void
+point_find_row(void *arg, uint32 payload)
+{
+	PointHas   *ph = arg;
+	uint32		lo = 0,
+				hi = 1,
+				off = payload & ~SIFT_CPOINT_LIST;
+	uint64		base = ph->pl->at + (uint64) ph->pl->nslots * sizeof(uint64);
+
+	if (!(payload & SIFT_CPOINT_LIST))
+	{
+		ph->found |= payload == ph->row;
+		return;
+	}
+	hi = point_list_count(ph->seg, ph->col, ph->pl, off);
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2,
+					v;
+
+		seg_read(ph->seg, base + (uint64) (off + 1 + mid) * sizeof(uint32), sizeof(v), &v);
+		if (v < ph->row)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo < point_list_count(ph->seg, ph->col, ph->pl, off))
+	{
+		uint32		v;
+
+		seg_read(ph->seg, base + (uint64) (off + 1 + lo) * sizeof(uint32), sizeof(v), &v);
+		ph->found |= v == ph->row;
+	}
+}
+
+bool
+sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 row)
+{
+	const PointLeaf *pl = points_read(seg);
+	PointHas	ph = {.seg = seg,.col = col,.row = row};
+
+	if (pl == NULL || pl[col].nslots == 0)
+		return false;
+	ph.pl = pl + col;
+	point_probe(seg, col, ph.pl, sift_cpoint_hash(key), point_find_row, &ph);
+	return ph.found;
 }
 
 uint32
@@ -1657,10 +1765,14 @@ sift_cseg_verify_points(SiftColSegment *seg)
 	const PointLeaf *pl = points_read(seg);
 	uint32		total = seg->nsb > 0 ? seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows : 0;
 	uint64		win[1024];
+	uint32		rows[1024];
 
 	for (int c = 0; pl && c < seg->schema->ncols; c++)
 	{
-		uint64		used = 0;
+		uint64		listed = 0,
+					words = 0;
+		uint32		keys = 0;
+		uint64		lists = pl[c].at + (uint64) pl[c].nslots * sizeof(uint64);
 
 		if (pl[c].nslots == 0)
 			continue;
@@ -1670,16 +1782,40 @@ sift_cseg_verify_points(SiftColSegment *seg)
 
 			seg_read(seg, pl[c].at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
 			for (uint32 j = 0; j < m; j++)
-				if (win[j] != SIFT_CPOINT_EMPTY)
+			{
+				uint32		payload = (uint32) win[j],
+							cnt = 1;
+
+				if (win[j] == SIFT_CPOINT_EMPTY)
+					continue;
+				keys++;
+				if (payload & SIFT_CPOINT_LIST)
 				{
-					if ((uint32) win[j] >= total)
-						corrupt(seg, "The point directory of leaf %d lists row %u of %u.", c, (uint32) win[j], total);
-					used++;
+					uint32		prev = 0;
+
+					cnt = point_list_count(seg, c, &pl[c], payload & ~SIFT_CPOINT_LIST);
+					words += 1 + cnt;
+					for (uint32 i = 0, got; i < cnt; i += got)
+					{
+						got = Min(lengthof(rows), cnt - i);
+						seg_read(seg, lists + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1 + i) * sizeof(uint32), got * sizeof(uint32), rows);
+						for (uint32 k = 0; k < got; k++)
+						{
+							if (rows[k] >= total || (i + k > 0 && rows[k] <= prev))
+								corrupt(seg, "The point directory of leaf %d lists row %u of %u out of order.", c, rows[k], total);
+							prev = rows[k];
+						}
+					}
 				}
+				else if (payload >= total)
+					corrupt(seg, "The point directory of leaf %d lists row %u of %u.", c, payload, total);
+				listed += cnt;
+			}
 			CHECK_FOR_INTERRUPTS();
 		}
-		if (used != pl[c].count)
-			corrupt(seg, "The point directory of leaf %d lists %llu rows, its record %u.", c, (unsigned long long) used, pl[c].count);
+		if (keys != pl[c].nkeys || listed != pl[c].count || words != pl[c].words)
+			corrupt(seg, "The point directory of leaf %d lists %u keys, %llu rows and %llu words, its record %u, %u and %u.", c, keys, (unsigned long long) listed,
+					(unsigned long long) words, pl[c].nkeys, pl[c].count, pl[c].words);
 	}
 }
 

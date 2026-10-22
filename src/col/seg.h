@@ -219,7 +219,9 @@ extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, ui
  * segment, or the keys find more than SIFT_CPOINT_MAX_ROWS rows.
  */
 extern bool sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys, uint32 **rows, uint32 *nrows);
-/* The rows the point directory of leaf col lists (0: it has none), and the check of the tables of every leaf: slots in range, as many as the records say */
+/* Does the directory list the row (in the segment) under the key */
+extern bool sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 row);
+/* The rows the point directory of leaf col lists (0: it has none), and the check of the blocks of every leaf: slots and lists in range, ascending, as many keys, rows and words as the records say */
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);
 extern void sift_cseg_verify_points(SiftColSegment *seg);
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
