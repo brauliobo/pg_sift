@@ -1,0 +1,3 @@
+# CHANGELOG lines that claim a speed and that no benchmark case measures, each with the reason (scripts/check-bench-cases.sh).
+# Format: a phrase of the line (it must stay in the Unreleased section), a tab, the reason. A line that a case measures needs no entry here (its row of bench/cases.tsv names it);
+# an entry whose phrase matches no claim, or that has no reason, fails the check. Short on purpose: a speed that can be measured gets a case, not a line here.
