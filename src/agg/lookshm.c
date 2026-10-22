@@ -375,6 +375,7 @@ typedef struct LookShmRelease
 {
 	MemoryContextCallback cb;
 	uint64		key;
+	bool		taken;
 } LookShmRelease;
 
 static void
@@ -404,9 +405,9 @@ lookshm_unclaim(const char *key)
 		claim_drop(key_hash(key));
 }
 
-/* the pid that is loading the rows of the key, 0 when none is (a claim of a backend that is gone is dropped) */
+/* the pid of another backend that is loading the rows of the key, 0 when none is; with take, the claim is the caller's then (r keeps its release) */
 static int
-claim_holder(LookShm *s, uint64 kh)
+claim_try(LookShm *s, uint64 kh, LookShmRelease *r)
 {
 	int			pid = 0;
 
@@ -414,17 +415,27 @@ claim_holder(LookShm *s, uint64 kh)
 	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
 		if (s->claim[i].pid != 0 && s->claim[i].pid != MyProcPid && s->claim[i].key == kh)
 			pid = s->claim[i].pid;
+	for (int i = 0; pid == 0 && r != NULL && i < LOOKSHM_CLAIMS; i++)
+		if (s->claim[i].pid == 0)
+		{
+			s->claim[i].pid = MyProcPid;
+			s->claim[i].key = kh;
+			r->taken = true;
+			break;
+		}
 	SpinLockRelease(&s->mutex);
-	if (pid != 0 && BackendPidGetProc(pid) == NULL)
-	{
-		SpinLockAcquire(&s->mutex);
-		for (int i = 0; i < LOOKSHM_CLAIMS; i++)
-			if (s->claim[i].pid == pid)
-				s->claim[i].pid = 0;
-		SpinLockRelease(&s->mutex);
-		pid = 0;
-	}
 	return pid;
+}
+
+/* the claims of a backend that is gone are dropped */
+static void
+claim_clear(LookShm *s, int pid)
+{
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
+		if (s->claim[i].pid == pid)
+			s->claim[i].pid = 0;
+	SpinLockRelease(&s->mutex);
 }
 
 /*
@@ -439,13 +450,25 @@ lookshm_claim(const char *key, MemoryContext mcxt)
 	LookShm    *s;
 	uint64		kh = key_hash(key);
 	TimestampTz start = GetCurrentTimestamp();
+	LookShmRelease *r;
 	bool		waited = false;
 
 	if (lookshm_bytes() == 0)
 		return false;
 	s = shm_get();
-	while (claim_holder(s, kh) != 0)
+	r = MemoryContextAllocZero(mcxt, sizeof(LookShmRelease));
+	r->key = kh;
+	for (;;)
 	{
+		int			pid = claim_try(s, kh, waited ? NULL : r);
+
+		if (pid == 0)
+			break;
+		if (BackendPidGetProc(pid) == NULL)
+		{
+			claim_clear(s, pid);
+			continue;
+		}
 		if (TimestampDifferenceExceeds(start, GetCurrentTimestamp(), LOOKSHM_WAIT_MS))
 			return false;
 		waited = true;
@@ -453,21 +476,10 @@ lookshm_claim(const char *key, MemoryContext mcxt)
 		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
 	}
-	if (waited)
-		return true;
-	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LOOKSHM_CLAIMS; i++)
-		if (s->claim[i].pid == 0)
-		{
-			LookShmRelease *r = MemoryContextAlloc(mcxt, sizeof(LookShmRelease));
-
-			s->claim[i].pid = MyProcPid;
-			s->claim[i].key = kh;
-			r->cb = (MemoryContextCallback) {claim_release, r, NULL};
-			r->key = kh;
-			MemoryContextRegisterResetCallback(mcxt, &r->cb);
-			break;
-		}
-	SpinLockRelease(&s->mutex);
-	return false;
+	if (r->taken)
+	{
+		r->cb = (MemoryContextCallback) {claim_release, r, NULL};
+		MemoryContextRegisterResetCallback(mcxt, &r->cb);
+	}
+	return waited;
 }
