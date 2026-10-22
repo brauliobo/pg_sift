@@ -186,7 +186,7 @@ CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'i
 SET sift.col_format_minor = 3;
 CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
 RESET sift.col_format_minor;
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');
 
@@ -211,7 +211,7 @@ CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
 FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
 CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}');
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
 SELECT count(*) = 4 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 2 AS nums
 FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
 SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
@@ -223,7 +223,7 @@ TRUNCATE ap;
 INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', CASE WHEN n % 2 = 0 THEN 'a' ELSE 'b' END, 'n', n) ORDER BY n)
 FROM generate_series(1, 65) n;
 REINDEX INDEX ap_col;
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
 SELECT count(*) = 65 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 65 AS nums
 FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
 SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
@@ -246,7 +246,7 @@ SELECT * FROM pa_sum('a3');
 
 -- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
 CALL pa_settle();
-VACUUM (index_cleanup on, disable_page_skipping) ac, ae, a3;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac, ae, a3;
 SELECT * FROM pa_check('ac');
 
 -- 4. rows in the write buffer, then sealed
@@ -255,13 +255,13 @@ INSERT INTO ac SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k'
 SELECT * FROM pa_check('ac');
 SELECT sift.col_promote('ac_col') >= 0 AS promoted;
 CALL pa_settle();
-VACUUM (index_cleanup on, disable_page_skipping) ac;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
 SELECT * FROM pa_check('ac');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ac_col', true) >= 0 AS merged;
 CALL pa_settle();
-VACUUM (index_cleanup on, disable_page_skipping) ac;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
 SELECT sift.col_verify('ac_col', true);
 SELECT * FROM pa_check('ac');
 
@@ -284,7 +284,7 @@ RESET sift.col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(410001, 415000) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 CALL pa_settle();
-VACUUM (index_cleanup on, disable_page_skipping) a3;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) a3;
 SELECT array_agg(format ORDER BY format) = ARRAY[3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
 SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
