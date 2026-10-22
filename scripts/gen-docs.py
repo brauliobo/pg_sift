@@ -24,10 +24,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 # the results file behind each bench block; a block with a missing file is not rendered, it says so
-RESULTS = {n: n + '.tsv' for n in ('sets', 'rollup', 'tablewrites', 'writepath', 'bm25size', 'leaftypes', 'fields', 'buildcost', 'gpu')}
+RESULTS = {n: n + '.tsv' for n in ('sets', 'rollup', 'tablewrites', 'writepath', 'bm25size', 'leaftypes', 'fields', 'buildcost', 'gpu', 'duckdb')}
 RESULTS.update({'store': 'store.json', 'store-updates': 'store.json', 'store-compression': 'store-compression.json',
                 'slim': 'articles.tsv', 'readme': 'articles.tsv', 'summary': 'articles.tsv'})
-BENCH_CMD = dict.fromkeys(('store', 'store-updates', 'store-compression'), 'bench/bench store all --docs') | dict.fromkeys(('slim', 'readme', 'summary'), 'bench/bench all --docs')
+BENCH_CMD = dict.fromkeys(('store', 'store-updates', 'store-compression'), 'bench/bench store all --docs') | dict.fromkeys(('slim', 'readme', 'summary'), 'bench/bench all --docs') | {'duckdb': 'bench/bench duckdb --docs'}
 
 CONTEXT = {'PGC_USERSET': 'any user', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart', 'PGC_BACKEND': 'connection', 'PGC_SU_BACKEND': 'connection'}
 # argument positions after the name: (short, long, var, boot, ...) and where the context and the bounds are

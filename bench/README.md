@@ -288,6 +288,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 | `final.sh`, `gap.sh`, `gap.py` | `bench/bench final` (the release pass in stages with budgets and resume, `--dry-run`); the pg_sift profile behind docs/BENCH-GAP.md |
 | `store.sh`, `store.py` | the online-store benchmark against Citus (columnar), Elasticsearch and ClickHouse (`store`): docker containers, seeded data, load, warm and cold runs, updates, the Markdown tables of README.md and docs/BENCHMARKS.md |
+| `duckdb.sh`, `duckdb.py` | pg_duckdb against pg_sift and PostgreSQL on the store questions (`duckdb`): two docker containers, the heap and a Parquet file as pg_duckdb's data, warm and cold; rows to `docs/results/duckdb.tsv`, rendered by `extras.py` |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for

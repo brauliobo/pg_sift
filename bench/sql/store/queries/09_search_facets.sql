@@ -3,6 +3,8 @@
 -- label: `count(*) WHERE title @@> 'a b', ... GROUP BY category`
 --@ pg
 SELECT category, count(*) AS n FROM orders WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', 'wireless headphones') AND status = 'shipped' AND amount >= 50 GROUP BY category ORDER BY n DESC, category LIMIT 10
+--@ duck
+SELECT category, count(*) AS n FROM orders WHERE lower(title) LIKE '%wireless%' AND lower(title) LIKE '%headphones%' AND status = 'shipped' AND amount >= 50 GROUP BY category ORDER BY n DESC, category LIMIT 10
 --@ sift
 SELECT category, count(*) AS n FROM orders WHERE title @@> 'wireless headphones' AND status = 'shipped' AND amount >= 50 GROUP BY category ORDER BY n DESC, category LIMIT 10
 --@ ch
