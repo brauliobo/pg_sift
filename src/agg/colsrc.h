@@ -504,6 +504,12 @@ typedef struct SiftSrcProvider
 	/* optional: read only the rows of bits (the other rows of the vector are zero; a source restricted to a match set may read the whole leaf) */
 	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 	/*
+	 * optional: the rows of bits, which are few, are all the executor needs of the unit. When true, the unit goes on as those rows alone,
+	 * renumbered 0..unit->nrow-1 as in a unit of a match set: `nrow`, `read`, `live`, `vet` and the tests are about them, and what the executor
+	 * read of the unit before is stale. False: nothing changed.
+	 */
+	bool		(*narrow) (void *impl, SiftSrcUnit *unit, const uint64 *bits);
+	/*
 	 * Optional, both or neither (sift_colsrc_can_types): the JSON types of the values of a leaf (SIFT_SRC_JT_*), for a leaf that holds the
 	 * values of one type and sets aside the others (overflow). filter_types clears the rows of bits whose type is not one of the types
 	 * (SIFT_SRC_JT_NONE: jsonb_typeof is NULL, a missing key; SIFT_SRC_JT_NULL: a JSON null) and says whether any row is left. It raises the
@@ -792,6 +798,8 @@ extern void sift_colsrc_read_jnull(SiftSrcSource *src, const SiftSrcUnit *unit, 
 
 /* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */
 extern bool sift_colsrc_can_read_sel(const SiftSrcSource *src);
+extern bool sift_colsrc_can_narrow(const SiftSrcSource *src);
+extern bool sift_colsrc_narrow(SiftSrcSource *src, SiftSrcUnit *unit, const uint64 *bits);
 extern void sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 
 #endif							/* SIFT_COLSRC_H */

@@ -316,6 +316,8 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
 #define SPARSE_RATIO	8
+/* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 3% (ten keys of 300 parents) it costs what it saves */
+#define NARROW_RATIO	32
 
 /* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
 static bool
@@ -343,12 +345,12 @@ wide_filters(AggExec *ex, uint64 *rmask)
 	return true;
 }
 
+/* what the scan derived from the rows of the unit */
 static void
-unit_begin(AggExec *ex)
+unit_forget(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 
-	MemoryContextReset(ex->ucxt);
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
@@ -357,7 +359,32 @@ unit_begin(AggExec *ex)
 		ex->ps[i].rowmask_ok = false;
 		ex->ps[i].poison_ok = false;
 	}
+}
+
+static void
+unit_begin(AggExec *ex)
+{
+	MemoryContextReset(ex->ucxt);
+	unit_forget(ex);
 	ex->n_units++;
+}
+
+/*
+ * The source's filters left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
+ * as those rows alone, so that the rest of the work (the leaves, the offsets and owners of the elements of a list) costs what they do, not
+ * what the unit does. rmask becomes all of them, nrow their number.
+ */
+static void
+unit_narrow(AggExec *ex, uint64 **rmask, int *nrow)
+{
+	SiftSrcUnit *u = &ex->unit;
+
+	if (!sift_colsrc_narrow(ex->src, u, *rmask))
+		return;
+	*nrow = u->nrow;
+	*rmask = MemoryContextAllocZero(ex->ucxt, ((*nrow + 63) / 64 + PADW) * sizeof(uint64));
+	fill_ones(*rmask, *nrow);
+	unit_forget(ex);
 }
 
 /*
@@ -547,6 +574,9 @@ process_unit(AggExec *ex)
 		ex->row_base += nrow;
 		return;
 	}
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_narrow(ex->src) &&
+		sift_colk->bits_count(rmask, (nrow + 63) / 64) * NARROW_RATIO < nrow)
+		unit_narrow(ex, &rmask, &nrow);
 	unit_conjuncts(ex, rmask, cand, nrow);
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);
