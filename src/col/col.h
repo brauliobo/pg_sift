@@ -32,7 +32,6 @@
 #define SIFT_COL_DICT_MAX_ENTRY	255			/* a longer string is never a dictionary entry of a segment: its unit stores the strings inline */
 #define SIFT_COL_DICT_MAX_BYTES	(64 << 20)	/* bytes of one segment dictionary: a unit that would exceed it stores its strings inline */
 #define SIFT_COL_UNIT_MAX_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)
-#define SIFT_COL_VEC_ROWS		SIFT_COL_UNIT_MAX_ROWS
 
 /* ---------------------------------------------------------------------------
  * 1. Leaf columns and values
@@ -254,13 +253,6 @@ sift_col_f8_from_key(int64 key)
 
 	memcpy(&f, &b, sizeof(f));
 	return f;
-}
-
-/* float4 keys are the float8 keys of the promoted value (exact), so one domain serves both */
-static inline int64
-sift_col_f4_key(float4 f)
-{
-	return sift_col_f8_key((double) f);
 }
 
 /* ---------------------------------------------------------------------------
