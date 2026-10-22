@@ -43,6 +43,7 @@ typedef struct MapTab
 	int			nkey;
 	int			ncol;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	bool		knull[SIFT_AGG_MAX_JKEYS];	/* a row whose key is NULL is in the chain of the NULL id 0 (SiftAggJoin.keynull) */
 	uint32		nrow;
 	uint32		cap;
 	KeyDict		kd[SIFT_AGG_MAX_JKEYS];
@@ -56,6 +57,16 @@ typedef struct MapTab
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
 } MapTab;
+
+/* does a NULL key of the row equal nothing, so that it is in no chain? */
+static inline bool
+map_key_dead(const MapTab *m, const uint32 *kid)
+{
+	for (int k = 0; k < m->nkey; k++)
+		if (kid[k] == 0 && !m->knull[k])
+			return true;
+	return false;
+}
 
 /* the integer key k of a row */
 static inline int64
@@ -88,6 +99,7 @@ typedef struct MapShared
 	uint32		nrow;
 	uint32		nslot;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
 	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
