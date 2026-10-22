@@ -49,7 +49,8 @@ fetch_sift() {
     *) (cd "$REPO" && git ls-files -z -- . ':!bench' ':!docs' ':!packaging' | tar --null -T - -cf -) | tar -x -C "$src" ;;
   esac
   pgxs_install sift "$src" >/dev/null
-  echo "$(git -C "$REPO" rev-parse --short=12 "${SIFT_SRC#ref:}^{commit}" 2>/dev/null || git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)$(sift_dirty)" >"$SIFT_ROOT/.build-info"
+  local rev=${SIFT_SRC:-HEAD}
+  echo "$(git -C "$REPO" rev-parse --short=12 "${rev#ref:}^{commit}" 2>/dev/null || git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)$(sift_dirty)" >"$SIFT_ROOT/.build-info"
 }
 
 fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz" "$RUM_SHA256"; }
