@@ -169,7 +169,21 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 				st->in_hasnull = true;
 				continue;
 			}
-			v = sift_aggspec_operand_int(p->argtype, el[i]);
+			if (p->argtype == NUMERICOID)
+			{
+				/* the element as the scaled integer of the leaf, if a stored value can equal it */
+				if (numeric_is_nan(DatumGetNumeric(el[i])))
+				{
+					st->in_hasnan = true;
+					continue;
+				}
+				numeric_operand(st, SCMP_EQ, ex->lay->leaf[p->leaf].scale, PG_INT64_MAX, el[i]);
+				if (st->konst >= 0)
+					continue;
+				v = (int64) st->cn;
+			}
+			else
+				v = sift_aggspec_operand_int(p->argtype, el[i]);
 			if (!wide && (v < PG_INT32_MIN || v > PG_INT32_MAX))
 				continue;		/* no int4 value equals it */
 			vals[nv++] = v;
@@ -177,6 +191,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 			hi = Max(hi, v);
 		}
 		in_build(st, vals, nv, lo, hi);
+		st->konst = -1;
 	}
 	MemoryContextSwitchTo(old);
 	st->ready = true;
@@ -238,7 +253,7 @@ cmp_int(uint64 *out, const void *v, int slot, int n, SiftCmpOp op, int64 c)
 }
 
 /* the rows of `rows` (n bits) are in out (res) or are not */
-static void
+void
 set_rows(const uint64 *rows, int n, bool res, uint64 *out)
 {
 	for (int w = 0; w < (n + 63) / 64; w++)
