@@ -1,0 +1,19 @@
+name: runner-smoke
+
+# Manual check of the optional self-hosted runner (label pg-sift-local). Dispatch only and not part of any other workflow: nothing else is routed to it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [pg-sift-local]
+    timeout-minutes: 5
+    steps:
+      - name: Host
+        run: |
+          uname -a
+          nproc
+          free -g
