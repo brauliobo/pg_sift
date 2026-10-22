@@ -7,7 +7,7 @@
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-if ((PG_MAJOR < 18)); then echo '1..0 # SKIP two library roots require PostgreSQL 18'; exit 0; fi
+if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 # release | text kind of the jsonb path (3.0 has no astext) | sift_table (3.1 on) | newest column minor it reads
 MATRIX=("v3.0.2 text no 3" "v3.1.0 astext yes 4" "v3.2.0 astext yes 6")
 for row in "${MATRIX[@]}"; do
