@@ -22,7 +22,11 @@
 #include "storage/spin.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#if PG_VERSION_NUM >= 180000
 #include "utils/wait_classes.h"
+#else
+#include "utils/wait_event.h"
+#endif
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
