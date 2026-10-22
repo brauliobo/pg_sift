@@ -166,11 +166,6 @@ sift_create(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *lengt
 	return result;
 }
 
-EXPORT void
-sift_create_deinit(UDF_INIT *initid)
-{
-}
-
 EXPORT sx_bool
 sift_exists_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
@@ -184,11 +179,6 @@ sift_exists(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 
 	pthread_once(&dirs_once, set_dirs);
 	return arg_name(args, 0, name, sizeof(name), error) ? sx_exists(name) : 0;
-}
-
-EXPORT void
-sift_exists_deinit(UDF_INIT *initid)
-{
 }
 
 EXPORT sx_bool
@@ -216,11 +206,6 @@ sift_drop(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length,
 	return result;
 }
 
-EXPORT void
-sift_drop_deinit(UDF_INIT *initid)
-{
-}
-
 EXPORT sx_bool
 sift_version_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
@@ -234,11 +219,6 @@ sift_version(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *leng
 {
 	*length = snprintf(result, 255, "%s", sx_version());
 	return result;
-}
-
-EXPORT void
-sift_version_deinit(UDF_INIT *initid)
-{
 }
 
 /* ------------------------------------------------ sift_merge, sift_stats, sift_watermark, sift_tokens, sift_ping */
@@ -306,11 +286,6 @@ sift_watermark(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 	if (ix == NULL || sx_stats(ix, &st, err, sizeof(err)) != 0)
 		return -1;
 	return st.drained;
-}
-
-EXPORT void
-sift_watermark_deinit(UDF_INIT *initid)
-{
 }
 
 EXPORT sx_bool
