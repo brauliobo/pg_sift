@@ -368,6 +368,7 @@ typedef struct SiftAggFirst
 	int			keyarg[SIFT_AGG_MAX_JKEYS];	/* position of the parameter, in the join's params and args */
 	int			ncol;			/* output columns of the child */
 	int			col[SIFT_AGG_MAX_FOUT];		/* the column of the table each is, 0 when it is not one */
+	List	   *qual;			/* what else the child tests of its row (comparisons of columns with constants, null tests), over the table's Vars: the lookup table holds the rows that pass */
 	List	   *params;			/* executor only: the child's parameters once the join is a lookup table (EXPLAIN names them) */
 } SiftAggFirst;
 

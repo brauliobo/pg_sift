@@ -748,6 +748,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	Relation	idx;
 	KeptTry		kept = {.cx = cxt};
 	SiftAggJoin lj = *j;
+	ExprState  *firstq = NULL;
+	ExprContext *firstcx = NULL;
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -780,6 +782,11 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			lj.coltype[c] = kept.cols.type[c];
 		}
 	}
+	if (j->first.qual != NIL)
+	{
+		firstq = ExecInitQual(j->first.qual, NULL);
+		firstcx = CreateStandaloneExprContext();
+	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, own != NULL, kept.cx);
 	if (idx)
@@ -804,11 +811,25 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 				ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
 		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
 
+		/* a first-row lookup of a child that tests more than its key: the rows it would not return are not loaded */
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-			map_row(ex, m, slot, &lj, cb, own);
+		{
+			bool		pass = true;
+
+			if (firstq)
+			{
+				firstcx->ecxt_scantuple = slot;
+				pass = ExecQual(firstq, firstcx);
+				ResetExprContext(firstcx);
+			}
+			if (pass)
+				map_row(ex, m, slot, &lj, cb, own);
+		}
 		table_endscan(scan);
 	}
 	map_index_rows(m);
+	if (firstcx)
+		FreeExprContext(firstcx, true);
 	MemoryContextSwitchTo(old);
 	map_kept_keep(rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
@@ -891,6 +912,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	}
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
+	if (j->first.qual != NIL)
+		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
 		appendStringInfo(&k, "|%d/%u/%u/%d/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], j->idxany[i], nodeToString(j->idxval[i]));
 	return k.data;
