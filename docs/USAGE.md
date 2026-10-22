@@ -264,7 +264,7 @@ RESET sift.parallel_scan;
 
 Writes go to small write buffers through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
 and merges; VACUUM promotes, merges and clears dead postings.
-`sift.workers` lists every `sift` and `sift_col` index you can read with its directory entries, the write buffers waiting for promotion, whether maintenance is running and, when the last background step failed, `failures` in a row, `failed_at`, `next_retry` (the delay doubles from `sift.maintenance_naptime` up to an hour), the SQLSTATE and the `last_error`; the next successful step clears them. For a `sift_col` index `due` is the answer of `sift.col_maintenance_due`; its failed steps are in the server log only.
+`sift.workers` lists every `sift` and `sift_col` index you can read with its directory entries, the write buffers waiting for promotion, whether maintenance is running and, when the last background step failed, `failures` in a row, `failed_at`, `next_retry` (the delay doubles from `sift.maintenance_naptime` up to an hour), the SQLSTATE and the `last_error`; the next successful step clears them. For a `sift_col` index `due` is the answer of `sift.col_maintenance_due`; a worker of a `sift_col` index that fails records its error the same way, and the requests for a new worker wait out the same delay.
 `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index. `sift.index_info(index)` shows its size, high-water mark,
 free and reusable blocks, directory entries and whether a maintenance run holds the lock; `sift.version()` is the version of the loaded
 library (compare with `pg_extension.extversion`). `sift.promote`, `merge`, `verify`, `segments`, `segment_postings` and `index_info`

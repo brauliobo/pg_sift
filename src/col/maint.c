@@ -5,8 +5,8 @@
  *
  * Intentional differences from the BM25 maintenance (bm25/maint.c), kept so the behaviour of sift_col stays what it was:
  * - a step holds the maintenance lock exclusively, not in RowExclusiveLock with claims on its segments: one step of the index at a time;
- * - a step is not run in a subtransaction: an ERROR goes on to the caller, nothing is counted for the backoff (the failure flags are never
- *   set, so the backoff of the shared flow never applies) and there is no segment another step could have claimed (busy stays 0);
+ * - a step is not run in a subtransaction: an ERROR goes on to the caller (a worker records it, worker_failed, for the backoff of the shared
+ *   flow and sift.workers; the other callers see it) and there is no segment another step could have claimed (busy stays 0);
  * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM merges until the policy asks for none or the rewrite limit is reached;
  * - the worker runs in one transaction until nothing is left to do; VACUUM merges to a fixed point only up to sift.vacuum_rewrite_limit.
  */
@@ -722,28 +722,62 @@ sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	return sift_mops_vacuumcleanup(&col_ops, info, stats);
 }
 
+/*
+ * A worker whose transaction fails keeps the error where sift.workers and the backoff of the requests find it (the steps of a sift_col index run
+ * outside a subtransaction, so the whole transaction of the worker is the unit), warns as a failed BM25 step does, and ends. Cancellation and
+ * shutdown go on as they were.
+ */
+static void
+worker_failed(Oid indexoid, MemoryContext cx)
+{
+	ErrorData  *err;
+
+	MemoryContextSwitchTo(cx);
+	err = CopyErrorData();
+	FlushErrorState();
+	AbortCurrentTransaction();
+	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
+		ReThrowError(err);
+	ereport(WARNING,
+			(errcode(err->sqlerrcode),
+			 errmsg("maintenance of sift_col index %u failed: %s", indexoid, err->message),
+			 errdetail("It is retried later, after a growing delay.")));
+	sift_maint_record_failure(indexoid, err);
+	FreeErrorData(err);
+}
+
 void
 sift_col_maint_worker_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
-	Relation	index;
+	MemoryContext cx = CurrentMemoryContext;
 
-	StartTransactionCommand();
-	PushActiveSnapshot(GetTransactionSnapshot());
-	index = try_index_open(indexoid, RowExclusiveLock);
-	if (index != NULL && sift_col_is_index(index))
+	PG_TRY();
 	{
-		/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
-		while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
-			CHECK_FOR_INTERRUPTS();
-		sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+		Relation	index;
+
+		StartTransactionCommand();
+		PushActiveSnapshot(GetTransactionSnapshot());
+		index = try_index_open(indexoid, RowExclusiveLock);
+		if (index != NULL && sift_col_is_index(index))
+		{
+			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
+			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
+				CHECK_FOR_INTERRUPTS();
+			sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+		}
+		if (index != NULL)
+			index_close(index, RowExclusiveLock);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
 	}
-	if (index != NULL)
-		index_close(index, RowExclusiveLock);
-	PopActiveSnapshot();
-	CommitTransactionCommand();
+	PG_CATCH();
+	{
+		worker_failed(indexoid, cx);
+	}
+	PG_END_TRY();
 }
 
 /* Waits as sift_maint_wait_quiet does, until ready() says so; False: it stayed not ready, and the next VACUUM asks again */
@@ -789,27 +823,37 @@ sift_col_rewrite_worker_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
-	Relation	index;
+	MemoryContext cx = CurrentMemoryContext;
 
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
 	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !wait_until(take_slot))
 		return;
-	StartTransactionCommand();
-	PushActiveSnapshot(GetTransactionSnapshot());
-	index = try_index_open(indexoid, RowExclusiveLock);
-	if (index != NULL)
+	PG_TRY();
 	{
-		if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
-		{
-			TimestampTz start = GetCurrentTimestamp();
+		Relation	index;
 
-			if (sift_mops_rewrite(&col_ops, index, true) >= 0)
-				sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
+		StartTransactionCommand();
+		PushActiveSnapshot(GetTransactionSnapshot());
+		index = try_index_open(indexoid, RowExclusiveLock);
+		if (index != NULL)
+		{
+			if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
+			{
+				TimestampTz start = GetCurrentTimestamp();
+
+				if (sift_mops_rewrite(&col_ops, index, true) >= 0)
+					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
+			}
+			index_close(index, RowExclusiveLock);
 		}
-		index_close(index, RowExclusiveLock);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
 	}
-	PopActiveSnapshot();
-	CommitTransactionCommand();
+	PG_CATCH();
+	{
+		worker_failed(indexoid, cx);
+	}
+	PG_END_TRY();
 }
 
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
