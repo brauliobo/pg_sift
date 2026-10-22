@@ -40,7 +40,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  lookup_shared_bytes | SHARE_MAX                       | 1073741824 | t         | f
  lookup_shared_slots | LOOKSHM_SLOTS                   |         64 | t         | f
  maint_backoff_ms    | BACKOFF_MAX_MS                  |    3600000 | t         | f
- max_segments        | SIFT_MAX_SEGMENTS               |        128 | t         | f
+ max_segments        | SIFT_MAX_SEGMENTS               |        128 | t         | t
  num_in_list         | AGG_MAX_NUM_IN                  |         64 | t         | t
  part_key_tests      | KEYS_MAX_TESTS                  |      20000 | t         | t
  partitions          | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
