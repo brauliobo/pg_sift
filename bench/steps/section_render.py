@@ -10,9 +10,9 @@ sys.path.insert(0, HERE)
 import charts  # noqa: E402
 from store_render import best_bold, best_high, md_table as table, ms, rate  # noqa: E402
 
-LANES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint']
-NAMES = {'pg': 'PostgreSQL', 'sift': '`sift_col`', 'sift_maint': '`sift_col` + auto merge', 'sift_table': '`sift_table`', 'sift_table_maint': '`sift_table` + auto defrag'}
-COLORS = {'pg': '#D55E00', 'sift': '#0072B2', 'sift_maint': '#56B4E9', 'sift_table': '#009E73', 'sift_table_maint': '#8FD6BD'}
+LANES = ['pg', 'sift', 'sift_maint', 'sift_table']
+NAMES = {'pg': 'PostgreSQL', 'sift': '`sift_col`', 'sift_maint': '`sift_col` + auto vacuum and merge (opt-in)', 'sift_table': '`sift_table`'}
+COLORS = {'pg': '#D55E00', 'sift': '#0072B2', 'sift_maint': '#56B4E9', 'sift_table': '#009E73'}
 CHANGES = [('update 1%', 'update 1% of the rows'), ('update 10%', 'update 10% of the rows'), ('delete 5%', 'delete 5% of the rows')]
 STATES = [('baseline', 'fresh table'), ('after churn', 'right after the changes'), ('after maintenance', 'after VACUUM')]
 # why a cell loses, one line each; a sentence is printed only for a cell that loses in the results
@@ -66,11 +66,11 @@ def header(S):
     loads = [float(r['loadavg'][0]) for r in S.meta['runs'].values()]
     noisy = sum(len(r.get('noisy') or []) for r in S.meta['runs'].values())
     reps = ', '.join(f'{s:,} orders: ' + (f'median of {S.reps(s)} runs [min-max]' if S.reps(s) > 1 else 'one run') for s in S.sizes)
-    auto = ' and '.join(f'`{sv[e + "_maintenance"]}`' for e in ('sift_maint', 'sift_table_maint') if sv.get(e + '_maintenance'))
+    setting = lambda e: f'`{sv[e + "_maintenance"]}`' if sv.get(e + '_maintenance') else 'the settings of the server'
     sha = f' ({S.meta["sha"]})' if S.meta.get('sha') else ''
     return [f'Measured at pg_sift {sv.get("sift_sift", "?")}{sha} on {S.meta["date"]}, {S.meta["host"].get("cpu", "?")} ({S.meta["host"].get("threads", "?")} threads), PostgreSQL {sv.get("pg", "?")}, '
             f'one container of {S.meta["cpus"]} CPUs; load average {min(loads):.1f}-{max(loads):.1f} at the start of the runs, {noisy} NOISY window{"s" * (noisy != 1)}. {reps}.',
-            f'`sift_col` and `sift_table` are the defaults of that build; "+ auto" is the same layout in a database with {auto} (read back from the server).']
+            f'`sift_col` and `sift_table` run the defaults of that build ({setting("sift")} and {setting("sift_table")}); the opt-in column is the `sift_col` layout in a database with {setting("sift_maint")} (all read back from the server).']
 
 
 def tables(S, detail):
