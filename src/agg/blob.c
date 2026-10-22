@@ -169,17 +169,15 @@ group_key_id(AggExec *ex, int j, uint32 g)
 	return ex->hash ? ex->hkey[(Size) g * ex->spec->nkeys + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
 }
 
+/* the values of the ids ids[0..n) of key j, and the ids renumbered from 1 in order of use (0 stays 0): the leader gives them its own */
 static void
-blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
+blob_key_table(AggExec *ex, int j, uint32 *ids, uint32 n, StringInfo b)
 {
 	KeyState   *k = &ex->ks[j];
-	uint32	   *ids = palloc(Max(ng, 1) * sizeof(uint32)),
-			   *old,
+	uint32	   *old,
 				nused;
 
-	for (uint32 r = 0; r < ng; r++)
-		ids[r] = group_key_id(ex, j, gl[r]);
-	old = renumber(ids, ng, k->numk ? k->im.n : k->ident ? k->nident : k->ot.n, &nused);
+	old = renumber(ids, n, k->numk ? k->im.n : k->ident ? k->nident : k->ot.n, &nused);
 	if (k->ident || k->numk)
 	{
 		/* the values themselves: 64 bits for an integer or the bits of a float, 128 for a numeric */
@@ -197,7 +195,39 @@ blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
 	}
 	else
 		bw_values(b, &k->ot, old, nused);
+	pfree(old);
+}
+
+static void
+blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
+{
+	uint32	   *ids = palloc(Max(ng, 1) * sizeof(uint32));
+
+	for (uint32 r = 0; r < ng; r++)
+		ids[r] = group_key_id(ex, j, gl[r]);
+	blob_key_table(ex, j, ids, ng, b);
 	bw_put(b, ids, (Size) ng * sizeof(uint32));
+	pfree(ids);
+}
+
+/* the pairs (group of the blob, id of key `slot`) of the count(DISTINCT) of a key the arms group by, with the values of the ids */
+static void
+blob_key_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
+{
+	uint32		np,
+			   *pg,
+			   *pv,
+				hd[2];
+
+	dist_pairs(ex, ai, cidx, &pg, &pv, &np);
+	hd[0] = np;
+	hd[1] = 0;
+	bw_put(b, hd, sizeof(hd));
+	bw_put(b, pg, (Size) np * sizeof(uint32));
+	blob_key_table(ex, ex->spec->agg[ai].slot, pv, np, b);
+	bw_put(b, pv, (Size) np * sizeof(uint32));
+	pfree(pg);
+	pfree(pv);
 }
 
 /*
@@ -382,12 +412,16 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 		bw_acc(b, &ex->acc[i], gl, ng);
 		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
 			blob_set(ex, i, cidx, b);
+		if (s->agg[i].kind == SAA_O_COUNT_KEY)
+			blob_key_set(ex, i, cidx, b);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			blob_osa(ex, i, cidx, n, b);
 		if (s->agg[i].kind == SAA_GEN)
 			blob_gen(ex, i, gl, ng, b);
 	}
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
+	for (int k = 0; k < s->narms; k++)
+		bw_put(b, ex->arm[k].amax, Max(s->arm[k].ninner, 1) * sizeof(double));
 	dist_end_all(ex);
 	pfree(gl);
 	pfree(cidx);
@@ -444,6 +478,40 @@ merge_values(AggExec *g, OutTable *t, const char **p, uint32 *xid)
 		MemoryContextSwitchTo(old);
 	}
 	*p += TYPEALIGN(8, hd[1]);
+}
+
+/* the ids in the table of key j of the values a blob lists (blob_key_table): xid[0] is NULL's, the reader is left after the values */
+static uint32 *
+merge_key_table(AggExec *g, int j, const char **p)
+{
+	KeyState   *k = &g->ks[j];
+	const uint32 *hd = (const uint32 *) *p;
+	uint32	   *xid = palloc0((hd[0] + 1) * sizeof(uint32));
+
+	if (k->ident)
+	{
+		const int64 *iv;
+
+		br_get(p, 8);
+		iv = br_get(p, (Size) hd[0] * sizeof(int64));
+		if (g->spec->key[j].kind == SAK_SET)
+			for (uint32 i = 0; i < hd[0]; i++)
+				xid[i + 1] = iv[i] + 1;	/* the ids of the sets are fixed: set + 1 */
+		else
+			merge_ident(g, j, iv, hd[0], xid);
+	}
+	else if (k->numk)
+	{
+		const sift_i128 *nv;
+
+		br_get(p, 8);
+		nv = br_get(p, (Size) hd[0] * sizeof(sift_i128));
+		for (uint32 i = 0; i < hd[0]; i++)
+			xid[i + 1] = idmap_id(&k->im, nv[i]);
+	}
+	else
+		merge_values(g, &k->ot, p, xid);
+	return xid;
 }
 
 typedef struct BlobAgg
@@ -508,7 +576,23 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 			case SAA_COUNT_STAR:
 			case SAA_COUNT:
 			case SAA_COUNT_ROWS:
+			case SAA_O_COUNT_STAR:
+			case SAA_O_COUNT_ROWS:
 				acc->n[t] += ba->a.n[r];
+				break;
+			case SAA_O_SUM_I64:
+				acc->n[t] += ba->a.n[r];
+				if (pg_add_s64_overflow(acc->i[t], ba->a.i[r], &acc->i[t]))
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
+							 errhint("Set sift.enable_agg to off for this query.")));
+				break;
+			case SAA_O_SUM_F64:
+			case SAA_O_AVG_F64:
+				acc->n[t] += ba->a.n[r];
+				acc->d[t] += ba->a.d[r];
+				acc->nf[t] |= ba->a.nf[r];
 				break;
 			case SAA_SUM_INT:
 			case SAA_AVG_INT:
@@ -532,6 +616,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				acc->nf[t] |= ba->a.nf[r];
 				break;
 			case SAA_COUNT_DISTINCT:
+			case SAA_O_COUNT_KEY:
 			case SAA_GROUPING:
 				break;
 			case SAA_PCT_CONT:
@@ -580,6 +665,13 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 			ba->xv = palloc0((vh[0] + 1) * sizeof(uint32));
 			merge_values(g, &g->aot[ai], p, ba->xv);
 		}
+	}
+	if (g->spec->agg[ai].kind == SAA_O_COUNT_KEY)
+	{
+		ba->npairs = ((const uint32 *) br_get(p, 8))[0];
+		ba->pg = br_get(p, (Size) ba->npairs * 4);
+		ba->xv = merge_key_table(g, g->spec->agg[ai].slot, p);
+		ba->pv = br_get(p, (Size) ba->npairs * 4);
 	}
 	if (is_ordered_agg(&g->spec->agg[ai]) && g->spec->agg[ai].share == ai)
 	{
@@ -647,41 +739,25 @@ blob_merge(AggExec *g, const char *p)
 		elog(ERROR, "sift: bad partial aggregate");
 	for (int j = 0; j < s->nkeys; j++)
 	{
-		KeyState   *k = &g->ks[j];
-		const uint32 *hd = (const uint32 *) p;
-
-		xid[j] = palloc0((hd[0] + 1) * sizeof(uint32));
-		if (k->ident)
-		{
-			const int64 *iv;
-
-			br_get(&p, 8);
-			iv = br_get(&p, (Size) hd[0] * sizeof(int64));
-			if (s->key[j].kind == SAK_SET)
-				for (uint32 i = 0; i < hd[0]; i++)
-					xid[j][i + 1] = iv[i] + 1;	/* the ids of the sets are fixed: set + 1 */
-			else
-				merge_ident(g, j, iv, hd[0], xid[j]);
-		}
-		else if (k->numk)
-		{
-			const sift_i128 *nv;
-
-			br_get(&p, 8);
-			nv = br_get(&p, (Size) hd[0] * sizeof(sift_i128));
-			for (uint32 i = 0; i < hd[0]; i++)
-				xid[j][i + 1] = idmap_id(&k->im, nv[i]);
-		}
-		else
-			merge_values(g, &k->ot, &p, xid[j]);
+		xid[j] = merge_key_table(g, j, &p);
 		lid[j] = br_get(&p, (Size) ng * sizeof(uint32));
 	}
 	seen = br_get(&p, (Size) ng * sizeof(int64));
 	for (int i = 0; i < s->naggs; i++)
 		merge_read_agg(g, i, &p, ng, &ba[i]);
-	if (s->naggs)
+	{
+		const double *am = br_get(&p, Max(s->naggs, 1) * sizeof(double));
+
 		for (int i = 0; i < s->naggs; i++)
-			g->amax[i] = Max(g->amax[i], ((const double *) p)[i]);
+			g->amax[i] = Max(g->amax[i], am[i]);
+	}
+	for (int k = 0; k < s->narms; k++)
+	{
+		const double *am = br_get(&p, Max(s->arm[k].ninner, 1) * sizeof(double));
+
+		for (int i = 0; i < s->arm[k].ninner; i++)
+			g->arm[k].amax[i] = Max(g->arm[k].amax[i], am[i]);
+	}
 	if (!g->hash)
 		for (int j = 0; j < s->nkeys; j++)
 			grow |= key_used(&g->ks[j]) > g->ks[j].cap;
@@ -714,7 +790,7 @@ blob_merge(AggExec *g, const char *p)
 			merge_agg(g, i, &ba[i], gids, r0, n);
 	}
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT || s->agg[i].kind == SAA_O_COUNT_KEY)
 			merge_set(g, i, &ba[i], gids);
 		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			merge_osa(g, i, &ba[i], gids);
