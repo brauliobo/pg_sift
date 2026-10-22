@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Shared dependency-map owner: Bash ERE, exact known groups and captures 1..3.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 declare -A GROUP
 ROWS=() FAST_ROWS=()
 areas_load() {

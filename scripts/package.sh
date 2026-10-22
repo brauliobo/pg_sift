@@ -8,6 +8,7 @@
 #   scripts/package.sh test IMAGE PACKAGE      install PACKAGE in a fresh IMAGE container, run packaging/smoke.sql, remove it
 #
 # REF defaults to HEAD, OUTDIR to dist/. Override the images with BUILD_DEB, BUILD_RPM, TEST_DEB, TEST_RPM (space-separated lists).
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

@@ -22,6 +22,7 @@
 #
 # LEAK_PROC_MB (32): growth of a long-lived server process; LEAK_GROWTH_MB (8), LEAK_GROWTH_R2 (0.8): growth of a sampled
 # backend over the post-warmup samples that fails the soak (both plus LEAK_QUARANTINE_MB on an ASan server).
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 LEAK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # leak_quarantine_mb: what an ASan server holds in its quarantine of freed memory (the ASan default, 256 MB) before it is a leak: a checkpointer

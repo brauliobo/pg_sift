@@ -12,6 +12,7 @@
 # tarballs are kept in $SIFT_PG_CACHE/src. A build takes about five minutes (nice, 4 jobs); it is not repeated while the recipe (version,
 # flags) is the same, and concurrent callers wait for each other. The prefix has the pgxs tree, pg_regress, the TAP perl modules, the
 # contrib modules the tests use and share/valgrind.supp (src/tools/valgrind.supp of the same tree). Needs: curl, bzip2, gcc, make, flex, bison, perl.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 declare -A VERSION=([18]=18.6 [17]=17.11)
