@@ -10,8 +10,9 @@ CREATE TABLE items (id int, key int, kind text, amount numeric(10,2), pad text, 
 INSERT INTO items SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 1000), md5(g::text), md5(g::text || 'b') FROM generate_series(1, 40000) g;
 CREATE TABLE items_plain (LIKE items) WITH (autovacuum_enabled = false);
 INSERT INTO items_plain SELECT * FROM items ORDER BY id;
-CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount, tag, tag2);
-CREATE INDEX items_plain_col ON items_plain USING sift_col (id, key, kind, amount, tag, tag2);
+-- the partitions are cut by their bytes: the stored form of a big dictionary (minor 14) would double the index, so dict_lookup = off
+CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount, tag, tag2) WITH (dict_lookup = off);
+CREATE INDEX items_plain_col ON items_plain USING sift_col (id, key, kind, amount, tag, tag2) WITH (dict_lookup = off);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) items, items_plain;
 -- the rewrite of the worker is what is looked at: neither the rewrite of a lone mostly dead segment nor the moves of VACUUM's space step may change the segments
 ALTER INDEX items_col SET (dead_rewrite_pct = 100);
