@@ -1,0 +1,113 @@
+-- UNION ALL arms that look the same table up and differ in their WHERE run in one pass over the index: the conjuncts every arm has are the pass's,
+-- what an arm has beyond them is applied to the rows of its own set, and the units and rows that no arm needs are not read. Arms that share no
+-- lookup keep their own scans (a filter of the chunk per set costs more than the shared decode saves).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE dims (id int PRIMARY KEY, label text, tier int);
+INSERT INTO dims SELECT i, CASE WHEN i % 9 = 0 THEN NULL ELSE 'l' || i % 6 END, i % 3 FROM generate_series(0, 399) i;
+CREATE TABLE ev (id int PRIMARY KEY, grp int, ref int, kind text, day date, qty int, price float8, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 7 END, CASE WHEN i % 19 = 0 THEN NULL ELSE i % 420 END, CASE WHEN i % 13 = 0 THEN NULL ELSE (ARRAY['a', 'b', 'c'])[1 + i % 3] END,
+       '2026-03-01'::date + i % 40, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 9 END, (i % 13) + 0.5,
+       jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (ARRAY['x', 'y', 'z'])[1 + (i + j) % 3], 'p', 'p' || (i * j) % 4,
+                                                                        'v', CASE WHEN i % 10 = 0 AND j = 1 THEN to_jsonb(((i + j) % 8)::text) ELSE to_jsonb((i + j) % 8 + 0.5) END))
+                                    FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 6000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, ref, kind, day, qty, price, doc) WITH (paths = 'doc.lines[]{k text, p text, v float8}');
+VACUUM (FREEZE, ANALYZE) ev;
+ANALYZE dims;
+
+-- the most arms one scan served in the plan
+CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Arms In One Pass: ' THEN n := greatest(n, substr(l, strpos(l, ': ') + 2)::int); END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the rows are those of the normal plan, and those of the arms each in a scan of its own
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.agg_fuse = off;
+	EXECUTE format('CREATE TEMP TABLE r_alone AS %s', q);
+	RESET sift.agg_fuse;
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)
+								 UNION ALL (TABLE r_on EXCEPT ALL TABLE r_alone) UNION ALL (TABLE r_alone EXCEPT ALL TABLE r_on)) x;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_alone, r_off;
+	RETURN d = 0 AND n > 0;
+END $$;
+
+\set from 'FROM ev e JOIN dims d ON d.id = e.ref'
+\set lines_from 'FROM ev e JOIN dims d ON d.id = e.ref CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> ''lines'') AS l(k text, p text, v float8)'
+
+-- a conjunct every arm has, and others that an arm has and the other arms lack (NULL values pass neither side of them)
+\set beyond 'SELECT ''hi'' AS arm, d.label AS a, NULL::date AS b, count(*) AS n, sum(e.price) AS s, avg(e.qty) AS m ' :from ' WHERE e.day >= ''2026-03-10'' AND e.qty > 3 GROUP BY d.label UNION ALL SELECT ''lo'', d.label, e.day, count(*), sum(e.price), avg(e.qty) ' :from ' WHERE e.day >= ''2026-03-10'' AND e.qty <= 3 GROUP BY d.label, e.day UNION ALL SELECT ''all'', NULL, e.day, count(*), sum(e.price), avg(e.qty) ' :from ' WHERE e.day >= ''2026-03-10'' GROUP BY e.day'
+SELECT arms_shared(:'beyond') AS beyond_shared, same(:'beyond') AS beyond_same;
+
+-- every arm has a conjunct of its own (their OR is the pass's), NULL keys, a conjunct that is a NULL test, and a window of days only an arm reads
+\set own 'SELECT e.kind AS a, d.label AS b, count(*) AS n, sum(e.qty) AS s ' :from ' WHERE e.kind = ''a'' GROUP BY e.kind, d.label UNION ALL SELECT e.kind, (e.day - DATE ''2026-03-01'')::text, count(*), sum(e.qty) ' :from ' WHERE e.kind = ''b'' OR e.kind IS NULL GROUP BY e.kind, e.day UNION ALL SELECT NULL, e.grp::text, count(*), sum(e.qty) ' :from ' WHERE e.day >= ''2026-04-05'' GROUP BY e.grp'
+SELECT arms_shared(:'own') AS own_shared, same(:'own') AS own_same;
+
+-- arms with the same conjuncts in another order, and one more in an arm
+\set order_arms 'SELECT e.kind AS a, count(*) AS n ' :from ' WHERE e.qty > 1 AND e.day > ''2026-03-05'' GROUP BY e.kind UNION ALL SELECT d.label, count(*) ' :from ' WHERE e.day > ''2026-03-05'' AND e.qty > 1 GROUP BY d.label UNION ALL SELECT ''x'' || e.kind, count(*) ' :from ' WHERE e.day > ''2026-03-05'' AND e.qty > 1 AND e.price > 3 GROUP BY e.kind'
+SELECT arms_shared(:'order_arms') AS order_shared, same(:'order_arms') AS order_same;
+
+-- an arm that no row passes has no group, the others keep theirs
+\set none 'SELECT e.kind AS a, count(*) AS n ' :from ' WHERE e.qty > 100 GROUP BY e.kind UNION ALL SELECT d.label, count(*) ' :from ' WHERE e.qty > 5 GROUP BY d.label'
+SELECT arms_shared(:'none') AS none_shared, same(:'none') AS none_same;
+
+-- a conjunct that may raise an error runs for the rows that reach it in its arm: that arm keeps its own scan
+\set late_arm 'SELECT e.kind AS a, count(*) AS n ' :from ' WHERE e.qty > 0 AND 10 / e.qty > 1 GROUP BY e.kind UNION ALL SELECT d.label, count(*) ' :from ' WHERE e.qty > 5 GROUP BY d.label'
+SELECT arms_shared(:'late_arm') AS late_shared, same(:'late_arm') AS late_same;
+
+-- a conjunct that runs a sub-select reading the same table: the sub-select's scan is not an arm of the pass that waits for it
+\set subselect 'SELECT e.kind AS a, count(*) AS n ' :from ' WHERE e.grp NOT IN (SELECT grp FROM ev WHERE grp < 3 GROUP BY grp HAVING count(*) > 700) GROUP BY e.kind UNION ALL SELECT d.label, count(*) ' :from ' WHERE e.qty > 5 GROUP BY d.label'
+SELECT arms_shared(:'subselect') AS subselect_shared, same(:'subselect') AS subselect_same;
+\set subselect_alone 'SELECT kind AS a, count(*) AS n FROM ev WHERE grp NOT IN (SELECT grp FROM ev WHERE grp < 3 GROUP BY grp HAVING count(*) > 700) GROUP BY kind'
+SELECT arms_shared(:'subselect_alone') AS subselect_alone_shared, same(:'subselect_alone') AS subselect_alone_same;
+
+-- the lines of a document (some with a score stored as text, which the index reads again from the heap), each arm with a conjunct on its lines
+\set lines 'SELECT l.k AS a, NULL::text AS b, count(*) AS n, avg(l.v) AS m ' :lines_from ' WHERE l.p = ''p1'' GROUP BY l.k UNION ALL SELECT l.k, l.p, count(*), avg(l.v) ' :lines_from ' WHERE l.v > 3 GROUP BY l.k, l.p UNION ALL SELECT NULL, l.p, count(*), avg(l.v) ' :lines_from ' GROUP BY l.p'
+SELECT arms_shared(:'lines') AS lines_shared, same(:'lines') AS lines_same;
+-- and a conjunct on the document's row beside one on its lines
+\set lines_row 'SELECT l.k AS a, count(*) AS n, sum(e.qty) AS s ' :lines_from ' WHERE e.kind = ''a'' AND l.v > 3 GROUP BY l.k UNION ALL SELECT d.label, count(*), sum(e.qty) ' :lines_from ' WHERE e.qty > 2 AND l.v > 3 GROUP BY d.label'
+SELECT arms_shared(:'lines_row') AS lines_row_shared, same(:'lines_row') AS lines_row_same;
+
+-- arms that look nothing up: the pass would filter the chunk per set for what the source does for each arm alone, so each keeps its scan
+\set no_join 'SELECT kind AS a, count(*) AS n FROM ev WHERE qty > 5 GROUP BY kind UNION ALL SELECT grp::text, count(*) FROM ev WHERE qty <= 5 GROUP BY grp'
+SELECT arms_shared(:'no_join') AS no_join_shared, same(:'no_join') AS no_join_same;
+SELECT arms_shared($$SELECT kind AS a, count(*) AS n FROM ev WHERE qty > 5 GROUP BY kind$$) AS single_arm_shared;
+
+-- rows changed after the index was built are read from the heap, for the arm whose conjunct they meet
+UPDATE ev SET qty = 1, kind = 'b' WHERE id % 97 = 0;
+UPDATE ev SET qty = NULL, day = '2026-04-20' WHERE id % 89 = 0;
+DELETE FROM ev WHERE id % 101 = 0;
+SELECT arms_shared(:'beyond') AS beyond_shared, same(:'beyond') AS beyond_same;
+SELECT arms_shared(:'own') AS own_shared, same(:'own') AS own_same;
+SELECT arms_shared(:'lines') AS lines_shared, same(:'lines') AS lines_same;
+SELECT arms_shared(:'lines_row') AS lines_row_shared, same(:'lines_row') AS lines_row_same;
+
+-- the workers of the scan: the sets' rows are the same
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET sift.agg_preagg = off;
+SELECT same(:'beyond') AS beyond_par_same, same(:'own') AS own_par_same, same(:'lines') AS lines_par_same, same(:'lines_row') AS lines_row_par_same;
+
+DROP FUNCTION arms_shared(text), same(text);
+DROP TABLE ev, dims;
+DROP EXTENSION pg_sift;
