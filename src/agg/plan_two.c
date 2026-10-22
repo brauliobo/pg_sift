@@ -63,7 +63,6 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
-#define AGG_MAX_ARMS	4
 
 typedef struct CteSub
 {
@@ -615,7 +614,7 @@ typedef struct TwoLevel
 	int			pair_att[SIFT_AGG_MAX_JKEYS];	/* the column of the arms each pair of the join reads */
 	List	   *roots;			/* the planned roots of the arms */
 	List	   *gates;
-	ArmIn		arms[AGG_MAX_ARMS];
+	ArmIn		arms[SIFT_AGG_MAX_ARMS];
 	int			narms;
 	int			ncols;			/* the columns every arm returns */
 	AggCtx		ctx;
@@ -631,7 +630,7 @@ two_arms(TwoLevel *t)
 	PlannerInfo *base = NULL;
 
 	t->roots = outer_arms(t->root, t->srti, &t->gates);
-	if (t->roots == NIL || list_length(t->roots) > AGG_MAX_ARMS)
+	if (t->roots == NIL || agg_width_hit(list_length(t->roots) - 1, arms, sift_limit(arms, SIFT_AGG_MAX_ARMS), "arms"))
 		return NULL;
 	foreach_ptr(PlannerInfo, ar, t->roots)
 	{

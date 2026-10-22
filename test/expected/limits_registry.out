@@ -5,7 +5,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
          id          |              macro              |    dflt    | unchanged | hooked 
 ---------------------+---------------------------------+------------+-----------+--------
  any_list_rows       | ANY_LIST_MAX_ROWS               |     100000 | t         | f
- arms                | SIFT_AGG_MAX_ARMS               |          4 | t         | f
+ arms                | SIFT_AGG_MAX_ARMS               |         16 | t         | t
  boost               | SIFT_MAX_BOOST                  |      10000 | t         | f
  calendar_groups     | SIFT_PAGG_CAL_GROUPS            |       1024 | t         | f
  col_leaves          | SIFT_COL_MAX_COLS               |        128 | t         | t
@@ -30,7 +30,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  group_keys          | SIFT_AGG_MAX_KEYS               |         32 | t         | t
  hash_part_combos    | HASH_MAX_COMBOS                 |    1048576 | t         | t
  int_digits          | SIFT_COL_MAX_SCALE              |         18 | t         | f
- join_cols           | SIFT_AGG_MAX_JCOLS              |          6 | t         | f
+ join_cols           | SIFT_AGG_MAX_JCOLS              |          6 | t         | t
  join_index_eqs      | SIFT_AGG_MAX_JIDX               |          3 | t         | f
  join_keys           | SIFT_AGG_MAX_JKEYS              |          3 | t         | f
  joins               | SIFT_AGG_MAX_JOINS              |          8 | t         | t
@@ -52,7 +52,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  rollup_dims         | SIFT_PAGG_MAX_RDIMS             |          6 | t         | f
  rollup_tuples       | SIFT_PAGG_ROLLUP_TUPLES         |       4096 | t         | f
  rollups             | SIFT_PAGG_MAX_ROLLUPS           |          8 | t         | f
- rows_shared         | SIFT_ROWS_MAX_SHARED            |         32 | t         | f
+ rows_shared         | SIFT_ROWS_MAX_SHARED            |         32 | t         | t
  scan_filters        | SIFT_COLSRC_MAX_FILTERS         |         64 | t         | f
  set_keys            | SIFT_CSET_LIMIT                 |         32 | t         | f
  set_keys_max        | SIFT_CSET_LIMIT_MAX             |       1024 | t         | f
@@ -72,7 +72,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  topn_rows           | SIFT_TOPN_MAX_ROWS              |     100000 | t         | t
  unit_bytes          | SIFT_COL_UNIT_MAX_BYTES         | 1073741823 | t         | t
  unit_rows           | SIFT_COL_UNIT_MAX_ROWS          |      74496 | t         | f
- virtual_leaves      | SIFT_AGG_MAX_VLEAVES            |          8 | t         | f
+ virtual_leaves      | SIFT_AGG_MAX_VLEAVES            |         16 | t         | t
  wide_conjuncts      | SIFT_AGG_MAX_WIDE               |          8 | t         | f
  wide_digits         | SIFT_COL_MAX_WIDE_SCALE         |         38 | t         | f
  write_buffer_kb     | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |       4096 | t         | f
@@ -131,8 +131,6 @@ SET sift.test_limits = 'no_such_limit=1';
 ERROR:  unknown limit "no_such_limit" in sift.test_limits
 HINT:  The ids are the first column of SIFT_LIMITS in src/core/limits.h.
 SET sift.test_limits = 'arms=1';
-ERROR:  limit "arms" cannot be lowered by sift.test_limits: no code reads it through sift_limit() yet
-HINT:  Wire the site and set hooked to 1 in its row of src/core/limits.h.
 SET sift.test_limits = 'query_bytes=-1';
 ERROR:  invalid value "-1" for limit "query_bytes"
 HINT:  A value is a number from 0 to the default, 262144.
@@ -148,7 +146,7 @@ HINT:  A value is a number from 0 to the default, 262144.
 SHOW sift.test_limits;
  sift.test_limits 
 ------------------
- 
+ arms=1
 (1 row)
 
 -- 0 is a value: a query of any length is too long

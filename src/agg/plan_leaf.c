@@ -281,7 +281,7 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 				val;
 	SiftSrcLeaf *v;
 
-	if (n == 0 || c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (n == 0 || agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	for (int i = 0; i < c->lay->nleaves; i++)
 	{
@@ -323,7 +323,7 @@ types_leaf(AggCtx *c, Node *call)
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].types && c->vleaf[j].obj == base)
 			return c->lay->nleaves - c->nvleaf + j;
-	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	v = vleaf_add(c, leaf_of(c, base)->attno, leaf_of(c, base)->path, SCV_CODE, TEXTOID);
 	strlcpy(v->name, "#typeof", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
@@ -344,7 +344,7 @@ count_leaf(AggCtx *c, int grp)
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].count && c->vleaf[j].obj == grp)
 			return nbase + j;
-	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	v = vleaf_add(c, leaf_of(c, grp)->attno, leaf_of(c, grp)->path, SCV_I32, INT4OID);
 	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
