@@ -198,6 +198,8 @@ CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads in
 CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
 										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_zone_flags(index regclass, OUT units int8, OUT jnull_units int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_zone_flags' LANGUAGE C STRICT;
 
 -- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
