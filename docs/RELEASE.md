@@ -12,6 +12,7 @@ scripts/release.sh VERSION --resume    continue a stopped release at the step th
 Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, have the notes of the release under `## Unreleased` in
 `CHANGELOG.md`, `pg_sift.control` at the version of the extension SQL (a patch release keeps it), and push `main`. When the last code commit is pushed,
 `gh workflow run ci.yml --ref main` starts the full run of that commit (about 8 minutes), so that the release finds it done.
+After a minor release replace `scripts/options-released.tsv` with `scripts/gen-options.sh --snapshot` of the release, so that the options tables stop marking its defaults as new or changed.
 
 ## What it does
 

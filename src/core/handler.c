@@ -12,14 +12,17 @@
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
 #include "fmgr.h"
+#include "funcapi.h"
 #include "nodes/value.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tuplestore.h"
 
 #include "core/sift.h"
 #include "core/limits.h"
@@ -377,36 +380,99 @@ sift_catalog(void)
 	return &catalog;
 }
 
+static const relopt_parse_elt sift_relopt_tab[] = {
+	{"k1", RELOPT_TYPE_REAL, offsetof(SiftOptions, k1)},
+	{"b", RELOPT_TYPE_REAL, offsetof(SiftOptions, b)},
+	{"stemmer", RELOPT_TYPE_STRING, offsetof(SiftOptions, stemmer)},
+	{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
+	{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
+	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, write_buffer_limit)},
+	{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},	/* DEPRECATED ALIAS */
+	{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
+	{"merge_fanin", RELOPT_TYPE_INT, offsetof(SiftOptions, merge_fanin)},
+	{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
+	{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
+	{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
+	{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
+	{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
+	{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftOptions, dead_rewrite_pct)},
+	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
+};
+
 static bytea *
 sift_amoptions(Datum reloptions, bool validate)
 {
-	static const relopt_parse_elt tab[] = {
-		{"k1", RELOPT_TYPE_REAL, offsetof(SiftOptions, k1)},
-		{"b", RELOPT_TYPE_REAL, offsetof(SiftOptions, b)},
-		{"stemmer", RELOPT_TYPE_STRING, offsetof(SiftOptions, stemmer)},
-		{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
-		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
-		{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, write_buffer_limit)},
-		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},	/* DEPRECATED ALIAS */
-		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
-		{"merge_fanin", RELOPT_TYPE_INT, offsetof(SiftOptions, merge_fanin)},
-		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
-		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
-		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
-		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
-		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
-		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftOptions, dead_rewrite_pct)},
-		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
-	};
-
 	SiftOptions *o = (SiftOptions *) build_reloptions(reloptions, validate, sift_relopt_kind,
-													  sizeof(SiftOptions), tab, lengthof(tab));
+													  sizeof(SiftOptions), sift_relopt_tab, lengthof(sift_relopt_tab));
 
 	/* the alias counts when write_buffer_limit is left at its default */
 	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
 	return (bytea *) o;
 }
+
+#ifdef SIFT_TESTING
+extern const void *sift_col_test_reloptions(const relopt_parse_elt **tab, int *n);
+
+PG_FUNCTION_INFO_V1(sift_test_reloptions);
+
+/*
+ * Access method, name, type and default of every reloption of sift and sift_col as registered: the options struct of an index with none set,
+ * read through the table that parses them (scripts/gen-options.sh --live compares it with the sources). An enum shows its symbol.
+ */
+Datum
+sift_test_reloptions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	const char *ams[] = {"sift", "sift_col"};
+	const relopt_parse_elt *tabs[2] = {sift_relopt_tab};
+	int			ns[2] = {lengthof(sift_relopt_tab)};
+	const char *base[2];
+
+	base[0] = (const char *) sift_amoptions((Datum) 0, false);
+	base[1] = sift_col_test_reloptions(&tabs[1], &ns[1]);
+	InitMaterializedSRF(fcinfo, 0);
+	for (int a = 0; a < 2; a++)
+		for (int i = 0; i < ns[a]; i++)
+		{
+			const relopt_parse_elt *e = &tabs[a][i];
+			const char *p = base[a] + e->offset;
+			const char *type = "", *dflt = "";
+			Datum		vals[4];
+			bool		nulls[4] = {false};
+
+			switch (e->opttype)
+			{
+				case RELOPT_TYPE_BOOL:
+					type = "bool";
+					dflt = *(const bool *) p ? "true" : "false";
+					break;
+				case RELOPT_TYPE_INT:
+					type = "int";
+					dflt = psprintf("%d", *(const int *) p);
+					break;
+				case RELOPT_TYPE_REAL:
+					type = "real";
+					dflt = psprintf("%.15g", *(const double *) p);
+					break;
+				case RELOPT_TYPE_ENUM:
+					type = "enum";
+					dflt = psprintf("%d", *(const int *) p);
+					break;
+				case RELOPT_TYPE_STRING:
+					type = "string";
+					dflt = *(const int *) p ? base[a] + *(const int *) p : "";
+					break;
+			}
+			vals[0] = CStringGetTextDatum(ams[a]);
+			vals[1] = CStringGetTextDatum(e->optname);
+			vals[2] = CStringGetTextDatum(type);
+			vals[3] = CStringGetTextDatum(dflt);
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, vals, nulls);
+		}
+	return (Datum) 0;
+}
+#endif
 
 const SiftOptions *
 sift_index_options(Relation index)
