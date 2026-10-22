@@ -7,6 +7,7 @@
 CREATE FUNCTION sift.col_refresh(index regclass, max_segments int4 DEFAULT NULL, OUT refreshed int4, OUT remaining int4)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_refresh' LANGUAGE C VOLATILE;
+COMMENT ON FUNCTION sift.col_refresh(regclass, int4) IS 'Rewrites the segments of a sift_col index whose pre-aggregates differ from its current options, at most max_segments per call; returns the segments rewritten and those left.';
 
 -- How well the rows of a sift_col index are ordered for its zone maps (docs/USAGE.md "Is the index clustered"), from the zones of its immutable
 -- segments, one row per leaf. units: the units of the index; zoned_units: those whose zone holds a bounded range of the leaf (a unit with an
@@ -20,6 +21,7 @@ CREATE FUNCTION sift.col_clustering(index regclass, width_pct float8 DEFAULT 1,
 									OUT verdict text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_clustering' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.col_clustering(regclass, float8) IS 'How well the rows of a sift_col index are ordered for its zone maps, one row per leaf: the units an equality or a range touches, the correlation and a verdict (clustered, partial or scattered).';
 
 -- The sift_col indexes that a REINDEX would improve, one row per reason: an option (cube_minmax, JSON paths, rollup_dims, set_columns) that only the
 -- units written after it follow, set on an index whose older units lack the section (docs/UPGRADING.md). detected: the option and the oldest column
@@ -65,6 +67,7 @@ BEGIN
 	END LOOP;
 END
 $fn$;
+COMMENT ON FUNCTION sift.reindex_needed() IS 'The sift_col indexes that a REINDEX would improve (an option that only the units written after it follow), with the statement to run; changes nothing.';
 
 -- What the Custom Scan (SiftAgg) scans of this session did (docs/USAGE.md "Session statistics"): one row per counter, and one per refusal
 -- slug recorded (sift.explain_refusals). The counters are in the memory of the backend: no shared memory, no shared_preload_libraries, so the
@@ -72,9 +75,11 @@ $fn$;
 CREATE FUNCTION sift.stats(OUT name text, OUT value int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_stats' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.stats() IS 'What the aggregate pushdown (Custom Scan (SiftAgg)) scans of this session did: one row per counter and per refusal slug.';
 
 CREATE FUNCTION sift.stats_reset() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_stats_reset' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.stats_reset() IS 'Resets the session counters that sift.stats() reports.';
 
 -- Why each candidate path (arm) of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run (docs/USAGE.md "Why a
 -- query kept the normal plan"): one row per arm, used = the arm is in the plan, slug and reason = the first reason it gave up for (NULL when used),
@@ -83,18 +88,21 @@ CREATE FUNCTION sift.stats_reset() RETURNS void
 CREATE FUNCTION sift.explain_why(query text, OUT arm text, OUT used bool, OUT slug text, OUT reason text, OUT scan_cost float8, OUT normal_cost float8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_agg_explain_why' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.explain_why(text) IS 'Why each candidate path of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run: one row per arm with the first reason it gave up.';
 
 -- The slugs sift.explain_why and sift.stats() name, with their class: 'limit' when the query has more of something than a fixed limit of the
 -- extension allows (docs/LIMITS.md), 'semantic' otherwise.
 CREATE FUNCTION sift.refusal_slugs(OUT slug text, OUT class text, OUT reason text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_agg_refusal_slugs' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.refusal_slugs() IS 'The slugs that sift.explain_why and sift.stats() name, with their class (limit: the query has more of something than a fixed limit of the extension allows; semantic: otherwise) and the reason.';
 
 -- The scans of this session that could not answer from the pre-aggregates of their index, by index and reason (a slug), the units scanned for
 -- lack of a rollup, and whether other options of the index (rollup, preagg) would answer them (fixable). Most scans first.
 CREATE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fixable bool, OUT scans int8, OUT units int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_rollup_misses' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.col_rollup_misses() IS 'The scans of this session that could not answer from the pre-aggregates of their sift_col index, by index and reason, and whether other index options would answer them.';
 
 -- Operator classes that let the planner use a sift_col index as a bitmap index scan (docs/COL-SCAN.md; sift.enable_col_scan, off by
 -- default). Opt-in per column: CREATE INDEX ON t USING sift_col (id sift.col_int4_ops, ts sift.col_timestamptz_ops). The stored index
@@ -209,6 +217,7 @@ CREATE FUNCTION sift.worker_state(index regclass,
 								  OUT failed_at timestamptz, OUT next_retry timestamptz, OUT error_code text, OUT last_error text)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_worker_state' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of an index: segments and sealed write buffers waiting for promotion, whether a step runs now, and the last background failure with its retry time.';
 
 -- One row per sift and sift_col index of the database whose table the caller can read; due: why a sift_col index would be rewritten now
 -- (sift.col_maintenance_due). A sift_col step that fails raises its error to the worker, which the log records: failures stay 0 for it.
@@ -221,6 +230,7 @@ CREATE VIEW sift.workers AS
 	JOIN pg_index i ON i.indexrelid = c.oid
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
+COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index the caller can read: its maintenance state (sift.worker_state) and, for a sift_col index, why it would be rewritten now.';
 
 -- Logical replication of a sift_table needs pg_sift in shared_preload_libraries (docs/COL-TAM.md section 5): a custom resource manager can only
 -- be registered at preload time. Without it the first DML on a published table fails; this trigger refuses CREATE/ALTER PUBLICATION instead, when

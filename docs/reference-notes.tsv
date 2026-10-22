@@ -1,0 +1,61 @@
+# Notes for scripts/gen-reference.sh (docs/REFERENCE.md and the README block are generated from the install scripts).
+# name<TAB>group<TAB>since<TAB>description. group: empty = by the name prefix (col_ column index, table_ tables, else search), or search col table maint diag;
+# - = internal, not listed. A description is only for the objects of the released scripts (a later one gets COMMENT ON in the SQL), and for a family
+# of operator classes that a DO block creates (name with *: group and since are needed too).
+@@>			Full-text match of a text against a SiftQL query (words, phrases, prefixes, fuzzy terms, NOT, fields); a sift index answers it, with BM25 ranking through sift.score.
+match			The function behind @@> with the default analyzer; the planner rebinds it to the index analyzer.
+match_idx			The function behind @@> for a column whose sift index uses another analyzer.
+score			BM25 score of the row of a sift scan, in the same query (error anywhere else).
+max_score			The largest BM25 score the query can give, for a scan (error anywhere else).
+highlight			The text with the matched terms of a query wrapped in start_tag and stop_tag.
+tokenize			The tokens of a text under an index analyzer or given options: token, position and character offsets.
+parse_query			The parsed form of a SiftQL query under an index analyzer, as text.
+text_ops			Default operator class of the sift index for text: the @@> operator.
+segments			One row per segment of a sift index: documents, terms, bytes by section, dirty and dead documents.
+segment_postings			Postings of a sift index by segment and document-frequency class: representation counts, codec bytes and bits per posting.
+index_info			Space and directory state of a sift index: blocks, free list, segments, documents and whether maintenance runs.
+verify			Checks the structure of a sift index (and with heapallindexed, that every visible row is in it); raises on a problem.
+facets			Counts of the matches of a query per value of a keyword sift index, most frequent first.
+sections			Joins the fields of a document into the text a fields index is built on.
+field_query			The query with the weights of its fields: each term searched in every field with its boost times the field weight.
+facet_counts			Facet counts over a search: terms, range, histogram and date_histogram facets of any column type, several in one call.
+facet_sql			The SQL statement that facet_counts runs, one scan per facet.
+promote	maint		Turns the write buffer of a sift index into an immutable segment; returns the buffers promoted.
+merge	maint		Merges the segments of a sift index into fewer; force merges even when no policy asks; returns the segments merged.
+version	diag		Version of the loaded library (the installed extension version is in pg_extension).
+col_ops			Default operator class of the sift_col index: it has no operators, the index is read by the column scans.
+col_*_ops	col	3.3	Operator classes per type (int2, int4, int8, float4, float8, date, timestamp, timestamptz, bool, numeric, text, bpchar, uuid) that let the planner scan a sift_col index; opt-in per column.
+col_index_info			Space and directory state of a sift_col index: blocks, free list, segments, rows and the kernel level of the scans.
+col_unit_agg			Pre-aggregates of every stored unit of a leaf of a sift_col index (debug and test hook).
+col_unit_hist			Histogram of the groups of a dimension of a sift_col index per unit, with the count and sum of one measure (debug and test hook).
+col_segments			One row per segment of a sift_col index: rows, units, bytes, column format and the bytes of its pre-aggregates.
+col_leaves			One row per leaf of a sift_col index: its chunks by encoding, their bytes and the bytes of its dictionaries.
+col_sections			Where the bytes of a sift_col index or a sift_table go, one row per kind; they add up to pg_relation_size.
+col_verify			Checks the structure of a sift_col index (and with heapallindexed, its rows against the heap); raises on a problem.
+col_promote	maint		Turns the write buffer of a sift_col index into column segments; returns the segments written.
+col_merge	maint		Merges the segments of a sift_col index into fewer; force merges even when no policy asks; returns the segments merged.
+col_maintain	maint		The rewrite of sift.col_auto_merge now, in this session: seals the write buffer and merges every segment when churn has scattered the index; false when nothing is due.
+col_maintenance_due	maint		Why col_maintain would rewrite the index now (dirty units, fragmented units, write buffer rows), NULL when it is not due.
+col_rollup_counters	maint		Server counters of the on-demand refresh of unit rollups: requested, refreshed, skipped, dropped, queued, refreshing.
+col_rollup_queue	maint		The queued requests to refresh the rollups of a segment, with their state.
+col_rollup_refresh	maint		Refreshes the queued rollup requests of a sift_col index now, in this session; returns the segments rewritten.
+col_rollup_state	maint		The columns of col_rollup_counters as a view.
+col_rollup_requests	maint		The rows of col_rollup_queue as a view.
+table_segments			One row per segment of a sift_table: write buffers, sealed buffers, column segments (rows, units, dead rows, format, unfrozen) and tombstones.
+table_space			Space of a sift_table: file blocks, free list, reusable blocks and the virtual TID blocks left.
+table_maintain	maint		VACUUM's work on the column segments and the file of a sift_table without its indexes: clears dead rows, promotes buffers, rewrites mostly dead segments, returns the free end of the file.
+table_set_paths			Declares the JSON paths of a jsonb column of a sift_table, in the grammar of the paths option of sift_col; an empty spec removes it.
+table_paths			The declared JSON paths of the jsonb columns of sift_table tables (one row per table and column), dumped with the extension.
+col_ops_unused	-		Placeholder member of the col_ops operator class, never called.
+facet_cap	-		Helper of facet_sql: raises when a gap-filled histogram would return too many buckets.
+facet_part	-		Helper of facet_sql: the shape of one facet of a spec.
+table_paths_check	-		Helper of table_set_paths: checks that the table can hold the paths.
+explain_why	diag		
+stats	diag		
+stats_reset	diag		
+col_rollup_misses	diag		
+reindex_needed	diag		
+worker_state	maint		
+workers	maint		
+col_refresh	maint		
+refusal_slugs	diag		

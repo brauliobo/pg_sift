@@ -249,6 +249,7 @@ if [[ $MODE == full ]]; then
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-12 --queries 150 --rows 6000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
+	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job fuzz fuzz 1 "$S/fuzz.sh"
 	flavor_job hardened hardened "$S/hardened.sh"
 	job static static 0 "$S/static.sh"
@@ -289,6 +290,7 @@ else
 	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
+	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
@@ -434,7 +436,7 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors)
+HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors reference)
 if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
 	selftest=$!
@@ -446,20 +448,22 @@ if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	neutral=$!
 	step errors errors "$S/check-errors.sh" &
 	errors=$!
+	step reference reference "$S/gen-reference.sh" --check &
+	reference=$!
 	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
 	spantest=$!
 else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-}
+wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
