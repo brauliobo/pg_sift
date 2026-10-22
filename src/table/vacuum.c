@@ -633,16 +633,30 @@ removable_tombs(Relation rel, SiftTblRel *st)
 	return n;
 }
 
-static bool
-dead_wanted(Relation rel, SiftTblRel *st, uint64 tombs, uint64 seen)
+static uint64
+column_rows(const SiftTblRel *st)
 {
 	uint64		rows = 0;
 
 	for (int i = 0; i < st->dir.nsegs; i++)
 		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += st->dir.segs[i].ndocs;
-	return sift_tbl_auto_defrag_dead_pct < 100 && rows > 0 && tombs * 100 >= rows * sift_tbl_auto_defrag_dead_pct &&
-		tombs >= seen && (tombs - seen) * 200 >= rows * sift_tbl_auto_defrag_dead_pct;
+	return rows;
+}
+
+/* Could that many tombstones be enough? The header counts every entry, the removable ones are fewer, and counting them reads the log */
+static bool
+dead_over(const SiftTblRel *st, uint64 tombs)
+{
+	uint64		rows = column_rows(st);
+
+	return sift_tbl_auto_defrag_dead_pct < 100 && rows > 0 && tombs * 100 >= rows * sift_tbl_auto_defrag_dead_pct;
+}
+
+static bool
+dead_wanted(Relation rel, SiftTblRel *st, uint64 tombs, uint64 seen)
+{
+	return dead_over(st, tombs) && tombs >= seen && (tombs - seen) * 200 >= column_rows(st) * sift_tbl_auto_defrag_dead_pct;
 }
 
 static void
@@ -660,7 +674,11 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	tombs = removable_tombs(rel, st);
+	/* the log is read, by this backend, only when its length could cross the threshold: a ticking backend that does nothing else does not sync it */
+	if (dead_over(st, sift_tbl_tomb_entries(rel, st)))
+		tombs = removable_tombs(rel, st);
+	else
+		tombs = st->defrag_tombs = 0;
 	nblocks = RelationGetNumberOfBlocks(rel);
 	fs = sift_store_free_stats(rel);
 	/*
