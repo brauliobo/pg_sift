@@ -28,6 +28,8 @@ EXPLAIN (COSTS OFF) SELECT id, body FROM vb WHERE body @@> 'express' ORDER BY id
 SELECT id, body FROM vb WHERE body @@> 'express' ORDER BY id LIMIT 3;
 VACUUM vb;
 SELECT vb_agree('express');
+-- sift.table_space tells the virtual blocks left: the floor of 140000 and the table's write buffers are taken from 2^32 - 2
+SELECT vblocks_left BETWEEN 4294967294 - 140000 - 100000 AND 4294967294 - 140000 AS vblocks_left FROM sift.table_space('vb');
 DROP TABLE vb;
 DROP FUNCTION vb_agree;
 DROP EXTENSION pg_sift;

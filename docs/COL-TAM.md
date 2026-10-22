@@ -397,8 +397,8 @@ new table with dense TIDs (`sift_tbl_bulk_*`: no row-format pages, no promotion)
 the scan's tuples. CLUSTER sorts the scan's tuples by a btree index whatever the planner's `use_sort` says (a TID fetch decodes the unit of
 its superblock, so an index scan in random order would decode a unit per row) and fetches by index scan only for an index that cannot
 order a sort. A version deleted or updated by the rewriting transaction itself is dropped (the rewrite commits or aborts with it).
-`VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). `sift.table_space(tbl)` shows the file, the high-water mark
-and the free list.
+`VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). `sift.table_space(tbl)` shows the file, the high-water mark,
+the free list and the virtual blocks of TIDs left (`vblocks_left`).
 
 **`sift.table_maintain(tbl)`** does steps 2, 4 and 6 and nothing that needs the indexes: it promotes the write buffers, clears the liveness bits of the group rows whose
 deletion is committed and older than the horizon (`GetOldestNonRemovableTransactionId`, as the inline promotion uses), merges and rewrites the mostly dead segments,
@@ -444,7 +444,7 @@ and also covers the free space, which autovacuum's counters do not see.
 
 ## 9. Limits
 
-BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or promotion fails with the same error until a column is dropped); 128 directory entries (under directory pressure every write buffer becomes an unfrozen group whatever wrote it, and the groups merge, so a load of any size by any mix of commands, writers and savepoints is not bounded by them; what still waits is a write buffer that holds a deleted row VACUUM has not seen or a speculative insertion in progress, and the insert that cannot open a write buffer then fails with the error of section 2.1); rows up to 1 GB (varlena limit); vblocks
+BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`, and so does an `ALTER TABLE` that adds a column or brings declared paths back past it, by the event trigger `sift_table_ddl_check`; `DROP COLUMN` is not checked, so that a table made too wide by 3.2, whose writes fail with the same error, can be narrowed); 128 directory entries (under directory pressure every write buffer becomes an unfrozen group whatever wrote it, and the groups merge, so a load of any size by any mix of commands, writers and savepoints is not bounded by them; what still waits is a write buffer that holds a deleted row VACUUM has not seen or a speculative insertion in progress, and the insert that cannot open a write buffer then fails with the error of section 2.1); rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
 `xmin/xmax/cmin/cmax` (they read zero), multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
@@ -466,7 +466,7 @@ Run by `scripts/ci.sh` like the BM25 tests:
   `tbl_dead` (live and dead row counts, the rewrite of mostly dead segments under `sift.table_dead_rewrite_pct`),
   `tbl_rewrite` (CLUSTER by a btree sort and a GiST index scan, CLUSTER after deletions of its own transaction, VACUUM FULL over two
   column layouts), `tbl_sample` (TABLESAMPLE over write buffer rows and groups).
-- Regression `tbl_cap` (the directory limit, lowered by `sift.table_max_segments`: a transaction of many commands ends with the limit error and its size, one command goes through) and `tbl_bigtx`
+- Regression `tbl_cap` (the directory limit, lowered by `sift.table_max_segments`: loads in many transactions, one command and a loop of single-row INSERTs in one transaction go through) and `tbl_bigtx`
   (one transaction with more write buffers than the directory has entries for, at a limit of 16: INSERT ... SELECT, COPY, ROLLBACK and the
   space VACUUM returns, a savepoint rolled back in the middle and one released, UPDATE and DELETE of the rows of the same transaction and a statement
   that reads what it writes through an index, parallel plans before and after the freeze; a heap twin must agree). Isolation
