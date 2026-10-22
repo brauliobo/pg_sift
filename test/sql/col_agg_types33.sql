@@ -1,6 +1,6 @@
 -- inet, cidr, macaddr, macaddr8, timetz, bit and varbit in a sift_col index (docs/COL-LEAFTYPES-32.md 7, 8): the column engine stores the image of the
 -- datum and SiftAgg reads it as a dictionary of datums, so a key, an aggregate, a conjunct, an OR, a FILTER or an expression is PostgreSQL's own
--- function on the value (equality, hash and order are the type's, never a comparison of the images). Every query runs with and without the
+-- function on the value (equality, hash and order are the type's; only a bit or varbit key, which has no hash, is grouped by image). Every query runs with and without the
 -- pushdown and the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;

@@ -1,6 +1,6 @@
 -- inet, cidr, macaddr, macaddr8, timetz, bit and varbit in a sift_col index (docs/COL-LEAFTYPES-32.md 7, 8): the column engine stores the image of the
 -- datum and SiftAgg reads it as a dictionary of datums, so a key, an aggregate, a conjunct, an OR, a FILTER or an expression is PostgreSQL's own
--- function on the value (equality, hash and order are the type's, never a comparison of the images). Every query runs with and without the
+-- function on the value (equality, hash and order are the type's; only a bit or varbit key, which has no hash, is grouped by image). Every query runs with and without the
 -- pushdown and the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -84,9 +84,9 @@ SELECT chk($$SELECT ip::text AS k, count(*) AS c FROM nt GROUP BY ip$$) AS inet_
        chk($$SELECT length(vb) AS k, count(*) AS c, count(DISTINCT vb) AS d FROM nt GROUP BY length(vb)$$) AS varbit_length,
        chk($$SELECT count(*) AS groups FROM (SELECT vb FROM nt GROUP BY vb) g$$) AS varbit_groups,
        chk($$SELECT ip::text AS a, mac::text AS b, count(*) AS c FROM nt GROUP BY ip, mac$$) AS two_keys;
- inet_key  | cidr_key  | macaddr_key | macaddr8_key | timetz_key |  bit_key   | varbit_length | varbit_groups | two_keys  
------------+-----------+-------------+--------------+------------+------------+---------------+---------------+-----------
- scan same | scan same | scan same   | scan same    | scan same  | plain same | scan same     | plain same    | scan same
+ inet_key  | cidr_key  | macaddr_key | macaddr8_key | timetz_key |  bit_key  | varbit_length | varbit_groups | two_keys  
+-----------+-----------+-------------+--------------+------------+-----------+---------------+---------------+-----------
+ scan same | scan same | scan same   | scan same    | scan same  | scan same | scan same     | scan same     | scan same
 (1 row)
 
 -- equal values are one group whatever their spelling, different masks and different zones are not
@@ -173,17 +173,17 @@ CREATE FUNCTION shapes(tag text) RETURNS text LANGUAGE sql AS $$
 		chk('SELECT grp AS g, count(*) AS c FROM nt WHERE ip <<= ''10.0.0.0/8'' OR tz > ''12:00+00'' GROUP BY grp'))
 $$;
 SELECT shapes('buffered');
-                                shapes                                 
------------------------------------------------------------------------
- buffered scan same scan same scan same scan same plain same scan same
+                                shapes                                
+----------------------------------------------------------------------
+ buffered scan same scan same scan same scan same scan same scan same
 (1 row)
 
 DELETE FROM nt WHERE id % 5 = 1;
 UPDATE nt SET ip = '10.9.9.9/24', tz = '01:02:03+04', vb = B'1111', mac = 'AA-BB-CC-00-00-01' WHERE id % 11 = 2;
 SELECT shapes('updated');
-                                shapes                                
-----------------------------------------------------------------------
- updated scan same scan same scan same scan same plain same scan same
+                               shapes                                
+---------------------------------------------------------------------
+ updated scan same scan same scan same scan same scan same scan same
 (1 row)
 
 SELECT sift.col_promote('nt_col');
@@ -200,9 +200,9 @@ SELECT sift.col_merge('nt_col', true);
 (1 row)
 
 SELECT shapes('merged');
-                               shapes                                
----------------------------------------------------------------------
- merged scan same scan same scan same scan same plain same scan same
+                               shapes                               
+--------------------------------------------------------------------
+ merged scan same scan same scan same scan same scan same scan same
 (1 row)
 
 SELECT sift.col_verify('nt_col', true);
@@ -213,9 +213,9 @@ SELECT sift.col_verify('nt_col', true);
 
 REINDEX INDEX nt_col;
 SELECT shapes('reindexed');
-                                 shapes                                 
-------------------------------------------------------------------------
- reindexed scan same scan same scan same scan same plain same scan same
+                                shapes                                 
+-----------------------------------------------------------------------
+ reindexed scan same scan same scan same scan same scan same scan same
 (1 row)
 
 -- parallel workers
@@ -240,7 +240,7 @@ CREATE INDEX ot_col ON ot USING sift_col (id, grp, v);
 SELECT format FROM sift.col_segments('ot_col') WHERE kind = 'immutable';
  format 
 --------
-     12
+     14
 (1 row)
 
 CREATE TABLE tt (id int, ip inet, cd cidr, mac macaddr, mac8 macaddr8, tz timetz, b bit(8), vb varbit) USING sift_table;
