@@ -290,8 +290,7 @@ spill_next(AggExec *ex)
 
 		sp->work = list_delete_first(sp->work);
 		table_reset(ex);
-		if (BufFileSeek(w->f, 0, 0, SEEK_SET) != 0)
-			ereport(ERROR, (errcode_for_file_access(), errmsg("sift: could not rewind a temporary file of the aggregate")));
+		SIFT_INVARIANT(BufFileSeek(w->f, 0, 0, SEEK_SET) == 0, "sift: could not rewind a partition of the aggregate");
 		for (uint32 i = 0; i < w->nblobs; i++)
 		{
 			MemoryContext tmp = MemoryContextSwitchTo(sp->tmp);
@@ -358,8 +357,7 @@ spill_output(AggExec *ex, TupleTableSlot *slot, bool (*next) (AggExec *, TupleTa
 	}
 	if (sp->nread < sp->nwritten)
 	{
-		if (!tuplestore_gettupleslot(sp->out, true, false, sp->mslot))
-			elog(ERROR, "sift: a group of the aggregate scan is missing from its store");
+		SIFT_INVARIANT(tuplestore_gettupleslot(sp->out, true, false, sp->mslot), "sift: a group of the aggregate scan is missing from its store");
 		slot_getallattrs(sp->mslot);
 		ExecClearTuple(slot);
 		memcpy(slot->tts_values, sp->mslot->tts_values, slot->tts_tupleDescriptor->natts * sizeof(Datum));
