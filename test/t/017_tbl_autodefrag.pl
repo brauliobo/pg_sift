@@ -11,14 +11,15 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 my $node = sift_node('autodefrag');
-$node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_auto_defrag = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nsift.table_auto_defrag_delay = 0\nmax_parallel_maintenance_workers = 0");
+$node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_auto_defrag = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nsift.table_auto_defrag_delay = 0\nsift.table_write_buffer_limit = 2048\nmax_parallel_maintenance_workers = 0");
 $node->start;
 install_sift($node);
 plan skip_all => 'space crash injection needs the testing build' unless $node->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
 $node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
 
-# with 30000 rows (the quick size of knob) the third subtest never gets its worker; 60000 do (the test then takes 15 s)
-my $rows = $ENV{SIFT_ROWS} // 60000;
+# The backend asks for a pass when it closes a write buffer (2 MB here, the smallest), and the churn of a subtest, about 100 bytes a row,
+# has to close one: with the default 4 MB buffer 30000 rows (3 MB) never reached the check and no worker was asked for
+my $rows = $ENV{SIFT_ROWS} // 30000;
 my $worker = qr/table maintenance worker finished/;
 my $digest = 'SET sift.enable_agg = off; SELECT count(*) || $$:$$ || sum(id) || $$:$$ || sum(v) || $$:$$ || sum(length(t)) FROM %s';
 
