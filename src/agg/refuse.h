@@ -9,48 +9,55 @@
 
 #include "nodes/pathnodes.h"
 
+#include "core/limits.h"
+
 /*
- * X(ID, slug, sentence): the one table of refusals. The slug is the stable name (docs/USAGE.md lists them); a refusal no site names is 'other'.
+ * X(ID, slug, sentence, limit): the one table of refusals. The slug is the stable name (docs/USAGE.md lists them, generated from this table by
+ * scripts/gen-refusals.sh); a refusal no site names is 'other'. limit is 1 for a slug that is always a fixed limit of the extension (core/limits.h): the
+ * query has more of something than the scan holds, and the detail names the limit and its value. A site that meets a registered limit under another slug
+ * (a top-N past its rows) says so with agg_refuse_limit.
  * A site names the first reason an arm (a candidate path of the planner: single, distinct, two_level, rows, topn) gave up for.
  */
 #define SIFT_AGG_REFUSALS(X) \
-	X(OTHER, "other", "the shape is not one the aggregate pushdown proves, and no more specific reason is recorded") \
-	X(DISABLED, "disabled", "sift.enable_agg is off") \
-	X(QUERY_KIND, "query_kind", "the query has a set-returning function in the select list, row locks or a recursive CTE") \
-	X(FROM_SHAPE, "from_shape", "the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads") \
-	X(TABLE_KIND, "table_kind", "the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table") \
-	X(NO_SOURCE, "no_source", "no sift_col index or sift_table covers the table") \
-	X(PARTITION_SOURCE, "partition_source", "a partition has no column index the plan can use, or the partitions do not share a layout") \
-	X(PARTITION_COUNT, "partition_count", "the table has more partitions left by PostgreSQL's pruning than a scan reads") \
-	X(JOIN_CHILD, "join_child", "a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child") \
-	X(OUTER_JOIN, "outer_join", "an outer join of the scanned table keeps rows the scan cannot reproduce") \
-	X(UNNEST_LEAF, "unnest_leaf", "the array or object a lateral function unnests is not a leaf of the column index") \
-	X(WHERE, "where", "a condition of the WHERE or ON clause is not one the scan can test") \
-	X(JOIN_CONDITION, "join_condition", "a join condition is not an equality or filter the scan can look up") \
-	X(GROUP_KEY, "group_key", "a group key is not a leaf, or an expression of one, that the scan reads") \
-	X(TOO_MANY_KEYS, "too_many_keys", "the query groups by more columns than the scan holds") \
-	X(OUTPUT_EXPR, "output_expr", "the select list or HAVING reads something besides group keys and the aggregates the scan computes") \
-	X(AGGREGATE, "aggregate", "an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes") \
-	X(DISTINCT_ON, "distinct_on", "DISTINCT ON has no total order for the row it keeps") \
-	X(GROUPING_SETS, "grouping_sets", "the arm does not group by grouping sets") \
-	X(DIRTY_UNITS, "dirty_units", "some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does") \
-	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate") \
-	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill") \
-	X(LATERAL_LIMIT, "lateral_limit", "a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties") \
-	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id") \
-	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by") \
-	X(TWO_AGGS, "two_aggs", "an aggregate over the arms is not one the two level scan computes") \
-	X(SPINE_SHAPE, "spine_shape", "the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms") \
-	X(SPINE_ROWS, "spine_rows", "the rows of the spine are estimated above sift.agg_lookup_max_kb") \
-	X(ROWS_SHAPE, "rows_shape", "the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group") \
-	X(TOPN_SHAPE, "topn_shape", "the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests") \
-	X(COST, "cost", "the normal plan is estimated cheaper than the scan") \
-	X(CTE_COST, "cte_cost", "the shared CTE plan is estimated cheaper than the plan with the CTE inlined")
+	X(OTHER, "other", "the shape is not one the aggregate pushdown proves, and no more specific reason is recorded", 0) \
+	X(DISABLED, "disabled", "sift.enable_agg is off", 0) \
+	X(QUERY_KIND, "query_kind", "the query has a set-returning function in the select list, row locks or a recursive CTE", 0) \
+	X(FROM_SHAPE, "from_shape", "the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads", 0) \
+	X(TABLE_KIND, "table_kind", "the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table", 0) \
+	X(NO_SOURCE, "no_source", "no sift_col index or sift_table covers the table", 0) \
+	X(PARTITION_SOURCE, "partition_source", "a partition has no column index the plan can use, or the partitions do not share a layout", 0) \
+	X(PARTITION_COUNT, "partition_count", "the table has more partitions left by PostgreSQL's pruning than a scan reads", 1) \
+	X(JOIN_CHILD, "join_child", "a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child", 0) \
+	X(OUTER_JOIN, "outer_join", "an outer join of the scanned table keeps rows the scan cannot reproduce", 0) \
+	X(UNNEST_LEAF, "unnest_leaf", "the array or object a lateral function unnests is not a leaf of the column index", 0) \
+	X(WHERE, "where", "a condition of the WHERE or ON clause is not one the scan can test", 0) \
+	X(JOIN_CONDITION, "join_condition", "a join condition is not an equality or filter the scan can look up", 0) \
+	X(GROUP_KEY, "group_key", "a group key is not a leaf, or an expression of one, that the scan reads", 0) \
+	X(TOO_MANY_KEYS, "too_many_keys", "the query groups by more columns than the scan holds", 1) \
+	X(ERROR_PARITY, "error_parity", "the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read)", 0) \
+	X(OUTPUT_EXPR, "output_expr", "the select list or HAVING reads something besides group keys and the aggregates the scan computes", 0) \
+	X(AGGREGATE, "aggregate", "an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes", 0) \
+	X(DISTINCT_ON, "distinct_on", "DISTINCT ON has no total order for the row it keeps", 0) \
+	X(GROUPING_SETS, "grouping_sets", "the arm does not group by grouping sets", 0) \
+	X(DIRTY_UNITS, "dirty_units", "some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does", 0) \
+	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate", 1) \
+	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1) \
+	X(LATERAL_LIMIT, "lateral_limit", "a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties", 0) \
+	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id", 0) \
+	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by", 0) \
+	X(TWO_AGGS, "two_aggs", "an aggregate over the arms is not one the two level scan computes", 0) \
+	X(SPINE_SHAPE, "spine_shape", "the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms", 0) \
+	X(SHAPE_WIDTH, "shape_width", "the query has more joined tables, value combinations, leaves, arms or columns than the scan holds: the detail names the limit and its value", 1) \
+	X(SPINE_ROWS, "spine_rows", "the rows of the spine are estimated above sift.agg_lookup_max_kb", 1) \
+	X(ROWS_SHAPE, "rows_shape", "the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group", 0) \
+	X(TOPN_SHAPE, "topn_shape", "the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests", 0) \
+	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0) \
+	X(CTE_COST, "cte_cost", "the shared CTE plan is estimated cheaper than the plan with the CTE inlined", 0)
 
 typedef enum AggRefusal
 {
 	AGG_REFUSE_NONE = 0,
-#define AGG_REFUSAL_ID(id, slug, text) AGG_REFUSE_##id,
+#define AGG_REFUSAL_ID(id, slug, text, limit) AGG_REFUSE_##id,
 	SIFT_AGG_REFUSALS(AGG_REFUSAL_ID)
 #undef AGG_REFUSAL_ID
 	AGG_REFUSE_COUNT
@@ -61,6 +68,8 @@ extern const char *agg_variant;
 
 /* the refusal that gave up the arm being planned, if it is the first: false, so that a site returns it */
 extern bool agg_refuse_note(AggRefusal why, const char *detail);
+/* the same for a refusal by the limit lim of the registry (SiftLimitId): the arm counts it under that name */
+extern bool agg_refuse_limit_note(AggRefusal why, int lim, const char *detail);
 extern void agg_arm_begin(const char *name, bool candidate);
 extern void agg_arm_candidate(void);
 extern void agg_arm_spill(double cost, double groups, double bytes);
@@ -81,10 +90,22 @@ typedef struct AggStage
 extern void agg_stage_begin(AggStage *st, int level);
 extern void agg_stage_end(AggStage *st);
 
-/* `return agg_refuse(ID);` in a function that returns bool, `agg_refused(ID);` before a bare return; _on: with a detail (a name) */
+/*
+ * `return agg_refuse(ID);` in a function that returns bool, `agg_refused(ID);` before a bare return; _on: with a detail (a name); _f: with a detail
+ * built from a format, evaluated only while the refusals are noted. _limit: a limit of core/limits.h (joins, combos, ...) by its id, with the value the
+ * site compares with (sift_limit(id, MACRO) once the limit is hooked for sift.test_limits) and a format for what the query has more of: the detail
+ * ends "the limit <id> is <value>" and sift.stats counts limit.<id>.
+ */
 #define agg_refuse(id) (sift_explain_refusals ? agg_refuse_note(AGG_REFUSE_##id, NULL) : false)
 #define agg_refused(id) do { if (sift_explain_refusals) agg_refuse_note(AGG_REFUSE_##id, NULL); } while (0)
 #define agg_refused_on(id, what) do { if (sift_explain_refusals) agg_refuse_note(AGG_REFUSE_##id, (what)); } while (0)
+#define agg_refuse_on(id, what) (sift_explain_refusals ? agg_refuse_note(AGG_REFUSE_##id, (what)) : false)
+#define agg_refuse_f(id, ...) (sift_explain_refusals ? agg_refuse_note(AGG_REFUSE_##id, psprintf(__VA_ARGS__)) : false)
+#define agg_refused_f(id, ...) do { if (sift_explain_refusals) agg_refuse_note(AGG_REFUSE_##id, psprintf(__VA_ARGS__)); } while (0)
+#define agg_refuse_limit(slug, lim, value, ...) \
+	(sift_explain_refusals ? agg_refuse_limit_note(AGG_REFUSE_##slug, SIFT_LIM_##lim, \
+		psprintf("%s, the limit %s is %lld", psprintf(__VA_ARGS__), #lim, (long long) (value))) : false)
+#define agg_refused_limit(slug, lim, value, ...) ((void) agg_refuse_limit(slug, lim, value, __VA_ARGS__))
 
 extern void sift_agg_refuse_init(void);
 

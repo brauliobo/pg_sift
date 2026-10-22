@@ -25,24 +25,38 @@
 
 #include "agg/refuse.h"
 #include "agg/stats.h"
+#include "core/limits.h"
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
+PG_FUNCTION_INFO_V1(sift_agg_refusal_slugs);
 
+/* sift_explain_refusals: the sites note their reasons (the notice, sift.count_refusals or sift.explain_why asked for them); the notice is for the first */
 bool		sift_explain_refusals = false;
+static bool notice_refusals = false;
+static bool count_refusals = false;
 const char *agg_variant = NULL;
 
-#define AGG_REFUSAL_ROW(id, slug, text) {slug, text},
+#define AGG_REFUSAL_ROW(id, slug, text, limit) {slug, text, limit},
 static const struct
 {
 	const char *slug;
 	const char *text;
-}			refusals[] = {{NULL, NULL}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
+	bool		limit;
+}			refusals[] = {{NULL, NULL, false}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
+
+/* the ids of core/limits.h: the name sift.stats counts a refusal by a limit under */
+static const char *const limit_names[] = {
+#define LIMIT_NAME(id, macro, file, value, unit, what, behaviour, setting, hooked) #id,
+	SIFT_LIMITS(LIMIT_NAME)
+#undef LIMIT_NAME
+};
 
 typedef struct ArmNote
 {
 	const char *name;
 	AggRefusal	why;
 	const char *detail;
+	const char *limit;			/* the id of the limit of core/limits.h the refusal is for */
 	bool		candidate;
 	bool		used;
 	List	   *paths;
@@ -80,6 +94,14 @@ agg_refuse_note(AggRefusal why, const char *detail)
 		arm->candidate = true;
 	}
 	return false;
+}
+
+bool
+agg_refuse_limit_note(AggRefusal why, int lim, const char *detail)
+{
+	if (arm != NULL && arm->why == AGG_REFUSE_NONE)
+		arm->limit = limit_names[lim];
+	return agg_refuse_note(why, detail);
 }
 
 /* [variant:][L<level>:]name: the arms of a sub-select and of a variant of the statement are told from the top level's */
@@ -187,7 +209,7 @@ report(const ArmNote *a)
 		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
 
 	if (!a->used && a->why != AGG_REFUSE_NONE)
-		sift_stats_refusal(slug);
+		sift_stats_refusal(slug, a->limit);
 	if (why_store != NULL)
 	{
 		Datum		v[6];
@@ -201,7 +223,7 @@ report(const ArmNote *a)
 		v[5] = Float8GetDatum(a->normal);
 		tuplestore_putvalues(why_store, why_desc, v, n);
 	}
-	else if (!a->used)
+	else if (!a->used && notice_refusals)
 		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name)));
 }
 
@@ -338,11 +360,45 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+static void
+assign_notice(bool newval, void *extra)
+{
+	sift_explain_refusals = newval || count_refusals;
+}
+
+static void
+assign_count(bool newval, void *extra)
+{
+	sift_explain_refusals = newval || notice_refusals;
+}
+
 void
 sift_agg_refuse_init(void)
 {
 	DefineCustomBoolVariable("sift.explain_refusals",
 							 "Reports as a notice why a query kept the normal plan instead of Custom Scan (SiftAgg): the first reason each candidate path gave up for.",
-							 NULL, &sift_explain_refusals, false,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
+							 NULL, &notice_refusals, false,
+							 PGC_USERSET, 0, NULL, assign_notice, NULL);
+	DefineCustomBoolVariable("sift.count_refusals",
+							 "Counts in sift.stats() why queries kept the normal plan (refused.<slug>, limit.<id>), without the notice of sift.explain_refusals.",
+							 NULL, &count_refusals, false,
+							 PGC_USERSET, 0, NULL, assign_count, NULL);
+}
+
+/* sift.refusal_slugs(): the registry of refuse.h, for the tools that read sift.stats() or sift.explain_why() */
+Datum
+sift_agg_refusal_slugs(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
+	{
+		Datum		v[3] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
+							CStringGetTextDatum(refusals[i].text)};
+		bool		n[3] = {false, false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
+	}
+	return (Datum) 0;
 }

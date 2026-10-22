@@ -84,6 +84,12 @@ CREATE FUNCTION sift.explain_why(query text, OUT arm text, OUT used bool, OUT sl
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_agg_explain_why' LANGUAGE C STRICT VOLATILE;
 
+-- The slugs sift.explain_why and sift.stats() name, with their class: 'limit' when the query has more of something than a fixed limit of the
+-- extension allows (docs/LIMITS.md), 'semantic' otherwise.
+CREATE FUNCTION sift.refusal_slugs(OUT slug text, OUT class text, OUT reason text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_agg_refusal_slugs' LANGUAGE C STRICT VOLATILE;
+
 -- The scans of this session that could not answer from the pre-aggregates of their index, by index and reason (a slug), the units scanned for
 -- lack of a rollup, and whether other options of the index (rollup, preagg) would answer them (fixable). Most scans first.
 CREATE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fixable bool, OUT scans int8, OUT units int8)

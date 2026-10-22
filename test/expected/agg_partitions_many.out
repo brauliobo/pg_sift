@@ -153,16 +153,16 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc WHERE d >=
 (1 row)
 
 SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-      slug       |                                                 reason                                                  
------------------+---------------------------------------------------------------------------------------------------------
- partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions, up to 99)
+      slug       |                                                                        reason                                                                        
+-----------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 99)
 (1 row)
 
 SET sift.test_limits = 'partitions=64';
 SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-      slug       |                                                 reason                                                  
------------------+---------------------------------------------------------------------------------------------------------
- partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions, up to 64)
+      slug       |                                                                        reason                                                                        
+-----------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 64)
 (1 row)
 
 RESET sift.test_limits;

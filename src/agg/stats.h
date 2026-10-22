@@ -47,6 +47,6 @@ sift_stat_add(SiftStat s, int64 n)
 extern void sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units);
 
 /* a query kept the normal plan for the refusal named by slug (a static string; agg/refuse.h) */
-extern void sift_stats_refusal(const char *slug);
+extern void sift_stats_refusal(const char *slug, const char *limit);
 
 #endif

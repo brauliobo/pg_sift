@@ -19,7 +19,7 @@ PG_FUNCTION_INFO_V1(sift_col_rollup_misses);
 
 /* (relation, reason) pairs and refusals kept; a pair that finds the table full is not counted */
 #define STATS_MISSES	256
-#define STATS_REFUSALS	64
+#define STATS_REFUSALS	128
 
 int64		sift_stat_v[SIFT_STAT_COUNT];
 
@@ -34,7 +34,8 @@ typedef struct Miss
 
 typedef struct Refusal
 {
-	const char *slug;
+	const char *slug;			/* or the id of a limit */
+	bool		limit;
 	int64		n;
 } Refusal;
 
@@ -69,21 +70,30 @@ sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units)
 	}
 }
 
-void
-sift_stats_refusal(const char *slug)
+static void
+count_refusal(const char *name, bool limit)
 {
 	Refusal    *r = NULL;
 
 	for (int i = 0; i < nrefusals && r == NULL; i++)
-		if (strcmp(refusals[i].slug, slug) == 0)
+		if (refusals[i].limit == limit && strcmp(refusals[i].slug, name) == 0)
 			r = &refusals[i];
 	if (r == NULL && nrefusals < STATS_REFUSALS)
 	{
 		r = &refusals[nrefusals++];
-		*r = (Refusal) {slug, 0};
+		*r = (Refusal) {name, limit, 0};
 	}
 	if (r != NULL)
 		r->n++;
+}
+
+/* both names are static strings: the slug of the registry (agg/refuse.h) and, for a refusal by a fixed limit, its id in core/limits.h */
+void
+sift_stats_refusal(const char *slug, const char *limit)
+{
+	count_refusal(slug, false);
+	if (limit != NULL)
+		count_refusal(limit, true);
 }
 
 Datum
@@ -101,7 +111,7 @@ sift_stats(PG_FUNCTION_ARGS)
 	}
 	for (int i = 0; i < nrefusals; i++)
 	{
-		Datum		v[2] = {CStringGetTextDatum(psprintf("refused.%s", refusals[i].slug)), Int64GetDatum(refusals[i].n)};
+		Datum		v[2] = {CStringGetTextDatum(psprintf(refusals[i].limit ? "limit.%s" : "refused.%s", refusals[i].slug)), Int64GetDatum(refusals[i].n)};
 		bool		nulls[2] = {false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);

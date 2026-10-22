@@ -17,8 +17,8 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `partitions` | leaf partitions per SiftAgg scan, after PostgreSQL's pruning | 32,768 | partitions | normal plan (slug partition_count, the detail has the count) |  | `agg/part.h` `SIFT_AGG_MAX_PARTS` | yes |
 | `hash_part_combos` | value combinations the remainders of a hash level are computed for (once per level) | 1,048,576 | combinations | the partitions of the level are kept (not pruned) |  | `agg/part.c` `HASH_MAX_COMBOS` | yes |
 | `part_key_tests` | keys times range or list partitions a list of keys is tested against exactly | 20,000 | tests | only the range of the keys prunes |  | `agg/part.c` `KEYS_MAX_TESTS` | yes |
-| `joins` | lookup-joined tables per scan | 8 | tables | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` |  |
-| `combos` | value combinations per scan | 16 | combinations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` |  |
+| `joins` | lookup-joined tables per scan | 8 | tables | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` | yes |
+| `combos` | value combinations per scan | 16 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
 | `join_cols` | columns of the joined table that expressions read | 6 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` |  |
@@ -31,7 +31,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/plan_order.c` `FIRST_MAX_KEYS` |  |
 | `first_order_cols` | ORDER BY columns of a first-row lookup child | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` |  |
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
-| `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` |  |
+| `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |
 | `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |
 | `arms` | UNION ALL arms of a fused or two-level scan | 4 | arms | not fused |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` |  |
 | `virtual_leaves` | virtual leaves (expressions) per scan | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` |  |
@@ -42,7 +42,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `generic_args` | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | 100 | arguments | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GARGS` |  |
 | `float_ops` | operations of one float8 aggregate argument | 16 | operations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VX` |  |
 | `combo_leaves` | leaves one value combination reads | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_CLEAVES` |  |
-| `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` |  |
+| `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` |  |
 | `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/col_int.h` `COL_MAX_STR_PRUNE` |  |
 | `filter_set` | values of an IN set sent as a zone filter | 8 | values | a larger set is not used as a zone filter |  | `agg/init_filter.c` `FILTER_MAX_SET` |  |
 

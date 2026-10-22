@@ -175,7 +175,7 @@ first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 {
 	/* the normal plan evaluates a volatile function for every row, before it picks one */
 	if (contain_volatile_functions((Node *) target->exprs))
-		return false;
+		return agg_refuse_on(DISTINCT_ON, "the select list calls a volatile function: the normal plan evaluates it for every row before it picks one");
 	foreach_ptr(Node, e, target->exprs)
 	{
 		OutWalk		w = {keys, NIL, false};
@@ -186,7 +186,7 @@ first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 		if (!w.bad)
 			continue;
 		if ((a = first_aggref(c, e, more)) == NULL)
-			return false;
+			return agg_refuse_on(DISTINCT_ON, "an expression of the select list is not a first-row aggregate the scan computes");
 		foreach_ptr(Aggref, f, *firsts)
 			have |= equal(f, a);
 		if (!have)
@@ -236,7 +236,7 @@ distinct_on_more(AggCtx *c, Query *parse, List **more)
 	{
 		sortexprs = lappend(sortexprs, get_sortgroupclause_expr(sgc, c->root->processed_tlist));
 		if (arg_joined(c, llast(sortexprs)))
-			return false;
+			return agg_refuse_on(DISTINCT_ON, "a sort expression of the DISTINCT ON reads a joined table");
 		if (get_sortgroupref_clause_noerr(sgc->tleSortGroupRef, parse->distinctClause) == NULL)
 			*more = lappend(*more, sgc);
 	}
@@ -326,11 +326,11 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
 #endif
 
 	if (!get_ordering_op_properties(sgc->sortop, &opfamily, &opcintype, &strategy))
-		return false;
+		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
 	*leaf = match_leaf(c, normalize_expr(c, e));
 	if (*leaf < 0 || !sift_topn_key_ok(leaf_of(c, *leaf)) || opcintype != leaf_of(c, *leaf)->typid ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
-		return false;
+		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, or its operator is not the default btree one of its type");
 	*desc = strategy == TOPN_DESC;
 	appendStringInfo(txt, "%s%s%s", txt->len ? ", " : "", leaf_name(c, *leaf), *desc ? " DESC" : "");
 	if (sgc->nulls_first != *desc)
@@ -387,16 +387,16 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
 	List	   *vars;
 
 	if (contain_volatile_functions((Node *) target->exprs))
-		return false;
+		return agg_refuse_on(TOPN_SHAPE, "the select list calls a volatile function");
 	vars = pull_var_clause((Node *) target->exprs, PVC_RECURSE_PLACEHOLDERS);
 	foreach_node(Var, v, vars)
 	{
 		if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0)
-			return false;
+			return agg_refuse_on(TOPN_SHAPE, "the select list reads a column that is not of the scanned table");
 		if (list_member(*scan_tlist, v) || tlist_member((Expr *) v, *scan_tlist))
 			continue;
 		if (list_length(*scan_tlist) >= MaxHeapAttributeNumber)
-			return false;
+			return agg_refuse_on(TOPN_SHAPE, "the select list reads more columns than a heap tuple holds");
 		attno[list_length(*scan_tlist)] = v->varattno;
 		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(v), list_length(*scan_tlist) + 1, NULL, false));
 	}
@@ -440,10 +440,10 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 		if (j->kind != SJ_INNER || j->params != NIL || j->child >= 0 || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
 			cb->nleaves != 1 || cb->leaf[0] < 0 || cb->leaf[0] >= c->lay->nleaves || cb->nslots != (j->fslot >= 0 ? 1 : 0) ||
 			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
-			return false;
+			return agg_refuse_on(TOPN_SHAPE, "a joined table is not an inner join by one key that the rows of the heap hold, with ON and WHERE on its own columns");
 		lf = &c->lay->leaf[cb->leaf[0]];
 		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || !topn_unique_key(c, jc))
-			return false;
+			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
 	}
 	return true;
 }

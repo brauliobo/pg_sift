@@ -135,7 +135,7 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 
 	if (a->agglevelsup != 0 || a->aggkind != AGGKIND_NORMAL || a->aggorder != NIL || a->aggvariadic || a->aggdirectargs != NIL ||
 		a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > 1 || contain_volatile_functions((Node *) a))
-		return false;
+		return agg_refuse_on(ROWS_SHAPE, "an aggregate with an outer level, ORDER BY, VARIADIC, direct arguments, a partial split, several arguments or a volatile call");
 	if (a->args != NIL)
 		arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
 	out->fn = a->aggfnoid;
@@ -146,13 +146,13 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 	if (a->aggfnoid == F_COUNT_)
 	{
 		if (a->aggdistinct != NIL)
-			return false;
+			return agg_refuse_on(ROWS_SHAPE, "count(*) with DISTINCT");
 		out->kind = SRA_COUNT_STAR;
 	}
 	else if (a->aggfnoid == F_COUNT_ANY)
 	{
 		if (a->aggdistinct != NIL && out->argtype != INT2OID && out->argtype != INT4OID && out->argtype != INT8OID)
-			return false;
+			return agg_refuse_on(ROWS_SHAPE, "count(DISTINCT) of a value that is not a smallint, integer or bigint");
 		out->kind = a->aggdistinct != NIL ? SRA_DISTINCT : SRA_COUNT;
 	}
 	else if (pg_aggregate_ok(a->aggfnoid) && a->aggdistinct == NIL)
@@ -161,7 +161,7 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 		out->kind = SRA_PG;
 	}
 	else
-		return false;
+		return agg_refuse_on(ROWS_SHAPE, "an aggregate that is not count, or one of the sums and averages the rows plan computes");
 	if (arg)
 		out->argcol = target_column(cols, arg);
 	if (a->aggfilter)
@@ -182,7 +182,7 @@ sets_fit(const SiftRowsSpec *s)
 		for (int k = 0; k < s->naggs; k++)
 			n += s->agg[k].kind == SRA_DISTINCT && s->agg[k].argcol == s->agg[i].argcol;
 		if (n > SIFT_ROWS_MAX_SHARED)
-			return false;
+			return agg_refuse_limit(ROWS_SHAPE, rows_shared, SIFT_ROWS_MAX_SHARED, "more count(DISTINCT) aggregates of one column (%d) than one pass shares", n);
 	}
 	return true;
 }
