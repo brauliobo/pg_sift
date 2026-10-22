@@ -39,7 +39,21 @@ typedef struct Fuse
 	int			ncommon;		/* the conjuncts over the rows that every arm has: the pass applies them */
 	SiftAggPred **common;
 	SiftAggPred **resid;		/* per arm: its other conjuncts as one node, NULL none: they are applied to its set (spec.setpred) */
+	int			nagg;			/* the aggregates of the pass: those of the arms, each once */
+	SiftAggAgg *agg;
+	uint32	   *aggsets;		/* per aggregate: the arms that read it; NULL when every arm has the same aggregates */
+	int		  **aggmap;			/* per arm: the aggregate of the pass that is each of its aggregates */
+	List	   *owners;			/* the slots that give the ids of an aggregate's values (SlotOwn): their aggregate is the pass's when it is known */
 } Fuse;
+
+typedef struct SlotOwn
+{
+	int			combo;
+	int			slot;
+	int			arm;
+	int			agg;			/* the aggregate of the arm */
+	List	   *key;			/* that aggregate, apart from the slot it reads */
+} SlotOwn;
 
 /* the arm's join with what an arm may differ in left out: an inner join is a left join whose arm drops the tuples without a row (SAP_MATCHED), its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
 static List *
@@ -143,6 +157,52 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 	return true;
 }
 
+static SiftAggPred *
+pred_noid(const SiftAggPred *p)
+{
+	SiftAggPred *o = palloc(sizeof(SiftAggPred));
+
+	*o = *p;
+	o->id = 0;
+	o->desc = NULL;
+	if (p->nchild > 0)
+		o->child = palloc(p->nchild * sizeof(SiftAggPred *));
+	for (int i = 0; i < p->nchild; i++)
+		o->child[i] = pred_noid(p->child[i]);
+	return o;
+}
+
+/* an aggregate as a spec of its own: two aggregates of arms over the same combos are the same when these are equal */
+static List *
+agg_pack(const SiftAggAgg *a)
+{
+	SiftAggAgg	x = *a;
+	SiftAggSpec t = {.naggs = 1, .agg = &x};
+
+	x.filter = a->filter ? pred_noid(a->filter) : NULL;
+	x.desc = NULL;
+	return sift_aggspec_pack(&t);
+}
+
+/* the aggregate that a slot gives the ids for: the same in two arms when they are the same but for the slot they read */
+static List *
+slot_agg_key(const SiftAggAgg *a)
+{
+	SiftAggAgg	x = *a;
+
+	x.combo = x.slot = 0;
+	return agg_pack(&x);
+}
+
+static const SlotOwn *
+slot_owner(const Fuse *f, int combo, int slot)
+{
+	foreach_ptr(SlotOwn, o, f->owners)
+		if (o->combo == combo && o->slot == slot)
+			return o;
+	return NULL;
+}
+
 /* the combo of the arm in the pass, with the slots the arm asks for added to the pass's */
 static bool
 fuse_combo(Fuse *f, FuseArm *arm, int ci)
@@ -180,14 +240,23 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 	{
 		SiftAggSlot sl = mc->slot[s];
 		int			sat = 0;
+		List	   *own;
 
 		if (cm.col)
 			sl.expr = col_mutator(sl.expr, &cm);
-		while (sat < u->nslots && !(u->slot[sat].is_key == sl.is_key && u->slot[sat].direct == sl.direct && u->slot[sat].agg == sl.agg &&
-									equal(u->slot[sat].expr, sl.expr)))
+		own = sl.agg >= 0 ? slot_agg_key(&arm->s->agg[sl.agg]) : NIL;
+		while (sat < u->nslots && !(u->slot[sat].is_key == sl.is_key && u->slot[sat].direct == sl.direct && equal(u->slot[sat].expr, sl.expr) &&
+									(sl.agg < 0 ? u->slot[sat].agg < 0 : u->slot[sat].agg >= 0 && equal(slot_owner(f, at, sat)->key, own))))
 			sat++;
 		if (sat == u->nslots)
+		{
+			SlotOwn    *o = palloc(sizeof(SlotOwn));
+
+			*o = (SlotOwn) {at, sat, arm - f->arm, sl.agg, own};
+			if (sl.agg >= 0)
+				f->owners = lappend(f->owners, o);
 			u->slot[u->nslots++] = sl;
+		}
 		arm->slot[ci][s] = sat;
 	}
 	return true;
@@ -260,21 +329,6 @@ static bool
 agg_reads_combo(const SiftAggAgg *a)
 {
 	return (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG || (a->kind >= SAA_X_COUNT && a->kind <= SAA_X_AVG);
-}
-
-static SiftAggPred *
-pred_noid(const SiftAggPred *p)
-{
-	SiftAggPred *o = palloc(sizeof(SiftAggPred));
-
-	*o = *p;
-	o->id = 0;
-	o->desc = NULL;
-	if (p->nchild > 0)
-		o->child = palloc(p->nchild * sizeof(SiftAggPred *));
-	for (int i = 0; i < p->nchild; i++)
-		o->child[i] = pred_noid(p->child[i]);
-	return o;
 }
 
 /* the conjunct with its own ids in the pass (an executor state each) */
@@ -373,6 +427,89 @@ fuse_posts(Fuse *f)
 	return true;
 }
 
+/* does the expression run a plan (a sub-select, or a parameter an InitPlan sets); the Param 0 of a SAP_LUT is the leaf's value */
+static bool
+runs_plan(Node *n, void *lut)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
+		return true;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !(lut && ((Param *) n)->paramid == 0))
+		return true;
+	return expression_tree_walker(n, runs_plan, lut);
+}
+
+static bool
+pred_runs_plan(const SiftAggPred *p)
+{
+	if (p->expr && runs_plan(p->expr, (void *) (p->kind == SAP_LUT ? p : NULL)))
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_runs_plan(p->child[i]))
+			return true;
+	return false;
+}
+
+/*
+ * The aggregates of the pass: those of the arms when they have the same, else the union of them, each set updating its own (spec.setaggs). The
+ * sorted values of a percentile and the keys of GROUPING are numbered by the arm's own lists: arms with different lists cannot have them.
+ */
+static bool
+fuse_aggs(Fuse *f)
+{
+	const SiftAggSpec *a0 = &f->arm[0].a;
+	List	   *keys = NIL;
+	int			total = 0;
+	bool		same = true;
+
+	f->aggmap = palloc(f->n * sizeof(int *));
+	for (int i = 0; i < f->n; i++)
+	{
+		const SiftAggSpec *a = &f->arm[i].a;
+
+		total += a->naggs;
+		f->aggmap[i] = palloc(Max(a->naggs, 1) * sizeof(int));
+		for (int k = 0; k < a->naggs; k++)
+			f->aggmap[i][k] = k;
+		same &= a->naggs == a0->naggs;
+		for (int k = 0; same && k < a->naggs; k++)
+			same = equal(agg_pack(&a->agg[k]), agg_pack(&a0->agg[k]));
+	}
+	f->nagg = a0->naggs;
+	f->agg = a0->agg;
+	f->aggsets = NULL;
+	if (same)
+		return true;
+	f->nagg = 0;
+	f->agg = palloc(Max(total, 1) * sizeof(SiftAggAgg));
+	f->aggsets = palloc0(Max(total, 1) * sizeof(uint32));
+	for (int i = 0; i < f->n; i++)
+		for (int k = 0; k < f->arm[i].a.naggs; k++)
+		{
+			const SiftAggAgg *a = &f->arm[i].a.agg[k];
+			List	   *key = agg_pack(a);
+			int			at = 0;
+
+			if (a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC || a->kind == SAA_GROUPING || (a->filter && pred_runs_plan(a->filter)))
+				return false;
+			while (at < f->nagg && !equal(list_nth(keys, at), key))
+				at++;
+			if (at == f->nagg)
+			{
+				keys = lappend(keys, key);
+				f->agg[f->nagg] = *a;
+				f->agg[f->nagg].filter = a->filter ? pred_number(a->filter, &f->npreds) : NULL;
+				f->nagg++;
+			}
+			f->aggmap[i][k] = at;
+			f->aggsets[at] |= (uint32) 1 << i;
+		}
+	foreach_ptr(SlotOwn, o, f->owners)
+		f->u.combo[o->combo].slot[o->slot].agg = f->aggmap[o->arm][o->agg];
+	return true;
+}
+
 /* the arm over the joins and combos of the pass */
 static void
 fuse_adapt(Fuse *f, FuseArm *arm)
@@ -427,19 +564,6 @@ fuse_unpost(Fuse *f)
 	}
 }
 
-/* does the expression run a plan (a sub-select, or a parameter an InitPlan sets); the Param 0 of a SAP_LUT is the leaf's value */
-static bool
-runs_plan(Node *n, void *lut)
-{
-	if (n == NULL)
-		return false;
-	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
-		return true;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !(lut && ((Param *) n)->paramid == 0))
-		return true;
-	return expression_tree_walker(n, runs_plan, lut);
-}
-
 /*
  * does eval_pred test p on the rows of a chunk (the source and the joined tuples test the others); not one that runs a plan: the plan may read
  * the table with a node of its own that is another arm of the pass, which then waits for the pass
@@ -447,7 +571,7 @@ runs_plan(Node *n, void *lut)
 static bool
 routable(const SiftAggPred *p)
 {
-	if (p->expr && runs_plan(p->expr, (void *) (p->kind == SAP_LUT ? p : NULL)))
+	if (pred_runs_plan(p))
 		return false;
 	switch (p->kind)
 	{
@@ -647,6 +771,7 @@ static bool
 fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 {
 	f->n = n;
+	f->owners = NIL;
 	f->arm = palloc0(n * sizeof(FuseArm));
 	memset(&f->u, 0, sizeof(f->u));
 	f->u.join = palloc0(SIFT_AGG_MAX_JOINS * sizeof(SiftAggJoin));
@@ -689,7 +814,7 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 	}
 	for (int i = 0; i < n; i++)
 		fuse_adapt(f, &f->arm[i]);
-	if (!fuse_posts(f) || !fuse_split(f))
+	if (!fuse_posts(f) || !fuse_split(f) || !fuse_aggs(f))
 		return false;
 	fuse_unpost(f);
 	return true;
@@ -775,7 +900,7 @@ fuse_candidate(const SiftAggSpec *s)
 	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0 && s->nprepost == 0;
 }
 
-/* what the arms must share: everything but their keys */
+/* what the arms must share: everything but their keys, aggregates and the conjuncts over the rows (fuse_aggs, fuse_split) */
 static List *
 fuse_shape(const SiftAggSpec *a)
 {
@@ -790,12 +915,8 @@ fuse_shape(const SiftAggSpec *a)
 	t.desc_quals = NULL;
 	t.npred = 0;
 	t.pred = NULL;
-	t.agg = palloc(Max(a->naggs, 1) * sizeof(SiftAggAgg));
-	for (int i = 0; i < a->naggs; i++)
-	{
-		t.agg[i] = a->agg[i];
-		t.agg[i].filter = a->agg[i].filter ? pred_noid(a->agg[i].filter) : NULL;
-	}
+	t.naggs = 0;
+	t.agg = NULL;
 	return sift_aggspec_pack(&t);
 }
 
@@ -810,15 +931,18 @@ sift_aggspec_fusable(SiftAggSpec *const *m, int n, bool preagg)
 	Fuse		f;
 	List	   *shape,
 			   *keys;
+	bool		own;
 
 	for (int i = 0; i < n; i++)
 		if (!fuse_candidate(m[i]))
 			return false;
 	if (!fuse_build(m, n, &f))
 		return false;
+	own = f.aggsets != NULL;
 	for (int i = 0; i < n; i++)
-		if (f.resid[i] && (preagg || f.u.njoin == 0))
-			return false;
+		own |= f.resid[i] != NULL;
+	if (own && (preagg || f.u.njoin == 0))
+		return false;
 	keys = fused_keys(&f, NULL);
 	if (list_length(keys) >= SIFT_AGG_MAX_KEYS || !fuse_key_slots(&f, keys))
 		return false;
@@ -830,7 +954,7 @@ sift_aggspec_fusable(SiftAggSpec *const *m, int n, bool preagg)
 }
 
 SiftAggSpec *
-sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap)
+sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 {
 	Fuse		f;
 	SiftAggSpec *spec = palloc(sizeof(SiftAggSpec));
@@ -860,6 +984,10 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap)
 		spec->est_groups += m[i]->est_groups;
 	}
 	spec->npost = f.npost;
+	spec->naggs = f.nagg;
+	spec->agg = f.agg;
+	spec->setaggs = f.aggsets;
+	*aggmap = f.aggmap;
 	fuse_preds(&f, spec);
 	spec->npreds_total = f.npreds;
 	spec->nprepost = 0;

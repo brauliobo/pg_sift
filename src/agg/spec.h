@@ -440,6 +440,7 @@ typedef struct SiftAggSpec
 	int			nprepost;		/* prefix applied inside the nullable input, before its preserved join */
 	SiftAggPred **post;			/* SAP_COMBO nodes */
 	uint32	   *postsets;		/* per post conjunct: the sets of a fused pass that apply it (bit i: set i); 0: all of them */
+	uint32	   *setaggs;		/* per aggregate of a fused pass: the sets that update it (bit i: set i); NULL: all of them update all */
 	SiftAggPred **setpred;		/* per set of a fused pass: the conjuncts its arm has beyond those of pred, as one node (NULL: none); NULL: no set has any */
 	int			nvleaf;			/* leaves after the source's: row level scalars read from a key of an object leaf */
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
@@ -585,7 +586,7 @@ extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 
 /* Arms that read the same rows for the same aggregates and differ in their keys, the leaves and slots those read: can one scan serve them (sets of one spec; keymap[i][j] the key of the fused spec that is key j of arm i) */
 extern bool sift_aggspec_fusable(SiftAggSpec *const *m, int n, bool preagg);
-extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap);
+extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);
 
 #endif							/* SIFT_AGGSPEC_H */
