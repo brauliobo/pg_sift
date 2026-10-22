@@ -21,6 +21,9 @@ extern PGDLLIMPORT int sift_agg_param_set_size;
 extern PGDLLIMPORT bool sift_agg_key_skew;
 extern PGDLLIMPORT int sift_agg_lookup_max_rows;
 
+/* agg/first.c: does a unique index of the table hold only columns among atts */
+extern bool sift_agg_unique_key(Oid relid, int nkey, const int *atts);
+
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);

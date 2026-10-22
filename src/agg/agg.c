@@ -879,7 +879,7 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	ExplainState child;
 	List       *own;
 	bool        correlated = s->join[i].params != NIL;
-	char       *group = correlated ? "Correlated Lookup" : "Lookup Plan";
+	char       *group = s->join[i].first.ok && s->join[i].first.use ? "First Row Lookup" : correlated ? "Correlated Lookup" : "Lookup Plan";
 	char       *label = psprintf("%s %d", group, i + 1);
 
 	ExplainOpenGroup(group, label, true, es);
@@ -931,6 +931,8 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
 	if (c->ncached > 0)
 		ExplainPropertyInteger("Cached Lookup Tables", NULL, c->ncached, es);
+	if (c->nfirst > 0)
+		ExplainPropertyInteger("First Row Lookup Tables", NULL, c->nfirst, es);
 	if (c->nsemi > 0)
 	{
 		ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);

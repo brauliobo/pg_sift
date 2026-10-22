@@ -16,6 +16,7 @@
 #include "catalog/pg_collation.h"
 #include "commands/defrem.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_inherits.h"
 #include "miscadmin.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
@@ -346,6 +347,113 @@ child_scan_path(RelOptInfo *rel, JoinCtx *jc)
 	jc->cpath = (Path *) p;
 }
 
+/* is the equality `column = value` one the lookup of a key makes, with the column's and the value's types of one class? */
+static bool
+first_key_ok(OpExpr *op, Var *v, Oid et)
+{
+	Oid			lt,
+				rt;
+	TypeClass	tc;
+
+	if (builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ)
+		return false;
+	tc = type_class(lt);
+	if (lt == TEXTOID)
+		return rt == TEXTOID && (v->vartype == TEXTOID || v->vartype == VARCHAROID) && (et == TEXTOID || et == VARCHAROID) &&
+			OidIsValid(op->inputcollid) && get_collation_isdeterministic(op->inputcollid);
+	return (tc == TC_INT || tc == TC_DATE) && tc == type_class(rt) && tc == type_class(v->vartype) && tc == type_class(et);
+}
+
+/*
+ * `SELECT columns FROM table WHERE column = parameter [AND ...] LIMIT 1` over a table that holds each key once (a unique index on columns
+ * among those compared) returns the key's row, whatever plan it has: the scan can read the table as a lookup table (agg/first.c). Anything
+ * else the query does (a condition, an order, a second table, an offset, a row lock) leaves the child as it is.
+ */
+static void
+first_lookup(AggCtx *c, JoinCtx *jc)
+{
+	Query	   *q = jc->subroot->parse;
+	SiftAggFirst *f = &jc->j.first;
+	Const	   *lim = (Const *) q->limitCount;
+	RangeTblEntry *rte;
+	RelOptInfo *brel;
+	List	   *conj;
+	int			atts[SIFT_AGG_MAX_JKEYS];
+
+	memset(f, 0, sizeof(*f));
+	if (jc->j.scoped || q->commandType != CMD_SELECT || q->setOperations != NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs ||
+		q->hasSubLinks || q->hasForUpdate || q->hasRecursive || q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL ||
+		q->sortClause != NIL || q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
+		q->limitOption != LIMIT_OPTION_COUNT || lim == NULL || !IsA(lim, Const) || lim->constisnull || lim->consttype != INT8OID ||
+		DatumGetInt64(lim->constvalue) != 1 || list_length(q->rtable) != 1 || list_length(q->targetList) > SIFT_AGG_MAX_FOUT ||
+		q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || q->jointree->quals == NULL)
+		return;
+	if (!IsA(linitial(q->jointree->fromlist), RangeTblRef) || ((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex != 1)
+		return;
+	rte = linitial_node(RangeTblEntry, q->rtable);
+	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL ||
+		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || brel->tuples > sift_agg_lookup_max_rows)
+		return;
+	conj = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
+	if (list_length(conj) > SIFT_AGG_MAX_JKEYS)
+		return;
+	foreach_ptr(Node, qual, conj)
+	{
+		OpExpr	   *op = (OpExpr *) qual;
+		Node	   *l,
+				   *r;
+		Var		   *v;
+		Param	   *p;
+		int			pos = -1;
+
+		if (!IsA(qual, OpExpr) || list_length(op->args) != 2)
+			return;
+		l = strip_relabel(linitial(op->args));
+		r = strip_relabel(lsecond(op->args));
+		if (IsA(l, Var) && IsA(r, Param))
+		{
+			v = (Var *) l;
+			p = (Param *) r;
+		}
+		else if (IsA(r, Var) && IsA(l, Param))
+		{
+			v = (Var *) r;
+			p = (Param *) l;
+		}
+		else
+			return;
+		if (v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 || p->paramkind != PARAM_EXEC)
+			return;
+		for (int i = 0; i < f->nkey; i++)
+			if (f->keyatt[i] == v->varattno)
+				return;
+		for (int i = 0; i < list_length(jc->j.params); i++)
+			if (list_nth_int(jc->j.params, i) == p->paramid)
+				pos = i;
+		if (pos < 0 || contain_volatile_functions(list_nth(jc->args, pos)) || !first_key_ok(op, v, exprType(strip_relabel(list_nth(jc->args, pos)))))
+			return;
+		f->keyatt[f->nkey] = v->varattno;
+		f->keytype[f->nkey] = v->vartype;
+		f->keyarg[f->nkey++] = pos;
+	}
+	for (int k = 0; k < f->nkey; k++)
+		atts[k] = f->keyatt[k];
+	if (!sift_agg_unique_key(rte->relid, f->nkey, atts))
+		return;
+	foreach_node(TargetEntry, te, q->targetList)
+	{
+		Var		   *v = (Var *) te->expr;
+
+		if (te->resjunk || te->resno > SIFT_AGG_MAX_FOUT)
+			return;
+		f->col[te->resno - 1] = IsA(v, Var) && v->varno == 1 && v->varlevelsup == 0 && v->varattno > 0 ? v->varattno : 0;
+		f->ncol = Max(f->ncol, te->resno);
+	}
+	f->relid = rte->relid;
+	f->ok = true;
+	jc->frows = Max(brel->tuples, 1.0);
+}
+
 /*
  * A sub-select or function that reads the query's other tables is planned in a query level of its own, with what it reads of them as
  * parameters: the scan gives it their values for each distinct input and runs the plan PostgreSQL makes of it (an Append of the arms of
@@ -398,6 +506,8 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		return false;
 	jc->j.sig = sift_agg_child_sig((Node *) q, jc->j.params);
 	child_scan_path(rel, jc);
+	if (e->rtekind == RTE_SUBQUERY && x.calls == NIL)
+		first_lookup(c, jc);
 	return true;
 }
 
@@ -640,6 +750,8 @@ planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *
 			jc->subroot = done->subroot;
 			jc->j.params = done->j.params;
 			jc->j.sig = done->j.sig;
+			jc->j.first = done->j.first;
+			jc->frows = done->frows;
 			jc->args = done->args;
 			return done->cpath != NULL;
 		}
