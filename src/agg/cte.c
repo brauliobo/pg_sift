@@ -57,18 +57,33 @@ has_column_index(Oid relid)
 	return found;
 }
 
-/* a CTE that is read twice or more and selects from a table that has a column index */
+/* does the query select from a table that has a column index, itself or through a CTE of the same WITH (which PostgreSQL inlines when one query reads it)? */
 static bool
-shared_cte_over_column_index(CommonTableExpr *cte)
+reads_indexed_table(Query *q, List *siblings, int depth)
+{
+	foreach_node(RangeTblEntry, rte, q->rtable)
+	{
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+			return true;
+		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != 1 || depth <= 0)
+			continue;
+		foreach_node(CommonTableExpr, sib, siblings)
+			if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query) &&
+				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1))
+				return true;
+	}
+	return false;
+}
+
+/* a CTE that is read twice or more and selects from a table that has a column index; siblings: the CTEs of its WITH */
+static bool
+shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 {
 	Query	   *q = castNode(Query, cte->ctequery);
 
 	if (cte->cterecursive || cte->cterefcount < 2 || cte->ctematerialized != CTEMaterializeDefault || q->commandType != CMD_SELECT)
 		return false;
-	foreach_node(RangeTblEntry, rte, q->rtable)
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
-			return true;
-	return false;
+	return reads_indexed_table(q, siblings, 4);
 }
 
 /* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
@@ -87,7 +102,7 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 	if (!IsA(n, Query))
 		return expression_tree_walker(n, shared_cte_walker, w);
 	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
-		if (shared_cte_over_column_index(cte))
+		if (shared_cte_over_column_index(cte, ((Query *) n)->cteList))
 		{
 			if (!w->inline_them)
 				return true;
