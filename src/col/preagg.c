@@ -25,8 +25,6 @@
 #include "col/preagg_int.h"
 #include "core/cmp.h"
 
-/* ---------- varints ---------- */
-
 static void
 put_u(StringInfo out, uint64 v)
 {
@@ -57,8 +55,6 @@ put_zz128(StringInfo out, SiftCI128 v)
 	appendStringInfoChar(out, (char) (uint8) u);
 }
 
-/* ---------- exact leaf sums ---------- */
-
 static inline bool
 is_null(const uint64 *nulls, uint32 i)
 {
@@ -81,8 +77,6 @@ sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a)
 			a->flags |= SIFT_CAGG_SUMSQ_OVF;
 	}
 }
-
-/* ---------- the cube of a unit ---------- */
 
 typedef struct GroupKey
 {
@@ -333,8 +327,6 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	pfree(sc.sf);
 	pfree(sc.si);
 }
-
-/* ---------- the rollup of a list ---------- */
 
 typedef struct RuBuild
 {

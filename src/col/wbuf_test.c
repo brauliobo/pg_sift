@@ -45,8 +45,6 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 #define ID_MUL		UINT64CONST(0x9E3779B1)		/* odd: id -> position is a bijection of ID_BITS bits */
 #define ULL(x)		((unsigned long long) (x))
 
-/* ---------- schema and generator ---------- */
-
 static const SiftColSchema *
 test_schema(void)
 {
@@ -301,8 +299,6 @@ check_row(uint64 seed, const SiftColRow *got, bool exact)
 	return id;
 }
 
-/* ---------- helpers ---------- */
-
 static const char *
 kind_name(SiftSegKind kind)
 {
@@ -330,8 +326,6 @@ set_hash(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
 	meta->analyzer_hash = *(uint32 *) arg;
 }
-
-/* ---------- SQL functions ---------- */
 
 /* (index regclass, hash_xor int4 DEFAULT 0): the index now carries the test schema's hash (xor hash_xor: a stale definition) */
 Datum

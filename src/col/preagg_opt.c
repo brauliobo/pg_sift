@@ -6,8 +6,6 @@
 
 #include "col/preagg.h"
 
-/* ---------- leaves that can be dims and measures ---------- */
-
 /* a scalar leaf of the top level, or of a list of the top level: a list inside a list has no cube */
 static bool
 depth1(const SiftColSchema *s, const SiftColDef *d)
@@ -52,8 +50,6 @@ is_list(const SiftColSchema *s, int c)
 {
 	return s->cols[c].kind == SIFT_COLK_GROUP && s->cols[c].parent < 0;
 }
-
-/* ---------- the option ---------- */
 
 /* The default measures of a dim: the measures of its list, in order of usefulness: decimals and floats (money, scores), then the integers */
 static int
