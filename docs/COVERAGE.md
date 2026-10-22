@@ -29,13 +29,13 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on 2b4d8ebf (2026-10-22) against v3.2.1.
+them (the nightly job `coverage-pct` verifies the file), measured on 45491326 (2026-10-22) against v3.2.1.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 2b4d8ebf |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 45491326 |
 |---|---|---|---|---|
 | **all** | 295 | 4 | 56.7% | 82.8% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
@@ -56,26 +56,26 @@ Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design),
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 2b4d8ebf |
+| Sub-family | Variants | By design | Covered at v3.2.1 | Covered at 45491326 |
 |---|---|---|---|---|
-| **all** | 514 | 34 | 87.7% | 93.1% |
+| **all** | 516 | 34 | 87.3% | 94.2% |
 | DISTINCT | 32 | 0 | 90.6% | 90.6% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
 | aggregate DISTINCT | 34 | 0 | 100.0% | 100.0% |
 | fixtures: distinct_on | 17 | 0 | 100.0% | 100.0% |
-| fixtures: flat | 81 | 0 | 96.3% | 96.3% |
-| fixtures: join | 81 | 0 | 88.9% | 97.5% |
+| fixtures: flat | 81 | 0 | 96.3% | 97.5% |
+| fixtures: join | 83 | 0 | 86.7% | 97.6% |
 | fixtures: part | 32 | 0 | 81.2% | 93.8% |
 | fixtures: trap | 11 | 0 | 9.1% | 9.1% |
 | join child | 33 | 0 | 78.8% | 97.0% |
 | join condition | 64 | 4 | 90.0% | 90.0% |
 | join kind | 17 | 0 | 94.1% | 100.0% |
-| stable or immutable function | 24 | 0 | 83.3% | 83.3% |
+| stable or immutable function | 24 | 0 | 83.3% | 100.0% |
 | table kind | 34 | 0 | 76.5% | 100.0% |
 | volatile function | 24 | 24 | -% | -% |
 
-Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 7, `join_condition` 4, `outer_join` 3, `volatile` 24 (by design).
+Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `distinct_on` 6 (by design), `group_key` 3, `join_condition` 4, `outer_join` 3, `volatile` 24 (by design).
 
 238 rows: 178 Yes, 23 Partly, 27 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
@@ -175,7 +175,7 @@ Variants that keep the normal plan, by refusal slug: `cost` 4 (by design), `dist
 | K12 | Group keys | SELECT DISTINCT of columns or expressions the index holds | Yes | sift_col | `SELECT DISTINCT status FROM orders` | A group-by with no aggregate: the distinct stage of the planner takes the scan; ORDER BY and LIMIT stay above it. Not for a SELECT DISTINCT over a grouped or windowed query. Proof: fixture `k_select_distinct_one`, fixture `k_select_distinct_multi`, test `agg_distinct`. |
 | K13 | Group keys | Key or filter expression over an integer column with a wide range of values (x % 7 of an int8) | Yes | sift_col, sift_table | `SELECT i8 % 7, count(*) FROM t GROUP BY 1` | Evaluated by PostgreSQL per distinct value that occurs, not per value of the range. Proof: fixture `e_int8_expr`. |
 | K14 | Group keys | DISTINCT ON (columns) | Partly (the ORDER BY holds every column of a unique index of the table (NOT NULL, or NULLS NOT DISTINCT), at most 4 sort columns after the ON columns, and the best rows fit the memory of a hash aggregate) | sift_col, sift_table | `SELECT DISTINCT ON (store_id) store_id, id, placed_at FROM orders ORDER BY store_id, placed_at DESC, id` | The first row of each group by the ORDER BY is kept while the rows pass, with no sort; the select list is columns and expressions of them. Without the unique index the tie-break is the choice of the sort of PostgreSQL: K17. Proof: fixture `do_latest`, fixture `do_earliest`, fixture `do_mixed_keys`, fixture `do_two_keys`, fixture `do_join`, fixture `do_t_misc`, test `agg_distinct_on`. |
-| K15 | Group keys | Constant in the GROUP BY list (GROUP BY 1, 2 over a literal and a key) | Yes | sift_col, sift_table | `SELECT 'cur'::text AS label, country_code, count(*) FROM orders GROUP BY 1, 2` | A constant adds no group: it is dropped from the keys and output as it is. Proof: fixture `k_group_const`. |
+| K15 | Group keys | Constant or stable expression that reads no column in the GROUP BY list (GROUP BY 1, 2 over a literal and a key; alone) | Yes | sift_col, sift_table | `SELECT 'cur'::text AS label, country_code, count(*) FROM orders GROUP BY 1, 2` | A constant next to another key adds no group: it is dropped from the keys and output as it is. Alone, or as a stable expression (current_setting(...), now()), it is one group, evaluated once; a scan with no rows gives no group, as in the normal plan. Proof: fixture `k_group_const`, fixture `k_const_stable`, fixture `k_const_literal`, fixture `k_const_empty`, fixture `k_const_with_key`, fixture `k_const_join`. |
 | K16 | Group keys | sift_table: the expression of a stored generated column (GENERATED ALWAYS AS (date_trunc('month', ts)::date) STORED) as a key or in a filter | Yes | sift_table | `SELECT date_trunc('month', ts)::date, sum(v) FROM t GROUP BY 1` | The column is read, with its pre-aggregates, where the query writes the expression; a sift_col index does the same for an index expression. The generation expression must be the query's (same functions and casts). Proof: test `tbl_generated`. |
 | K17 | Group keys | DISTINCT ON (columns) the ORDER BY of which is not a total order, or whose values cannot be kept | No (no unique column in the ORDER BY (a tie is the choice of the sort), a volatile or array value, or the groups would not fit the hash memory) | sift_col, sift_table | `SELECT DISTINCT ON (store_id) store_id, placed_at FROM orders ORDER BY store_id, placed_at DESC` | The normal plan stays; add the primary key columns to the ORDER BY to get the scan. Proof: fixture `t_distinct_on`, fixture `do_plain_ties`, fixture `do_plain_cap`, fixture `do_plain_array`, fixture `do_plain_volatile`, fixture `pa_distinct_on`. |
 | P01 | Predicates | Equality, range, BETWEEN, <> on integers, dates, text, numeric(p<=18) | Yes | sift_col, sift_table | `SELECT count(*) FROM orders WHERE store_id BETWEEN 5 AND 50 AND placed_at >= DATE '2024-01-01'` | Range tests on the encoded values; zone maps skip whole units on a clustered column. Proof: fixture `q_in_between`, fixture `z_zone_ranges`. |
