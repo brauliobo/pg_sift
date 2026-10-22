@@ -225,6 +225,8 @@ typedef struct AggExec
 	uint32	   *cu32;
 	uint64	   *c64;
 	uint8	   *okb;
+	int64	  **ncnt;			/* the counters that take every tuple of the chunk (seen, the n of the aggregates that leave none out): counted in one pass */
+	int			nncnt;
 	uint8	   *nb;
 	double	   *vstk;			/* float8 aggregate arguments: SIFT_AGG_MAX_VX vectors */
 	sift_i128  *nstk;			/* numeric programs: SIFT_AGG_MAX_VX vectors */
