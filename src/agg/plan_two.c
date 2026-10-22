@@ -710,6 +710,20 @@ two_arm_terms(TwoLevel *t, int k)
 	return true;
 }
 
+/* a column every arm has as NULL is a key no arm groups by: no group has an id for it, and the scan emits NULL */
+static void
+null_key(SortGroupClause *sgc, Node *e, SiftAggKey *k)
+{
+	/* the key has no program: no arm selects it, so it is never evaluated */
+	k->kind = SAK_NUM;
+	k->leaf = -1;
+	k->typid = exprType(e);
+	k->typmod = exprTypmod(e);
+	k->collid = exprCollation(e);
+	k->eqop = sgc->eqop;
+	k->desc = "NULL";
+}
+
 /* the outer keys: columns that every arm groups by or has as NULL */
 static bool
 two_keys(TwoLevel *t)
@@ -745,7 +759,9 @@ two_keys(TwoLevel *t)
 			t->arms[k].kidx = lappend_int(t->arms[k].kidx, s->nkeys);
 			t->arms[k].out->keymask |= (uint32) 1 << s->nkeys;
 		}
-		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
+		if (def == NULL)
+			null_key(sgc, e, &s->key[s->nkeys]);
+		else if (!compile_key(c, sgc, def, &s->key[s->nkeys]))
 			return false;
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
 		t->ow.keys = lappend(t->ow.keys, e);
