@@ -171,6 +171,7 @@ typedef struct TopFetch
 struct SiftTopN
 {
 	int			limit;			/* rows the heap holds; 0: none wanted (a LIMIT that leaves nothing) */
+	bool		totals;			/* the aggregates over every row that passes are computed in this scan (TOPN_TOTALS): all units are read */
 	bool		all;			/* no bound the heap can hold (NULL, past the cap, more keys): every row that passes is kept, sorted by the keys and the TID at the end */
 	int64	   *mem;			/* ... in memory while they fit work_mem: nkey keys, the NULL flags (a bit for each key), the TID's number, for each row */
 	int64		nmem;
@@ -384,6 +385,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 	if (flags & TOPN_SKIP_OFFSET)
 		t->skip = offset;
 	t->all = !bounded;
+	t->totals = (flags & TOPN_TOTALS) != 0;
 	if (t->all && t->nblob > 0)
 		t->sort = sort_begin(t);		/* byte strings do not fit the array of integers: the tuplesort holds them, in memory up to work_mem */
 	else if (t->all)
@@ -1646,7 +1648,7 @@ key_zone(const TopKey *k, const SiftSrcZone *z)
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
-	return !t->all && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
+	return !t->all && !t->totals && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
 }
 
 /*
@@ -1990,7 +1992,7 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 bool
 sift_topn_parallel_ok(const SiftTopN *t)
 {
-	return !t->all && t->limit > 0;
+	return !t->all && !t->totals && t->limit > 0;
 }
 
 void

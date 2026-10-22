@@ -137,6 +137,8 @@ typedef struct AggExec
 	uint32	   *glist;
 	uint32		nglist;
 	uint32		gpos;
+	Datum	   *total_val;		/* a top-N with totals (TOPN_TOTALS): the aggregates of the one group, once the scan is done */
+	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
 	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */

@@ -489,18 +489,28 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 
 /*
  * The scan tuple of the top-N is the heap columns the output reads, in custom_scan_tlist: their attribute numbers go in the spec, and
- * the node's tlist (PostgreSQL's projection) computes the rest from them.
+ * the node's tlist (PostgreSQL's projection) computes the rest from them. *funcs: the window functions of the output, each once; they are
+ * not columns of the heap (topn_windows).
  */
 static bool
-topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
+topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs)
 {
 	List	   *vars;
 
 	if (contain_volatile_functions((Node *) target->exprs))
 		return agg_refuse_on(TOPN_SHAPE, "the select list calls a volatile function");
-	vars = pull_var_clause((Node *) target->exprs, PVC_RECURSE_PLACEHOLDERS);
-	foreach_node(Var, v, vars)
+	vars = pull_var_clause((Node *) target->exprs, PVC_RECURSE_PLACEHOLDERS | PVC_INCLUDE_WINDOWFUNCS);
+	foreach_ptr(Node, n, vars)
 	{
+		Var		   *v;
+
+		if (IsA(n, WindowFunc))
+		{
+			if (!list_member(*funcs, n))
+				*funcs = lappend(*funcs, n);
+			continue;
+		}
+		v = castNode(Var, n);
 		if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0)
 			return agg_refuse_on(TOPN_SHAPE, "the select list reads a column that is not of the scanned table");
 		if (list_member(*scan_tlist, v) || tlist_member((Expr *) v, *scan_tlist))
@@ -509,6 +519,62 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
 			return agg_refuse_on(TOPN_SHAPE, "the select list reads more columns than a heap tuple holds");
 		attno[list_length(*scan_tlist)] = v->varattno;
 		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(v), list_length(*scan_tlist) + 1, NULL, false));
+	}
+	return true;
+}
+
+/* Is the window the whole set of rows: no PARTITION BY and no ORDER BY (every row is a peer of every other), and a frame that is not cut (the default one ends at the last peer) */
+static bool
+window_whole_set(WindowClause *wc)
+{
+	return wc->partitionClause == NIL && wc->orderClause == NIL &&
+		(!(wc->frameOptions & FRAMEOPTION_NONDEFAULT) ||
+		 (wc->frameOptions & (FRAMEOPTION_START_UNBOUNDED_PRECEDING | FRAMEOPTION_END_UNBOUNDED_FOLLOWING | FRAMEOPTION_EXCLUSION)) ==
+		 (FRAMEOPTION_START_UNBOUNDED_PRECEDING | FRAMEOPTION_END_UNBOUNDED_FOLLOWING));
+}
+
+/* The aggregate a window function calls, as the compile of the scan reads it */
+static Aggref *
+window_aggref(WindowFunc *wf)
+{
+	Aggref	   *a = makeNode(Aggref);
+
+	a->aggfnoid = wf->winfnoid;
+	a->aggtype = wf->wintype;
+	a->aggcollid = wf->wincollid;
+	a->inputcollid = wf->inputcollid;
+	a->aggkind = AGGKIND_NORMAL;
+	a->aggsplit = AGGSPLIT_SIMPLE;
+	a->aggstar = wf->winstar;
+	a->aggfilter = wf->aggfilter;
+	a->location = wf->location;
+	foreach_ptr(Expr, arg, wf->args)
+	{
+		a->args = lappend(a->args, makeTargetEntry(arg, foreach_current_index(arg) + 1, NULL, false));
+		a->aggargtypes = lappend_oid(a->aggargtypes, exprType((Node *) arg));
+	}
+	return a;
+}
+
+/*
+ * The window functions of the output are aggregates over the whole set of rows that pass (`count(*) OVER ()`, the page of a list and its total): the
+ * scan computes them as it does an aggregate with no GROUP BY, from every row that passes, not only those of the heap, and the node gives the result
+ * after the columns of the heap in every row. A window with PARTITION BY, ORDER BY or a frame that cuts the set, or a function that is not an
+ * aggregate (row_number, rank, first_value, ...), keeps the normal plan.
+ */
+static bool
+topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tlist)
+{
+	s->key = palloc0(sizeof(SiftAggKey));
+	s->agg = palloc0(Max(list_length(funcs), 1) * sizeof(SiftAggAgg));
+	foreach_ptr(WindowFunc, wf, funcs)
+	{
+		if (!wf->winagg)
+			return agg_refuse_f(TOPN_SHAPE, "%s() OVER is not an aggregate: only aggregates over the whole set are computed with the top-N", get_func_name(wf->winfnoid));
+		if (!compile_agg(c, window_aggref(wf), &s->agg[s->naggs], s->naggs))
+			return agg_refuse_f(AGGREGATE, "%s OVER () is not an aggregate the scan computes over its arguments and filter", get_func_name(wf->winfnoid));
+		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(wf), list_length(*scan_tlist) + 1, NULL, false));
+		s->naggs++;
 	}
 	return true;
 }
@@ -613,25 +679,53 @@ topn_query_ok(PlannerInfo *root, double *count, double *offset)
 		agg_refused_on(TOPN_SHAPE, "LIMIT and OFFSET are not constants or parameters, leave no row, or the limit has ties");
 		return false;
 	}
-	if (parse->hasWindowFuncs || parse->distinctClause || parse->setOperations)
+	if (parse->distinctClause || parse->setOperations)
 	{
-		agg_refused_on(TOPN_SHAPE, "the query has a window function, DISTINCT or a set operation");
+		agg_refused_on(TOPN_SHAPE, "the query has DISTINCT or a set operation");
 		return false;
 	}
+	foreach_node(WindowClause, wc, parse->windowClause)
+		if (!window_whole_set(wc))
+		{
+			agg_refused_on(TOPN_SHAPE, "a window has PARTITION BY, ORDER BY or a frame that is not all the rows");
+			return false;
+		}
 	return true;
 }
 
-void
-topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
+/* The rel the rows come from: the window stage has no relids of its own, and its paths read the rel of the scan (or join) below the WindowAgg nodes */
+static RelOptInfo *
+window_input(RelOptInfo *rel)
 {
+	Path	   *p = rel->cheapest_total_path;
+
+	while (p != NULL && bms_is_empty(p->parent->relids))
+	{
+		if (IsA(p, WindowAggPath))
+			p = ((WindowAggPath *) p)->subpath;
+		else if (IsA(p, ProjectionPath))
+			p = ((ProjectionPath *) p)->subpath;
+		else
+			p = NULL;
+	}
+	return p ? p->parent : NULL;
+}
+
+void
+topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
+{
+	RelOptInfo *input_rel = window_rel;
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
 	FromScan	fs = {.ok = true};
 	SiftAggSpec *s;
 	StringInfoData txt;
-	List	   *scan_tlist = NIL;
-	int			nworkers;
+	List	   *scan_tlist = NIL,
+			   *funcs = NIL;
+	int			nworkers,
+				nout,
+				flags;
 	uint64		tlo,
 				thi;
 	int		   *leaf,
@@ -655,6 +749,11 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	agg_arm_candidate();
 	if (!topn_query_ok(root, &count, &offset))
 		return;
+	if (parse->hasWindowFuncs && (input_rel = window_input(window_rel)) == NULL)
+	{
+		agg_refused_on(TOPN_SHAPE, "the window functions are not over the rows of one scan");
+		return;
+	}
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	if (c->func_rti != 0 || !topn_lefts_ok(fs.lefts) ||
@@ -704,11 +803,14 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		}
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
-	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno))
+	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno, &funcs))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
+	nout = list_length(scan_tlist);
+	if (!topn_windows(c, s, funcs, &scan_tlist))
+		return;
 	if (!spec_finish(c, s, root, input_rel, NIL))
 		return;
 	if (!topn_joins_ok(c, s))
@@ -719,23 +821,25 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	rows = count + offset;
 	/* the Limit node throws the first OFFSET rows away unread: when the output is the scan tuple, they are not read from the heap */
 	foreach_ptr(Expr, e, target->exprs)
-		skip_offset &= IsA(e, Var);
+		skip_offset &= IsA(e, Var) || IsA(e, WindowFunc);
 	c->topn_fetch = Min(skip_offset ? count : rows, Max(input_rel->rows, 1.0));
 	record_deps(root, parse->limitCount);
 	record_deps(root, parse->limitOffset);
 	s->desc_topn = txt.data;
 
 	/* the heap holds the bound, or the scan sorts every row that passes: a heap of many rows costs more than the sort, so both are priced */
+	flags = (skip_offset ? TOPN_SKIP_OFFSET : 0) | (s->naggs > 0 ? TOPN_TOTALS : 0);
 	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
-		c->topn_frac = topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &xf[0], NULL),
-									 leaf[0], input_rel->rows, (int64) rows);
-		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, list_length(scan_tlist), attno, skip_offset ? TOPN_SKIP_OFFSET : 0,
-								 copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		/* totals read every unit: no zone leaves one out */
+		c->topn_frac = s->naggs > 0 ? 1.0 :
+			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &xf[0], NULL),
+						  leaf[0], input_rel->rows, (int64) rows);
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
-		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers */
-		nworkers = c->joins == NIL ? parallel_workers(c, s, input_rel, output_rel) : 0;
+		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
+		nworkers = c->joins == NIL && s->naggs == 0 ? parallel_workers(c, s, input_rel, output_rel) : 0;
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 		if (rows <= TOPN_SORT_ROWS)
@@ -743,7 +847,6 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	}
 	c->topn_sorted = true;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, list_length(scan_tlist), attno, (skip_offset ? TOPN_SKIP_OFFSET : 0) | TOPN_SORT,
-							 copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, nout, attno, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 }
