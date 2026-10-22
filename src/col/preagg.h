@@ -107,6 +107,7 @@ typedef struct SiftCPaggSpec
 	bool		nolookup;				/* the option dict_lookup is off: the dictionaries are written in the compact form (column format minor 14) */
 	bool		pres[SIFT_COL_MAX_COLS];	/* the leaves that keep every distinct key of a unit as a bitmap (option key_presence, column format minor 15; col/setsum.h) */
 	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
+	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;

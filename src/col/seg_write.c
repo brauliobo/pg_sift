@@ -4,6 +4,7 @@
 
 #include "core/host.h"
 
+#include "col/point.h"
 #include "col/preagg.h"
 #include "col/runs.h"
 #include "col/seg.h"
@@ -12,6 +13,19 @@
 #include "col/ver.h"
 #include "core/limits.h"
 #include "core/live.h"
+
+/* The entries of the point directory of one leaf: the key and the row number (in the segment) of each row with a value; bad: some unit cannot be listed (an overflow value, inline strings) */
+typedef struct PointAcc
+{
+	int64	   *key;
+	uint32	   *row;
+	uint32		n;
+	uint32		cap;
+	bool		bad;
+	bool		want;			/* the index names the leaf (option point_columns) */
+	uint32		nslots;			/* the table, once built at the end of the segment (0: none) */
+	StringInfoData tab;
+} PointAcc;
 
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
@@ -56,6 +70,8 @@ struct SiftColSegWriter
 	bool		anypres;		/* some unit keeps the presence of a leaf (minor 15) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
+	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
+	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	bool	   *lookup;			/* [ncols] the dictionary is written in the form that is searched in place (minor 14) */
 	StringInfoData buf;
@@ -216,6 +232,56 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 		w->format = SIFT_COL_FORMAT_SUPER;
 	if (w->setting >= SIFT_COL_FORMAT_RUNS && w->run == NULL)
 		w->run = acc_new(w, spec->run);
+	/* the point directories are written with the dictionaries, minor 14 */
+	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (spec->point[c])
+			{
+				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+				if (w->pt == NULL)
+					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
+				MemoryContextSwitchTo(old);
+				w->pt[c].want = true;
+			}
+}
+
+/* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
+static void
+add_points(SiftColSegWriter *w, const SiftCPaggCol *cols)
+{
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+	{
+		PointAcc   *a = &w->pt[c];
+		const SiftCPaggCol *v = &cols[c];
+
+		if (!a->want || a->bad)
+			continue;
+		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
+			if (v->ovf[i])
+				a->bad = true;
+		if (!v->ready || a->bad || w->rows + v->n >= UINT32_MAX)
+		{
+			a->bad = true;
+			continue;
+		}
+		if (a->n + v->n > a->cap)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			a->cap = Max(Max(a->cap * 2, 4096), a->n + v->n);
+			a->key = a->key ? repalloc_huge(a->key, (Size) a->cap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(int64));
+			a->row = a->row ? repalloc_huge(a->row, (Size) a->cap * sizeof(uint32)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint32));
+			MemoryContextSwitchTo(old);
+		}
+		for (uint32 i = 0; i < v->n; i++)
+		{
+			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
+				continue;
+			a->key[a->n] = v->key[i];
+			a->row[a->n++] = (uint32) w->rows + i;
+		}
+	}
 }
 
 /*
@@ -300,7 +366,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		const SiftColDef *def = &w->schema->cols[c];
 
 		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
-		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data)) && !w->inl[c])
+		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -317,6 +383,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_sets(w, cols, unit_bytes);
 	add_runs(w, cols);
+	add_points(w, cols);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
 			pfree(tk[c]);
@@ -458,6 +525,76 @@ put8(SiftColSegWriter *w, const void *data, Size len)
 	return off;
 }
 
+/* The tables of the point directories, built when the last unit is in: a leaf whose rows crowd one position (a key in very many rows) has none */
+static void
+build_points(SiftColSegWriter *w)
+{
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+	{
+		PointAcc   *a = &w->pt[c];
+
+		if (a->want && !a->bad && a->n > 0)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			initStringInfo(&a->tab);
+			MemoryContextSwitchTo(old);
+			a->nslots = sift_cpoint_slots(a->n);
+			if (sift_cpoint_build(a->key, a->row, a->n, a->nslots, &a->tab))
+				w->anypoints = true;
+			else
+				a->nslots = 0;
+		}
+		if (a->key)
+		{
+			pfree(a->key);
+			pfree(a->row);
+			a->key = NULL;
+			a->row = NULL;
+		}
+	}
+}
+
+/*
+ * The point directories after the dictionaries, in the DICT section: a header {u32 magic, u32 version, u32 nleaves, u32 0}, a record
+ * {u32 leaf, u32 nslots, u32 count, u32 0, u64 offset in the section} for each leaf, the tables, and the last 16 bytes of the section {u64 offset of the
+ * header, u32 magic, u32 version}.
+ */
+static void
+write_points(SiftColSegWriter *w, SiftSectionRef *sec)
+{
+	int			ncols = w->schema->ncols;
+	uint64		block = sift_sw_tell(w->sw) - sec->off;
+	uint32		hdr[4] = {SIFT_CPOINT_MAGIC, SIFT_CPOINT_VERSION, 0, 0};
+	uint64		foot[2];
+	uint32		ftail[2] = {SIFT_CPOINT_MAGIC, SIFT_CPOINT_VERSION};
+	uint64		at;
+
+	if (!w->anypoints)
+		return;
+	for (int c = 0; c < ncols; c++)
+		hdr[2] += w->pt[c].nslots > 0;
+	at = block + sizeof(hdr) + (uint64) hdr[2] * 24;
+	sift_sw_write(w->sw, hdr, sizeof(hdr));
+	for (int c = 0; c < ncols; c++)
+	{
+		const PointAcc *a = &w->pt[c];
+		uint32		rec[4] = {c, a->nslots, a->n, 0};
+
+		if (a->nslots == 0)
+			continue;
+		sift_sw_write(w->sw, rec, sizeof(rec));
+		sift_sw_write(w->sw, &at, sizeof(at));
+		at += a->tab.len;
+	}
+	for (int c = 0; c < ncols; c++)
+		if (w->pt[c].nslots > 0)
+			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
+	foot[0] = block;
+	memcpy(&foot[1], ftail, sizeof(ftail));
+	sift_sw_write(w->sw, foot, sizeof(foot));
+}
+
 static void
 write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 {
@@ -485,6 +622,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
 	sw_pad8(w->sw);
+	write_points(w, sec);
 	sec->len = sift_sw_tell(w->sw) - sec->off;
 	pfree(blob.data);
 	pfree(offs);
@@ -844,6 +982,9 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->anypres ? SIFT_COL_FORMAT_PRESENCE : SIFT_COL_FORMAT_SETS);
 	if (w->anyruns)
 		w->format = Max(w->format, SIFT_COL_FORMAT_RUNS);
+	build_points(w);
+	if (w->anypoints)
+		w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
 	/* a dictionary of many strings is written to be searched in place when the setting allows it, the index has not turned it off and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->pagg.nolookup && !w->inexact)
 	{

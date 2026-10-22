@@ -502,7 +502,7 @@ col_scan_begin(IndexScanDesc scan)
 	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
-	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS);
+	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS);
 	if (scan_preds(scan, &keys, so->preds))
 	{
 		so->npreds = scan->numberOfKeys;
@@ -525,14 +525,18 @@ col_scan_begin(IndexScanDesc scan)
 static bool
 col_scan_unit(ColScanOpaque *so, SiftColUnit *unit, SiftColSel *sel)
 {
+	bool		used;
+
 	if (so->unsat)
 		return false;
 	while (sift_col_next(so->src, unit))
 	{
 		CHECK_FOR_INTERRUPTS();
 		sift_col_sel_all(unit, sel);
-		if (!sift_col_filter(unit, so->preds, so->npreds, sel) || sift_col_sel_count(sel) == 0)
+		/* the rows of a point directory are the fingerprint's: the heap checks the condition again */
+		if (!sift_col_filter_points(unit, so->preds, so->npreds, sel, &used) || sift_col_sel_count(sel) == 0)
 			continue;
+		so->recheck |= used;
 		return true;
 	}
 	return false;

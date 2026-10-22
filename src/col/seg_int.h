@@ -198,6 +198,14 @@ typedef struct DictLook
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
 
+/* The table of a leaf's point directory (col/point.h): stream offset, slots, rows listed */
+typedef struct PointLeaf
+{
+	uint64		at;
+	uint32		nslots;
+	uint32		count;
+} PointLeaf;
+
 typedef struct SegPriv
 {
 	SiftLive	live;
@@ -235,6 +243,9 @@ typedef struct SegPriv
 	uint64		vblob_len;
 	uint32		vmin;
 	uint32		vmax;
+	bool		pt_checked;		/* the point directories at the end of the DICT section were looked for */
+	uint64		dict_end;		/* where the dictionaries end in the DICT section (before the point directories, if any) */
+	PointLeaf  *pt;				/* [ncols] (nslots 0: none) */
 } SegPriv;
 
 #define PRIV(seg)	((SegPriv *) (seg)->priv)

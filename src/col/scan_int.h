@@ -26,6 +26,10 @@ typedef struct ColCursor
 	uint32		cur;
 	uint32		end;
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
+	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
+	uint32		nprow;
+	uint32		pat;			/* the first of them not yet handed to a unit */
+	int			ppred;
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -90,6 +94,9 @@ typedef struct ColUnit
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
 	bool		codes_only;		/* sift_col_read_text: a STR leaf is read as codes, without its dictionary */
+	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
+	uint32		nprow;
+	int			ppred;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
@@ -157,6 +164,8 @@ struct SiftColSource
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
+/* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
+extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 
 static inline void
 set_ones(uint64 *bits, uint32 n)

@@ -10,6 +10,7 @@
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "col/ver.h"
+#include "core/cmp.h"
 #include "core/live.h"
 
 void
@@ -278,9 +279,42 @@ verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 	pfree(blob);
 }
 
+/* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
+static void
+verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, uint64 *listed)
+{
+	uint32		base = (uint32) seg->sbdir[u].rank_base;
+
+	if (sift_cseg_point_count(seg, c) == 0)
+		return;
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a point directory and no keys in the unit %u.", c, u);
+	for (uint32 i = 0; col->ovf && i < SIFT_COL_NWORDS(col->n); i++)
+		if (col->ovf[i])
+			corrupt(seg, "Leaf %d has a point directory and an overflow value in the unit %u.", c, u);
+	for (uint32 i = 0; i < col->n; i++)
+	{
+		uint32	   *rows,
+					n,
+					lo = 0,
+					hi;
+
+		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+			continue;
+		if (!sift_cseg_point_rows(seg, c, &col->key[i], 1, &rows, &n))
+			corrupt(seg, "The point directory of leaf %d answers the key of row %u of unit %u with too many rows.", c, base + i, u);
+		hi = n;
+		SIFT_BISECT(uint32, mid, lo, hi, rows[mid] < base + i);
+		if (lo >= n || rows[lo] != base + i)
+			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
+		pfree(rows);
+		(*listed)++;
+	}
+}
+
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
-verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
+verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	const SiftColSchema *sc = seg->schema;
@@ -344,6 +378,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 		}
 		verify_set(seg, c, u, &pcol[c]);
 		verify_run(seg, c, u, &pcol[c]);
+		verify_point(seg, c, u, &pcol[c], &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
@@ -596,14 +631,19 @@ sift_cseg_verify(SiftColSegment *seg)
 {
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	uint64		live = seg->hdr->ndocs;
+	uint64		listed[SIFT_COL_MAX_COLS] = {0};
 
 	verify_vers(seg);
 	verify_dicts(seg);
+	sift_cseg_verify_points(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		verify_unit(seg, u, keys);
+		verify_unit(seg, u, keys, listed);
 		CHECK_FOR_INTERRUPTS();
 	}
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (listed[c] != sift_cseg_point_count(seg, c))
+			corrupt(seg, "The point directory of leaf %d lists %u rows, its units hold %llu values.", c, sift_cseg_point_count(seg, c), ULL(listed[c]));
 	sift_cseg_verify_super(seg);
 	verify_set_kinds(seg);
 	verify_run_kinds(seg);

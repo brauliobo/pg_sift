@@ -52,6 +52,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_set_file_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
+#define TEST_POINTS	8		/* open the source with SIFT_COLO_POINTS: a segment with a point directory answers an equality or a short IN list from it */
 #define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
 #define WAIT_KEY		0x51F7
 
@@ -245,7 +246,7 @@ scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							(flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0);
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0));
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
@@ -284,8 +285,10 @@ test_next(TestScan *ts, SiftColUnit *unit)
 static bool
 unit_select(TestScan *ts, const SiftColUnit *unit, int flags, SiftColSel *sel)
 {
+	bool		used;
+
 	sift_col_sel_all(unit, sel);
-	if (!sift_col_filter(unit, ts->q.top, ts->q.ntop, sel))
+	if (!sift_col_filter_points(unit, ts->q.top, ts->q.ntop, sel, &used))
 		return false;
 	for (int g = 0; g < ts->q.ngrp; g++)
 		if (!sift_col_filter_group(unit, &ts->q.grp[g], sel))

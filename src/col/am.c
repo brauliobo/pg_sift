@@ -31,6 +31,7 @@
 #include "col/am.h"
 #include "col/build.h"
 #include "col/seg.h"
+#include "col/point.h"
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "core/cpu.h"
@@ -191,6 +192,15 @@ sift_col_validate_order_columns(const char *value)
 }
 
 void
+sift_col_validate_point_columns(const char *value)
+{
+	const char *err = sift_cpoint_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -334,6 +344,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "point_columns",
+						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
+						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -368,6 +381,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"key_presence", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_presence)},
+	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 };
 
 static bytea *
@@ -446,6 +460,14 @@ sift_col_options_key_presence(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->key_presence ? (const char *) o + o->key_presence : "";
+}
+
+const char *
+sift_col_options_point_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->point_columns ? (const char *) o + o->point_columns : "";
 }
 
 const char *
@@ -589,6 +611,8 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_presence option: %s", err)));
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
+		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
