@@ -117,7 +117,7 @@ ctest_make_num(const SiftColDef *def, const SiftColPred *p, SiftCTest *t)
 			}
 			break;
 		default:
-			elog(ERROR, "sift_col: operator %d is not defined on a numeric column", p->op);
+			SIFT_INVARIANT(false, "sift_col: operator %d is not defined on a numeric column", p->op);
 	}
 }
 
@@ -181,8 +181,7 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 	int64	   *codes = NULL;
 	uint32		nfound = 0;
 
-	if (dict == NULL)
-		elog(ERROR, "sift_col: a test on a text column needs its dictionary");
+	SIFT_INVARIANT(dict != NULL, "sift_col: a test on a text column needs its dictionary");
 	t->pred = p;
 	lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
 	switch (p->op)
@@ -232,7 +231,7 @@ sift_ctest_make_strs(const SiftColPred *p, SiftCTest *t)
 	if (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL)
 		t->kind = p->op == SIFT_COLOP_ISNULL ? SIFT_CT_ISNULL : SIFT_CT_NOTNULL;
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
-		elog(ERROR, "sift_col: predicate without a constant");
+		SIFT_INVARIANT(false, "sift_col: predicate without a constant");
 	else if (p->nvals < 1)
 		t->kind = p->op == SIFT_COLOP_IN ? SIFT_CT_NONE : SIFT_CT_NONNULL;
 	else
@@ -249,7 +248,7 @@ sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, Si
 	else if (def->store == SIFT_COLS_VAR)
 		sift_ctest_make_strs(p, t);
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
-		elog(ERROR, "sift_col: predicate without a constant");
+		SIFT_INVARIANT(false, "sift_col: predicate without a constant");
 	else if (def->store == SIFT_COLS_STR)
 		ctest_make_str(dict, p, t);
 	else

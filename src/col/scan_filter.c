@@ -90,8 +90,8 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 
 	for (int i = 0; i < npreds; i++)
 	{
-		if (cu->src->schema->cols[preds[i].col].parent >= 0)
-			elog(ERROR, "sift_col: leaf %d is an element column, use the group filters", preds[i].col);
+		SIFT_INVARIANT(cu->src->schema->cols[preds[i].col].parent < 0, "sift_col: leaf %d is an element column, use the group filters",
+					   preds[i].col);
 		if (!(sift_colw_is_wide_int(&cu->src->schema->cols[preds[i].col]) ? sift_colw_filter(unit, &preds[i], sel) : chunk_filter(cu, &preds[i], sel, NULL)))
 			return false;
 	}
@@ -158,8 +158,7 @@ sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, uint8 de
 			   *tagged = palloc(sel->nwords * sizeof(uint64));
 	uint32		nw = (sel->n + 63) / 64;
 
-	if (cu->src->schema->cols[col].parent >= 0)
-		elog(ERROR, "sift_col: leaf %d is an element column, its types are not read per row", col);
+	SIFT_INVARIANT(cu->src->schema->cols[col].parent < 0, "sift_col: leaf %d is an element column, its types are not read per row", col);
 	*known = true;
 	if (!unit_chunk(cu, col, &c))
 		for (uint32 w = 0; w < nw; w++)
@@ -199,8 +198,7 @@ sift_col_row_types(const SiftColUnit *unit, int col, uint8 deftag, bool mixed, u
 	ColUnit    *cu = unit->priv;
 	SiftCChunk	c;
 
-	if (cu->src->schema->cols[col].parent >= 0)
-		elog(ERROR, "sift_col: leaf %d is an element column, its types are not read per row", col);
+	SIFT_INVARIANT(cu->src->schema->cols[col].parent < 0, "sift_col: leaf %d is an element column, its types are not read per row", col);
 	if (!unit_chunk(cu, col, &c))
 	{
 		memset(out, SIFT_COLTAG_NONE, unit->nrows);
@@ -253,8 +251,8 @@ group_elems_sel(ColUnit *cu, const SiftColGroupPred *gp, SiftColSel *el, uint64 
 	*unknown = MemoryContextAllocZero(cu->src->arena, el->nwords * sizeof(uint64));
 	for (int i = 0; i < gp->npreds; i++)
 	{
-		if (cu->src->schema->cols[gp->preds[i].col].parent != gp->group)
-			elog(ERROR, "sift_col: leaf %d is not an element of group %d", gp->preds[i].col, gp->group);
+		SIFT_INVARIANT(cu->src->schema->cols[gp->preds[i].col].parent == gp->group, "sift_col: leaf %d is not an element of group %d",
+					   gp->preds[i].col, gp->group);
 		if (!chunk_filter(cu, &gp->preds[i], el, *unknown))
 			break;
 	}

@@ -128,7 +128,7 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 			read_strs(arena, present ? &c : NULL, idx, m, vec);
 			break;
 		default:
-			elog(ERROR, "sift_col: storage class %d cannot be read yet", def->store);
+			SIFT_INVARIANT(false, "sift_col: storage class %d cannot be read yet", def->store);
 	}
 }
 
@@ -337,8 +337,8 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 
 	memset(info, 0, sizeof(*info));
 	info->n = n;
-	if (def->kind == SIFT_COLK_GROUP ? lane != SIFT_COLL_I32 : !lane_fits(def->store, lane))
-		elog(ERROR, "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
+	SIFT_INVARIANT(def->kind == SIFT_COLK_GROUP ? lane == SIFT_COLL_I32 : lane_fits(def->store, lane),
+				   "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
 	if (lane == SIFT_COLL_CODE)
 	{
 		SiftCDict  *dict = unit_dict(cu, col);	/* first: an inline chunk's dictionary and its id exist once the chunk is read */

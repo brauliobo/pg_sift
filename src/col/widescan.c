@@ -127,7 +127,7 @@ sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 				break;
 			}
 		default:
-			elog(ERROR, "sift_col: operator %d on a wide integer leaf", p->op);
+			SIFT_INVARIANT(false, "sift_col: operator %d on a wide integer leaf", p->op);
 			return false;
 	}
 	sel_assign(sel, r);

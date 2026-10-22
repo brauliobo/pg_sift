@@ -68,10 +68,16 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 {
 	uint32	   *slot;
 
-	if (len > SIFT_COL_MAX_VALUE || d->nbytes + len > SIFT_COL_MAX_VALUE)
+	if (len > SIFT_COL_MAX_VALUE)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("value of %u bytes does not fit a sift_col column (the strings of a unit are at most %d bytes)", len, SIFT_COL_MAX_VALUE)));
+				 errmsg("a value of %u bytes does not fit a sift_col column (at most %d bytes)", len, SIFT_COL_MAX_VALUE),
+				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
+	if (d->nbytes + len > SIFT_COL_MAX_VALUE)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("the strings of one unit of a sift_col column exceed %d bytes", SIFT_COL_MAX_VALUE),
+				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	cdict_ready(d);
 	slot = cdict_probe(d, s, len);
 	if (*slot)

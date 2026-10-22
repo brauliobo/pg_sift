@@ -480,8 +480,7 @@ sift_shred_enter(SiftShred *sh, bool is_array)
 	}
 	if (t->kind != N_OBJ)
 		list_set(sh, t, SIFT_SHRED_VALUE);
-	if (sh->nframes == sh->maxframes)
-		elog(ERROR, "sift shred: nesting deeper than the spec allows");
+	SIFT_INVARIANT(sh->nframes != sh->maxframes, "sift shred: nesting deeper than the spec allows");
 	f = &sh->frames[sh->nframes++];
 	f->node = t;
 	f->pending = NULL;
@@ -724,8 +723,7 @@ sift_shred_number(SiftShred *sh, const char *text, int len)
 void
 sift_shred_finish(SiftShred *sh)
 {
-	if (sh->nframes != 0)
-		elog(ERROR, "sift shred: finished with %d containers open", sh->nframes);
+	SIFT_INVARIANT(sh->nframes == 0, "sift shred: finished with %d containers open", sh->nframes);
 }
 
 void

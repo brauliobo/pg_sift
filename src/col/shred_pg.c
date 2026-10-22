@@ -144,7 +144,7 @@ walk_plain(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc)
 				break;
 			}
 		default:
-			elog(ERROR, "sift shred: unexpected jsonb value type %d", v->type);
+			SIFT_INVARIANT(false, "sift shred: unexpected jsonb value type %d", v->type);
 	}
 }
 

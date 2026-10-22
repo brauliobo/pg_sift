@@ -495,7 +495,8 @@ sift_shred_spec_parse(const char *text)
 
 	if (strlen(text) > SIFT_SHRED_MAX_SPEC_BYTES)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						errmsg("sift shred paths: the spec has more than %d bytes", SIFT_SHRED_MAX_SPEC_BYTES)));
+						errmsg("sift shred paths: the spec has more than %d bytes", SIFT_SHRED_MAX_SPEC_BYTES),
+						errhint("Declare fewer paths, or a wildcard path for the keys of an object.")));
 	memset(&P, 0, sizeof(P));
 	P.src = text;
 	P.root = new_node(N_OBJ, 0);
