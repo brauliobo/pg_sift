@@ -273,7 +273,7 @@ pg_sift is weaker in text analysis (English stemming only, one key per index) an
 | `GROUP BY x`, `GROUP BY expr`, `ROLLUP`, `CUBE` | Yes | sift_col |
 | `JOIN` a small table, `EXISTS`, `IN (SELECT ...)` | Yes | sift_col |
 | `HAVING`, `ORDER BY ... LIMIT n` of the groups | Yes | sift_col |
-| `WHERE ... ORDER BY x LIMIT n` of rows | 72.2% | sift_col |
+| `WHERE ... ORDER BY x LIMIT n` of rows | 74.9% | sift_col |
 | pre-aggregated `count`, `sum`, `avg`, `min`, `max` | Yes | sift_col |
 | `jsonb` paths: `col->>'k'`, `jsonb_to_recordset(col)` | Yes | sift_col |
 | `numeric(p>18)`, `money`, `interval` | Yes | sift_col |
