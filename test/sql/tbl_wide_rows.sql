@@ -9,7 +9,8 @@ SET cpu_tuple_cost = 0.5;
 CREATE TABLE wr (id int, g int, v text) USING sift_table;
 INSERT INTO wr SELECT i, i % 3, repeat(md5(i::text), 100) FROM generate_series(1, 50) i;
 
--- off (the default): the row is refused, and the hint names the setting
+-- off: the row is refused, and the hint names the setting
+SET sift.table_wide_rows = off;
 INSERT INTO wr VALUES (100, 0, repeat('a', 5000000));
 SELECT count(*) AS rows_after_refusal FROM wr;
 
