@@ -25,6 +25,7 @@
 #include "agg/agg.h"
 #include "agg/colsrc.h"
 #include "agg/refuse.h"
+#include "agg/rows.h"
 
 /*
  * The part of the inline plan that is the scans must cost this many times less than what the shared CTE's plan costs for it, on top of the unnest
@@ -109,7 +110,8 @@ sift_agg_cost(Plan *plan)
 
 	if (plan == NULL)
 		return 0;
-	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+	if (IsA(plan, CustomScan) &&
+		(((CustomScan *) plan)->methods == &sift_agg_plan_methods || ((CustomScan *) plan)->methods == &sift_agg_rows_plan_methods))
 		return plan->total_cost;
 	switch (nodeTag(plan))
 	{
