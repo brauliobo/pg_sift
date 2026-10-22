@@ -1,0 +1,208 @@
+Parsed test spec with 4 sessions
+
+starting permutation: hb wb wcopy oseg rscan ridx rbm ragg hc wown wc rscan ridx rbm ragg
+step hb: BEGIN; SELECT sift._test_tbl_hold_maint('iso_bulk');
+_test_tbl_hold_maint
+--------------------
+                    
+(1 row)
+
+step wb: BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wcopy: COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/'''; <waiting ...>
+step oseg: SELECT count(*) AS entries, count(*) FILTER (WHERE unfrozen) AS carry_their_writer FROM sift.table_segments('iso_bulk') WHERE kind = 'columns';
+entries|carry_their_writer
+-------+------------------
+     14|                14
+(1 row)
+
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk WHERE id > 0;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_bulk WHERE id > 100;
+count
+-----
+ 1300
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*) FROM iso_bulk GROUP BY 1 ORDER BY 1;
+g|count
+-+-----
+0|  466
+1|  467
+2|  467
+(3 rows)
+
+step hc: COMMIT;
+step wcopy: <... completed>
+step wown: SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step wc: COMMIT;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk WHERE id > 0;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_bulk WHERE id > 100;
+count
+-----
+ 4300
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*) FROM iso_bulk GROUP BY 1 ORDER BY 1;
+g|count
+-+-----
+0| 1466
+1| 1467
+2| 1467
+(3 rows)
+
+
+starting permutation: wb wcopy wown rscan wa rscan ridx rv rscan
+step wb: BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wcopy: COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/''';
+step wown: SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step wa: ROLLBACK;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk WHERE id > 0;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step rv: VACUUM iso_bulk;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+
+starting permutation: rrr wb wcopy wc rscan rend rscan
+step rrr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_bulk;
+count
+-----
+ 1400
+(1 row)
+
+step wb: BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wcopy: COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/''';
+step wc: COMMIT;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step rend: COMMIT;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+
+starting permutation: wb wcopy wown wself wown wc rscan ridx
+step wb: BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wcopy: COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/''';
+step wown: SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step wself: INSERT INTO iso_bulk SELECT id + 200000, v FROM iso_bulk WHERE id > 100000 AND id <= 100010;
+step wown: SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4410|308482255
+(1 row)
+
+step wc: COMMIT;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4410|308482255
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk WHERE id > 0;
+count|      sum
+-----+---------
+ 4410|308482255
+(1 row)
+
+
+starting permutation: wb wcopy rv rscan ragg wown wc rscan ragg
+step wb: BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wcopy: COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/''';
+step rv: VACUUM iso_bulk;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|   sum
+-----+------
+ 1400|980700
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*) FROM iso_bulk GROUP BY 1 ORDER BY 1;
+g|count
+-+-----
+0|  466
+1|  467
+2|  467
+(3 rows)
+
+step wown: SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step wc: COMMIT;
+step rscan: SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk;
+count|      sum
+-----+---------
+ 4400|305482200
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*) FROM iso_bulk GROUP BY 1 ORDER BY 1;
+g|count
+-+-----
+0| 1466
+1| 1467
+2| 1467
+(3 rows)
+
