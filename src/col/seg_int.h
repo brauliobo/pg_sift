@@ -181,10 +181,18 @@ typedef struct DictLook
 	uint32		n;
 	uint32		fixed;			/* the length of every string, 0: off[] says */
 	uint32		nbytes;
-	uint64		offs_at;		/* stream offsets: u32 off[n + 1] (fixed 0), the strings, u32 code[n] in byte order */
+	uint64		offs_at;		/* stream offsets: plain (form 0): u32 off[n + 1], the strings */
 	uint64		bytes_at;
+	uint64		boff_at;		/* the searched form (2): u32 boff[blocks + 1], the blocks of DICT_BLOCK strings, u32 code[n] in byte order */
+	uint64		blk_at;
+	uint64		blk_len;
 	uint64		perm_at;
+	uint32		blkno;			/* the block in blkraw (UINT32_MAX: none) */
+	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
+	uint8		blkraw[DICT_BLOCK_RAW_MAX];
+	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	bool		searchable;		/* form 2: find and match read the stream */
+	bool		blocked;		/* form 2: the strings are in blocks */
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */

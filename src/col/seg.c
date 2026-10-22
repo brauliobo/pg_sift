@@ -9,6 +9,7 @@
 
 #include "core/host.h"
 
+#include "col/compress.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -277,14 +278,73 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 	return pv->dict[col];
 }
 
+/* Block b of a dictionary of the searched form, decompressed into l->blkraw with the offsets of its strings in l->blkoff */
+static void
+look_load_block(DictLook *l, uint32 b)
+{
+	uint32		o[2],
+				cnt = Min(DICT_BLOCK, l->n - b * DICT_BLOCK),
+				rawlen,
+				pos = 0;
+
+	seg_read(l->seg, l->boff_at + (uint64) b * sizeof(uint32), sizeof(o), o);
+	if (o[1] < o[0] + DICT_BLOCK_HEAD || o[1] - o[0] > sizeof(l->blkz) || o[1] > l->blk_len)
+		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+	seg_read(l->seg, l->blk_at + o[0], o[1] - o[0], l->blkz);
+	rawlen = l->blkz[2] | (uint32) l->blkz[3] << 8;
+	if (rawlen > DICT_BLOCK_RAW_MAX)
+		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+	if (l->blkz[0] == 0)
+	{
+		if (o[1] - o[0] - DICT_BLOCK_HEAD != rawlen)
+			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+		memcpy(l->blkraw, l->blkz + DICT_BLOCK_HEAD, rawlen);
+	}
+	else if (l->blkz[0] != SIFT_CC_ALG_ZSTD || !sift_colz_available(l->blkz[0]))
+		corrupt(l->seg, "The dictionary of leaf %d is compressed with an algorithm this build lacks.", l->col);
+	else if (!sift_colz_decompress(l->blkz[0], l->blkz + DICT_BLOCK_HEAD, o[1] - o[0] - DICT_BLOCK_HEAD, l->blkraw, rawlen))
+		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+	if (l->fixed)
+	{
+		if (rawlen != cnt * l->fixed)
+			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+		for (uint32 i = 0; i <= cnt; i++)
+			l->blkoff[i] = i * l->fixed;
+	}
+	else
+	{
+		if (rawlen < cnt)
+			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+		for (uint32 i = 0; i < cnt; i++)
+		{
+			l->blkoff[i] = cnt + pos;
+			pos += l->blkraw[i];
+		}
+		l->blkoff[cnt] = cnt + pos;
+		if (cnt + pos != rawlen)
+			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
+	}
+	l->blkno = b;
+}
+
 /* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */
 static const char *
-look_code_str(const DictLook *l, uint32 code, uint32 *len, char *buf)
+look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 {
 	uint64		at;
 
 	if (code >= l->n)
 		corrupt(l->seg, "Code %u is beyond the %u strings of the dictionary of leaf %d.", code, l->n, l->col);
+	if (l->blocked)
+	{
+		uint32		i = code % DICT_BLOCK;
+
+		if (l->blkno != code / DICT_BLOCK)
+			look_load_block(l, code / DICT_BLOCK);
+		*len = l->blkoff[i + 1] - l->blkoff[i];
+		memcpy(buf, l->blkraw + l->blkoff[i], *len);
+		return buf;
+	}
 	if (l->fixed)
 	{
 		*len = l->fixed;
@@ -321,7 +381,7 @@ look_sorted_str(const void *ctx, uint32 pos, uint32 *len)
 {
 	const DictLook *l = ctx;
 
-	return look_code_str(l, look_perm(l, pos), len, ((DictLook *) l)->buf);
+	return look_code_str((DictLook *) l, look_perm(l, pos), len, ((DictLook *) l)->buf);
 }
 
 static int64
@@ -370,7 +430,8 @@ dict_look(SiftColSegment *seg, int col)
 				len;
 	uint32		head[4];
 	DictLook   *l;
-	uint64		offs;
+	uint64		nblk;
+	uint32		blen;
 
 	if (pv->look_checked[col])
 		return pv->look[col];
@@ -401,14 +462,20 @@ dict_look(SiftColSegment *seg, int col)
 		if (len < DICT_HEAD_LOOKUP)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, off, DICT_HEAD_LOOKUP, head);
-		offs = head[2] == 0 ? ((uint64) head[1] + 1) * sizeof(uint32) : 0;
 		l->fixed = head[2];
 		l->nbytes = head[3];
-		l->offs_at = off + DICT_HEAD_LOOKUP;
-		l->bytes_at = l->offs_at + offs;
-		l->perm_at = off + (DICT_HEAD_LOOKUP + offs + head[3] + 3) / 4 * 4;
+		l->blocked = true;
+		l->blkno = UINT32_MAX;
+		nblk = ((uint64) l->n + DICT_BLOCK - 1) / DICT_BLOCK;
+		l->boff_at = off + DICT_HEAD_LOOKUP;
+		l->blk_at = l->boff_at + (nblk + 1) * sizeof(uint32);
 		if (l->n == 0 || l->fixed > SIFT_COL_DICT_MAX_ENTRY || (l->fixed != 0 && (uint64) l->n * l->fixed != l->nbytes) ||
-			l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
+			l->blk_at > off + len)
+			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+		seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
+		l->blk_len = blen;
+		l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
+		if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		l->look = (SiftCDictLook) {look_find, look_match};
 		l->stub.n = l->n;

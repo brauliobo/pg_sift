@@ -175,8 +175,10 @@ sift_agg_init(void)
 							NULL, &sift_agg_lookup_cache_kb, 256 * 1024, 0, MAX_KILOBYTES,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_shared_kb",
-							"Shared memory, for all backends together, that keeps the rows of the joined tables a scan loaded for the queries of other backends, while the table does not change (0: off, -1: the smaller of sift.agg_lookup_cache_kb and a twentieth of shared_buffers). Dynamic shared memory, taken as entries are kept and returned as they go.",
-							NULL, &sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
+							"Shared memory, for all backends together, that keeps the rows of the joined tables a scan loaded for the queries of other backends, while the table does not change (0: off, -1: the smaller of sift.agg_lookup_cache_kb and a twentieth of shared_buffers).",
+							"Dynamic shared memory, taken as entries are kept and returned as they go, so it needs no restart; with posix shared memory it comes from /dev/shm, which it must stay below. "
+							"Backends that run the same query at once wait for the one that loads the rows (30 s at most); a segment the system has no room for gives a notice and the backend loads its own tables.",
+							&sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",

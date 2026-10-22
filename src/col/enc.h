@@ -105,11 +105,15 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
+#define DICT_BLOCK		32			/* strings in a block of the searched form: the unit of compression and of a read in place */
+#define DICT_BLOCK_RAW_MAX	(DICT_BLOCK * (SIFT_COL_DICT_MAX_ENTRY + 1))	/* the most bytes of a block before compression: a length and the string of each */
+#define DICT_BLOCK_HEAD		4			/* u8 algorithm (0: raw, else SIFT_CC_ALG_*), u8 0, u16 raw bytes */
 /*
  * DICTS section entry: u32 form, u32 n, then the plain dictionary (u32 off[n + 1], bytes) or, when the policy is not "none" and it is
  * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. lookup: the form that is
- * searched in place (docs/COL.md 2.15): u32 form 2, u32 n, u32 length of every string (0: they differ and u32 off[n + 1] follows), u32 bytes, the
- * strings, u32 code[n] in byte order of the strings (4-aligned)
+ * searched in place (docs/COL.md 2.15): u32 form 2, u32 n, u32 length of every string (0: they differ), u32 bytes of the strings, u32 boff[blocks + 1],
+ * the blocks of DICT_BLOCK strings each (a length byte for each string unless they have one length, then the strings, compressed when that is smaller;
+ * DICT_BLOCK_HEAD bytes of header), u32 code[n] in byte order of the strings (4-aligned)
  */
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringInfo out);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */

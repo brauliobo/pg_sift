@@ -3,7 +3,11 @@
 # sift_table; promoted segments and unpromoted write-buffer records), taken over by this tree in the same cluster: ALTER EXTENSION UPDATE, answers
 # through the indexes equal to the plain plan and to what the release answered, sift.verify and sift.col_verify clean, REINDEX, writes (insert,
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
-# (3), at the newest minor it reads, and refuses an index of the minor 7 (cube_minmax), the minor 13 (order_columns) or the minor 14 (a stored dictionary) or the minor 15 (key_presence) with a format error instead of a wrong answer; an index with order_columns under the lowest setting writes no run and is read.
+# (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
+# REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 set_columns, 12 superunit,
+# 13 order_columns, 14 a stored dictionary, 15 key_presence), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
+# documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
@@ -96,7 +100,7 @@ sift.async_maintenance = off'
 		q "CREATE TABLE tbl (id int, g int, n int) USING sift_table" "INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 12000) i" "VACUUM tbl" \
 			"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(12001, 12600) i" "CREATE TABLE tbl_h AS TABLE tbl" \
 			"CREATE TABLE tbl_ts (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ts SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" \
-			"VACUUM tbl_ts" >/dev/null || bail "$ref table setup"
+			"VACUUM tbl_ts" "CREATE TABLE tbl_big (id int, v text) USING sift_table" "INSERT INTO tbl_big VALUES (1, repeat('b', 2000000))" >/dev/null || bail "$ref table setup"
 	fi
 	q "VACUUM docs, jt" >/dev/null
 	a=$(ans IDX "" "${what}b"); plain=$(ans PLAIN "" "${what}b")
@@ -140,6 +144,17 @@ sift.async_maintenance = off'
 		done
 	fi
 	agree "$ref: answers after writes equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
+	if [[ $hastbl == yes ]]; then
+		# a row of 2 MB the release buffered, and beside it a row of 5 MB, which this tree writes to tail pages (the buffer that takes it is format 11)
+		BIGQ="SELECT id, length(v), md5(v) FROM tbl_big ORDER BY id"
+		bigwant=$(q "SELECT 1, 2000000, md5(repeat('b', 2000000))" "SELECT 2, 5000000, md5(repeat('a', 5000000))" | tr '\n' ' ')
+		check "$ref: the row of 2 MB the release buffered is read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$(sed 's/ 2|.*//' <<<"$bigwant") "
+		q "SET sift.table_wide_rows = on" "INSERT INTO tbl_big VALUES (2, repeat('a', 5000000))" >/dev/null
+		check "$ref: the wide row opens a buffer of format 11" test "$(q "SELECT count(*) FROM sift.table_segments('tbl_big') WHERE kind = 'sealed buffer' AND format = 11")" == 1
+		check "$ref: both rows are read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$bigwant"
+		q "VACUUM tbl_big" >/dev/null
+		check "$ref: both rows are read after the promotion into columns" test "$(q "$BIGQ" | tr '\n' ' ')" == "$bigwant"
+	fi
 	check "$ref: promotion and merge" q "SELECT sift.promote('docs_idx'), sift.col_promote('docs_col'), sift.col_promote('jt_col')" \
 		"SELECT sift.merge('docs_idx', true), sift.col_merge('docs_col', true), sift.col_merge('jt_col', true)" "VACUUM docs, jt"
 	[[ $hastbl == no ]] || check "$ref: VACUUM of the sift_table" q "VACUUM tbl, tbl_h" "SELECT sift.table_maintain('tbl')"
@@ -147,20 +162,37 @@ sift.async_maintenance = off'
 	[[ $hastbl == no ]] || check "$ref: the sift_table is its heap twin after the writes" twin_same
 	agree "$ref: answers after promotion, merge and VACUUM equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 
-	# ---- the way back: clones written by this tree at the lowest minor, the newest one the release reads, and the cube minmax
+	# ---- the way back: clones written by this tree. Read by the release: the lowest minor, the newest it reads (and 4), and an index at the defaults that
+	# opts out of what is on by default. Refused: one clone for each newer minor, and an index at the defaults with no option
 	q "DROP INDEX docs_idx" >/dev/null	# a BM25 segment has no setting for an older reader: the release refuses a newer format by design
 	# the setting exists once a function of the library ran in the session
 	lowest=$(q "SELECT count(*) FROM sift.col_segments('docs_col')" "SELECT min_val FROM pg_settings WHERE name = 'sift.col_format_minor'" | tail -1)
 	check "$ref: the lowest column format minor is 3" test "$lowest" == 3
-	formats=("lo $lowest" "cm 7" "rn 13" "kp 15"); [[ $newest == 3 ]] || formats=("lo $lowest" "hi $newest" "cm 7" "rn 13" "kp 15")
+	# fmt minor: the setting, and the minor the segments are stamped with (the clone at the defaults has no setting)
+	formats=("lo $lowest")
+	[[ $newest == 3 ]] || formats+=("hi $newest")
+	((newest > 4)) && formats+=("h4 4")
+	((newest >= 4)) && formats+=("ke 4")
+	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "df 12")
+	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
+		[ca]=", calendar_columns = 'at'" [rd]=", rollup_dims = 'g, n'" [sc]=", set_columns = 's'" [kp]=", key_presence = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
+	declare -A COLS=([ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
+	docsonly=" h4 ke cm ca rd sc su rn dk kp df "
+	refused=" cm ca rd sc su rn dk kp df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		opt=", order_columns = 'g, n'"; [[ $fmt != cm ]] || opt=", cube_minmax = true"; [[ $fmt != kp ]] || opt=", key_presence = 'g'"
-		q "SET sift.col_format_minor = $minor" \
-			"CREATE TABLE docs_$fmt AS TABLE docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (id, g, n) WITH (write_buffer_limit = 2048$opt)" \
-			"INSERT INTO docs_$fmt SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
-			"INSERT INTO docs_$fmt SELECT i, i % 9, i % 100, 'y' FROM generate_series(20401, 20600) i" >/dev/null || bail "$ref $fmt docs"
-		[[ $fmt == cm || $fmt == rn || $fmt == kp ]] && continue
+		set="SET sift.col_format_minor = $minor"; [[ $fmt != df ]] || set="SELECT 1"
+		q "$set" \
+			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
+			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
+			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'y' FROM generate_series(20401, 20600) i" >/dev/null || bail "$ref $fmt docs"
+		if [[ $refused == *" $fmt "* ]]; then
+			check "$ref: the $fmt clone is stamped minor $minor" test "$(q "SELECT max(format) FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" == "$minor"
+		else
+			same "$ref: the $fmt clone is written at a minor the release reads (at most $minor)" "$(q "SELECT max(format) <= $minor AND min(format) >= 3 FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" t
+		fi
+		[[ $docsonly == *" $fmt "* ]] && continue
 		# a minor 3 segment stores no types: 3.1 refuses an astext leaf of it at query time with the REINDEX hint, by design
 		kind=$textkind; [[ $fmt != lo ]] || kind=text
 		q "SET sift.col_format_minor = $minor" \
@@ -170,16 +202,21 @@ sift.async_maintenance = off'
 			q "SET sift.col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
 		fi
-		same "$ref: the $fmt clone is written at a minor the release reads (at most $minor)" "$(q "SELECT max(format) <= $minor AND min(format) >= 3 FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" t
 	done
-	check "$ref: the cube_minmax clone is minor 7" test "$(q "SELECT min(format) FROM sift.col_segments('docs_cm_col') WHERE kind = 'immutable'")" == 7
-	check "$ref: the order_columns clone is minor 13" test "$(q "SELECT min(format) FROM sift.col_segments('docs_rn_col') WHERE kind = 'immutable'")" == 13
-	check "$ref: the key_presence clone is minor 15" test "$(q "SELECT min(format) FROM sift.col_segments('docs_kp_col') WHERE kind = 'immutable'")" == 15
 	check "$ref: the clone with order_columns under the lowest setting holds no run" test "$(q "SELECT count(*) FROM sift.col_sections('docs_lo_col') WHERE section = 'runs'")" == 0
+	if [[ $hastbl == yes ]]; then
+		# the two sift_table formats that no index shows: the calendar cells of a timestamp column (8) and the write buffer of a row on tail pages (11)
+		q "CREATE TABLE tbl_ca (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ca SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" "VACUUM tbl_ca" \
+			"SET sift.table_wide_rows = on" "CREATE TABLE tbl_wr (id int, v text) USING sift_table" "INSERT INTO tbl_wr VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "$ref table clones"
+		check "$ref: tbl_ca holds column format 8" test "$(q "SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl_ca') WHERE kind = 'columns'")" == 8
+		check "$ref: tbl_wr holds a buffer of format 11" test "$(q "SELECT count(*) FROM sift.table_segments('tbl_wr') WHERE kind = 'sealed buffer' AND format = 11")" == 1
+	fi
+	WRQ="SELECT count(*), sum(length(t::text)) FROM tbl_wr t"
+	[[ $hastbl == no ]] || wrwant=$(q "$WRQ")
 	declare -A want=()
 	for f in "${formats[@]}"; do
 		fmt=${f%% *}
-		w=d; [[ $fmt == cm || $fmt == rn || $fmt == kp ]] || w=$what; w=${w//b/}
+		w=$what; [[ $docsonly != *" $fmt "* ]] || w=d; w=${w//b/}
 		want[$fmt]=$(ans PLAIN_NEW "_$fmt" "$w")
 		agree "$ref: $fmt clone, this tree: index answers equal the plain plan" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}"
 		check "$ref: $fmt clone, this tree: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
@@ -190,22 +227,85 @@ sift.async_maintenance = off'
 	use_root mx "$oldroot"
 	node_start mx || bail "cannot restart $ref"
 	for f in "${formats[@]}"; do
-		fmt=${f%% *}
-		w=d; [[ $fmt == cm || $fmt == rn || $fmt == kp ]] || w=$what; w=${w//b/}
-		if [[ $fmt != cm && $fmt != rn && $fmt != kp ]]; then
-			check "$ref reads the $fmt clone: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)" "SELECT sift.col_verify('jt_${fmt}_col', true)"
+		read -r fmt minor <<<"$f"
+		w=$what; [[ $docsonly != *" $fmt "* ]] || w=d; w=${w//b/}
+		if [[ $refused != *" $fmt "* ]]; then
+			check "$ref reads the $fmt clone: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
+			[[ $docsonly == *" $fmt "* ]] || check "$ref reads the $fmt clone: col_verify of the JSON paths index" q "SELECT sift.col_verify('jt_${fmt}_col', true)"
 			agree "$ref reads the $fmt clone: index answers equal what this tree answered" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}" tolerate
 			agree "$ref reads the $fmt clone: plain answers equal what this tree answered" "$(ans PLAIN "_$fmt" "$w")" "${want[$fmt]}"
 		else
-			minor=${f##* }
 			err=$(q "SELECT sift.col_verify('docs_${fmt}_col', true)" 2>&1)
-			check "$ref refuses the minor $minor index with a format error and the REINDEX hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2
+			check "$ref refuses the $fmt clone (minor $minor) with a format error and the REINDEX hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2
 			out=$(ans IDX "_$fmt" d)
-			check "$ref never answers wrongly from the minor $minor index (the rows or a format error)" test "$out" == "${want[$fmt]}" -o "$(grep -ci 'format' <<<"$out")" -gt 0
+			check "$ref never answers wrongly from the $fmt clone (the rows or a format error)" test "$out" == "${want[$fmt]}" -o "$(grep -ci 'format' <<<"$out")" -gt 0
 			check "$ref still serves after the refusal" test "$(q "SELECT 1")" == 1
 		fi
 	done
+	if [[ $hastbl == yes ]]; then
+		err=$(q "SELECT count(*), sum(length(t::text)) FROM tbl_ca t" 2>&1)
+		check "$ref refuses the sift_table tbl_ca (calendar cells, column format 8) with a format error and the hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2
+		# the buffer of a wide row (format 11) is a marker the release does not look at: it reads the rows, takes a write beside them and promotes the buffer
+		check "$ref reads the rows of tbl_wr, the buffer of format 11, as this tree does" test "$(q "$WRQ")" == "$wrwant"
+		check "$ref writes to tbl_wr and promotes its buffers" q "INSERT INTO tbl_wr VALUES (3, 'w')" "VACUUM tbl_wr"
+		check "$ref reads the wide row intact after the promotion" test "$(q "SELECT id, length(v), md5(v) FROM tbl_wr ORDER BY id" | tr '\n' ' ')" == "1|5000000|$(q "SELECT md5(repeat('a', 5000000))") 2|5|$(q "SELECT md5('short')") 3|1|$(q "SELECT md5('w')") "
+		check "$ref still serves after the refusals of the tables" test "$(q "SELECT count(*) FROM tbl")" -gt 0
+	fi
 	node_stop mx
+
+	# ---- the downgrade of everything above, as docs/UPGRADING.md section 4 says: preflight, the setting, the rewrite of what the preflight lists, preflight again,
+	# then the release's library serves the database (its extension stays at the version of this tree: there is no script back)
+	if [[ $ref == v3.2.0 ]]; then
+		uc() { PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres "$REPO/scripts/upgrade-check.sh" "$@"; }
+		use_root mx "$newroot"
+		node_start mx || bail "cannot restart this tree for the downgrade"
+		q "CREATE TABLE dgb AS SELECT id, body FROM docs" "CREATE INDEX dgb_idx ON dgb USING sift (body)" "INSERT INTO dgb SELECT i, 'alpha' || i % 5 FROM generate_series(30001, 30500) i" \
+			"SET sift.table_wide_rows = on" "CREATE TABLE tbl_wr2 (id int, v text) USING sift_table" "INSERT INTO tbl_wr2 VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "downgrade setup"
+		DGB="SELECT count(*), sum(id) FROM dgb WHERE body @@> 'alpha3 beta4'"
+		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
+		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
+		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
+		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 11
+		check "3.2 downgrade: it lists no BM25 index" test "$(grep -c ' dgb_idx \| docs_idx ' <<<"$blockers")" == 0
+		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
+		for _ in $(seq 100); do [[ $(q "SHOW sift.col_format_minor") == 6 ]] && break; sleep 0.1; done
+		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.col_format_minor")" == 6
+		while read -r _ obj kind _; do
+			case $kind in
+				index) q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed" ;;
+				table) q "VACUUM FULL $obj" >/dev/null || diag "VACUUM FULL $obj failed" ;;
+			esac
+		done <<<"$blockers"
+		uc --to 3.2 postgres >/dev/null; rc=$?
+		check "3.2 downgrade: the preflight has no blocker left" test $rc -eq 0
+		left=$(q "SELECT c.relname || ':' || (SELECT max(format) FROM sift.col_segments(c.oid::regclass)) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i'
+			AND (SELECT max(format) FROM sift.col_segments(c.oid::regclass)) > 6
+			UNION ALL SELECT c.relname || ':' || (SELECT max(format) FROM sift.table_segments(c.oid::regclass)) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_table'
+			AND (SELECT max(format) FROM sift.table_segments(c.oid::regclass)) > 6" | tr '\n' ' ')
+		check "3.2 downgrade: no segment is above minor 6 or in a buffer of format 11" test -z "$left"
+		[[ -z $left ]] || diag "left above 6: $left"
+		node_stop mx
+		use_root mx "$oldroot"
+		node_start mx || bail "cannot restart $ref after the downgrade"
+		check "3.2 downgrade: the release's library is the one that runs" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.2
+		for idx in $(q "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i' ORDER BY 1"); do
+			check "3.2 downgrade: $idx verifies" q "SELECT sift.col_verify('$idx', true)"
+		done
+		check "3.2 downgrade: the BM25 index verifies" q "SELECT sift.verify('dgb_idx', true)"
+		check "3.2 downgrade: the BM25 index answers as before" test "$(q "SET enable_seqscan = off" "$DGB" | tail -1)" == "$bidx"
+		for f in "${formats[@]}"; do
+			fmt=${f%% *}
+			w=$what; [[ $docsonly != *" $fmt "* ]] || w=d; w=${w//b/}
+			agree "3.2 downgrade: the $fmt clone answers as this tree answered" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}" tolerate
+		done
+		check "3.2 downgrade: tbl_ca and tbl_wr2 (the wide row) are read" test "$(q "SELECT count(*) FROM tbl_ca" "SELECT id, length(v) FROM tbl_wr2 ORDER BY id" | tr '\n' ' ')" == "3000 1|5000000 2|5 "
+		check "3.2 downgrade: tbl_big (the wide row) is read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$bigwant"
+		check "3.2 downgrade: the release writes, promotes, merges and rewrites" q "INSERT INTO docs_df SELECT i, i % 9, i % 100, 'z' FROM generate_series(30001, 30400) i" \
+			"SELECT sift.col_promote('docs_df_col')" "SELECT sift.col_merge('docs_df_col', true)" "REINDEX INDEX docs_df_col" "INSERT INTO tbl_ca VALUES (3001, now())" "VACUUM tbl_ca" \
+			"INSERT INTO dgb VALUES (30501, 'alpha3 beta4')" "SELECT sift.promote('dgb_idx')"
+		check "3.2 downgrade: and the indexes verify after the writes" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
+		node_stop mx
+	fi
 	ROOT=$newroot
 done
 # an aborted loop must not pass: every release runs more than 30 checks

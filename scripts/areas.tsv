@@ -15,7 +15,7 @@
 =agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(vacuum_agg|topn_vacuum)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
 =tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
 =dec	^(fuzz|hardened)$
-=any	^(production-regress|coverage|coverage-pct|reference-live|isa-baseline|isolation(-emulated)?|static)$
+=any	^(production-regress|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
@@ -62,8 +62,9 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
-^scripts/(check-neutral|check-errors|check-bench-fresh|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|limits\.allow|gen-refusals|refusals\.allow)	-
+^scripts/(check-neutral|check-errors|check-bench-fresh|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|options-released|limits\.allow|gen-refusals|refusals\.allow)	-
 ^(scripts/gen-reference\.sh|docs/reference-notes\.tsv)$	^reference-live$
+^(scripts/gen-options\.sh|scripts/options-released\.tsv|docs/options\.tsv|src/(agg|bm25|col|table)/.*\.[ch])$	^options-live$
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/upgrade[-_]check\.(sh|sql)$	^tap-shell-upgrade_check$
 ^scripts/(static\.baseline|build-bench\.sql)	-

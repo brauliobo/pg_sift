@@ -99,21 +99,66 @@ BM25 results and scores, the column aggregates and the `sift_table` contents are
 
 ## 4. An older release
 
-An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint (`old_lib_refusal`). 3.3 writes at `sift.col_format_minor = 12` by default, so a 3.2 library cannot read a `sift_table` with a date or timestamp column, or a `sift_col` index (`cube_minmax` and `superunit` are on by default; `rollup_dims` and `set_columns` are options), written after the update, unless the setting is lowered to 6 before they are written (`SET sift.col_format_minor = 6` makes `cube_minmax` and `superunit` no-ops). Ask the preflight what the target release can read:
+**A database written by the 3.3 library with its default settings can no longer be read by a 3.2 library.** An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint
+(`old_lib_refusal`), and 3.3 writes at `sift.col_format_minor = 15` by default: a `sift_col` index created or rewritten after the update carries sections 3.2 does not know, and so does a `sift_table` with a date or timestamp
+column. Only what was written with the settings below stays at minor 4 or 6, the highest a 3.2 library reads (a segment is stamped with the lowest minor that describes what it holds):
+
+| Minor | Written when | Keeps the 3.2 bytes |
+|---|---|---|
+| 7 | a `sift_col` index with `cube_minmax` (on by default) | `WITH (cube_minmax = false)`, or `sift.col_format_minor` 6 or less |
+| 8 | the calendar cells of a date, timestamp or timestamptz column: a `sift_col` index (`calendar_columns` defaults to all of them), a `sift_table` | `WITH (calendar_columns = 'off')`; a `sift_table`: `sift.col_format_minor` 7 or less |
+| 9 | `rollup_dims` (option, off) | do not set it, or `sift.col_format_minor` 8 or less |
+| 10 | `set_columns` (option, off) | do not set it, or `sift.col_format_minor` 9 or less |
+| 11 | a `sift_table` write buffer that took a row over the buffer (`sift.table_wide_rows`, on by default; a 3.2 library reads it, writes beside it and promotes it, but the preflight lists it until it is promoted) | `SET sift.table_wide_rows = off` (a row over the buffer is refused again) |
+| 12 | a `sift_col` index with `superunit` (16 by default) | `WITH (superunit = 0)`, or `sift.col_format_minor` 11 or less |
+| 13 | `order_columns` (option, off) | do not set it, or `sift.col_format_minor` 12 or less |
+| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid), in any index, option or not | `WITH (dict_lookup = off)`, or `sift.col_format_minor` 13 or less |
+| 15 | `key_presence` (option, off) | do not set it, or `sift.col_format_minor` 14 or less |
+
+So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off', dict_lookup = off)` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
+without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
+
+### Going back to 3.2
+
+The sequence, run on the 3.3 database while the 3.3 library still runs (`test/t/compat_matrix.sh`, "3.2 downgrade", runs it end to end on a database that holds an index of every minor above, a `sift_table` with calendar cells and
+one with a 5 MB row, and a BM25 index, then starts the 3.2.0 library on it):
 
 ```
-scripts/upgrade-check.sh --to 3.1 app
+# 1. what the target cannot read: one blocker row per object, with the advice
+scripts/upgrade-check.sh --to 3.2 app
+
+# 2. every write from now on is readable by 3.2 (superuser; new sessions pick it up)
+psql -d postgres -c "ALTER SYSTEM SET sift.col_format_minor = 6" -c "SELECT pg_reload_conf()"
+
+# 3. rewrite each blocker row: an index with REINDEX, a sift_table with VACUUM FULL (one command each, outside a transaction block)
+psql -d app -c "REINDEX INDEX CONCURRENTLY public.facts_col"
+psql -d app -c "VACUUM FULL public.orders"
+
+# 4. nothing blocks any more (exit status 0; the warning that the setting is below the default is the point)
+scripts/upgrade-check.sh --to 3.2 app
+
+# 5. stop the server, install the 3.2 files, start it; then check
+psql -d app -c "SELECT sift.col_verify('facts_col', true)"       # each sift_col index
+psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift index
 ```
 
-Every `blocker` row says how to write what that release reads:
+- Keep `sift.col_format_minor = 6` while any 3.3 library still writes: a write after step 4 at the default would put a section 3.2 cannot read back into the database.
+- `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the table in the format of the setting. The preflight names `ALTER TABLE t SET ACCESS METHOD heap` and back for a `sift_table`; it does the same, but it failed with
+  `row is too big` on a table holding a 5 MB row, which `VACUUM FULL` rewrites.
+- A `sift` (BM25) index needs nothing for 3.2: its metapage minor (1.3) is the one 3.1 and 3.2 write (the test builds one with 3.3, and the 3.2 library verifies it and answers the same). A word over 255 bytes is stored as a hash since 3.3 and
+  cut at 255 bytes by 3.2 (section 2): `REINDEX` such an index with 3.2 if a query for the long word must find it.
+- The catalog keeps the extension at 3.3: there is no script back, so the SQL objects added in 3.3 stay and their functions are not in the 3.2 library. The access methods, `sift.col_verify`, `sift.verify` and the other functions
+  3.2 has work on the downgraded database (tested), and writes, promotion, merge and `REINDEX` by the 3.2 library work.
+- A standby that stays on 3.2 needs steps 2 and 3 on its primary, and `sift.col_format_minor` set there for every later write.
+- For 3.1 use 4 and for 3.0 use 3 in step 2 and `--to 3.1` or `--to 3.0` in steps 1 and 4 (the matrix test checks that those releases read what the settings 4 and 3 write, not the full sequence).
+
+Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 15, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it |
-| `sift_table` | with `sift.col_format_minor` set, `ALTER TABLE t SET ACCESS METHOD heap` and back to `sift_table` rewrites it in that format |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 15, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` (or `ALTER TABLE t SET ACCESS METHOD heap` and back to `sift_table`) rewrites it in that format |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
-
-A standby that stays on the older release needs the same: its primary writes the formats the standby reads while `sift.col_format_minor` is set.
 
 ## Defaults changed in 3.3
 

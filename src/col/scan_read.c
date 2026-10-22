@@ -288,6 +288,30 @@ sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, Sift
 	vec->vbytes = sb.data;
 }
 
+bool
+sift_col_read_codes(const SiftColUnit *unit, int col, SiftColVec *vec)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftColDef *def = &cu->src->schema->cols[col];
+
+	if (cu->seg == NULL || def->store != SIFT_COLS_STR || def->parent >= 0 || unit_inline(cu, col) || !sift_cseg_dict_lazy(cu->seg, col, 1))
+		return false;
+	cu->codes_only = true;
+	sift_col_read(unit, col, NULL, vec);
+	cu->codes_only = false;
+	return true;
+}
+
+const char *
+sift_col_code_str(const SiftColUnit *unit, int col, uint32 code, uint32 *len, char *buf)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (sift_cseg_dict_lazy(cu->seg, col, 1))
+		return sift_cseg_dict_get(cu->seg, col, code, len, buf);
+	return sift_cdict_str(sift_cseg_dict(cu->seg, col), code, len);
+}
+
 uint32
 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known)
 {

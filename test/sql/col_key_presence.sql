@@ -253,4 +253,6 @@ SELECT kp_rows('SELECT count(*), sum(val) FROM kb WHERE k = 17', true) = kp_rows
        kp_rows('SELECT count(*) FROM kb WHERE k BETWEEN 100 AND 130', true) = kp_rows('SELECT count(*) FROM kb WHERE k BETWEEN 100 AND 130', false) AS range_same;
 SELECT sift.col_merge('kb_idx', true) >= 0 AS merged;
 SELECT sift.col_verify('kb_idx', true);
-DROP TABLE kb, ka, kp_q;
+DROP TABLE kb, ka, kp_q, kp, kp_b;
+DROP FUNCTION kp_rows(text, bool), kp_units(text), kp_check(text, text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -348,36 +348,50 @@ sift_col_init(void)
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
 }
 
+static const relopt_parse_elt col_relopt_tab[] = {
+	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
+	{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
+	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, vacuum_truncate)},
+	{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
+	{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
+	{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
+	{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
+	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
+	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
+	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
+	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
+	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
+	{"dict_lookup", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, dict_lookup)},
+	{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
+	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
+	{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
+	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
+	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"key_presence", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_presence)},
+};
+
 static bytea *
 col_amoptions(Datum reloptions, bool validate)
 {
-	static const relopt_parse_elt tab[] = {
-		{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
-		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
-		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, vacuum_truncate)},
-		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
-		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
-		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
-		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
-		{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
-		{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
-		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
-		{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
-		{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
-		{"dict_lookup", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, dict_lookup)},
-		{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
-		{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
-		{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
-		{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
-		{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
-		{"key_presence", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_presence)},
-	};
-	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
+	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), col_relopt_tab, lengthof(col_relopt_tab));
 
 	if (validate && o && o->superunit == 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
 	return (bytea *) o;
 }
+
+#ifdef SIFT_TESTING
+/* The options of an index with none set and the table that parses them, for sift._test_reloptions() */
+extern const void *sift_col_test_reloptions(const relopt_parse_elt **tab, int *n);
+
+const void *
+sift_col_test_reloptions(const relopt_parse_elt **tab, int *n)
+{
+	*tab = col_relopt_tab;
+	*n = lengthof(col_relopt_tab);
+	return col_amoptions((Datum) 0, false);
+}
+#endif
 
 const SiftColOptions *
 sift_col_options(Relation index)

@@ -1,0 +1,78 @@
+# released: 3.2, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
+sift(accent_folding)	true
+sift(analyzer)	text
+sift(b)	0.75
+sift(build_segments)	0
+sift(case_folding)	true
+sift(dead_rewrite_pct)	50
+sift(fields)	''
+sift(k1)	1.2
+sift(merge_fanin)	8
+sift(mutable_limit)	4096
+sift(positions)	true
+sift(prefix_index)	0
+sift(stemmer)	''
+sift(vacuum_segments)	2
+sift(vacuum_truncate)	true
+sift(write_buffer_limit)	4096
+sift.agg_combo_cache	1048576
+sift.agg_dense	on
+sift.agg_fuse	on
+sift.agg_join_filter	on
+sift.agg_key_skew	on
+sift.agg_lookup_cache_kb	262144 kB
+sift.agg_lookup_max_rows	1000000
+sift.agg_lookup_pushdown	on
+sift.agg_param_set_size	1000
+sift.agg_preagg	on
+sift.agg_rollup_cost	1
+sift.agg_rows	on
+sift.agg_semi_lut	on
+sift.agg_semi_lut_size	4096 kB
+sift.agg_share_lookups	on
+sift.agg_two_level	on
+sift.async_maintenance	on
+sift.col_auto_merge	off
+sift.col_auto_merge_buffer_pct	1
+sift.col_auto_merge_dirty_pct	30
+sift.col_auto_merge_fragmentation	2
+sift.col_format_minor	6
+sift.col_rollup_on_demand	on
+sift.col_rollup_worker	on
+sift.enable_agg	on
+sift.enable_col	on
+sift.enable_count	on
+sift.enable_scan	on
+sift.enable_topn	on
+sift.filter_pushdown	on
+sift.gpu	off
+sift.gpu_cache_mb	256 MB
+sift.gpu_device	''
+sift.gpu_min_rows	5000000
+sift.log_min_duration	1000 ms
+sift.maintenance_cost_delay	0
+sift.maintenance_naptime	2000 ms
+sift.max_expansions	512
+sift.parallel_scan	off
+sift.prefetch	on
+sift.prefix_cache_size	8192 kB
+sift.simd	avx512
+sift.standby_conflicts	off
+sift.table_auto_defrag	off
+sift.table_auto_defrag_delay	10 ms
+sift.table_auto_defrag_free_pct	25
+sift.table_auto_defrag_indexes	on
+sift.table_compression	''
+sift.table_dead_rewrite_pct	30
+sift.table_inline_promote	on
+sift.table_write_buffer_limit	4096 kB
+sift.topn_walk	on
+sift.vacuum_rewrite_limit	128 MB
+sift_col(compression)	''
+sift_col(dead_rewrite_pct)	10
+sift_col(paths)	''
+sift_col(preagg)	''
+sift_col(rollup)	''
+sift_col(rollup_on_demand)	true
+sift_col(vacuum_truncate)	true
+sift_col(write_buffer_limit)	4096

@@ -536,13 +536,16 @@ in a third form, searched where it lies in the stream:
 
 ```
 u32 form = 2, u32 n, u32 fixed, u32 nbytes,
-[u32 off[n + 1]      only when fixed = 0],
-bytes[nbytes]        the strings in code order,
+u32 boff[blocks + 1]  where each block starts, from the first (blocks = ceil(n / 32)),
+blocks               32 strings each in code order (the last fewer): u8 algorithm (0 raw, 2 zstd), u8 0, u16 raw bytes, then
+                     [u8 length[count]  only when fixed = 0] followed by the strings, compressed as a whole when that is smaller,
 (padding to 4 bytes)
 u32 code[n]          the codes in the byte order of their strings (equal strings do not occur: a dictionary has each once)
 ```
 
-`fixed` is the length of every string when they all have one (a uuid: 16, an md5: 32) and then no offsets are stored; otherwise `off` is the form 0 offsets. Codes keep their first-seen
+`fixed` is the length of every string when they all have one (a uuid: 16, an md5: 32) and then no lengths are stored; `nbytes` is the bytes of all the strings. A string is read by decompressing its block
+(about 1.3 kB, the one block the backend keeps for the dictionary) and a bisection reads a handful of them; the writer compresses a block with zstd unless the compression policy of the index is `none` or the
+block does not shrink, and a build without zstd writes raw blocks and cannot read compressed ones (the error says so). Codes keep their first-seen
 order, so the units, the zones, the small-set summaries and the sorted runs do not change. A test of a predicate on a stored segment (`sift_cseg_dict_search`) asks the dictionary for
 what it needs and nothing else: an equality or a member of an `IN` list bisects `code[]`, reading about log2(n) strings one at a time (`seg_read` of the page that holds
 them, which the segment keeps pinned), and a prefix or range bisects it twice and reads the codes between, so the work follows the matches. The lookup table of codes the unit
@@ -553,8 +556,11 @@ offset or a code out of range; `sift.col_verify` checks that `code[]` names ever
 A segment is minor 14 when some dictionary has the form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small, and
 `dict_lookup = off` are read by the releases that read their other sections, and a 3.2 library refuses a segment with the form with the REINDEX hint (minor 14 is above its 6). An index
 written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new form where the setting allows it. The merge
-of a segment of the new form with one of the old makes a new dictionary and writes it in the new form. The form costs the bytes it stores uncompressed and 4 for each code: a dictionary of
-random uuids, which does not compress, grows by 4 bytes a string, and one of hex digests or words, which the compact form shrinks, by what the codec saved.
+of a segment of the new form with one of the old makes a new dictionary and writes it in the new form. The form costs 4 bytes for each code, 4 for each 32 strings, and what the compression of
+blocks of 32 strings saves less than that of the whole dictionary: a dictionary of random uuids, which does not compress, grows by 4 bytes a string, and one of hex digests or words by about a fifth
+(60,000 texts of `'text ' ||` an md5, a `sift_table`: 1.16 MB of segments in the compact form, 1.49 MB in this one; stored uncompressed they took 2.53 MB).
+
+A `sift_table` row fetch (`sift_tbl_gscan_fill`) takes the strings of a segment with such a dictionary the same way, one at a time from the stream (`sift_col_read_codes`, `sift_col_code_str`), while the strings read from the segment are fewer than a sixteenth of its dictionary (the same count as the reads of `sift_col_read_text`); then the dictionary is loaded and cached and the reads come from it.
 
 ### 2.16 Key presence of a leaf in a unit (column format minor 15, 3.3; opt-in)
 

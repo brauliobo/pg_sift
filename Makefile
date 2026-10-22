@@ -58,7 +58,7 @@ TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += tbl_wide_rows col_wildcard_keys
 TESTING_REGRESS += col_topn_deep_limits col_topn_text col_topn_expr
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths
-TESTING_REGRESS += col_dict_cache col_zone_jnull col_dict_lookup col_dict_stored col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build
+TESTING_REGRESS += col_dict_cache col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += agg_group_spill_limits
 ifdef SIFT_TESTING
@@ -107,7 +107,7 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals reference
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits refusals reference options
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
@@ -123,6 +123,9 @@ refusals:
 # docs/REFERENCE.md and the README block from the sift.* objects of the install scripts (scripts/gen-reference.sh --check proves them)
 reference:
 	scripts/gen-reference.sh
+# the options tables of README.md and docs/USAGE.md from the reloption and setting definitions in src/ and docs/options.tsv (scripts/gen-options.sh --check proves them)
+options:
+	scripts/gen-options.sh
 
 # Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
