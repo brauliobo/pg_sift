@@ -22,6 +22,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
+#include "core/limits.h"
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -378,7 +379,7 @@ compile_cmp(AggCtx *c, OpExpr *op)
 	return p;
 }
 
-#define AGG_MAX_NUM_IN		64		/* constants of a numeric IN list: one comparison each */
+#define AGG_MAX_NUM_IN		64		/* constants of a numeric IN list that are one comparison each: a longer list is a hash set */
 
 /* numeric leaf IN (constants) is the OR of its equalities, NOT IN the AND of its inequalities: every operand is scaled like a comparison's */
 static SiftAggPred *
@@ -407,8 +408,19 @@ compile_num_in(AggCtx *c, ScalarArrayOpExpr *sa, int leaf, Node *arr)
 		return NULL;
 	if (elems == NIL)
 		return new_pred(c, sa->useOr ? SAP_FALSE : SAP_TRUE);
-	if (list_length(elems) > AGG_MAX_NUM_IN)
-		return NULL;
+	if (list_length(elems) > sift_limit(num_in_list, AGG_MAX_NUM_IN))
+	{
+		/* a long list is one test of a hash set of the scaled values, not a comparison for each */
+		if (exprType(arr) != NUMERICARRAYOID)
+			return NULL;
+		p = make_leaf_pred(c, SAP_IN, leaf);
+		p->op = !sa->useOr;
+		p->expr = arr;
+		p->argtype = NUMERICOID;
+		p->desc = psprintf("%s %s %s (hash set)", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, arr));
+		p->sel = clause_selectivity(c->root, (Node *) sa, c->relid, JOIN_INNER, NULL);
+		return p;
+	}
 	p = new_pred(c, sa->useOr ? SAP_OR : SAP_AND);
 	p->level = leaf_level(c, leaf);
 	p->nchild = list_length(elems);

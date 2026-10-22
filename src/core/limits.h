@@ -64,7 +64,7 @@
 	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec.h", SIFT_AGG_MAX_KEYS, "keys", \
 	  "group keys (grouping sets count with their keys)", "normal plan (slug too_many_keys)", "-", 0) \
 	X(num_in_list, "AGG_MAX_NUM_IN", "agg/plan_pred.c", 64, "constants", \
-	  "constants of a numeric IN list", "the conjunct is not pushed into the scan", "-", 0) \
+	  "constants of a numeric IN list compared one by one; a longer list is tested as a hash set", "a hash set of the scaled values", "-", 1) \
 	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec.h", SIFT_AGG_MAX_ARMS, "arms", \
 	  "UNION ALL arms of a fused or two-level scan", "not fused", "-", 0) \
 	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec.h", SIFT_AGG_MAX_VLEAVES, "leaves", \

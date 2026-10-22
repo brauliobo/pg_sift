@@ -12,6 +12,7 @@
 /* pred.c */
 void clear_nulls(AggExec *ex, const SiftSrcVec *v, int start, int n, uint64 *out);
 void negate(AggExec *ex, uint64 *out, int n);
+void set_rows(const uint64 *rows, int n, bool res, uint64 *out);
 
 /* pred_in.c */
 void eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out);
