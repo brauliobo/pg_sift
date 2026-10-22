@@ -156,20 +156,22 @@ fuse_start(AggExec *ex)
 	SiftAggSpec **specs;
 	int		  **keymap;
 	int			n = 1;
+	bool		preagg = ex->pa_on;
 	MemoryContext old;
 	FuseSt	   *fs;
 	AggExec    *F;
 
-	if (r == NULL)
+	if (r == NULL || !sift_agg_fuse)
 		return false;
 	specs = palloc(sizeof(SiftAggSpec *) * (list_length(r->nodes) + 1));
 	specs[0] = ex->spec;
 	foreach_ptr(AggExec, o, r->nodes)
 	{
 		specs[n] = o->spec;
-		if (o != ex && !o->started && sift_aggspec_fusable(specs, n + 1))
+		if (o != ex && !o->started && sift_aggspec_fusable(specs, n + 1, preagg || o->pa_on))
 		{
 			m = lappend(m, o);
+			preagg |= o->pa_on;
 			n++;
 		}
 	}

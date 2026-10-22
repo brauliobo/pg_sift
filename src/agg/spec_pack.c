@@ -344,6 +344,9 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nsets);
 	for (int i = 0; i < s->nsets; i++)
 		put_int(p, (int) s->setmask[i]);
+	put_int(p, s->setpred != NULL);
+	for (int i = 0; s->setpred && i < s->nsets; i++)
+		put_pred(p, s->setpred[i]);
 	put_int(p, s->nhidden);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
@@ -702,6 +705,12 @@ sift_aggspec_unpack(const List *items)
 	s->setmask = palloc(Max(s->nsets, 1) * sizeof(uint32));
 	for (int i = 0; i < s->nsets; i++)
 		s->setmask[i] = (uint32) get_int(u);
+	if (get_int(u))
+	{
+		s->setpred = palloc(s->nsets * sizeof(SiftAggPred *));
+		for (int i = 0; i < s->nsets; i++)
+			s->setpred[i] = get_pred(u);
+	}
 	s->nhidden = get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);

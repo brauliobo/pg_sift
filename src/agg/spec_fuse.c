@@ -12,6 +12,7 @@
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 
+#include "agg/plan_int.h"
 #include "agg/spec.h"
 
 typedef struct FuseArm
@@ -35,6 +36,9 @@ typedef struct Fuse
 	SiftAggPred **post;
 	uint32	   *postsets;
 	int			npreds;			/* predicates of the pass: those of the arms (ids below npreds_total of the arm with most) and its own conjuncts */
+	int			ncommon;		/* the conjuncts over the rows that every arm has: the pass applies them */
+	SiftAggPred **common;
+	SiftAggPred **resid;		/* per arm: its other conjuncts as one node, NULL none: they are applied to its set (spec.setpred) */
 } Fuse;
 
 /* the arm's join with what an arm may differ in left out: an inner join is a left join whose arm drops the tuples without a row (SAP_MATCHED), its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
@@ -290,10 +294,10 @@ pred_number(const SiftAggPred *p, int *next)
 
 /* a conjunct as a spec of its own: two conjuncts of arms over the same combos are the same when these are equal */
 static List *
-post_pack(const SiftAggPred *p)
+pred_pack(const SiftAggPred *p)
 {
 	SiftAggPred *q = pred_noid(p);
-	SiftAggSpec t = {.npost = 1, .post = &q};
+	SiftAggSpec t = {.npred = 1, .pred = &q};
 
 	return sift_aggspec_pack(&t);
 }
@@ -302,10 +306,10 @@ post_pack(const SiftAggPred *p)
 static void
 fuse_post(Fuse *f, const SiftAggPred *p, int arm)
 {
-	List	   *k = post_pack(p);
+	List	   *k = pred_pack(p);
 	int			at = 0;
 
-	while (at < f->npost && !equal(post_pack(f->post[at]), k))
+	while (at < f->npost && !equal(pred_pack(f->post[at]), k))
 		at++;
 	if (at == f->npost)
 	{
@@ -421,6 +425,143 @@ fuse_unpost(Fuse *f)
 		f->arm[i].a.nprepost = 0;
 		f->arm[i].a.post = NULL;
 	}
+}
+
+/* does the expression run a plan (a sub-select, or a parameter an InitPlan sets); the Param 0 of a SAP_LUT is the leaf's value */
+static bool
+runs_plan(Node *n, void *lut)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
+		return true;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !(lut && ((Param *) n)->paramid == 0))
+		return true;
+	return expression_tree_walker(n, runs_plan, lut);
+}
+
+/*
+ * does eval_pred test p on the rows of a chunk (the source and the joined tuples test the others); not one that runs a plan: the plan may read
+ * the table with a node of its own that is another arm of the pass, which then waits for the pass
+ */
+static bool
+routable(const SiftAggPred *p)
+{
+	if (p->expr && runs_plan(p->expr, (void *) (p->kind == SAP_LUT ? p : NULL)))
+		return false;
+	switch (p->kind)
+	{
+		case SAP_AND:
+		case SAP_OR:
+			for (int i = 0; i < p->nchild; i++)
+				if (!routable(p->child[i]))
+					return false;
+			break;
+		case SAP_TRUE:
+		case SAP_FALSE:
+		case SAP_GATE:
+		case SAP_CMP:
+		case SAP_NCMP:
+		case SAP_IN:
+		case SAP_NULL:
+		case SAP_LUT:
+		case SAP_ANY_ELEM:
+		case SAP_ELEM_ROW:
+			break;
+		default:
+			return false;
+	}
+	return !p->late && p->level <= 1;
+}
+
+static SiftAggPred *
+junction(SiftAggPredKind kind, int n, SiftAggPred **child)
+{
+	SiftAggPred *p = palloc0(sizeof(SiftAggPred));
+
+	p->kind = kind;
+	p->leaf = p->leaf2 = -1;
+	p->nchild = n;
+	p->child = child;
+	junction_done(p);
+	return p;
+}
+
+/* the conjuncts over the rows that every arm has, and per arm those it has beyond them: false when an arm's cannot be tested on its own set */
+static bool
+fuse_split(Fuse *f)
+{
+	List	  **keys = palloc(f->n * sizeof(List *));
+	List	   *common = NIL;
+
+	for (int i = 0; i < f->n; i++)
+	{
+		keys[i] = NIL;
+		for (int j = 0; j < f->arm[i].a.npred; j++)
+			keys[i] = lappend(keys[i], pred_pack(f->arm[i].a.pred[j]));
+	}
+	f->ncommon = 0;
+	f->common = palloc(Max(f->arm[0].a.npred, 1) * sizeof(SiftAggPred *));
+	for (int j = 0; j < f->arm[0].a.npred; j++)
+	{
+		bool		all = true;
+
+		for (int i = 1; i < f->n; i++)
+			all &= list_member(keys[i], list_nth(keys[0], j));
+		if (all)
+		{
+			common = lappend(common, list_nth(keys[0], j));
+			f->common[f->ncommon++] = f->arm[0].a.pred[j];
+		}
+	}
+	f->resid = palloc0(f->n * sizeof(SiftAggPred *));
+	for (int i = 0; i < f->n; i++)
+	{
+		const SiftAggSpec *a = &f->arm[i].a;
+		SiftAggPred **own = palloc(Max(a->npred, 1) * sizeof(SiftAggPred *));
+		int			n = 0;
+
+		for (int j = 0; j < a->npred; j++)
+			if (!list_member(common, list_nth(keys[i], j)))
+			{
+				if (!routable(a->pred[j]))
+					return false;
+				own[n++] = a->pred[j];
+			}
+		f->resid[i] = n == 0 ? NULL : n == 1 ? own[0] : junction(SAP_AND, n, own);
+	}
+	return true;
+}
+
+/* the conjuncts of the pass: those every arm has, then the OR of what the arms have beyond them when each has some (it prunes the units and rows no arm needs); the sets' own */
+static void
+fuse_preds(Fuse *f, SiftAggSpec *spec)
+{
+	bool		all = true,
+				any = false;
+
+	for (int i = 0; i < f->n; i++)
+	{
+		all &= f->resid[i] != NULL;
+		any |= f->resid[i] != NULL;
+	}
+	spec->npred = 0;
+	spec->pred = palloc((f->ncommon + 1) * sizeof(SiftAggPred *));
+	for (int k = 0; k < f->ncommon; k++)
+		spec->pred[spec->npred++] = pred_number(f->common[k], &f->npreds);
+	if (all)
+	{
+		SiftAggPred **any_of = palloc(f->n * sizeof(SiftAggPred *));
+
+		memcpy(any_of, f->resid, f->n * sizeof(SiftAggPred *));
+		spec->pred[spec->npred++] = pred_number(junction(SAP_OR, f->n, any_of), &f->npreds);
+	}
+	spec->setpred = NULL;
+	if (any)
+		spec->setpred = palloc0(f->n * sizeof(SiftAggPred *));
+	for (int i = 0; any && i < f->n; i++)
+		if (f->resid[i])
+			spec->setpred[i] = pred_number(f->resid[i], &f->npreds);
 }
 
 /* the leaves the arms read together, and how: false when two arms read one leaf in different ways */
@@ -548,7 +689,7 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 	}
 	for (int i = 0; i < n; i++)
 		fuse_adapt(f, &f->arm[i]);
-	if (!fuse_posts(f))
+	if (!fuse_posts(f) || !fuse_split(f))
 		return false;
 	fuse_unpost(f);
 	return true;
@@ -644,12 +785,11 @@ fuse_shape(const SiftAggSpec *a)
 	t.key = NULL;
 	t.nworkers = 0;
 	t.est_groups = 0;
-	/* the conjuncts and FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text */
+	/* the FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text; the conjuncts over the rows are split (fuse_split) */
 	t.npreds_total = 0;
 	t.desc_quals = NULL;
-	t.pred = palloc(Max(a->npred, 1) * sizeof(SiftAggPred *));
-	for (int i = 0; i < a->npred; i++)
-		t.pred[i] = pred_noid(a->pred[i]);
+	t.npred = 0;
+	t.pred = NULL;
 	t.agg = palloc(Max(a->naggs, 1) * sizeof(SiftAggAgg));
 	for (int i = 0; i < a->naggs; i++)
 	{
@@ -659,8 +799,13 @@ fuse_shape(const SiftAggSpec *a)
 	return sift_aggspec_pack(&t);
 }
 
+/*
+ * the arms are one pass. Conjuncts of the arms' own cost the pass a filter of the chunk per set, which the arm alone gets from the source for
+ * less: they are worth it when the arms share a lookup join, not when they only share a cheap decode. An arm that a unit's
+ * pre-aggregates answer (preagg) is not given them either: the pass reads the rows
+ */
 bool
-sift_aggspec_fusable(SiftAggSpec *const *m, int n)
+sift_aggspec_fusable(SiftAggSpec *const *m, int n, bool preagg)
 {
 	Fuse		f;
 	List	   *shape,
@@ -671,6 +816,9 @@ sift_aggspec_fusable(SiftAggSpec *const *m, int n)
 			return false;
 	if (!fuse_build(m, n, &f))
 		return false;
+	for (int i = 0; i < n; i++)
+		if (f.resid[i] && (preagg || f.u.njoin == 0))
+			return false;
 	keys = fused_keys(&f, NULL);
 	if (list_length(keys) >= SIFT_AGG_MAX_KEYS || !fuse_key_slots(&f, keys))
 		return false;
@@ -712,6 +860,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap)
 		spec->est_groups += m[i]->est_groups;
 	}
 	spec->npost = f.npost;
+	fuse_preds(&f, spec);
 	spec->npreds_total = f.npreds;
 	spec->nprepost = 0;
 	spec->post = f.post;

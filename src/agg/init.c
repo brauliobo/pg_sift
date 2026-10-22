@@ -236,7 +236,7 @@ register_pred(AggExec *ex, SiftAggPred *p)
 		register_pred(ex, p->child[i]);
 }
 
-/* every predicate the scan evaluates: the conjuncts of the rows, the FILTER of the aggregates and of the inner aggregates of the arms */
+/* every predicate the scan evaluates: the conjuncts of the rows and of the sets, the FILTER of the aggregates and of the inner aggregates of the arms */
 void
 register_preds(AggExec *ex)
 {
@@ -246,6 +246,8 @@ register_preds(AggExec *ex)
 		register_pred(ex, s->pred[i]);
 	for (int i = 0; i < s->npost; i++)
 		register_pred(ex, s->post[i]);
+	for (int i = 0; s->setpred && i < s->nsets; i++)
+		register_pred(ex, s->setpred[i]);
 	for (int i = 0; i < s->naggs; i++)
 		register_pred(ex, s->agg[i].filter);
 	for (int k = 0; k < s->narms; k++)
