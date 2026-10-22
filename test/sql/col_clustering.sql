@@ -70,18 +70,35 @@ INSERT INTO evo SELECT i, date '2020-01-01' + i / 300, repeat('x', 1000) FROM ge
 CREATE INDEX evo_col ON evo USING sift_col (id, day);
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) evs, evo;
-SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
+SELECT tbl, order_by, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
 FROM sift.cluster_advice('ev', 10000);
-SELECT tbl, key, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ' reads', 1) AS why, command
+SELECT tbl, order_by, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ' reads', 1) AS why, command
 FROM sift.cluster_advice('evs_col', 10000);
-SELECT tbl, key, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('evo', 10000);
-SELECT tbl, key, verdict, split_part(reason, ' ', 1) AS why FROM sift.cluster_advice('evs');
+SELECT tbl, order_by, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('evo', 10000);
+SELECT tbl, order_by, verdict, split_part(reason, ' ', 1) AS why FROM sift.cluster_advice('evs');
+-- what if: a list of leaves, units of an equality on its first; the leaves outside it are the ones it can scatter; the command ends with the VACUUM a rewrite needs
+SELECT tbl, order_by, round(units_now) AS now, round(units_after) AS after, verdict, command FROM sift.cluster_advice('evs_col', 10000, 'grp, rnd');
+SELECT tbl, order_by, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('ev', 10000, 'rnd, id');
+SELECT tbl, order_by, verdict, split_part(reason, ':', 1) AS why FROM sift.cluster_advice('ev', 10000, 'id, day');
+SELECT tbl, verdict, reason FROM sift.cluster_advice('evs_col', 10000, 'grp, nope, lbl');
+SELECT count(*) AS rows FROM sift.cluster_advice(NULL, 10000, 'grp');
+\set VERBOSITY terse
+SELECT * FROM sift.cluster_advice('evs_col', 10000, ' , ');
+\set VERBOSITY default
+-- the visibility map: a table that VACUUM has not seen says so
+CREATE TABLE evv (id int PRIMARY KEY, grp int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evv SELECT i, abs(hashint4(i)) % 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX evv_col ON evv USING sift_col (grp);
+ANALYZE evv;
+SELECT reason ~ 'VACUUM \(ANALYZE\) public.evv first' AS vm_note FROM sift.cluster_advice('evv', 10000);
+VACUUM evv;
+SELECT reason ~ 'all-visible' AS vm_note FROM sift.cluster_advice('evv', 10000);
 -- the two switches
 SET sift.cluster_advice = off;
-SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
 RESET sift.cluster_advice;
 ALTER INDEX evs_col SET (cluster_advice = off);
-SELECT tbl, key, verdict, reason FROM sift.cluster_advice('evs', 10000);
+SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
 SELECT tbl, verdict FROM sift.cluster_advice('ev', 10000);
 ALTER INDEX evs_col RESET (cluster_advice);
 SELECT tbl, verdict FROM sift.cluster_advice('evs', 10000);
@@ -89,6 +106,6 @@ SELECT tbl, verdict FROM sift.cluster_advice('evs', 10000);
 SELECT tbl, verdict, reason FROM sift.cluster_advice('empty_t');
 SELECT count(*) AS rows FROM sift.cluster_advice('ev_bm25');
 
-DROP TABLE ev, empty_t, evs, evo;
+DROP TABLE ev, empty_t, evs, evo, evv;
 DROP FUNCTION units_read(text), predicted(text, int[]);
 DROP EXTENSION pg_sift;
