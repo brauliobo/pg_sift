@@ -32,7 +32,8 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROLLUP_TUPLES	4096		/* the most tuples of a rollup in a unit (explicit rollup(...)); the default takes at most a 32nd of the unit's elements, at least 64 */
 #define SIFT_PAGG_ROLLUP_MIN	64
 #define SIFT_PAGG_MAX_MEAS		8
-#define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim */
+#define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
+#define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
@@ -67,6 +68,7 @@ typedef struct SiftCPaggDim
 {
 	int16		leaf;
 	uint8		nmeas;
+	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
 
@@ -101,7 +103,7 @@ typedef struct SiftCPaggSpec
 extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);
 
-/* 'default': every top level dim candidate with up to SIFT_PAGG_DEF_MEAS measures (numeric and floats first, then integers), and the rollup of every list. Never fails */
+/* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
 /*
  * The option: "" / "default", "off", or "cube(dim: m1, m2; dim2: m3; dim3)" for the top level and "rollup(d1, d2: m1, m2; ...)" for lists (one entry per list,

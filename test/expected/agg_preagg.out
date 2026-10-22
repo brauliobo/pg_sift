@@ -157,7 +157,7 @@ SELECT * FROM pa_check('ac');
 SELECT * FROM pa_sum('ap');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |      13 |        3 |      3
+      21 |      0 |      14 |        3 |      3
 (1 row)
 
 SELECT * FROM pa_sum('ao');
@@ -201,7 +201,7 @@ SELECT * FROM pa_check('ac');
 SELECT * FROM pa_sum('ap');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |       0 |       15 |      4
+      21 |      0 |       0 |       16 |      4
 (1 row)
 
 SELECT * FROM pa_sum('ao');
