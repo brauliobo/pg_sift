@@ -8,7 +8,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import charts  # noqa: E402
-from store_render import best_bold, best_high, md_table, ms, rate, seconds  # noqa: E402
+from store_render import best_bold, best_high, md_table as table, ms, rate  # noqa: E402
 
 LANES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint']
 NAMES = {'pg': 'PostgreSQL', 'sift': '`sift_col`', 'sift_maint': '`sift_col` + auto merge', 'sift_table': '`sift_table`', 'sift_table_maint': '`sift_table` + auto defrag'}
@@ -18,6 +18,9 @@ STATES = [('baseline', 'fresh table'), ('after churn', 'right after the changes'
 # why a cell loses, one line each; a sentence is printed only for a cell that loses in the results
 CAUSE = {'bulk': 'a changed row also marks its unit of the column index dirty, which a PostgreSQL heap has no equivalent of',
          'reads': 'until VACUUM (or a merge) a unit with a changed row is not answered from its pre-aggregates and its rows are checked against the heap (docs/COL-DIRTY-UNITS.md)'}
+
+
+md_table = lambda head, body: table(head, body, ['---', '---'] + ['---:'] * (len(head) - 2))
 
 
 class Section:
@@ -78,8 +81,8 @@ def tables(S, detail):
     out += md_table(head(['orders', 'state']), [line(S, s, (q, v, 'latency_ms'), ms, best_bold, f'{label}: {name}') for s in S.sizes for q, label in qs for v, name in STATES]) + ['']
     out += ['**VACUUM, WAL and space**', '']
     body = []
-    for s in S.sizes:
-        body.append(line(S, s, ('-', 'maintenance', 'maintain_s'), seconds, best_bold, 'VACUUM (ANALYZE), seconds'))
+    for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of docs/BENCHMARKS.md every size
+        body.append(line(S, s, ('-', 'maintenance', 'maintain_s'), lambda x: f'{x:.1f}', best_bold, 'VACUUM (ANALYZE), seconds'))
         wal = lambda e: [S.med(s, e, '-', v, 'wal_mib') for v, _ in CHANGES] + [S.med(s, e, '-', 'maintenance', 'wal_mib')]
         body.append([f'{s:,}', 'WAL MiB: the three changes / VACUUM'] + [(f'{sum(w[:3]):,.0f} / {w[3]:,.0f}' if None not in w else 'n/a') for w in map(wal, S.lanes)])
         body.append([f'{s:,}', 'size MiB: fresh, after the changes, after VACUUM'] + [' / '.join(f'{x:,.0f}' if x is not None else 'n/a' for x in (S.med(s, e, '-', v, 'size_mib') for v in ('before', 'after churn', 'after maintenance'))) for e in S.lanes])
@@ -99,6 +102,7 @@ def tables(S, detail):
 
 
 def losses(S):
+    """one sentence per kind of loss, each only when the results have it"""
     out, big = [], S.sizes[-1]
     for s in S.sizes:
         for v, label in CHANGES:
@@ -107,23 +111,26 @@ def losses(S):
             mine = {e: x for e, x in mine.items() if x}
             if pg and mine and pg > max(mine.values()) * 1.05:
                 best = max(mine, key=mine.get)
-                out.append(f'{label} at {s:,} orders: PostgreSQL {pg / mine[best]:.1f}x faster than {NAMES[best]} ({rate(pg)} against {rate(mine[best])} rows/s); {CAUSE["bulk"]}')
+                out.append(f'{label} at {s:,} orders: PostgreSQL {pg / mine[best]:.1f}x faster than {NAMES[best]} ({rate(pg)} against {rate(mine[best])} rows/s); {CAUSE["bulk"]}.')
     pg = S.med(big, 'pg', '03', 'after churn', 'latency_ms')
+    slow = []
     for e in ('sift', 'sift_table'):
         a, b, c = (S.med(big, e, '03', v, 'latency_ms') for v, _ in STATES)
         if a and b and b > 10 * a:
-            out.append(f'{NAMES[e]} at {big:,} orders: the monthly revenue read takes {ms(b)} ms right after the changes, {b / a:.0f}x the {ms(a)} ms of the fresh table, and {ms(c)} ms after VACUUM'
-                       + (f' (PostgreSQL {ms(pg)} ms)' if pg else '') + f'; {CAUSE["reads"]}')
+            slow.append(f'{NAMES[e]} {ms(b)} ms ({b / a:.0f}x its fresh {ms(a)} ms; {ms(c)} ms after VACUUM)')
+    if slow:
+        out.append(f'the monthly revenue read at {big:,} orders right after the changes: ' + ', '.join(slow) + (f', PostgreSQL {ms(pg)} ms' if pg else '') + f'; {CAUSE["reads"]}.')
     vis = {e: S.med(big, e, '-', 'commit', 'visible_ms') for e in ('pg', 'sift', 'sift_table')}
     if all(vis.values()) and max(vis['sift'], vis['sift_table']) > 2 * vis['pg']:
-        out.append(f'a single-row change is seen by the next query after {ms(vis["sift"])} ms on `sift_col` and {ms(vis["sift_table"])} ms on `sift_table`, PostgreSQL {ms(vis["pg"])} ms')
+        out.append(f'a single-row change is seen by the next query after {ms(vis["sift"])} ms on `sift_col` and {ms(vis["sift_table"])} ms on `sift_table`, PostgreSQL {ms(vis["pg"])} ms.')
     return out
 
 
 def readme_block(S):
     out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](docs/img/updates-reads.svg)', '']
     ls = losses(S)
-    out += ['- **Where pg_sift loses:** ' + '; '.join(ls) + '.' if ls else '- **Where pg_sift loses:** no bulk change of this pass is slower than PostgreSQL.']
+    out += ['**Where pg_sift loses**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL.']
+    out += ['']
     out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).']
     return out
 
