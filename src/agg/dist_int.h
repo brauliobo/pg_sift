@@ -102,6 +102,7 @@ void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *
 void dist_finish_all(AggExec *ex);
 void dist_end_all(AggExec *ex);
 void dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
+void dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
 
 #pragma GCC visibility pop
 

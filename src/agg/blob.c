@@ -230,17 +230,27 @@ blob_key_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 	pfree(pv);
 }
 
+/* count(DISTINCT x), and the sum and average over distinct numbers: their partial state is a set of (group, value) pairs, not an accumulator */
+static bool
+set_agg(const SiftAggAgg *a)
+{
+	return a->kind == SAA_COUNT_DISTINCT || ((a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM) && a->distinct);
+}
+
 /*
  * The set of a count(DISTINCT) of aggregate ai in the groups of cidx (blob numbering), header {pairs, chunks}: the (group, value)
  * pairs, then the (group, chunk number) of each bitmap chunk and its bits. A set that is still a bitmap of raw values sends the chunks
  * with DB_DENSE bits or more as they are, so that the leader ORs them and counts by popcount, and the bits of the others as pairs;
- * what it sends is bounded by the memory of the bitmap, hash_mem. The values of a dictionary leaf go by value.
+ * what it sends is bounded by the memory of the bitmap, hash_mem. The values of a dictionary leaf go by value, and so do the numbers of a numeric
+ * expression (the ids of the worker's table of them, which the leader gives its own).
  */
 static void
 blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 {
+	const SiftAggAgg *a = &ex->spec->agg[ai];
 	Dist	   *d = ex->dist[ai];
-	bool		dict = ex->lay->leaf[ex->spec->agg[ai].leaf].vtype == SCV_CODE;
+	bool		dict = a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype == SCV_CODE,
+				num = a->num.n != 0;
 	uint32		np,
 			   *pg,
 			   *pv,
@@ -253,7 +263,7 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 			   *cc = none;
 	const uint64 **bits = NULL;
 
-	if (d->mode == DD_BITS && d->sgn)
+	if (d && d->mode == DD_BITS && d->sgn)
 	{
 		uint32		n = Min(ex->hash ? ex->ngroups : ex->gcap, d->ngd);
 		uint64		total = 0;
@@ -290,10 +300,14 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 						}
 			}
 	}
-	else
+	else if (d)
 		dist_pairs(ex, ai, cidx, &pg, &pv, &np);
+	else
+		dset_pairs(ex, ai, cidx, &pg, &pv, &np);
 	if (dict)
 		old = renumber(pv, np, ex->aot[ai].n, &nused);
+	else if (num)
+		old = renumber(pv, np, ex->amap[ai].n, &nused);
 	hd[0] = np;
 	hd[1] = nc;
 	bw_put(b, hd, sizeof(hd));
@@ -305,6 +319,14 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 		appendBinaryStringInfo(b, (const char *) bits[i], DB_WORDS * sizeof(uint64));
 	if (dict)
 		bw_values(b, &ex->aot[ai], old, nused);
+	else if (num)
+	{
+		uint32		vh[2] = {nused, nused * sizeof(sift_i128)};
+
+		bw_put(b, vh, sizeof(vh));
+		for (uint32 i = 0; i < nused; i++)
+			bw_put(b, &ex->amap[ai].val[old[i] - 1], sizeof(sift_i128));
+	}
 }
 
 typedef struct OsaRec
@@ -410,7 +432,7 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 	for (int i = 0; i < s->naggs; i++)
 	{
 		bw_acc(b, &ex->acc[i], gl, ng);
-		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+		if (set_agg(&s->agg[i]))
 			blob_set(ex, i, cidx, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
 			blob_key_set(ex, i, cidx, b);
@@ -607,6 +629,8 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				break;
 			case SAA_SUM_NUM:
 			case SAA_AVG_NUM:
+				if (a->distinct)
+					break;
 				acc->n[t] += ba->a.n[r];
 				acc->w[t] += ba->a.w[r];
 				acc->nf[t] |= ba->a.nf[r];
@@ -643,8 +667,9 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		ba->a.nf = (uint8 *) br_get(p, ng);
 	if (acc->w)
 		ba->a.w = (sift_i128 *) br_get(p, (Size) ng * sizeof(sift_i128));
-	if (g->spec->agg[ai].kind == SAA_COUNT_DISTINCT)
+	if (set_agg(&g->spec->agg[ai]))
 	{
+		const SiftAggAgg *a = &g->spec->agg[ai];
 		const uint32 *hd = br_get(p, 8);
 
 		ba->npairs = hd[0];
@@ -654,12 +679,21 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		ba->cg = br_get(p, (Size) hd[1] * 4);
 		ba->cc = br_get(p, (Size) hd[1] * 4);
 		ba->bits = br_get(p, (Size) hd[1] * DB_WORDS * sizeof(uint64));
-		if (g->lay->leaf[g->spec->agg[ai].leaf].vtype == SCV_CODE)
+		if (a->leaf >= 0 && g->lay->leaf[a->leaf].vtype == SCV_CODE)
 		{
 			const uint32 *vh = (const uint32 *) *p;
 
 			ba->xv = palloc0((vh[0] + 1) * sizeof(uint32));
 			merge_values(g, &g->aot[ai], p, ba->xv);
+		}
+		else if (a->num.n)
+		{
+			const uint32 *vh = br_get(p, 8);
+			const sift_i128 *nv = br_get(p, (Size) vh[0] * sizeof(sift_i128));
+
+			ba->xv = palloc0((vh[0] + 1) * sizeof(uint32));
+			for (uint32 i = 0; i < vh[0]; i++)
+				ba->xv[i + 1] = idmap_id(&g->amap[ai], nv[i]);
 		}
 	}
 	if (g->spec->agg[ai].kind == SAA_O_COUNT_KEY)
@@ -686,6 +720,27 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 static void
 merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 {
+	if (g->spec->agg[ai].kind == SAA_SUM_NUM || g->spec->agg[ai].kind == SAA_AVG_NUM)
+	{
+		/* a sum over distinct numbers: a value the leader has not summed in the group is added */
+		AggAcc	   *acc = &g->acc[ai];
+
+		for (uint32 i = 0; i < ba->npairs; i++)
+		{
+			uint32		t = gids[ba->pg[i]],
+						id = ba->xv[ba->pv[i]];
+			sift_i128	v = g->amap[ai].val[id - 1];
+
+			if (!dset_add(g, &g->dset[ai], t, id))
+				continue;
+			if (v == SIFT_NX_NAN)
+				acc->nf[t] = 1;
+			else
+				acc->w[t] += v;
+			acc->n[t]++;
+		}
+		return;
+	}
 	for (uint32 i = 0; i < ba->nchunks; i++)
 	{
 		uint32		t = gids[ba->cg[i]];
@@ -785,7 +840,7 @@ blob_merge(AggExec *g, const char *p)
 			merge_agg(g, i, &ba[i], gids, r0, n);
 	}
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_COUNT_DISTINCT || s->agg[i].kind == SAA_O_COUNT_KEY)
+		if (set_agg(&s->agg[i]) || s->agg[i].kind == SAA_O_COUNT_KEY)
 			merge_set(g, i, &ba[i], gids);
 		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			merge_osa(g, i, &ba[i], gids);

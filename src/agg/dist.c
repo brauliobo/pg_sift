@@ -792,3 +792,21 @@ dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv
 	*pv_out = pv;
 	*np_out = np;
 }
+
+/* The (group of cidx, value id) pairs of the set of a sum or average over distinct values (ex->dset[ai]), as dist_pairs gives those of a count */
+void
+dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out)
+{
+	const DSet *s = &ex->dset[ai];
+	uint32		np = 0;
+
+	*pg_out = palloc(Max(s->n, 1) * sizeof(uint32));
+	*pv_out = palloc(Max(s->n, 1) * sizeof(uint32));
+	for (uint64 i = 0; i < s->cap; i++)
+		if (s->slot[i] && cidx[(s->slot[i] >> 32) & 0x7fffffff] != UINT32_MAX)
+		{
+			(*pg_out)[np] = cidx[(s->slot[i] >> 32) & 0x7fffffff];
+			(*pv_out)[np++] = (uint32) s->slot[i];
+		}
+	*np_out = np;
+}
