@@ -207,7 +207,7 @@ joined_distinct(AggCtx *c, JoinCtx *jc, int col)
  * of the lookup it reads.
  */
 static double
-combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
+combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples)
 {
 	List	   *exprs = NIL;
 	double		entries = 1.0,
@@ -230,7 +230,12 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 					if (scoped)
 						entries *= joined_distinct(c, jc, cb->refcol[p]);
 					else if (!bms_is_member(jc->combo, lookups))
-						entries *= Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+					{
+						double		rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+
+						/* a correlated child gives its rows for each distinct input of its own combo */
+						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples) : rows;
+					}
 					lookups = bms_add_member(lookups, jc->combo);
 				}
 			continue;
@@ -311,7 +316,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			{
 				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples;
 
-				cost += combo_entries(c, cb, scan_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
+				cost += combo_entries(c, s, cb, scan_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
 			}
 			continue;
 		}
@@ -326,7 +331,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		if (wide == 0 && !direct)
 			continue;
 		tuples = filter ? rows : agg_rows;
-		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
+		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
 	}
 	return cost;
 }
@@ -1082,7 +1087,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		native = combo_entries(c, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		native = combo_entries(c, s, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 
 			/* the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input */
 			f->use = f->ok && jc->frows * AGG_FIRST_ROW < native;
