@@ -197,11 +197,8 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 
 	if (had && lo >= old_lo && hi <= old_hi)
 		return;
-	if (span > MAX_RANGE)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: a column range of %lld values is too wide for the aggregate scan", (long long) span),
-				 errhint("Set sift.enable_agg to off for this query.")));
+	/* the callers test rt_span first */
+	Assert(span <= MAX_RANGE);
 	if (r->mem == NULL || nlo < r->plo || nhi > r->phi)
 	{
 		/* twice the room, on the side the range grows (bounded by MAX_RANGE): a range that creeps along is not copied every time */
