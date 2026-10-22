@@ -76,6 +76,7 @@ typedef struct SiftCVals
 	uint32	   *voff;			/* n + 1 entries once a value was added */
 	char	   *vb;
 	Size		vcap;
+	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised */
 } SiftCVals;
 
 typedef struct SiftColBatch

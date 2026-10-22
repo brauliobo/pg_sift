@@ -95,8 +95,8 @@
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
-	X(unit_bytes, "-", "col/batch.c", 2147483647, "bytes", \
-	  "variable-length bytes of the rows of one column unit", "ERROR 54000 at build or merge", "-", 0) \
+	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/col.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
+	  "string bytes of one leaf in one column unit", "the values after it are stored as overflow and read from the heap (NOTICE)", "-", 1) \
 	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/col.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
 	  "rows of one column unit (256 heap pages)", "a new unit starts", "-", 0) \
 	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/col.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \

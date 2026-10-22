@@ -33,6 +33,7 @@
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
+#define SIFT_COL_UNIT_MAX_BYTES	SIFT_COL_MAX_VALUE	/* bytes of the strings of one leaf in one unit; the values past it are stored as overflow */
 #define SIFT_COL_DICT_MAX_ENTRY	255			/* a longer string is never a dictionary entry of a segment: its unit stores the strings inline (docs/COL.md 2.9) */
 #define SIFT_COL_DICT_MAX_BYTES	(64 << 20)	/* bytes of one segment dictionary: a unit that would exceed it stores its strings inline */
 #define SIFT_COL_UNIT_MAX_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)
