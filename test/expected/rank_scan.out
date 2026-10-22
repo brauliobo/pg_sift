@@ -194,6 +194,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM r WHERE body @@> 'quick fox' AND grp = 1 ORDE
 SET sift.enable_scan = off;
 SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;
 -- ties break on the ctid of the visible tuple, not of the index entry (HOT updates move it along the page)
@@ -256,12 +257,14 @@ SELECT t.q, s.id FROM (VALUES ('lazy'), ('runs')) t(q),
 -- the score only exists inside the scan of its relation
 SELECT sift.score(ctid) FROM r;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'fox' ORDER BY sift.score(ctid) DESC LIMIT 1 FOR UPDATE;
 ERROR:  sift.score() is not available in FOR UPDATE and FOR SHARE
 HINT:  Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.
 SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 -- the operator follows the index analyzer
 CREATE TABLE s (id int, body text);

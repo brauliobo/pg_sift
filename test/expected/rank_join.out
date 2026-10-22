@@ -245,16 +245,20 @@ RESET sift.filter_pushdown;
 -- a score that no sift scan produces keeps the error
 SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id < 100;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT d.id FROM jd d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id WHERE d.id < 100 ORDER BY sift.score(d.ctid) DESC;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT o.id, sift.score(o.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey';
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SET sift.enable_scan = off;
 SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;
 DROP FUNCTION join_check(text), join_shapes(text), sift_plan(text);

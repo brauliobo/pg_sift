@@ -343,9 +343,11 @@ DROP TABLE re;
 -- sift.score() outside a ranked scan raises its usual error, and sift.max_score() is refused through the parent
 SELECT sift.score(ctid) FROM rp;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT sift.score(ctid) FROM rp WHERE id = 5;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id, sift.max_score(ctid) FROM rp WHERE body @@> 'rare' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.max_score() is not available through a partitioned table
@@ -580,6 +582,7 @@ ERROR:  sift.score() needs a sift index on every partition the query reads
 DETAIL:  "rx3" has no sift index that answers the @@> condition.
 SELECT id, sift.score(ctid) FROM rx WHERE id < 200 ORDER BY id LIMIT 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 DROP TABLE rx;
 DROP TABLE rp;
