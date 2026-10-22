@@ -86,4 +86,20 @@ typedef struct config_enum_entry SiftEnumEntry;
 
 #endif
 
+/*
+ * A condition the code rules out (a cap the caller checked, a table the planner built, a state the previous step left):
+ * Assert in an assert build, an ERROR with SQLSTATE XX000 otherwise, so a test that reaches it still fails loud. It is the
+ * only XX000 of the extension (scripts/check-errors.sh). A condition a user can reach is an ereport with its own errcode,
+ * 54000 for a limit, 0A000 for an unsupported case, XX001/XX002 for damaged data, and says what to do about it.
+ */
+#ifdef USE_ASSERT_CHECKING
+#define SIFT_INVARIANT(cond, ...)	Assert(cond)
+#else
+#define SIFT_INVARIANT(cond, ...) \
+	do { \
+		if (unlikely(!(cond))) \
+			elog(ERROR, __VA_ARGS__);	/* check-errors: allow */ \
+	} while (0)
+#endif
+
 #endif							/* SIFT_HOST_H */
