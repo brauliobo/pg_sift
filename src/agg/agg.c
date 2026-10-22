@@ -322,6 +322,7 @@ run_scan(AggExec *ex)
 		pg_atomic_write_u32(&ex->shared->next, ex->shared->nitems);
 	ex->lane_serial = ordered && ex->par == NULL;
 	ex->lanes = ordered && !ex->lane_serial;
+	spill_begin(ex);
 	table_init(ex);
 	if (ex->spec->spine)
 		spine_load(ex);
@@ -336,6 +337,8 @@ run_scan(AggExec *ex)
 		spine_tail(ex);
 	if (ex->par)
 		par_finish(ex);
+	if (spill_started(ex))
+		spill_finish(ex);
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
 		if (ex->acc[i].dt)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
@@ -729,13 +732,35 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 	return !sift_topn_empty(ex->topn) && sift_topn_next(ex->topn, slot) ? slot : NULL;
 }
 
+/* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
+static bool
+group_slot(AggExec *ex, TupleTableSlot *slot)
+{
+	AggExec    *t = ex->gtab;
+	uint32		g;
+
+	while (ex->gpos >= t->nglist)
+		if (!spill_more(ex))
+			return false;
+	g = t->glist[ex->gpos++];
+	ExecClearTuple(slot);
+	for (int j = 0; j < t->spec->nkeys; j++)
+		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
+	for (int i = 0; i < t->spec->naggs; i++)
+	{
+		int			c = t->spec->nkeys + i;
+
+		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
+	}
+	ExecStoreVirtualTuple(slot);
+	return true;
+}
+
 static TupleTableSlot *
 agg_next(ScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
 	TupleTableSlot *slot = node->ss_ScanTupleSlot;
-	AggExec    *t;
-	uint32		g;
 
 	if (ex->spec->topn)
 		return topn_next(ex, slot);
@@ -752,20 +777,9 @@ agg_next(ScanState *node)
 	}
 	if (ex->fuse)
 		return fuse_next(ex, slot);
-	t = ex->gtab;
-	if (ex->gpos >= t->nglist)
-		return NULL;
-	g = t->glist[ex->gpos++];
-	ExecClearTuple(slot);
-	for (int j = 0; j < t->spec->nkeys; j++)
-		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
-	for (int i = 0; i < t->spec->naggs; i++)
-	{
-		int			c = t->spec->nkeys + i;
-
-		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
-	}
-	return ExecStoreVirtualTuple(slot);
+	if (spill_started(ex))
+		return spill_output(ex, slot, group_slot);
+	return group_slot(ex, slot) ? slot : NULL;
 }
 
 static bool
@@ -958,6 +972,7 @@ agg_end(CustomScanState *node)
 	dist_end_all(ex);
 	if (ex->gtab)
 		dist_end_all(ex->gtab);
+	spill_end(ex);
 	if (ex->started && !ex->fuse)
 		stats_run(ex);
 	engine_close(ex);
@@ -973,6 +988,8 @@ agg_rescan(CustomScanState *node)
 	AggExec    *ex = (AggExec *) node;
 
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
+	if (spill_rescan(ex))
+		return;
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);
@@ -1205,6 +1222,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 	if (c->n_osa_spilled)
 		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
+	if (c->n_spills)
+		ExplainPropertyInteger("Group Table Spills", NULL, c->n_spills, es);
 	if (c->n_dist_spilled)
 		ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
 	if (c->n_dist_chunks)

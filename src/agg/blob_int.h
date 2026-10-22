@@ -26,6 +26,8 @@ typedef struct BlobHdr
 
 /* blob.c */
 void blob_dump(AggExec *ex, int lane, StringInfo b);
+void blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b);
+uint32 blob_group_hash(AggExec *ex, uint32 g);
 void blob_merge(AggExec *g, const char *p);
 
 #pragma GCC visibility pop

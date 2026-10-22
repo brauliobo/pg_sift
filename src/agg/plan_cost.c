@@ -1326,24 +1326,43 @@ group_bytes(const SiftAggSpec *s, double *state)
 }
 
 /*
- * The group table has no memory of its own to give up: when it outgrows the memory a hash aggregate gets, the groups that do not fit go to
- * sorted runs of partial states and are merged by the end (the spill of the normal plan, which cost_agg prices the same way: the pages
- * of what is written and read back, the tuples through the sort). A group in no run is in the table: the rows that are written are the
- * share of the rows whose group is not in it, and no more than a run for each of the groups.
+ * The groups the table of the scan can hold: the estimate, and no more than the elements the index has (the normal plan expects 100 rows of
+ * every call of an unnesting function, and the groups of a scan of 12,000 rows are not a million)
+ */
+double
+group_count(AggCtx *c, const SiftAggSpec *s)
+{
+	double		rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0)) * (s->group >= 0 ? elems_of(c, s->group) : 1.0);
+
+	return Min(Max(s->est_groups, 1.0), Max(rows, 1.0));
+}
+
+/* The bytes of the group table of the scan for the groups it is expected to hold. *state: of a group, what its partial state carries */
+double
+group_table_bytes(const SiftAggSpec *s, double groups, double *state)
+{
+	return groups * group_bytes(s, state);
+}
+
+/*
+ * The group table of a spillable spec (agg/spill.c) that outgrows the memory a hash aggregate gets writes the partial states of its groups
+ * to partitions on disk and reads them back by the end: the price is that of the spill of the normal plan (cost_agg): the pages of what is
+ * written and read back and the tuples through them. A group in no partition is in the table: the states written are the share of the
+ * rows whose group is not in it, and no more than a state for each group of each time the table fills.
  */
 static double
-group_spill_cost(const SiftAggSpec *s, double rows, double *table)
+group_spill_cost(const SiftAggSpec *s, double groups, double rows, double *table)
 {
 	double		mem = (double) get_hash_memory_limit(),
 				state,
 				runs,
 				written;
 
-	*table = Max(s->est_groups, 1.0) * group_bytes(s, &state);
-	if (*table <= mem)
+	*table = group_table_bytes(s, groups, &state);
+	if (*table <= mem || !sift_aggspec_spillable(s))
 		return 0;
 	runs = ceil(*table / mem);
-	written = Min(rows * (1.0 - mem / *table), s->est_groups * runs);
+	written = Min(rows * (1.0 - mem / *table), groups * runs);
 	return written * state / BLCKSZ * (random_page_cost + seq_page_cost) + 2.0 * cpu_tuple_cost * written +
 		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost;
 }
@@ -1355,7 +1374,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	double		vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
 				exact,
 				spill,
-				table;
+				table,
+				groups;
 	Cost		startup;
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
@@ -1401,9 +1421,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	if (s->nworkers > 0)
 		cost_parallel(s, &k, &startup);
 	/* each process holds a table of its own (and spills it) */
-	spill = group_spill_cost(s, k.agg_rows / (s->nworkers + 1), &table);
+	groups = group_count(c, s);
+	spill = group_spill_cost(s, groups, k.agg_rows / (s->nworkers + 1), &table);
 	k.scan_cost += spill;
-	agg_arm_spill(spill, s->est_groups, table);
+	agg_arm_spill(spill, groups, table);
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each */

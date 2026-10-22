@@ -28,6 +28,7 @@
 #include "commands/defrem.h"
 #include "catalog/pg_index.h"
 #include "miscadmin.h"
+#include "core/limits.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
@@ -709,11 +710,19 @@ param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *
 		}
 }
 
+/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
+#define GROUP_NOSPILL_FACTOR	32
+/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
+#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
+
 /* the cost; adds the paths to output_rel */
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
-	int			nworkers;
+	int			nworkers,
+				nospill = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+	double		state,
+				table;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
@@ -722,11 +731,23 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		agg_refused(FIRST_MEMORY);
 		return;
 	}
+	table = group_table_bytes(s, group_count(c, s), &state);
+	/* a scan that cannot spill holds all its groups: the estimate may go far past hash memory (an OOM kill is the other end of it) but not to the sizes of a table of millions of groups */
+	if (table > (double) nospill * Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) && !sift_aggspec_spillable(s))
+	{
+		agg_refused_on(GROUP_MEMORY, psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB",
+											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill,
+											  Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) / 1024.0));
+		return;
+	}
 	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
+	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
+	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
+		nworkers = 0;
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
 }

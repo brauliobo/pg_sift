@@ -29,6 +29,7 @@
 #include "agg/init_int.h"
 #include "agg/update_int.h"
 #include "agg/blob_int.h"
+#include "agg/spill_int.h"
 #include "agg/par_int.h"
 #include "agg/fuse_int.h"
 #include "agg/back_host_int.h"
@@ -129,6 +130,8 @@ typedef struct AggExec
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
 	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
+	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
+	int			n_spills;		/* ... and the times it did */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
 	uint32	   *glist;
