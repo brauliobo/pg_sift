@@ -123,13 +123,14 @@ typedef struct AggCtx
 	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
 	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
+	bool		detached;		/* root is a query level below the one being planned (the arms of a two level aggregate): its paths are planned there */
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
 typedef struct SiftAggPath
 {
 	CustomPath path;
-	List       *correlated;		/* the native path of each correlated child, NULL for the other joins */
+	List       *correlated;		/* the native path of each child planned in its own query level (correlated, or of a detached scan), NULL for the other joins */
 	List       *subroots;		/* and the query level it belongs to */
 } SiftAggPath;
 
