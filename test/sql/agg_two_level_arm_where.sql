@@ -48,7 +48,7 @@ CREATE FUNCTION report(w1 text DEFAULT 'CASE WHEN o.sign = ''p'' THEN o.cat ELSE
 $$;
 
 -- the same arms under a spine of buckets, one of which no row has: it is a row of NULL columns
-CREATE FUNCTION spined() RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION spined(sets text DEFAULT NULL) RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.kind, e.doc, e.ts FROM events e),
 	  mapped AS (
 	    SELECT s.id, CASE WHEN o.sign = 'p' THEN o.cat ELSE rm.mapped_cat END AS category, avg(o.score) AS score, count(s.id) AS n
@@ -62,7 +62,7 @@ CREATE FUNCTION spined() RETURNS text LANGUAGE sql AS $$
 	    GROUP BY s.id)
 	  SELECT b.label, m.category, count(*) AS cells, round(avg(m.score)::numeric, 6) AS value, sum(m.n)::int AS n, count(DISTINCT m.id) AS ids
 	  FROM (VALUES ('m0'), ('m1'), ('cat_2'), ('none')) b(label) LEFT JOIN mapped m ON m.category = b.label
-	  GROUP BY b.label, m.category ORDER BY 1, 2$q$)
+	  GROUP BY %s ORDER BY 1, 2$q$, coalesce(sets, 'b.label, m.category'))
 $$;
 
 -- the plan is the two-level scan: the joins in the node, and neither the grouping of PostgreSQL nor the node that groups rows
@@ -108,6 +108,8 @@ SELECT same(report('CASE WHEN o.sign = ''p'' THEN o.cat ELSE rm.mapped_cat END I
 
 -- a spine of buckets over arms with different WHERE
 SELECT same(spined()) AS spine;
+-- and by grouping sets: the sets that lack a key null it, the spine rows no cell matched are a group in each
+SELECT same(spined('GROUPING SETS ((b.label, m.category), (b.label), (m.category), ())')) AS spine_sets;
 
 -- rows that were updated and deleted since the index was built are read from the heap
 UPDATE events SET doc = jsonb_set(doc, '{parts,0,score}', '9') WHERE id % 17 = 0 AND doc IS NOT NULL;
