@@ -290,14 +290,15 @@ COMMENT ON FUNCTION sift.col_refresh(regclass, int4) IS 'Rewrites the segments o
 -- overflow value is always read, one with no value never); useful_pct: the share of them whose range is narrower than the leaf's; point_units:
 -- the units an equality on a value of the data touches, on average; range_units: the same for a range of width_pct percent of the leaf's span;
 -- range_ideal: what a column sorted by itself would touch; correlation: the order of the units against the order of their values (1 ascending,
--- -1 descending, 0 scattered); verdict: clustered, partial or scattered. Integer, date and timestamp leaves only (the others have NULLs).
+-- -1 descending, 0 scattered); verdict: clustered, partial or scattered; depth_max: the most units whose zones hold one value (the deepest overlap,
+-- what a column that arrives out of order adds up to; point_units is the average, a few deep values hide in it). Integer, date and timestamp leaves only (the others have NULLs).
 CREATE FUNCTION sift.col_clustering(index regclass, width_pct float8 DEFAULT 1,
 									OUT leaf int4, OUT path text, OUT units int8, OUT zoned_units int8, OUT useful_pct float8,
 									OUT point_units float8, OUT range_units float8, OUT range_ideal float8, OUT correlation float8,
-									OUT verdict text)
+									OUT verdict text, OUT depth_max int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_clustering' LANGUAGE C STRICT VOLATILE;
-COMMENT ON FUNCTION sift.col_clustering(regclass, float8) IS 'How well the rows of a sift_col index are ordered for its zone maps, one row per leaf: the units an equality or a range touches, the correlation and a verdict (clustered, partial or scattered).';
+COMMENT ON FUNCTION sift.col_clustering(regclass, float8) IS 'How well the rows of a sift_col index are ordered for its zone maps, one row per leaf: the units an equality or a range touches, the most units any value touches (depth_max), the correlation and a verdict (clustered, partial or scattered).';
 
 -- Which physical order of a table (CLUSTER, or pg_repack --order-by on a heap table) would let the scans of its sift_col index skip the most units,
 -- one row per index of rel (a table or an index; every index you may read when NULL). min_rows: the rows a query must save for the order to be

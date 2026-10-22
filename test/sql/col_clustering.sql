@@ -20,6 +20,19 @@ SELECT leaf, path, units > 20 AS several_units, zoned_units = units AS all_zoned
        round(correlation::numeric, 2) AS correlation, verdict
 FROM sift.col_clustering('ev_col') ORDER BY leaf;
 
+-- depth_max: the most units whose zones hold one value, never under the average and never over the units; 1 where the zones are disjoint
+SELECT path, depth_max, depth_max >= point_units AS above_average, depth_max <= units AS within_units, depth_max = units AS every_unit
+FROM sift.col_clustering('ev_col') WHERE depth_max IS NOT NULL ORDER BY leaf;
+-- rows that arrive out of order deepen the zones of the units written for them: ids spread over the whole range, promoted into units of their own
+CREATE TABLE evd (id int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO evd SELECT i, repeat('x', 1000) FROM generate_series(0, 19999) i;
+CREATE INDEX evd_col ON evd USING sift_col (id);
+SELECT depth_max FROM sift.col_clustering('evd_col');
+INSERT INTO evd SELECT i * 7, repeat('x', 1000) FROM generate_series(0, 2999) i;
+SELECT sift.col_promote('evd_col') > 0 AS promoted;
+SELECT depth_max > 1 AS deeper, depth_max <= units AS within_units FROM sift.col_clustering('evd_col');
+DROP TABLE evd;
+
 -- a wider window touches more units, and a window of the whole span about half of them from the middle of the data
 SELECT path, round((range_units / units)::numeric, 2) AS share FROM sift.col_clustering('ev_col', 10) WHERE path IN ('id', 'blk') ORDER BY leaf;
 SELECT path, range_units > units / 2 AS most_units FROM sift.col_clustering('ev_col', 100) WHERE path = 'id';
