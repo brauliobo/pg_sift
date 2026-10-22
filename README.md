@@ -357,5 +357,5 @@ Reproduce: `bench/bench extras gpu` (a Vulkan device and `VULKAN=1`; results: [r
 
 ## Testing, security, license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->302 regression tests (`test/sql`), 30 isolation specs, 53 TAP tests (`test/t`), 744 column fixtures and 232 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->303 regression tests (`test/sql`), 30 isolation specs, 53 TAP tests (`test/t`), 744 column fixtures and 232 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
