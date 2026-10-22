@@ -10,6 +10,7 @@
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "storage/procarray.h"
+#include "utils/fmgrprotos.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -29,6 +30,24 @@ init_data_page(Page page, uint32 vblock, uint16 flags)
 	TBL_PAGE(page)->vblock = vblock;
 	TBL_PAGE(page)->flags = flags;
 }
+
+int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
+
+#ifdef SIFT_TESTING
+static void
+seal_gate(void)
+{
+	if (sift_tbl_seal_gate > 0)
+	{
+		Datum		key = Int64GetDatum(sift_tbl_seal_gate);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
+}
+#else
+#define seal_gate()	((void) 0)
+#endif
 
 typedef struct SwapArg
 {
@@ -134,7 +153,10 @@ again:
 	}
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	if (old.gen)
+	{
+		seal_gate();
 		sift_lane_flag_sealed_pages(rel, &old);
+	}
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote)
 		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false);

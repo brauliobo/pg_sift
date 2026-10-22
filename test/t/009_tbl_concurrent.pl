@@ -37,6 +37,28 @@ is($rows_in_g, 2, 'and the stalled first writer finds it laid out: both rows are
 $_->quit for ($gate, $first);
 eval { $reader->quit };
 
+# A writer that closes a write buffer swaps it for a new one in the directory and flags its pages sealed afterwards. A session that holds a page
+# of the closed buffer from before appends to it until the flag is there; the maintenance that promotes the closed buffer meanwhile (VACUUM
+# would do, but it invalidates the cache of the session) must not release a page that still takes rows: that row was lost, its insert had
+# succeeded.
+$node->safe_psql('postgres', 'CREATE TABLE s (id int, v text) USING sift_table');
+my $closer = $node->background_psql('postgres');
+my $held = $node->background_psql('postgres');
+$held->query_safe('SET sift.table_write_buffer_limit = 2048');	# the session that opens a write buffer sets its size: 256 pages
+$held->query_safe('INSERT INTO s VALUES (0, $$first$$)');
+my $gate2 = $node->background_psql('postgres');
+$gate2->query_safe('SELECT pg_advisory_lock(7102)');
+$closer->query_until(qr/closing/, "SET sift.table_seal_gate = 7102;\n\\echo closing\n"
+	. "SELECT format('INSERT INTO s VALUES (%s, repeat(''x'', 1000))', g) FROM generate_series(1, 2600) g \\gexec\n");
+$node->poll_query_until('postgres', "SELECT count(*) = 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted");
+is($node->safe_psql('postgres', "SELECT promoted > 0 FROM sift.table_maintain('s')"), 't', 'the closed write buffer is promoted');
+$held->query_safe('INSERT INTO s VALUES (-1, $$second$$)');
+$gate2->query_safe('SELECT pg_advisory_unlock(7102)');
+$closer->query_safe('SELECT 1');
+is($node->safe_psql('postgres', 'SELECT count(*) FROM s'), 2602, 'a row appended to a closed write buffer while it was promoted is not lost');
+is($node->safe_psql('postgres', 'SELECT count(*) FROM s WHERE id = -1'), 1, 'the row of the session that held a page of it is there');
+$_->quit for ($closer, $held, $gate2);
+
 my $dir = PostgreSQL::Test::Utils::tempdir;
 my $len = '4100 + (:id % 7)::int * 5000';
 open(my $f, '>', "$dir/ins.sql") or die;

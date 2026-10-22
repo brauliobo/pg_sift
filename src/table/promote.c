@@ -227,6 +227,8 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 
 		if (e->kind != SIFT_SEG_WBUF_SEALED || !(e->flags & SIFT_TBL_SEG_WBUF))
 			continue;
+		/* the writer that closed the segment flags its pages after it swapped it in the directory: until every page is flagged a session that holds one still appends */
+		sift_lane_flag_sealed_pages(rel, e);
 		sift_tbl_seg_load(rel, &seg);
 		class = seg_class(rel, &seg, oldest, vacuum, pressure);
 		if (class == SEG_WAIT)

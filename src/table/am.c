@@ -100,6 +100,8 @@ sift_tbl_define_gucs(void)
 							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_init_gate", "Test only: the first write of a sift_table waits for the advisory lock of this number before it creates the tombstone segment (0 = no gate).", NULL,
 							&sift_tbl_init_gate, 0, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_seal_gate", "Test only: the writer that closed a write buffer of a sift_table waits for the advisory lock of this number before it flags the pages sealed (0 = no gate).", NULL,
+							&sift_tbl_seal_gate, 0, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
 #endif
 	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
 							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
