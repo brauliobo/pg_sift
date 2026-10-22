@@ -6,6 +6,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
+#include "agg/part.h"
 #include "agg/wide.h"
 #include "agg/agg_int.h"
 
@@ -92,6 +93,8 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 		hi = Max(hi, v);
 	}
 	in_build(st, vals, nv, lo, hi);
+	if (ex->spec->nparts > 0 && !IsParallelWorker() && ex->lay->leaf[leaf].path == NIL)
+		ex->parts_pruned += sift_aggpart_prune_keys(ex->src, ex->spec->heapoid, list_nth(ex->lay->attexprs, ex->lay->leaf[leaf].attno - 1), vals, nv);
 	pfree(vals);
 	st->ready = true;
 	p = palloc0(sizeof(SiftAggPred));

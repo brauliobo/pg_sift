@@ -20,6 +20,11 @@ setup
 	CREATE TABLE iso_ph_3 PARTITION OF iso_ph FOR VALUES WITH (MODULUS 4, REMAINDER 3) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_ph SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE i % 60 END, i FROM generate_series(1, 3000) i;
 	CREATE INDEX iso_ph_col ON iso_ph USING sift_col (id, k, v);
+	-- the keys of a join
+	CREATE TABLE iso_days (d date);
+	INSERT INTO iso_days VALUES ('2024-02-02'), ('2024-08-01');
+	CREATE TABLE iso_hkeys (k int);
+	INSERT INTO iso_hkeys VALUES (7), (12);
 }
 
 setup		{ VACUUM (FREEZE, ANALYZE) iso_pp; }
@@ -55,7 +60,7 @@ setup
 teardown
 {
 	DROP FUNCTION iso_pp_run(text, text);
-	DROP TABLE iso_pp, iso_pp_n, iso_ph;
+	DROP TABLE iso_pp, iso_pp_n, iso_ph, iso_days, iso_hkeys;
 	DROP TABLE IF EXISTS iso_ph_3;
 }
 
@@ -70,6 +75,10 @@ step s1gen	{ SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT 
 step s1hprep	{ SET plan_cache_mode = force_generic_plan;
 		  PREPARE iso_ph_p (int[]) AS SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY ($1); }
 step s1hgen	{ SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])'); }
+step s1join	{ SELECT iso_pp_run('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g',
+                            'SELECT p.g, count(*) AS n, sum(p.v) AS s FROM iso_pp p JOIN iso_days x ON x.d = p.d GROUP BY p.g'); }
+step s1hjoin	{ SELECT iso_pp_run('SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k',
+                            'SELECT count(*) AS n, sum(f.v) AS s FROM iso_ph f JOIN iso_hkeys x ON x.k = f.k'); }
 step s1hrr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ph; }
 step s1rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp; }
 step s1end	{ COMMIT; }
@@ -110,3 +119,16 @@ permutation s1hrr s2hdetachc s1hgen s1end s1hgen s2hattach s1hgen
 permutation s2begin s2hmove s1hgen s2commit s1hgen
 permutation s2begin s2hmove s1hgen s2abort s1hgen
 permutation s1hrr s2hmove s1hgen s1end s1hgen
+
+# the keys of a join decide the partitions: a partition attached or detached (also concurrently) and rows moved, in a snapshot older than the change or not
+permutation s1join s2attach s1join
+permutation s1rr s2attach s1join s1end s1join
+permutation s2attach s1rr s2detach s1join s1end s1join
+permutation s2attach s1rr s2detachc s1join s1end s1join
+permutation s2begin s2move s1join s2commit s1join
+permutation s2begin s2move s1join s2abort s1join
+permutation s1rr s2move s1join s1end s1join
+permutation s1hjoin s2hdetach s1hjoin s2hattach s1hjoin
+permutation s1hrr s2hdetachc s1hjoin s1end s1hjoin s2hattach s1hjoin
+permutation s2begin s2hmove s1hjoin s2commit s1hjoin
+permutation s1hrr s2hmove s1hjoin s1end s1hjoin
