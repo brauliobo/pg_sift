@@ -4,6 +4,9 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the units answered
+-- from the rollups or by cost follow the layout
+SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
 SET sift.col_rollup_worker = off;
 SET sift.col_rollup_on_demand = off;
