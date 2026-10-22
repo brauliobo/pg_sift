@@ -21,6 +21,51 @@ CREATE FUNCTION sift.col_clustering(index regclass, width_pct float8 DEFAULT 1,
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_clustering' LANGUAGE C STRICT VOLATILE;
 
+-- The sift_col indexes that a REINDEX would improve, one row per reason: an option (cube_minmax, JSON paths, rollup_dims, set_columns) that only the
+-- units written after it follow, set on an index whose older units lack the section (docs/UPGRADING.md). detected: the option and the oldest column
+-- format; advice: what the REINDEX changes; command: the statement to run (REINDEX CONCURRENTLY cannot run in a transaction block). Reads the catalogs
+-- and the metapages, changes nothing, and gives up on an index that is locked at once (lock_timeout) or that this library refuses (sift.upgrade_check
+-- reports those); a library that cannot be loaded is an error. ALTER EXTENSION pg_sift UPDATE to 3.3 prints this list.
+CREATE FUNCTION sift.reindex_needed(OUT index regclass, OUT detected text, OUT advice text, OUT command text)
+	RETURNS SETOF record
+	LANGUAGE plpgsql SET lock_timeout = '100ms' AS $fn$
+DECLARE
+	r record;
+	o record;
+	lo int;
+BEGIN
+	FOR r IN SELECT c.oid AS relid, c.reloptions AS opts, format('%I.%I', n.nspname, c.relname) AS name
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE am.amname = 'sift_col' AND c.relkind = 'i' AND c.reloptions IS NOT NULL ORDER BY n.nspname, c.relname
+	LOOP
+		BEGIN
+			SELECT min((to_jsonb(s)->>'format')::int) INTO lo FROM sift.col_segments(r.relid) s;
+		EXCEPTION WHEN OTHERS THEN
+			IF SQLSTATE IN ('42883', '58P01', '55P03') THEN RAISE; END IF;
+			CONTINUE;
+		END;
+		CONTINUE WHEN lo IS NULL;
+		-- a segment is minor 9 or 10 when some unit holds the section, so a lower minor means no unit of the segment does (docs/COL.md 2.13)
+		FOR o IN SELECT * FROM (VALUES
+					('^paths=', 6, 'JSON paths',
+					 'segments before format 6 may lack the kinds of a JSON null or of a type; a predicate that needs them uses the normal plan, and a REINDEX writes them'),
+					('^cube_minmax=(true|on)$', 7, 'cube_minmax',
+					 'the units written before the option scan; a REINDEX writes the minimum and maximum of every unit'),
+					('^rollup_dims=.', 9, 'rollup_dims',
+					 'the units written before the option have no rollup of their rows and are scanned (nor has a unit over the caps of the rollup, which a REINDEX does not change); a REINDEX writes it where it fits'),
+					('^set_columns=.', 10, 'set_columns',
+					 'the units written before the option have no small-set summary and are read (nor has a unit whose keys are all alike or fill their range); a REINDEX writes it where it helps')
+				 ) v(pat, minor, what, why)
+				 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) ORDER BY v.minor
+		LOOP
+			index := r.relid; detected := format('%s with column format %s', o.what, lo); advice := o.why;
+			command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
+			RETURN NEXT;
+		END LOOP;
+	END LOOP;
+END
+$fn$;
+
 -- What the Custom Scan (SiftAgg) scans of this session did (docs/USAGE.md "Session statistics"): one row per counter, and one per refusal
 -- slug recorded (sift.explain_refusals). The counters are in the memory of the backend: no shared memory, no shared_preload_libraries, so the
 -- figures are of the session and lost with it.
@@ -107,3 +152,26 @@ CREATE FUNCTION sift.table_ddl_check() RETURNS event_trigger
 	AS 'MODULE_PATHNAME', 'sift_table_ddl_check' LANGUAGE C;
 
 CREATE EVENT TRIGGER sift_table_ddl_check ON ddl_command_end WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION sift.table_ddl_check();
+
+-- The indexes this update leaves for a REINDEX, printed once; sift.reindex_needed() lists them again. The last step of every update path to 3.3, so it
+-- covers the indexes that 3.0, 3.1 and 3.2 wrote. It only reads, and never fails the update: a library that does not answer (an older one loaded in this
+-- session, an index locked by another session) gets a warning that says to run the function after reconnecting. An extension script runs with
+-- client_min_messages at warning or above, so what asks for an action is a warning, and the all-clear lowers it to notice for itself (undone with the script).
+DO $do$
+DECLARE
+	cmds text[];
+	n int;
+BEGIN
+	SELECT array_agg(command ORDER BY command), count(*) INTO cmds, n FROM (SELECT DISTINCT command FROM sift.reindex_needed()) s;
+	IF n = 0 THEN
+		PERFORM set_config('client_min_messages', 'notice', true);
+		RAISE NOTICE 'pg_sift 3.3: no index needs a REINDEX after this update';
+	ELSE
+		RAISE WARNING 'pg_sift 3.3: REINDEX is worth it for % sift_col index(es) after this update', n
+			USING DETAIL = concat(array_to_string(cmds[1:20], E'\n'), CASE WHEN n > 20 THEN format(E'\nand %s more', n - 20) END),
+				  HINT = 'The older units stay readable until then. REINDEX CONCURRENTLY cannot run in a transaction block. SELECT * FROM sift.reindex_needed() gives the reason for each index.';
+	END IF;
+EXCEPTION WHEN OTHERS THEN
+	RAISE WARNING 'pg_sift 3.3: the check for indexes to REINDEX did not run (%): reconnect and run SELECT * FROM sift.reindex_needed()', SQLERRM;
+END
+$do$;
