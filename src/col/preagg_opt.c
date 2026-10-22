@@ -62,7 +62,7 @@ default_meas(const SiftColSchema *s, int dim, int16 *meas)
 	int			nm = 0;
 
 	for (int pass = 0; pass < 2; pass++)
-		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_DEF_MEAS; c++)
+		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_MORE_MEAS; c++)
 		{
 			const SiftColDef *d = &s->cols[c];
 			bool		first = d->type == SIFT_COLT_NUMERIC || d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
@@ -115,6 +115,7 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 		sd = &spec->dim[spec->ndims++];
 		sd->leaf = c;
 		sd->nmeas = default_meas(s, c, sd->meas);
+		sd->lean = SIFT_PAGG_DEF_MEAS;
 	}
 	for (int c = 0; c < s->ncols && spec->nrollups < SIFT_PAGG_MAX_ROLLUPS; c++)
 		if (is_list(s, c))

@@ -110,7 +110,10 @@ typedef struct DimBuild
 {
 	int			spec;				/* index into spec->dim */
 	StringInfoData blob;
-	Size		bytes;
+	Size		bytes;				/* what the byte budget counts: the blob with the first spec dim lean measures only (all of them without a lean) */
+	int			nm;					/* measures in the blob */
+	Size		cut[SIFT_PAGG_MAX_MEAS + 1];	/* offset in the blob after the first i measure leaves (cut[0]: after the flags) */
+	Size		tail[SIFT_PAGG_MAX_MEAS + 1];	/* offset after the counts (tail[0]) and after each measure's sums */
 	bool		ok;
 	bool		keep;
 } DimBuild;
@@ -145,8 +148,9 @@ col_usable(const SiftCPaggCol *c, uint32 nrows)
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
 build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, const Scratch *sc,
-		  StringInfo out)
+		  DimBuild *b)
 {
+	StringInfo	out = &b->blob;
 	const SiftCPaggCol *dc = &cols[sd->leaf];
 	uint32		ng = 0,
 				nullg = UINT32_MAX,
@@ -211,8 +215,13 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	appendStringInfoChar(out, (char) nm);
 	put_u(out, ng);
 	appendStringInfoChar(out, nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP);
+	b->cut[0] = out->len;
 	for (int i = 0; i < nm; i++)
+	{
 		put_u(out, mm[i]);
+		b->cut[i + 1] = out->len;
+	}
+	b->nm = nm;
 	{
 		int64		prev = 0;
 		uint32		nk = ng - (nullg == UINT32_MAX ? 0 : 1);
@@ -228,6 +237,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	}
 	for (uint32 i = 0; i < ng; i++)
 		put_u(out, cnt[ord[i].g]);
+	b->tail[0] = out->len;
 	for (int m = 0; m < nm; m++)
 	{
 		const SiftCPaggCol *mc = &cols[mm[m]];
@@ -271,6 +281,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
 		}
+		b->tail[m + 1] = out->len;
 	}
 	return true;
 }
@@ -318,10 +329,14 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
 	for (int d = 0; d < spec->ndims; d++)
 	{
+		int			lean;
+
 		db[d] = (DimBuild) {.spec = d};
 		initStringInfo(&db[d].blob);
-		db[d].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[d].blob);
-		db[d].bytes = db[d].blob.len;
+		db[d].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[d]);
+		/* the dims are chosen by the size they have with the first measures: the others come with a dim that is kept, as the planner expects */
+		lean = spec->dim[d].lean > 0 ? Min(spec->dim[d].lean, db[d].nm) : db[d].nm;
+		db[d].bytes = db[d].ok && lean < db[d].nm ? db[d].cut[lean] + db[d].tail[lean] - db[d].cut[db[d].nm] : db[d].blob.len;
 	}
 	pfree(sc.gid);
 	pfree(sc.hk);
