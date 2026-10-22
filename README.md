@@ -78,7 +78,8 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The HEAD-only formula builds `main` and supports macOS arm64. Tested on Apple Silicon with PostgreSQL 17.11 and 18.6.
+The HEAD-only formula builds `main` and supports macOS arm64. Tried by hand on Apple Silicon with PostgreSQL 17.11 and 18.6; no CI job runs on macOS yet.
+`make check` needs bash 4 or newer (`brew install bash`); the stock macOS bash 3.2 stops with a message.
 With your PostgreSQL server running, connect as a superuser:
 
 ```sh

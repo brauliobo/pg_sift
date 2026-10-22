@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: `make check` on macOS. The stock bash 3.2 failed on the syntax of bash 4 and `make check` exited 0 with no test run; it now stops with `needs bash 4+ (brew install bash)`, a run that selects no job fails, and `scripts/cpu_time.py` and the job claim no longer need Linux (`prctl`, `flock`). `scripts/ci.sh --selftest` checks that a script with bash 4 constructs carries that first-line check.
+
 ## 3.2.2 - 2026-10-22
 
 - Added: bench: the aggregate benchmarks are presented in layers: generated plain-text performance highlights at the top of README.md (`steps/highlights.py`), charts of the ten store questions in a light and a dark variant (latency per question with the spread of the runs, speed-up over PostgreSQL warm and cold, CPUs, size and load time, update growth, pg_duckdb; `steps/store_charts.py`), the page docs/perf/AGGREGATES.md (what each table and chart answers, the scale tables, the shapes), and `bench/bench scaling` (partitions to 4096 and parallel workers). The store size rows show the index or columnar data with the heap beside it; README.md drops the places table, the Vulkan table and the rows that are sums of others.
