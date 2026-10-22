@@ -98,7 +98,7 @@ BM25 results and scores, the column aggregates and the `sift_table` contents are
 
 ## 4. An older release
 
-An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint (`old_lib_refusal`). Ask the preflight what the target release can read:
+An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint (`old_lib_refusal`). 3.3 writes at `sift.col_format_minor = 12` by default, so a 3.2 library cannot read a `sift_table` with a date or timestamp column, or an index with `cube_minmax`, `rollup_dims`, `set_columns` or `superunit`, written after the update, unless the setting is lowered to 6 before they are written. Ask the preflight what the target release can read:
 
 ```
 scripts/upgrade-check.sh --to 3.1 app
@@ -108,7 +108,7 @@ Every `blocker` row says how to write what that release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2, 10 for 3.3) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 12, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it |
 | `sift_table` | with `sift.col_format_minor` set, `ALTER TABLE t SET ACCESS METHOD heap` and back to `sift_table` rewrites it in that format |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
@@ -123,7 +123,7 @@ A standby that stays on the older release needs the same: its primary writes the
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |
-| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`) | 3.3 |
+| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`) | 3.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there (AGENTS.md, "On-disk formats").
 
