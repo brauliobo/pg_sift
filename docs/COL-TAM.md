@@ -18,7 +18,7 @@ metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `me
 
 ## 1. Decisions in one page
 
-| subject | decision |
+| area | decision |
 |---|---|
 | Storage | the page store of `core/store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
 | TIDs | **synthetic and never reused**: a TID is `(vblock, offset)` with `offset` in 1..`MaxHeapTuplesPerPage` (291) so every index AM, TID bitmaps and GIN accept it. `vblock` comes from a counter in the metapage and never decreases; it is *not* a physical block number. A superblock (SB, 256 vblocks, 74,496 TIDs) is the engine's unit, so the engine's row directory returns the table's own TIDs. |
