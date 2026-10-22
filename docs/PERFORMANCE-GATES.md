@@ -10,6 +10,9 @@ python3 bench/steps/perf_gate.py \
   --scratch-root OWNED_SCRATCH --output ARTIFACT_DIRECTORY
 ```
 
+The workflow runs nightly and on dispatch, not on pull requests: of 439 hosted measurements (2026-10-20..22) 12 % were inconclusive and two of the six
+regressions it reported cleared on a rerun of the same commit.
+
 Both refs must be exact 40-character commit SHAs available locally. The workflow
 resolves the merge-base and PR head; the driver records and validates their
 identities. Nightly CI chooses the newest first-parent candidate ancestor at least
