@@ -213,13 +213,15 @@ const SiftColKernels sift_col_kernels_scalar = {
 };
 
 #if defined(SIFT_HAVE_NEON)
+SIFT_COLK_BITS_COUNT(neon, sift_kern_neon)
+
 const SiftColKernels sift_col_kernels_neon = {
 	.range = {sift_colk_range_u8_neon, sift_colk_range_u16_neon, sift_colk_range_u32_neon, sift_colk_range_u64_neon},
 	.lut = {sift_colk_lut_u8_neon, lut_u16_scalar, lut_u32_scalar},
 	.bits_and = bits_and_scalar,
 	.bits_or = bits_or_scalar,
 	.bits_andnot = bits_andnot_scalar,
-	.bits_count = bits_count_scalar,
+	.bits_count = bits_count_neon,
 	.bits_and_count = bits_and_count_scalar,
 	.bits_to_idx = sift_colk_bits_to_idx_neon,
 	.zone_range = sift_colk_zone_range_neon,
