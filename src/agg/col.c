@@ -455,15 +455,14 @@ zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
 	return c;
 }
 
-static void
-col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
+
+/* The predicates a begin over the prune entries tests (the zone trees and the tests behind them are made once for the entries) */
+static int
+col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
 {
-	ColSource  *src = impl;
-	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
 	int			n;
 
-	if (src->rck)
-		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	if (src->zfor != prune)
 	{
 		src->zfor = prune;
@@ -483,7 +482,38 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	for (int i = 0; i < src->nwtest; i++)
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			preds[n++] = src->wtest[i].pred;
+	return n;
+}
+
+static void
+col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+{
+	ColSource  *src = impl;
+	SiftColPred	preds[COL_PREDS_MAX];
+	int			n;
+
+	if (src->rck)
+		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
+	n = col_preds(src, prune, nprune, preds);
 	sift_col_begin_zones(src->cs, preds, n, src->zone, src->nzone, sb_lo, sb_hi);
+}
+
+static bool
+col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set)
+{
+	ColSource  *src = impl;
+	SiftColPred	preds[COL_PREDS_MAX];
+	int			n = col_preds(src, prune, nprune, preds);
+
+	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept, pruned, set);
+}
+
+static void
+col_skipped(void *impl, int64 pruned, int64 set)
+{
+	ColSource  *src = impl;
+
+	sift_col_skipped(src->cs, pruned, set);
 }
 
 static bool
@@ -785,6 +815,8 @@ static const SiftSrcProvider col_provider = {
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,
 	.begin = col_begin,
+	.kept = col_kept,
+	.skipped = col_skipped,
 	.next = col_next,
 	.super = col_super,
 	.split = col_split,

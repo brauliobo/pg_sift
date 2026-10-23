@@ -138,12 +138,63 @@ shared_init(ScanShared *sh, AggExec *ex)
 		topn_shared_init(sh, ex);
 }
 
+/* The superblocks the zones and summaries of the source leave a unit in, for the scan: a range of none costs a few words, not a begin (colsrc.h kept) */
+typedef struct SkipMap
+{
+	bool		ok;
+	uint32		nsb;
+	uint64	   *kept;
+	uint16	   *pruned;
+	uint16	   *set;
+} SkipMap;
+
+static bool
+range_skipped(AggExec *ex, uint32 lo, uint32 hi)
+{
+	SkipMap    *m = ex->skip;
+	int64		pruned = 0,
+				set = 0;
+
+	if (m == NULL)
+	{
+		uint32		nsb = sift_colsrc_nsb(ex->src);
+
+		m = ex->skip = MemoryContextAllocZero(ex->cxt, sizeof(SkipMap));
+		m->nsb = nsb;
+		m->kept = MemoryContextAllocZero(ex->cxt, (nsb + 63) / 64 * sizeof(uint64));
+		m->pruned = MemoryContextAllocZero(ex->cxt, nsb * sizeof(uint16));
+		m->set = MemoryContextAllocZero(ex->cxt, nsb * sizeof(uint16));
+		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept, m->pruned, m->set);
+	}
+	hi = Min(hi, m->nsb);
+	if (!m->ok || lo >= hi)
+		return false;
+	for (uint32 w = lo / 64; w < (hi + 63) / 64; w++)
+	{
+		uint64		mask = ~UINT64CONST(0);
+
+		if (w == lo / 64)
+			mask &= ~UINT64CONST(0) << (lo % 64);
+		if (w == (hi - 1) / 64 && hi % 64)
+			mask &= (UINT64CONST(1) << (hi % 64)) - 1;
+		if (m->kept[w] & mask)
+			return false;
+	}
+	for (uint32 sb = lo; sb < hi; sb++)
+	{
+		pruned += m->pruned[sb];
+		set += m->set[sb];
+	}
+	sift_colsrc_skipped(ex->src, pruned, set);
+	return true;
+}
+
 void
 scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	lo = Max(lo, ex->tid_sb_lo);
 	hi = Min(hi, ex->tid_sb_hi);
-	if (lo >= hi)
+	if (lo >= hi || range_skipped(ex, lo, hi))
 		return;
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nzone);
 	while (sift_colsrc_next(ex->src, &ex->unit))

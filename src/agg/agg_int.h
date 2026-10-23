@@ -159,6 +159,7 @@ typedef struct AggExec
 	bool		dsabort;		/* ... and the sweep was given up: the table of the groups would have spilled, so the scan started over in plain order */
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts: the integer leaves they compare (nprune), then the ORs of such tests (up to nzone) */
 	int			nprune;
+	struct SkipMap *skip;		/* the superblocks the zones keep, made at the first unit range of the scan (par.c range_skipped) */
 	int			nzone;
 	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */

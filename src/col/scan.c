@@ -741,6 +741,64 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	MemoryContextSwitchTo(old);
 }
 
+/*
+ * The superblocks that hold a unit no test prunes, for the whole scan at once: an aggregate begins for every morsel of units, and the begin of a morsel that the
+ * zones clear costs as much as the tests of its units. Sets bit sb of kept for each such unit (and each batch of the write buffer) and counts the units the
+ * tests prune and those the summaries cleared in pruned[sb] and set[sb], as a cursor over that superblock would. Each unit is tested once, through the
+ * cache of keep_cached. False (nothing to rely on) when the cache does not apply or a superblock lies past nspace.
+ */
+bool
+sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set)
+{
+	MemoryContext old;
+	bool		ok = true;
+
+	if (!keep_cached(src, preds, npreds, nzones))
+		return false;
+	MemoryContextReset(src->scan);
+	old = MemoryContextSwitchTo(src->scan);
+	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
+		load_wbuf(src);
+	for (int i = 0; i < src->nmem && ok; i++)
+		if (src->mem[i].b->nrows > 0)
+		{
+			ok = src->mem[i].b->sb < nspace;
+			if (ok)
+				sift_col_bit_set(kept, src->mem[i].b->sb);
+		}
+	for (int i = 0; i < src->nseg && ok; i++)
+	{
+		ColCursor  *c = &src->seg[i];
+
+		prune_segment(src, c, preds, npreds, zones, nzones, 0, PG_UINT32_MAX, true);
+		for (uint32 u = 0; u < c->seg->nsb && ok; u++)
+		{
+			uint32		sb = c->seg->sbdir[u].sb;
+
+			ok = sb < nspace;
+			if (!ok)
+				break;
+			if (sift_col_bit_test(c->keep, u))
+				sift_col_bit_set(kept, sb);
+			else
+			{
+				pruned[sb]++;
+				set[sb] += sift_col_bit_test(c->setcut, u);
+			}
+		}
+	}
+	MemoryContextSwitchTo(old);
+	return ok;
+}
+
+/* The units of superblocks a scan did not begin, counted as a cursor over them would have */
+void
+sift_col_skipped(SiftColSource *src, int64 pruned, int64 set)
+{
+	src->cnt.units_pruned += pruned;
+	src->cnt.units_set += set;
+}
+
 void
 sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi)
 {

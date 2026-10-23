@@ -18,6 +18,7 @@
 #include "bm25/kernels.h"
 #include "table/table.h"
 #include "core/popcount.h"
+#include "core/cpu.h"
 #include "core/store.h"
 #include "core/visibility.h"
 
@@ -68,6 +69,34 @@ sift_vis_nblocks(Relation heap)
 	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
 }
 
+/* The all-visible bit of each page (not its all-frozen bit) among the n words of a map page; the contents of a page are 8-aligned. The popcnt instruction where the CPU has it */
+#if defined(__x86_64__)
+__attribute__((target("popcnt")))
+static uint32
+count_words_popcnt(const uint64 *w, uint32 n)
+{
+	uint32		count = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		count += (uint32) __builtin_popcountll(w[i] & UINT64CONST(0x5555555555555555));
+	return count;
+}
+#endif
+
+static uint32
+count_allvisible_words(const uint64 *w, uint32 n)
+{
+	uint32		count = 0;
+
+#if defined(__x86_64__)
+	if (sift_cpu.flags & SIFT_CPU_POPCNT)
+		return count_words_popcnt(w, n);
+#endif
+	for (uint32 i = 0; i < n; i++)
+		count += sift_pc64(w[i] & UINT64CONST(0x5555555555555555));
+	return count;
+}
+
 /*
  * The pages among the first nblocks that the map says are all-visible: what visibilitymap_count counts, from the bytes of the map those pages
  * use (it counts the whole 8 kB of every map page, a hundred times the work for a partition of a few pages). Not locked, as there: a bit
@@ -89,11 +118,9 @@ sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
 		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
 		const char *map = PageGetContents(BufferGetPage(buf));
 		uint32		len = Min(left, VM_MAPSIZE);
-		uint32		off = 0;
+		uint32		off = len / sizeof(uint64) * sizeof(uint64);
 
-		/* the all-visible bit of each page, not its all-frozen bit; the contents of a page are 8-aligned */
-		for (; off + sizeof(uint64) <= len; off += sizeof(uint64))
-			count += sift_pc64(*(const uint64 *) (map + off) & UINT64CONST(0x5555555555555555));
+		count += count_allvisible_words((const uint64 *) map, len / sizeof(uint64));
 		if (off < len)
 		{
 			uint64		w = 0;
