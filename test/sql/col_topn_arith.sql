@@ -218,3 +218,6 @@ SELECT tq_runs($q$SELECT id, kn FROM tq ORDER BY kn, id LIMIT 30$q$) AS column_b
 SELECT ta_check($q$SELECT id, kn FROM tq ORDER BY kn * -1, id LIMIT 30$q$) AS negated,
 	   ta_check($q$SELECT id, kn FROM tq ORDER BY kn + 1 DESC, id LIMIT 30 OFFSET 100$q$) AS plus_desc,
 	   ta_check($q$SELECT id, kn FROM tq ORDER BY kn % 5, id DESC LIMIT 30$q$) AS remainder;
+DROP TABLE ta, ta_q, tq, tv;
+DROP FUNCTION ta_check(text,integer), ta_error(text,boolean), ta_mode(boolean,integer), ta_scan(text), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

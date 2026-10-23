@@ -28,3 +28,5 @@ SELECT (SELECT count(*) FROM tm) = (SELECT count(*) FROM th) AS same_count,
 \c
 SELECT id, v FROM tm WHERE id IN (5, 10, 94, 95, 96, 29999, 30000) ORDER BY id;
 SELECT id, v FROM th WHERE id IN (5, 10, 94, 95, 96, 29999, 30000) ORDER BY id;
+DROP TABLE th, tm;
+DROP EXTENSION pg_sift;
