@@ -137,41 +137,6 @@ def absolute(v, digits=3):
     return '{:,.0f}'.format(float('%.*g' % (digits, v))) if v >= 10 ** (digits - 1) else '%.*g' % (digits, v)
 
 
-def measured_cell(r, edge, higher=True):
-    """a value of a row, its standard error where that exceeds 10% of it, in bold when it is as good as `edge`"""
-    v = number(r)
-    if v is None:
-        return r[6] if r is not None and r[6] in ('NA', 'error') else 'n/a'
-    se = rel(r)
-    text = absolute(v) + (' ± %s' % absolute(v * se, 2) if se is not None and se > FLAG else '')
-    return '**%s**' % text if edge is not None and (v >= edge if higher else v <= edge) else text
-
-
-def best_edge(column, higher=True):
-    """the best value of a column moved by its own standard error: the cells at least that good are within the noise of the best"""
-    rows = [r for r in column if number(r) is not None]
-    if not rows:
-        return None
-    best = (max if higher else min)(rows, key=number)
-    se = (rel(best) or 0) * number(best)
-    return number(best) - se if higher else number(best) + se
-
-
-def table(t):
-    """the Markdown table of the README: queries per second of each engine and class (the fastest in bold), index size and build time"""
-    classes = t.classes
-    label = {'count': '`count(*)`'}
-    head = ['articles (queries/s)', 'index', 'build'] + [label.get(c, c) for c in classes]
-    best = {c: best_edge([t.qps(e, c) for e in t.articles]) for c in classes}
-    body = []
-    for e in t.articles:
-        name = '**%s** (default)' % t.label(e) if e == 'sift' else t.label(e)
-        size, build = t.num('articles', e, metric='index_mib'), t.num('articles', e, metric='build_s')
-        body.append([name, '%.0f MiB' % size if size is not None else 'NA', '%.1f s' % build if build is not None else 'NA']
-                    + [measured_cell(t.qps(e, c), best[c]) for c in classes])
-    return tables.md_table(head, body)
-
-
 def places_bullet(t):
     """sift against pg_search (and Elasticsearch) on the places: the range of the top-20 p50 over the classes, and the cells where sift is ahead"""
     p50 = [r for r in t.rows if r[:2] == ('places', t.tier) and r[5] == 'p50_ms']
@@ -200,33 +165,26 @@ def positions_bullet(t):
 
 
 def benchmarks_block(t, timing):
+    """the README's search block: the findings and the charts; the scope, method, CPU budget and host are the footnote [^search], every cell with its standard error is in docs/BENCHMARKS.md"""
     s, p = t.session, t.load()
     articles, places = format(t.corpus('articles'), ','), format(t.corpus('places'), ',')
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
     budget, details = tables.cpus_parts(s.get('quota', ''))
-    out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client): the slim tier of the suite, the default of `bench/bench all`.' % (articles, places), '',
-           '- **Scope:** every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus; cells stop at a 5% relative standard error (at most 1 s).',
-           '- **Method:** same data, queries and clients for every engine, one engine at a time, median of %s interleaved rounds.' % ('2-%d' % rounds if rounds > 2 else '2'),
-           '- **CPUs:** ' + budget + (':' if details else '.')]
-    out += ['  - ' + d for d in details]
-    if s:
-        at = ' at pg_sift %s (%s)' % (s['version'], s['sift'][:7]) if s.get('version') and s.get('sift') else ''
-        out += ['- **Host:** measured%s %s on %s (%s threads), PostgreSQL %s.' % (at, s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
-    out += ['- **Cells:** queries per second (higher is better); '
-            'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value. The places are in the chart below and in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#places).', '']
-    out += table(t) + ['']
+    out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client), every engine on the same data, queries and clients[^search]. Throughput in queries per second, higher is better; '
+           'the error bars are one standard error over the interleaved rounds.' % (articles, places), '',
+           '![Throughput by workload](docs/img/articles-throughput.svg)', '', '![Index size](docs/img/index-size.svg)', '']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
-    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).']
-    out += ['- The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable.' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else '')]
-    out += ['- Every cell with its standard error, the cold-cache tables and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).', '']
-    out += ['![Throughput by workload](docs/img/articles-throughput.svg)', '![Index size](docs/img/index-size.svg)', '![Autocomplete latency](docs/img/places-latency.svg)', '']
-    out += ['Reproduce:', '',
-            '- `bench/bench all` (see [bench/README.md](bench/README.md)): %s of builds and measurements for the slim tier, %s with the cold-cache tables of `--docs`.' % (timing[0], timing[1]),
-            '- `bench/bench all --docs` rewrites this section from a new session.',
-            '- `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour) and writes its own results; they are not published here.',
-            '- `bench/bench regress --run` compares this checkout with an earlier release and exits non-zero on a regression.']
-    return out
+    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).', '',
+            '![Autocomplete latency](docs/img/places-latency.svg)', '',
+            'Every cell with its standard error, the cold-cache tables and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md); reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
+    foot = ['[^search]: Scope: every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus (the slim tier, the default of `bench/bench all`); cells stop at a 5%% relative standard error (at most 1 s). '
+            'Method: one engine at a time, median of %s interleaved rounds. CPUs: %s%s' % ('2-%d' % rounds if rounds > 2 else '2', budget, (': ' + '; '.join(details) + '.') if details else '.')]
+    if s:
+        at = ' at pg_sift %s (%s)' % (s['version'], s['sift'][:7]) if s.get('version') and s.get('sift') else ''
+        foot[0] += ' Measured%s %s on %s (%s threads), PostgreSQL %s.' % (at, s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))
+    foot[0] += ' The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable.' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else '')
+    return out + foot
 
 
 def replace_block(path, name, lines):

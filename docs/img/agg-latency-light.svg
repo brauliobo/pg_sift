@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="607" viewBox="0 0 1000 607" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Time per aggregate question on 1,000,000 orders</title>
+<desc id="d">Median warm latency of seven aggregate questions on PostgreSQL, pg_sift, Elasticsearch, ClickHouse, Citus columnar and pg_duckdb.</desc>
+<rect x="0.5" y="0.5" width="999" height="606" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">7 aggregate questions on 1,000,000 orders: time per question</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">Median of the warm runs in milliseconds on a logarithmic axis, left is faster; the line of a dot runs from the fastest to the</text>
+<text x="20" y="72" font-size="13" text-anchor="start" fill="#59636e">slowest run. Every question is answered by every system.</text>
+<rect x="20.5" y="87.5" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"></rect>
+<text x="36" y="96" font-size="13" text-anchor="start" fill="#1f2328">PostgreSQL</text>
+<circle cx="131.8" cy="92" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="142.8" y="96" font-size="13" text-anchor="start" fill="#1f2328">pg_sift sift_col</text>
+<polygon points="282.3,86.2 288.1,92 282.3,97.8 276.4,92" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="293.3" y="96" font-size="13" text-anchor="start" fill="#1f2328">pg_sift sift_table</text>
+<polygon points="447.3,86.6 452.7,96.5 441.9,96.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="458.3" y="96" font-size="13" text-anchor="start" fill="#1f2328">Elasticsearch</text>
+<polygon points="576,97.4 581.4,87.5 570.6,87.5" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="587" y="96" font-size="13" text-anchor="start" fill="#1f2328">ClickHouse</text>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><line x1="678.7" y1="88" x2="686.8" y2="96"/><line x1="678.7" y1="96" x2="686.8" y2="88"/></g>
+<text x="693.8" y="96" font-size="13" text-anchor="start" fill="#1f2328">Citus columnar</text>
+<polygon points="818.7,86.6 824.1,96.5 813.3,96.5" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="829.7" y="96" font-size="13" text-anchor="start" fill="#1f2328">pg_duckdb</text>
+<line x1="250" y1="136" x2="250" y2="510" stroke="#e3e7eb" stroke-width="1"/>
+<text x="250" y="130" font-size="12" text-anchor="middle" fill="#59636e">0.1 ms</text>
+<line x1="375" y1="136" x2="375" y2="510" stroke="#e3e7eb" stroke-width="1"/>
+<text x="375" y="130" font-size="12" text-anchor="middle" fill="#59636e">1 ms</text>
+<line x1="500" y1="136" x2="500" y2="510" stroke="#e3e7eb" stroke-width="1"/>
+<text x="500" y="130" font-size="12" text-anchor="middle" fill="#59636e">10 ms</text>
+<line x1="625" y1="136" x2="625" y2="510" stroke="#e3e7eb" stroke-width="1"/>
+<text x="625" y="130" font-size="12" text-anchor="middle" fill="#59636e">100 ms</text>
+<line x1="750" y1="136" x2="750" y2="510" stroke="#e3e7eb" stroke-width="1"/>
+<text x="750" y="130" font-size="12" text-anchor="middle" fill="#59636e">1,000 ms</text>
+<text x="980" y="116" font-size="11" text-anchor="end" fill="#59636e">best pg_sift layout against the</text>
+<text x="980" y="130" font-size="11" text-anchor="end" fill="#59636e">fastest other system</text>
+<rect x="14" y="146" width="972" height="52" fill="#eef0f2" rx="4"/>
+<text x="22" y="170" font-size="14" text-anchor="start" fill="#1f2328">Q01 point lookup</text>
+<text x="22" y="187" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 0.269 ms, sift_table 0.158 ms</text>
+<line x1="296.2" y1="155.5" x2="306.5" y2="155.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="299.1" y="151" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: PostgreSQL 0.269 ms (fastest 0.234, slowest 0.283)</title></rect>
+<line x1="289.7" y1="161" x2="311.4" y2="161" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="291.7" cy="161" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_col 0.215 ms (fastest 0.208, slowest 0.31)</title></circle>
+<line x1="269.5" y1="166.5" x2="290.7" y2="166.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="274.8,160.7 280.7,166.5 274.8,172.3 269,166.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_sift sift_table 0.158 ms (fastest 0.143, slowest 0.212)</title></polygon>
+<line x1="403.5" y1="172" x2="416.9" y2="172" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="405.5,166.6 410.9,176.5 400.1,176.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: Elasticsearch 1.75 ms (fastest 1.69, slowest 2.16)</title></polygon>
+<line x1="436.9" y1="177.5" x2="442" y2="177.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="439.9,182.9 445.3,173 434.5,173" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: ClickHouse 3.3 ms (fastest 3.13, slowest 3.43)</title></polygon>
+<line x1="408.3" y1="183" x2="410.5" y2="183" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q01 point lookup: Citus columnar 1.85 ms (fastest 1.85, slowest 1.92)</title><line x1="404.5" y1="178.9" x2="412.6" y2="187.1"/><line x1="404.5" y1="187.1" x2="412.6" y2="178.9"/></g>
+<line x1="460.2" y1="188.5" x2="460.2" y2="188.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="460.2,183.1 465.6,193 454.8,193" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q01 point lookup: pg_duckdb 4.81 ms (fastest 4.81, slowest 4.81)</title></polygon>
+<text x="980" y="177" font-size="13" text-anchor="end" fill="#1f2328">1.7× faster than PostgreSQL</text>
+<text x="22" y="222" font-size="14" text-anchor="start" fill="#1f2328">Q02 orders per country</text>
+<text x="22" y="239" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 21.7 ms, sift_col 0.534 ms</text>
+<line x1="539.3" y1="207.5" x2="542.5" y2="207.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="537.6" y="203" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: PostgreSQL 21.7 ms (fastest 20.6, slowest 21.9)</title></rect>
+<line x1="336.9" y1="213" x2="346.4" y2="213" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="340.9" cy="213" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: pg_sift sift_col 0.534 ms (fastest 0.496, slowest 0.59)</title></circle>
+<line x1="344" y1="218.5" x2="357.4" y2="218.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="346.4,212.7 352.2,218.5 346.4,224.3 340.5,218.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: pg_sift sift_table 0.59 ms (fastest 0.565, slowest 0.723)</title></polygon>
+<line x1="462.1" y1="224" x2="471.7" y2="224" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="463.9,218.6 469.3,228.5 458.5,228.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: Elasticsearch 5.15 ms (fastest 4.98, slowest 5.94)</title></polygon>
+<line x1="455.8" y1="229.5" x2="525.5" y2="229.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="460.8,234.9 466.2,225 455.4,225" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: ClickHouse 4.86 ms (fastest 4.43, slowest 16)</title></polygon>
+<line x1="606.2" y1="235" x2="608.1" y2="235" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q02 orders per country: Citus columnar 71.4 ms (fastest 70.8, slowest 73.2)</title><line x1="602.6" y1="230.9" x2="610.7" y2="239.1"/><line x1="602.6" y1="239.1" x2="610.7" y2="230.9"/></g>
+<line x1="412.1" y1="240.5" x2="412.1" y2="240.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="412.1,235.1 417.5,245 406.7,245" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q02 orders per country: pg_duckdb 1.98 ms (fastest 1.98, slowest 1.98)</title></polygon>
+<text x="980" y="229" font-size="13" text-anchor="end" fill="#1f2328">3.7× faster than pg_duckdb</text>
+<rect x="14" y="250" width="972" height="52" fill="#eef0f2" rx="4"/>
+<text x="22" y="274" font-size="14" text-anchor="start" fill="#1f2328">Q03 revenue per month</text>
+<text x="22" y="291" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 172 ms, sift_col 0.537 ms</text>
+<line x1="652.3" y1="259.5" x2="655.4" y2="259.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="650" y="255" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: PostgreSQL 172 ms (fastest 165, slowest 175)</title></rect>
+<line x1="340.2" y1="265" x2="344.6" y2="265" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="341.3" cy="265" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_col 0.537 ms (fastest 0.526, slowest 0.571)</title></circle>
+<line x1="354.8" y1="270.5" x2="361.8" y2="270.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="357.4,264.6 363.3,270.5 357.4,276.4 351.6,270.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_sift sift_table 0.724 ms (fastest 0.689, slowest 0.784)</title></polygon>
+<line x1="493.9" y1="276" x2="499.7" y2="276" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="494.9,270.6 500.3,280.5 489.5,280.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: Elasticsearch 9.1 ms (fastest 8.93, slowest 9.95)</title></polygon>
+<line x1="472.6" y1="281.5" x2="486.8" y2="281.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="474.2,286.9 479.6,277 468.8,277" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: ClickHouse 6.22 ms (fastest 6.04, slowest 7.84)</title></polygon>
+<line x1="634.4" y1="287" x2="634.8" y2="287" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q03 revenue per month: Citus columnar 119 ms (fastest 119, slowest 120)</title><line x1="630.4" y1="282.9" x2="638.5" y2="291.1"/><line x1="630.4" y1="291.1" x2="638.5" y2="282.9"/></g>
+<line x1="507" y1="292.5" x2="507" y2="292.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="507,287.1 512.4,297 501.6,297" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q03 revenue per month: pg_duckdb 11.4 ms (fastest 11.4, slowest 11.4)</title></polygon>
+<text x="980" y="281" font-size="13" text-anchor="end" fill="#1f2328">12× faster than ClickHouse</text>
+<text x="22" y="326" font-size="14" text-anchor="start" fill="#1f2328">Q04 top categories</text>
+<text x="22" y="343" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 39.9 ms, sift_col 0.553 ms</text>
+<line x1="573.4" y1="311.5" x2="575.8" y2="311.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="570.6" y="307" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: PostgreSQL 39.9 ms (fastest 38.6, slowest 40.4)</title></rect>
+<line x1="340.9" y1="317" x2="347.9" y2="317" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="342.9" cy="317" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_col 0.553 ms (fastest 0.534, slowest 0.608)</title></circle>
+<line x1="349.1" y1="322.5" x2="354.9" y2="322.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="352.9,316.6 358.7,322.5 352.9,328.4 347,322.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_sift sift_table 0.665 ms (fastest 0.621, slowest 0.691)</title></polygon>
+<line x1="494.9" y1="328" x2="511.5" y2="328" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="497.1,322.6 502.5,332.5 491.7,332.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: Elasticsearch 9.47 ms (fastest 9.1, slowest 12.4)</title></polygon>
+<line x1="463.1" y1="333.5" x2="466.3" y2="333.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="465.6,338.9 471,329 460.2,329" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: ClickHouse 5.31 ms (fastest 5.07, slowest 5.38)</title></polygon>
+<line x1="623" y1="339" x2="625.5" y2="339" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q04 top categories: Citus columnar 99.8 ms (fastest 96.5, slowest 101)</title><line x1="620.8" y1="334.9" x2="628.9" y2="343.1"/><line x1="620.8" y1="343.1" x2="628.9" y2="334.9"/></g>
+<line x1="453.3" y1="344.5" x2="453.3" y2="344.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="453.3,339.1 458.7,349 447.9,349" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q04 top categories: pg_duckdb 4.23 ms (fastest 4.23, slowest 4.23)</title></polygon>
+<text x="980" y="333" font-size="13" text-anchor="end" fill="#1f2328">7.6× faster than pg_duckdb</text>
+<rect x="14" y="354" width="972" height="52" fill="#eef0f2" rx="4"/>
+<text x="22" y="378" font-size="14" text-anchor="start" fill="#1f2328">Q05 average shipped order</text>
+<text x="22" y="395" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 9.81 ms, sift_col 1.75 ms</text>
+<line x1="497.8" y1="363.5" x2="502.8" y2="363.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="494.5" y="359" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: PostgreSQL 9.81 ms (fastest 9.6, slowest 10.5)</title></rect>
+<line x1="403.1" y1="369" x2="408" y2="369" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="405.4" cy="369" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: pg_sift sift_col 1.75 ms (fastest 1.68, slowest 1.84)</title></circle>
+<line x1="437.7" y1="374.5" x2="441.7" y2="374.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="439.1,368.6 444.9,374.5 439.1,380.4 433.2,374.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: pg_sift sift_table 3.26 ms (fastest 3.18, slowest 3.42)</title></polygon>
+<line x1="449.5" y1="380" x2="491.1" y2="380" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="453.1,374.6 458.5,384.5 447.7,384.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: Elasticsearch 4.21 ms (fastest 3.94, slowest 8.49)</title></polygon>
+<line x1="465.2" y1="385.5" x2="551.4" y2="385.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="467.4,390.9 472.8,381 462,381" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: ClickHouse 5.49 ms (fastest 5.27, slowest 25.8)</title></polygon>
+<line x1="598.5" y1="391" x2="600.2" y2="391" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q05 average shipped order: Citus columnar 61.9 ms (fastest 61.4, slowest 63.3)</title><line x1="594.9" y1="386.9" x2="603" y2="395.1"/><line x1="594.9" y1="395.1" x2="603" y2="386.9"/></g>
+<line x1="475.6" y1="396.5" x2="475.6" y2="396.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="475.6,391.1 481,401 470.2,401" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q05 average shipped order: pg_duckdb 6.38 ms (fastest 6.38, slowest 6.38)</title></polygon>
+<text x="980" y="385" font-size="13" text-anchor="end" fill="#1f2328">2.4× faster than Elasticsearch</text>
+<text x="22" y="430" font-size="14" text-anchor="start" fill="#1f2328">Q06 customers per month</text>
+<text x="22" y="447" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 201 ms, sift_col 5.23 ms</text>
+<line x1="659.3" y1="415.5" x2="669.5" y2="415.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="658.4" y="411" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: PostgreSQL 201 ms (fastest 188, slowest 227)</title></rect>
+<line x1="462.7" y1="421" x2="467.6" y2="421" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="464.8" cy="421" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_col 5.23 ms (fastest 5.03, slowest 5.51)</title></circle>
+<line x1="472.9" y1="426.5" x2="481.3" y2="426.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="475.6,420.6 481.5,426.5 475.6,432.4 469.8,426.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_sift sift_table 6.38 ms (fastest 6.07, slowest 7.09)</title></polygon>
+<line x1="567.7" y1="432" x2="573.1" y2="432" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="568.9,426.6 574.3,436.5 563.5,436.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: Elasticsearch 35.6 ms (fastest 34.8, slowest 38.4)</title></polygon>
+<line x1="496" y1="437.5" x2="504.8" y2="437.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="497.4,442.9 502.8,433 492,433" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: ClickHouse 9.54 ms (fastest 9.28, slowest 10.9)</title></polygon>
+<line x1="700.4" y1="443" x2="708.5" y2="443" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q06 customers per month: Citus columnar 433 ms (fastest 401, slowest 466)</title><line x1="700.6" y1="438.9" x2="708.7" y2="447.1"/><line x1="700.6" y1="447.1" x2="708.7" y2="438.9"/></g>
+<line x1="554.6" y1="448.5" x2="554.6" y2="448.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="554.6,443.1 560,453 549.2,453" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q06 customers per month: pg_duckdb 27.3 ms (fastest 27.3, slowest 27.3)</title></polygon>
+<text x="980" y="437" font-size="13" text-anchor="end" fill="#1f2328">1.8× faster than ClickHouse</text>
+<rect x="14" y="458" width="972" height="52" fill="#eef0f2" rx="4"/>
+<text x="22" y="482" font-size="14" text-anchor="start" fill="#1f2328">Q07 big recent orders</text>
+<text x="22" y="499" font-size="11" text-anchor="start" fill="#59636e">PostgreSQL 11.6 ms, sift_col 1.42 ms</text>
+<line x1="507" y1="467.5" x2="512.6" y2="467.5" stroke="#6e7781" stroke-width="2" stroke-opacity="0.55"/>
+<rect x="503.5" y="463" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: PostgreSQL 11.6 ms (fastest 11.4, slowest 12.6)</title></rect>
+<line x1="391" y1="473" x2="397.3" y2="473" stroke="#2a78d6" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="394.1" cy="473" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: pg_sift sift_col 1.42 ms (fastest 1.34, slowest 1.51)</title></circle>
+<line x1="399.4" y1="478.5" x2="407.5" y2="478.5" stroke="#1baf7a" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="401.4,472.6 407.2,478.5 401.4,484.4 395.5,478.5" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: pg_sift sift_table 1.63 ms (fastest 1.57, slowest 1.82)</title></polygon>
+<line x1="439.5" y1="484" x2="485.8" y2="484" stroke="#6250d6" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="441.9,478.6 447.3,488.5 436.5,488.5" fill="#6250d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: Elasticsearch 3.43 ms (fastest 3.28, slowest 7.7)</title></polygon>
+<line x1="441.8" y1="489.5" x2="446.5" y2="489.5" stroke="#eda100" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="442.7,494.9 448.1,485 437.3,485" fill="#eda100" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: ClickHouse 3.48 ms (fastest 3.42, slowest 3.73)</title></polygon>
+<line x1="573.4" y1="495" x2="576" y2="495" stroke="#e87ba4" stroke-width="2" stroke-opacity="0.55"/>
+<g stroke="#e87ba4" stroke-width="2.5" stroke-linecap="round"><title>Q07 big recent orders: Citus columnar 40.1 ms (fastest 38.7, slowest 40.5)</title><line x1="571.4" y1="490.9" x2="579.5" y2="499.1"/><line x1="571.4" y1="499.1" x2="579.5" y2="490.9"/></g>
+<line x1="466.6" y1="500.5" x2="466.6" y2="500.5" stroke="#eb6834" stroke-width="2" stroke-opacity="0.55"/>
+<polygon points="466.6,495.1 472,505 461.2,505" fill="#eb6834" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>Q07 big recent orders: pg_duckdb 5.41 ms (fastest 5.41, slowest 5.41)</title></polygon>
+<text x="980" y="489" font-size="13" text-anchor="end" fill="#1f2328">2.4× faster than Elasticsearch</text>
+<text x="20" y="548" font-size="12" text-anchor="start" fill="#59636e">Data: docs/results/store.json, duckdb.tsv, 2026-10-22, AMD Ryzen 7 9700X, 16 threads, 8g per server, 3 CPUs.</text>
+<text x="20" y="565" font-size="12" text-anchor="start" fill="#59636e">PostgreSQL 18.6, pg_sift 3.3, Elasticsearch 9.5.5, ClickHouse 26.9.19.9, Citus 14.2-1, pg_duckdb 1.1.1. One client, the same rows in every</text>
+<text x="20" y="582" font-size="12" text-anchor="start" fill="#59636e">system; Elasticsearch with its request cache off; pg_duckdb is its own run (the better of heap and Parquet, a different PostgreSQL build).</text>
+</svg>
