@@ -46,6 +46,7 @@ struct ColBuild
 	Size		budget;			/* memory a segment's writer may hold */
 	SiftColBatch *batch;		/* the rows of the current superblock, flushed at the next one */
 	SiftColSegWriter *w;
+	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
 	int			nrows;
 	int			maxrows;
@@ -84,6 +85,7 @@ end_segment(ColBuild *b)
 						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	b->w = NULL;
+	MemoryContextDelete(b->wcxt);
 }
 
 /* A parallel build reserves the generation in the metapage, the serial one numbers its segments */
@@ -100,7 +102,8 @@ flush_batch(ColBuild *b)
 		return;
 	if (b->w == NULL)
 	{
-		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->cxt);
+		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
