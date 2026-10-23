@@ -11,6 +11,9 @@ SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 300 END, 1 + i % 
        (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 500) / 10.0, (ARRAY['cable', 'broken', 'fast', 'late'])[1 + i % 4] || ' ' || (ARRAY['box', 'wire', 'label'])[1 + i % 3]
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, tenant_id, region, kind, amount);
+NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 56 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: tenant_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX ev_fts ON ev USING sift (memo);
 CREATE TABLE tenants (id int PRIMARY KEY, kind text, country text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3], (ARRAY['north', 'south', 'east', NULL])[1 + i % 4] FROM generate_series(1, 40) i;
