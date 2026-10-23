@@ -358,6 +358,15 @@ direct_grow(AggExec *ex)
 		total = Min((uint64) ex->direct_max + 1, total * k->cap);
 	}
 	remap = palloc(oldcap * sizeof(uint32));
+	if (total > PRESIZE_MIN && total <= ex->direct_max && total > ex->spec->est_groups * 4)
+	{
+		uint32		used = 0;
+
+		for (uint32 g = 0; g < oldcap; g++)
+			used += ex->seen[g] != 0;
+		if ((uint64) used * DIRECT_SPARSE < total)
+			total = (uint64) ex->direct_max + 1;
+	}
 	if (total > ex->direct_max)
 	{
 		/* the existing groups keep their ids in the hash table */
