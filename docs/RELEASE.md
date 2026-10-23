@@ -57,7 +57,7 @@ A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared 
 
 PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
 PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).
-PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in one shard and fails the run like 17 and 18.
+PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in the same shards and fails the run like 17 and 18.
 19 is a supported major: the source in `src/core/compat.h` carries its differences, and a red 19 job blocks a release like any other.
 
 Following the 19 betas and release candidates needs no change in the repository: the action builds the head of `REL_19_STABLE` (`scripts/pg19-build.sh`: assertions on, ICU, the TAP and contrib modules the tests use).
