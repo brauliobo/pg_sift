@@ -388,6 +388,7 @@ ms per query: 48 queries per row, value bitmaps forced BITMAP. The query column 
 - **Dispatch:**
   - `sift_init()` picks the best of scalar (baseline x86-64), AVX2 (avx2, bmi, bmi2, popcnt) and AVX-512 (F/BW/VL/VBMI2/VPOPCNTDQ). It uses `__builtin_cpu_supports` and function-level target pragmas only.
   - `sift_set_isa()` caps the level, for the `sift.simd` GUC.
+  - On AArch64 the levels are scalar and NEON (compiled in, nothing to detect). `bm25/bitmap_neon.c` is the generic template plus the population count of 64 bytes and more with `CNT` (four registers added as bytes before they are widened): 297 to 86 ns for 73,728 bits on an Apple M4, 3.5x the compiler's loop; `and`, `or`, `andnot` and the AND-count are what clang makes of the template, as fast as intrinsics (measured 1.0x). `col/kern.c` takes its `bits_count` from it.
 - **Encode:** `sift_encode(tids, tf, ub, n, opts, out)` with exact-size mode. Also `sift_keylist_encode/decode` and `sift_chunk_encode/count/pagemask/offsets/grp`.
 - **Cursors (operator trees):**
   - Sources are `sift_cur_blob` and `sift_cur_tids` (raw or inline keys). Operators are `sift_cur_and` (k-way), `sift_cur_or` (k-way) and `sift_cur_andnot`.

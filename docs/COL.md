@@ -881,6 +881,7 @@ Measured (Apple M4, one thread, clang, `-O2`, best of 300 batches and the best o
 | `zone_range` / `zone_notnull` (1024 units) | 344 / 219 | 117 / 47 | 2.9x / 4.7x |
 | `unpack` 7 / 13 / 20 bits | 1188 | 234 | 5.1x |
 | `bits_to_flags` | 344 | 61 | 5.7x |
+| `bits_count` (73,728 bits; the bitmap module's NEON popcount, `bm25/bitmap_neon.c`) | 297 | 86 | 3.5x |
 | `unpack` 29 bits, `lut` 16 / 32 bits, `bits_and`, `bits_and_count`, `zone_set`, `for_i64`, `f8_from_keys` | | scalar | 1.0x |
 
 ### Measured

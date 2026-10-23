@@ -25,7 +25,7 @@ N       ?= 1
 
 CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/compress.c \
                                bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/kernels_neon.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
-                               col/kern.c col/kern_avx2.c col/kern_avx512.c col/kern_neon.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c)
+                               col/kern.c col/kern_avx2.c col/kern_avx512.c col/kern_neon.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c)
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(CODEC)) $(OUT)/shim.o $(OUT)/ccshim.o $(OUT)/pgshim.o
 HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/compress.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/kern*.h $(SRC)/col/col.h) ccshim.h
 

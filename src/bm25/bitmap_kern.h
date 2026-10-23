@@ -25,7 +25,7 @@ typedef struct {
 
 enum { SIFT_VOP_AND, SIFT_VOP_OR, SIFT_VOP_ANDNOT };
 
-extern const sift_kernels sift_kern_scalar, sift_kern_avx2, sift_kern_avx512;
+extern const sift_kernels sift_kern_scalar, sift_kern_avx2, sift_kern_avx512, sift_kern_neon;
 extern const sift_kernels *sift_k;
 
 #define SIFT_INLINE static inline __attribute__((always_inline))
