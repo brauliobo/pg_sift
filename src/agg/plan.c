@@ -129,6 +129,23 @@ left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 	return TextDatumGetCString(((Const *) b)->constvalue);
 }
 
+/*
+ * LEFT JOIN LATERAL over the list of a row: its own conditions (the lateral's WHERE, the ON clause) say which elements exist, and a row with
+ * none is one tuple with NULL element columns. A condition above the join on an element column that PostgreSQL did not turn into an inner join
+ * (it is not strict) would see that NULL tuple: the plan stays normal.
+ */
+static bool
+left_lateral(AggCtx *c, FromScan *fs, LeftJoin *lj, Index rti)
+{
+	if (!sift_agg_left_lateral || lj->kind != SJ_LEFT || (c->func_kind != FK_RECORDSET && c->func_kind != FK_ELEMENTS))
+		return false;
+	foreach_ptr(Node, q, fs->quals)
+		if (bms_is_member(rti, pull_varnos(c->root, q)))
+			return false;
+	fs->quals = list_concat(fs->quals, list_copy(lj->quals));
+	return true;
+}
+
 bool
 agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
@@ -199,7 +216,11 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
 			foreach_ptr(LeftJoin, lj, fs->lefts)
 				if (lj->rti == rti && (c->func_key = left_each_key(lj, rti, c->func_kind)) == NULL)
-					return agg_refuse(OUTER_JOIN);
+				{
+					if (!left_lateral(c, fs, lj, rti))
+						return agg_refuse(OUTER_JOIN);
+					c->func_left = true;
+				}
 		}
 		else if (input_rel == NULL || c->joinless ||
 				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
@@ -309,6 +330,7 @@ agg_spec_new(AggCtx *c)
 	s->partindex = c->partindex;
 	s->partprune = c->partprune;
 	s->group = c->group;
+	s->left_lateral = c->func_left;
 	return s;
 }
 
@@ -625,6 +647,11 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse_on(FROM_SHAPE, "the query reads the elements of a second list besides the one it unnests");
 	if (types_guard_reads(c))
 		return agg_refuse_on(ERROR_PARITY, "a jsonb_typeof guard (FILTER or CASE) wraps a read of the same path: the leaf cannot hold the values the guard skips");
+	/* the NULL tuples are found before the late conjuncts run, so a late one on the elements could not give a row whose elements all fail it its tuple */
+	if (s->left_lateral)
+		for (int i = 0; i < s->npred; i++)
+			if (s->pred[i]->level == 1 && s->pred[i]->late)
+				return agg_refuse_on(WHERE, "a condition of the LEFT JOIN LATERAL may raise an error and is evaluated after the elements are kept");
 	share_ordered(s);
 	if (c->group < 0)
 		for (int i = 0; i < c->lay->nleaves; i++)

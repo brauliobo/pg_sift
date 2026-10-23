@@ -200,6 +200,10 @@ typedef struct AggExec
 	SiftSrcUnit unit;
 	SiftSrcVec *uvec;
 	bool	   *uvec_ok;
+	SiftSrcVec *nvec;			/* LEFT lateral: per element leaf, the NULL column of the rows with no element (nullpass) */
+	bool	   *nvec_ok;
+	uint64	   *nullrows;		/* the rows of the unit that get a NULL tuple (left_lateral), NULL: none */
+	bool		nullpass;		/* the tuples are rows (qlevel 0) that have no element: the element leaves read NULL */
 	uint32	  **gofs;			/* per array leaf: elem_offs of the unit, NULL when not built yet */
 	uint32	  **gpar;			/* per array leaf: the row that owns each of its elements in the unit (array_parent), NULL when not built yet */
 	int			qlevel;			/* 1: element queries */

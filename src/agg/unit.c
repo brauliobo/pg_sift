@@ -382,6 +382,7 @@ unit_forget(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
+	memset(ex->nvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < s->npreds_total; i++)
@@ -544,6 +545,42 @@ elems_vet(AggExec *ex, uint64 *em, int nrow)
 		}
 }
 
+/*
+ * LEFT JOIN LATERAL .. ON true: a kept row none of whose elements passes the lateral's own conditions is one tuple with NULL element columns.
+ * The rows are those of the row mask without a kept element, found before the snapshot check takes elements away: a row the snapshot does not
+ * see is no row at all.
+ */
+static void
+null_rows(AggExec *ex, const uint64 *rmask, const uint64 *em, int nrow)
+{
+	int			nrw = (nrow + 63) / 64;
+	uint64	   *has = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+
+	rows_of_elems(ex->offs, nrow, em, has);
+	ex->nullrows = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+	for (int w = 0; w < nrw; w++)
+		ex->nullrows[w] = rmask[w] & ~has[w];
+	if (sift_colk->bits_count(ex->nullrows, nrw) == 0)
+		ex->nullrows = NULL;
+}
+
+/* The tuples of the rows with no element: the rows themselves, their element columns NULL */
+static void
+unit_null_tuples(AggExec *ex, int nrow)
+{
+	uint64	   *nm = ex->nullrows;
+
+	ex->nullrows = NULL;
+	sift_colsrc_vet(ex->src, &ex->unit, nm);
+	ex->nullpass = true;
+	ex->qlevel = 0;
+	apply_late(ex, nm, nrow, 0);
+	for (int st = 0; st < nrow; st += VEC)
+		agg_chunk(ex, st, Min(VEC, nrow - st), nm + st / 64);
+	ex->nullpass = false;
+	ex->qlevel = 1;
+}
+
 /* A unit of elements: the elements of the kept rows, vetted, the late conjuncts, then the chunks */
 static void
 unit_elems(AggExec *ex, uint64 *rmask, int nrow)
@@ -554,12 +591,16 @@ unit_elems(AggExec *ex, uint64 *rmask, int nrow)
 	build_parents(ex);
 	m = ex->nelem;
 	em = elems_kept(ex, rmask, nrow);
+	if (ex->spec->left_lateral)
+		null_rows(ex, rmask, em, nrow);
 	elems_vet(ex, em, nrow);
 	apply_late(ex, em, m, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow_elems(ex, em);
 	for (int st = 0; st < m; st += VEC)
 		agg_chunk(ex, st, Min(VEC, m - st), em + st / 64);
+	if (ex->nullrows)
+		unit_null_tuples(ex, nrow);
 }
 
 void
@@ -571,7 +612,7 @@ process_unit(AggExec *ex)
 			   *cand;
 
 	unit_begin(ex);
-	if (nrow > 0 && ex->pa_on && preagg_unit(ex))
+	if (nrow > 0 && ex->pa_on && !ex->spec->left_lateral && preagg_unit(ex))
 	{
 		/* a superunit stands for its units: they count as the units they are */
 		ex->n_units += Max(u->nsu, 1) - 1;
@@ -593,7 +634,7 @@ process_unit(AggExec *ex)
 	ex->n_rows += nrow;
 	if (nrow == 0)
 		return;
-	if (sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
+	if (!ex->spec->left_lateral && sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
 	{
 		ex->row_base += nrow;
 		CHECK_FOR_INTERRUPTS();

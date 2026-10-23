@@ -489,6 +489,7 @@ typedef struct SiftAggSpec
 	Oid		   *partindex;
 	List	   *partprune;		/* the conditions on the partition key that a parameter or a stable function decides: the scan drops the partitions they refute when it starts */
 	int			group;			/* leaf id of the array/object leaf the query unnests, -1: row level */
+	bool		left_lateral;	/* LEFT JOIN LATERAL ON true: a row none of whose elements passes the lateral's own conditions is one tuple with NULL element columns */
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
 	uint8	   *recheck;		/* per entry of leaves: how the query reads the leaf when the source holds a value it cannot store (SiftSrcRecheck, SRK_NONE: such a value is an error) */

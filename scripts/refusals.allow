@@ -3,7 +3,7 @@
 # gives the arm up names the refusal. A reason recorded in a try would be the first of the arm and would hide the one that follows it (the arm keeps
 # the first reason it gets), so a try never names one.
 
-plan.c: member_source reads_overflow reads_json_null_cast groupClause_has_nonconst has_agg_path missing_column_walker # predicates of the shape and the mid-way tries of agg_base, and the walker that finds the column a where refusal names: the sites that give the arm up name the slug
+plan.c: member_source reads_overflow reads_json_null_cast groupClause_has_nonconst has_agg_path missing_column_walker left_lateral # predicates of the shape and the mid-way tries of agg_base, and the walker that finds the column a where refusal names: the sites that give the arm up name the slug
 plan_agg.c: compile_combo_key compile_key unique_row_column compile_vx compile_ordered same_sorted_input mapped_pg_agg compile_mapped count_rows_kind compile_int8_agg leaf_agg_kind compile_leaf_agg compile_native_agg compile_agg # tries of compile_agg (native, mapped, ordered, generic in turn): compile_agg and its caller name the aggregate
 plan_child.c: derived_column_walker bare_read_walker planned_child first_key_ok first_filter_bad first_order correlated_child scoped_child ancestor_param_walker # tries of the lookup child: the caller of planned_correlated_child names join_child
 plan_combo.c: table_key_expr join_clause combo_walker nonzero_const func_may_raise may_raise_walker join_expr_clause combo_slot_in # tries of the join key and of the combo slot: setup_joins and the callers name the join condition or the expression
