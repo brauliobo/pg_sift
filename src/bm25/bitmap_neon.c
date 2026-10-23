@@ -1,7 +1,10 @@
-/* AArch64 Advanced SIMD bitmap kernels: the generic template, and the population count of 64 bytes and more with CNT. */
-#include "core/neon.h"
+/*
+ * AArch64 Advanced SIMD bitmap kernels: the generic template, and the population count of 64 bytes and more with CNT. tools/codec builds this file
+ * without the server's headers: it tests the target as bitmap.c does and does not include core/neon.h.
+ */
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
 
-#if defined(SIFT_HAVE_NEON)
 #define KFN(x) x##_neon
 #define and_wide_neon sift_and_wide_gen
 #define or_wide_neon sift_or_wide_gen
