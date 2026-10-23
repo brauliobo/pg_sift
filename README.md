@@ -44,10 +44,10 @@ against PostgreSQL's.
 - 3.3 optimizations on 200,000 orders, one backend, against PostgreSQL on
   the same rows (sift.enable_agg = off): A page of rows with the total of
   its set (11x); ORDER BY coalesce(column, constant) LIMIT n (14x);
-  count(DISTINCT key) of a whole table from the key presence of its units
-  (67x); COPY into a sift_table, written as column groups, against a heap
-  COPY (4.1x less WAL); ORDER BY an unsorted integer column LIMIT n from the
-  sorted run of each unit (order_columns) (7.4x).
+  count(DISTINCT key) of a whole table from the key lists and bitmaps of its
+  units (67x); COPY into a sift_table, written as column groups, against a
+  heap COPY (4.1x less WAL); ORDER BY an unsorted integer column LIMIT n
+  from the sorted run of each unit (order_columns) (7.4x).
 - Where it does not win:
   - Cold (caches emptied), not the fastest on 3 of 10 questions: point
     lookup (PostgreSQL, 1.4x), average shipped order (ClickHouse, 1.3x), big
@@ -586,5 +586,5 @@ Measured against the CPU on the store table: [docs/GPU.md](docs/GPU.md#when-it-h
 
 ## Testing, security, license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->398 regression tests (`test/sql`), 38 isolation specs, 70 TAP tests (`test/t`), 837 column fixtures and 240 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->405 regression tests (`test/sql`), 38 isolation specs, 72 TAP tests (`test/t`), 958 column fixtures and 242 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
