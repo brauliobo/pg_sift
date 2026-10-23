@@ -56,21 +56,29 @@ def cell(v, f):
 
 
 def line(S, size, key, f, best, label):
+    """the cells of a row; in bold the lanes whose median is inside the range of the runs of the best lane (a tie), the best median alone where there is a single run"""
     vs = [S.vals(size, e, *key) for e in S.lanes]
     meds = [statistics.median(v) if v else None for v in vs]
-    return [f'{size:,}', label] + best(meds, [cell(v, f) for v in vs])
+    cells = [cell(v, f) for v in vs]
+    top = [m for m in meds if m is not None]
+    if not top or not any(len(v) > 1 for v in vs):
+        return [f'{size:,}', label] + best(meds, cells)
+    win = vs[meds.index(max(top) if best is best_high else min(top))]
+    return [f'{size:,}', label] + [f'**{c}**' if m is not None and min(win) <= m <= max(win) else c for m, c in zip(meds, cells)]
 
 
 def header(S):
     sv = S.run0['servers']
     loads = [float(r['loadavg'][0]) for r in S.meta['runs'].values()]
     noisy = sum(len(r.get('noisy') or []) for r in S.meta['runs'].values())
+    churn = [r['churn_seconds'] for r in S.meta['runs'].values() if r['churn_seconds']]
     reps = ', '.join(f'{s:,} orders: ' + (f'median of {S.reps(s)} runs [min-max]' if S.reps(s) > 1 else 'one run') for s in S.sizes)
     setting = lambda e: f'`{sv[e + "_maintenance"]}`' if sv.get(e + '_maintenance') else 'the settings of the server'
     sha = f' ({S.meta["sha"]})' if S.meta.get('sha') else ''
     return [f'Measured at pg_sift {sv.get("sift_sift", "?")}{sha} on {S.meta["date"]}, {S.meta["host"].get("cpu", "?")} ({S.meta["host"].get("threads", "?")} threads), PostgreSQL {sv.get("pg", "?")}, '
             f'one container of {S.meta["cpus"]} CPUs; load average {min(loads):.1f}-{max(loads):.1f} at the start of the runs, {noisy} NOISY window{"s" * (noisy != 1)}. {reps}.',
-            f'`sift_col` and `sift_table` run the defaults of that build ({setting("sift")} and {setting("sift_table")}); the opt-in column is the `sift_col` layout in a database with {setting("sift_maint")} (all read back from the server).']
+            f'`sift_col` and `sift_table` run the defaults of that build ({setting("sift")}); the opt-in column is the `sift_col` layout in a database with {setting("sift_maint")} (all read back from the server). '
+            'In bold: the best median of a row and the medians inside the range of its runs.']
 
 
 def tables(S, detail):
@@ -92,7 +100,7 @@ def tables(S, detail):
     out += md_table(head(['orders', '']), body) + ['']
     cs = S.churn_size()
     if cs:
-        out += [f'**Steady churn and inserts only** ({cs:,} orders, 4 clients, {S.run0["churn_seconds"]} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement)', '']
+        out += [f'**Steady churn and inserts only** ({cs:,} orders, 4 clients, {max(r["churn_seconds"] for r in S.meta["runs"].values())} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement)', '']
         body = [line(S, cs, ('churn', 'steady', 'tps'), lambda x: f'{x:,.0f}', best_high, 'churn: transactions/s'),
                 line(S, cs, ('churn', 'steady', 'p99_ms'), ms, best_bold, 'churn: p99 ms'),
                 line(S, cs, ('churn', 'steady', 'read_p50_ms'), ms, best_bold, 'churn: the monthly revenue read meanwhile, p50 ms'),
@@ -140,7 +148,10 @@ def readme_block(S):
 def benchmarks_block(S):
     out = header(S) + ['', 'Steps (`bench/steps/store_updates.py`, `bench/steps/store_section.py`): update 1% (`id % 100 = 0`), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`) in statements of 1,000 ids over one connection, '
                        'the reads before, right after and after `VACUUM (ANALYZE)`, then the steady churn and the inserts only on a freshly loaded table of each lane.', '']
-    return out + tables(S, True) + ['Every run is in `bench/results/updates.json`; the cells above are the median of the runs with their range.']
+    noise = [[t, r['loadavg'][0], f'{r["churn_seconds"]} s' if r['churn_seconds'] else 'none', ', '.join(sorted(n.split(':')[0].split(' ')[-1] for n in r.get('noisy') or [])) or 'none'] for t, r in S.meta['runs'].items()]
+    out += tables(S, True) + ['**The runs** (load average at the start; the lanes whose window was NOISY: other work of the host above its idle level)', '']
+    out += md_table(['run', 'load average', 'churn windows', 'NOISY lanes'], noise) + ['']
+    return out + ['Every run is in `bench/results/updates.json`; the cells above are the median of the runs with their range.']
 
 
 def chart(S):
