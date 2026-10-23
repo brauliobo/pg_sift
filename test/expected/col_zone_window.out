@@ -89,6 +89,31 @@ SELECT n, cond, s.* FROM zw_q, LATERAL same(cond) s ORDER BY n;
 (15 rows)
 
 RESET sift.simd;
+-- the units a begin keeps are kept for the next begin while the predicates stay the same: a scan that is run again with other values (a lateral parameter, a
+-- different list for each outer row) begins with them from scratch, and a begin that is the same as the last one reads its units again
+CREATE FUNCTION lat(agg bool) RETURNS TABLE (g int, n bigint, s bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	RETURN QUERY EXECUTE 'SELECT g, c.n, c.s FROM generate_series(0, 129, 9) g, LATERAL (SELECT count(*) AS n, sum(id) AS s FROM zw WHERE k = g OR (j = g % 17 AND k > g)) c';
+END $$;
+CREATE FUNCTION lat_in(agg bool) RETURNS TABLE (g int, n bigint, s bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	RETURN QUERY EXECUTE 'SELECT g, c.n, c.s FROM generate_series(0, 120, 10) g, LATERAL (SELECT count(*) AS n, sum(id) AS s FROM zw WHERE k IN (g, g + 1, 129 - g) AND j IS NOT NULL) c';
+END $$;
+SELECT (SELECT count(*) FROM lat(true)) AS rows_pushed, (SELECT count(*) FROM ((SELECT * FROM lat(true) EXCEPT ALL SELECT * FROM lat(false)) UNION ALL (SELECT * FROM lat(false) EXCEPT ALL SELECT * FROM lat(true))) d) AS or_differences;
+ rows_pushed | or_differences 
+-------------+----------------
+          15 |              0
+(1 row)
+
+SELECT (SELECT count(*) FROM lat_in(true)) AS rows_pushed, (SELECT count(*) FROM ((SELECT * FROM lat_in(true) EXCEPT ALL SELECT * FROM lat_in(false)) UNION ALL (SELECT * FROM lat_in(false) EXCEPT ALL SELECT * FROM lat_in(true))) d) AS in_differences;
+ rows_pushed | in_differences 
+-------------+----------------
+          13 |              0
+(1 row)
+
+DROP FUNCTION lat(bool), lat_in(bool);
 DROP FUNCTION same(text), units_of(text);
 DROP TABLE zw_q;
 DROP TABLE zw;
