@@ -144,17 +144,16 @@ extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
 extern PGDLLIMPORT bool sift_col_table_lookup;	/* sift.table_dict_lookup: the order of a dictionary of a sift_table is stored too */
 extern const char *sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char *buf);
 
-/* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows and their running sums, nrows + 1 of them */
+/* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows, 16 bit (a unit with a longer list is not kept), and the elements they add up to; the running ends are summed again from them */
 typedef struct SiftCLens
 {
 	uint32		nelems;
-	uint32	   *counts;
-	uint32	   *eoff;
+	const uint16 *counts;
 } SiftCLens;
 /* the entry, pinned until the memory context arena is reset (the next unit), or NULL */
 extern const SiftCLens *sift_cseg_lens_find(SiftColSegment *seg, uint32 unit, int col, MemoryContext arena);
-/* a copy of the structure a scan just decoded for n rows (counts[n], eoff[n + 1]), when the cache has room */
-extern void sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, const uint32 *eoff);
+/* a copy of the lengths a scan just decoded for n rows (counts[n]), when the cache has room */
+extern void sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, uint32 nelems);
 /* The bytes the dictionary of a STR leaf takes in the stream (0 for other leaves), as stored: smaller than its parsed size when it is compressed */
 extern uint64 sift_cseg_dict_stored(SiftColSegment *seg, int col);
 
