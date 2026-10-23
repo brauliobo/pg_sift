@@ -555,6 +555,8 @@ typedef struct SiftColPrune
 
 /* sift_col_begin, the units also kept by every one of the nzones tests */
 extern void sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi);
+extern bool sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set);
+extern void sift_col_skipped(SiftColSource *src, int64 pruned, int64 set);
 
 /*
  * Adds in-memory units to the source before sift_col_begin: each batch (one SB, rows in key order, all live) is read like a unit of a write

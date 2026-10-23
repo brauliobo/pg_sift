@@ -264,6 +264,7 @@ prune_init(AggExec *ex)
 {
 	List	   *tests = NIL;
 
+	ex->skip = NULL;
 	for (int i = 0; i < ex->spec->npred; i++)
 		tests = zone_tests(ex, ex->spec->pred[i], tests);
 	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
