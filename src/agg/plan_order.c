@@ -661,7 +661,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	else
 		rtype = lf->typid;
 	/* a varchar column sorts by the operators of text */
-	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID)) ||
+	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID) && !(opcintype == ANYENUMOID && type_is_enum(rtype))) ||
 		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
 		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, nor an expression of the leaves, or its operator is not the default btree operator of its type");
 	*cmp = *collid = InvalidOid;
@@ -704,8 +704,8 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 	double		corr = 0,
 				nsb = Max(c->stats.nunits, 1.0);
 
-	/* the zones are of integers: the strings of a unit are not bounded, the scan reads them all */
-	if (!IsA(x, Var) || leaf_of(c, leaf)->vtype == SCV_CODE)
+	/* the zones are of integers: the strings of a unit are not bounded, the scan reads them all; those of an enum are OIDs, not in the order of its values */
+	if (!IsA(x, Var) || leaf_of(c, leaf)->vtype == SCV_CODE || type_is_enum(leaf_of(c, leaf)->typid))
 		return 1.0;
 	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tp))
