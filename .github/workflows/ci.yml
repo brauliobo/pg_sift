@@ -146,8 +146,8 @@ jobs:
 
       - uses: ./.github/actions/apt-limits
 
-      - name: Install PostgreSQL ${{ matrix.pg }}
-        if: ${{ !matrix.git }}
+      # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
+      - name: PGDG repository
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -158,6 +158,10 @@ jobs:
           # the tests start their own clusters: no default cluster, no service on 5432
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        if: ${{ !matrix.git }}
+        run: |
           sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
@@ -173,6 +177,21 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
+
+      # test/t/pg_upgrade.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
+      # pg_sift for it, so it needs the server and its headers. Only the entries whose share of the queue has the job install them; a major PGDG lacks
+      # is a warning, and the test then upgrades within one major
+      - name: Install the previous PostgreSQL major (pg_upgrade)
+        if: ${{ matrix.pg > 17 }}
+        env:
+          SIFT_CI_AFFECTED: ${{ matrix.jobs }}
+          SIFT_CI_JOBS: ${{ matrix.only }}
+          SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+        run: |
+          scripts/ci.sh --plan ${{ matrix.tier == 'full' && 'full' || 'quick' }} | grep -q '^tap-shell-pg_upgrade ' || { echo "no pg_upgrade job in this entry"; exit 0; }
+          prev=$(( ${{ matrix.pg }} - 1 ))
+          sudo apt-get install -y --no-install-recommends postgresql-$prev postgresql-server-dev-$prev ||
+            echo "::warning::PostgreSQL $prev is not available from PGDG: pg_upgrade runs within one major"
 
       # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories
       - name: Install into the server (PostgreSQL 17)
