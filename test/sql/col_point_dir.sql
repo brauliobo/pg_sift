@@ -158,9 +158,9 @@ FROM sift._test_col_counters('pd_one', '0:eq:', 8) p, sift._test_col_counters('p
 	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = '') sb;
 -- the point directories (the header, the records of the leaves and the footer, then the tables of slots and the lists) read as themselves with a bit flipped,
 -- one damage at a time, through a fresh open and the check of the segment: never outside the section (meaningful under SANITIZE=1). With a stride past
--- the section only the header, the records and the footer are damaged: the ones the check of the segment cannot know (reserved bytes, a fingerprint) are counted
--- as unnoticed; with a stride of 997 a byte in 997 of the tables and lists too (sift.col_verify compares those with the heap)
-SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_point_file_damage('pd_one', 1000000000);
+-- the section only the header, the records and the footer are damaged, and every damage is refused when the segment is opened (the frame is checked whole: reserved
+-- words, order of the leaves, tables one after the other up to the footer); with a stride of 997 a byte in 997 of the tables and lists too (sift.col_verify compares those with the heap)
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pd_one', 1000000000);
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pd_one', 997);
 DROP INDEX pd_one;
 

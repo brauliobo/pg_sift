@@ -215,14 +215,18 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 
 /*
  * The point directories at the end of the DICT section, found by the footer in its last 16 bytes: the tables of the leaves, read on
- * first use. A section without them ends with its last dictionary.
+ * first use. A section without them ends with its last dictionary. The frame is checked whole, so that no byte of it can change what is read without a
+ * refusal: the reserved words are 0, the records ascend by leaf, and the tables follow the records one after the other and end at the footer (a record
+ * dropped, a leaf changed or a table moved shows as a gap or an overlap). The bytes of a table are the check of the segment's (sift_cseg_verify_points).
  */
 static const PointLeaf *
 points_read(SiftColSegment *seg)
 {
 	SegPriv    *pv = PRIV(seg);
 	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
-	uint64		foot[2];
+	uint64		foot[2],
+				next;
+	int64		prev = -1;
 	uint32		hdr[4],
 				tail[2];
 
@@ -235,29 +239,44 @@ points_read(SiftColSegment *seg)
 	seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
 	memcpy(tail, &foot[1], sizeof(tail));
 	if (tail[0] != SIFT_CPOINT_MAGIC || tail[1] != SIFT_CPOINT_VERSION)
+	{
+		/* a footer of another version is no directory; a header of this version where the offset says is a footer that was damaged */
+		if (foot[0] % 8 == 0 && foot[0] + sizeof(hdr) <= s->len - sizeof(foot))
+		{
+			seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
+			if (hdr[0] == SIFT_CPOINT_MAGIC && hdr[1] == SIFT_CPOINT_VERSION)
+				corrupt(seg, "The footer of the point directories of the DICT section has the magic 0x%08x, version %u.", tail[0], tail[1]);
+		}
 		return NULL;
+	}
 	if (foot[0] % 8 != 0 || foot[0] + sizeof(hdr) > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
 	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
-	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != SIFT_CPOINT_VERSION || hdr[2] > (uint32) seg->schema->ncols ||
+	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != SIFT_CPOINT_VERSION || hdr[2] > (uint32) seg->schema->ncols || hdr[3] != 0 ||
 		foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
+	next = foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN;
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
 	for (uint32 i = 0; i < hdr[2]; i++)
 	{
 		uint32		rec[6];
 		uint64		at;
 		uint64		rat = s->off + foot[0] + sizeof(hdr) + (uint64) i * SIFT_CPOINT_RECLEN;
+		uint64		size;
 
 		seg_read(seg, rat, sizeof(rec), rec);
 		seg_read(seg, rat + sizeof(rec), sizeof(at), &at);
-		if (rec[0] >= (uint32) seg->schema->ncols || rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[3] == 0 || rec[3] > rec[1] || rec[2] < rec[3] ||
-			rec[2] >= SIFT_CPOINT_SEG_ROWS || rec[4] > rec[2] + rec[3] ||
-			at < foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN ||
-			at + (uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32) > s->len - sizeof(foot))
+		size = ALIGN8((uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32));
+		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] != 0 || rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[3] == 0 ||
+			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || rec[4] > rec[2] + rec[3] ||
+			at != next || size > s->len - sizeof(foot) - next)
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
 		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4]};
+		prev = rec[0];
+		next += size;
 	}
+	if (next != s->len - sizeof(foot))
+		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) (s->len - sizeof(foot)));
 	pv->dict_end = foot[0];
 	return pv->pt;
 }
