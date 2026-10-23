@@ -477,6 +477,9 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		agk_step(res, "sum_gid_i32");
 		memcpy(facc, c->facc0, (size_t) c->ngrp * 8);
 		k->sum_gid_f64(facc, c->gid, c->f64, mm, n);
+		/* the NaN of inf - inf is negative on x86-64 and positive on AArch64, and a payload follows the operand order: a sum compares as NaN, and the pinned digests must not depend on the CPU */
+		for (int g = 0; g < c->ngrp; g++)
+			facc[g] = facc[g] != facc[g] ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : facc[g];
 		agk_hash(res, facc, (size_t) c->ngrp * 8);
 		agk_step(res, "sum_gid_f64");
 		AGK_FREE(cnt);
