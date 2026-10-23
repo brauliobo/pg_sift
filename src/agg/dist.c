@@ -153,6 +153,42 @@ dist_new(AggExec *ex, bool sgn)
 	return d;
 }
 
+#define DIST_SPARSE_BYTES	128		/* bytes of bitmap chunks per value from which a hash set (32 bytes a pair) is the smaller */
+
+/*
+ * A table that spilled with sets that had left their bitmaps holds groups of few values: a bitmap costs a directory and a chunk, zeroed, for
+ * each group of each table, and the move to a hash set walks them again. The next tables start with the hash set.
+ */
+void
+dist_start_hash(Dist *d)
+{
+	d->mode = DD_HASH;
+	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);
+}
+
+/* the sets of the table that spilled that are not bitmaps any more, or hold less than a value in 16 bytes of bitmap chunks (dist_start_hash) */
+void
+dist_note_spill(AggExec *ex)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+
+	if (ex->dist == NULL)
+		return;
+	for (int ai = 0; ai < Min(ex->spec->naggs, 64); ai++)
+	{
+		Dist	   *d = ex->dist[ai];
+		uint64		pairs = 0;
+
+		if (d == NULL || ex->spec->agg[ai].kind != SAA_COUNT_DISTINCT)
+			continue;
+		if (d->mode == DD_BITS)
+			for (uint32 g = 0; g < n; g++)
+				pairs += ex->acc[ai].n[g];
+		if (d->mode != DD_BITS || d->bytes > DIST_SPARSE_BYTES * pairs)
+			ex->dist_hash |= UINT64CONST(1) << ai;
+	}
+}
+
 static inline int64
 dist_x(const Dist *d, uint32 v)
 {
@@ -912,6 +948,88 @@ dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv
 			(*pv_out)[np++] = (uint32) s->slot[i];
 		}
 	*np_out = np;
+}
+
+typedef struct PairSplit
+{
+	const uint32 *gpart;
+	const uint32 *cidx;
+	PartPairs  *out;
+	int			stride;
+} PairSplit;
+
+static void
+pairs_put(PartPairs *pp, uint32 g, uint32 v)
+{
+	if (pp->np == pp->cap)
+	{
+		pp->cap = pp->cap ? pp->cap * 2 : 64;
+		pp->pg = pp->pg ? repalloc(pp->pg, pp->cap * sizeof(uint32)) : palloc(pp->cap * sizeof(uint32));
+		pp->pv = pp->pv ? repalloc(pp->pv, pp->cap * sizeof(uint32)) : palloc(pp->cap * sizeof(uint32));
+	}
+	pp->pg[pp->np] = g;
+	pp->pv[pp->np++] = v;
+}
+
+static void
+split_collect(void *arg, uint32 g, uint32 v)
+{
+	PairSplit  *sp = arg;
+
+	if (sp->gpart[g] != UINT32_MAX)
+		pairs_put(&sp->out[(Size) sp->gpart[g] * sp->stride], sp->cidx[g], v);
+}
+
+/*
+ * The pairs of the set of aggregate ai of every partition of a spilled table, from one walk of the set: gpart[g] is the partition of group g
+ * (UINT32_MAX: not written) and cidx[g] its number in the blob of that partition; partition p's pairs go to out[p * stride]. A walk for each
+ * partition costs the whole set each time.
+ */
+void
+dist_pairs_split(AggExec *ex, int ai, const uint32 *gpart, const uint32 *cidx, PartPairs *out, int stride)
+{
+	Dist	   *d = ex->dist[ai];
+	PairSplit	sp = {gpart, cidx, out, stride};
+
+	dist_finish(ex, ai);
+	if (d->mode == DD_SORT)
+	{
+		uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+		uint32	   *sg = palloc0(Max(d->nsid, 1) * sizeof(uint32));
+		bool		isnull;
+		int32		prev_sid = -1;
+		int64		prev_val = 0;
+
+		for (uint32 g = 0; g < Min(n, d->sidgroups); g++)
+			if (d->sid[g])
+				sg[d->sid[g] - 1] = g;
+		tuplesort_rescan(d->sort);
+		while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
+		{
+			int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
+			int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
+
+			if (sid != prev_sid || val != prev_val)
+				split_collect(&sp, sg[sid], (uint32) val);
+			prev_sid = sid;
+			prev_val = val;
+		}
+		pfree(sg);
+	}
+	else
+		dist_walk(d, split_collect, &sp);
+}
+
+/* the same for the set of a sum or average over distinct numbers */
+void
+dset_pairs_split(AggExec *ex, int ai, const uint32 *gpart, const uint32 *cidx, PartPairs *out, int stride)
+{
+	const DSet *s = &ex->dset[ai];
+	PairSplit	sp = {gpart, cidx, out, stride};
+
+	for (uint64 i = 0; i < s->cap; i++)
+		if (s->slot[i])
+			split_collect(&sp, (s->slot[i] >> 32) & 0x7fffffff, (uint32) s->slot[i]);
 }
 
 /*

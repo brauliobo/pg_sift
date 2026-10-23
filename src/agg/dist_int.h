@@ -105,10 +105,24 @@ void dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint
 bool dist_stream_begin(AggExec *ex);
 void dist_stream_scan(AggExec *ex);
 void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v);
+void dist_start_hash(Dist *d);
+void dist_note_spill(AggExec *ex);
 void dist_finish_all(AggExec *ex);
 void dist_end_all(AggExec *ex);
 void dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
 void dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out);
+
+/* the pairs of one set that fall in one partition of a spilled table, as the blob of that partition numbers its groups */
+typedef struct PartPairs
+{
+	uint32		np;
+	uint32		cap;
+	uint32	   *pg;
+	uint32	   *pv;
+} PartPairs;
+
+void dist_pairs_split(AggExec *ex, int ai, const uint32 *gpart, const uint32 *cidx, PartPairs *out, int stride);
+void dset_pairs_split(AggExec *ex, int ai, const uint32 *gpart, const uint32 *cidx, PartPairs *out, int stride);
 
 #pragma GCC visibility pop
 
