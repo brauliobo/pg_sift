@@ -31,11 +31,11 @@ BEGIN
 END $$;
 
 -- one query forced to the scan (the sort and the hash of the normal plan off) with the memory given, then as the normal plan: does it spill, are the rows the same
-CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB', aggs text DEFAULT NULL) RETURNS TABLE (shape text, spilled boolean, same boolean) LANGUAGE plpgsql AS $$
+CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB', aggs text DEFAULT NULL, tbl text DEFAULT 'events') RETURNS TABLE (shape text, spilled boolean, same boolean) LANGUAGE plpgsql AS $$
 DECLARE q text; l text; sp boolean := false;
 BEGIN
-	q := format('SELECT %s, %s FROM events GROUP BY %s', kcols, coalesce(aggs, 'count(*) AS m1, count(val) AS m2, sum(val) AS m3, avg(val) AS m4, min(val) AS m5, max(val) AS m6, sum(w) AS m7, avg(w) AS m8, '
-				'min(w) AS m9, max(w) AS m10, sum(n) AS m11, avg(n) AS m12'), keys);
+	q := format('SELECT %s, %s FROM %s GROUP BY %s', kcols, coalesce(aggs, 'count(*) AS m1, count(val) AS m2, sum(val) AS m3, avg(val) AS m4, min(val) AS m5, max(val) AS m6, sum(w) AS m7, avg(w) AS m8, '
+				'min(w) AS m9, max(w) AS m10, sum(n) AS m11, avg(n) AS m12'), tbl, keys);
 	DROP TABLE IF EXISTS got;
 	DROP TABLE IF EXISTS want;
 	PERFORM set_config('work_mem', mem, false), set_config('hash_mem_multiplier', '1', false), set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
@@ -49,6 +49,15 @@ BEGIN
 	RESET sift.enable_agg;
 	RETURN QUERY SELECT keys, sp, same_rows('got', 'want');
 END $$;
+
+-- 800 groups of 94 rows whose sets of 40 to 100,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
+-- the counts are taken from it when the partition is done
+CREATE TABLE sets AS
+SELECT i AS id, (hashint4(i) & 2147483647) % 800 AS k1, (hashint4(i * 3) & 2147483647) % 40 AS v40, (hashint4(i * 5) & 2147483647) % 100000 AS v5, 1.5::float8 AS w
+FROM generate_series(1, 75000) i;
+CREATE INDEX sets_col ON sets USING sift_col (id, k1, v40, v5, w);
+VACUUM (FREEZE, ANALYZE) sets;
+SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(*) AS m1, count(DISTINCT v40) AS m2, count(DISTINCT v5) AS m3', 'sets');
 
 SELECT * FROM spill_case('k1 AS k1', 'k1');
 SELECT * FROM spill_case('k2 AS k2', 'k2');
@@ -123,6 +132,6 @@ DELETE FROM wrong WHERE ctid = (SELECT min(ctid) FROM wrong);
 SELECT same_rows('got', 'wrong') AS control_missing;
 
 DROP TABLE wrong, got, want;
-DROP FUNCTION spill_case(text, text, text, text), same_rows(regclass, regclass), plan_has(text, text), rescan_case(boolean);
-DROP TABLE events;
+DROP FUNCTION spill_case(text, text, text, text, text), same_rows(regclass, regclass), plan_has(text, text), rescan_case(boolean);
+DROP TABLE events, sets;
 DROP EXTENSION pg_sift;
