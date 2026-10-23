@@ -245,7 +245,7 @@ set_agg(const SiftAggAgg *a)
  * expression (the ids of the worker's table of them, which the leader gives its own).
  */
 static void
-blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
+blob_set(AggExec *ex, int ai, const uint32 *cidx, const PartPairs *pre, StringInfo b)
 {
 	const SiftAggAgg *a = &ex->spec->agg[ai];
 	Dist	   *d = ex->dist[ai];
@@ -263,7 +263,13 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 			   *cc = none;
 	const uint64 **bits = NULL;
 
-	if (d && d->mode == DD_BITS && d->sgn)
+	if (pre)
+	{
+		pg = pre->pg ? pre->pg : none;
+		pv = pre->pv ? pre->pv : none;
+		np = pre->np;
+	}
+	else if (d && d->mode == DD_BITS && d->sgn)
 	{
 		uint32		n = Min(ex->hash ? ex->ngroups : ex->gcap, d->ngd);
 		uint64		total = 0;
@@ -441,18 +447,18 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 	pfree(gl);
 }
 
-/* the groups gl[0..ng) of the table (their rows have seen > 0) as a blob */
-void
-blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
+/*
+ * The groups gl[0..ng) of the table (their rows have seen > 0) as a blob. cidx[g] is the number of group g in the blob. pairs, from
+ * blob_pairs_split, holds the pairs of the sets of these groups (cidx is then not read for them): a table spilled to many partitions
+ * walks each set once, not once for each partition.
+ */
+static void
+blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 *cidx, const PartPairs *pairs, StringInfo b)
 {
 	SiftAggSpec *s = ex->spec;
-	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
-			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
 	BlobHdr		h = {BLOB_MAGIC, lane, 0, 0};
 
-	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
-	for (uint32 r = 0; r < ng; r++)
-		cidx[gl[r]] = r;
 	h.ngroups = ng;
 	bw_put(b, &h, sizeof(h));
 	for (int j = 0; j < s->nkeys; j++)
@@ -466,7 +472,7 @@ blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
 	{
 		bw_acc(b, &ex->acc[i], gl, ng);
 		if (set_agg(&s->agg[i]))
-			blob_set(ex, i, cidx, b);
+			blob_set(ex, i, cidx, pairs ? &pairs[i] : NULL, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
 			blob_key_set(ex, i, cidx, b);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
@@ -477,6 +483,87 @@ blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
 	for (int k = 0; k < s->narms; k++)
 		bw_put(b, ex->arm[k].amax, Max(s->arm[k].ninner, 1) * sizeof(double));
+}
+
+void
+blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+
+	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
+	for (uint32 r = 0; r < ng; r++)
+		cidx[gl[r]] = r;
+	blob_dump_with(ex, lane, gl, ng, cidx, NULL, b);
+	pfree(cidx);
+}
+
+/* can the sets of the table be split by partition (blob_pairs_split)? The other states that read cidx are one structure for all the groups */
+bool
+blob_splittable(const AggExec *ex)
+{
+	for (int i = 0; i < ex->spec->naggs; i++)
+		if (ex->spec->agg[i].kind == SAA_O_COUNT_KEY || is_ordered_agg(&ex->spec->agg[i]))
+			return false;
+	return true;
+}
+
+/*
+ * The table written to the nparts partitions, one blob each, with the groups of partition p as order[start[p] .. start[p] + fill[p]): the sets are
+ * walked once for all the partitions. blob_write is called with each blob in the context sp->tmp, which it resets after.
+ */
+void
+blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 *start, const uint32 *fill, MemoryContext tmp,
+				void (*put) (void *arg, int p, StringInfo b), void *arg)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+			   *gpart = palloc(Max(n, 1) * sizeof(uint32)),
+			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+	int			naggs = ex->spec->naggs;
+	PartPairs  *pp = palloc0((Size) nparts * Max(naggs, 1) * sizeof(PartPairs));
+
+	memset(gpart, 0xff, Max(n, 1) * sizeof(uint32));
+	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
+	for (int p = 0; p < nparts; p++)
+		for (uint32 k = 0; k < fill[p]; k++)
+		{
+			gpart[order[start[p] + k]] = p;
+			cidx[order[start[p] + k]] = k;
+		}
+	for (int i = 0; i < naggs; i++)
+		if (set_agg(&ex->spec->agg[i]))
+		{
+			if (ex->dist[i])
+				dist_pairs_split(ex, i, gpart, cidx, pp + i, naggs);
+			else
+				dset_pairs_split(ex, i, gpart, cidx, pp + i, naggs);
+		}
+	for (int p = 0; p < nparts; p++)
+	{
+		StringInfoData b;
+		MemoryContext old;
+
+		if (fill[p] == 0)
+			continue;
+		old = MemoryContextSwitchTo(tmp);
+		initStringInfo(&b);
+		blob_dump_with(ex, -1, order + start[p], fill[p], cidx, pp + (Size) p * naggs, &b);
+		put(arg, p, &b);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(tmp);
+		for (int i = 0; i < naggs; i++)
+		{
+			PartPairs  *q = pp + (Size) p * naggs + i;
+
+			if (q->pg)
+			{
+				pfree(q->pg);
+				pfree(q->pv);
+			}
+		}
+	}
+	pfree(pp);
+	pfree(gpart);
 	pfree(cidx);
 }
 

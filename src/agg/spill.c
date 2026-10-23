@@ -159,6 +159,12 @@ blob_read(BufFile *f)
 	return data;
 }
 
+static void
+part_put(void *arg, int p, StringInfo b)
+{
+	blob_write(arg, p, b);
+}
+
 /* the groups of the table to the partitions of the set, by the hash of their keys one level down; the table is left as it was */
 static void
 table_write(AggExec *ex, SpillSet *set)
@@ -195,21 +201,24 @@ table_write(AggExec *ex, SpillSet *set)
 	order = palloc(Max(ng, 1) * sizeof(uint32));
 	for (uint32 r = 0; r < ng; r++)
 		order[start[part[r]] + fill[part[r]]++] = gl[r];
-	for (int p = 0; p < sp->nparts; p++)
-	{
-		StringInfoData b;
+	if (blob_splittable(ex))
+		blob_dump_parts(ex, sp->nparts, order, start, fill, sp->tmp, part_put, set);
+	else
+		for (int p = 0; p < sp->nparts; p++)
+		{
+			StringInfoData b;
 
-		MemoryContext old;
+			MemoryContext old;
 
-		if (fill[p] == 0)
-			continue;
-		old = MemoryContextSwitchTo(sp->tmp);
-		initStringInfo(&b);
-		blob_dump_list(ex, -1, order + start[p], fill[p], &b);
-		blob_write(set, p, &b);
-		MemoryContextSwitchTo(old);
-		MemoryContextReset(sp->tmp);
-	}
+			if (fill[p] == 0)
+				continue;
+			old = MemoryContextSwitchTo(sp->tmp);
+			initStringInfo(&b);
+			blob_dump_list(ex, -1, order + start[p], fill[p], &b);
+			blob_write(set, p, &b);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(sp->tmp);
+		}
 	for (int i = 0; i < ex->spec->naggs; i++)
 		sp->amax[i] = Max(sp->amax[i], ex->amax[i]);
 	pfree(gl);
@@ -240,6 +249,7 @@ spill_table(AggExec *ex)
 		sp->set = set_new(sp, 0);
 	}
 	table_write(ex, sp->set);
+	dist_note_spill(ex);
 	sp->spilled = true;
 	ex->n_spills++;
 	table_reset(ex);
