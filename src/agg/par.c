@@ -680,7 +680,11 @@ par_receive(AggExec *ex)
 			if (r == SHM_MQ_DETACHED)
 			{
 				/* a worker that failed sent its error before it exited, but the signal that makes the interrupt raise it may not have been handled yet: read the error queues now, so that the error of the worker is the one raised */
+#if PG_VERSION_NUM >= 180000
 				ProcessParallelMessages();
+#else
+				HandleParallelMessages();
+#endif
 				ereport(ERROR,
 						(errcode(ERRCODE_CONNECTION_FAILURE),
 						 errmsg("sift: a worker of a parallel aggregate stopped without its result"),
