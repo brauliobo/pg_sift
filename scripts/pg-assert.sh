@@ -2,7 +2,9 @@
 # PostgreSQL built from source with assertions and memory debugging, for the `assert` and `valgrind` CI lanes (docs/SAFETY.md). A
 # distribution server has none of it: --enable-cassert implies MEMORY_CONTEXT_CHECKING (palloc overruns and double frees are caught at
 # pfree, which ASan cannot see inside a chunk), CLOBBER_FREED_MEMORY (freed memory is overwritten, so a use after free reads garbage) and
-# RANDOMIZE_ALLOCATED_MEMORY (new memory is not zero, so a missing palloc0 shows; the one of the three that needs a -D). The --valgrind
+# RANDOMIZE_ALLOCATED_MEMORY (new memory is not zero, so a missing palloc0 shows; the one of the three that needs a -D) and CATCACHE_FORCE_RELEASE (a catalog cache
+# entry is freed when its last reference goes, so a syscache tuple used after ReleaseSysCache reads freed memory; also a -D). debug_discard_caches, which cassert enables as a
+# setting, reloads the relcache entries (tests cache_discard, verify_relcache). The --valgrind
 # variant adds USE_VALGRIND, which makes the memory contexts tell valgrind about every chunk (src/backend/utils/mmgr/memdebug.c).
 #
 #   scripts/pg-assert.sh [--valgrind] [--major 17|18]     builds when missing and prints the prefix on stdout (make pg-assert)
@@ -38,7 +40,7 @@ SUM=${PG_ASSERT_SHA256:-${SHA256[$V]:-}}
 
 CACHE=${SIFT_PG_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/pg}
 PREFIX=$CACHE/$V-assert${VALGRIND:+-valgrind}
-CPP="-DRANDOMIZE_ALLOCATED_MEMORY${VALGRIND:+ -DUSE_VALGRIND}"
+CPP="-DRANDOMIZE_ALLOCATED_MEMORY -DCATCACHE_FORCE_RELEASE${VALGRIND:+ -DUSE_VALGRIND}"
 CFLAGS_="-O1 -ggdb -fno-omit-frame-pointer"
 RECIPE="$V sha256=$SUM cassert debug tap CPPFLAGS=[$CPP] CFLAGS=[$CFLAGS_] contrib=[$CONTRIB]"
 
