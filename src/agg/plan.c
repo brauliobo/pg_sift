@@ -20,6 +20,8 @@
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
+#include "catalog/partition.h"
+#include "utils/partcache.h"
 #include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
@@ -144,6 +146,43 @@ left_lateral(AggCtx *c, FromScan *fs, LeftJoin *lj, Index rti)
 			return false;
 	fs->quals = list_concat(fs->quals, list_copy(lj->quals));
 	return true;
+}
+
+/*
+ * Does the group key hold every column of the partition key, as the column itself? A row of a group is then in the one partition that holds the
+ * value of the key, and the groups of a partition are final when its units end. The partitions are read one after the other, so a partition
+ * of a partition would end a group that goes on in the next.
+ */
+static bool
+group_has_partition_key(AggCtx *c, List *keys)
+{
+	Relation	rel;
+	PartitionKey pk;
+	bool		ok;
+
+	if (c->nparts == 0)
+		return false;
+	for (int i = 0; i < c->nparts; i++)
+		if (get_partition_parent(c->partheap[i], false) != c->heapoid)
+			return false;
+	rel = table_open(c->heapoid, NoLock);
+	pk = RelationGetPartitionKey(rel);
+	ok = pk != NULL && pk->partnatts > 0;
+	for (int i = 0; ok && i < pk->partnatts; i++)
+	{
+		AttrNumber	att = get_partition_col_attnum(pk, i);
+		bool		hit = false;
+
+		foreach_ptr(Node, e, keys)
+		{
+			Node	   *x = strip_relabel(e);
+
+			hit |= att != 0 && IsA(x, Var) && ((Var *) x)->varno == c->relid && ((Var *) x)->varattno == att;
+		}
+		ok = hit;
+	}
+	table_close(rel, NoLock);
+	return ok;
 }
 
 bool
@@ -821,6 +860,10 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
+	/* only a count(DISTINCT) carries a set per group, which is what makes the table of a partition's groups worth finishing early: the tuples of the others cost more than the table */
+	if (c->part_key && sift_aggspec_spillable(s) && !sift_aggspec_ordered(s))
+		for (int i = 0; i < s->naggs; i++)
+			s->part_final |= s->agg[i].kind == SAA_COUNT_DISTINCT;
 	if (!first_fits(s))
 	{
 		agg_refused(FIRST_MEMORY);
@@ -968,6 +1011,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	}
 	if (parse->groupingSets != NIL)
 		add_sets(parse, s, &scan_tlist);
+	c->part_key = parse->groupingSets == NIL && !parse->hasDistinctOn && group_has_partition_key(c, ow.keys);
 
 	/* DISTINCT ON: the other columns are the first row's */
 	if (parse->hasDistinctOn)

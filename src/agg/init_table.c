@@ -278,8 +278,13 @@ table_init(AggExec *ex)
 			ident_go_wide(ex, k);
 	}
 	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */
-	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max && spill_presize_ok(ex))
-		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
+	if (s->nkeys == 1 && !ex->lanes && spill_presize_ok(ex))
+	{
+		double		eg = part_flush_on(ex) ? s->est_groups / s->nparts : s->est_groups;
+
+		if (eg > PRESIZE_MIN && eg <= ex->direct_max)
+			ex->ks[0].cap = pg_nextpower2_32((uint32) eg);
+	}
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
 	if (total > ex->direct_max || direct_oversized(ex, total))

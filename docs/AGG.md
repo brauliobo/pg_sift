@@ -110,6 +110,14 @@ work as on one table, and the result is the normal plan's. `EXPLAIN` shows `Inde
 partitions' pages and rows. Pre-aggregates answer per unit as on a plain table. Privileges and row security are checked on the partitioned table, as in
 PostgreSQL (a role without access to the partitions reads through the parent).
 
+When the group key holds every column of the partition key (the column itself, not an expression of it) and the partitions are direct children of the
+table, the groups of a partition are final when its units end: no row of another partition belongs to them. A scan without workers and with a `count(DISTINCT)` (the aggregate whose set per group makes the table large; the others keep the single table) then reads a partition as
+one item, puts its finished groups (with the sums and averages of integers, the counts, the minima and the maxima next to the sets) into the tuples of
+the result and starts the group table again, so it holds the groups of one partition instead of all of them and does not spill at `work_mem`. `EXPLAIN` shows
+`Groups Finished: per partition`; the cost is that of the table of one partition. The normal single table stays for a key without the partition key, a
+partition of a partition, an expression as the partition key, grouping sets, `DISTINCT ON`, ordered-set aggregates, a scan with workers and a float sum or
+average, whose lanes add in an order that the partitions would change. Test `agg_part_final`.
+
 The normal plan stays when a partition has no `sift_col` index, has an index with other columns or options, is not a heap table (`sift_table`, a foreign
 table), is read with `ONLY`, or the table is an inheritance parent (a mixed tree too); when a parameter is compared with a column a hash level splits by other
 than by an equality of the column's type (`k > $1`, a value of another type, an expression key: the normal plan prunes the remainders); and for the shapes the scan reads one index for (a ranked search with
