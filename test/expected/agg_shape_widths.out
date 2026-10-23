@@ -23,6 +23,9 @@ CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
 CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
 CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
+NOTICE:  sift_col index wide_col: the cube holds 16 dimensions and left out the histograms of 2 columns: "c16", "c17"
+DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
+HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).
 VACUUM (FREEZE, ANALYZE) events, dd, wide;
 SET join_collapse_limit = 64;
 SET from_collapse_limit = 64;

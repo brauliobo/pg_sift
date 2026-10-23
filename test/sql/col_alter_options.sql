@@ -15,10 +15,15 @@ CREATE TABLE ap (id int, pid int, d date, ts timestamptz, cc text, f float8) WIT
 INSERT INTO ap SELECT i, i % 50, date '2024-01-01' + i % 300, timestamptz '2024-01-01' + i * interval '1 minute', 'c' || i % 7, i % 10 FROM generate_series(1, 3000) i;
 CREATE INDEX ap_plain ON ap USING sift_col (id, pid, d, ts, cc, f);
 
--- a table with more default dimensions than the cube holds leaves no room for an explicit list of calendar columns
+-- a table with more default dimensions than the cube holds: the cells of an explicit list of calendar columns come first, the default dims give way;
+-- more dates than the cube holds dimensions are refused
 CREATE TABLE aw (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO aw SELECT i, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 2, date '2024-01-01' + i % 30, date '2024-01-01' + i % 20 FROM generate_series(1, 2000) i;
 CREATE INDEX aw_wide ON aw USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
+CREATE TABLE ad (d1 date, d2 date, d3 date, d4 date, d5 date, d6 date, d7 date, d8 date, d9 date, d10 date, d11 date, d12 date, d13 date, d14 date, d15 date, d16 date, d17 date) WITH (autovacuum_enabled = off);
+INSERT INTO ad SELECT date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i,
+                      date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i FROM generate_series(1, 100) i;
+CREATE INDEX ad_dates ON ad USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17) WITH (calendar_columns = 'off');
 
 -- an index with paths: calendar cells need a schema without them
 \c
@@ -52,10 +57,12 @@ ALTER INDEX ap_plain SET (calendar_columns = 'nope');
 ALTER INDEX ap_plain SET (calendar_columns = 'd, d');
 \c
 ALTER INDEX aw_wide SET (calendar_columns = 'd1, d2');
-
--- nothing was changed, and the table still takes statements
 \c
-SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain', 'aw_wide') ORDER BY 1;
+ALTER INDEX ad_dates SET (calendar_columns = 'd1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17');
+
+-- the refused options changed nothing (aw_wide took its list), and the table still takes statements
+\c
+SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain', 'aw_wide', 'ad_dates') ORDER BY 1;
 SET client_min_messages = warning;
 INSERT INTO ao VALUES (0, 0, '2024-01-01', now(), 'x', 0, '{"a": 1}', '[]');
 SET sift.enable_agg = on;
@@ -75,5 +82,5 @@ SELECT count(*) FROM ap;
 VACUUM ao;
 VACUUM ap;
 SELECT sift.col_verify('ao_paths', true), sift.col_verify('ap_plain', true);
-DROP TABLE ao, ap, aw;
+DROP TABLE ao, ap, aw, ad;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
