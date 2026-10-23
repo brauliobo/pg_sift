@@ -70,6 +70,16 @@ SELECT used, slug FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 20
  t    | 
 (1 row)
 
+-- the heap check a plan recorded is not kept across statements: a refused CTE plan deletes its memory when the planner hook is done, and the next statement
+-- of the transaction (a function plans several) adds its own to the list (a crash on a server with assertions, where freed memory is overwritten)
+SET sift.explain_refusals = on;
+SET client_min_messages = warning;
+DO $$ DECLARE r record; BEGIN
+	FOR r IN EXPLAIN WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v LOOP END LOOP;
+	FOR r IN EXPLAIN SELECT v, count(*), sum(k) FROM ordered WHERE k < 200 GROUP BY v LOOP END LOOP;
+END $$;
+RESET client_min_messages;
+RESET sift.explain_refusals;
 VACUUM ordered;
 SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
  used | slug | reason 
