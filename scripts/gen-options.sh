@@ -465,7 +465,9 @@ def live(opts):
                 _, _, vt, boot, lo, hi, cx, unit, short, extra, enums = x
                 same = {'bool': lambda: (boot == 'on') == o['default'], 'integer': lambda: int(boot) == o['default'] and int(lo) == o['lo'] and int(hi) == o['hi'],
                         'real': lambda: float(boot) == o['default'] and float(lo) == o['lo'] and float(hi) == o['hi'], 'string': lambda: boot == o['default'],
-                        'enum': lambda: boot == o['default'] and set(o['members']) <= set(enums.split(','))}[vt]
+                        # sift.simd starts at the top level of the architecture (src/core/cpu.h): neon on AArch64, where src/ lists avx512
+                        'enum': lambda: (boot == o['default'] or (k == 'sift.simd' and boot == 'neon' and os.uname().machine in ('aarch64', 'arm64')))
+                                        and set(o['members']) <= set(enums.split(','))}[vt]
                 if not same():
                     errors.append('live: %s: the library has default %s (%s%s) but src/ says %s' % (k, boot, lo, '..' + hi if hi else '', fmt(o, o['default'])))
                 if ctx.get(cx) != o['ctx']:
