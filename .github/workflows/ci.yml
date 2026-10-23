@@ -155,7 +155,7 @@ jobs:
           # the tests start their own clusters: no default cluster, no service on 5432
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev
+          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
