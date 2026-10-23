@@ -8,7 +8,7 @@
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
-or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `--@ prepare` / `--@ load` for a case that times a load). `run` builds
+or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `--@ prepare` / `--@ load` for a case that times a load). `run` builds
 each case's table in a schema of its own on the server named by PGHOST / PGPORT (steps/cases.sh starts it), asserts the plan of the sift lane from
 EXPLAIN (a case that falls back to the normal plan fails), then times the lanes interleaved in rounds and compares every answer with the native one:
 
@@ -65,7 +65,7 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set): ', m))
         self.load = 'load' in self.sec
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
@@ -171,7 +171,7 @@ def lane_sessions(case, engines, duck_port):
     out = {}
     for lane, sets in lanes.items():
         s = server_session(TIMEOUT)
-        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
+        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
             s.run(st)
         out[lane] = s
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
