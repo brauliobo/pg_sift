@@ -120,6 +120,7 @@ start() {
 			wal_recycle = off
 			shared_buffers = 64MB
 			max_worker_processes = 16
+			max_locks_per_transaction = 256
 			autovacuum = off
 		EOF
 	fi
