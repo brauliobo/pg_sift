@@ -38,7 +38,7 @@ build() { # build REF OUTDIR
 	git -C "$REPO" archive "$ref" mariadb src sqlite/host scripts LICENSE NOTICE | tar x -C "$src"
 	for s in $SERIES; do
 		docker run --rm --cpus "${DOCKER_CPUS:-4}" --entrypoint bash -e SERIES="$s" -e VER="$ver" -e HOST_UID="$(id -u)" \
-			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$src:/src:ro" -v "$work:/out" "mariadb:$s" /pkg/container.sh build
+			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$src:/src:ro" -v "$work:/out" "mariadb:$s" /pkg/container.sh build
 	done
 	mkdir -p "$work/$name/sql" && cp -r "$work/lib" "$work/$name/lib"
 	cp "$src/mariadb/sql/functions.sql" "$src/mariadb/sql/sift.sql" "$work/$name/sql/"
@@ -55,7 +55,7 @@ test_tarball() { # test_tarball TARBALL [SERIES...]
 	base=$(basename "$tarball" .tar.gz); ver=${base#sift-mariadb-}; ver=${ver%-linux-x86_64}
 	for s in ${*:-$SERIES}; do
 		docker run --rm --entrypoint bash -e SERIES="$s" -e VER="$ver" -e TARBALL="$(basename "$tarball")" \
-			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$REPO/mariadb:/mdb:ro" -v "$(dirname "$tarball"):/out:ro" "mariadb:$s" /pkg/container.sh test
+			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/mariadb:/mdb:ro" -v "$(dirname "$tarball"):/out:ro" "mariadb:$s" /pkg/container.sh test
 	done
 }
 

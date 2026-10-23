@@ -7,6 +7,8 @@ set -euo pipefail
 
 command -v apt-get >/dev/null && FMT=deb || FMT=rpm
 # shellcheck source=/dev/null
+. /net.sh
+# shellcheck source=/dev/null
 . /etc/os-release
 NAME=sift-sqlite-$VER-linux-x86_64
 # the oldest glibc the build image carries is the oldest one the extension runs on; the build fails when it needs a newer one

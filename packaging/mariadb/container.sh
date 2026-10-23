@@ -7,6 +7,9 @@
 set -euo pipefail
 
 . /etc/os-release
+FMT=deb # read by net.sh
+# shellcheck source=/dev/null
+. /net.sh
 # the library binds to the glibc of its build image; the floor of each series is printed and goes into the tarball (BUILD-INFO)
 build() {
 	export DEBIAN_FRONTEND=noninteractive
