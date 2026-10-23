@@ -78,11 +78,17 @@ extern SiftColSchema *schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry
 extern bool seg_page(Relation rel, SiftTblSeg *seg, uint32 idx, Page copy);
 extern void seal_flush(SealWriter *sw);
 
-/* The column format minor of a group: sift.col_format_minor, but the version section of a group with unfrozen rows is minor 4 whatever it says */
+/*
+ * The column format minor of a group: sift.col_format_minor, but the version section of a group with unfrozen rows is minor 4 whatever it says, and no
+ * dictionary is stored for a lookup in place (minor 14) unless sift.table_dict_lookup is on: it costs a quarter to three quarters of a high-distinct text
+ * column and a row fetch gets back the load of the dictionary in the first statement of a backend only
+ */
 static inline int
 tbl_col_format(bool vers)
 {
-	return vers ? Max(sift_col_format_minor, SIFT_COL_FORMAT_VERS) : sift_col_format_minor;
+	int			minor = sift_tbl_dict_lookup ? sift_col_format_minor : Min(sift_col_format_minor, SIFT_COL_FORMAT_RUNS);
+
+	return vers ? Max(minor, SIFT_COL_FORMAT_VERS) : minor;
 }
 
 /* Whether a merge of the n segments of sel can carry rows that are not final: a version section, or a group tagged with its writer by 3.0.1 */

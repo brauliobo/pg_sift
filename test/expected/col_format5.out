@@ -60,7 +60,7 @@ CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n) WITH (cube_
 SELECT fmt('g_all');
  fmt 
 -----
- 14
+ 5
 (1 row)
 
 SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('g_all')) = fmt('g_all') AS hook_agrees;
@@ -90,9 +90,9 @@ SELECT sift.col_promote('g_narrow');
 (1 row)
 
 SELECT fmt('g_all'), fmt('g_narrow');
- fmt  | fmt 
-------+-----
- 14,5 | 3,4
+ fmt | fmt 
+-----+-----
+ 5,5 | 3,4
 (1 row)
 
 SELECT sift.col_merge('g_all', true);
@@ -104,7 +104,7 @@ SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
  fmt 
 -----
- 14
+ 5
 (1 row)
 
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true);
@@ -138,7 +138,7 @@ REINDEX INDEX g_all;
 SELECT fmt('g_all');
  fmt 
 -----
- 14
+ 5
 (1 row)
 
 SELECT sift.col_verify('g_all', true);

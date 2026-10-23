@@ -1,7 +1,9 @@
+-- (sift.table_dict_lookup: the default writes the compact form, which is smaller and a row fetch loads whole.)
 -- The strings a sift_table row fetch reads from a segment whose dictionary is stored for a lookup are read in
 -- place, one by one: the first SELECT or UPDATE of a backend does not load the dictionary. After many such reads of a segment the dictionary is loaded and
 -- cached as before, and the rows read are the same either way: NULL, empty, long (stored inline), non-ASCII, varchar, and after DML.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.table_dict_lookup = on;
 
 CREATE TABLE tf (id int PRIMARY KEY, s text, v varchar(40), n int) USING sift_table;
 INSERT INTO tf
@@ -53,5 +55,13 @@ SELECT s, v FROM tf WHERE id = 7005;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf EXCEPT SELECT id, s, v, n FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf) d;
 
-DROP TABLE tf, tf_heap;
+-- the default writes the compact form (smaller; a row fetch loads the dictionary whole) and reads the same rows
+RESET sift.table_dict_lookup;
+CREATE TABLE tf_c USING sift_table AS SELECT * FROM tf_heap;
+VACUUM tf_c;
+SELECT min(format) < 14 AS compact_by_default FROM sift.table_segments('tf_c') WHERE kind = 'columns';
+SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_c EXCEPT SELECT id, s, v, n FROM tf_heap) d;
+SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf_c) d;
+
+DROP TABLE tf, tf_heap, tf_c;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

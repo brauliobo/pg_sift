@@ -93,6 +93,14 @@ extern void sift_col_shred_recheck_member(struct SiftShredRecheck *rc, const Sif
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
  * ------------------------------------------------------------------------- */
 
+/* The values of the option dict_lookup: auto stores the dictionaries of the leaves a lookup structure reads (point_columns, set_columns, return_columns) */
+enum
+{
+	SIFT_COL_DICT_AUTO,
+	SIFT_COL_DICT_ON,
+	SIFT_COL_DICT_OFF
+};
+
 typedef struct SiftColOptions
 {
 	int32		vl_len_;
@@ -110,7 +118,7 @@ typedef struct SiftColOptions
 	int			key_presence;	/* offset of the "key_presence" string, 0 = none */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
-	bool		dict_lookup;	/* a dictionary of many strings is stored to be searched in place (column format minor 14) */
+	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored to be searched in place (column format minor 14) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */

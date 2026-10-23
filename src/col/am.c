@@ -200,6 +200,15 @@ sift_col_validate_point_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option \"%s\": %s", value, err)));
 }
 
+static relopt_enum_elt_def dict_lookup_names[] = {
+	{"auto", SIFT_COL_DICT_AUTO},
+	{"on", SIFT_COL_DICT_ON},
+	{"true", SIFT_COL_DICT_ON},
+	{"off", SIFT_COL_DICT_OFF},
+	{"false", SIFT_COL_DICT_OFF},
+	{(const char *) NULL}
+};
+
 void
 sift_col_init(void)
 {
@@ -336,9 +345,10 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
 					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
-	add_bool_reloption(col_relopt_kind, "dict_lookup",
-					   "A dictionary of 1,024 strings or more of the segments written from now on is stored so that an equality, an IN list or a prefix test reads it in place, without loading it (default on; the segments are column format minor 14)",
-					   true, ShareUpdateExclusiveLock);
+	add_enum_reloption(col_relopt_kind, "dict_lookup",
+					   "A dictionary of 1,024 strings or more of the segments written from now on is stored so that an equality, an IN list or a prefix test reads it in place, without loading it: auto (default) for the columns of point_columns, set_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the stored form is larger than the compact one)",
+					   dict_lookup_names, SIFT_COL_DICT_AUTO,
+					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
 					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
 					   true, ShareUpdateExclusiveLock);
@@ -387,7 +397,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
-	{"dict_lookup", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, dict_lookup)},
+	{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
 	{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
@@ -423,7 +433,7 @@ sift_col_test_reloptions(const relopt_parse_elt **tab, int *n)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = true, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -615,7 +625,6 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
-		r->pagg.nolookup = !sift_col_options(index)->dict_lookup;
 		if ((err = sift_cset_spec_parse(sift_col_options_set_columns(index), r->schema, (const char *const *) names, r->pagg.set)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
 		r->pagg.set_limit = sift_col_options(index)->set_limit;
@@ -626,6 +635,12 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON ||
+				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i]));
+		for (int a = 1; a <= natts; a++)
+			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
+				r->pagg.lookup[r->first[a]] = true;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

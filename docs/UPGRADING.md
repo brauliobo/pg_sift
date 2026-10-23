@@ -114,10 +114,10 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 11 | a `sift_table` write buffer that took a row over the buffer (`sift.table_wide_rows`, on by default; a 3.2 library reads it, writes beside it and promotes it, but the preflight lists it until it is promoted) | `SET sift.table_wide_rows = off` (a row over the buffer is refused again) |
 | 12 | a `sift_col` index with `superunit` (16 by default) | `WITH (superunit = 0)`, or `sift.col_format_minor` 11 or less |
 | 13 | `order_columns` (option, off) | do not set it, or `sift.col_format_minor` 12 or less |
-| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid), in any index, option or not; `point_columns` (option, off) | `WITH (dict_lookup = off)` and do not set `point_columns`, or `sift.col_format_minor` 13 or less |
+| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid) of a column in `set_columns`, `point_columns` or `return_columns`, of any column with `dict_lookup = on`, or in a `sift_table` with `sift.table_dict_lookup = on` (all off by default); `point_columns` (option, off) | do not set them, `WITH (dict_lookup = off)`, or `sift.col_format_minor` 13 or less |
 | 15 | `key_presence` (option, off) | do not set it, or `sift.col_format_minor` 14 or less |
 
-So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off', dict_lookup = off)` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
+So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
 
 ### Going back to 3.2

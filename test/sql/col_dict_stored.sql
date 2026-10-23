@@ -60,7 +60,7 @@ INSERT INTO ds_q (preds, heapwhere) VALUES
  ('0:eq:ab;1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 's = ''ab'' AND u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b''');
 
 -- the stored form: the segment is minor 14, the dictionaries are not parsed by an equality, an IN list or a prefix, and every answer is the heap's
-CREATE INDEX ds_new ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+CREATE INDEX ds_new ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = on);
 VACUUM (ANALYZE) ds;
 SELECT sift.col_verify('ds_new', true);
 SELECT count(*) AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
@@ -76,7 +76,7 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 -- the compact form: the option off, or the setting 13; the same answers, the dictionaries are parsed
 CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = off);
 SET sift.col_format_minor = 13;
-CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = on);
 RESET sift.col_format_minor;
 SELECT index, min(format) AS format FROM (SELECT 'off' AS index, format FROM sift.col_segments('ds_off') WHERE kind = 'immutable'
 	UNION ALL SELECT '13', format FROM sift.col_segments('ds_13') WHERE kind = 'immutable') x GROUP BY index ORDER BY index;
@@ -88,7 +88,7 @@ DROP INDEX ds_off, ds_13;
 
 -- a dictionary under the minimum is kept compact (the minimum is a limit)
 CREATE TABLE dfew AS SELECT i AS id, 'few' || i % 300 AS s FROM generate_series(1, 6000) i;
-CREATE INDEX dfew_i ON dfew USING sift_col (s sift.col_text_ops, id sift.col_int4_ops);
+CREATE INDEX dfew_i ON dfew USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
 SELECT min(format) AS format FROM sift.col_segments('dfew_i') WHERE kind = 'immutable';
 DROP TABLE dfew;
 SELECT set_config('sift.test_limits', 'dict_lookup_min=1', false) IS NOT NULL AS lowered;
@@ -96,8 +96,8 @@ CREATE TABLE dt (id int, s text);
 INSERT INTO dt SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN 'one' WHEN 2 THEN '' ELSE repeat('x', 255) END FROM generate_series(1, 400) i;
 CREATE TABLE dt1 (id int, s text);
 INSERT INTO dt1 SELECT i, 'same' FROM generate_series(1, 100) i;
-CREATE INDEX dt_i ON dt USING sift_col (s sift.col_text_ops, id sift.col_int4_ops);
-CREATE INDEX dt1_i ON dt1 USING sift_col (s sift.col_text_ops, id sift.col_int4_ops);
+CREATE INDEX dt_i ON dt USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
+CREATE INDEX dt1_i ON dt1 USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
 SELECT (SELECT min(format) FROM sift.col_segments('dt_i') WHERE kind = 'immutable') AS format,
 	   (SELECT min(format) FROM sift.col_segments('dt1_i') WHERE kind = 'immutable') AS format_one_string;
 SELECT (SELECT count(*) FROM sift._test_col_tids('dt_i', '0:eq:one')) AS one,
@@ -138,10 +138,29 @@ RESET sift.test_limits;
 ALTER INDEX ds_new SET (dict_lookup = off);
 REINDEX INDEX ds_new;
 SELECT min(format) < 14 AS compact FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
-ALTER INDEX ds_new RESET (dict_lookup);
+ALTER INDEX ds_new SET (dict_lookup = on);
 REINDEX INDEX ds_new;
 SELECT min(format) AS format FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
+
+-- the default (auto) stores the dictionary of a leaf that a lookup structure reads (set_columns, point_columns, return_columns) and of no other; on stores every one, off none
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
+CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = off);
+CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops);
+CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (set_columns = 's');
+CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 'u');
+CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (return_columns = 's, v');
+CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = off);
+RESET max_parallel_maintenance_workers;
+SELECT i.idx, d.leaf, d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_on') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS stored_form,
+	   d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_off2') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS compact_form
+FROM (VALUES ('ds_on'), ('ds_off2'), ('ds_auto'), ('ds_auto_set'), ('ds_auto_point'), ('ds_auto_ret'), ('ds_auto_off')) i(idx), LATERAL sift.col_sections(i.idx::regclass) d
+WHERE d.section = 'dict' ORDER BY i.idx, d.leaf;
+SELECT sift.col_verify('ds_auto_set', true), sift.col_verify('ds_auto_point', true), sift.col_verify('ds_auto_ret', true);
+CREATE INDEX ds_bad ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = sometimes);
+CREATE INDEX ds_bool ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = true);
+DROP INDEX ds_bool;
 
 DROP TABLE ds CASCADE;
 DROP FUNCTION ds_cmp(regclass, text, text);

@@ -240,7 +240,7 @@ CREATE INDEX ot_col ON ot USING sift_col (id, grp, v);
 SELECT format FROM sift.col_segments('ot_col') WHERE kind = 'immutable';
  format 
 --------
-     14
+     12
 (1 row)
 
 CREATE TABLE tt (id int, ip inet, cd cidr, mac macaddr, mac8 macaddr8, tz timetz, b bit(8), vb varbit) USING sift_table;
