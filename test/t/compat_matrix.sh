@@ -5,7 +5,7 @@
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
 # (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
 # REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 key_columns (a summary), 12 superunit,
-# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
 # and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
@@ -173,16 +173,16 @@ sift.async_maintenance = off'
 	[[ $newest == 3 ]] || formats+=("hi $newest")
 	((newest > 4)) && formats+=("h4 4")
 	((newest >= 4)) && formats+=("ke 4")
-	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "df 12")
+	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "df 12")
 	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
-	docsonly=" h4 ke cm ca rd sc su rn dk kp df "
-	refused=" cm ca rd sc su rn dk kp df "
+	docsonly=" h4 ke cm ca rd sc su rn dk kp pt df "
+	refused=" cm ca rd sc su rn dk kp pt df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		set="SET sift.col_format_minor = $minor"; [[ $fmt != df ]] || set="SELECT 1"
+		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt ]] || set="SELECT 1"	# the option stamps 16 at the default setting (15)
 		q "$set" \
 			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
@@ -202,6 +202,15 @@ sift.async_maintenance = off'
 			q "SET sift.col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
 		fi
+	done
+	# point_tid_columns (minor 16): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
+	ptfmt() { q "SELECT max(format) || ':' || (SELECT coalesce(reloptions::text, '') ~ 'point_tid_columns=g' FROM pg_class WHERE relname = 'docs_pt_col') FROM sift.col_segments('docs_pt_col') WHERE kind = 'immutable'"; }
+	ptwant=$(q "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(id) FROM docs_pt WHERE g = 4")
+	for step in "SELECT sift.col_merge('docs_pt_col', true)" "SELECT sift.col_refresh('docs_pt_col')" "REINDEX INDEX docs_pt_col"; do
+		check "$ref: the pt clone: ${step%%(*}" q "$step"
+		same "$ref: the pt clone is minor 16 with its option after ${step%%(*}" "$(ptfmt)" "16:true"
+		check "$ref: the pt clone verifies after ${step%%(*}" q "SELECT sift.col_verify('docs_pt_col', true)"
+		same "$ref: the pt clone answers a lookup as the plain plan after ${step%%(*}" "$(q "SET sift.enable_col_scan = on" "SET enable_seqscan = off" "SELECT count(*), sum(id) FROM docs_pt WHERE g = 4")" "$ptwant"
 	done
 	check "$ref: the clone with order_columns under the lowest setting holds no run" test "$(q "SELECT count(*) FROM sift.col_sections('docs_lo_col') WHERE section = 'runs'")" == 0
 	if [[ $hastbl == yes ]]; then
@@ -265,7 +274,7 @@ sift.async_maintenance = off'
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
 		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
 		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 11
+		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|pt|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 11
 		check "3.2 downgrade: it lists no BM25 index" test "$(grep -c ' dgb_idx \| docs_idx ' <<<"$blockers")" == 0
 		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
@@ -280,10 +289,9 @@ sift.async_maintenance = off'
 		done <<<"$blockers"
 		uc --to 3.2 postgres >/dev/null; rc=$?
 		check "3.2 downgrade: the preflight has no blocker left" test $rc -eq 0
-		left=$(q "SELECT c.relname || ':' || (SELECT max(format) FROM sift.col_segments(c.oid::regclass)) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i'
-			AND (SELECT max(format) FROM sift.col_segments(c.oid::regclass)) > 6
-			UNION ALL SELECT c.relname || ':' || (SELECT max(format) FROM sift.table_segments(c.oid::regclass)) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_table'
-			AND (SELECT max(format) FROM sift.table_segments(c.oid::regclass)) > 6" | tr '\n' ' ')
+		left=$(q "WITH i AS MATERIALIZED (SELECT c.oid, c.relname, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))
+			SELECT relname || ':' || (SELECT max(format) FROM sift.col_segments(oid::regclass)) FROM i WHERE amname = 'sift_col' AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
+			UNION ALL SELECT relname || ':' || (SELECT max(format) FROM sift.table_segments(oid::regclass)) FROM i WHERE amname = 'sift_table' AND (SELECT max(format) FROM sift.table_segments(oid::regclass)) > 6" | tr '\n' ' ')
 		check "3.2 downgrade: no segment is above minor 6 or in a buffer of format 11" test -z "$left"
 		[[ -z $left ]] || diag "left above 6: $left"
 		node_stop mx
