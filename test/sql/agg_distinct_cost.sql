@@ -2,6 +2,8 @@
 -- (about 0.7 microseconds a chunk), so a query with thousands of groups pays for them while one with a hundred does not. The scan is priced for the chunks
 -- while they fit the memory of the set (work_mem times hash_mem_multiplier): past it the set moves to a hash set whose pair costs between 0.1 and 2
 -- microseconds with the column and the size of the set, which is not priced. The statements run with enable_agg on and off: the rows must be the same.
+-- The workers of a scan are priced for their start (3 ms and 0.35 ms each) and, for a count(DISTINCT), for the leader merging the pairs of the sets one by one;
+-- a parallel_setup_cost of 0 asks for them.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, grp int NOT NULL, part int NOT NULL, cat int NOT NULL, amount float8 NOT NULL);
@@ -35,6 +37,29 @@ FROM (VALUES ('5000 groups', 'grp'), ('100 groups', 'part')) v(groups, g) ORDER 
 SELECT scan_cost('SELECT grp, count(*) AS n, count(DISTINCT cat) AS d FROM items GROUP BY grp') / scan_cost('SELECT grp, count(*) AS n, count(DISTINCT part) AS d FROM items GROUP BY grp') > 1.5 AS words_not_priced,
        differences('SELECT grp, count(*) AS n, count(DISTINCT part) AS d FROM items GROUP BY grp') AS differences;
 
-DROP FUNCTION scan_cost(text), differences(text);
+-- workers planned for the scan of a table priced as 100 times larger (sift.plan_scale): a sum scales with them, a count(DISTINCT) does not (the leader merges
+-- every pair), and a start that costs 3 ms keeps a scan of a few milliseconds serial whatever the setup cost; 0 asks for the workers
+CREATE FUNCTION workers(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
+END $$;
+SET min_parallel_table_scan_size = 0;
+SET parallel_tuple_cost = 0;
+SET sift.agg_preagg = off;
+SET sift.plan_scale = 100;
+CREATE FUNCTION workers_at(setup int) RETURNS TABLE (setup_cost int, sum_workers int, grouped_distinct_workers int, global_distinct_workers int) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('parallel_setup_cost', setup::text, true);
+	RETURN QUERY SELECT setup, workers('SELECT part, sum(amount) FROM items GROUP BY part'), workers('SELECT grp, count(DISTINCT cat) FROM items GROUP BY grp'),
+		workers('SELECT count(DISTINCT cat) FROM items');
+END $$;
+SELECT * FROM workers_at(0) UNION ALL SELECT * FROM workers_at(1) UNION ALL SELECT * FROM workers_at(100) ORDER BY 1;
+RESET sift.plan_scale;
+SELECT sum_workers AS small_scan_workers FROM workers_at(1);
+RESET parallel_setup_cost; RESET min_parallel_table_scan_size; RESET parallel_tuple_cost; RESET sift.agg_preagg;
+
+DROP FUNCTION scan_cost(text), differences(text), workers(text), workers_at(int);
 DROP TABLE items;
 DROP EXTENSION pg_sift;
