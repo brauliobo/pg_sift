@@ -146,12 +146,12 @@ set_chosen(Relation index, const StringInfoData *list)
 bool
 sift_col_auto_keys(Relation heap, Relation index)
 {
-	SiftColRel *rel;
+	const SiftColRel *rel;
 	StringInfoData list;
 
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return false;
-	rel = sift_col_rel(index);
+	rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the loop reads catalogs, which reload the cached state */
 	if (sift_col_options_key_columns(index) != NULL && !rel->pagg.keyauto)
 		return false;
 	for (int c = 0; c < rel->schema->ncols; c++)
