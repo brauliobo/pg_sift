@@ -65,6 +65,18 @@ bits_and_count_scalar(const uint64 *a, const uint64 *b, uint32 nwords)
 	return c;
 }
 
+/* Position of the j-th set bit of m (0 past the last), lane j of row m */
+#define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
+#define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
+#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
+#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
+#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
+#define POS(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
+#define LANE(m, j)	(POS(m, j, 0) + POS(m, j, 1) + POS(m, j, 2) + POS(m, j, 3) + \
+					 POS(m, j, 4) + POS(m, j, 5) + POS(m, j, 6) + POS(m, j, 7))
+#define POSROW(m)	{LANE(m, 0), LANE(m, 1), LANE(m, 2), LANE(m, 3), LANE(m, 4), LANE(m, 5), LANE(m, 6), LANE(m, 7)}
+const uint8 sift_colk_lut_pos[256][8] = {R256(POSROW)};
+
 static uint32
 bits_to_idx_scalar(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)
 {
@@ -101,8 +113,8 @@ zone_notnull_scalar(const uint32 *nnull, const uint32 *nvals, uint32 n, uint64 *
 	KEEP_AND(n, keep, nnull[i] != nvals[i]);
 }
 
-static void
-unpack_scalar(const uint8 *src, uint32 bits, uint32 n, uint32 *dst)
+void
+sift_colk_unpack_scalar(const uint8 *src, uint32 bits, uint32 n, uint32 *dst)
 {
 	const uint32 mask = (1U << bits) - 1;
 
@@ -196,7 +208,7 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.zone_range = zone_range_scalar,
 	.zone_set = zone_set_scalar,
 	.zone_notnull = zone_notnull_scalar,
-	.unpack = unpack_scalar,
+	.unpack = sift_colk_unpack_scalar,
 	.for_i64 = {sift_colk_for_i64_u8_scalar, sift_colk_for_i64_u16_scalar, sift_colk_for_i64_u32_scalar, sift_colk_for_i64_u64_scalar},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
@@ -205,10 +217,37 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.expand_parents = expand_parents_scalar,
 };
 
+#if defined(SIFT_HAVE_NEON)
+const SiftColKernels sift_col_kernels_neon = {
+	.range = {sift_colk_range_u8_neon, sift_colk_range_u16_neon, sift_colk_range_u32_neon, sift_colk_range_u64_neon},
+	.lut = {sift_colk_lut_u8_neon, lut_u16_scalar, lut_u32_scalar},
+	.bits_and = bits_and_scalar,
+	.bits_or = bits_or_scalar,
+	.bits_andnot = bits_andnot_scalar,
+	.bits_count = bits_count_scalar,
+	.bits_and_count = bits_and_count_scalar,
+	.bits_to_idx = sift_colk_bits_to_idx_neon,
+	.zone_range = sift_colk_zone_range_neon,
+	.zone_set = zone_set_scalar,
+	.zone_notnull = sift_colk_zone_notnull_neon,
+	.unpack = sift_colk_unpack_neon,
+	.for_i64 = {sift_colk_for_i64_u8_scalar, sift_colk_for_i64_u16_scalar, sift_colk_for_i64_u32_scalar, sift_colk_for_i64_u64_scalar},
+	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
+	.gather_u32 = sift_colk_gather_u32_scalar,
+	.f8_from_keys = sift_colk_f8_from_keys_scalar,
+	.bits_to_flags = sift_colk_bits_to_flags_neon,
+	.expand_parents = expand_parents_scalar,
+};
+#endif
+
 const SiftColKernels *
 sift_col_kernels_for(SiftSimdLevel level)
 {
 	level = Min(level, sift_cpu.detected);
+#if defined(SIFT_HAVE_NEON)
+	if (level == SIFT_SIMD_NEON)
+		return &sift_col_kernels_neon;
+#endif
 #if defined(__x86_64__)
 	if (level == SIFT_SIMD_AVX512)
 		return &sift_col_kernels_avx512;

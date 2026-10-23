@@ -863,6 +863,27 @@ noise), ns per call over a vector of 4096 elements (a bit vector of 64 words) as
 returns `simd` (the active level name), and the column scan's EXPLAIN prints `SIMD: avx512` (the level in effect, from
 `sift_simd_level_name(sift_cpu.active)`).
 
+### AArch64 (NEON)
+
+`col/kern_neon.c` is the NEON level (`sift.simd = neon`, the first level of AArch64; `core/neon.h` has the helpers the NEON files share). NEON has no
+movemask: a compare gives all ones or zero per element, the results are narrowed to bytes, ANDed with the weight of their bit in the byte and folded by
+pairwise adds into the 64-bit word. A slot without a NEON kernel is the scalar function in the NEON table of `col/kern.c`: it stays there when the
+compiler's loop (clang vectorizes the plain loops of `bits_and`, `for_i64`, `f8_from_keys`) is as fast as the intrinsics, or when the slot is a gather
+(`lut` over 16 and 32 bits, `gather_u32`, `for_i64_sel`) for which NEON has no instruction. `unpack` is NEON up to 25 bits (a value and its offset in the
+byte fit the four bytes TBL picks) and scalar above.
+
+Measured (Apple M4, one thread, clang, `-O2`, best of 300 batches and the best of five runs, ns per call over a vector of 4096 elements):
+
+| slot | scalar | neon | |
+|---|---|---|---|
+| `range[SIFT_COLW_8]` / `16` / `32` / `64` | 906 / 875 / 875 / 844 | 57 / 98 / 180 / 344 | 16x / 9x / 4.9x / 2.5x |
+| `lut[SIFT_COLW_8]` | 1125 | 113 | 9.9x |
+| `bits_to_idx` 50 % / 0.8 % set | 813 / 29 | 211 / 25 | 3.9x / 1.1x |
+| `zone_range` / `zone_notnull` (1024 units) | 344 / 219 | 117 / 47 | 2.9x / 4.7x |
+| `unpack` 7 / 13 / 20 bits | 1188 | 234 | 5.1x |
+| `bits_to_flags` | 344 | 61 | 5.7x |
+| `unpack` 29 bits, `lut` 16 / 32 bits, `bits_and`, `bits_and_count`, `zone_set`, `for_i64`, `f8_from_keys` | | scalar | 1.0x |
+
 ### Measured
 
 `tools/kernels/bench col` (`make -C tools/kernels bench-col`), one thread pinned to a core, arrays in L1/L2, best of 300 batches and the

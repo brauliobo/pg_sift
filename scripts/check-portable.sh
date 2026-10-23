@@ -9,7 +9,7 @@ set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
 std='assert|ctype|errno|float|inttypes|limits|locale|math|setjmp|stdarg|stdatomic|stdbool|stddef|stdint|stdio|stdlib|string|time'
-intrinsics='immintrin|emmintrin|x86intrin|cpuid'
+intrinsics='immintrin|emmintrin|x86intrin|cpuid|arm_neon'
 compress='lz4|lz4hc|zstd'	# the optional libraries of src/col/compress.c, behind SIFT_HAVE_LZ4 / SIFT_HAVE_ZSTD
 mapfile -t files < <(cat "$SRC/portable.list" "$SRC/portable-col.list" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
 names=("${files[@]}" "${files[@]##*/}")	# a file is included by its path from src/
