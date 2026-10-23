@@ -28,7 +28,7 @@ pgdg_repo() {
 }
 
 build_deb() {
-	apt-get install -y -qq --no-install-recommends build-essential fakeroot debhelper postgresql-server-dev-$PG liblz4-dev libzstd-dev
+	apt-get install -y -qq --no-install-recommends build-essential fakeroot debhelper postgresql-server-dev-$PG liblz4-dev libzstd-dev libicu-dev
 	cp -r /pkg/debian debian
 	cat > debian/changelog <<LOG
 pg-sift ($VER-1) unstable; urgency=medium
@@ -42,7 +42,7 @@ LOG
 }
 
 build_rpm() {
-	dnf -y -q --enablerepo=crb install rpm-build gcc make redhat-rpm-config postgresql$PG-devel lz4-devel libzstd-devel
+	dnf -y -q --enablerepo=crb install rpm-build gcc make redhat-rpm-config postgresql$PG-devel lz4-devel libzstd-devel libicu-devel
 	nice rpmbuild -bb /pkg/pg_sift_$PG.spec --define "pkg_version $VER" --define "_sourcedir /src" \
 		--define "_topdir /tmp/rpmbuild" --define "_smp_mflags -j$JOBS" >/dev/null
 	cp /tmp/rpmbuild/RPMS/x86_64/*.rpm /out
