@@ -419,7 +419,7 @@ notice_point_tid(Relation index)
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": point_tid_columns lists the heap addresses of the rows", RelationGetRelationName(index)),
 			 errdetail("A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65%% longer than without a directory."),
-			 errhint("Drop the option, or set sift.col_format_minor to 15, to list the rows of the segment instead.")));
+			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
 IndexBuildResult *
