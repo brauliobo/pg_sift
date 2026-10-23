@@ -3,6 +3,8 @@
  */
 #include "core/host.h"
 
+#include <math.h>
+
 #include "col/shred.h"
 #include "core/neon.h"
 
