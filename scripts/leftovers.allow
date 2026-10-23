@@ -1,0 +1,3 @@
+# The objects a regress test may leave in its database (scripts/pgtest.sh regress fails a test that leaves any other).
+# Format: test: regex # reason. The regex is matched against the lines scripts/leftovers.sql prints ("table events", "function helper(text)", "extension pg_sift"...).
+# A reason names the test that needs the object, or what keeps the test from dropping it. The list is meant to stay empty: a test ends with the DROPs of what it creates.

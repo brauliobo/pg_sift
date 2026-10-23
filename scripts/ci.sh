@@ -160,6 +160,12 @@ if [[ $MODE == --selftest ]]; then
 	done
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 	(cd "$REPO" && sha256sum --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
+	# scripts/leftovers.allow: a test that exists, an object and a reason on every line
+	re='^([a-z0-9_]+): .+ # .+$'
+	while IFS= read -r l; do
+		[[ -z $l || $l == '#'* ]] && continue
+		[[ $l =~ $re && -f $REPO/test/sql/${BASH_REMATCH[1]}.sql ]] || { echo "FAIL: scripts/leftovers.allow: \"$l\" is not \"test: regex # reason\" of an existing test"; bad=1; }
+	done < "$REPO/scripts/leftovers.allow"
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	"$REPO/scripts/gen-options.sh" --selftest || bad=1
 	"$REPO/scripts/check-bench-cases.sh" --selftest || bad=1
