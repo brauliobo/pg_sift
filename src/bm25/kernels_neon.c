@@ -2,8 +2,8 @@
  * bm25/kernels_neon.c - AArch64 Advanced SIMD kernels. An 8-slot byte of a mask word is two registers of floats; only nonzero bytes
  * are visited. Rank-order tf bytes are placed into slot lanes with TBL from the 256-entry expand table (an index of 0x80 gives 0),
  * and slots outside the mask are blended back unchanged. Slots without a NEON kernel are the scalar functions: expand, tf_decode, select_gt and vm_allvisible
- * (a deposit, a variable length decode, a compaction and a bit gather, none of which NEON has an instruction for), and ub_accum,
- * which the compiler vectorizes as well as the intrinsics do.
+ * (a deposit, a variable length decode, a compaction and a bit gather, none of which NEON has an instruction for), ub_accum,
+ * which the compiler vectorizes as well as the intrinsics do, and bm25_sel, which the intrinsics lose on.
  */
 #include "core/host.h"
 
@@ -62,24 +62,20 @@ accum4(float4 *scores, const float4 *knorm, float32x4_t w, float32x4_t t, uint32
 	vst1q_f32(scores, vbslq_f32(l, vaddq_f32(s, vmulq_f32(w, vdivq_f32(u, vaddq_f32(u, n)))), s));
 }
 
-/*
- * ... for the 8 slots of the byte k: a half without a selected slot is not divided. A byte with this many slots or fewer costs less
- * as the scalar sequence (a four lane division is not four times a scalar one)
- */
+/* A byte with this many slots or fewer costs less as the scalar sequence (a four lane division is not four times a scalar one) */
 #define SIFT_KERN_NEON_SPARSE	2
 
 static inline void
-accum8(float4 *scores, const float4 *knorm, float4 w, const uint8 *tf, uint32 k, uint32 kc)
+accum8(float4 *scores, const float4 *knorm, float4 w, const uint8 *tf, uint32 k)
 {
-	if (__builtin_popcount(kc) <= SIFT_KERN_NEON_SPARSE)
+	if (__builtin_popcount(k) <= SIFT_KERN_NEON_SPARSE)
 	{
 		for (uint32 m = k, j = 0; m; m &= m - 1, j++)
-			if ((kc >> __builtin_ctz(m)) & 1)
-			{
-				const int	b = __builtin_ctz(m);
+		{
+			const int	b = __builtin_ctz(m);
 
-				scores[b] += sift_kern_bm25(w, tf ? tf[j] : 1, knorm[b]);
-			}
+			scores[b] += sift_kern_bm25(w, tf ? tf[j] : 1, knorm[b]);
+		}
 		return;
 	}
 	{
@@ -89,10 +85,10 @@ accum8(float4 *scores, const float4 *knorm, float4 w, const uint8 *tf, uint32 k,
 
 		if (tf)
 			byte_tf(tf, k, &t0, &t1);
-		if (kc & 15)
-			accum4(scores, knorm, vw, t0, kc & 15);
-		if (kc >> 4)
-			accum4(scores + 4, knorm + 4, vw, t1, kc >> 4);
+		if (k & 15)
+			accum4(scores, knorm, vw, t0, k & 15);
+		if (k >> 4)
+			accum4(scores + 4, knorm + 4, vw, t1, k >> 4);
 	}
 }
 
@@ -102,21 +98,7 @@ bm25_accum_neon(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 	int			r = 0;
 
 	FOREACH_BYTE(mask, npages, s, k,
-				 accum8(scores + s, knorm + s, w, tf ? tf + r : NULL, k, k);
-				 r += __builtin_popcount(k));
-	return r;
-}
-
-static int
-bm25_sel_neon(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf, const float4 *knorm, float4 w)
-{
-	int			r = 0;
-
-	FOREACH_BYTE(mask, npages, s, k,
-				 const uint32 kc = k & (uint32) (cand[s >> 6] >> (s & 63));
-
-				 if (kc)
-					 accum8(scores + s, knorm + s, w, tf ? tf + r : NULL, k, kc);
+				 accum8(scores + s, knorm + s, w, tf ? tf + r : NULL, k);
 				 r += __builtin_popcount(k));
 	return r;
 }
@@ -203,7 +185,7 @@ const SiftKernels sift_kernels_neon = {
 	.tf_decode = sift_kern_tf_decode_scalar,
 	.knorm = knorm_neon,
 	.bm25_accum = bm25_accum_neon,
-	.bm25_sel = bm25_sel_neon,
+	.bm25_sel = sift_kern_bm25_sel_scalar,
 	.prune_gt = prune_gt_neon,
 	.max_merge = max_merge_neon,
 	.ub_accum = sift_kern_ub_accum_scalar,

@@ -24,6 +24,7 @@ extern const uint8 sift_kern_lut_expand[256][8];
 
 /* The scalar kernels the NEON table keeps for the slots it has no kernel for (expand and vm_allvisible are above) */
 extern void sift_kern_tf_decode_scalar(uint8 *tf, const uint8 *l1, const uint8 *nib, const uint8 *esc, SiftTfPos *pos, uint32 count);
+extern int	sift_kern_bm25_sel_scalar(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf, const float4 *knorm, float4 w);
 extern void sift_kern_ub_accum_scalar(float4 *ub, const uint8 *bounds, float4 w, int n);
 extern int	sift_kern_select_gt_scalar(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask, int npages, float4 theta);
 

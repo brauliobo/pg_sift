@@ -80,8 +80,8 @@ bm25_accum_scalar(float4 *scores, const uint64 *mask, int npages, const uint8 *t
 	return r;
 }
 
-static int
-bm25_sel_scalar(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
+int
+sift_kern_bm25_sel_scalar(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
 				const float4 *knorm, float4 w)
 {
 	int			r = 0;
@@ -165,7 +165,7 @@ const SiftKernels sift_kernels_scalar = {
 	.tf_decode = sift_kern_tf_decode_scalar,
 	.knorm = knorm_scalar,
 	.bm25_accum = bm25_accum_scalar,
-	.bm25_sel = bm25_sel_scalar,
+	.bm25_sel = sift_kern_bm25_sel_scalar,
 	.prune_gt = prune_gt_scalar,
 	.max_merge = max_merge_scalar,
 	.ub_accum = sift_kern_ub_accum_scalar,
