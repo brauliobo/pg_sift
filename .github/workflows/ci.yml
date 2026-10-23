@@ -7,6 +7,8 @@ name: ci
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs).
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, and fails the run like them.
+# Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
+# of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 # No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:
@@ -92,9 +94,10 @@ jobs:
           # a pull request: one PostgreSQL 18 job, the regression tests of the areas the diff touches (`jobs`, narrower than the push's: scripts/areas.tsv `fast:` rows) and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
           jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
-            if $event == "pull_request" then (if $pg == "true" then [{pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast}] else [] end) else
+            if $event == "pull_request" then (if $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end) else
             (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
-              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}] else [] end)
+              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}]
+              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}] else [] end)
             + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
@@ -125,10 +128,10 @@ jobs:
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 
   postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: ${{ matrix.tier == 'full' && 150 || 90 }}
     strategy:
       fail-fast: false
@@ -180,7 +183,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/sift/old-lib/*/root
-          key: old-lib-${{ runner.os }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/compat_matrix.sh', 'test/t/old_lib_refusal.sh') }}
+          key: old-lib-${{ runner.os }}-${{ runner.arch }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/compat_matrix.sh', 'test/t/old_lib_refusal.sh') }}
 
       - name: Build
         run: |
@@ -204,7 +207,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-test-logs-pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
+          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
