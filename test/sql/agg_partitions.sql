@@ -26,6 +26,9 @@ SELECT pt_fill(1, 6000);
 -- on the parent: one index per partition, with the partitions' own attribute numbers
 CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pt;
+-- the maintenance view lists the indexes of the partitions, not the parent's, which has no storage to read
+SELECT NOT EXISTS (SELECT 1 FROM sift.workers WHERE index = 'pt_col'::regclass) AS parent_skipped;
+SELECT count(*) > 0 AS leaves_listed FROM sift.workers w JOIN pg_inherits h ON h.inhrelid = w.index WHERE h.inhparent = 'pt_col'::regclass;
 
 -- the plan: SiftAgg with the partitions it reads (and workers), or the normal plan
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
