@@ -51,6 +51,7 @@ typedef struct AggSpill
 {
 	Size		budget;			/* hash memory */
 	Size		floor;			/* what an empty table holds */
+	uint32		keep;			/* groups of the table written last: the next table of the scan starts with room for them */
 	int			nparts;
 	bool		spilled;
 	int64		groups;			/* of the partitions returned so far */
@@ -92,6 +93,13 @@ bool
 spill_presize_ok(const AggExec *ex)
 {
 	return ex->spill == NULL || ex->spec->est_groups * 256.0 <= (double) ex->spill->budget;
+}
+
+/* the room a table of the scan starts with in hash mode: growing it again group by group costs as much as the groups themselves (0: none kept) */
+uint32
+spill_keep(const AggExec *ex)
+{
+	return ex->spill ? ex->spill->keep : 0;
 }
 
 /* a spilled scan keeps hash tables: the memory of a direct table follows the range of the keys, not the groups */
@@ -251,6 +259,7 @@ spill_table(AggExec *ex)
 	table_write(ex, sp->set);
 	dist_note_spill(ex);
 	sp->spilled = true;
+	sp->keep = ex->hash ? ex->ngroups : 0;
 	ex->n_spills++;
 	table_reset(ex);
 	MemoryContextSwitchTo(old);
@@ -293,6 +302,7 @@ spill_finish(AggExec *ex)
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
 	table_write(ex, sp->set);
+	sp->keep = 0;
 	table_reset(ex);
 	/* the check of avg(float8) (final_checks) is that of the scan, not of the table that is left */
 	for (int i = 0; i < ex->spec->naggs; i++)
