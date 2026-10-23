@@ -6,6 +6,7 @@ Every number is a row of the results file; the shape text, the baselines, the va
 slower than PostgreSQL or ties it stays in the table and is named in the takeaway.
 """
 import argparse
+import math
 import os
 import re
 import sys
@@ -138,15 +139,103 @@ def headline(rows, registry):
     return parts, [('%s %s' % (f['case'].id, UNIT[f['metric']]), speed(1 / verdict(f))) for f in slower]
 
 
+def size(n):
+    return '%.3gM' % (n / 1e6) if n >= 1e6 else '%.3gk' % (n / 1e3) if n >= 1e3 else str(n)
+
+
+def curves(rows, registry):
+    """per case that has scale rows (case id ID@ROWS): the points by size, each with PostgreSQL's and pg_sift's time (the metric ms), the plans and whether the host was busy"""
+    out = []
+    for c in registry:
+        m = 'ms' if 'ms' in c.metrics else c.metrics[0]
+        pts = []
+        for n in sorted({int(r['case'].partition('@')[2]) for r in rows if r['case'].partition('@')[0] == c.id and '@' in r['case']}):
+            get = lambda arm: extras.get(rows, case='%s@%d' % (c.id, n), arm=arm, metric=m)  # noqa: E731
+            nat, sf = get('native'), get('sift')
+            if nat and sf and nat['value'] not in ('', 'NA', 'error') and sf['value'] not in ('', 'NA', 'error'):
+                pts.append(dict(rows=n, native=float(nat['value']), sift=float(sf['value']), kept=re.sub(r' NOISY$', '', nat['note']) == re.sub(r' NOISY$', '', sf['note']),
+                                noisy=any('NOISY' in (r['note'] or '') for r in (nat, sf)), plan=re.sub(r' NOISY$', '', sf['note'])))
+        if pts:
+            out.append(dict(case=c, metric=m, points=pts))
+    return out
+
+
+def ratio(pt):
+    return pt['native'] / pt['sift'] if pt['sift'] else float('inf')
+
+
+def crossover(pts):
+    """the size from which pg_sift is faster than PostgreSQL and stays faster: from the smallest point, or an estimate between the last point it loses or ties at and the first it wins at
+    (a straight line through the two ratios on logarithmic axes), or none up to the largest point, with the way the ratio is going"""
+    wins = [ratio(p) >= 1 + TIE and not p['kept'] for p in pts]
+    if pts[-1]['kept']:
+        return 'the planner keeps PostgreSQL\'s plan up to %s rows' % size(pts[-1]['rows'])
+    if all(wins):
+        return 'wins from %s rows' % size(pts[0]['rows'])
+    if not wins[-1]:
+        heading = ''
+        if len(pts) > 1 and ratio(pts[-1]) != ratio(pts[-2]):
+            heading = ', the ratio is %s' % ('rising' if ratio(pts[-1]) > ratio(pts[-2]) else 'falling')
+        return 'none up to %s rows (%s at the largest%s)' % (size(pts[-1]['rows']), speed(ratio(pts[-1])) + ' faster' if ratio(pts[-1]) >= 1 else speed(1 / ratio(pts[-1])) + ' slower', heading)
+    i = max(k for k, w in enumerate(wins) if not w)
+    a, b = pts[i], pts[i + 1]
+    ra, rb = ratio(a), ratio(b)
+    if ra > 0 and rb > 0 and ra != rb:
+        at = math.exp(math.log(a['rows']) + (0 - math.log(ra)) / (math.log(rb) - math.log(ra)) * (math.log(b['rows']) - math.log(a['rows'])))
+        return 'about %s rows (between %s and %s, wins from %s)' % (size(min(max(at, a['rows']), b['rows'])), size(a['rows']), size(b['rows']), size(b['rows']))
+    return 'wins from %s rows' % size(b['rows'])
+
+
+def scale_lines(meta, rows, registry):
+    cs = curves(rows, registry)
+    if not cs:
+        return ['Not measured at scale yet: `bench/bench cases --scales 1,10,100 --docs` writes this block (one backend, on a host with the memory for the largest point; `bench/bench refresh --stages scale`).']
+    sizes = sorted({p['rows'] for c in cs for p in c['points']})
+    cs.sort(key=lambda c: (0 if ratio(c['points'][-1]) <= 1 - TIE else 2 if ratio(c['points'][-1]) >= 1 + TIE and not c['points'][-1]['kept'] else 1))   # losses at the largest size first
+    head = ['| case | shape | ' + ' | '.join('%s rows (%gx)' % (format(n, ','), n / int(meta.get('orders', n))) for n in sizes) + ' | crossover |', '|---|---|' + '---:|' * len(sizes) + '---|']
+    body = []
+    for c in cs:
+        cells = []
+        for n in sizes:
+            p = next((p for p in c['points'] if p['rows'] == n), None)
+            if p is None:
+                cells.append('-')
+                continue
+            r = ratio(p)
+            verdict_ = ('same plan' + (', %s slower' % speed(1 / r) if r <= 1 - TIE else '')) if p['kept'] else '**%s**' % speed(r) if r >= 1 + TIE else '%s slower' % speed(1 / r) if r <= 1 - TIE else 'tie'
+            cells.append('%s / %s ms %s%s' % (figure(p['native']), figure(p['sift']), verdict_, ' (busy)' if p['noisy'] else ''))
+        body.append('| `%s` | %s | %s | %s |' % (c['case'].id, c['case'].label.replace('|', '\\|'), ' | '.join(cells), crossover(c['points'])))
+    top = [c for c in cs if ratio(c['points'][-1]) <= 1 - TIE]
+    win = [c for c in cs if ratio(c['points'][-1]) >= 1 + TIE and not c['points'][-1]['kept']]
+    text = 'at the largest size (%s rows) pg_sift is faster than PostgreSQL on %d of %d cases' % (format(sizes[-1], ','), len(win), len(cs))
+    if top:
+        text += ', slower on %d: %s' % (len(top), ', '.join('%s (%s slower)' % (c['case'].id, speed(1 / ratio(c['points'][-1]))) for c in top))
+    kept = [c for c in cs if c['points'][-1]['kept'] and ratio(c['points'][-1]) > 1 - TIE]
+    if kept:
+        text += '; the planner kept PostgreSQL\'s plan on %d: %s' % (len(kept), ', '.join(c['case'].id for c in kept))
+    return ['The cases of the table above at %s orders (%s at 1x), the planner\'s own plan at each size (a case whose plan changes with the size shows it in the ratio), time in ms of PostgreSQL (`sift.enable_agg = off`, same table and indexes) / pg_sift, '
+            'one backend, median of %s. %s' % (', '.join(size(n) for n in sizes), format(int(meta.get('orders', 0)), ','), rounds(meta), extras.footer(meta)), ''] + head + body + [
+        '', '**Takeaway:** ' + text + '.', '',
+        '**Caveats**', '',
+        '- The largest sizes are measured once on the host named above, not on a laptop: the milliseconds are that host\'s, the ratios and the crossover are what travels. `(busy)` marks a cell measured while the host was busy.',
+        '- The crossover of a case is the size from which pg_sift is faster by more than 5% and stays so; between two points it is a straight line through the two ratios on logarithmic axes, an estimate and not a measurement.',
+        '', 'Raw results: [docs/results/cases-scale.tsv](docs/results/cases-scale.tsv); reproduce with `bench/bench cases --scales 1,10,100 --docs`.']
+
+
 def render(results, readme, benchmarks):
     path = os.path.join(results, 'cases.tsv')
-    if not os.path.exists(path):
-        return
-    meta, rows = extras.read(path)
     registry = cases_mod.read_registry()
-    for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, lines(meta, rows, registry))):
-        if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
-            extras.replace_block(doc, 'faster33', body)
+    if os.path.exists(path):
+        meta, rows = extras.read(path)
+        for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, lines(meta, rows, registry))):
+            if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
+                extras.replace_block(doc, 'faster33', body)
+    scale = os.path.join(results, 'cases-scale.tsv')
+    meta, rows = extras.read(scale) if os.path.exists(scale) else ({}, [])
+    for doc in (benchmarks, readme):
+        if doc and os.path.exists(doc) and '<!-- bench:scale33:begin' in open(doc).read():
+            body = scale_lines(meta, rows, registry)
+            extras.replace_block(doc, 'scale33', [l.replace('docs/results/', 'results/') if doc == benchmarks else l for l in body])
 
 
 def main():
