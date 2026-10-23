@@ -270,4 +270,12 @@ extern const SiftShredKernels sift_shred_kernels_scalar;
 extern const SiftShredKernels sift_shred_kernels_avx2;
 extern const SiftShredKernels sift_shred_kernels_avx512;
 
+#if defined(SIFT_HAVE_NEON)
+/* The NEON kernels (shred_kern_neon.c); the NEON table is in shred_kern.c, next to the scalar kernels it keeps for the other slots */
+extern void sift_shred_state_counts_neon(const uint8 *state, uint32 n, uint32 counts[4]);
+extern void sift_shred_state_bits_neon(const uint8 *state, uint32 n, uint64 *nulls, uint64 *ovf);
+extern bool sift_shred_minmax_i64_neon(const uint8 *state, const int64 *val, uint32 n, int64 *min, int64 *max);
+extern bool sift_shred_minmax_f64_neon(const uint8 *state, const double *val, uint32 n, double *min, double *max);
+#endif
+
 #endif							/* SIFT_SHRED_H */

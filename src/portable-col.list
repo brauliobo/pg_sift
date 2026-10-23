@@ -39,6 +39,7 @@ col/shred_spec.c
 col/shred_kern.c
 col/shred_kern_avx2.c
 col/shred_kern_avx512.c
+col/shred_kern_neon.c
 agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c

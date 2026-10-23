@@ -174,7 +174,7 @@ trailing fraction zeros) only when the target is a numeric column (`wants_number
 
 `col/shred_kern_avx512.c` are bit-identical, dispatch through `sift_cpu_register` (`sift.simd`, registered by the first
 `sift_shred_create` or `sift_shred_init()`), `sift_shred_kernels_for(level)` for tests. Detection is at run time; the same library runs on
-any x86-64 and on other architectures the scalar table is used. Kernels: `state_counts` (histogram of the four states of a column),
+any x86-64; on AArch64 `col/shred_kern_neon.c` is the NEON level (compiled in, nothing to detect); elsewhere the scalar table is used. Kernels: `state_counts` (histogram of the four states of a column),
 `state_bits` (the NULL and the overflow bitmaps of a column, for the engine's chunk header),
 `minmax_i64` / `minmax_f64` (zone map over the `VALUE` slots). The offsets to per-element parent ordinals (`sift_shred_expand_parents`)
 are the column table's `expand_parents`: one implementation for the shredder, the column scan
@@ -204,6 +204,19 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 
 `expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast
 or faster than AVX-512 (memory bound on this host).
+
+On AArch64 (clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
+
+| kernel | 4096 | 4 Mi |
+|---|---|---|
+| `state_counts` | 0.86 / 35 | 0.82 / 35 |
+| `state_bits` | 2.3 / 48 | 2.1 / 46 |
+| `minmax_i64` | 1.5 / 2.3 | 1.4 / 2.2 |
+| `minmax_f64` | 0.82 / 3.6 | 0.78 / 3.5 |
+
+The NEON kernels count with byte compares (a byte lane takes 255 vectors before it is added up), build the bitmaps with the pairwise-add
+movemask of `core/neon.h`, and select the `VALUE` lanes of the min / max with `BSL` (`FMIN`/`FMAX` for the doubles, which are never NaN; the
+integers compare and select, NEON has no 64-bit min).
 
 ### Arrays of objects, dynamic keys and nested objects (3.1)
 

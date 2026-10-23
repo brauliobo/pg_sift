@@ -9,7 +9,7 @@ SELECT sift._test_shred_kern_level() AS level;
 SELECT sift._test_shred_kern_digest(1, 400) AS scalar_digest \gset
 SELECT :scalar_digest;
 SET sift.simd = avx2;
-SELECT sift._test_shred_kern_level() IN ('scalar', CASE sift._test_simd_detected() WHEN 'avx512' THEN 'avx2' ELSE sift._test_simd_detected() END) AS avx2_capped,
+SELECT sift._test_shred_kern_level() = CASE sift._test_simd_detected() WHEN 'avx512' THEN 'avx2' ELSE sift._test_simd_detected() END AS avx2_capped,
 	   sift._test_shred_kern_digest(1, 400) = :scalar_digest AS avx2_same;
 SET sift.simd = avx512;
 SELECT sift._test_shred_kern_level() IN ('scalar', 'avx2', 'avx512', 'neon') AS some_level, sift._test_shred_kern_digest(1, 400) = :scalar_digest AS avx512_same;

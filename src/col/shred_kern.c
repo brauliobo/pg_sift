@@ -83,6 +83,15 @@ const SiftShredKernels sift_shred_kernels_scalar = {
 	.minmax_f64 = minmax_f64_scalar
 };
 
+#if defined(SIFT_HAVE_NEON)
+const SiftShredKernels sift_shred_kernels_neon = {
+	.state_counts = sift_shred_state_counts_neon,
+	.state_bits = sift_shred_state_bits_neon,
+	.minmax_i64 = sift_shred_minmax_i64_neon,
+	.minmax_f64 = sift_shred_minmax_f64_neon
+};
+#endif
+
 const SiftShredKernels *sift_shred_kern = &sift_shred_kernels_scalar;
 
 const SiftShredKernels *
@@ -90,6 +99,10 @@ sift_shred_kernels_for(SiftSimdLevel level)
 {
 	if (level > sift_cpu.detected)
 		return NULL;
+#if defined(SIFT_HAVE_NEON)
+	if (level == SIFT_SIMD_NEON)
+		return &sift_shred_kernels_neon;
+#endif
 #if defined(__x86_64__)
 	if (level == SIFT_SIMD_AVX512)
 		return &sift_shred_kernels_avx512;
