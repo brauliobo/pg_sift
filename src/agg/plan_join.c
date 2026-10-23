@@ -259,8 +259,9 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 /*
  * `column = value` or `column = ANY (array)` (IN (list)) among the table's own conditions (the value reads no column, is not volatile and takes no
  * executor parameter): the rows of the table that can match are those of an index scan on the column, when the table has a btree on it (the executor
- * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A list that keeps a large share of the table is read faster by
- * the heap scan than through the index, so it is only for a list the statistics of the table expect to keep a small share.
+ * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A condition that keeps a large share of the table is read faster
+ * by the heap scan than through the index (a random heap fetch for each row), so it is only for a condition the statistics of the table expect to keep
+ * a small share.
  */
 static bool
 index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, Node **val, bool *any)
@@ -297,6 +298,8 @@ index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, No
 			l = r;
 			r = strip_relabel(linitial(op->args));
 		}
+		if (clause_selectivity(c->root, q, jc->rti, JOIN_INNER, NULL) * AGG_IDX_ROW >= AGG_JOIN_ROW)
+			return false;
 	}
 	else
 		return false;
