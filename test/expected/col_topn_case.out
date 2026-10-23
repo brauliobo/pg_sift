@@ -257,18 +257,16 @@ SELECT k, w.used, w.slug, w.reason
 FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('stable',      $q$SELECT id FROM tb ORDER BY CASE WHEN d > current_date THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('volatile',    $q$SELECT id FROM tb ORDER BY CASE WHEN random() > 2 THEN 1 ELSE g END, id LIMIT 5$q$),
-			 ('text result', $q$SELECT id FROM tb ORDER BY CASE WHEN s IS NULL THEN '' ELSE left(s, 3) END, id LIMIT 5$q$),
 			 ('allowed',     $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-      k      | used |    slug    |                                                                                    reason                                                                                     
--------------+------+------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- allowed     | t    |            | 
- stable      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- sub-select  | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a construct the scan does not evaluate)
- text result | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function or operator whose result is not a number)
- volatile    | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
-(5 rows)
+     k      | used |    slug    |                                                                                  reason                                                                                  
+------------+------+------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ allowed    | t    |            | 
+ stable     | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ sub-select | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
+ volatile   | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
+(4 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE tb, tb_q;

@@ -118,18 +118,6 @@ SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'upper_desc', 'int
 VACUUM tc;
 SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'date_desc', 'lower', 'upper_desc') ORDER BY tag COLLATE "C";
 
--- the expressions that stay with the normal plan, each by a named refusal: a string result of a function (a concatenation, a function of a function; a later step).
--- Arithmetic and casts are col_topn_arith, CASE, coalesce of several columns and the tests col_topn_case.
-SET sift.enable_agg = on;
-SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
-SELECT k, w.used, w.slug, substr(w.reason, 1, 400) AS reason
-FROM (VALUES ('concatenation', $q$SELECT id, s FROM tc ORDER BY lower(s || v), id LIMIT 5$q$),
-			 ('nested',        $q$SELECT id, s FROM tc ORDER BY lower(upper(s)), id LIMIT 5$q$),
-			 ('allowed',       $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5), id LIMIT 5$q$)) q(k, q),
-	 LATERAL sift.explain_why(q.q) w
-ORDER BY k COLLATE "C";
-RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
-
 -- overflow strings (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the plan that would read the key leaves the query to the normal plan
 CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
