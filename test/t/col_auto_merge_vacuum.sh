@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The VACUUM that churn and scans ask for (sift.col_auto_vacuum, off by default): after churn spread over a table every heap page is not all-visible, so a
+# The VACUUM that churn and scans ask for (sift.col_auto_merge, off by default): after churn spread over a table every heap page is not all-visible, so a
 # scan of a sift_col index checks the rows in the heap one by one. A backend that inserts a row version, or whose scan checked many rows, looks at the
 # statistics of the table and starts a worker that vacuums it; the next scan checks almost none. Here: off, the scan checks the rows and nothing is
 # vacuumed; on, the table is vacuumed and the next scan is cheap and answers as the heap does; a change of a few rows (under 50) asks for nothing; a table
-# with autovacuum_enabled = false is left alone, and vacuumed once it is not.
+# with autovacuum_enabled = false is left alone, and vacuumed once it is not; CREATE INDEX on such a table says so.
 . "$(dirname "$0")/lib.bash"
 
-plan 9
+plan 10
 # The least time between two VACUUMs of a table is five naptimes before PostgreSQL 18 (from 18, ten times the average one): a scan that checked many
 # rows in the heap after a change of ten rows asks for one, and must find the last within that time, so the naptime is not shorter
 node_init av 22 "autovacuum = off
@@ -45,7 +45,7 @@ check "off: the scan checks the rows in the heap (the churn is spread over every
 check "off: and the table is not vacuumed" stays "$T0"
 
 # 2. on
-sql av "ALTER DATABASE postgres SET sift.col_auto_vacuum = on" >/dev/null
+sql av "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
 check "on: the table is vacuumed after a scan that checked its rows" await_vacuum "$T0"
 check "on: the next scan checks few rows" test "$(vetted)" -lt 10000
 check "on: and answers as the heap does" test "$(groups on)" == "$(groups off)"
@@ -62,6 +62,8 @@ churn 2
 check "autovacuum_enabled = false: not vacuumed" stays "$T1"
 sql av "ALTER TABLE facts RESET (autovacuum_enabled)" >/dev/null
 check "reset: vacuumed" await_vacuum "$T1"
+check "CREATE INDEX on a table with autovacuum_enabled = false: a notice" test "$(sql av "SET client_min_messages = notice" "CREATE TABLE facts_off (id int) WITH (autovacuum_enabled = false)" \
+	"CREATE INDEX facts_off_idx ON facts_off USING sift_col (id)" 2>&1 | grep -c 'does not vacuum')" == 1
 check "the index verifies" test "$(sql av "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
 
 finish

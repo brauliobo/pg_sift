@@ -430,6 +430,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
 	sift_col_report_caps(index);
+	sift_col_vacuum_notice(heap, index);
 	return res;
 }
 

@@ -234,23 +234,17 @@ sift_col_init(void)
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
-							 "After a VACUUM that left a sift_col index scattered by churn, a background worker seals its write buffer and merges all its segments into one.",
-							 "The rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
-							 "when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. Set it for the server or the database: the worker reads no session setting.",
-							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_auto_vacuum",
-							 "A background worker vacuums the heap table of a sift_col index that churn has made its scans check in the heap row by row.",
+							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
-							 "and the index answers none of its units from their pre-aggregates. A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table "
-							 "once per sift.maintenance_naptime and starts the worker when sift.col_auto_vacuum_churn_pct is crossed. It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
-							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. Needs sift.async_maintenance. "
+							 "and a unit holding a dead row answers from its rows; the VACUUM sets the map, and the merge after it makes the units answer from their pre-aggregates again. "
+							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
+							 "when the rows changed since the last VACUUM are a thousandth of the table (50 at least). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
+							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
+							 "The merge rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
+							 "when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. "
 							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
 							 "Set it for the server or the database: the worker reads no session setting.",
-							 &sift_col_auto_vacuum, false, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.col_auto_vacuum_churn_pct",
-							 "Percent of the rows of a table, dead or written since its last VACUUM, from which sift.col_auto_vacuum vacuums it.",
-							 "At least 50 rows. autovacuum starts at 20; 0.1 is a row changed per page of a thousand rows, which is enough to send every row of the table to the heap check.",
-							 &sift_col_auto_vacuum_churn_pct, 0.1, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
 							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
 							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
