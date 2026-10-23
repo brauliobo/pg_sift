@@ -64,3 +64,22 @@ class Takeaway(unittest.TestCase):
         slow_kept = self.fig('k', 1.0, 1.5, {}, 'Seq Scan')
         slow_kept['kept'] = True
         self.assertEqual([r.ranked(f) for f in (win, loss, tie, slow_kept)], [2, 0, 1, 0])
+
+
+class Scale(unittest.TestCase):
+    def pts(self, *ratios):
+        return [dict(rows=200000 * 10 ** i, native=r, sift=1.0, kept=False, noisy=False, plan='') for i, r in enumerate(ratios)]
+
+    def test_crossover(self):
+        import cases_render as r
+        self.assertEqual(r.crossover(self.pts(3.0, 20.0)), 'wins from 200k rows')
+        self.assertEqual(r.crossover(self.pts(0.5, 2.0)), 'about 632k rows (between 200k and 2M, wins from 2M)')
+        self.assertEqual(r.crossover(self.pts(0.5, 0.4)), 'none up to 2M rows (2.5x slower at the largest, the ratio is falling)')
+        self.assertEqual(r.crossover(self.pts(2.0, 0.5, 4.0)), 'about 4.31M rows (between 2M and 20M, wins from 20M)')
+
+    def test_kept_plan_is_not_a_win(self):
+        import cases_render as r
+        pts = self.pts(1.0, 1.0)
+        for p in pts:
+            p['kept'] = True
+        self.assertEqual(r.crossover(pts), "the planner keeps PostgreSQL's plan up to 2M rows")

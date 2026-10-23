@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
+# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--timeout S] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
 #        bench/bench cases --list
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases of the 3.3 optimizations (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
@@ -7,6 +7,8 @@
 # plain copy of the rows; every answer is compared with PostgreSQL's. A private cluster (scripts/pgtest.sh, release build) under a CPU quota of --cpus (default 1: one backend, no
 # parallel workers, how the CHANGELOG numbers were taken; 3 is the budget of the store benchmark, where a parallel normal plan can beat the scan on the planner's cost) and a memory cap; the timed part holds the
 # perf lock. Small by default (--rows 200000); the published size is `bench/bench cases --docs --rows 1000000`.
+#   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "What got faster in 3.3, by size"
+#               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
 #   --docs      write bench/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and docs/BENCHMARKS.md
 #   --no-wait   do not wait for a quiet host (the rows say NOISY when it was busy)       --keep   leave the cluster and the container up
 # Settings: CASES_TMP (cluster directory, default /var/tmp/sift-cases), CASES_PORT (56100-56299, default 56262; pg_duckdb 56263), CASES_MEM (memory cap, default 8G).
@@ -26,7 +28,7 @@ while (( $# )); do
     --engines) ENGINES=$2; shift ;;
     --docs) DOCS=1 ;;
     --keep) KEEP=1 ;;
-    --cases|--out|--wait) PY+=("$1" "$2"); shift ;;
+    --cases|--out|--wait|--scales|--timeout) PY+=("$1" "$2"); shift ;;
     --no-wait) PY+=("$1") ;;
     *) sed -n '2,11p' "$0"; exit 1 ;;
   esac

@@ -204,15 +204,16 @@ def equal(a, b, ordered):
     return len(a) == len(b) and (all(same([x], [y]) for x, y in zip(a, b)) if ordered else same(a, b))
 
 
-def measure_query(case, lanes, rounds, runs):
-    """rows of results: per lane the timed runs of the interleaved rounds, the answer of the warm-up compared with the native one"""
+def measure_query(case, lanes, rounds, runs, keep_plan=True):
+    """rows of results: per lane the timed runs of the interleaved rounds, the answer of the warm-up compared with the native one; a plan other than the case's is an error
+    unless keep_plan is false (the scale points: the planner's choice at each size is what the curve shows)"""
     ordered = case.opt.get('ordered', 'no') == 'yes'
     sql = {lane: case.statement(lane) for lane in lanes}
     notes, answers, times, errors = {}, {}, {lane: [] for lane in lanes}, {}
     for lane, s in lanes.items():
         text = plan_text(s, sql[lane], lane != 'pg_duckdb')
         notes[lane] = plan_note(text)
-        if lane == 'sift' and not re.search(case.plan, text, re.S):
+        if lane == 'sift' and keep_plan and not re.search(case.plan, text, re.S):
             errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
         if lane == 'pg_duckdb' and 'DuckDBScan' not in text:
             errors[lane] = 'not supported: it runs on the PostgreSQL executor'
@@ -306,45 +307,57 @@ def summarize(results, cases):
     return '\n'.join(lines)
 
 
-def cmd_run(args):
-    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
-    if not cases:
-        die('no case matches %s' % ','.join(args.cases))
-    engines = args.engines.split(',')
-    load_before = host_load()
-    csv = dataset(args.rows)
+def run_point(args, cases, rows, engines, results, failed):
+    """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
+    scaled = bool(args.scales)
+    tag = '@%d' % rows if scaled else ''
+    csv = dataset(rows)
     if args.duck_port:
         load_duck(args.duck_port, csv)
-    results, failed = [], []
+    point = []
     for c in cases:
-        log('%s: %s' % (c.id, c.label))
-        build(c, args.rows)
+        log('%s%s: %s' % (c.id, ' at %s rows' % format(rows, ',') if scaled else '', c.label))
+        build(c, rows)
         if not args.no_wait:
             wait_quiet(args.wait)
         noisy = busy()
         load = server_load()
         if c.load:
-            out, plans, errors = measure_load(c, csv, args.rounds, args.rows)
-            failed += ['%s on %s: %s' % (c.id, lane, e) for lane, e in errors.items()]
+            out, plans, errors = measure_load(c, csv, args.rounds, rows)
+            failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
-                    results.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
+                    point.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
-        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs)
+        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not scaled)
         for lane in lanes:
             if lane in errors:
                 if lane in ('sift', 'native') or errors[lane].startswith(('PLAN', 'RESULT')):
-                    failed.append('%s on %s: %s' % (c.id, lane, errors[lane]))
-                results.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
+                    failed.append('%s%s on %s: %s' % (c.id, tag, lane, errors[lane]))
+                point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
-                results.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
             lanes[lane].close()
-    print(summarize(results, cases))
+    print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
+    results += [dict(r, case=r['case'] + tag) for r in point]
+
+
+def cmd_run(args):
+    global TIMEOUT
+    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    if not cases:
+        die('no case matches %s' % ','.join(args.cases))
+    TIMEOUT = args.timeout
+    engines = args.engines.split(',')
+    load_before = host_load()
+    results, failed = [], []
+    for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
+        run_point(args, cases, args.rows * scale, engines, results, failed)
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results, load_before)
-    if args.docs and not failed:   # the blocks that quote bench/results/cases.tsv
+    if args.docs and not failed:   # the blocks that quote bench/results/cases.tsv and cases-scale.tsv
         import cases_render
         cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
         subprocess.run([sys.executable, '-I', os.path.join(HERE, 'highlights.py')], check=True, stdout=subprocess.DEVNULL)
@@ -372,14 +385,18 @@ def write_results(args, cases, results, load_before):
         r['version'] = version
     path = args.out
     if args.docs:
-        path = os.path.join(REPO, 'bench', 'results', 'cases.tsv')
+        path = os.path.join(REPO, 'bench', 'results', 'cases-scale.tsv' if args.scales else 'cases.tsv')
         if os.path.exists(path):   # a run of some cases replaces only their rows, at the size of the others
             old_meta, old = extras.read(path)
-            ran = {c.id for c in cases}
-            if str(args.rows) != old_meta.get('orders') and ran != {r['case'] for r in old}:
+            ran = {r['case'] for r in results}
+            if not args.scales and str(args.rows) != old_meta.get('orders') and {c.id for c in cases} != {r['case'] for r in old}:
                 die('bench/results/cases.tsv holds %s orders: run every case at --rows %d, or these at --rows %s' % (old_meta.get('orders'), args.rows, old_meta.get('orders')))
+            if args.scales and str(args.rows) != old_meta.get('orders'):
+                die('bench/results/cases-scale.tsv has its 1x at %s orders: run with --rows %s' % (old_meta.get('orders'), old_meta.get('orders')))
             results = [r for r in old if r['case'] not in ran] + results
-    extras.write(path, 'Benchmark cases of the 3.3 optimizations (bench/cases.tsv): pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.', meta, results)
+    if args.scales:
+        meta['scales'] = args.scales
+    extras.write(path, 'Benchmark cases of the 3.3 optimizations (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
     log('wrote %s' % path)
 
 
@@ -492,6 +509,8 @@ def main():
     ap.add_argument('--runs', type=int, default=5)
     ap.add_argument('--duck-port', type=int, default=0)
     ap.add_argument('--out', default=os.path.join(BENCH, 'out', 'cases-%s.tsv' % time.strftime('%Y%m%dT%H%M%S')))
+    ap.add_argument('--scales', help='run every case at ROWS times each of these (1,10,100): the curve of bench/results/cases-scale.tsv, the planner\'s plan at each size')
+    ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)
