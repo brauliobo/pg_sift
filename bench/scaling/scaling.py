@@ -15,8 +15,8 @@ sys.path.insert(0, H)
 from model import Case, Query, verdict          # noqa: E402
 
 ENGINES = {
-    'sift': ['enable_seqscan=off'],
-    'native': ['sift.enable_agg=off', 'sift.enable_topn=off', 'sift.enable_scan=off', 'sift.enable_count=off'],
+    'sift': ['enable_seqscan=off', 'sift.enable_col_scan=on'],             # col_scan: the index scan of sift_col (point lookups, IN lists, ORDER BY .. LIMIT)
+    'native': ['sift.enable_agg=off', 'sift.enable_topn=off', 'sift.enable_scan=off', 'sift.enable_count=off', 'sift.enable_col_scan=off'],
 }
 COMMON = ["work_mem='4GB'", 'max_parallel_workers_per_gather=0', "statement_timeout=0"]      # large work_mem; one worker so that time is work
 
@@ -24,8 +24,14 @@ COMMON = ["work_mem='4GB'", 'max_parallel_workers_per_gather=0', "statement_time
 def psql(sql, check=True):
     r = subprocess.run(['psql', '-X', '-q', '-At', '-v', f'ON_ERROR_STOP={int(check)}'], input=sql, capture_output=True, text=True)
     if check and r.returncode:
-        sys.exit(f'psql: {r.stderr[:1500]}')
+        raise RuntimeError(f'psql: {r.stderr[:1500]}')
     return r.stdout + (r.stderr if not check else '')
+
+
+def drop_schema(name):
+    """one transaction per table: a single DROP SCHEMA over thousands of partitions runs out of lock slots (max_locks_per_transaction)"""
+    psql(f"select format('drop table %s', c.oid::regclass) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'scal_{name}' "
+         f"and c.relkind in ('r', 'p') order by c.relispartition desc \\gexec\ndrop schema if exists scal_{name} cascade;")
 
 
 def load_cases():
@@ -68,44 +74,67 @@ def run(args):
     rows, failed = {}, False
     print('case,query,engine,size,plan_ms,exec_ms,units,pruned,node', flush=True)
     for name in only:
-        c = cases[name]
-        sizes = sizes_override.get(name) or (c.sizes[:c.quick] if args.quick else c.sizes)
-        for size in sizes:
-            if size == sizes[0] or c.per_size:
-                t0 = time.time()
-                psql(f'drop schema if exists scal_{name} cascade; create schema scal_{name};')
-                psql(f'set search_path = scal_{name}, public; {c.setup(size if c.per_size else max(sizes))}')
-                print(f'# {name}: built for {size if c.per_size else max(sizes)} {c.unit} in {time.time() - t0:.0f}s', file=sys.stderr, flush=True)
-            psql(f'set search_path = scal_{name}, public; {c.at(size)}')
-            if c.check and size == sizes[0]:
-                res = {e: psql('\n'.join(f'set {x};' for x in COMMON + [f'search_path = scal_{name}, public'] + ENGINES[e]) + f'\n{c.check(size)}', check=False).strip() for e in ENGINES}
-                same = len(set(res.values())) == 1 and 'ERR' not in res['sift']
-                print(f'CHECK {name}@{size} {"ok" if same else "MISMATCH " + str(res)}', flush=True)
-                failed |= not same
-            for q in c.queries:
-                for eng in ENGINES if c.native else ['sift']:
-                    r, err = explain(q.sql(size), [f'search_path = scal_{name}, public'] + ENGINES[eng], args.reps)
-                    if r is None:
-                        print(f'{name},{q.name},{eng},{size},,,,,ERROR', flush=True)
-                        print(f'# {name}/{q.name}/{eng}@{size}: {err}', file=sys.stderr)
-                        if eng == 'sift' and q.target:
-                            failed = True
-                        continue
-                    pl, ex, plan = r
-                    g = lambda k: m.group(1) if (m := re.search(k + r': (\d+)', plan)) else ''
-                    p, e = med(pl), med(ex)
-                    if eng == 'sift' and q.needs_sift and 'sift' not in plan.lower() and 'SiftAgg' not in plan:
-                        print(f'# {name}/{q.name}@{size}: the plan does not use sift ({node(plan)}): the time below is not the index', file=sys.stderr)
+        try:
+            failed |= run_case(name, cases[name], args, rows, sizes_override)
+        except RuntimeError as e:
+            print(f'{name},,,,,,,,ERROR', flush=True)
+            print(f'# {name}: {e}', file=sys.stderr)
+            failed = True
+            try:
+                drop_schema(name)
+            except RuntimeError:
+                pass
+    summary(rows, failed)
+
+
+nosift = set()
+
+
+def run_case(name, c, args, rows, sizes_override):
+    failed = False
+    sizes = sizes_override.get(name) or (c.sizes[:c.quick] if args.quick else c.sizes)
+    for size in sizes:
+        if size == sizes[0] or c.per_size:
+            t0 = time.time()
+            drop_schema(name)
+            psql(f'create schema scal_{name};')
+            psql(f'set search_path = scal_{name}, public; {c.setup(size if c.per_size else max(sizes))}')
+            print(f'# {name}: built for {size if c.per_size else max(sizes)} {c.unit} in {time.time() - t0:.0f}s', file=sys.stderr, flush=True)
+        psql(f'set search_path = scal_{name}, public; {c.at(size)}')
+        if c.check and size == sizes[0]:
+            res = {e: psql('\n'.join(f'set {x};' for x in COMMON + [f'search_path = scal_{name}, public'] + ENGINES[e]) + f'\n{c.check(size)}', check=False).strip() for e in ENGINES}
+            same = len(set(res.values())) == 1 and 'ERR' not in res['sift']
+            print(f'CHECK {name}@{size} {"ok" if same else "MISMATCH " + str(res)}', flush=True)
+            failed |= not same
+        for q in c.queries:
+            for eng in ENGINES if c.native else ['sift']:
+                r, err = explain(q.sql(size), [f'search_path = scal_{name}, public'] + ENGINES[eng], args.reps)
+                if r is None:
+                    print(f'{name},{q.name},{eng},{size},,,,,ERROR', flush=True)
+                    print(f'# {name}/{q.name}/{eng}@{size}: {err}', file=sys.stderr)
+                    if eng == 'sift' and q.target:
                         failed = True
-                    print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
-                    rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
-        if not args.keep:
-            psql(f'drop schema if exists scal_{name} cascade')
+                    continue
+                pl, ex, plan = r
+                g = lambda k: m.group(1) if (m := re.search(k + r': (\d+)', plan)) else ''
+                p, e = med(pl), med(ex)
+                if eng == 'sift' and q.needs_sift and 'sift' not in plan.lower() and 'SiftAgg' not in plan:
+                    print(f'# {name}/{q.name}@{size}: the plan does not use sift ({node(plan)}): the time below is not the index', file=sys.stderr)
+                    nosift.add((name, q.name))
+                    failed = True
+                print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
+                rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
+    if not args.keep:
+        drop_schema(name)
+    return failed
+
+
+def summary(rows, failed):
     for (name, qn, eng, target), pts in rows.items():
         if len(pts) < 2:
             continue
         slope, last, v = verdict(pts, target)
-        scale = pts[-1][0] * 64
+        v = 'NOSIFT' if eng == 'sift' and (name, qn) in nosift else v
         extra = pts[-1][1] * (64 ** max(last, 0))
         print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}ms', flush=True)
         failed |= eng == 'sift' and v == 'FAIL'
