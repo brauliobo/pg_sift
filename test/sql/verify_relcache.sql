@@ -12,4 +12,20 @@ SELECT sift.col_verify('cv_col', true);
 RESET sift.test_col_verify_inval;
 SELECT sift.col_verify('cv_col', true);
 DROP TABLE cv;
-DROP EXTENSION pg_sift_test;
+
+-- A toasted value is read through the lock of the toast table, which processes the invalidation messages: the entry is reloaded in the middle of a
+-- tuple. A server built with assertions can do it at every such point (debug_discard_caches); the others skip the setting.
+SELECT coalesce((SELECT max_val::int > 0 FROM pg_settings WHERE name = 'debug_discard_caches'), false) AS discard \gset
+CREATE TABLE cvt (id int, t text);
+INSERT INTO cvt SELECT i, (SELECT string_agg(md5(i::text || j), ' ') FROM generate_series(1, 200) j) FROM generate_series(1, 30) i;
+SELECT count(*) AS toasted FROM cvt WHERE pg_column_toast_chunk_id(t) IS NOT NULL;
+CREATE INDEX cvt_col ON cvt USING sift_col (id, t);
+\if :discard
+SET debug_discard_caches = 1;
+\endif
+SELECT sift.col_verify('cvt_col', true);
+\if :discard
+RESET debug_discard_caches;
+\endif
+DROP TABLE cvt;
+DROP EXTENSION pg_sift_test, pg_sift;
