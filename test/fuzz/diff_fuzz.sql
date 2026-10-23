@@ -12,7 +12,8 @@ BEGIN
 							 'sift.agg_share_lookups', 'sift.agg_dense', 'sift.enable_topn', 'sift.simd', 'sift.agg_rows', 'sift.agg_semi_lut',
 							 'sift.agg_join_filter', 'max_parallel_workers_per_gather', 'parallel_setup_cost', 'parallel_tuple_cost',
 							 'min_parallel_table_scan_size', 'min_parallel_index_scan_size', 'parallel_leader_participation', 'seq_page_cost',
-							 'random_page_cost', 'enable_nestloop', 'enable_hashjoin', 'enable_mergejoin', 'enable_seqscan', 'enable_sort'] LOOP
+							 'random_page_cost', 'enable_nestloop', 'enable_hashjoin', 'enable_mergejoin', 'enable_seqscan', 'enable_sort', 'sift.enable_col_scan',
+							 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan'] LOOP
 		EXECUTE 'RESET ' || g;
 	END LOOP;
 	FOREACH kv IN ARRAY string_to_array(spec, ';') LOOP
@@ -33,7 +34,7 @@ BEGIN
 	RETURN format('FZ|%s|ref|%s|%s', qid, CASE WHEN err IS NULL THEN 'ok' WHEN err ~ '^(42|0A)' THEN 'GENERR' ELSE 'ERR ' || left(err, 5) END, n);
 END $$;
 
--- FZ|qid|variant name|status|used|detail: status ok or DIFF; used: the plan of the variant has Custom Scan (SiftAgg)
+-- FZ|qid|variant name|status|used|detail: status ok or DIFF; used: the plan of the variant has Custom Scan (SiftAgg), or an index scan of ev_part (only sift_col indexes: the point family)
 CREATE FUNCTION fz.var(qid text, q text, keycols int[], vname text, spec text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE err_ref text := current_setting('fz.err', true); err_got text; msg text;
 BEGIN
@@ -46,5 +47,5 @@ BEGIN
 		msg := coldiff.compare('coldiff_ref', 'coldiff_got', keycols, 1e-9, 1e-12);
 	END IF;
 	RETURN format('FZ|%s|%s|%s|%s|%s', qid, vname, CASE WHEN msg IS NULL THEN 'ok' ELSE 'DIFF' END,
-				  CASE WHEN coldiff.explain(q) LIKE '%Custom Scan (SiftAgg)%' THEN 1 ELSE 0 END, replace(left(coalesce(msg, ''), 900), E'\n', ' '));
+				  CASE WHEN coldiff.explain(q) ~ 'Custom Scan \(SiftAgg\)|Index (Only )?Scan using ev_part|Bitmap Index Scan on ev_part' THEN 1 ELSE 0 END, replace(left(coalesce(msg, ''), 900), E'\n', ' '));
 END $$;

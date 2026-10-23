@@ -196,6 +196,15 @@ sift_col_validate_point_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option \"%s\": %s", value, err)));
 }
 
+void
+sift_col_validate_point_tid_columns(const char *value)
+{
+	const char *err = sift_cpoint_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option \"%s\": %s", value, err)));
+}
+
 static relopt_enum_elt_def dict_lookup_names[] = {
 	{"auto", SIFT_COL_DICT_AUTO},
 	{"on", SIFT_COL_DICT_ON},
@@ -361,6 +370,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "point_columns",
 						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "point_tid_columns",
+						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 16, which only 3.3 and later read, and the lists take 1 to 5 bytes per row (default none)",
+						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -391,6 +403,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
+	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 };
 
 static bytea *
@@ -469,6 +482,14 @@ sift_col_options_point_columns(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->point_columns ? (const char *) o + o->point_columns : "";
+}
+
+const char *
+sift_col_options_point_tid_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
 }
 
 const char *
@@ -610,9 +631,11 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
+		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
 		for (int i = 0; i < n; i++)
 			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON ||
-				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i]));
+				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
 				r->pagg.lookup[r->first[a]] = true;

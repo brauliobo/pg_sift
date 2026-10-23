@@ -399,8 +399,55 @@ point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
  * The units that hold the rows the point directory lists for the predicate i, on leaf col, of the segment (the test t), when the directory has a short
  * answer: the other units are cut, and the cursor keeps the rows for the units that remain (sift_col_point_sel). One directory per segment answers.
  */
+/*
+ * A directory of heap addresses (column format minor 16) names the rows with no unit to read: the addresses in the units that still pass the zones go to the
+ * source, and those units are done. A unit with a dead row is read instead, as if no directory were there (the address of a dead row may be used again), and
+ * so is every unit when the caller wants the values (an index-only scan): the directory only cuts the units, whose rows the predicate then selects.
+ */
 static bool
-prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
+{
+	SiftColSegment *seg = c->seg;
+	SiftKey    *tids;
+	uint32		n,
+				nw = SIFT_COL_NWORDS(seg->nsb),
+				last = PG_UINT32_MAX;
+	bool		clean = false,
+				emit = (src->flags & SIFT_COLO_POINT_TIDS) != 0;
+	uint64	   *has,
+			   *done;
+
+	if (!sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n))
+		return false;
+	has = palloc0(2 * nw * sizeof(uint64));
+	done = has + nw;
+	for (uint32 k = 0; k < n; k++)
+	{
+		uint32		u = sift_cseg_find_unit(seg, (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT);
+
+		sift_col_bit_set(has, u);
+		if (u != last)
+			clean = emit && sift_col_bit_test(keep, u) && !sift_cseg_dirty(seg, u);
+		last = u;
+		if (!clean)
+			continue;
+		if (src->nptid == src->capptid)
+			src->ptid = src->ptid ? repalloc_huge(src->ptid, (src->capptid *= 2) * sizeof(SiftKey)) : palloc((src->capptid = 64) * sizeof(SiftKey));
+		src->ptid[src->nptid++] = tids[k];
+		sift_col_bit_set(done, u);
+	}
+	for (uint32 w = 0; w < nw; w++)
+		keep[w] &= has[w] & ~done[w];
+	pfree(has);
+	if (tids)
+		pfree(tids);
+	c->ptids = true;
+	c->ppred = i;
+	return true;
+}
+
+static bool
+prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
 {
 	int64		keys[SIFT_CPOINT_MAX_KEYS];
 	int			nkeys;
@@ -409,7 +456,11 @@ prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *
 				u = 0;
 	uint64	   *has;
 
-	if (c->prow != NULL || !point_keys(t, keys, &nkeys) || !sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
+	if (c->prow != NULL || c->ptids || !point_keys(t, keys, &nkeys))
+		return false;
+	if (sift_cseg_point_is_tid(seg, col))
+		return prune_point_tids(src, c, i, col, keys, nkeys, keep);
+	if (!sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
 		return false;
 	has = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 k = 0; k < nrows; k++)
@@ -453,7 +504,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		else
 			make_test(src, def, NULL, &preds[i], &t);
 		/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
-		if (pr->top == NULL || !prune_point(seg, pr->top, i, preds[i].col, &t, keep))
+		if (pr->top == NULL || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
 			sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
 		range[i] = t.kind == SIFT_CT_RANGE;
 		lo[i] = t.lo;
@@ -594,6 +645,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	PruneRange	zr = pr;
 
 	c->prow = NULL;
+	c->ptids = false;
 	c->nosuper_to = 0;
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
@@ -643,6 +695,22 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->setcut = pr.setcut;
 }
 
+static int
+ptid_cmp(const void *a, const void *b)
+{
+	SiftKey		x = *(const SiftKey *) a,
+				y = *(const SiftKey *) b;
+
+	return (x > y) - (x < y);
+}
+
+const SiftKey *
+sift_col_point_tids(const SiftColSource *src, uint32 *n)
+{
+	*n = src->nptid;
+	return src->ptid;
+}
+
 void
 sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
@@ -655,8 +723,12 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 		SIFT_INVARIANT(preds[i].col >= 0 && preds[i].col < src->schema->ncols, "sift_col: predicate on leaf %d of %d", preds[i].col,
 					   src->schema->ncols);
 	cached = keep_cached(src, preds, npreds, nzones);
+	src->ptid = NULL;
+	src->nptid = src->capptid = 0;
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
+	if (src->nseg > 1 && src->nptid > 1)
+		qsort(src->ptid, src->nptid, sizeof(SiftKey), ptid_cmp);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));

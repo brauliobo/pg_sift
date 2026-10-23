@@ -75,6 +75,8 @@ typedef struct ColScanOpaque
 				pos,
 				cap;
 	ItemPointerData *tids;
+	ItemPointerData *dtids;		/* the rows a point directory of heap addresses lists, returned before the units' (no unit read for them) */
+	uint32		ndtids;
 	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
 	bool	   *nulls;
 	IndexTuple	itup;
@@ -117,7 +119,8 @@ col_scan_end(ColScanOpaque *so)
 	so->src = NULL;
 	so->started = so->unsat = so->recheck = false;
 	so->n = so->pos = so->cap = 0;
-	so->tids = NULL;
+	so->tids = so->dtids = NULL;
+	so->ndtids = 0;
 	so->vals = NULL;
 	so->nulls = NULL;
 	so->itup = NULL;
@@ -503,6 +506,7 @@ col_scan_begin(IndexScanDesc scan)
 	/* check-memory: allow the scan copies what it keeps before it opens the heap */
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	ColKeys		keys;
+	const SiftKey *tids;
 
 	so->first = palloc((r->natts + 1) * sizeof(int));
 	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
@@ -513,11 +517,19 @@ col_scan_begin(IndexScanDesc scan)
 	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
-	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS);
+	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS));
 	if (scan_preds(scan, &keys, so->preds))
 	{
 		so->npreds = scan->numberOfKeys;
 		sift_col_begin(so->src, so->preds, so->npreds, 0, PG_UINT32_MAX);
+		/* the addresses a directory of heap addresses lists are the fingerprints': the heap checks every condition again */
+		if ((tids = sift_col_point_tids(so->src, &so->ndtids)) != NULL)
+		{
+			so->dtids = palloc(so->ndtids * sizeof(ItemPointerData));
+			for (uint32 i = 0; i < so->ndtids; i++)
+				sift_key_to_tid(tids[i], &so->dtids[i]);
+			keys.recheck = true;
+		}
 	}
 	else
 		so->unsat = true;
@@ -563,6 +575,11 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	int64		ntids = 0;
 
 	col_scan_begin(scan);
+	if (so->ndtids > 0)
+	{
+		tbm_add_tuples(tbm, so->dtids, so->ndtids, true);
+		ntids += so->ndtids;
+	}
 	while (col_scan_unit(so, &unit, &sel))
 	{
 		if (sel.count > so->cap)
@@ -774,7 +791,11 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	ColScanOpaque *so = scan->opaque;
 
 	if (!so->started)
+	{
 		col_scan_begin(scan);
+		so->tids = so->dtids;
+		so->n = so->ndtids;
+	}
 	while (so->pos >= so->n)
 		if (!col_fill_batch(scan))
 			return false;
@@ -994,16 +1015,18 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 /*
  * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
  * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS), the rows of the keys the selectivity of the clause (misses and the keys with many rows
- * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole.
+ * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole. *tid is the
+ * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).
  */
 static double
-point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes)
+point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid)
 {
 	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 
 	*nprobes = 0;
+	*tid = 0.0;
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
@@ -1031,6 +1054,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			{
 				kept = 1.0 - cover + cover * share;
 				*nprobes = (int) ceil(nkeys);
+				*tid = path->path.pathtype == T_IndexOnlyScan ? 0.0 : l->point_tid_units / l->point_units;
 			}
 		}
 	}
@@ -1051,6 +1075,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	Relation	irel;
 	double		kept,
 				pkept,
+				tid,
 				units,
 				kept_units,
 				idx_rows,
@@ -1061,7 +1086,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	genericcostestimate(root, path, loop_count, &costs);
 	irel = index_open(index->indexoid, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
-	pkept = point_kept(root, path, irel, units, &nprobes);
+	pkept = point_kept(root, path, irel, units, &nprobes, &tid);
 	kept = Min(Min(zones_kept(root, path, irel), sets_kept(root, path, irel)), pkept);
 	index_close(irel, AccessShareLock);
 	kept_units = kept * units;
@@ -1069,8 +1094,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans, 1);
 	costs.indexStartupCost = scale * (COL_SCAN_FIXED + (pkept < 1.0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
-		+ kept_units * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
-		+ (pkept <= kept ? idx_rows : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
+		+ kept_units * (pkept < 1.0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ (pkept <= kept ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
 		+ index->pages * cpu_tuple_cost
 		+ idx_rows * (scale * COL_SCAN_EMIT + cpu_index_tuple_cost);
 	*indexStartupCost = costs.indexStartupCost;

@@ -36,6 +36,7 @@ typedef struct ColCursor
 	uint32		nprow;
 	uint32		pat;			/* the first of them not yet handed to a unit */
 	int			ppred;
+	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -167,6 +168,9 @@ struct SiftColSource
 	uint32		sig_gen;
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
+	SiftKey    *ptid;			/* the heap addresses the point directories answered since the last begin, in sift_col_begin's memory (SIFT_COLO_POINT_TIDS) */
+	uint32		nptid;
+	uint32		capptid;
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	SiftDirSnapshot dir;
