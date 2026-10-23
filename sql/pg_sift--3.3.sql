@@ -214,6 +214,16 @@ CREATE FUNCTION sift.col_maintenance_status(index regclass,
 	AS 'MODULE_PATHNAME', 'sift_col_maintenance_status' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite, an index over the rewrite limit).';
 
+-- The profile of the columns of a sift_col index and what its options could still use, one row per column and per pair of dimensions: kind (dimension, key,
+-- unique, date, measure, text, list), what the index holds of it, the units looked at (32 evenly spaced ones: the same answer for the same index), the share
+-- of them that satisfy the rule of a dimension (at most 256 distinct values) or of a pair (its combinations fit a rollup of the rows of the unit), and the advice
+-- when a rule holds in 90% of them. Nothing is changed.
+CREATE FUNCTION sift.index_advice(index regclass,
+								  OUT leaf text, OUT kind text, OUT held text, OUT sampled int4, OUT share int4, OUT advice text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_col_index_advice' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.index_advice(regclass) IS 'The profile of the columns of a sift_col index and what its options could still use: per column its kind (dimension, key, unique, date, measure, text, list), what the index holds of it and, over 32 evenly spaced units, the share that satisfy the rule of a dimension (at most 256 distinct values) or, per pair of dimensions, of a rollup of the rows; advice only, nothing is changed.';
+
 -- The sift_table table access method (docs/COL-TAM.md): CREATE TABLE ... USING sift_table.
 CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
 	AS 'MODULE_PATHNAME', 'sift_table_handler' LANGUAGE C STRICT;
