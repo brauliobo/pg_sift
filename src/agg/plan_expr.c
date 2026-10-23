@@ -855,7 +855,80 @@ bucket_key_groups(AggCtx *c, const SiftAggKey *k)
 	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
 }
 
-/* the groups of a key whose number the planner knows: a calendar bucket from the statistics of its column, a function of the JSON type of a path (at most seven); 0: unknown */
+typedef struct CalUnits
+{
+	const BucketUnit *finest;
+	int			n;
+} CalUnits;
+
+/* the date_trunc, extract and date_part calls of a constant unit in an expression, the finest of them: for an estimate, whatever type the call is applied to */
+static bool
+calendar_units_walker(Node *n, CalUnits *cu)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr) && get_func_namespace(((FuncExpr *) n)->funcid) == PG_CATALOG_NAMESPACE)
+	{
+		FuncExpr   *f = (FuncExpr *) n;
+		char	   *fname = get_func_name(f->funcid);
+		bool		trunc = strcmp(fname, "date_trunc") == 0;
+
+		if ((trunc || strcmp(fname, "extract") == 0 || strcmp(fname, "date_part") == 0) && list_length(f->args) >= 2 && IsA(linitial(f->args), Const) &&
+			!((Const *) linitial(f->args))->constisnull && ((Const *) linitial(f->args))->consttype == TEXTOID)
+		{
+			char	   *unit = TextDatumGetCString(((Const *) linitial(f->args))->constvalue);
+
+			for (const BucketUnit *u = trunc ? trunc_units : field_units; u->name; u++)
+				if (pg_strcasecmp(u->name, unit) == 0)
+				{
+					cu->n++;
+					if (cu->finest == NULL || u->len < cu->finest->len)
+						cu->finest = u;
+				}
+		}
+	}
+	return expression_tree_walker(n, calendar_units_walker, cu);
+}
+
+/*
+ * The groups of a calendar key of a date leaf: the days the leaf's values take (PostgreSQL's distinct days under the table's conditions on it, no more
+ * than the index's range of days), over the days one value of the key covers. PostgreSQL counts a function of a column as many groups as the column
+ * has values. 0: not a calendar key of a date column, or the days are unknown.
+ */
+static double
+date_key_groups(AggCtx *c, const SiftAggKey *k)
+{
+	SiftSrcLeaf *l;
+	CalUnits	cu = {NULL, 0};
+	Node	   *e;
+	uint8		mask;
+	double		days,
+				n;
+
+	if (k->kind != SAK_LUT || k->bucket > 0 || k->leaf < 0 || k->leaf >= c->lay->nleaves - c->nvleaf)
+		return 0;
+	l = leaf_of(c, k->leaf);
+	if (l->kind != SCL_SCALAR || l->parent >= 0 || l->path != NIL || l->typid != DATEOID || sift_aggexpr_cal(k->expr, &mask) != SAC_OK)
+		return 0;
+	calendar_units_walker(k->expr, &cu);
+	if (cu.finest == NULL)
+		return 0;
+	days = c->stats.ndistinct[k->leaf];
+	e = list_nth(c->attexpr, l->attno - 1);
+	if (e != NULL && IsA(e, Var))
+	{
+		double		nd = column_distinct(c, (Var *) e);
+
+		if (nd > 0)
+			days = days > 0 ? Min(days, nd) : nd;
+	}
+	if (days <= 0)
+		return 0;
+	n = Min(days, days / (cu.finest->len / DAY_SECS) + 1);
+	return cu.n == 1 && cu.finest->cycle ? Min(n, cu.finest->cycle) : n;
+}
+
+/* the groups of a key whose number the planner knows: a calendar bucket from the statistics of its column, a calendar function of a date, a function of the JSON type of a path (at most seven); 0: unknown */
 double
 key_groups(AggCtx *c, const SiftAggKey *k)
 {
@@ -863,7 +936,7 @@ key_groups(AggCtx *c, const SiftAggKey *k)
 
 	if ((k->kind == SAK_LEAF || k->kind == SAK_LUT) && k->leaf >= nbase && c->vleaf[k->leaf - nbase].types)
 		return 7;
-	return k->bucket > 0 ? bucket_key_groups(c, k) : 0;
+	return k->bucket > 0 ? bucket_key_groups(c, k) : date_key_groups(c, k);
 }
 
 /* EXPLAIN: the step a key on a timestamp is evaluated for */
