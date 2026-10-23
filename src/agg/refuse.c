@@ -88,7 +88,7 @@ static const char *path_spill_detail;
 static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
 static double path_vet_pct;
 static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of: in vet_cx, for the plans of a statement are planned in contexts that are deleted before the choice between them is made */
-static MemoryContext vet_cx;
+static MemoryContext vet_cx;		/* kept for the backend, reset after each statement's plans (the leak report allows the names "sift cache ...") */
 static List *done;
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
@@ -222,7 +222,7 @@ agg_arm_path(Path *p)
 		PathVet    *v;
 
 		if (vet_cx == NULL)
-			vet_cx = AllocSetContextCreate(TopMemoryContext, "sift path vets", ALLOCSET_SMALL_SIZES);
+			vet_cx = AllocSetContextCreate(TopMemoryContext, "sift cache path vets", ALLOCSET_SMALL_SIZES);
 		old = MemoryContextSwitchTo(vet_cx);
 		v = palloc(sizeof(PathVet));
 		*v = (PathVet) {p->total_cost, path_vet, path_vet_pct};
