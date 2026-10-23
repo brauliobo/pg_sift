@@ -525,9 +525,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	SharedCteWalk walk = {true, NIL};
 
 	inline_won = false;
+	agg_vet_forget();
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
-	agg_vet_forget();
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
