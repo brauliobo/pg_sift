@@ -56,10 +56,21 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 32) RETURNS 
 	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
 $$;
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 32) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 32) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE plpgsql AS $$
+DECLARE state text;
+BEGIN
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
-	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
-$$;
+	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
+	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
+	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
+	RAISE LOG 'pa_sum %: % | heap all-visible % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT relallvisible || '/' || relpages FROM pg_class WHERE oid = tbl::regclass),
+		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
+		(SELECT count(*) FROM sift.col_rollup_queue()),
+		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+	RETURN NEXT;
+END $$;
 -- kind: 0 to 6 (a ninth of the rows NULL, -2 for one row) in every unit, so no zone lies inside a comparison with it; big: a few int8 values with the
 -- extremes and NULLs, the sign and 2^62 as dims; val and amt: NULLs among the values
 INSERT INTO ev

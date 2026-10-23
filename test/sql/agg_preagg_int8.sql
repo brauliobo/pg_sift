@@ -46,10 +46,21 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS 
 $$;
 
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE plpgsql AS $$
+DECLARE state text;
+BEGIN
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
-	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
-$$;
+	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
+	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
+	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
+	RAISE LOG 'pa_sum %: % | heap all-visible % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT relallvisible || '/' || relpages FROM pg_class WHERE oid = tbl::regclass),
+		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
+		(SELECT count(*) FROM sift.col_rollup_queue()),
+		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+	RETURN NEXT;
+END $$;
 
 -- kind 0: near 2^62 (two rows pass 2^63), kind 1: near -2^62, kind 2: the extremes of int8 with both signs, kind 3: only NULLs,
 -- kind 4: small values, a fifth of them NULL, kind 5: values that make the average a repeating decimal
