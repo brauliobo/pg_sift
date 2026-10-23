@@ -518,7 +518,7 @@ CREATE FUNCTION sift.col_maintenance_status(index regclass,
 											OUT rewrite_due text, OUT last_request timestamptz, OUT blocked_by text[])
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_maintenance_status' LANGUAGE C STRICT VOLATILE;
-COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite, an index over the rewrite limit).';
+COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite).';
 
 -- What a DBA watches on a sift_col index of a large table, one row per index the caller can read: sizes (the file, the segments, the free and the
 -- reusable blocks), segments against the directory limit, units listed against units covered (more than 1 is the overlap of promoted segments),
