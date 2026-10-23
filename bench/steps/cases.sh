@@ -11,7 +11,7 @@
 #               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
 #   --docs      write docs/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and docs/BENCHMARKS.md
 #   --no-wait   do not wait for a quiet host (the rows say NOISY when it was busy)       --keep   leave the cluster and the container up
-# Settings: CASES_TMP (cluster directory, default /var/tmp/sift-cases), CASES_PORT (56100-56299, default 56262; pg_duckdb 56263), CASES_MEM (memory cap, default 8G).
+# Settings: CASES_TMP (cluster directory, default /dev/shm/sift-cases: tmpfs, the clusters are scratch and run with fsync off; a run that needs more than 4 GB points it elsewhere), CASES_PORT (56100-56299, default 56262; pg_duckdb 56263), CASES_MEM (memory cap, default 8G).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=cases
@@ -39,10 +39,11 @@ done
 need psql python3 flock
 [[ $CPUS =~ ^[1-9][0-9]*$ && $ROWS =~ ^[1-9][0-9]*$ ]] || die "--cpus and --rows take whole numbers"
 
-export SIFT_TMP=${CASES_TMP:-/var/tmp/sift-cases} SIFT_PORT=${CASES_PORT:-56262} SIFT_TESTING= CASES_TMP=${CASES_TMP:-/var/tmp/sift-cases} CASES_WORKERS=$((CPUS - 1))
+export SIFT_TMP=${CASES_TMP:-/dev/shm/sift-cases} SIFT_PORT=${CASES_PORT:-56262} SIFT_TESTING= CASES_TMP=${CASES_TMP:-/dev/shm/sift-cases} CASES_WORKERS=$((CPUS - 1))
 export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
+# fsync and autovacuum are off in the test cluster; wal_level and full_page_writes stay as they are: bulk_copy_wal measures the WAL a COPY writes
 SETTINGS=(max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
           parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB checkpoint_timeout=30min)
 
