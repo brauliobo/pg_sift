@@ -57,5 +57,5 @@ keys_join_500k	as an `IN` list of the table already was	keys	-	Custom Scan \(Sif
 keys_in_few_256	a list of 256 keys over a range of a million values added about 2 ms to a scan that read two units	keys	-	Bitmap Heap Scan on events_u	native	-	ms	faster33	no
 count_distinct_spill	a group table that spills writes each `count(DISTINCT)` set	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 text_key_filtered	a near-unique text key under a filter made a table of ids as large as the rows read	orders	default+title	.	native	-	ms	faster33	no
-topn_numeric_wide	takes a numeric of more than 18 digits as a sort key	orders	default	Top-N: price	native,pg_duckdb	-	ms	faster33	no
+topn_numeric_wide	takes the column as a sort key, as it took a numeric of up to 18 digits	orders	default	Top-N: price	native,pg_duckdb	-	ms	faster33	no
 topn_enum_key	takes an enum column as a sort key, in the order of its type	orders	default	Top-N: lvl	native,pg_duckdb	-	ms	faster33	no
