@@ -69,9 +69,6 @@ CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops
 NOTICE:  sift_col index "pt_t": point_tid_columns lists the heap addresses of the rows
 DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
-NOTICE:  sift_col index "pt_t": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "pt" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
  col_verify 
@@ -333,9 +330,6 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
 SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, s, u');
-NOTICE:  sift_col index "pt_r": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "pt" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 RESET sift.col_format_minor;
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
@@ -373,9 +367,6 @@ SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitma
 ALTER INDEX pt_r RESET (point_tid_columns);
 ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 REINDEX INDEX pt_r;
-NOTICE:  sift_col index "pt_r": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "pt" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------
@@ -414,9 +405,6 @@ REINDEX INDEX pt_r;
 NOTICE:  sift_col index "pt_r": point_tid_columns lists the heap addresses of the rows
 DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
-NOTICE:  sift_col index "pt_r": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "pt" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
  commands 
 ----------
@@ -462,9 +450,6 @@ CREATE INDEX pb_t ON pb USING sift_col (k sift.col_int4_ops, id sift.col_int4_op
 NOTICE:  sift_col index "pb_t": point_tid_columns lists the heap addresses of the rows
 DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
-NOTICE:  sift_col index "pb_t": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "pb" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 SELECT sift.col_verify('pb_t', true);
  col_verify 
 ------------
