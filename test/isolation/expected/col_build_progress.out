@@ -1,0 +1,54 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2h s1serial s2p s2r s1drop s2h s1par s2p s2r s1w
+step s2h: SELECT pg_advisory_lock(1003);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1serial: SET maintenance_work_mem = '64MB'; SET max_parallel_maintenance_workers = 0; SET sift.test_phase_gate = 1000;
+			  CREATE INDEX iso_cbp_idx ON iso_cbp USING sift_col (id, k, pad); <waiting ...>
+step s2p: SELECT phase, blocks_total > 0 AS has_blocks, blocks_done = blocks_total AS all_blocks, tuples_done = 60000 AS all_rows
+			  FROM pg_stat_progress_create_index WHERE relid = 'iso_cbp'::regclass;
+phase                           |has_blocks|all_blocks|all_rows
+--------------------------------+----------+----------+--------
+building index: writing segments|t         |t         |t       
+(1 row)
+
+step s2r: SELECT pg_advisory_unlock(1003);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1serial: <... completed>
+step s1drop: DROP INDEX iso_cbp_idx;
+step s2h: SELECT pg_advisory_lock(1003);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1par: SET maintenance_work_mem = '128MB'; SET max_parallel_maintenance_workers = 2; SET min_parallel_table_scan_size = 0; SET sift.test_phase_gate = 1000;
+			  CREATE INDEX iso_cbp_idx ON iso_cbp USING sift_col (id, k, pad); <waiting ...>
+step s2p: SELECT phase, blocks_total > 0 AS has_blocks, blocks_done = blocks_total AS all_blocks, tuples_done = 60000 AS all_rows
+			  FROM pg_stat_progress_create_index WHERE relid = 'iso_cbp'::regclass;
+phase                           |has_blocks|all_blocks|all_rows
+--------------------------------+----------+----------+--------
+building index: writing segments|t         |t         |t       
+(1 row)
+
+step s2r: SELECT pg_advisory_unlock(1003);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1par: <... completed>
+step s1w: SELECT current_setting('sift.test_col_workers')::int > 0 AS workers_launched;
+workers_launched
+----------------
+t               
+(1 row)
+
