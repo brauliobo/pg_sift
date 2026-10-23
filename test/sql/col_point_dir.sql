@@ -291,6 +291,46 @@ FROM (VALUES ('0:eq:1', ARRAY[1]), ('0:eq:2', ARRAY[2]), ('0:eq:3', ARRAY[3]), (
 ORDER BY w.preds;
 DROP TABLE pw;
 
+-- the other integer leaves: int2, date, timestamp, timestamptz, numeric(p <= 18, s) and bool take a directory like an int4 does (a float or a wide numeric does not): the
+-- rows of an equality, an IN list, NULLs and absent values are the heap's through the index scan, and the lookup is an index scan
+CREATE TABLE pt (id int, i2 int2, d date, t timestamp, tz timestamptz, n numeric(12, 2), b bool, pad text DEFAULT repeat('x', 200));
+INSERT INTO pt (id, i2, d, t, tz, n, b)
+SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 997 END, CASE WHEN g % 37 = 0 THEN NULL ELSE date '2024-01-01' + g % 600 END,
+	   CASE WHEN g % 41 = 0 THEN NULL WHEN g % 43 = 0 THEN 'infinity' ELSE timestamp '2024-01-01' + (g % 5000) * interval '7 minutes' END,
+	   CASE WHEN g % 47 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (g % 3000) * interval '11 minutes' END,
+	   CASE WHEN g % 53 = 0 THEN NULL ELSE (g % 2500) / 100.0 END, CASE WHEN g % 59 = 0 THEN NULL ELSE g % 7 = 0 END
+FROM generate_series(1, 20000) g;
+CREATE INDEX pt_i ON pt USING sift_col (i2 sift.col_int2_ops, d sift.col_date_ops, t sift.col_timestamp_ops, tz sift.col_timestamptz_ops, n sift.col_numeric_ops, b sift.col_bool_ops, id sift.col_int4_ops)
+	WITH (point_columns = 'i2, d, t, tz, n, b', write_buffer_limit = 256);
+SELECT sift.col_verify('pt_i', true);
+CREATE FUNCTION pt_arr(w text, idx bool) RETURNS bigint[] LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', CASE WHEN idx THEN 'on' ELSE 'off' END, true);
+	PERFORM set_config('enable_seqscan', CASE WHEN idx THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM pt WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION pt_plan(w text) RETURNS text LANGUAGE plpgsql SET sift.enable_col_scan = on SET enable_seqscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM pt WHERE %s', w) LOOP
+		IF l ~ 'pt_i' THEN RETURN regexp_replace(trim(l), '^-> *| on pt$', '', 'g'); END IF;
+	END LOOP;
+	RETURN 'no index scan';
+END $$;
+SELECT w, pt_arr(w, true) = pt_arr(w, false) AS same_rows, cardinality(pt_arr(w, false)) AS matches, pt_plan(w) AS plan
+FROM (VALUES ('i2 = 5'), ('i2 = 996'), ('i2 = 1500'), ('i2 IN (3, 7, 996, 2000)'), ('i2 IS NULL'),
+			 ('d = date ''2024-03-01'''), ('d = date ''2030-01-01'''), ('d IN (date ''2024-01-01'', date ''2025-08-22'')'),
+			 ('t = timestamp ''2024-01-01 00:07:00'''), ('t = ''infinity''::timestamp'), ('t IN (timestamp ''2024-01-01'', timestamp ''2024-01-02 03:00:00'')'), ('t = timestamp ''1999-01-01'''),
+			 ('tz = timestamptz ''2024-01-01 00:11:00+00'''), ('tz IN (timestamptz ''2024-01-01 00:00:00+00'', timestamptz ''2024-01-02 00:00:00+00'')'),
+			 ('n = 12.34'), ('n = 0.00'), ('n IN (1.5, 24.99, 99)'), ('n = 12.345'),
+			 ('b = true'), ('b = false'), ('b IS NULL')) AS q (w)
+ORDER BY w;
+DROP TABLE pt;
+DROP FUNCTION pt_arr(text, bool), pt_plan(text);
+
 -- the option names plain integer, text and uuid columns of the top level (a date is an integer leaf)
 CREATE TABLE pe (id int, f float8, j jsonb, d date);
 CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_columns = 'f');
