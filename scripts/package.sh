@@ -46,7 +46,7 @@ all() {
 		build "${!b}" "$ref" "$out"
 		for image in ${!t}; do test_package "$image" "$out"/*."$fam"; done
 	done
-	(cd "$out" && shopt -s nullglob && sha256sum *.deb *.rpm > SHA256SUMS && cat SHA256SUMS)
+	(cd "$out" && shopt -s nullglob && "$REPO/scripts/sha256.sh" *.deb *.rpm > SHA256SUMS && cat SHA256SUMS)
 }
 
 case ${1:-all} in
