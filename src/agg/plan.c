@@ -988,6 +988,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 
 int			agg_index_pick;
 int			agg_index_usable;
+double		agg_stage_normal = HUGE_VAL;
 
 static void
 upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -1069,10 +1070,15 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 {
 	int			outer_pick = agg_index_pick,
 				outer_usable = agg_index_usable;
+	double		outer_normal = agg_stage_normal;
 	AggStage	st;
 
 	agg_stage_begin(&st, root);
 	agg_index_usable = 0;
+	agg_stage_normal = HUGE_VAL;
+	foreach_ptr(Path, p, output_rel->pathlist)
+		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
+			agg_stage_normal = Min(agg_stage_normal, p->total_cost);
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
 		upper_paths_on(root, stage, input_rel, output_rel, extra);
@@ -1082,6 +1088,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	agg_stage_end(&st);
 	agg_index_pick = outer_pick;
 	agg_index_usable = outer_usable;
+	agg_stage_normal = outer_normal;
 }
 
 /* the native plans of the correlated children, made now that the plan has its place in the statement; true when the spec holds their IDs */

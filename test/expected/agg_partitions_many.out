@@ -72,6 +72,16 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g
  normal |                 0 |                  0 |           7 |              0
 (1 row)
 
+-- ... and the refusal is made before any partition's index is read: the opening alone is dearer than the normal plan
+SET cpu_operator_cost = 0.02;
+SELECT used, slug, reason ~ '\(opening [0-9]+ partitions costs the scan [0-9.]+, the normal plan [0-9.]+\)$' AS opening_decides
+FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+ used | slug | opening_decides 
+------+------+-----------------
+ f    | cost | t
+(1 row)
+
+RESET cpu_operator_cost;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a generic plan
 SET plan_cache_mode = force_generic_plan;
