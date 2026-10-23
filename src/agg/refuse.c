@@ -22,6 +22,7 @@
 #include "utils/builtins.h"
 #include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "utils/tuplestore.h"
 
 #include "agg/refuse.h"
@@ -86,7 +87,8 @@ static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm
 static const char *path_spill_detail;
 static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
 static double path_vet_pct;
-static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of */
+static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of: in vet_cx, for the plans of a statement are planned in contexts that are deleted before the choice between them is made */
+static MemoryContext vet_cx;
 static List *done;
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
@@ -193,6 +195,8 @@ void
 agg_vet_forget(void)
 {
 	path_vets = NIL;
+	if (vet_cx != NULL)
+		MemoryContextReset(vet_cx);
 }
 
 /* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */
@@ -214,10 +218,16 @@ agg_arm_path(Path *p)
 	}
 	if (path_vet > 0)
 	{
-		PathVet    *v = palloc(sizeof(PathVet));
+		MemoryContext old;
+		PathVet    *v;
 
+		if (vet_cx == NULL)
+			vet_cx = AllocSetContextCreate(TopMemoryContext, "sift path vets", ALLOCSET_SMALL_SIZES);
+		old = MemoryContextSwitchTo(vet_cx);
+		v = palloc(sizeof(PathVet));
 		*v = (PathVet) {p->total_cost, path_vet, path_vet_pct};
 		path_vets = lappend(path_vets, v);
+		MemoryContextSwitchTo(old);
 	}
 	arm->paths = lappend(arm->paths, p);
 	arm->rel = p->parent;
@@ -338,7 +348,7 @@ forget_arms(void)
 {
 	arm = NULL;
 	done = NIL;
-	path_vets = NIL;
+	agg_vet_forget();
 	agg_variant = NULL;
 	quiet_reports = false;
 	stage_level = 0;
