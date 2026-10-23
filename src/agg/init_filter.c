@@ -98,7 +98,24 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 	return true;
 }
 
-/* z, ANDed with the test of its leaf in tests (a leaf is one entry: its range narrows, the first set stays) */
+/* the values both sorted sets hold (none: the range of the test is empty, which prunes every unit) */
+static const int64 *
+meet_values(const int64 *a, int na, const int64 *b, int nb, int *n)
+{
+	int64	   *out = palloc(Max(Min(na, nb), 1) * sizeof(int64));
+
+	*n = 0;
+	for (int i = 0, j = 0; i < na && j < nb;)
+		if (a[i] < b[j])
+			i++;
+		else if (a[i] > b[j])
+			j++;
+		else
+			out[(*n)++] = a[i++], j++;
+	return out;
+}
+
+/* z, ANDed with the test of its leaf in tests (a leaf is one entry: its range narrows, its sets meet) */
 static List *
 and_zone(List *tests, const SiftSrcPrune *z)
 {
@@ -115,6 +132,16 @@ and_zone(List *tests, const SiftSrcPrune *z)
 	{
 		t->nvals = z->nvals;
 		t->vals = z->vals;
+	}
+	else if (z->nvals > 0)
+	{
+		/* two sets of keys on one leaf (a dimension filter and a lookup's keys): a unit has to hold a value of both */
+		t->vals = meet_values(t->vals, t->nvals, z->vals, z->nvals, &t->nvals);
+		if (t->nvals == 0)
+		{
+			t->lo = PG_INT64_MAX;
+			t->hi = PG_INT64_MIN;
+		}
 	}
 	return tests;
 }

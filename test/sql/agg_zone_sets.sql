@@ -1,0 +1,52 @@
+-- Two sets of keys on one leaf (an IN list or a dimension filter, and the keys of a lookup join): a unit is read only when its zone holds a value of
+-- both. The zone test used to keep the first set and the range of the two, so a wide list in front of a narrow set read the units of the wide one.
+-- Every query runs with and without the scan: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- events stored in entity order, 20 per entity: a unit of about 12000 rows holds 600 entities (units: 1-600, 601-1200, 1201-1800, 1801-2400, 2401-3000)
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i - 1) / 20 END, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) || md5((i + 3)::text)
+FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, amount, pad);
+CREATE TABLE ents (id int PRIMARY KEY, grp int);
+INSERT INTO ents SELECT i, i % 3 FROM generate_series(1, 3000) i;
+VACUUM (FREEZE, ANALYZE) ev, ents;
+
+-- the units a query reads, whether the scan answered it, and the rows it differs by from the plan without the scan
+CREATE FUNCTION check_units(q text) RETURNS TABLE (pushed bool, units int, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  pushed := false;
+  units := NULL;
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    units := coalesce(units, substring(l from '^\s*Units: (\d+)')::int);
+  END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+
+-- a list with gaps alone: the units of 10 and 2900. A set with a value in every unit (10, 710, 1410, 2110, 2810) in front of it or behind it: only 10 is in both
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (10, 2900)$q$);
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (SELECT g FROM generate_series(10, 2810, 700) g) AND dim_a_id IN (10, 2900)$q$);
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (10, 2900) AND dim_a_id IN (SELECT g FROM generate_series(10, 2810, 700) g)$q$);
+SELECT * FROM check_units($q$SELECT dim_a_id, count(*), sum(amount) FROM ev WHERE dim_a_id IN (SELECT g FROM generate_series(10, 2810, 700) g) AND dim_a_id IN (10, 2900) GROUP BY dim_a_id$q$);
+-- a list and the keys of a lookup join (300, 600, .. 1800): 300 and 1200 are in both, in the units 1 and 2 of the 5
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (300, 1200, 2700, 2901)$q$);
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (300, 1200, 2700, 2901) AND dim_a_id IN (SELECT id FROM ents WHERE grp = 0 AND id % 100 = 0 AND id <= 1800)$q$);
+-- a range and two sets
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (SELECT g FROM generate_series(10, 2810, 700) g) AND dim_a_id > 1000 AND dim_a_id IN (10, 900, 1410, 2900)$q$);
+-- sets with no value in common: no unit is read
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (1, 2, 3) AND dim_a_id IN (1500, 1600)$q$);
+SELECT * FROM check_units($q$SELECT count(*), sum(amount) FROM ev WHERE dim_a_id IN (SELECT id FROM ents WHERE grp = 1 AND id < 100) AND dim_a_id IN (2, 5, 8)$q$);
+
+DROP TABLE ev, ents;
+DROP FUNCTION check_units(text);
+DROP EXTENSION pg_sift;
