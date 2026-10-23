@@ -27,7 +27,7 @@ Q="SELECT * FROM (
   SELECT 'kind', kind, count(DISTINCT id), sum(qty) FROM scoped GROUP BY kind
 ) q ORDER BY 1, 2"
 
-# session STATEMENT...: one fresh backend runs the statements; the last two lines are the scans it ran and the md5 of the first statement's rows
+# session STATEMENT...: one fresh backend runs the statements; the last two lines are the scans it ran and the checksum of the first statement's rows
 session() {
 	{ for s in "$@"; do echo "$s;"; done; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af
 }
