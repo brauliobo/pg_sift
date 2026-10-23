@@ -7,7 +7,7 @@
 OUT     ?= /tmp/sift-aggkern-tools
 N       ?= 20
 
-LIB      = $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c \
+LIB      = $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c $(SRC)/agg/kern_neon.c \
            $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c $(SRC)/col/kern_neon.c \
            $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c \
            $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c

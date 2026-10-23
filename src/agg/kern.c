@@ -218,6 +218,10 @@ const SiftAggKernels sift_aggkern_scalar = {AGK_SLOTS(AGK_INIT)};
 const SiftAggKernels *
 sift_aggkern_for(SiftSimdLevel level)
 {
+#if defined(SIFT_HAVE_NEON)
+	if (level >= SIFT_SIMD_NEON && sift_cpu.detected >= SIFT_SIMD_NEON)
+		return &sift_aggkern_neon;
+#endif
 #if defined(__x86_64__)
 	if (level >= SIFT_SIMD_AVX512 && sift_cpu.detected >= SIFT_SIMD_AVX512)
 		return &sift_aggkern_avx512;

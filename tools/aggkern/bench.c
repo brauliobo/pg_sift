@@ -157,6 +157,12 @@ main(void)
 	ROW("sum_i32 all rows", sink = k->sum_i32(i32, NULL, N));
 	ROW("sum_i32 50 %", sink = k->sum_i32(i32, m50, N));
 	{
+		double		amx;
+
+		ROW("absmax_f64 all rows", sink = k->absmax_f64(f64, NULL, N, &amx));
+		ROW("absmax_f64 50 %", sink = k->absmax_f64(f64, m50, N, &amx));
+	}
+	{
 		int32		a,
 					b;
 		int64		c,

@@ -43,6 +43,7 @@ col/shred_kern_neon.c
 agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c
+agg/kern_neon.c
 # headers
 col/shred.h
 col/shred_int.h
