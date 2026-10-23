@@ -13,11 +13,11 @@ FROM generate_series(1, 2) l ORDER BY l;
 SET sift.simd = scalar;
 SELECT sift._test_col_level() AS level, sift._test_col_kernels_active(1) = :scalar_1 AS same_as_scalar;
 SET sift.simd = avx2;
-SELECT sift._test_col_level() IN ('scalar', 'avx2') AS level_capped, sift._test_col_kernels_active(2) = :scalar_2 AS same_as_scalar;
+SELECT sift._test_col_level() IN ('scalar', 'avx2', 'neon') AS level_capped, sift._test_col_kernels_active(2) = :scalar_2 AS same_as_scalar;
 SET sift.simd = avx512;
-SELECT sift._test_col_level() IN ('scalar', 'avx2', 'avx512') AS level_known, sift._test_col_kernels_active(1) = :scalar_1 AS same_as_scalar;
+SELECT sift._test_col_level() IN ('scalar', 'avx2', 'avx512', 'neon') AS level_known, sift._test_col_kernels_active(1) = :scalar_1 AS same_as_scalar;
 RESET sift.simd;
-SELECT sift._test_col_level() IN ('scalar', 'avx2', 'avx512') AS level_known, sift._test_col_kernels_active(2) = :scalar_2 AS same_as_scalar;
+SELECT sift._test_col_level() IN ('scalar', 'avx2', 'avx512', 'neon') AS level_known, sift._test_col_kernels_active(2) = :scalar_2 AS same_as_scalar;
 
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -58,13 +58,13 @@ $(OUT)/bench: bench.c gen.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ bench.c $(OBJ) $(PGLIB) -lpgport $(LDLIBS)
 
 research: $(OUT)/research
-	flock /tmp/sift-perf.lock $(OUT)/research $(ARGS)
+	$(FLOCK) $(OUT)/research $(ARGS)
 
 test: $(OUT)/test
 	$(OUT)/test $(N)
 
 bench: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench $(ARGS)
+	$(FLOCK) $(OUT)/bench $(ARGS)
 
 clean:
 	rm -rf $(OUT) $(OUT)-san

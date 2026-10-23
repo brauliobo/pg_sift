@@ -10,18 +10,21 @@
 #define _GNU_SOURCE
 #include "harness.h"
 
+#if defined(__x86_64__)
 #include <immintrin.h>
+#endif
 #include <pthread.h>
-#include <sched.h>
 
 #define NPAGES		16
 
+#if defined(__x86_64__)
 int			alt_bm25_ymm(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 						 const float4 *knorm, float4 w);
 int			alt_bm25_compress(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 							  const float4 *knorm, float4 w, float4 *dense);
 int			alt_bm25_tfvar(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 						   const float4 *knorm, float4 w, int var);
+#endif
 
 typedef struct BenchBlock
 {
@@ -105,6 +108,7 @@ bench_block(const char *scen, int maxoff, double d)
 		row("select 50%", scen, n, BENCH(k->select_gt(b.slot, b.vals, b.other, b.mask, NPAGES, 5.0f)), b.pop, 4);
 		row("select 1%", scen, n, BENCH(k->select_gt(b.slot, b.vals, b.other, b.mask, NPAGES, 9.9f)), b.pop, 4);
 	}
+#if defined(__x86_64__)
 	if (nlevels == 3)
 	{
 		float4	   *s0 = kt_alloc(NPAGES * SIFT_KERN_SLOTS * 4),
@@ -141,6 +145,7 @@ bench_block(const char *scen, int maxoff, double d)
 			b.pop, 13);
 		free(s0), free(s1), free(orig);
 	}
+#endif
 }
 
 static void
@@ -201,6 +206,7 @@ bench_misc(void)
 	free(bounds), free(ub);
 }
 
+#if defined(__x86_64__)
 /* Read bandwidth reference: AVX-512 sum over a 1 GiB buffer, 1 and 8 threads */
 #define BW_BYTES	(UINT64CONST(1) << 30)
 static uint8 *bw_buf;
@@ -254,16 +260,12 @@ bench_bandwidth(void)
 	(void) sink;
 	free(bw_buf);
 }
+#endif
 
 int
 main(int argc, char **argv)
 {
-	cpu_set_t	set;
-	int			cpu = getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2;
-
-	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
-	sched_setaffinity(0, sizeof(set), &set);
+	kt_pin(getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2);
 	kt_cpu_init();
 	sift_rng_seed(&rng, 42);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && sift_kernels_for(l); l++)
@@ -276,8 +278,10 @@ main(int argc, char **argv)
 	}
 	printf("%-12s %-22s %-12s %9s %8s %9s %9s\n", "kernel", "scenario", "level", "ns/call",
 		   "lanes", "Glanes/s", "L1 GB/s");
+#if defined(__x86_64__)
 	if (nlevels < 3)
 		printf("# AVX-512 rows (the rejected bm25_accum designs, avx512-1pg, the DRAM read reference) not run: this host has no AVX-512\n");
+#endif
 	if (argc > 1 && strcmp(argv[1], "col") == 0)
 	{
 		bench_col();
@@ -291,7 +295,9 @@ main(int argc, char **argv)
 	bench_tf("P(tf>1)=0.75", 25, 65536);
 	bench_tf("P(tf>1)=0.02", 98, 65536);
 	bench_misc();
+#if defined(__x86_64__)
 	if (nlevels == 3)
 		bench_bandwidth();
+#endif
 	return 0;
 }
