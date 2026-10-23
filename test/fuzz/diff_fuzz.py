@@ -64,6 +64,13 @@ def _in(r, vals, k):
     return ', '.join(str(v) if not isinstance(v, str) else f"'{v}'" for v in r.sample(vals, k))
 
 
+def _wide(r, n):
+    """A list of ids with a member far beyond the table's: a range wider than a byte table (a bit table, a hash table when it is wider than 2^28), long, or short for
+    the variant that lowers bits_set_values; a NULL now and then."""
+    ids = r.sample(range(1, max(n, 8)), min(r.choice([5, 60, 1100]), max(n, 8) - 1)) + [r.choice([5_000_000, 30_000_000, 200_000_000, 300_000_000])]
+    return ', '.join([str(v) for v in ids] + (['NULL'] if r.random() < 0.15 else []))
+
+
 def _date(r):
     return f"date '2025-{r.randrange(1, 13):02d}-{r.randrange(1, 29):02d}'"
 
@@ -77,6 +84,7 @@ PREDS = [
     ({'id'}, lambda r, e, n: f'{e}.id < {r.randrange(1, n)}'),
     ({'id'}, lambda r, e, n: f'{e}.id % {r.choice([2, 3, 7, 16])} = {r.randrange(2)}'),
     ({'id'}, lambda r, e, n: f'{e}.id BETWEEN {r.randrange(1, n // 2)} AND {r.randrange(n // 2, n)}'),
+    ({'id'}, lambda r, e, n: f"{e}.id {r.choice(['', 'NOT '])}IN ({_wide(r, n)})"),
     ({'kind'}, lambda r, e, n: f"{e}.kind = 'k{r.randrange(6)}'"),
     ({'kind'}, lambda r, e, n: f'{e}.kind IN ({_in(r, ["k0", "k1", "k2", "k3", "k4", "k9"], r.randrange(1, 4))})'),
     ({'kind'}, lambda r, e, n: f"{e}.kind <> 'k{r.randrange(5)}'"),
@@ -537,6 +545,7 @@ def variants(r, fam):
         ('nolookup', 'sift.enable_agg=on;sift.agg_lookup_pushdown=off;sift.agg_share_lookups=off;max_parallel_workers_per_gather=0'),
         ('nodense', 'sift.enable_agg=on;sift.agg_dense=off;sift.simd=scalar;max_parallel_workers_per_gather=0'),
         ('notopn', 'sift.enable_agg=on;sift.enable_topn=off;max_parallel_workers_per_gather=0'),
+        ('bitset', 'sift.enable_agg=on;sift.test_limits=bits_set_values=4;max_parallel_workers_per_gather=0'),
     ]
     v += r.sample(extra, r.choice([1, 2]))
     return v
