@@ -30,6 +30,7 @@ stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds o
 | 8 | Static analysis (scripts/static.sh) | shallow bugs, widening multiplies | none at run time | CI `static`, non-blocking |
 | 9 | Structural verifier (sift.verify) sharing the Span code | offline detection | none at run time | phase 2 |
 | 10 | CBMC on Span and the chunk header parser; clang `-fbounds-safety` | proof for small code; compiler-enforced bounds | CBMC not installed here; bounds-safety blocked | later |
+| 11 | `debug_discard_caches = 1` on a server with assertions (tests `cache_discard`, `verify_relcache`) | a pointer into the relcache's cached state (`rd_amcache`) kept across a lock or a catalog read: the entry is reloaded at every such point and the freed state is overwritten. Found the crash of , of `sift.col_verify` and of the cost estimate of a scan; each dies in seconds on a few rows | `cache_discard` 48 s (0.5 s without the setting, about 30 ms per row), `verify_relcache` 2 s; 0 at run time | the PostgreSQL 19 job of CI (a build with assertions) and the `assert` lane |
 
 ## Measured overhead
 
