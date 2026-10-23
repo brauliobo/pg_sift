@@ -47,6 +47,8 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_text_key	pg_duckdb	ms	30.295	27.079	49.780	15	21.33	DuckDBScan NOISY
 3.3	topn_uuid_key	sift	ms	2.453	1.964	6.625	15	13.21	Top-N: ref (limit 10, stored dictionary) NOISY
 3.3	topn_uuid_key	native	ms	13.765	12.592	21.495	15	13.21	Seq Scan on orders NOISY
+3.3	topn_text_code	sift	ms	2.364	1.918	9.414	15	12.65	Top-N: sku (limit 100) NOISY
+3.3	topn_text_code	native	ms	23.835	22.670	29.623	15	12.65	Seq Scan on orders NOISY
 3.3	topn_sorted_runs	sift	ms	1.166	0.889	1.887	15	20.58	Top-N: customer_id (limit 100) NOISY
 3.3	topn_sorted_runs	native	ms	8.671	7.945	10.367	15	20.58	Seq Scan on orders NOISY
 3.3	topn_sorted_runs	runs_off	ms	1.969	1.460	2.760	15	20.58	Top-N: customer_id (limit 100) NOISY

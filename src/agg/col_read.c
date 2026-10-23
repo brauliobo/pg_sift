@@ -113,7 +113,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 			break;
 		case SCV_CODE:
 			memcpy(buf->data, v->codes, n * sizeof(uint32));
-			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes, v->dict->order, v->dict->octx};
 			break;
 	}
 	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
@@ -184,7 +184,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
 	if (l->vtype == SCV_CODE)
 	{
-		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes};
+		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes, info.dict.order, info.dict.octx};
 		vec->dict = &src->dict[leaf];
 	}
 }
@@ -248,7 +248,7 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 		case SCV_CODE:
 			for (size_t k = 0; k < m; k++)
 				((uint32 *) b->data)[idx[k]] = v->codes[k];
-			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes, v->dict->order, v->dict->octx};
 			break;
 	}
 	vec->data = b->data;
