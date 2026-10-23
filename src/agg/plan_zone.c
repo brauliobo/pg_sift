@@ -110,6 +110,17 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 	}
 }
 
+/* the bytes the scan clears to test the IN list p when it starts (agg/pred_in.c); 0 for a list that is not constants, an empty one, or a hash table */
+double
+in_list_table_bytes(AggCtx *c, const SiftAggPred *p)
+{
+	ZoneRange	r;
+
+	if (p->kind != SAP_IN || !zone_range(c, p, &r) || r.nvals == 0)
+		return 0;
+	return sift_agg_in_table_bytes((uint64) r.hi - (uint64) r.lo + 1, r.nvals);
+}
+
 /* may a unit whose zone is [zlo, zhi] hold a value the range keeps? */
 static bool
 zone_meets(const ZoneRange *r, int64 zlo, int64 zhi)

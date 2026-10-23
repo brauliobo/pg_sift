@@ -88,6 +88,32 @@ in_bit_has(const PredState *st, int64 x)
 	return u < st->in_nbits && (st->in_bits[u >> 6] >> (u & 63) & 1);
 }
 
+typedef enum { IN_HASH, IN_BITS, IN_BYTES } InKind;
+
+/* the structure of the test of an IN list of nv values within a range of span values (0: all the 2^64) */
+static InKind
+in_kind(uint64 span, int nv)
+{
+	if (span != 0 && span > MAX_RANGE && span <= MAX_BITS_RANGE && nv >= sift_limit(bits_set_values, MIN_BITS_VALUES))
+		return IN_BITS;
+	return span == 0 || span > MAX_RANGE ? IN_HASH : IN_BYTES;
+}
+
+/* the bytes the scan allocates and clears when it starts for such a list: what a range table costs it, whatever the rows (0: a hash table of the values) */
+double
+sift_agg_in_table_bytes(uint64 span, int nv)
+{
+	switch (in_kind(span, nv))
+	{
+		case IN_BITS:
+			return (double) ((span + 63) / 64 + 1) * sizeof(uint64);
+		case IN_BYTES:
+			return (double) span;
+		default:
+			return 0;
+	}
+}
+
 /*
  * the test of an IN list of nv values within [lo, hi]: a byte table over the range; a bit table when the range is wider and the list long (a
  * random bit costs a cache line like a random byte, but the table is eight times smaller, which keeps it in the cache: 1.5 to 2.4 ns a row
@@ -97,6 +123,7 @@ void
 in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 {
 	uint64		span = (uint64) hi - (uint64) lo + 1;	/* 0: all the 2^64 values */
+	InKind		kind = in_kind(span, nv);
 
 	st->in_lut = palloc0(SIFT_AGG_PAD);
 	st->in_nv = nv;
@@ -104,7 +131,7 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 		return;
 	st->in_lo = lo;
 	st->in_hi = hi;
-	if (span != 0 && span > MAX_RANGE && span <= MAX_BITS_RANGE && nv >= sift_limit(bits_set_values, MIN_BITS_VALUES))
+	if (kind == IN_BITS)
 	{
 		st->in_nbits = span;
 		st->in_bits = palloc0(((span + 63) / 64 + 1) * sizeof(uint64));
@@ -112,7 +139,7 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 			st->in_bits[((uint64) vals[i] - (uint64) lo) >> 6] |= UINT64CONST(1) << (((uint64) vals[i] - (uint64) lo) & 63);
 		return;
 	}
-	if (span == 0 || span > MAX_RANGE)
+	if (kind == IN_HASH)
 	{
 		in_hash_build(st, vals, nv);
 		return;
