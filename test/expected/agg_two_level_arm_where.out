@@ -101,10 +101,44 @@ SELECT same(report('true', 'CASE WHEN o.sign = ''p'' THEN o.cat ELSE rm.mapped_c
  t
 (1 row)
 
--- a NOT NULL test of the lookup itself makes its outer join an inner one in the arms that have it: they are not arms of one scan
-SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL'), scan => false) AS join_types_differ;
+-- a NOT NULL test of the lookup itself makes its outer join an inner one in the arms that have it: the scan keeps the outer join (a row the lookup has no
+-- row for is a tuple of NULLs, which the third arm counts) and the other arms test the NOT NULL
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS join_types_differ;
  join_types_differ 
 -------------------
+ t
+(1 row)
+
+SELECT same(report('true', 'rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS inner_in_the_last_two;
+ inner_in_the_last_two 
+-----------------------
+ t
+(1 row)
+
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'true', 'rm.mapped_cat IS NOT NULL')) AS inner_in_the_ends;
+ inner_in_the_ends 
+-------------------
+ t
+(1 row)
+
+SELECT same(report('rm.mapped_cat IS NOT NULL AND o.score > 2', 'true', 'true')) AS inner_in_one_with_a_condition;
+ inner_in_one_with_a_condition 
+-------------------------------
+ t
+(1 row)
+
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS inner_in_all;
+ inner_in_all 
+--------------
+ t
+(1 row)
+
+-- the number of tuples the lookup has no row for: the third arm counts them, the others do not
+SELECT same($q$SELECT count(*) FILTER (WHERE rm.mapped_cat IS NULL) AS unmatched, count(*) AS tuples
+	FROM events s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, sign text, score float8)
+	LEFT JOIN LATERAL (SELECT mapped_cat FROM lookup m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true$q$) AS unmatched_exist;
+ unmatched_exist 
+-----------------
  t
 (1 row)
 
@@ -180,6 +214,37 @@ SELECT same(report('CASE WHEN o.sign = ''p'' THEN o.cat ELSE rm.mapped_cat END I
 UPDATE lookup SET mapped_cat = 'm9' WHERE cat = 'cat_1';
 SELECT same(report()) AS dirty_lookup;
  dirty_lookup 
+--------------
+ t
+(1 row)
+
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS dirty_join_types_differ;
+ dirty_join_types_differ 
+-------------------------
+ t
+(1 row)
+
+UPDATE lookup SET mapped_cat = NULL WHERE cat = 'cat_3';
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS null_lookup_values;
+ null_lookup_values 
+--------------------
+ t
+(1 row)
+
+DELETE FROM lookup WHERE kind = 'k2';
+SELECT same(report('rm.mapped_cat IS NOT NULL', 'rm.mapped_cat IS NOT NULL')) AS missing_lookup_rows;
+ missing_lookup_rows 
+---------------------
+ t
+(1 row)
+
+-- a table joined by an outer join in one arm and an inner one in another is not a lateral LIMIT 1 child: they are not arms of one scan
+SELECT same($q$WITH mapped AS (
+	    SELECT e.id, l.mapped_cat AS category, count(*) AS n FROM events e LEFT JOIN lookup l ON l.kind = e.kind WHERE l.mapped_cat IS NOT NULL GROUP BY e.id, l.mapped_cat
+	    UNION ALL
+	    SELECT e.id, NULL::text, count(*) FROM events e LEFT JOIN lookup l ON l.kind = e.kind GROUP BY e.id)
+	  SELECT category, sum(n) AS n, count(DISTINCT id) AS ids FROM mapped GROUP BY category$q$, scan => false) AS joined_table;
+ joined_table 
 --------------
  t
 (1 row)
