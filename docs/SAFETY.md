@@ -59,6 +59,7 @@ Reproduce: `bench/steps/cpu_gate.sh --env LABEL=SIFT_HARDEN=1`.
 `SIFT_UBSAN_SET="bounds shift"` (or comma list) picks the trap checks, `SIFT_POINTER_OVERFLOW=1` adds the pointer-wrap trap; scripts/pgtest.sh passes them. Others: `-Wvla -Walloca -Warray-bounds=2
 -Wstringop-overflow=4 -Wformat=2 -Wundef` in `pkg`. `-Wconversion` (474 hits) and `-Wsign-conversion` (1306) are too noisy to enable;
 `-Wnull-dereference` (36) and `-Wclobbered` (2, see the findings) are worth a one-time read.
+`scripts/check-memory.sh` (lint, with a selftest; `check-memory: allow <why>` on a site) flags what a grep can decide: `rd_amcache` outside the files that own an accessor of it, and an inclusive `for` loop over a 64-bit counter (it never ends when the bound is the largest value, the key loop of the point directory).
 CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SIFT_HARDEN=1`, 16 decoder regress tests, all pass), `static`, `span-test`
 (sqlite/tests/span_test.c, ASan/UBSan, SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from source (`make pg-assert`, `make pg-valgrind`,
 `PG_ASSERT_MAJOR=17` for the 17 branch; scripts/pg-assert.sh pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, plus `-DUSE_VALGRIND` for
