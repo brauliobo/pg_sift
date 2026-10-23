@@ -65,6 +65,19 @@ SELECT same(report('sum(s) AS total, count(DISTINCT region) AS regions', 'region
  t
 (1 row)
 
+-- count(id) of the row ids counts the cells' rows as count(*) does, alone, with a filter, and with a key that splits the cells
+SELECT same(report('count(id) AS counted, count(*) AS n, sum(s) AS total')) AS count_row_id;
+ count_row_id 
+--------------
+ t
+(1 row)
+
+SELECT same(report('count(id) AS counted, count(id) FILTER (WHERE s > 9) AS big, count(DISTINCT id) AS ids', 'tag')) AS count_row_id_filter;
+ count_row_id_filter 
+---------------------
+ t
+(1 row)
+
 -- a hidden key that is an element's tag: several cells in a row, NULL tags among them
 SELECT same(report('sum(s) AS total, sum(c) AS cells, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT tag) AS tags', 'tag')) AS element_key;
  element_key 

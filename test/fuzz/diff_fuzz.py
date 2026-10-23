@@ -415,7 +415,7 @@ def render_twolevel(p):
                  .replace("coalesce(category,", "coalesce(m.category,")
     else:
         sql = (scoped + flag_a + "SELECT coalesce(category, 'all_cats') AS category, span, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, "
-               'count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents FROM flag_a GROUP BY category, span ORDER BY 1, 2')
+               'count(DISTINCT id) AS ids, count(id) AS idn, count(DISTINCT parent_id) AS parents FROM flag_a GROUP BY category, span ORDER BY 1, 2')
     return sql, True
 
 
