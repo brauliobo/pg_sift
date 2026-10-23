@@ -107,8 +107,18 @@ TRUNCATE rows_t;
 INSERT INTO rows_t SELECT g, 's', g, 'x' FROM generate_series(1, 30) g;
 SELECT count(*) FROM rows_t;
 
+-- key_columns: the choice before the build and the census after it read catalogs while they hold the state of the index (the NOTICE is the path under test)
+CREATE TABLE keyed (id int, parent_id int, set_id int, ext_id int, kind int) WITH (autovacuum_enabled = off);
+INSERT INTO keyed SELECT g, g % 400, g % 300, g, g % 5 FROM generate_series(1, 1500) g;
+SET client_min_messages = notice;
+CREATE INDEX keyed_col ON keyed USING sift_col (id, parent_id, set_id, ext_id, kind);
+SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'keyed_col' AND o LIKE 'key_columns=%';
+REINDEX INDEX keyed_col;
+SET client_min_messages = warning;
+SELECT count(DISTINCT parent_id) FROM keyed;
+
 \if :discard
 RESET debug_discard_caches;
 \endif
-DROP TABLE items, events, dims, blobs, notes, rows_t;
+DROP TABLE items, events, dims, blobs, notes, rows_t, keyed;
 DROP EXTENSION pg_sift;
