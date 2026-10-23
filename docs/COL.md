@@ -649,7 +649,8 @@ u64 offset of the header, u32 magic, u32 version    the last 16 bytes of the sec
 ```
 
 The section ends where the last dictionary ends when there is no directory, so the footer is looked for in the last 16 bytes (the magic and the version, then a header at the offset) of a segment of minor 14 or more; a
-footer of another version is no directory. The dictionaries end at that offset. `hash` is the 64-bit mix of `(uint64) key`; the fingerprint is 32 bits, so a row may be listed under another key (about one in 4 billion for
+footer of another version is no directory (a footer of this version damaged, with a header of this version at its offset, is refused). The dictionaries end at that offset. The frame is read whole and refused when it
+is not as written: the reserved words are 0, the records ascend by leaf, and the tables follow the records one after the other, each padded to 8 bytes, up to the footer. `hash` is the 64-bit mix of `(uint64) key`; the fingerprint is 32 bits, so a row may be listed under another key (about one in 4 billion for
 each other key in the same probe sequence): the table is a filter. The access method (`SIFT_COLO_POINTS`, set by the scans of `sift_col` indexes only, which run when `sift.enable_col_scan` is on) therefore has the heap check
 the condition again (`xs_recheck`, a bitmap scan's recheck), and the aggregate scans, which count the rows themselves, do not use it. A leaf gets no table in a segment when a unit holds an overflow value or an inline
 string for it, or when the segment has 2^30 rows or more (a list offset is 31 bits); a key in very many rows costs a list and nothing else. A lookup that finds more than 65,536 rows is answered by the units instead.
