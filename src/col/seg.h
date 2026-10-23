@@ -199,6 +199,7 @@ extern uint8 sift_test_seg_flip_mask;
 extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
 extern bool sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 extern bool sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
+extern bool sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 #endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
