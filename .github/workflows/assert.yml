@@ -40,6 +40,8 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      - uses: ./.github/actions/apt-limits
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -86,6 +88,8 @@ jobs:
         run: echo "SIFT_CI_TMP=$RUNNER_TEMP/sift-ci" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/apt-limits
 
       - name: Install build dependencies and valgrind
         run: |
