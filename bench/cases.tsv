@@ -2,7 +2,7 @@
 # id: the case (bench/cases/ID.sql, the layout of bench/sql/store/queries: `--@ pg` the statement of every lane, `--@ sift` / `--@ duck` replace it, `--@ setup` DDL after the index)
 # changelog: a phrase of the CHANGELOG line the case measures (the gate matches it; it must stay in CHANGELOG.md)
 # dataset: orders (the store table of bench/sql/store/gen.sql with two derived columns, segment_id with 6,313 values and order_date)
-# index: the columns of the sift_col index (`default`: every column of the store questions plus the derived ones) and its WITH options; `-` for a case that makes its own tables
+# index: the columns of the sift_col index (`default`: every column of the store questions plus the derived ones; `default+title` adds the columns named after the +) and its WITH options; `-` for a case that makes its own tables
 # plan: a regular expression the EXPLAIN of the sift lane must match (a load case: the output of its `--@ check`); a case that falls back to the normal plan fails
 # baselines: engines besides sift and native (PostgreSQL with sift.enable_agg = off) that can answer it: pg_duckdb (the others: bench/engines.tsv, steps/store_engine.py)
 # variants: name:SET a = b;SET c = d, further sift lanes with settings (the optimization turned off, or a lane without a pre-aggregate)
@@ -17,3 +17,14 @@ cube_minmax_groupby	`cube_minmax` and `superunit` are on by default	orders	defau
 calendar_month	`calendar_columns` of a `sift_col` index defaults to every date	orders	default	date_trunc\('month'.*Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 bulk_copy_wal	`sift.table_bulk_groups` (on by default since 3.3	orders	-	^columns$	native	bulk_off:sift.table_bulk_groups = off	wal_bytes,ms,cpu_ms	faster33	yes
 cluster_visibility_map	the planner charges the heap check of the rows on pages that are not all-visible	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+topn_text_key	`ORDER BY` a text, varchar, uuid, bytea or inet column `LIMIT n` is a top-N of the column scan	orders	default+title	Top-N: title	native,pg_duckdb	-	ms	faster33	no
+topn_sorted_runs	`order_columns` (`sift_col` reloption, default none	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	yes
+topn_sorted_runs_btree	(a btree needs 0.35)	orders	default WITH (order_columns = 'customer_id')	Index Only Scan using orders_customer	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	no
+topn_zone_keys	bounds the units by the zones of the sort keys after the first too	orders	default	Top-N: status, customer_id	native,pg_duckdb	zone_off:sift.topn_zone_keys = off	ms	faster33	no
+topn_big_offset	with `n + m` past 100,000	orders	default	Top-N: amount	native,pg_duckdb	-	ms	faster33	no
+topn_many_keys	or with more than 4 sort columns	orders	default	Seq Scan on orders	native,pg_duckdb	-	ms	faster33	no
+count_distinct_hist	`count(DISTINCT col)` of a 32-bit or text column the cube tenants a histogram of	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+group_numeric_key	a group key that is an `int8` or a `numeric(p,s)` column	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_dims = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+dict_equality	finds its dictionary codes without testing every string	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+dict_prefix	a byte-order permutation of the dictionary	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
