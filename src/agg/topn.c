@@ -1841,6 +1841,14 @@ key_prefix(uint8 bkind, const char *p, uint32 len)
 
 	if (bkind == BK_BYTEA)
 	{
+		varattrib_4b h;
+
+		/* an entry of the dictionary is padded to its alignment: the bytes after the varlena image are not part of the value (key_entry) */
+		if (len >= sizeof(uint32))
+		{
+			memcpy(&h, p, sizeof(uint32));
+			len = Min(len, VARSIZE_4B(&h));
+		}
 		p += Min(len, VARHDRSZ);
 		len -= Min(len, VARHDRSZ);
 	}
