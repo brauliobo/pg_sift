@@ -491,6 +491,7 @@ col_scan_begin(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
+	/* check-memory: allow the scan copies what it keeps before it opens the heap */
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	ColKeys		keys;
 
@@ -588,6 +589,7 @@ sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json)
 bool
 sift_col_amcanreturn(Relation index, int attno)
 {
+	/* check-memory: allow reads the definitions only, no call that locks */
 	SiftColRel *r = sift_col_rel(index);
 	const SiftColDef *d = &r->meta.cols[r->first[attno]];
 
@@ -888,7 +890,6 @@ static double
 zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 {
 	const SiftColZones *z = sift_col_zones(irel);
-	SiftColRel *r = sift_col_rel(irel);
 	IndexOptInfo *index = path->indexinfo;
 	bool	   *alive;
 	bool		tested = false;
@@ -900,7 +901,8 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	memset(alive, true, z->n * sizeof(bool));
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		int			leaf = r->first[ic->indexcol + 1];
+		/* the estimates below read the catalog, which can reload the index's relcache entry: ask for its cached state where it is used */
+		int			leaf = sift_col_rel(irel)->first[ic->indexcol + 1];
 
 		foreach_node(RestrictInfo, ri, ic->indexquals)
 		{
@@ -934,13 +936,12 @@ static double
 sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 {
 	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
-	SiftColRel *r = sift_col_rel(irel);
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		const SiftColLeafStats *l = &ls[r->first[ic->indexcol + 1]];
+		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
 
 		if (l->set_units <= 0 || l->set_sampled <= 0)
 			continue;
