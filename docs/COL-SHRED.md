@@ -31,6 +31,8 @@ prefix share the node (`a.b int4, a.c text`, `a[].x int4, a[].y text`). Errors n
 metrics.* float4, items[].category text, ...`), always with `.`; `fingerprint` is the `sift_term_hash64` of the canonical text; a segment stores both, so a
 changed spec is told from the one the segment was built with. Limits: 256 columns, 64 groups, 16 steps per path, 64 KiB of spec.
 
+`sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies): the documents come from 16 stretches of blocks evenly spaced over the table, a key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text), a map of more than 32 keys of one type a wildcard, an array of objects a group, and a key in fewer than 1% of the documents, or without a single shape, is left out. It refuses a table the caller cannot read and one with row-level security.
+
 ## Output model (Dremel / DuckDB LIST)
 
 A **group** is a repeated level: the root (exactly one element, the document), every `[]` and every `*`. Every **column** (a typed

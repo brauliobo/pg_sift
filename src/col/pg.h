@@ -151,5 +151,6 @@ extern PGDLLEXPORT Datum sift_col_maintain(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_maintenance_due(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_maintenance_status(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_advice(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_suggest_paths(PG_FUNCTION_ARGS);
 
 #endif							/* SIFT_COL_PG_H */
