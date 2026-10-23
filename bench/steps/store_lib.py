@@ -77,7 +77,7 @@ MODES = {'pg': 'commit', 'sift': 'commit', 'sift_maint': 'commit', 'sift_table':
 
 # the lanes that are a sift lane with the background rewrite switched on in their database (ALTER DATABASE ... SET): the update, delete and VACUUM cells show
 # the defaults next to the automatic maintenance; the switch is the setting that turns it on for that layout
-MAINT = {'sift_maint': ('sift', ('sift.col_auto_vacuum', 'sift.col_auto_merge')), 'sift_table_maint': ('sift_table', ('sift.table_auto_defrag',))}
+MAINT = {'sift_maint': ('sift', ('sift.col_auto_merge',)), 'sift_table_maint': ('sift_table', ('sift.table_auto_defrag',))}
 
 
 CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}

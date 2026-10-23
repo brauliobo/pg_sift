@@ -215,7 +215,7 @@ def servers(engines):
         v[eid + '_settings'] = settings(eid)
         if eid != 'pg':   # the maintenance settings of the lane, read back from the server in its database
             v[eid + '_maintenance'] = psql_value(eid, "SELECT string_agg(replace(name, 'sift.', '') || ' = ' || setting, ', ' ORDER BY name) FROM pg_settings "
-                                                      "WHERE name IN ('sift.async_maintenance', 'sift.col_auto_vacuum', 'sift.col_auto_merge', 'sift.table_auto_defrag')")
+                                                      "WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge', 'sift.table_auto_defrag')")
     if 'citus' in engines:
         v['citus'] = psql_value('citus', 'SHOW server_version')
         v['citus_columnar'] = psql_value('citus', "SELECT extversion FROM pg_extension WHERE extname = 'citus_columnar'")
