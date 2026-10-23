@@ -500,9 +500,45 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 		read_member_leaf(ex, leaf, out);
 }
 
+/* is the leaf an element column of the list the query unnests (a child of its leaf, at any depth)? */
+static bool
+unnested_leaf(AggExec *ex, int leaf)
+{
+	for (int p = ex->lay->leaf[leaf].parent; p >= 0; p = ex->lay->leaf[p].parent)
+		if (p == ex->spec->group)
+			return true;
+	return false;
+}
+
+/* the dictionary of a text leaf of the NULL tuples: no value, so the one code (0) is the NULL one */
+static const uint32 null_dict_off[1] = {0};
+static const SiftSrcDict null_dict = {.id = &null_dict, .n = 0, .off = null_dict_off, .bytes = ""};
+
+/* the column of the NULL tuples of a LEFT lateral: no element, so every element leaf is NULL (the data slots are readable zeros) */
+static const SiftSrcVec *
+null_vec(AggExec *ex, int leaf)
+{
+	if (!ex->nvec_ok[leaf])
+	{
+		int			n = ex->unit.nrow;
+		size_t		esz = ex->lay->leaf[leaf].vtype == SCV_I64 || ex->lay->leaf[leaf].vtype == SCV_F64 ? 8 : 4;
+		SiftSrcVec *v = &ex->nvec[leaf];
+
+		v->data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, n * esz + SIFT_AGG_PAD * esz + SIFT_SIMD_ALIGN));
+		v->isnull = memset(MemoryContextAlloc(ex->ucxt, n + SIFT_AGG_PAD), 1, n + SIFT_AGG_PAD);
+		v->dict = &null_dict;
+		v->n = n;
+		v->ovf = NULL;
+		ex->nvec_ok[leaf] = true;
+	}
+	return &ex->nvec[leaf];
+}
+
 const SiftSrcVec *
 get_vec(AggExec *ex, int leaf)
 {
+	if (ex->nullpass && leaf < ex->nbase && unnested_leaf(ex, leaf))
+		return null_vec(ex, leaf);
 	if (!ex->uvec_ok[leaf])
 	{
 		if (leaf >= ex->nbase)

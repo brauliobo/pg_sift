@@ -100,6 +100,7 @@ typedef struct AggCtx
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
+	bool		func_left;		/* LEFT JOIN LATERAL over the list, ON true or the lateral's own conditions: a row without a passing element is one NULL tuple (sift.agg_left_lateral) */
 	const char *func_key;		/* LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k': r.value is the member k of each row, no unnest */
 	int			func_obj;		/* ... and the object leaf of doc */
 	Bitmapset  *func_ovf;		/* ... and the leaves that make the scan unfit when a unit holds what they cannot store (a document that is no object raises in jsonb_each) */
