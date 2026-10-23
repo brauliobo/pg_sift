@@ -37,6 +37,7 @@ BENCH = os.path.dirname(HERE)
 REPO = os.path.dirname(BENCH)
 GEN = os.path.join(BENCH, 'sql', 'store', 'gen.sql')
 EVENTS_GEN = os.path.join(REPO, 'test', 'plan', 'gen.sql')   # the events dataset of the plan-choice gate: one schema, c_events, for every case of the dataset
+DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql'))}   # the datasets a case shares: schema and generator
 BUILT = set()
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']
@@ -77,7 +78,7 @@ class Case:
         return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
 
     def schema(self):
-        return 'c_events' if self.dataset == 'events' else 'c_' + self.id
+        return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + self.id
 
     def table_index(self):
         m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
@@ -132,17 +133,20 @@ def build(case, rows):
     if case.load:
         psql('DROP SCHEMA IF EXISTS c_%s CASCADE; CREATE SCHEMA c_%s' % (case.id, case.id))
         return
-    if case.dataset == 'events':
-        if rows not in BUILT:
-            psql('DROP SCHEMA IF EXISTS c_events CASCADE; CREATE SCHEMA c_events')
-            gen = open(EVENTS_GEN).read().replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
+    if case.dataset in DATASETS:
+        schema, path = DATASETS[case.dataset]
+        if (case.dataset, rows) not in BUILT:
+            psql('DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s' % (schema, schema))
+            gen = open(path).read()
+            if case.dataset == 'events':   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
+                gen = gen.replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")
             r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
-                               env={**ENV, 'PGOPTIONS': '-c search_path=c_events,public -c client_min_messages=warning'})
+                               env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
             if r.returncode:
-                die('test/plan/gen.sql: %s' % r.stderr.strip()[:500])
-            BUILT.add(rows)
+                die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
+            BUILT.add((case.dataset, rows))
         if case.sec.get('setup'):
-            psql('SET search_path = c_events, public;\n' + case.sec['setup'] + ';\n')
+            psql('SET search_path = %s, public;\n' % schema + case.sec['setup'] + ';\n')
         return
     ddl = ['DROP SCHEMA IF EXISTS c_{0} CASCADE', 'CREATE SCHEMA c_{0}', 'SET search_path = c_{0}, public',
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
@@ -211,11 +215,24 @@ def equal(a, b, ordered):
     return len(a) == len(b) and (all(same([x], [y]) for x, y in zip(a, b)) if ordered else same(a, b))
 
 
+IDS = {}
+
+
+def expand(sql, case):
+    """`{ids:TABLE:N}` is the list of the ids of the rows of TABLE with n = N, in the statement: a literal IN list of 50,000 or 500,000 values is not a thing to write in a file"""
+    def ids(m):
+        key = (case.schema(), m.group(1), m.group(2))
+        if key not in IDS:
+            IDS[key] = psql("SELECT string_agg(id::text, ',' ORDER BY id) FROM %s.%s WHERE n = %s" % key)
+        return IDS[key]
+    return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql)
+
+
 def measure_query(case, lanes, rounds, runs, keep_plan=True):
     """rows of results: per lane the timed runs of the interleaved rounds, the answer of the warm-up compared with the native one; a plan other than the case's is an error
     unless keep_plan is false (the scale points: the planner's choice at each size is what the curve shows)"""
     ordered = case.opt.get('ordered', 'no') == 'yes'
-    sql = {lane: case.statement(lane) for lane in lanes}
+    sql = {lane: expand(case.statement(lane), case) for lane in lanes}
     notes, answers, times, errors, texts = {}, {}, {lane: [] for lane in lanes}, {}, {}
     for lane, s in lanes.items():
         text = texts[lane] = plan_text(s, sql[lane], lane != 'pg_duckdb')
@@ -355,7 +372,7 @@ def run_point(args, cases, rows, engines, results, failed):
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
             lanes[lane].close()
-        if scaled and c.dataset != 'events':   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
+        if scaled and c.dataset not in DATASETS:   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
             psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
@@ -386,14 +403,14 @@ def cmd_plan(args):
     """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates from the 200,000-row trials: linear in the rows, a floor on a loaded host)"""
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
-    events = sum(c.dataset == 'events' for c in cases)
+    events = sum(c.dataset in DATASETS for c in cases)
     tmp = os.environ.get('CASES_TMP', '/var/tmp/sift-cases')
     probe = tmp
     while not os.path.exists(probe):
         probe = os.path.dirname(probe)
     free = os.statvfs(probe).f_bavail * os.statvfs(probe).f_frsize / 2**30
     seconds, peak = 0.0, 0.0
-    print('cases plan: %d cases (%d on orders, %d on events) at %d point%s of %s orders, %d rounds of %d timed runs, statement timeout %d s' % (
+    print('cases plan: %d cases (%d on orders, %d on shared datasets) at %d point%s of %s orders, %d rounds of %d timed runs, statement timeout %d s' % (
         len(cases), len(cases) - events, events, len(scales), 's' * (len(scales) > 1), ' x '.join([format(args.rows, ','), str(scales)]), args.rounds, args.runs, args.timeout))
     for sc in scales:
         n = args.rows * sc
