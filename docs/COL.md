@@ -968,7 +968,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 
 ## 10. Limits
 
-BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
+BLCKSZ 8192, heap tables only, PostgreSQL 17, 18 and 19. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
 integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, time, enums, uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit (section 2.12), float4/8, text-like. A group's elements: any number, one level. Not supported:
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_exact`).

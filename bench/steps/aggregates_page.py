@@ -3,7 +3,7 @@
 
     python3 -I bench/steps/aggregates_page.py [--results DIR]      (scripts/gen-docs.py runs it)
 
-  README.md                  <!-- bench:scale:begin -->       the charts of scale (rows, CPUs, partitions, workers)
+  README.md                  <!-- bench:scale:begin -->       the charts of scale (rows, CPUs); <!-- bench:shapes:begin --> the real query shapes
   docs/perf/AGGREGATES.md    <!-- bench:agg-map:begin -->     every results file behind an aggregate benchmark: what it answers, when, on which host
                              <!-- bench:agg-charts:begin -->  every chart with the question it answers
                              <!-- bench:agg-scale:begin -->   the tables behind the scale charts
@@ -19,6 +19,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bench_charts  # noqa: E402  (scale_takeaway)
 import extras  # noqa: E402,F401  (read, duck_table: the pg_duckdb tables)
 import readme  # noqa: E402  (replace_block)
 import store_charts  # noqa: E402
@@ -51,15 +52,21 @@ def maybe(results, name):
 # ---- what is measured --------------------------------------------------------------------------------------------------------------------------
 
 CHARTS = [
-    ('store-latency', 'How long does each question take on each system, and how much do the runs vary?', 'store.json'),
-    ('store-speedup', 'How many times faster than PostgreSQL is each system, warm and on the first run after a restart?', 'store.json'),
+    ('agg-latency', 'How long does each question take on each system, pg_duckdb included, and how much do the runs vary?', 'store.json'),
+    ('agg-speedup', 'How many times faster than PostgreSQL is each system, warm and on the first run after a restart?', 'store.json'),
     ('store-cpus', 'What does a second and third CPU buy each system?', 'store.json'),
     ('store-size', 'What does it cost in space and in load time?', 'store.json'),
+    ('cost-per-row', 'What does a row cost in index bytes, load time and update rate?', 'store.json'),
     ('store-updates', 'Does the data grow under updates and deletes, and does maintenance give the space back?', 'store.json'),
-    ('duckdb-speedup', 'How does it compare with DuckDB inside PostgreSQL (pg_duckdb)?', 'duckdb.tsv'),
-    ('store-scaling', 'Does the ranking hold from 25,000 to 10,000,000 orders?', 'store-scaling.json'),
+    ('scale-growth', 'Does the time grow with the rows, and with what slope?', 'store-scaling.json'),
+    ('scale-questions', 'Does the ranking hold from 25,000 to 10,000,000 orders, question by question?', 'store-scaling.json'),
     ('scaling-partitions', 'Does a partitioned table (to 4,096 partitions) keep the aggregates fast, and what does planning cost?', 'scaling.tsv'),
     ('scaling-workers', 'How do the aggregates use parallel workers?', 'scaling.tsv'),
+    ('shapes-speedup', 'Do the real query shapes get faster, and does it depend on the size of the filter?', 'analytics.json'),
+    ('cases-speedup', 'How much faster is each benchmark case of a query shape than PostgreSQL on the same rows?', 'cases.tsv'),
+    ('cases-ecdf', 'On what share of the cases and shapes is pg_sift how many times faster?', 'cases.tsv'),
+    ('cases-scale', 'How does each case scale from 100,000 to 3,000,000 rows?', 'cases-scale.tsv'),
+    ('cases-workmem', 'Does the production work_mem (4GB) change the ranking?', 'cases-wm4g.tsv'),
 ]
 
 
@@ -82,12 +89,12 @@ def map_lines(results):
     if s:
         S = store_charts.Store(s)
         t = S.tier_of(1_000_000, 3)
-        rows.append(['the ten questions, six systems, 1 and 3 CPUs, warm and cold, updates', 'store.json', S.tiers[t]['parts']['warm']['date'][:10], S.host(), '`bench/bench store all`'])
+        rows.append(['the seven aggregate questions (and the three full-text ones), six systems, 1 and 3 CPUs, warm and cold, updates', 'store.json', S.tiers[t]['parts']['warm']['date'][:10], S.host(), '`bench/bench store all`'])
     sc = maybe(results, 'store-scaling.json')
     if sc:
         S = store_charts.Store(sc)
         sizes = sorted({m['rows'] for m in S.tiers.values()})
-        rows.append([f'the ten questions at {", ".join(store_charts.rows_label(n) for n in sizes)} orders (the 1M set is in store.json)', 'store-scaling.json', next(iter(S.tiers.values()))['parts']['warm']['date'][:10], S.host(), '`bench/bench store all --sizes N,N`'])
+        rows.append([f'the aggregate questions at {", ".join(store_charts.rows_label(n) for n in sizes)} orders (the 1M set is in store.json)', 'store-scaling.json', next(iter(S.tiers.values()))['parts']['warm']['date'][:10], S.host(), '`bench/bench store all --sizes N,N`'])
     for f, what, cmd in (('duckdb.tsv', 'pg_duckdb against PostgreSQL and pg_sift, 1,000,000 orders', '`bench/bench duckdb`'), ('duckdb-10000000.tsv', 'the same at 10,000,000 orders', '`bench/bench duckdb --rows 10000000 --out FILE`'), ('scaling.tsv', 'partitions and parallel workers', '`bench/bench scaling`'),
                          ('sets.tsv', 'filters by a set of 1k to 100k ids', '`bench/bench sets`'), ('rollup.tsv', 'rollups of jsonb arrays', '`bench/bench extras rollup`'),
                          ('buildcost.tsv', 'build and write cost per operation', '`bench/bench extras buildcost`')):
@@ -163,17 +170,23 @@ def dim_table(results, dim, label):
 
 def scale_lines(results, prefix, brief=False):
     out = []
-    cpus = bool(maybe(results, 'store.json') and store_charts.Store(maybe(results, 'store.json')).tier_of(1_000_000, 1))
-    names = [('store-scaling', maybe(results, 'store-scaling.json')), ('store-cpus', cpus), ('scaling-partitions', maybe(results, 'scaling.tsv')), ('scaling-workers', maybe(results, 'scaling.tsv'))]
+    store = maybe(results, 'store.json')
+    cpus = bool(store and store_charts.Store(store).tier_of(1_000_000, 1))
+    names = [('scale-growth', maybe(results, 'store-scaling.json')), ('scale-questions', maybe(results, 'store-scaling.json')), ('cases-scale', maybe(results, 'cases-scale.tsv')), ('store-cpus', cpus),
+             ('scaling-partitions', maybe(results, 'scaling.tsv')), ('scaling-workers', maybe(results, 'scaling.tsv'))]
     if not any(have for _, have in names):
         return not_measured('bench/bench store all --sizes N,N; bench/bench scaling', 'docs/results/store-scaling.json and docs/results/scaling.tsv')
-    alt = {'store-scaling': 'Time per question at several table sizes', 'store-cpus': 'Gain from 1 to 3 CPUs per question and system',
+    alt = {'scale-growth': 'Growth of the time of the median question from 25,000 to 10,000,000 orders, with the log-log slope per system', 'scale-questions': 'Time per question at several table sizes, with the slope of each line',
+           'cases-scale': 'Time against rows of the query-shape cases, PostgreSQL and pg_sift, with the slope', 'store-cpus': 'Gain from 1 to 3 CPUs per question and system',
            'scaling-partitions': 'Aggregates by number of partitions', 'scaling-workers': 'Aggregates by number of parallel workers'}
+    take = bench_charts.scale_takeaway(results) if maybe(results, 'store-scaling.json') else None
     for name, have in names:
-        if have and (not brief or name in ('store-scaling', 'store-cpus')):
+        if have and (not brief or name != 'scale-questions' and not name.startswith('scaling-')):
             out += [picture(name, alt[name], prefix), '']
+            if name == 'scale-growth' and take and brief:
+                out += [take + '.', '']
     if brief:
-        return out + ['The tables behind these charts, the partition and worker sweeps and what each says: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#scale-rows-partitions-workers-cpus).']
+        return out + ['The tables behind these charts, the partition and worker sweeps and the chart of every question: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#scale-rows-partitions-workers-cpus).']
     if maybe(results, 'store-scaling.json'):
         out += ['### Rows', ''] + rows_tables(results)
     if maybe(results, 'scaling.tsv'):
@@ -239,6 +252,31 @@ def shapes_lines(results):
     return out
 
 
+def readme_shapes(results):
+    """the README's real query shapes: what they are, how many are faster and by how much, the chart by the size of the filter, and the same cases at the production work_mem"""
+    found = shape_cases(results)
+    if not found:
+        return not_measured(SHAPES_CMD, 'docs/results/analytics.json with the sift_col arm')
+    meta, cases = found
+    gains = [(t['heap'] / t['col'], q, v) for q, v, t in cases if t['heap'] and t['col']]
+    faster, slower = [g for g, _, _ in gains if g >= 1.05], [(1 / g, v) for g, _, v in gains if g <= 0.95]
+    rng = lambda vals: f'{min(vals):.1f}x to {max(vals):.0f}x' if max(vals) >= 9.5 else f'{min(vals):.1f}x to {max(vals):.1f}x'
+    out = [f'{len(gains)} shapes of an analytics application on {meta.get("tier", "?")} orders, one backend: whole-table reports (counts, groups, distinct, percentiles) and reports of a set of stores (mapping lookups, rollups at three levels, time series at four granularities, '
+           f'top 3 per store, notes by role) with 10, 400 and 4,000 stores in the filter. pg_sift is faster than the PostgreSQL heap on {len(faster)} of them ({rng(faster)}, median {statistics.median(g for g, _, _ in gains):.1f}x)'
+           + (f' and slower on {len(slower)} ({rng([r for r, _ in slower])}; {sum(1 for _, v in slower if v == "K10")} of them with the smallest filter set, where the whole query takes 1 to 5 ms)' if slower else '') + '.', '',
+           picture('shapes-speedup', 'Speed-up of pg_sift over the PostgreSQL heap on 8 whole-table shapes and 7 shapes at three filter sizes', 'docs/img/'), '']
+    if maybe(results, 'cases-wm4g.tsv'):
+        import cases as cases_mod
+        import cases_render
+        reg = cases_mod.read_registry()
+        ms_ = lambda path: {f['case'].id: f['native'] / f['sift'] for f in cases_render.collect(extras.read(path)[1], reg) if f['metric'] == 'ms' and f['native'] and f['sift'] and not f['kept']}
+        a, b = ms_(os.path.join(results, 'cases.tsv')), ms_(os.path.join(results, 'cases-wm4g.tsv'))
+        both = [i for i in b if i in a]
+        out += [f'The application-shaped cases of the table above again at the `work_mem` the production servers run ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
+                f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
+    return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#shapes-of-real-queries); raw results [docs/results/analytics.json](docs/results/analytics.json).']
+
+
 BLOCKS = {'agg-map': lambda r: map_lines(r), 'agg-charts': lambda r: charts_lines(r, IMG), 'agg-scale': lambda r: scale_lines(r, IMG), 'agg-shapes': lambda r: shapes_lines(r)}
 
 
@@ -251,6 +289,7 @@ def main():
     for name, fn in BLOCKS.items():
         readme.replace_block(a.page, name, fn(a.results))
     readme.replace_block(a.readme, 'scale', scale_lines(a.results, 'docs/img/', brief=True))
+    readme.replace_block(a.readme, 'shapes', readme_shapes(a.results))
 
 
 if __name__ == '__main__':
