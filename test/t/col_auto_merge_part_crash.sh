@@ -27,6 +27,8 @@ unaccounted() { sql pc "SELECT relation_blocks - free_blocks - (SELECT sum(bytes
 segments() { sql pc "SELECT count(*) FILTER (WHERE kind = 'immutable') || ' segments, ' || count(*) FILTER (WHERE dirty) || ' dirty' FROM sift.col_segments('facts_idx')"; }
 maintain_panics() { ! sql pc "SET sift.test_col_merge_panic = on" "SELECT sift.col_maintain('facts_idx')" >/dev/null 2>&1; }
 restarted() { for _ in $(seq 300); do [[ -f $(dir pc)/data/postmaster.pid ]] || break; sleep 0.1; done; node_start pc; }
+# a mismatch puts both sides in the TAP diagnostics
+same() { [[ $1 == "$2" ]] || diag "got:"$'\n'"$1"$'\n'"want:"$'\n'"$2"; [[ $1 == "$2" ]]; }
 OLD="SELECT gen, rows, dirty, dead_rows FROM sift.col_segments('facts_idx') WHERE kind = 'immutable' ORDER BY gen"
 HEAP=$(answer off)
 BEFORE=$(sql pc "$OLD")
@@ -37,7 +39,7 @@ SIFT_TMP=$(dir pc) leak_expect 2 'terminated by signal 6'
 check "the rewrite PANICs once the first partition is written" maintain_panics
 check "the server restarts through crash recovery" restarted
 check "the index verifies after the crash" test -z "$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)"
-check "the segment the rewrite was to replace is untouched" test "$(sql pc "$OLD")" == "$BEFORE"
+check "the segment the rewrite was to replace is untouched" same "$(sql pc "$OLD")" "$BEFORE"
 check "the answers are the heap's and the rewrite is still due" test "$(answer on)|$(due)" == "$HEAP|dirty units"
 
 # the partition the first step wrote is an orphan the log may or may not have kept: two VACUUMs leave no block unaccounted for
@@ -55,5 +57,5 @@ BEFORE=$(sql pc "$OLD")
 check "the window of churn makes the last partition due" test "$(due)" == "dirty units"
 check "the rewrite of that partition PANICs too" maintain_panics
 check "the server restarts" restarted
-check "the partitions are as they were, the answers the heap's, the index verifies" test "$(sql pc "$OLD")|$(answer on)|$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)" == "$BEFORE|$HEAP|"
+check "the partitions are as they were, the answers the heap's, the index verifies" same "$(sql pc "$OLD")|$(answer on)|$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)" "$BEFORE|$HEAP|"
 finish
