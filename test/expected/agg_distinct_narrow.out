@@ -1,0 +1,109 @@
+-- count(DISTINCT) of a column of a few values keeps a few words of bits per group instead of a directory and a chunk (agg/dist.c, DD_WORDS): the
+-- window of values is that of the first batch, widens when a value falls outside, and the set becomes a bitmap past dist_narrow_words words. Every
+-- shape, on columns around the edges of the window (63, 64, 65, 512 and 513 values, negative values, ids of a dictionary that outgrow it, a column that
+-- widens late, one that spans more than a window, NULLs) and in groups of one to 2,000 values, must give the normal plan's rows; as must each of the
+-- variants: the default, hash memory at its smallest (the group table spills), parallel workers, and the window limited to 0, 1 and 2 words.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '120s';
+CREATE TABLE nr AS
+SELECT i AS id, i % 200 AS g, (hashint4(i) & 2147483647) % 2000 AS gb,
+       1 + (hashint4(i + 1) & 2147483647) % 5 AS s5,
+       (hashint4(i + 2) & 2147483647) % 64 AS z63,
+       (hashint4(i + 3) & 2147483647) % 65 AS z64,
+       (hashint4(i + 4) & 2147483647) % 7 - 3 AS neg,
+       (hashint4(i + 5) & 2147483647) % 200 - 250 AS negw,
+       (hashint4(i + 6) & 2147483647) % 512 AS w511,
+       (hashint4(i + 7) & 2147483647) % 513 AS w512,
+       ((hashint4(i + 8) & 2147483647) % 90)::smallint AS i2,
+       date '2024-01-01' + (hashint4(i + 9) & 2147483647) % 400 AS dt,
+       CASE WHEN i <= 3000 THEN i % 5 ELSE (hashint4(i + 10) & 2147483647) % 3000 END AS late,
+       (hashint4(i + 11) & 2147483647) % 100000 AS wide,
+       'v' || (hashint4(i + 12) & 2147483647) % 1000 AS t1000,
+       'v' || (hashint4(i + 13) & 2147483647) % 5 AS t5,
+       ((hashint4(i + 14) & 2147483647) % 700)::numeric / 10 AS nm,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE (hashint4(i + 15) & 2147483647) % 6 END AS nul
+FROM generate_series(1, 20000) i;
+CREATE INDEX nr_col ON nr USING sift_col (id, g, gb, s5, z63, z64, neg, negw, w511, w512, i2, dt, late, wide, t1000, t5, nm, nul);
+VACUUM (FREEZE, ANALYZE) nr;
+CREATE TABLE shapes (name text, q text);
+INSERT INTO shapes
+SELECT c || ' ' || t.k, format(t.q, c)
+FROM unnest(ARRAY['s5', 'z63', 'z64', 'neg', 'negw', 'w511', 'w512', 'i2', 'dt', 'late', 'wide', 't1000', 't5', 'nm', 'nul']) c,
+     (VALUES ('grouped', 'SELECT g, count(DISTINCT %1$s) AS d, count(*) AS n FROM nr GROUP BY g'),
+             ('global', 'SELECT count(DISTINCT %1$s) AS d FROM nr'),
+             ('many groups', 'SELECT gb, count(DISTINCT %1$s) AS d FROM nr GROUP BY gb'),
+             ('filter', 'SELECT g, count(DISTINCT %1$s) FILTER (WHERE id %% 3 = 0) AS d, sum(id) AS s FROM nr GROUP BY g')) t(k, q);
+INSERT INTO shapes VALUES
+	('two sets', 'SELECT gb, count(DISTINCT s5) AS a, count(DISTINCT late) AS b, count(DISTINCT t1000) AS c FROM nr GROUP BY gb'),
+	('three sets', 'SELECT g, count(DISTINCT z63) AS a, count(DISTINCT w512) AS b, count(DISTINCT wide) AS c, count(DISTINCT negw) AS d FROM nr GROUP BY g');
+-- the variant's settings applied, every shape run on the scan (the hash and the sort of the normal plan off) and as the normal plan, the settings undone:
+-- how many shapes ran as the scan, whether any planned workers, how many gave other rows
+CREATE FUNCTION variant(label text, cfg text) RETURNS TABLE (variant text, shapes int, scan int, workers boolean, wrong int, failing text) LANGUAGE plpgsql AS $$
+DECLARE kv text; s record; l text; u boolean; w boolean; ns int := 0; nu int := 0; nw int := 0; nb int := 0; fl text := '';
+BEGIN
+	FOREACH kv IN ARRAY string_to_array(cfg || ';enable_hashagg = off;enable_sort = off', ';') LOOP
+		EXECUTE 'SET ' || kv;
+	END LOOP;
+	FOR s IN SELECT * FROM shapes ORDER BY name LOOP
+		u := false; w := false;
+		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || s.q LOOP
+			u := u OR l ~ 'SiftAgg';
+			w := w OR l ~ 'Workers Planned';
+		END LOOP;
+		DROP TABLE IF EXISTS r_on;
+		DROP TABLE IF EXISTS r_off;
+		EXECUTE 'CREATE TEMP TABLE r_on AS ' || s.q;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		EXECUTE 'CREATE TEMP TABLE r_off AS ' || s.q;
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		ns := ns + 1; nu := nu + u::int; nw := nw + w::int;
+		IF EXISTS ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) THEN
+			nb := nb + 1; fl := fl || ' ' || s.name;
+		END IF;
+	END LOOP;
+	FOREACH kv IN ARRAY string_to_array(cfg || ';enable_hashagg = off;enable_sort = off', ';') LOOP
+		EXECUTE 'RESET ' || split_part(kv, ' = ', 1);
+	END LOOP;
+	RETURN QUERY SELECT label, ns, nu, nw > 0, nb, trim(fl);
+END $$;
+SELECT * FROM variant('default', 'work_mem = ''4MB''');
+ variant | shapes | scan | workers | wrong | failing 
+---------+--------+------+---------+-------+---------
+ default |     62 |   62 | f       |     0 | 
+(1 row)
+
+SELECT * FROM variant('spill', 'work_mem = ''64kB'';hash_mem_multiplier = 1');
+ variant | shapes | scan | workers | wrong | failing 
+---------+--------+------+---------+-------+---------
+ spill   |     62 |   62 | f       |     0 | 
+(1 row)
+
+SELECT * FROM variant('parallel', 'max_parallel_workers_per_gather = 2;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');
+ variant  | shapes | scan | workers | wrong | failing 
+----------+--------+------+---------+-------+---------
+ parallel |     62 |   62 | t       |     0 | 
+(1 row)
+
+SELECT * FROM variant('window 0 words', 'sift.test_limits = ''dist_narrow_words=0''');
+    variant     | shapes | scan | workers | wrong | failing 
+----------------+--------+------+---------+-------+---------
+ window 0 words |     62 |   62 | f       |     0 | 
+(1 row)
+
+SELECT * FROM variant('window 1 word', 'sift.test_limits = ''dist_narrow_words=1''');
+    variant    | shapes | scan | workers | wrong | failing 
+---------------+--------+------+---------+-------+---------
+ window 1 word |     62 |   62 | f       |     0 | 
+(1 row)
+
+SELECT * FROM variant('window 2 words', 'sift.test_limits = ''dist_narrow_words=2''');
+    variant     | shapes | scan | workers | wrong | failing 
+----------------+--------+------+---------+-------+---------
+ window 2 words |     62 |   62 | f       |     0 | 
+(1 row)
+
+DROP FUNCTION variant(text, text);
+DROP TABLE shapes, nr, r_on, r_off;
+DROP EXTENSION pg_sift;

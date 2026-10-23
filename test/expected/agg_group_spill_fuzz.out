@@ -2,6 +2,7 @@
 -- FILTER) and a hash memory of 64kB to 256kB; the scan is forced (the hash and the sort of the normal plan off) and its rows must be the normal plan's,
 -- whether the group table spilled, its sets went through the sort in a merged partition, or not. The seeds include ones whose sets outgrew hash memory in the
 -- partitions (a partition returned before the counts of those sets were taken gave short counts).
+-- The later seeds count the narrow sets (columns of 5 and 200 values, one that widens late, one past the widest window).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '120s';
@@ -9,9 +10,11 @@ SET client_min_messages = warning;
 CREATE TABLE fz AS
 SELECT i AS id, (hashint4(i) & 2147483647) % 50000 AS k1, 'k' || (hashint4(i * 2) & 2147483647) % 3000 AS k2,
        (hashint4(i * 3) & 2147483647) % 100000 AS vi, 'v' || (hashint4(i * 5) & 2147483647) % 3000 AS vt,
-       ((hashint4(i * 7) & 2147483647) % 20000) / 100.0 AS vn, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS val
+       ((hashint4(i * 7) & 2147483647) % 20000) / 100.0 AS vn, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS val,
+       1 + (hashint4(i * 11) & 2147483647) % 5 AS v5, (hashint4(i * 13) & 2147483647) % 200 AS v200,
+       CASE WHEN i <= 40000 THEN i % 5 ELSE (hashint4(i * 17) & 2147483647) % 3000 END AS vl, (hashint4(i * 19) & 2147483647) % 600 AS v600
 FROM generate_series(1, 100000) i;
-CREATE INDEX fz_col ON fz USING sift_col (id, k1, k2, vi, vt, vn, val);
+CREATE INDEX fz_col ON fz USING sift_col (id, k1, k2, vi, vt, vn, val, v5, v200, vl, v600);
 VACUUM (FREEZE, ANALYZE) fz;
 CREATE TABLE fz_res (seed int, spilled boolean, wrong bigint, err text);
 DO $$
@@ -21,13 +24,19 @@ DECLARE
 		'count(*) AS m1, count(DISTINCT vi) AS m2',
 		'count(*) AS m1, count(DISTINCT vt) AS m2, sum(val) AS m3',
 		'count(DISTINCT vn) AS m1, count(DISTINCT vi) FILTER (WHERE id % 3 = 0) AS m2, max(val) AS m3',
-		'count(DISTINCT vi) AS m1, count(DISTINCT vt) AS m2, count(DISTINCT vn) AS m3, sum(val) AS m4, min(val) AS m5'];
+		'count(DISTINCT vi) AS m1, count(DISTINCT vt) AS m2, count(DISTINCT vn) AS m3, sum(val) AS m4, min(val) AS m5',
+		-- the narrow sets (agg/dist.c): 5 and 200 values, one that widens late, one past the widest window
+		'count(DISTINCT v5) AS m1, count(DISTINCT v200) AS m2, sum(val) AS m3',
+		'count(DISTINCT vl) AS m1, count(DISTINCT v600) AS m2, count(*) AS m3',
+		'count(DISTINCT v5) FILTER (WHERE id % 3 = 0) AS m1, count(DISTINCT vl) AS m2, count(DISTINCT vi) AS m3',
+		'count(DISTINCT v200) AS m1, count(DISTINCT v600) AS m2, min(val) AS m3, max(val) AS m4'];
 	mems text[] := ARRAY['64kB', '128kB', '256kB'];
 	s int; kx text; q text; l text; sp boolean; n bigint;
 BEGIN
-	FOR s IN 1 .. 64 LOOP
+	FOR s IN 1 .. 88 LOOP
 		kx := keys[1 + (hashint4(s) & 2147483647) % 6];
-		q := format('SELECT %s, %s FROM fz GROUP BY %s', kx, aggs[1 + (hashint4(s + 1000) & 2147483647) % 4], kx);
+		-- the seeds up to 64 keep the mixes they had; the others take the narrow ones
+		q := format('SELECT %s, %s FROM fz GROUP BY %s', kx, aggs[CASE WHEN s <= 64 THEN 1 + (hashint4(s + 1000) & 2147483647) % 4 ELSE 5 + (hashint4(s + 1000) & 2147483647) % 4 END], kx);
 		BEGIN
 			DROP TABLE IF EXISTS got;
 			DROP TABLE IF EXISTS want;
@@ -59,7 +68,7 @@ SELECT count(*) AS seeds, count(*) FILTER (WHERE spilled) >= 20 AS many_spilled,
 FROM fz_res;
  seeds | many_spilled | wrong | errors 
 -------+--------------+-------+--------
-    64 | t            |     0 |      0
+    88 | t            |     0 |      0
 (1 row)
 
 DROP TABLE fz_res, got, want, fz;
