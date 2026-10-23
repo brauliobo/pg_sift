@@ -148,20 +148,21 @@ unit_group(ColUnit *cu, int group)
 		uint32	   *lead;
 		bool		have;
 
-		/* the chunk is still looked at (its pages are checked, its row count too), what is decoded and summed from it is the cache's */
+		lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
+		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
+		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
+		/* the chunk is still looked at (its pages are checked, its row count too), what is decoded from it is the cache's */
 		if (kept && unit_chunk(cu, group, &c) && c.n == n)
 		{
-			g->counts = kept->counts;
-			g->eoff = kept->eoff;
+			for (uint32 i = 0; i < n; i++)
+				g->counts[i] = kept->counts[i];
+			sift_cck->prefix32(lead, n + 1, g->eoff, 0, 0);
 			g->nelems = kept->nelems;
 			g->nulls = c.nulls;
 			g->ovf = c.ovf;
 			g->ready = true;
 			return g;
 		}
-		lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
-		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
-		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
 		have = unit_chunk(cu, group, &c);
 		if (have)
 		{
@@ -183,7 +184,7 @@ unit_group(ColUnit *cu, int group)
 		}
 		g->nelems = g->eoff[n];
 		if (have && cu->seg)
-			sift_cseg_lens_keep(cu->seg, cu->u, group, n, g->counts, g->eoff);
+			sift_cseg_lens_keep(cu->seg, cu->u, group, n, g->counts, g->nelems);
 		g->ready = true;
 	}
 	return g;
