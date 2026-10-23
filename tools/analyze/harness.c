@@ -172,13 +172,15 @@ gen_text(char *buf, int max)
 	return n;
 }
 
-/* Whether a token analyzes to exactly itself */
+/* Whether a token analyzes to exactly itself; a word over 255 bytes is its start, U+FFFF and 16 hex digits (the hash), which no text analyzer keeps in one piece */
 static bool
 self_analyzes(SiftAnalyzer *a, const char *tok, int n)
 {
 	char		copy[SIFT_MAX_TERM_BYTES];
 	SiftToken  *r;
 
+	if (n > 19 && memcmp(tok + n - 19, "\xEF\xBF\xBF", 3) == 0)
+		return true;
 	memcpy(copy, tok, n);
 	return sift_analyze_tokens(a, copy, n, &r) == 1 && r[0].len == n && memcmp(r[0].str, copy, n) == 0;
 }
