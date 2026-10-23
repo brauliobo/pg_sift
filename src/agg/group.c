@@ -336,6 +336,13 @@ hash_init(AggExec *ex)
 	ex->ngroups = 0;
 }
 
+/* the arrays of `total` slots are far more than the groups the planner expects: the capacity of the keys multiplies, the groups do not */
+bool
+direct_oversized(AggExec *ex, uint64 total)
+{
+	return total > PRESIZE_MIN && total > ex->spec->est_groups * 4;
+}
+
 /* a key outgrew its capacity: more room per key, or the hash table when the arrays would be too big */
 void
 direct_grow(AggExec *ex)
@@ -358,7 +365,7 @@ direct_grow(AggExec *ex)
 		total = Min((uint64) ex->direct_max + 1, total * k->cap);
 	}
 	remap = palloc(oldcap * sizeof(uint32));
-	if (total > PRESIZE_MIN && total <= ex->direct_max && total > ex->spec->est_groups * 4)
+	if (total <= ex->direct_max && direct_oversized(ex, total))
 	{
 		uint32		used = 0;
 
