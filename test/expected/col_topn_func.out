@@ -1,0 +1,328 @@
+-- ORDER BY <a function of the columns> LIMIT n: concatenations, nested functions, functions with a string result (left, substr, initcap, md5, ...), numeric and date
+-- functions, a function of the user's (plpgsql, immutable) and a parameter of a generic plan. The scan runs PostgreSQL's own expression evaluator for every row that
+-- passes the WHERE, so the functions, their errors and the collation of their string results are the backend's. Every query runs twice, the plain plan as the reference
+-- (sift.enable_agg off) and the pushed one, and the rows are compared in order. A parameter of the statement or a function that is not parallel safe keeps the scan
+-- in the leader (no workers); an expression that is not immutable keeps the normal plan.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+CREATE TABLE tb (id int PRIMARY KEY, g int, a int, b bigint, c smallint, f float8, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text, v varchar(12), u uuid);
+INSERT INTO tb
+SELECT i, i % 7,
+	CASE WHEN i % 4000 < 900 THEN NULL WHEN i = 17000 THEN 2147483647 WHEN i = 21000 THEN -2147483648 ELSE i / 3 END,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN 9223372036854775807 WHEN i % 991 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 1000003 - 500000 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 101 = 0 THEN 32767 WHEN i % 103 = 0 THEN -32768 ELSE (i * 37) % 2000 - 1000 END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 1009 = 0 THEN 'NaN' WHEN i % 1013 = 0 THEN 'Infinity' WHEN i % 1021 = 0 THEN '-0' ELSE ((i * 7919) % 20001 - 10000) / 7.0 END,
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 997 = 0 THEN 9999999999.99 ELSE ((i * 37) % 4001 - 2000) / 7.0 END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 1000003::bigint) % 100000 - 50000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 5003 = 0 THEN 'infinity' ELSE DATE '2020-01-01' + (i / 40) END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + (i % 7000) * interval '29 minutes' END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 23 = 0 THEN ''
+		ELSE (ARRAY['Zed','apple','Apple','banana','éclair','Ärger','b','B','a b','a-b','z','10','9','ß','ss','日本','é日','_x','  ','İstanbul'])[1 + i % 20] || (i % 211) END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE 'V' || (i % 53) END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE ('00000000-0000-0000-0000-' || lpad(to_hex((i * 7919) % 100000), 12, '0'))::uuid END
+FROM generate_series(1, 30000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v, u);
+NOTICE:  sift_col: the strings of leaf 12 (attribute 13) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+NOTICE:  sift_col: the strings of leaf 12 (attribute 13) in superblock 1 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+RESET sift.test_limits;
+VACUUM (ANALYZE) tb;
+CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, '+par' when it plans workers, and the number of rows
+CREATE FUNCTION tb_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tb_a, tb_b;
+	PERFORM tb_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tb_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM tb_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE tb_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tb_a EXCEPT ALL SELECT pos, r FROM tb_b) UNION ALL (SELECT pos, r FROM tb_b EXCEPT ALL SELECT pos, r FROM tb_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ ', sorted' THEN '+sorted' ELSE '' END || CASE WHEN plan ~ 'Workers Planned' THEN '+par' ELSE '' END || ' ' || (SELECT count(*) FROM tb_b);
+END $$;
+CREATE FUNCTION tf_double(x int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$ BEGIN RETURN x * 2 + 1; END $$;
+CREATE FUNCTION tf_double_unsafe(x int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL UNSAFE AS $$ BEGIN RETURN x * 2 + 1; END $$;
+CREATE FUNCTION tf_raise(x int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$ BEGIN IF x = 17 THEN RAISE EXCEPTION 'seventeen' USING ERRCODE = 'P0042'; END IF; RETURN x; END $$;
+CREATE FUNCTION tf_stable(x int) RETURNS int LANGUAGE plpgsql STABLE AS $$ BEGIN RETURN x; END $$;
+-- a collation of the C library or ICU other than C, when the build has one (the case of strings follows its ctype)
+CREATE FUNCTION tb_coll() RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+-- a statement with parameters, planned generic: tb_check's answer
+CREATE FUNCTION tb_check_p(q text, types text, args text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tb_a, tb_b, tb_a0, tb_b0;
+	PERFORM set_config('plan_cache_mode', 'force_generic_plan', true);
+	PERFORM tb_mode(true, workers);
+	DEALLOCATE ALL;
+	EXECUTE format('PREPARE tb_p(%s) AS %s', types, q);
+	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) EXECUTE tb_p(%s)', args) LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE format('CREATE TEMP TABLE tb_a0 AS EXECUTE tb_p(%s)', args);
+	PERFORM tb_mode(false, 0);
+	DEALLOCATE ALL;
+	EXECUTE format('PREPARE tb_p(%s) AS %s', types, q);
+	EXECUTE format('CREATE TEMP TABLE tb_b0 AS EXECUTE tb_p(%s)', args);
+	CREATE TEMP TABLE tb_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM tb_a0 x;
+	CREATE TEMP TABLE tb_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM tb_b0 x;
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tb_a EXCEPT ALL SELECT pos, r FROM tb_b) UNION ALL (SELECT pos, r FROM tb_b EXCEPT ALL SELECT pos, r FROM tb_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ 'Workers Planned' THEN '+par' ELSE '' END || ' ' || (SELECT count(*) FROM tb_b);
+END $$;
+CREATE TABLE tb_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO tb_q VALUES
+	('concat_lower',    $q$SELECT id, s, v FROM tb ORDER BY lower(s || v), id LIMIT 25$q$),
+	('concat_upper',    $q$SELECT id, s, v FROM tb ORDER BY upper(v || s) DESC, id LIMIT 25$q$),
+	('concat_sep',      $q$SELECT id, s FROM tb ORDER BY s || '-' || id::text, id LIMIT 25$q$),
+	('concat_c',        $q$SELECT id, s, v FROM tb ORDER BY (s || v) COLLATE "C" DESC, id LIMIT 25$q$),
+	('concat_locale',   format($q$SELECT id, s, v FROM tb ORDER BY lower((s || v) COLLATE %I), id LIMIT 25 OFFSET 3$q$, tb_coll())),
+	('concat_nulls',    $q$SELECT id, s, v FROM tb ORDER BY coalesce(s, '') || coalesce(v, '') DESC, coalesce(v, '') || '/' || coalesce(s, ''), id LIMIT 25$q$),
+	('nested_lu',       $q$SELECT id, s FROM tb ORDER BY lower(upper(s)), id LIMIT 25$q$),
+	('nested_ul',       $q$SELECT id, s FROM tb ORDER BY upper(lower(s)) DESC, id LIMIT 25$q$),
+	('left',            $q$SELECT id, s FROM tb ORDER BY left(s, 3), id LIMIT 25$q$),
+	('substr',          $q$SELECT id, s FROM tb ORDER BY substr(s, 2, 3) DESC, id LIMIT 25$q$),
+	('trim_right',      $q$SELECT id, s FROM tb ORDER BY right(btrim(s), 2), id LIMIT 25$q$),
+	('initcap',         $q$SELECT id, s FROM tb ORDER BY initcap(s), id LIMIT 25$q$),
+	('initcap_locale',  format($q$SELECT id, s FROM tb ORDER BY initcap(s COLLATE %I) DESC, id LIMIT 25$q$, tb_coll())),
+	('reverse',         $q$SELECT id, s FROM tb ORDER BY reverse(s), id LIMIT 25$q$),
+	('replace',         $q$SELECT id, s FROM tb ORDER BY replace(s, 'a', 'z'), id LIMIT 25$q$),
+	('translate',       $q$SELECT id, s FROM tb ORDER BY translate(s, 'aeiou', 'AEIOU') DESC, id LIMIT 25$q$),
+	('md5',             $q$SELECT id, s FROM tb ORDER BY md5(s), id LIMIT 25$q$),
+	('repeat',          $q$SELECT id, s FROM tb ORDER BY repeat(left(s, 2), 3), id LIMIT 25$q$),
+	('lpad',            $q$SELECT id FROM tb ORDER BY lpad((id % 97)::text, 4, '0'), id LIMIT 25$q$),
+	('case_text_func',  $q$SELECT id, s FROM tb ORDER BY CASE WHEN s IS NULL THEN '' ELSE left(s, 3) END, id LIMIT 25$q$),
+	('coalesce_text',   $q$SELECT id, s, v FROM tb ORDER BY coalesce(left(s, 2), v), id LIMIT 25$q$),
+	('length_concat',   $q$SELECT id, s, v FROM tb ORDER BY length(s || v) DESC NULLS LAST, id LIMIT 25$q$),
+	('abs_guarded',     $q$SELECT id, a FROM tb WHERE a > -2147483648 ORDER BY abs(a) DESC, id LIMIT 25$q$),
+	('mod_div',         $q$SELECT id, a FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY mod(a, 7), div(a, 50) DESC, id LIMIT 25$q$),
+	('round_numeric',   $q$SELECT id, n FROM tb ORDER BY round(n, 1), sign(n), id LIMIT 25$q$),
+	('floor_ceil',      $q$SELECT id, n FROM tb ORDER BY floor(n) DESC, ceil(n), id LIMIT 25$q$),
+	('sqrt_abs',        $q$SELECT id, f FROM tb ORDER BY sqrt(abs(f)), id LIMIT 25$q$),
+	('ln_positive',     $q$SELECT id, f FROM tb WHERE f > 0 AND f < 'Infinity' ORDER BY ln(f) DESC, id LIMIT 25$q$),
+	('date_trunc',      $q$SELECT id, t FROM tb ORDER BY date_trunc('month', t) DESC, id LIMIT 25$q$),
+	('extract_date',    $q$SELECT id, d FROM tb WHERE d < 'infinity' ORDER BY extract(month FROM d), id LIMIT 25$q$),
+	('make_date',       $q$SELECT id, g FROM tb ORDER BY make_date(2024, 1 + g, 1) DESC, id LIMIT 25$q$),
+	('ts_interval_col', $q$SELECT id, t, g FROM tb ORDER BY t + g * interval '1 hour', id LIMIT 25$q$),
+	('epoch_diff',      $q$SELECT id, t FROM tb ORDER BY extract(epoch FROM t - TIMESTAMP '2020-02-01') DESC, id LIMIT 25$q$),
+	('user_function',   $q$SELECT id, g FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY tf_double(a), id LIMIT 25$q$),
+	('user_in_case',    $q$SELECT id, g FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY CASE WHEN a > 0 THEN tf_double(a) ELSE 0 END DESC, id LIMIT 25$q$),
+	('two_funcs',       $q$SELECT id, s, a FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY left(s, 2), abs(a) % 10 DESC, id LIMIT 30$q$),
+	('six_keys',        $q$SELECT id, s FROM tb ORDER BY g, left(s, 1), lower(s || v), length(s), md5(s), upper(v), id LIMIT 30$q$),
+	('window_total',    $q$SELECT id, s, count(*) OVER () AS total FROM tb WHERE g IN (1, 2) ORDER BY left(s, 2), id LIMIT 10$q$),
+	('deep_page',       $q$SELECT id, s FROM tb ORDER BY lower(s || v), id LIMIT 20 OFFSET 20000$q$),
+	('all_rows',        $q$SELECT id, s FROM tb ORDER BY left(s, 2), id LIMIT 200000$q$);
+SELECT tag, tb_check(q) FROM tb_q ORDER BY tag COLLATE "C";
+NOTICE:  table "tb_a" does not exist, skipping
+NOTICE:  table "tb_b" does not exist, skipping
+       tag       |        tb_check        
+-----------------+------------------------
+ abs_guarded     | same+topn 25
+ all_rows        | same+topn+sorted 30000
+ case_text_func  | same+topn 25
+ coalesce_text   | same+topn 25
+ concat_c        | same+topn 25
+ concat_locale   | same+topn 25
+ concat_lower    | same+topn 25
+ concat_nulls    | same+topn 25
+ concat_sep      | same+topn 25
+ concat_upper    | same+topn 25
+ date_trunc      | same+topn 25
+ deep_page       | same+topn 20
+ epoch_diff      | same+topn 25
+ extract_date    | same+topn 25
+ floor_ceil      | same+topn 25
+ initcap         | same+topn 25
+ initcap_locale  | same+topn 25
+ left            | same+topn 25
+ length_concat   | same+topn 25
+ ln_positive     | same+topn 25
+ lpad            | same+topn 25
+ make_date       | same+topn 25
+ md5             | same+topn 25
+ mod_div         | same+topn 25
+ nested_lu       | same+topn 25
+ nested_ul       | same+topn 25
+ repeat          | same+topn 25
+ replace         | same+topn 25
+ reverse         | same+topn 25
+ round_numeric   | same+topn 25
+ six_keys        | same+topn+sorted 30
+ sqrt_abs        | same+topn 25
+ substr          | same+topn 25
+ translate       | same+topn 25
+ trim_right      | same+topn 25
+ ts_interval_col | same+topn 25
+ two_funcs       | same+topn 30
+ user_function   | same+topn 25
+ user_in_case    | same+topn 25
+ window_total    | same+topn 10
+(40 rows)
+
+-- workers: each keeps a heap of the keys it saw, the leader merges them
+SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('concat_lower', 'nested_lu', 'left', 'md5', 'case_text_func', 'round_numeric', 'date_trunc', 'user_function', 'two_funcs', 'six_keys') ORDER BY tag COLLATE "C";
+      tag       |      tb_check       
+----------------+---------------------
+ case_text_func | same+topn+par 25
+ concat_lower   | same+topn+par 25
+ date_trunc     | same+topn+par 25
+ left           | same+topn+par 25
+ md5            | same+topn+par 25
+ nested_lu      | same+topn+par 25
+ round_numeric  | same+topn+par 25
+ six_keys       | same+topn+sorted 30
+ two_funcs      | same+topn+par 30
+ user_function  | same+topn+par 25
+(10 rows)
+
+-- a function that is not parallel safe keeps the scan in the leader; so does a parameter of the statement
+SELECT tb_check($q$SELECT id, g FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY tf_double_unsafe(a), id LIMIT 25$q$, 2) AS unsafe_function,
+	   tb_check($q$SELECT id, g FROM tb WHERE a BETWEEN -1000 AND 1000 ORDER BY tf_double(a), id LIMIT 25$q$, 2) AS safe_function;
+ unsafe_function |  safe_function   
+-----------------+------------------
+ same+topn 25    | same+topn+par 25
+(1 row)
+
+-- the sort of every row that passes spills (work_mem), and a deep page
+SET work_mem = '64kB';
+SELECT tb_check($q$SELECT id, s, v FROM tb ORDER BY lower(s || v), id LIMIT 20 OFFSET 20000$q$) AS spilled_concat,
+	   tb_check($q$SELECT id, s FROM tb ORDER BY md5(s), id LIMIT 30 OFFSET 15000$q$) AS spilled_md5;
+   spilled_concat    |     spilled_md5     
+---------------------+---------------------
+ same+topn+sorted 20 | same+topn+sorted 30
+(1 row)
+
+RESET work_mem;
+-- parameters of the statement, planned generic: the same rows as the plain plan, in the leader
+SELECT tb_check_p($q$SELECT id, g FROM tb ORDER BY g + $1, id LIMIT 25$q$, 'int', '7') AS plus,
+	   tb_check_p($q$SELECT id, g FROM tb ORDER BY CASE WHEN g > $1 THEN 1 ELSE 0 END, id DESC LIMIT 25$q$, 'int', '3') AS in_case,
+	   tb_check_p($q$SELECT id, a FROM tb ORDER BY coalesce(a, $1), id LIMIT 25$q$, 'int', '250') AS coalesce_default,
+	   tb_check_p($q$SELECT id, s FROM tb ORDER BY s || $1, id LIMIT 25$q$, 'text', $$'-x'$$) AS text_appended,
+	   tb_check_p($q$SELECT id, s FROM tb ORDER BY left(s, $1), id LIMIT 25$q$, 'int', '2', 2) AS with_workers_asked;
+NOTICE:  table "tb_a0" does not exist, skipping
+NOTICE:  table "tb_b0" does not exist, skipping
+     plus     |   in_case    | coalesce_default | text_appended | with_workers_asked 
+--------------+--------------+------------------+---------------+--------------------
+ same+topn 25 | same+topn 25 | same+topn 25     | same+topn 25  | same+topn 25
+(1 row)
+
+-- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
+INSERT INTO tb SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, NULL, 12.5 * i, NULL, DATE '2019-12-31' - i % 5, NULL,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE '!Ǆ' || i || 'zz' END, 'w' || i
+FROM generate_series(1, 700) i;
+UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
+UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
+DELETE FROM tb WHERE id % 83 = 0;
+SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('concat_lower', 'nested_lu', 'left', 'initcap', 'md5', 'case_text_func', 'round_numeric', 'user_function', 'two_funcs', 'deep_page') ORDER BY tag COLLATE "C";
+      tag       |   tb_check   
+----------------+--------------
+ case_text_func | same+topn 25
+ concat_lower   | same+topn 25
+ deep_page      | same+topn 20
+ initcap        | same+topn 25
+ left           | same+topn 25
+ md5            | same+topn 25
+ nested_lu      | same+topn 25
+ round_numeric  | same+topn 25
+ two_funcs      | same+topn 30
+ user_function  | same+topn 25
+(10 rows)
+
+SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('concat_lower', 'left', 'two_funcs') ORDER BY tag COLLATE "C";
+     tag      |     tb_check     
+--------------+------------------
+ concat_lower | same+topn+par 25
+ left         | same+topn+par 25
+ two_funcs    | same+topn+par 30
+(3 rows)
+
+VACUUM tb;
+SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('concat_lower', 'left', 'initcap', 'md5') ORDER BY tag COLLATE "C";
+     tag      |   tb_check   
+--------------+--------------
+ concat_lower | same+topn 25
+ initcap      | same+topn 25
+ left         | same+topn 25
+ md5          | same+topn 25
+(4 rows)
+
+-- an expression that raises raises the same SQLSTATE in both plans, and none for a row the WHERE removes
+CREATE FUNCTION tb_error(q text, pushed bool) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM tb_mode(pushed, 0);
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE;
+END $$;
+CREATE FUNCTION tb_scan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; plan text := '';
+BEGIN
+	PERFORM tb_mode(true, 0);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'topn' ELSE 'plain' END;
+END $$;
+SELECT tag, tb_error(q, true) = tb_error(q, false) AS same_error, tb_error(q, true) AS sqlstate, tb_scan(q) AS pushed
+FROM (VALUES ('abs_min',          $q$SELECT id FROM tb ORDER BY abs(a), id LIMIT 5$q$),
+			 ('abs_min_where',    $q$SELECT id FROM tb WHERE a > -2147483648 ORDER BY abs(a), id LIMIT 5$q$),
+			 ('ln_not_positive',  $q$SELECT id FROM tb ORDER BY ln(f), id LIMIT 5$q$),
+			 ('power_overflow',   $q$SELECT id FROM tb ORDER BY power(f, 400), id LIMIT 5$q$),
+			 ('user_raise',       $q$SELECT id FROM tb ORDER BY tf_raise((id % 40)::int), id LIMIT 5$q$),
+			 ('user_raise_where', $q$SELECT id FROM tb WHERE id % 40 <> 17 ORDER BY tf_raise((id % 40)::int), id LIMIT 5$q$),
+			 ('make_date_month',  $q$SELECT id FROM tb ORDER BY make_date(2024, g + 7, 1), id LIMIT 5$q$),
+			 ('make_date_ok',     $q$SELECT id FROM tb ORDER BY make_date(2024, g + 6, 1), id LIMIT 5$q$)) v(tag, q)
+ORDER BY tag COLLATE "C";
+       tag        | same_error | sqlstate | pushed 
+------------------+------------+----------+--------
+ abs_min          | t          | 22003    | topn
+ abs_min_where    | t          | no error | topn
+ ln_not_positive  | t          | 2201E    | topn
+ make_date_month  | t          | 22008    | topn
+ make_date_ok     | t          | no error | topn
+ power_overflow   | t          | 22003    | topn
+ user_raise       | t          | P0042    | topn
+ user_raise_where | t          | no error | topn
+(8 rows)
+
+-- what stays with the normal plan, each by a named refusal
+SET sift.enable_agg = on;
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
+SELECT k, w.used, w.slug, w.reason
+FROM (VALUES ('stable user function', $q$SELECT id FROM tb ORDER BY tf_stable(g), id LIMIT 5$q$),
+			 ('concat function',      $q$SELECT id FROM tb ORDER BY concat(s, v), id LIMIT 5$q$),
+			 ('stable text of date',  $q$SELECT id FROM tb ORDER BY d::text, id LIMIT 5$q$),
+			 ('interval result',      $q$SELECT id FROM tb WHERE t < 'infinity' ORDER BY t - TIMESTAMP '2020-02-01', id LIMIT 5$q$),
+			 ('array result',         $q$SELECT id FROM tb ORDER BY ARRAY[g, 1], id LIMIT 5$q$),
+			 ('jsonb result',         $q$SELECT id FROM tb ORDER BY to_jsonb(g), id LIMIT 5$q$),
+			 ('sub-select',           $q$SELECT id FROM tb ORDER BY length(s) + (SELECT 1), id LIMIT 5$q$),
+			 ('allowed',              $q$SELECT id FROM tb ORDER BY lower(s || v), id LIMIT 5$q$)) q(k, q),
+	 LATERAL sift.explain_why(q.q) w
+ORDER BY k COLLATE "C";
+          k           | used |    slug    |                                                                                reason                                                                                 
+----------------------+------+------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ allowed              | t    |            | 
+ array result         | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ concat function      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ interval result      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ jsonb result         | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ stable text of date  | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ stable user function | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ sub-select           | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
+(8 rows)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE tb, tb_q;
+DROP FUNCTION tb_check(text,integer), tb_check_p(text,text,text,integer), tb_coll(), tb_error(text,boolean), tb_mode(boolean,integer), tb_scan(text),
+	tf_double(int), tf_double_unsafe(int), tf_raise(int), tf_stable(int);
+DROP EXTENSION pg_sift_test, pg_sift;

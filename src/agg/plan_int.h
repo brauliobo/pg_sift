@@ -145,6 +145,7 @@ typedef struct AggCtx
 	double		topn_fetch;		/* ... the rows it reads from the heap */
 	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
 	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */
+	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
 	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
