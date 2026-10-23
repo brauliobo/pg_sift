@@ -232,7 +232,7 @@ sift_col_auto_keys_report(Relation index)
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], cx);
 		units += seg->nsb;
-		sift_cseg_pre_census(seg, spec, sift_col_format_minor, &c);
+		sift_cseg_pre_census(seg, spec, sift_col_format_minor, 0, &c);
 		for (int d = 0; d < spec->ndims; d++)
 			if (!spec->dim[d].cal)
 				cubed[spec->dim[d].leaf] += c.dim[d];

@@ -249,7 +249,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 
 			SiftCPaggCensus census;
 
-			sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, &census);
+			sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, 0, &census);
 			for (int d = 0; d < rel->pagg.ndims; d++)
 				if (!rel->pagg.dim[d].cal)
 					histo[rel->pagg.dim[d].leaf] += census.dim[d];
