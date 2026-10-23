@@ -4,6 +4,7 @@
 # again through the hook (agg/cte.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
 # is loaded before the statement under test, and sift.stats() reads the scans that backend ran.
 . "$(dirname "$0")/lib.bash"
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 plan 8
 node_init af 27 "autovacuum = off
@@ -36,7 +37,7 @@ on=$(session "$Q")
 check "the first statement of a session runs in the scan" test "$(scans "$on")" -ge 1
 off=$(session "SET sift.enable_agg = off" "$Q")
 check "with the pushdown off it does not" test "$(scans "$off")" == 0
-check "the rows are those of the normal plan" test "$(grep -v '^scans|' <<<"$on" | md5sum)" == "$(grep -v '^scans|' <<<"$off" | md5sum)"
+check "the rows are those of the normal plan" test "$(grep -v '^scans|' <<<"$on" | "$REPO/scripts/sha256.sh")" == "$(grep -v '^scans|' <<<"$off" | "$REPO/scripts/sha256.sh")"
 
 two=$(session "$Q" "$Q")
 check "the second statement runs in the scan too" test "$(scans "$two")" -ge 2
