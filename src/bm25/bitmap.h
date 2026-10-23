@@ -55,7 +55,8 @@ typedef uint64_t sift_tid;
 
 enum { SIFT_LIST = 1, SIFT_GROUPED = 2 };
 enum { SIFT_F_TF = 1 };
-enum { SIFT_ISA_SCALAR, SIFT_ISA_AVX2, SIFT_ISA_AVX512, SIFT_NISA };
+/* the ranks of an architecture's levels: NEON is the first level of AArch64, as AVX2 is of x86-64 (core/cpu.h) */
+enum { SIFT_ISA_SCALAR, SIFT_ISA_AVX2, SIFT_ISA_AVX512, SIFT_NISA, SIFT_ISA_NEON = SIFT_ISA_AVX2 };
 /* SIFT_CT_PACKED: as AUTO, but a group that would be an ARRAY is PACKED when that is smaller (segment format 3) */
 enum { SIFT_CT_AUTO, SIFT_CT_BITMAP, SIFT_CT_ARRAY, SIFT_CT_PACKED };
 

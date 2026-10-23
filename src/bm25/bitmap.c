@@ -7,7 +7,11 @@
 const sift_kernels *sift_k = &sift_kern_scalar;
 static int cur_isa;
 
+#if defined(__aarch64__) && defined(__ARM_NEON)
+static const sift_kernels *const kern_by_isa[SIFT_NISA] = { &sift_kern_scalar, &sift_kern_neon, &sift_kern_scalar };
+#else
 static const sift_kernels *const kern_by_isa[SIFT_NISA] = { &sift_kern_scalar, &sift_kern_avx2, &sift_kern_avx512 };
+#endif
 
 static int isa_ok(int isa)
 {
@@ -24,6 +28,8 @@ static int isa_ok(int isa)
 		       __builtin_cpu_supports("avx512vpopcntdq");
 	}
 	return 0;
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+	return isa == SIFT_ISA_SCALAR || isa == SIFT_ISA_NEON;
 #else
 	return isa == SIFT_ISA_SCALAR;
 #endif
@@ -49,7 +55,11 @@ int sift_isa(void) { return cur_isa; }
 
 const char *sift_isa_name(int isa)
 {
+#if defined(__aarch64__) && defined(__ARM_NEON)
+	static const char *n[SIFT_NISA] = { "scalar", "neon", "?" };
+#else
 	static const char *n[SIFT_NISA] = { "scalar", "avx2", "avx512" };
+#endif
 	return isa >= 0 && isa < SIFT_NISA ? n[isa] : "?";
 }
 
