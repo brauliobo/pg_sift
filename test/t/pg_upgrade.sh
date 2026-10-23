@@ -51,6 +51,8 @@ fi
 OLDCFG=${OLDBIN:+$OLDBIN/pg_config}
 OLDCFG=${OLDCFG:-$NEWCFG}
 OLD_MAJOR=$("$OLDCFG" --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+# a server image can carry a major pg_sift does not support (the Makefile's PG_MIN_MAJOR): the upgrade then runs within the major
+if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *:\?= *\([0-9]*\).*/\1/p' "$REPO/Makefile" | head -n 1))); then OLDCFG=$NEWCFG; OLD_MAJOR=$PG_MAJOR; fi
 
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
