@@ -36,7 +36,7 @@ Each index or table file records the format it needs (the BM25 metapage minor, t
 older ones, and refuses a newer one with a `REINDEX` hint instead of guessing. Going back to an older pg_sift is therefore not automatic:
 
 - run `scripts/upgrade-check.sh --to X.Y`; every object the target release cannot read is a `blocker` row with its fix;
-- `sift_col`: `SET sift.col_format_minor` to the minor the target release reads, then `REINDEX INDEX`; `sift_table`: the same setting, then `VACUUM FULL t` (or `ALTER TABLE t SET ACCESS METHOD heap` and back); the sequence, tested end to end for 3.2, is in [UPGRADING.md](UPGRADING.md#4-an-older-release);
+- `sift_col`: `SET sift.col_format_minor` to the minor the target release reads, then `REINDEX INDEX`; `sift_table`: the same setting, then `VACUUM FULL t`; the two event triggers of 3.3 `DISABLE`d for a 3.2 library; the sequence, tested end to end for 3.2, is in [UPGRADING.md](UPGRADING.md#4-an-older-release);
 - `sift` (BM25) index: drop it and create it again with the older release, or keep the newer library;
 - a standby that stays on the older release needs the formats the older library reads while its primary writes;
 - 3.3 writes at `sift.col_format_minor = 15` by default: a database written with the defaults can no longer be read by a 3.2 library (new indexes carry `cube_minmax` and `superunit`, and the `sift_table` tables with a date or timestamp column hold calendar cells), unless the setting is lowered (6 for 3.2) before the writes.

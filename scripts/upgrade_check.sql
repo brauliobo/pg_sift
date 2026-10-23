@@ -99,7 +99,8 @@ BEGIN
 			ELSIF r.amname = 'sift_col' THEN
 				adv := format('SET sift.col_format_minor = %s and REINDEX INDEX %s writes what %s reads', col_setting->>tgt, r.rel, tgt);
 			ELSE
-				adv := format('SET sift.col_format_minor = %s, then ALTER TABLE %s SET ACCESS METHOD heap and back to sift_table rewrites it in what %s reads',
+				-- not ALTER TABLE .. SET ACCESS METHOD heap and back: it fails with "row is too big" on a row that does not fit a heap page, VACUUM FULL rewrites any row
+				adv := format('SET sift.col_format_minor = %s, then VACUUM FULL %s rewrites it in what %s reads (ACCESS EXCLUSIVE lock)',
 							  col_setting->>tgt, r.rel, tgt);
 			END IF;
 			advice := adv;
@@ -112,6 +113,18 @@ BEGIN
 			RETURN NEXT;
 		END IF;
 	END LOOP;
+
+	-- the two event triggers of 3.3 call table_ddl_check, a function that only the 3.3 library has (sift_table_paths_drop is 3.2's): with an older library every ALTER TABLE
+	-- and CREATE TRIGGER of the database fails
+	IF tgt IS NOT NULL AND string_to_array(tgt, '.')::int[] < ARRAY[3, 3] THEN
+		FOR r IN SELECT e.evtname::text AS name FROM pg_event_trigger e JOIN pg_proc p ON p.oid = e.evtfoid
+				 WHERE e.evtenabled <> 'D' AND p.pronamespace = 'sift'::regnamespace AND p.proname = 'table_ddl_check' ORDER BY 1
+		LOOP
+			object := r.name; kind := 'trigger'; detected := 'enabled, its function is in the 3.3 library only'; status := 'blocker';
+			advice := format('ALTER EVENT TRIGGER %s DISABLE before the %s library runs (it would fail every ALTER TABLE and CREATE TRIGGER), ENABLE it when 3.3 runs again', r.name, tgt);
+			RETURN NEXT;
+		END LOOP;
+	END IF;
 
 	-- what the units written before an option, or the segments of a sift_table below the column format of its schema, lack (the extension of 3.3 on has the
 	-- function; an older one gets these rows after its update)

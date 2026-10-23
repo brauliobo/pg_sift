@@ -31,6 +31,7 @@ database has a blocker (or a warning with `--strict`) and 2 when a database coul
 | `index`, `table` | the metapage format and the column formats of every `sift` index, `sift_col` index and `sift_table` | `blocker`: this library cannot open it (the error and its hint are the advice); with `--to`, the first release that reads it is newer than the target |
 | `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_dims`, `set_columns`, `order_columns`, `key_presence` or `point_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
 | `setting` | `sift.*` in the server configuration, the session, `ALTER DATABASE` and `ALTER ROLE` | `warn`: a setting the library does not define (removed or renamed), a feature switched off (a boolean setting that defaults on), `sift.col_format_minor` kept below the default |
+| `trigger` | with `--to` a release before 3.3: the event triggers of 3.3 | `blocker`: the older library has not their function and would fail every `ALTER TABLE` and `CREATE TRIGGER`; `ALTER EVENT TRIGGER x DISABLE` |
 | `test` | test-only settings and the extension `pg_sift_test` | `warn`: remove them; they need the test build of the library |
 
 Run it before the update and again after it: the second run must have no `warn` that the first one explained.
@@ -130,9 +131,11 @@ scripts/upgrade-check.sh --to 3.2 app
 # 2. every write from now on is readable by 3.2 (superuser; new sessions pick it up)
 psql -d postgres -c "ALTER SYSTEM SET sift.col_format_minor = 6" -c "SELECT pg_reload_conf()"
 
-# 3. rewrite each blocker row: an index with REINDEX, a sift_table with VACUUM FULL (one command each, outside a transaction block)
+# 3. one command for each blocker row (outside a transaction block): an index with REINDEX, a sift_table with VACUUM FULL, an event trigger
+#    with DISABLE (the 3.2 library has not the function of the two event triggers of 3.3, and would fail every ALTER TABLE and CREATE TRIGGER of the database)
 psql -d app -c "REINDEX INDEX CONCURRENTLY public.facts_col"
 psql -d app -c "VACUUM FULL public.orders"
+psql -d app -c "ALTER EVENT TRIGGER sift_table_ddl_check DISABLE" -c "ALTER EVENT TRIGGER sift_table_repack_guard DISABLE"
 
 # 4. nothing blocks any more (exit status 0; the warning that the setting is below the default is the point)
 scripts/upgrade-check.sh --to 3.2 app
@@ -143,21 +146,36 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
 ```
 
 - Keep `sift.col_format_minor = 6` while any 3.3 library still writes: a write after step 4 at the default would put a section 3.2 cannot read back into the database.
-- `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the table in the format of the setting. The preflight names `ALTER TABLE t SET ACCESS METHOD heap` and back for a `sift_table`; it does the same, but it failed with
-  `row is too big` on a table holding a 5 MB row, which `VACUUM FULL` rewrites.
+- `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the table in the format of the setting, whatever the size of its rows (the test rewrites a table holding a 5 MB row). `ALTER TABLE t SET ACCESS METHOD heap` and back to
+  `sift_table` rewrites it too, but fails with `row is too big` on a row that does not fit a heap page, so the preflight does not name it: use `VACUUM FULL`.
 - A `sift` (BM25) index needs nothing for 3.2: its metapage minor (1.3) is the one 3.1 and 3.2 write (the test builds one with 3.3, and the 3.2 library verifies it and answers the same). A word over 255 bytes is stored as a hash since 3.3 and
   cut at 255 bytes by 3.2 (section 2): `REINDEX` such an index with 3.2 if a query for the long word must find it.
-- The catalog keeps the extension at 3.3: there is no script back, so the SQL objects added in 3.3 stay and their functions are not in the 3.2 library. The access methods, `sift.col_verify`, `sift.verify` and the other functions
-  3.2 has work on the downgraded database (tested), and writes, promotion, merge and `REINDEX` by the 3.2 library work.
+- The catalog keeps the extension at 3.3 (see "After the downgrade" below). The access methods, `sift.col_verify`, `sift.verify` and the other functions 3.2 has work on the downgraded database (tested), and writes, promotion,
+  merge and `REINDEX` by the 3.2 library work.
 - A standby that stays on 3.2 needs steps 2 and 3 on its primary, and `sift.col_format_minor` set there for every later write.
 - For 3.1 use 4 and for 3.0 use 3 in step 2 and `--to 3.1` or `--to 3.0` in steps 1 and 4 (the matrix test checks that those releases read what the settings 4 and 3 write, not the full sequence).
+
+### After the downgrade: the catalog, pg_dump and the way forward
+
+- **The catalog stays at 3.3.** There is no script from 3.3 to 3.2: `ALTER EXTENSION pg_sift UPDATE TO '3.2'` fails with `extension "pg_sift" has no update path from version "3.3" to version "3.2"`, and `DROP EXTENSION .. CASCADE` would drop every
+  index and `sift_table` that uses it. What 3.3 added to the SQL stays and is unusable with the 3.2 library: its functions (`sift.upgrade_commands`, `sift.stats`, `sift.explain_why`, `sift.worker_state`, `sift.table_space`, ...) and the two event
+  triggers fail with `could not find function "..." in file ".../pg_sift.so"` when called. Hence the `DISABLE` of step 3: with them enabled every `ALTER TABLE` and `CREATE TRIGGER` of the database fails, whatever the table, and the preflight lists them as
+  blockers for a target before 3.3. The tables and indexes, `sift.version()`, `sift.col_verify` and `sift.verify` work (tested).
+- **pg_dump and a server that has the 3.2 files only.** The dump holds `CREATE EXTENSION pg_sift` without a version, so the restore creates the extension at the version of the files it finds (3.2), not at 3.3; the objects of the extension are not in the dump, the
+  tables are restored with their rows, and every index is built again by the 3.2 library, in its format (no setting is needed and no section of 3.3 is left). A `CREATE INDEX` with an option that only 3.3 has (`cube_minmax`, `superunit`, `calendar_columns`,
+  `dict_lookup`, `rollup_dims`, `set_columns`, `order_columns`, `key_presence`, `point_columns`) fails with `unrecognized parameter`, and the restore goes on without that index. A `sift_table` with a row too large for a write buffer page (3.3 stores it, 3.2 refuses it with `row of sift_table "t" is too large`)
+  restores no row at all: its `COPY` fails as a whole. Those are the only errors (tested). Reset the option before the dump (`ALTER INDEX x RESET (option)`) or edit the statement, and keep such a table out of a dump for 3.2. The dump of a
+  database without them restores clean, and an index without an option is built at the defaults of 3.2.
+- **Going forward again.** Install the 3.3 files and restart. In the database downgraded in place the catalog is at 3.3 already: `ALTER EXTENSION pg_sift UPDATE` has nothing to do. Run `ALTER EVENT TRIGGER sift_table_ddl_check ENABLE` and `ALTER EVENT TRIGGER
+  sift_table_repack_guard ENABLE`, then `ALTER SYSTEM RESET sift.col_format_minor` and `SELECT pg_reload_conf()` so that the writes carry the sections of 3.3 again; what was rewritten at minor 6 stays at 6 until a `REINDEX` or `VACUUM FULL` (the preflight
+  without `--to` and `sift.upgrade_commands()` list them). A database restored at 3.2 takes the update of section 2: `ALTER EXTENSION pg_sift UPDATE`. The matrix test runs both.
 
 Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
 | `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 15, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
-| `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` (or `ALTER TABLE t SET ACCESS METHOD heap` and back to `sift_table`) rewrites it in that format |
+| `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
 ## Defaults changed in 3.3
