@@ -260,6 +260,12 @@ sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftS
 }
 
 bool
+sift_colsrc_has_zone_range(SiftSrcSource *src)
+{
+	return src->prov->zone_range != NULL;
+}
+
+bool
 sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
 {
 	return src->prov->overflow && src->prov->overflow(src->impl, unit, leaf);

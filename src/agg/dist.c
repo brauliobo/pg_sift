@@ -1094,7 +1094,7 @@ dist_stream_begin(AggExec *ex)
 		ex->dsorder = NULL;
 		ex->dsmin = NULL;
 	}
-	if (ai < 0 || !sift_agg_dist_stream || ex->be != &sift_agg_cpu_backend || ex->search || ex->topn)
+	if (ai < 0 || !sift_agg_dist_stream || ex->be != &sift_agg_cpu_backend || ex->search || ex->topn || !sift_colsrc_has_zone_range(ex->src))
 		return false;
 	leaf = s->agg[ai].leaf;
 	if (leaf >= ex->nbase || ex->lay->leaf[leaf].vtype != SCV_I32)
