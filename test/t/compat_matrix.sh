@@ -77,7 +77,7 @@ twin_same() { [[ $(q "$TWIN tbl") == "$(q "$TWIN tbl_h")" ]]; }
 for row in "${MATRIX[@]}"; do
 	read -r ref textkind hastbl newest <<<"$row"
 	what=dj; [[ $hastbl == no ]] || what=djt
-	oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
+	build_old "$ref"; oldroot=$OLDROOT
 	node_init mx 2 'autovacuum = off
 sift.async_maintenance = off'
 	use_root mx "$oldroot"

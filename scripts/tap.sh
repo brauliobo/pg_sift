@@ -22,6 +22,12 @@ IPC_RUN=IPC-Run-20260402.0
 IPC_RUN_SHA256=d6a326a8b1ffb19495dea4ff5a09ef138bf3562ab1b069d3fb7efbc77b9f6aca
 
 [[ -f $SIFT_ROOT/.flavor ]] || { echo "tap: run scripts/pgtest.sh install first" >&2; exit 1; }
+# Homebrew's PostgreSQL ships no src/test/perl: the Perl tests cannot run against it. Linux packages and source builds have it, so a missing module is a failure there.
+if [[ ! -f $PGXS_SRC/test/perl/PostgreSQL/Test/Cluster.pm && $(uname -s) == Darwin ]]; then
+	echo "tap: skipped, this PostgreSQL has no PostgreSQL::Test::Cluster (no src/test/perl in $PGXS_SRC): the Perl TAP tests need a server with its test modules, e.g. a source build"
+	exit 0
+fi
+
 if ! perl -I"$PERL5" -MIPC::Run -e1 2>/dev/null; then
 	dl=$(mktemp -d)
 	trap 'rm -rf "$dl"' EXIT

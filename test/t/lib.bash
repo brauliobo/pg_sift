@@ -53,6 +53,15 @@ diag() { sed 's/^/# /' <<<"$*"; }
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
 bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
+# sed -i in place on GNU and BSD sed (BSD's takes the next word as the suffix)
+sed_i() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
+# build_old REF: sets OLDROOT to the root of the released library REF (scripts/old-lib-check.sh); the test is skipped when the release cannot be built on this host
+build_old() {
+	local rc=0
+	OLDROOT=$(SIFT_OLD_REF=$1 "$REPO/scripts/old-lib-check.sh" build) || rc=$?
+	((rc != 77)) || { echo "1..0 # SKIP the release $1 cannot be built on this host (scripts/old-lib-check.sh)"; exit 0; }
+	((rc == 0)) || bail "cannot build $1"
+}
 
 dir() { echo "$TAPDIR/$1"; }
 port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
@@ -122,7 +131,7 @@ node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 use_root() {
 	local conf=$(dir "$1")/data/postgresql.conf
 	ROOT=$2
-	sed -i '/^sift\.table_auto_defrag = /d' "$conf"
+	sed_i '/^sift\.table_auto_defrag = /d' "$conf"
 	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep '^sift\.table_auto_defrag = ' >>"$conf"
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"

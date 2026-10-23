@@ -30,9 +30,10 @@ if [[ ${1:-} == --selftest ]]; then
 		if [[ $want == PASS ]]; then (( rc == 0 )) || { echo "selftest: $what should pass:"; echo "$out"; exit 1; }
 		else { (( rc != 0 )) && grep -q -- "$words" <<<"$out"; } || { echo "selftest: $what should fail with '$words' (exit $rc):"; echo "$out"; exit 1; }; fi
 	}
+	sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }	# BSD sed takes the word after -i as the suffix
 	fixture "$T/ok"; expect "a covered tree" PASS "$T/ok" ""; expect "a covered tree, strict" PASS "$T/ok" "" --strict
 	cp -r "$T/ok" "$T/claim"
-	sed -i 's/^- Fixed: pg_sift: a crash.$/&\n- Changed: pg_sift: phrase two went from 8 ms to 2 ms./' "$T/claim/CHANGELOG.md"
+	sedi 's/^- Fixed: pg_sift: a crash.$/&\n- Changed: pg_sift: phrase two went from 8 ms to 2 ms./' "$T/claim/CHANGELOG.md"
 	expect "a new speed claim with no case" FAIL "$T/claim" "claims a speed with no case" --changed <(printf -- '- Changed: pg_sift: phrase two went from 8 ms to 2 ms.\n')
 	expect "an old claim with no case, by default" PASS "$T/claim" "" --changed /dev/null
 	expect "an old claim with no case, strict" FAIL "$T/claim" "claims a speed with no case" --strict
@@ -40,9 +41,9 @@ if [[ ${1:-} == --selftest ]]; then
 	expect "a claim with a reasoned allow line" PASS "$T/claim" "" --strict
 	printf 'phrase two\t\n' >"$T/claim/scripts/bench-cases.allow"; expect "an allow line without a reason" FAIL "$T/claim" "has no reason" --strict
 	printf 'phrase nine\tthere is no such line\n' >"$T/claim/scripts/bench-cases.allow"; expect "an allow line that matches nothing" FAIL "$T/claim" "matches no speed claim" --strict
-	fixture "$T/anchor"; sed -i 's/phrase one/phrase uno/' "$T/anchor/CHANGELOG.md"; expect "a case whose phrase left the CHANGELOG" FAIL "$T/anchor" "is in no line of CHANGELOG.md"
+	fixture "$T/anchor"; sedi 's/phrase one/phrase uno/' "$T/anchor/CHANGELOG.md"; expect "a case whose phrase left the CHANGELOG" FAIL "$T/anchor" "is in no line of CHANGELOG.md"
 	fixture "$T/block"; printf '' >"$T/block/README.md"; expect "a case that feeds no block" FAIL "$T/block" "do not have"
-	fixture "$T/rows"; sed -i '/\tsift\t/d' "$T/rows/docs/results/cases.tsv"; expect "a case with no result row" FAIL "$T/rows" "has no sift row"
+	fixture "$T/rows"; sedi '/\tsift\t/d' "$T/rows/docs/results/cases.tsv"; expect "a case with no result row" FAIL "$T/rows" "has no sift row"
 	fixture "$T/orphan"; printf -- '--@ pg\nSELECT 2\n' >"$T/orphan/bench/cases/b.sql"; expect "a SQL file in no row" FAIL "$T/orphan" "is in no row of bench/cases.tsv"
 	echo "check-bench-cases: selftest passed (a covered tree passes; a new claim, an old claim in --strict, a moved phrase, a missing block, missing rows, an orphan file and a bad allow line fail)"
 	exit 0

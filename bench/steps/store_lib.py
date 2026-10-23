@@ -16,7 +16,7 @@ NAME = os.environ.get('STORE_NAME', 'sift-store')
 PORT = int(os.environ.get('STORE_PORT', 56280))
 
 
-START_LOAD = open('/proc/loadavg').read().split()[:3]     # the load average when this command started: only recorded, for the older tables
+START_LOAD = ['%.2f' % x for x in os.getloadavg()]     # the load average when this command started: only recorded, for the older tables
 
 
 QUIET = os.path.join(HERE, '..', '..', 'scripts', 'quiet.sh')

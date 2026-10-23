@@ -11,7 +11,7 @@ if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
 	exit 0
 fi
 newroot=$ROOT
-oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
+build_old "$ref"; oldroot=$OLDROOT
 
 node_init legacy 2 'autovacuum = off
 sift.async_maintenance = off'
