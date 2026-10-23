@@ -23,6 +23,12 @@ typedef struct ColCursor
 	SiftColSegment *seg;
 	uint64	   *keep;			/* units that passed the zone maps, nsb bits */
 	uint64	   *setcut;			/* units a small-set summary cleared, nsb bits */
+	uint64	   *ckeep;			/* keep and setcut kept between begins (in the source's sigcx) while the predicates stay the same, and the words of units they hold the answer for */
+	uint64	   *csetcut;
+	uint64	   *cdone;
+	uint32		cgen;			/* the generation of the predicates they were made for (SiftColSource.sig_gen); 0: none */
+	const SiftColSegment *cseg;	/* and the segment: a table's source is kept between statements and its segments change */
+	uint64		cseg_gen;
 	uint32		cur;
 	uint32		end;
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
@@ -155,6 +161,10 @@ struct SiftColSource
 	ColUnit		cu;
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
 	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
+	MemoryContext sigcx;		/* the predicates of the last begin and the bitmaps the cursors made under them */
+	SiftColPred *sig;
+	int			nsig;
+	uint32		sig_gen;
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */

@@ -505,26 +505,141 @@ prune_zone(SiftColSource *src, SiftColSegment *seg, const SiftColPrune *z, uint6
 		memcpy(keep, any, nw * sizeof(uint64));
 }
 
+/* The constants of a leaf that is no integer or float may be bytes at v.s (len > 0), whose buffer a caller may refill, or a number in v.i (an order code) */
+static bool
+pred_bytes(const SiftColSource *src, int col)
+{
+	SiftColStore st = src->schema->cols[col].store;
+
+	return st != SIFT_COLS_INT && st != SIFT_COLS_F4 && st != SIFT_COLS_F8;
+}
+
+/* Are the predicates of the last begin (src->sig) these? Bytes by content, the other constants by their bits */
+static bool
+sig_same(const SiftColSource *src, const SiftColPred *p, int n)
+{
+	if (src->nsig != n)
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		const SiftColPred *a = &src->sig[i],
+				   *b = &p[i];
+		bool		str = pred_bytes(src, b->col);
+
+		if (a->col != b->col || a->op != b->op || a->nvals != b->nvals)
+			return false;
+		for (int j = 0; j < b->nvals; j++)
+		{
+			const SiftColValue *x = &a->vals[j],
+					   *y = &b->vals[j];
+
+			if (x->len != y->len || x->lo != y->lo || x->isnull != y->isnull || x->overflow != y->overflow || x->tag != y->tag)
+				return false;
+			if (str && y->len > 0 ? memcmp(x->v.s, y->v.s, y->len) != 0 : memcmp(&x->v, &y->v, sizeof(x->v)) != 0)
+				return false;
+		}
+	}
+	return true;
+}
+
+/*
+ * Whether the units the zones and summaries keep can be kept for the next begin: an aggregate begins for every morsel of units with the same predicates, and
+ * each begin would test its units again, where the answer for a unit does not change. Not for the zone trees of an OR, the point directory (it answers per
+ * begin) or a wide integer (its test runs over the whole segment). The predicates are copied when they differ from those of the last begin, and the bitmaps
+ * of every cursor are dropped with them.
+ */
+static bool
+keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones)
+{
+	if (nzones > 0 || (src->flags & SIFT_COLO_POINTS))
+		return false;
+	for (int i = 0; i < npreds; i++)
+		if (sift_colw_is_wide_int(&src->schema->cols[preds[i].col]))
+			return false;
+	if (src->sig_gen > 0 && sig_same(src, preds, npreds))
+		return true;
+	if (src->sigcx == NULL)
+		src->sigcx = AllocSetContextCreate(src->mcxt, "sift column keep cache", ALLOCSET_DEFAULT_SIZES);
+	else
+		MemoryContextReset(src->sigcx);
+	src->sig = MemoryContextAlloc(src->sigcx, Max(npreds, 1) * sizeof(SiftColPred));
+	for (int i = 0; i < npreds; i++)
+	{
+		SiftColValue *v = MemoryContextAlloc(src->sigcx, Max(preds[i].nvals, 1) * sizeof(SiftColValue));
+		bool		str = pred_bytes(src, preds[i].col);
+
+		memcpy(v, preds[i].vals, preds[i].nvals * sizeof(SiftColValue));
+		for (int j = 0; j < preds[i].nvals && str; j++)
+			if (v[j].len > 0)
+			{
+				char	   *s = MemoryContextAlloc(src->sigcx, v[j].len);
+
+				memcpy(s, v[j].v.s, v[j].len);
+				v[j].v.s = s;
+			}
+		src->sig[i] = (SiftColPred) {preds[i].col, preds[i].op, preds[i].nvals, v};
+	}
+	src->nsig = npreds;
+	src->sig_gen++;
+	return true;
+}
+
 static void
-prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
+prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached)
 {
 	SiftColSegment *seg = c->seg;
-	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi),
-	palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64)), (src->flags & SIFT_COLO_POINTS) ? c : NULL};
+	uint32		nw = SIFT_COL_NWORDS(seg->nsb);
+	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi), NULL,
+	(src->flags & SIFT_COLO_POINTS) ? c : NULL};
 	PruneRange	zr = pr;
 
-	zr.top = NULL;
 	c->prow = NULL;
 	c->nosuper_to = 0;
-	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
-	memset(c->keep, 0xFF, SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	c->cur = pr.ulo;
+	c->end = pr.uhi;
+	if (cached)
+	{
+		if (c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
+		{
+			c->ckeep = MemoryContextAlloc(src->sigcx, nw * sizeof(uint64));
+			memset(c->ckeep, 0xFF, nw * sizeof(uint64));
+			if (seg->nsb % 64)
+				c->ckeep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+			c->csetcut = MemoryContextAllocZero(src->sigcx, nw * sizeof(uint64));
+			c->cdone = MemoryContextAllocZero(src->sigcx, nw * sizeof(uint64));
+			c->cgen = src->sig_gen;
+			c->cseg = seg;
+			c->cseg_gen = seg->entry.gen;
+		}
+		/* the words of units the range holds that no begin has tested yet, each run of them at once */
+		for (uint32 w = pr.ulo / 64, w1 = (pr.uhi + 63) / 64, e; w < w1; w = e)
+		{
+			PruneRange	br;
+
+			if (sift_col_bit_test(c->cdone, w))
+			{
+				e = w + 1;
+				continue;
+			}
+			for (e = w; e < w1 && !sift_col_bit_test(c->cdone, e); e++)
+				sift_col_bit_set(c->cdone, e);
+			br = (PruneRange) {w * 64, Min(e * 64, seg->nsb), c->csetcut, NULL};
+			prune_preds(src, seg, preds, npreds, c->ckeep, &br);
+		}
+		c->keep = c->ckeep;
+		c->setcut = c->csetcut;
+		return;
+	}
+	pr.setcut = palloc0(nw * sizeof(uint64));
+	zr = pr;
+	zr.top = NULL;
+	c->keep = palloc0(nw * sizeof(uint64));
+	memset(c->keep, 0xFF, nw * sizeof(uint64));
 	if (seg->nsb % 64)
 		c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
 	prune_preds(src, seg, preds, npreds, c->keep, &pr);
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
-	c->cur = pr.ulo;
-	c->end = pr.uhi;
 	c->setcut = pr.setcut;
 }
 
@@ -532,14 +647,16 @@ void
 sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
 	MemoryContext old;
+	bool		cached;
 
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
 	for (int i = 0; i < npreds; i++)
 		SIFT_INVARIANT(preds[i].col >= 0 && preds[i].col < src->schema->ncols, "sift_col: predicate on leaf %d of %d", preds[i].col,
 					   src->schema->ncols);
+	cached = keep_cached(src, preds, npreds, nzones);
 	for (int i = 0; i < src->nseg; i++)
-		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi);
+		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
