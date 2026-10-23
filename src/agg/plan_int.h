@@ -294,6 +294,7 @@ extern bool lut_leaf_ok(AggCtx *c, int leaf);
 extern bool combo_leaf_ok(AggCtx *c, int leaf);
 extern bool raising_walker(Node *n, void *context);
 extern bool leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi);
+extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
 extern const char *bucket_text(int secs);

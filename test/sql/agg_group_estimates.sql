@@ -36,6 +36,14 @@ FROM (VALUES ('date_trunc(''year'', day)'), ('date_trunc(''quarter'', day)'), ('
 SELECT k AS key, (groups_of(format('SELECT %s, count(*) FROM ge_rows WHERE day >= %L AND day < %L GROUP BY 1', k, '2025-04-01', '2025-07-01'))).*
 FROM (VALUES ('date_trunc(''month'', day)'), ('date_trunc(''week'', day)'), ('extract(month FROM day)')) v(k);
 
+-- a column of timestamps that was never analyzed has no histogram: the index's smallest and largest value give the span of the buckets
+CREATE TABLE ge_ts (id int PRIMARY KEY, ts timestamptz NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO ge_ts SELECT i, timestamptz '2025-01-01' + (hashint4(i) & 1023) % 700 * interval '1 day' + i % 86400 * interval '1 second' FROM generate_series(1, 100000) i;
+CREATE INDEX ge_ts_col ON ge_ts USING sift_col (id, ts);
+VACUUM (FREEZE) ge_ts;
+SELECT k AS key, (groups_of(format('SELECT %s, count(*) FROM ge_ts GROUP BY 1', k))).*
+FROM (VALUES ('date_trunc(''month'', ts AT TIME ZONE ''UTC'')'), ('date_trunc(''week'', ts AT TIME ZONE ''UTC'')')) v(k);
+
 DROP FUNCTION groups_of(text), est_rows(text);
-DROP TABLE ge_rows;
+DROP TABLE ge_rows, ge_ts;
 DROP EXTENSION pg_sift;
