@@ -1,4 +1,4 @@
-"""The "What got faster in 3.3" block of README.md and docs/BENCHMARKS.md, and its line in "Performance highlights", from bench/results/cases.tsv (bench/bench cases --docs).
+"""The "What got faster in 3.3" block of README.md (the chart, the takeaway and the application-shaped cases) and docs/BENCHMARKS.md (every case), from bench/results/cases.tsv (bench/bench cases --docs).
 
     python3 -I bench/steps/cases_render.py [--results DIR] [--readme FILE] [--benchmarks FILE]      (bench/bench readme)
 
@@ -72,7 +72,7 @@ def cell_others(f):
     return '; '.join(parts) or '-'
 
 
-def takeaway(figs):
+def takeaway(figs, brief=False):
     rs = [(f, verdict(f)) for f in figs if verdict(f)]
     kept = [f for f in figs if f['kept']]
     faster = [r for f, r in rs if r >= 1 + TIE]
@@ -85,6 +85,8 @@ def takeaway(figs):
     if slower:
         text += ', slower on %d: %s' % (len(slower), ', '.join('%s %s (%s slower)' % (f['case'].id, UNIT[f['metric']], speed(r)) for f, r in slower))
     flat = [(f, a) for f, _ in rs for a in OFF if isinstance(f['others'].get(a), float) and f['sift'] and f['others'][a] <= f['sift'] * (1 + TIE)]
+    if brief:
+        return text + (', the planner kept the normal plan on %d (%s)' % (len(kept), ', '.join(f['case'].id for f in kept)) if kept else '') + '. The setting of a variant that brings no gain is listed in docs/BENCHMARKS.md.'
     if flat:
         text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
     if kept:
@@ -126,17 +128,6 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
     out += ['- Variants: ' + '; '.join('`%s` is %s' % (k, VARIANT[k]) for k in sorted(used)) + '.'] * bool(used)
     out += ['- Measured while the host was busy (the load average is in each row of the results): %s. Read the ratios, not the milliseconds.' % ', '.join(sorted(set(noisy)))] * bool(noisy)
     return out + ['', 'Raw results: [%s/cases.tsv](%s/cases.tsv); the cases: [%s/cases.tsv](%s/cases.tsv); reproduce with `bench/bench cases` (`--docs --rows 1000000` for the published size).' % (results_dir, results_dir, bench_dir, bench_dir)]
-
-
-def headline(rows, registry):
-    """the line of Performance highlights: the cases the registry marks as headlines, with the losses of the whole table said plainly"""
-    figs = collect(rows, registry)
-    heads = [f for f in figs if f['case'].headline and f['metric'] == f['case'].metrics[0] and verdict(f)]
-    if not heads:
-        return None
-    parts = '; '.join('%s (%s%s)' % (f['case'].title, speed(verdict(f)), ' less WAL' if f['metric'] == 'wal_bytes' else '') for f in heads)
-    slower = [f for f in figs if verdict(f) and verdict(f) <= 1 - TIE]
-    return parts, [('%s %s' % (f['case'].id, UNIT[f['metric']]), speed(1 / verdict(f))) for f in slower]
 
 
 def size(n):
@@ -222,12 +213,71 @@ def scale_lines(meta, rows, registry):
         '', 'Raw results: [bench/results/cases-scale.tsv](bench/results/cases-scale.tsv); reproduce with `bench/bench cases --scales 1,10,100 --docs`.']
 
 
+def featured(rows, registry, scale_rows):
+    """the cases the registry marks `headline`, the ones that read like an application's query: a narrow table with the log-log slope of each engine over the sizes of cases-scale.tsv when it has them"""
+    import bench_charts
+    figs = {f['case'].id: f for f in collect(rows, registry) if f['metric'] == f['case'].metrics[0]}
+    ser = {}
+    for r in scale_rows:
+        cid, _, n = r['case'].partition('@')
+        if r['metric'] == 'ms' and r['arm'] in ('native', 'sift') and r['value'] not in ('', 'NA', 'error') and n:
+            ser.setdefault(cid, {}).setdefault(r['arm'], []).append((int(n), float(r['value'])))
+    head = ['case', 'what it stresses', 'PostgreSQL ms', 'pg_sift ms', 'speed-up', 'slope PostgreSQL / pg_sift']
+    flips = plan_flips(scale_rows)
+    body = []
+    for c in registry:
+        f = figs.get(c.id)
+        if not c.headline or not f or c.metrics[0] != 'ms':
+            continue
+        r = verdict(f)
+        sp = same_plan(f) if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
+        sl = ['%.2f' % bench_charts.slope(*zip(*sorted(ser[c.id][a]))) if len(ser.get(c.id, {}).get(a, [])) >= 3 else '-' for a in ('native', 'sift')]
+        body.append(['[`%s`](bench/cases/%s.sql)' % (c.id, c.id), c.label.replace('|', '\\|'), figure(f['native']), figure(f['sift']), sp, ' / '.join(sl)])
+    return (extras.table(head, body, ['---', '---', '---:', '---:', '---:', '---:']) + ([''] + flips if flips else [])) if body else []
+
+
+def plan_flips(scale_rows):
+    """a sentence on the cases whose plan changed with the size: pg_sift kept PostgreSQL's plan at some sizes and ran its scan at others"""
+    by = {}
+    for r in scale_rows:
+        cid, _, n = r['case'].partition('@')
+        if r['metric'] == 'ms' and r['arm'] in ('native', 'sift') and n:
+            by.setdefault(cid, {}).setdefault(int(n), {})[r['arm']] = re.sub(r' NOISY$', '', r['note'] or '')
+    sizes = {n for c in by.values() for n in c}
+    flipped = sorted(cid for cid, c in by.items() if len({v.get('native') == v.get('sift') for v in c.values()}) > 1)
+    if not by:
+        return []
+    return ['Between %s and %s rows the planner changed its plan on %d of the %d cases measured at scale%s.' % (size(min(sizes)), size(max(sizes)), len(flipped), len(by), ': ' + ', '.join('`%s`' % c for c in flipped) if flipped else '')]
+
+
+def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
+    """the README's block: the chart of every case, the table of the application-shaped ones, the takeaway; the machine and method are the footnote [^cases]"""
+    figs = collect(rows, registry)
+    if not figs:
+        return ['Not measured at this build yet: `bench/bench cases --docs` writes this block.']
+    n = len({f['case'].id for f in figs})
+    out = ['%d cases, each a query shape the planner has to recognize (a report with grouping sets, a ranked top-N per group, an anti join, a keyset page, a lookup by key, a JSON array and more), on %s rows, one backend[^cases]. '
+           'Every case runs on pg_sift and on PostgreSQL on the same table and indexes (`sift.enable_agg = off`) and every answer is compared before it is timed.' % (n, '{:,}'.format(int(meta.get('orders', 0)))), '',
+           '<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="docs/img/cases-speedup-light.svg"></picture>', '',
+           '**Takeaway:** ' + takeaway(figs, brief=True), '']
+    table = featured(rows, registry, scale_rows)
+    if table:
+        out += ['The cases that read like an application\'s query, with the SQL in `bench/cases/` and the slope of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows):' % results_dir, ''] + table + ['']
+    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
+            'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#what-got-faster-in-33); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
+            '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
+                meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'), meta.get('host_load_before', '?'))]
+    return out
+
+
 def render(results, readme, benchmarks):
     path = os.path.join(results, 'cases.tsv')
     registry = cases_mod.read_registry()
     if os.path.exists(path):
         meta, rows = extras.read(path)
-        for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, lines(meta, rows, registry))):
+        scale_path = os.path.join(results, 'cases-scale.tsv')
+        scale_rows = extras.read(scale_path)[1] if os.path.exists(scale_path) else []
+        for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, readme_lines(meta, rows, registry, scale_rows))):
             if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
                 extras.replace_block(doc, 'faster33', body)
     scale = os.path.join(results, 'cases-scale.tsv')
