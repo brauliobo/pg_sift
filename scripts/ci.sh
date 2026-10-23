@@ -207,6 +207,10 @@ if [[ $MODE == full ]]; then
 else
 	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-$(( 2 * BUDGET_MB ))}
 fi
+# CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 3000, full 7200; the slowest job of a shard takes 2100 and 4700 on a loaded runner), so that a
+# stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
+JOB_TIMEOUT=()
+for tm in timeout gtimeout; do command -v $tm >/dev/null && { JOB_TIMEOUT=($tm -k 20 "${CI_JOB_TIMEOUT:-$([[ $MODE == full ]] && echo 7200 || echo 3000)}"); break; }; done
 
 # ---------- the jobs ----------
 # job ID SUITE CLUSTER CMD...: queued in the order of the calls, so the longest come first (a job queued twice keeps its first
@@ -478,13 +482,17 @@ lane_cpu() {
 # step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
 # to the results and returns its status
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
 	c0=$(lane_cpu "$id")
-	"$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	${JOB_TIMEOUT[@]+"${JOB_TIMEOUT[@]}"} "$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || { rc=$?; status=FAIL; }
+	if (( rc == 124 || rc == 137 )); then
+		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$id.log"; } | tee -a "$LOG/$id.log"
+	fi
 	c1=$(lane_cpu "$id")
 	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
+	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
 	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
 		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
 	[[ $status == PASS ]]
