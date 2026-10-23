@@ -343,10 +343,13 @@ Datum
 sift_test_shred_kern_level(PG_FUNCTION_ARGS)
 {
 	sift_shred_init();
-	for (int level = SIFT_SIMD_AVX512; level >= SIFT_SIMD_SCALAR; level--)
-		if (sift_shred_kernels_for((SiftSimdLevel) level) == sift_shred_kern)
+	for (int level = SIFT_SIMD_TOP; level > SIFT_SIMD_SCALAR; level--)
+		if (sift_shred_kernels_for((SiftSimdLevel) level) == sift_shred_kern &&
+			sift_shred_kernels_for((SiftSimdLevel) level) != sift_shred_kernels_for((SiftSimdLevel) (level - 1)))
 			PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name((SiftSimdLevel) level)));
-	elog(ERROR, "sift shred: the active kernel table is none of the levels");
+	if (sift_shred_kern != &sift_shred_kernels_scalar)
+		elog(ERROR, "sift shred: the active kernel table is none of the levels");
+	PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(SIFT_SIMD_SCALAR)));
 }
 
 /* A digest of the kernels of the active level (sift.simd) over random cases: equal at every level */

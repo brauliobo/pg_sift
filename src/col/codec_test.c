@@ -360,7 +360,7 @@ sift_test_cc_equiv(PG_FUNCTION_ARGS)
 				continue;
 			set_level(SIFT_SIMD_SCALAR);
 			want = chunk_digest(&c, &pol, &bad);
-			for (int l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_AVX512; l++)
+			for (int l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_TOP; l++)
 			{
 				set_level((SiftSimdLevel) l);
 				mismatches += chunk_digest(&c, &pol, &bad) != want;

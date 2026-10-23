@@ -53,7 +53,7 @@ sift.parallel_scan	BM25				parallel SiftScan and SiftCount plans	off because a G
 sift.rls_scores	BM25				a ranked scan for a role under row-level security	scores use the statistics of the whole index, hidden rows included	USAGE.md#row-level-security
 sift.standby_conflicts	all				a standby without hot_standby_feedback waits for or cancels the queries that may read reused blocks, instead of failing them	replay can wait up to max_standby_streaming_delay	SIZING.md#settings-that-matter
 sift.log_min_duration	all				logs promotions, merges and worker runs of at least that long	none; a log line	SIZING.md#settings-that-matter
-sift.simd	all				caps the SIMD level of every kernel; every level returns the same results bit for bit	none; a lower level only slows the kernels (auto is the best level of the CPU, shown as avx512)	USAGE.md#maintenance-and-operations
+sift.simd	all				caps the SIMD level of every kernel; every level returns the same results bit for bit	none; a lower level only slows the kernels (auto is the best level of the CPU, shown as avx512 on x86-64 and as neon on AArch64, whose levels are scalar and neon; the level names of the other architecture cap nothing, so one configuration file serves a mixed fleet)	USAGE.md#maintenance-and-operations
 # Settings: maintenance
 sift.async_maintenance	all	maintenance			promotion and merges run in a background worker that the settings below throttle	a merge of a 10 MB index took 0.27 s at cost delay 0 and 5.3 s at 20 ms (at most 6.4 MB/s of I/O)	USAGE.md#maintenance-and-operations
 sift.maintenance_naptime	all	maintenance					USAGE.md#maintenance-and-operations
