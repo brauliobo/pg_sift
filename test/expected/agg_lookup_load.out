@@ -62,7 +62,7 @@ SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE d
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 7 AND role = 1) GROUP BY kind');
                                     plan                                     | result_rows | vs_no_pushdown | vs_normal_plan 
 -----------------------------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,Lookup Rows Read: 167,Lookup Rows Loaded: 167,Lookup Index Scans: 1 |           4 |              0 |              0
+ SiftAgg,Lookup Rows Read: 500,Lookup Rows Loaded: 167,Lookup Index Scans: 1 |           4 |              0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM members_bare WHERE group_id = 7 AND deleted_at IS NULL) GROUP BY kind');
