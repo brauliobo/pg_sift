@@ -45,6 +45,11 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < 
 -- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
 RESET seq_page_cost; RESET random_page_cost;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+-- ... and the refusal is made before any partition's index is read: the opening alone is dearer than the normal plan
+SET cpu_operator_cost = 0.02;
+SELECT used, slug, reason ~ '\(opening [0-9]+ partitions costs the scan [0-9.]+, the normal plan [0-9.]+\)$' AS opening_decides
+FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+RESET cpu_operator_cost;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a generic plan
 SET plan_cache_mode = force_generic_plan;

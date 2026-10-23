@@ -1504,6 +1504,13 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
 }
 
+/* What every path of the scan pays to start, whatever it reads: its source and the partitions it opens. No path costs less in total. */
+Cost
+agg_open_cost(int nparts)
+{
+	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
+}
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -1561,7 +1568,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = AGG_START_COST * cpu_operator_cost + k.child_cost + c->subplan_cost + AGG_PART_PAIR * c->nparts * c->nparts * cpu_operator_cost;
+	startup = agg_open_cost(c->nparts) + k.child_cost + c->subplan_cost;
 	if (s->nworkers > 0)
 		cost_parallel(s, &k, &startup);
 	/* each process holds a table of its own (and spills it) */
