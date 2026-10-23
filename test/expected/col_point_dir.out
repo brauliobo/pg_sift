@@ -325,6 +325,33 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
  17 | k = 4321 OR s = 's77'                                                                 | t          | t           |       8
 (17 rows)
 
+-- the cost of the scan follows the directory: a parameter prices a lookup as its constant does (the generic plan is the index scan, at the cost of the custom one, not of
+-- reading every unit), and an index the directory covers is cheaper to look up in than a sequential scan of the table, text and uuid included
+CREATE FUNCTION pd_total(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_col_scan = on SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE j json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+PREPARE pd_gs(text) AS SELECT id FROM pd WHERE s = $1;
+PREPARE pd_gk(int) AS SELECT id FROM pd WHERE k = ANY (ARRAY[$1, $1 + 1, $1 + 2]);
+CREATE TABLE pd_cost (q text, generic float8, custom float8);
+SET plan_cache_mode = force_generic_plan;
+INSERT INTO pd_cost (q, generic) VALUES ('s', pd_total('EXECUTE pd_gs(''s77'')')), ('k', pd_total('EXECUTE pd_gk(4321)'));
+SET plan_cache_mode = force_custom_plan;
+UPDATE pd_cost SET custom = pd_total(CASE q WHEN 's' THEN 'EXECUTE pd_gs(''s77'')' ELSE 'EXECUTE pd_gk(4321)' END);
+RESET plan_cache_mode;
+SELECT q, abs(generic - custom) < 0.05 * custom AS generic_prices_as_custom, custom < 0.5 * pd_total('SELECT id FROM pd WHERE s ~ ''s7$'' OR true') AS far_below_a_scan FROM pd_cost ORDER BY q;
+ q | generic_prices_as_custom | far_below_a_scan 
+---+--------------------------+------------------
+ k | t                        | t
+ s | t                        | t
+(2 rows)
+
+DROP TABLE pd_cost;
+DEALLOCATE pd_gs;
+DEALLOCATE pd_gk;
+DROP FUNCTION pd_total(text);
 -- DML, the write buffer, promotion and a merge of segments with and without a directory
 UPDATE pd SET k = 4321, s = 's77', v = 7 WHERE id % 1999 = 0;
 DELETE FROM pd WHERE id % 89 = 0;
