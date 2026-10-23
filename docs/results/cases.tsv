@@ -90,8 +90,8 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	partitions_many	native	ms	88.290	73.243	113.717	15	20.00	Seq Scan on orders_p_0 NOISY
 3.3	topn_join_filter	sift	ms	1.784	1.334	2.631	15	28.58	Top-N: ts DESC (limit 10) NOISY
 3.3	topn_join_filter	native	ms	7.575	5.762	10.740	15	28.58	Seq Scan on dims NOISY
-3.3	spine_array_key	sift	ms	606.727	525.330	647.978	15	28.58	Group Keys: ts: (g.d)::date; Pushed Aggregates: count(e.id) NOISY
-3.3	spine_array_key	native	ms	451.649	386.374	544.552	15	28.58	Seq Scan on events NOISY
+3.3	spine_array_key	sift	ms	17.342	15.709	22.759	15	11.79	Group Keys: ts: g.d; Pushed Aggregates: count(e.id)
+3.3	spine_array_key	native	ms	265.226	255.157	284.356	15	11.79	Seq Scan on events
 3.3	lateral_first_row	sift	ms	8.118	5.233	10.310	15	28.69	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val) NOISY
 3.3	lateral_first_row	native	ms	79.327	64.487	127.357	15	28.69	Seq Scan on events NOISY
 3.3	lateral_dim_test	sift	ms	4.140	2.999	5.180	15	28.69	Group Keys: parent_id: l.tier; Pushed Aggregates: count(*), sum(amount) NOISY
