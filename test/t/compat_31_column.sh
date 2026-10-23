@@ -16,7 +16,7 @@ QUERY="SELECT count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s != \
 TYPES="SELECT string_agg(coalesce(t, 'missing') || ':' || n, ',' ORDER BY t NULLS FIRST)
  FROM (SELECT jsonb_typeof(attr->'a') t, count(*) n FROM oldcol GROUP BY 1) s"
 for ref in v3.0.1 v3.1.0; do
-	oldroot=$(SIFT_OLD_REF=$ref "$REPO/scripts/old-lib-check.sh" build) || bail "cannot build $ref"
+	build_old "$ref"; oldroot=$OLDROOT
 	node_init legacy 2 'autovacuum = off
 sift.async_maintenance = off'
 	use_root legacy "$oldroot"

@@ -22,7 +22,7 @@
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
 # JOB_MB) plus its own fits CI_BUDGET_MB (quick 1200, full 2000; the first job always runs), so the run stays at about 1 GB
-# however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset), removed
+# however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
 # when everything passed (KEEP=1 keeps it; a failure keeps it for the logs); a job that passed leaves it at once. The ports are
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (twice the budget; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
@@ -432,7 +432,9 @@ lane() {
 }
 
 # not /dev/shm by choice: the run needs about a gigabyte and fsync is off, so RAM buys nothing
-BASE=${SIFT_CI_TMP:-${TMPDIR:-/tmp}/sift-ci-$$}
+# a Unix-domain socket path holds 103 bytes on macOS, where $TMPDIR is a long per-user directory: the clusters' sockets would not fit under it
+TMPBASE=${TMPDIR:-/tmp}; [[ $(uname -s) != Darwin ]] || TMPBASE=/tmp
+BASE=${SIFT_CI_TMP:-$TMPBASE/sift-ci-$$}
 LOG=$BASE/logs
 BASE_PORT=${SIFT_PORT:-56130}
 # one initdb per run: every cluster starts as a copy (the shell tests and lane clusters, with 1 MB WAL segments; the

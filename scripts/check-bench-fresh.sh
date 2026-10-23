@@ -9,6 +9,8 @@
 # Fix: `bench/bench readme` and `bench/bench store render` when only the generator or the text changed; `bench/bench refresh` for stale results (docs/RELEASE.md).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd)
+# the generators use f-strings that quote inside themselves (Python 3.12); the python3 of macOS is 3.9
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' || { echo "check-bench-fresh: skipped, the generators need Python 3.12 or newer ($(python3 -V 2>&1))"; exit 0; }
 STRICT='' ; [[ ${1:-} != --strict ]] || STRICT=1
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 res=$R/docs/results bad=0 warn=0

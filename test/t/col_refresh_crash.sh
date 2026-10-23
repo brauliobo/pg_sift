@@ -56,7 +56,7 @@ sleep 1
 refresh_panics() { ! sql primary "SELECT sift.col_refresh('items_idx')" >/dev/null 2>&1; }
 check "the refresh PANICs with the new segment written" refresh_panics
 for _ in $(seq 300); do [[ -f $(dir primary)/data/postmaster.pid ]] || break; sleep 0.1; done
-sed -i '/^sift.test_col_rollup_panic/d' "$(dir primary)/data/postgresql.conf"
+sed_i '/^sift.test_col_rollup_panic/d' "$(dir primary)/data/postgresql.conf"
 check "the primary restarts through crash recovery" node_start primary
 check "the index verifies after the crash" verify
 check "its segments are those it had" test "$(sql primary "$SEGS")" == "$BEFORE"

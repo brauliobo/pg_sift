@@ -88,7 +88,7 @@ brew test brauliobo/pg_sift/pg_sift
 ```
 
 The HEAD-only formula builds `main` and supports macOS arm64. CI builds it and runs `brew test` (a BM25 smoke, an extension upgrade and a `sift_col` aggregate) on macOS arm64 with PostgreSQL 17 and 18; earlier it was tried by hand on Apple Silicon with 17.11 and 18.6.
-`make check` also needs bash 4 or newer (`brew install bash`); the stock macOS bash 3.2 stops with a message. CI runs a few of its regression tests on macOS; the rest of the suite runs on Linux.
+`make check` also needs bash 4 or newer (`brew install bash`); the stock macOS bash 3.2 stops with a message. A stage the host cannot run (the Perl TAP tests, which need the server's `src/test/perl`; the compatibility tests that build releases older than 3.2.0; the Python 3.12 benchmark generators) is skipped with a message. CI runs a few of its regression tests on macOS, and the quick tier on Linux arm64.
 With your PostgreSQL server running, connect as a superuser:
 
 ```sh
