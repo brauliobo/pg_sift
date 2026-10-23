@@ -58,3 +58,4 @@ count_distinct_spill	a group table that spills writes each `count(DISTINCT)` set
 text_key_filtered	a near-unique text key under a filter made a table of ids as large as the rows read	orders	default+title	.	native	-	ms	faster33	no
 topn_numeric_wide	takes the column as a sort key, as it took a numeric of up to 18 digits	orders	default	Top-N: price	native,pg_duckdb	-	ms	faster33	no
 topn_enum_key	takes an enum column as a sort key, in the order of its type	orders	default	Top-N: lvl	native,pg_duckdb	-	ms	faster33	no
+topn_interval_key	takes an interval column as a sort key	orders	default	Top-N: lead	native,pg_duckdb	-	ms	faster33	no

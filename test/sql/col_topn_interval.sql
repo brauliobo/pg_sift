@@ -1,0 +1,132 @@
+-- ORDER BY an interval column LIMIT n: the top-N reads the key through the dictionary of its datums (three integer lanes: the total in microseconds, and the months and days
+-- that tell the spellings apart) and compares the entries with interval_cmp, which compares the totals: 1 mon, 30 days and 720:00:00 are equal keys shown as stored. Every
+-- query runs twice, the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows, spelling included, are compared in order, after the build,
+-- with more segments, with rows in the write buffer, after updates and deletes, a merge and VACUUM, with a dictionary cache that keeps almost nothing, with workers and a
+-- spilling sort, on a sift_table and a partitioned table.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+-- a: many values, NULL, infinities, negative, equal totals spelled differently; w: five values in all the rows
+-- pad makes a unit hold about 1300 rows, so that a segment has several units and the bar of one is a value of another
+CREATE TABLE iv (id int PRIMARY KEY, g int, a interval, w interval, pad text DEFAULT repeat('x', 1500));
+CREATE FUNCTION iv_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
+	INSERT INTO iv (id, g, a, w)
+	SELECT i, i % 7,
+		CASE WHEN i % 17 = 0 THEN NULL WHEN i % 101 = 0 THEN 'infinity' WHEN i % 103 = 0 THEN '-infinity'
+			 WHEN i % 6 = 0 THEN (hashint4(i) % 40) * interval '1 month'
+			 WHEN i % 6 = 1 THEN (hashint4(i) % 40) * interval '30 days'
+			 WHEN i % 6 = 2 THEN (hashint4(i) % 40) * interval '720 hours'
+			 WHEN i % 6 = 3 THEN (hashint4(i) % 100000) * interval '1 second' - interval '1 day'
+			 WHEN i % 6 = 4 THEN make_interval(0, hashint4(i) % 5, 0, hashint4(i * 3) % 40, hashint4(i * 5) % 30)
+			 ELSE (hashint4(i) % 1000000) * interval '1 microsecond' END,
+		(ARRAY['1 day', '24 hours', '-1 mon', '2 days 3 hours', '0'])[1 + i % 5]::interval
+	FROM generate_series(lo, hi) i $$;
+SELECT iv_rows(1, 6000);
+CREATE INDEX iv_col ON iv USING sift_col (id, g, a, w);
+VACUUM (ANALYZE) iv;
+
+CREATE FUNCTION iv_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
+CREATE FUNCTION iv_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS iv_a, iv_b;
+	PERFORM iv_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE iv_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM iv_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE iv_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM iv_a EXCEPT ALL SELECT pos, r FROM iv_b) UNION ALL (SELECT pos, r FROM iv_b EXCEPT ALL SELECT pos, r FROM iv_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM iv_b);
+END $$;
+
+CREATE TABLE iv_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO iv_q VALUES
+	('a_asc',          $q$SELECT id, a FROM iv ORDER BY a, id LIMIT 40$q$),
+	('a_desc',         $q$SELECT id, a FROM iv ORDER BY a DESC, id LIMIT 40$q$),
+	('a_nulls_first',  $q$SELECT id, a FROM iv ORDER BY a NULLS FIRST, id LIMIT 25$q$),
+	('a_nulls_last',   $q$SELECT id, a FROM iv ORDER BY a DESC NULLS LAST, id DESC LIMIT 25$q$),
+	('a_offset',       $q$SELECT id, a FROM iv ORDER BY a, id LIMIT 20 OFFSET 900$q$),
+	('a_deep_offset',  $q$SELECT id, a FROM iv ORDER BY a, id LIMIT 30 OFFSET 5500$q$),
+	('a_filter',       $q$SELECT id, a FROM iv WHERE g IN (1, 3) AND id > 2000 ORDER BY a DESC, id LIMIT 30$q$),
+	('a_same_leaf',    $q$SELECT id, a FROM iv WHERE a > interval '1 day' ORDER BY a, id LIMIT 25$q$),
+	('a_ties',         $q$SELECT id, g, a FROM iv ORDER BY g, a, id LIMIT 40 OFFSET 11$q$),
+	('a_text',         $q$SELECT id, a::text AS t FROM iv ORDER BY a, id LIMIT 60$q$),
+	('a_other_cols',   $q$SELECT id, a, w, g FROM iv ORDER BY a DESC NULLS LAST, id LIMIT 25$q$),
+	('w_few_asc',      $q$SELECT id, w FROM iv ORDER BY w, id LIMIT 30$q$),
+	('w_few_desc',     $q$SELECT id, w FROM iv ORDER BY w DESC, id DESC LIMIT 30$q$),
+	('two_keys',       $q$SELECT id, a, w FROM iv ORDER BY a DESC, w, id LIMIT 30$q$),
+	('second_key',     $q$SELECT id, g, a FROM iv ORDER BY g DESC, a, id LIMIT 30$q$),
+	('expression',     $q$SELECT id, a FROM iv ORDER BY a + interval '1 day', id LIMIT 25$q$),
+	('all_rows',       $q$SELECT id, a FROM iv ORDER BY a, id LIMIT 200000$q$);
+
+CREATE FUNCTION iv_stage(stage text, workers int DEFAULT 0) RETURNS TABLE (stage text, tag text, result text) LANGUAGE sql AS $$
+	SELECT stage, tag, iv_check(q, workers) FROM iv_q ORDER BY tag COLLATE "C" $$;
+
+SELECT * FROM iv_stage('build');
+SELECT tag, iv_check(q, 2) FROM iv_q WHERE tag IN ('a_asc', 'a_desc', 'two_keys') ORDER BY tag COLLATE "C";
+
+-- more segments: each promotion turns the rows of the write buffer into a segment of its own, with a dictionary of its own
+SELECT iv_rows(6001, 9000);
+SELECT sift.col_promote('iv_col') >= 0 AS promoted;
+SELECT iv_rows(9001, 12000);
+SELECT sift.col_promote('iv_col') >= 0 AS promoted;
+SELECT * FROM iv_stage('segments');
+SELECT tag, iv_check(q, 2) FROM iv_q WHERE tag IN ('a_asc', 'a_filter') ORDER BY tag COLLATE "C";
+
+-- rows of the write buffer and dirty units
+SELECT iv_rows(12001, 12400);
+UPDATE iv SET a = (id % 1000) * interval '1 day' + interval '1 month', w = 'infinity' WHERE id % 97 = 0;
+DELETE FROM iv WHERE id % 89 = 0;
+SELECT * FROM iv_stage('buffer');
+
+-- a heap of keys wider than work_mem sorts instead, and the rows past work_mem spill to a tuplesort
+SET work_mem = '64kB';
+SELECT iv_check($q$SELECT id, a, w FROM iv ORDER BY a, w DESC, id LIMIT 30 OFFSET 9000$q$) AS spilled_two_keys,
+	   iv_check($q$SELECT id, a FROM iv ORDER BY a, id LIMIT 4000$q$) AS wide_heap;
+RESET work_mem;
+
+-- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
+SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT tag, iv_check(q) FROM iv_q WHERE tag IN ('a_asc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
+RESET sift.test_limits;
+
+SELECT sift.col_merge('iv_col', true) >= 0 AS merged;
+SELECT * FROM iv_stage('merged');
+VACUUM iv;
+SELECT * FROM iv_stage('vacuumed');
+SELECT sift.col_verify('iv_col', true);
+
+-- a partitioned table
+CREATE TABLE ip (id int, g int NOT NULL, a interval, w interval, pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
+CREATE TABLE ip_a PARTITION OF ip FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
+CREATE TABLE ip_b PARTITION OF ip FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
+INSERT INTO ip (id, g, a, w) SELECT id, g, a, w FROM iv WHERE id <= 5000;
+CREATE INDEX ip_col ON ip USING sift_col (id, g, a, w);
+VACUUM (ANALYZE) ip;
+SELECT tag, iv_check(replace(q, 'FROM iv ', 'FROM ip ')) FROM iv_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
+
+-- a sift_table keeps its intervals by size, and reads the key the same way
+CREATE TABLE it (id int, g int, a interval, pad text DEFAULT repeat('x', 1500)) USING sift_table;
+INSERT INTO it (id, g, a) SELECT id, g, a FROM iv WHERE id <= 5000;
+VACUUM (ANALYZE) it;
+SELECT iv_check($q$SELECT id, a FROM it ORDER BY a, id LIMIT 25$q$) AS table_a_asc,
+	   iv_check($q$SELECT id, a FROM it ORDER BY a DESC NULLS LAST, id LIMIT 25$q$) AS table_a_desc,
+	   iv_check($q$SELECT id, a::text AS t FROM it WHERE g = 3 ORDER BY a DESC, id LIMIT 30 OFFSET 100$q$) AS table_filter;
+
+DROP FUNCTION iv_check, iv_mode, iv_rows, iv_stage;
+DROP TABLE iv, iv_q, ip, it;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

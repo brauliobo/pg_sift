@@ -57,6 +57,9 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		case NUMERICOID:
 			/* a wide numeric is read through the dictionary of its datums (agg/wide.c), a NaN among them, which numeric_cmp sorts last */
 			return lf->vtype == SCV_I64 || (lf->wide && lf->vtype == SCV_CODE);
+		case INTERVALOID:
+			/* read through the dictionary of its datums (agg/wide.c); interval_cmp compares the total, so 1 mon and 30 days tie */
+			return lf->wide && lf->vtype == SCV_CODE;
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
@@ -165,6 +168,7 @@ typedef struct TopKey
 	Oid			sortop;
 	Oid			collid;
 	FmgrInfo   *cmp;			/* BK_FMGR: the btree comparison function of the type */
+	int16		typlen;			/* BK_FMGR: the length of the type, -1 for a varlena (an interval is 16 bytes, padded in the dictionary) */
 	int			xk;				/* TXK_*: what the key does to its leaf's value (agg/topn.h) */
 	int64		xc;				/* TXK_COALESCE: the constant */
 	Oid			xcoll;			/* TXK_LOWER, TXK_UPPER: the collation of the call */
@@ -494,6 +498,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			{
 				k->cmp = palloc0(sizeof(FmgrInfo));
 				fmgr_info(cmp, k->cmp);
+				k->typlen = get_typlen(k->typid);
 			}
 			t->nblob++;
 		}
@@ -810,13 +815,15 @@ key_entry(SiftTopN *t, int j, const SiftSrcDict *d, uint32 code, const char **p,
 
 	*p = d->bytes + d->off[code];
 	*len = d->off[code + 1] - d->off[code];
-	if (k->bkind == BK_BYTEA || k->bkind == BK_FMGR)
+	if (k->bkind == BK_BYTEA || (k->bkind == BK_FMGR && k->typlen < 0))
 	{
 		varattrib_4b h;
 
 		memcpy(&h, *p, sizeof(uint32));
 		*len = VARSIZE_4B(&h);
 	}
+	else if (k->bkind == BK_FMGR)
+		*len = k->typlen;
 	if (k->xfn)
 	{
 		KeyBlob    *b;
