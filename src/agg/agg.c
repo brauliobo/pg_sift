@@ -864,7 +864,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
 	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
-	/* its per-query memory is where a sub-plan runs its scans (init_lut_expr) */
+	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
 	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ex->lutcx = CreateStandaloneExprContext();
 	MemoryContextSwitchTo(ex->cxt);
