@@ -1,0 +1,102 @@
+-- A scan begins for every morsel of units (one superblock for a float sum, which keeps its order); the superblocks the zones leave no unit in are found once for the
+-- scan and are not begun. The rows are those of the normal plan, and the units read and pruned are counted as a begin over each would count them, for a table
+-- that stays in order and for one with stray rows (every 50th row has the k of a far unit, as between two pg_repack runs: each stray row keeps its unit alive
+-- for a request on its k, and nothing more). A page holds one row, so unit n holds the rows 256 * n .. 256 * n + 255 (k = n, except the stray rows).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE sm (id int, k int, f float8, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO sm SELECT i, CASE WHEN i % 50 = 7 THEN ((i / 50) * 37) % 100 ELSE i / 256 END, i % 13, repeat('x', 600) FROM generate_series(0, 100 * 256 - 1) i;
+CREATE TABLE sm_o (LIKE sm) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO sm_o SELECT id, id / 256, f, pad FROM sm;
+CREATE TABLE sm_z (LIKE sm) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO sm_z SELECT * FROM sm;
+CREATE INDEX sm_idx ON sm USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops) WITH (key_columns = 'k');
+CREATE INDEX sm_z_idx ON sm_z USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops) WITH (key_columns = '');
+CREATE INDEX sm_o_idx ON sm_o USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops);
+VACUUM (FREEZE, ANALYZE) sm, sm_o, sm_z;
+CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; read text; pruned text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Units: %' THEN read := trim(split_part(l, ':', 2)); END IF;
+		IF l LIKE '%Units Pruned: %' THEN pruned := trim(split_part(l, ':', 2)); END IF;
+	END LOOP;
+	RETURN CASE WHEN r = 'normal' THEN r ELSE format('%s read %s pruned %s', r, read, pruned) END;
+END $$;
+CREATE FUNCTION same(tbl text, agg text, cond text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT k %% 3 AS g, count(*) AS n, %s AS a FROM %s WHERE %s GROUP BY 1', agg, tbl, cond);
+BEGIN
+	plan := units_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((SELECT * FROM r_on EXCEPT ALL SELECT * FROM r_off) UNION ALL (SELECT * FROM r_off EXCEPT ALL SELECT * FROM r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE TABLE sm_q (n serial, cond text);
+INSERT INTO sm_q (cond) VALUES ('k = 40'), ('k BETWEEN 10 AND 12'), ('k = 500'), ('k IN (3, 70, 99)'), ('k >= 98'), ('k < 0'), ('k = 40 AND id > 10000'), ('k BETWEEN 0 AND 99');
+-- sum(id) is exact in any order (items of two superblocks), sum of a float keeps its order (items of one); the table in order (sm_o), with stray rows and the
+-- small-set summary of k (sm: a stray row keeps its own unit for its k and no other), and with stray rows and the zones alone (sm_z: every unit spans most of k)
+SELECT t, a, n, cond, s.* FROM (VALUES ('sm_o'), ('sm'), ('sm_z')) tt(t), (VALUES ('sum(id)'), ('avg(f)')) aa(a), sm_q, LATERAL same(t, a, cond) s ORDER BY t DESC, a, n;
+  t   |    a    | n |         cond          |           plan            | result_rows | vs_normal_plan 
+------+---------+---+-----------------------+---------------------------+-------------+----------------
+ sm_z | avg(f)  | 1 | k = 40                | SiftAgg read 100 pruned 0 |           1 |              0
+ sm_z | avg(f)  | 2 | k BETWEEN 10 AND 12   | SiftAgg read 67 pruned 33 |           3 |              0
+ sm_z | avg(f)  | 3 | k = 500               | normal                    |           0 |              0
+ sm_z | avg(f)  | 4 | k IN (3, 70, 99)      | SiftAgg read 100 pruned 0 |           2 |              0
+ sm_z | avg(f)  | 5 | k >= 98               | SiftAgg read 12 pruned 88 |           2 |              0
+ sm_z | avg(f)  | 6 | k < 0                 | normal                    |           0 |              0
+ sm_z | avg(f)  | 7 | k = 40 AND id > 10000 | SiftAgg read 61 pruned 39 |           1 |              0
+ sm_z | avg(f)  | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+ sm_z | sum(id) | 1 | k = 40                | SiftAgg read 100 pruned 0 |           1 |              0
+ sm_z | sum(id) | 2 | k BETWEEN 10 AND 12   | SiftAgg read 67 pruned 33 |           3 |              0
+ sm_z | sum(id) | 3 | k = 500               | normal                    |           0 |              0
+ sm_z | sum(id) | 4 | k IN (3, 70, 99)      | SiftAgg read 100 pruned 0 |           2 |              0
+ sm_z | sum(id) | 5 | k >= 98               | SiftAgg read 12 pruned 88 |           2 |              0
+ sm_z | sum(id) | 6 | k < 0                 | normal                    |           0 |              0
+ sm_z | sum(id) | 7 | k = 40 AND id > 10000 | SiftAgg read 61 pruned 39 |           1 |              0
+ sm_z | sum(id) | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+ sm_o | avg(f)  | 1 | k = 40                | SiftAgg read 1 pruned 99  |           1 |              0
+ sm_o | avg(f)  | 2 | k BETWEEN 10 AND 12   | SiftAgg read 3 pruned 97  |           3 |              0
+ sm_o | avg(f)  | 3 | k = 500               | normal                    |           0 |              0
+ sm_o | avg(f)  | 4 | k IN (3, 70, 99)      | SiftAgg read 3 pruned 97  |           2 |              0
+ sm_o | avg(f)  | 5 | k >= 98               | SiftAgg read 2 pruned 98  |           2 |              0
+ sm_o | avg(f)  | 6 | k < 0                 | normal                    |           0 |              0
+ sm_o | avg(f)  | 7 | k = 40 AND id > 10000 | SiftAgg read 1 pruned 99  |           1 |              0
+ sm_o | avg(f)  | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+ sm_o | sum(id) | 1 | k = 40                | SiftAgg read 1 pruned 99  |           1 |              0
+ sm_o | sum(id) | 2 | k BETWEEN 10 AND 12   | SiftAgg read 3 pruned 97  |           3 |              0
+ sm_o | sum(id) | 3 | k = 500               | normal                    |           0 |              0
+ sm_o | sum(id) | 4 | k IN (3, 70, 99)      | SiftAgg read 3 pruned 97  |           2 |              0
+ sm_o | sum(id) | 5 | k >= 98               | SiftAgg read 2 pruned 98  |           2 |              0
+ sm_o | sum(id) | 6 | k < 0                 | normal                    |           0 |              0
+ sm_o | sum(id) | 7 | k = 40 AND id > 10000 | SiftAgg read 1 pruned 99  |           1 |              0
+ sm_o | sum(id) | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+ sm   | avg(f)  | 1 | k = 40                | SiftAgg read 6 pruned 94  |           1 |              0
+ sm   | avg(f)  | 2 | k BETWEEN 10 AND 12   | SiftAgg read 19 pruned 81 |           3 |              0
+ sm   | avg(f)  | 3 | k = 500               | normal                    |           0 |              0
+ sm   | avg(f)  | 4 | k IN (3, 70, 99)      | SiftAgg read 17 pruned 83 |           2 |              0
+ sm   | avg(f)  | 5 | k >= 98               | SiftAgg read 12 pruned 88 |           2 |              0
+ sm   | avg(f)  | 6 | k < 0                 | normal                    |           0 |              0
+ sm   | avg(f)  | 7 | k = 40 AND id > 10000 | SiftAgg read 4 pruned 96  |           1 |              0
+ sm   | avg(f)  | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+ sm   | sum(id) | 1 | k = 40                | SiftAgg read 6 pruned 94  |           1 |              0
+ sm   | sum(id) | 2 | k BETWEEN 10 AND 12   | SiftAgg read 19 pruned 81 |           3 |              0
+ sm   | sum(id) | 3 | k = 500               | normal                    |           0 |              0
+ sm   | sum(id) | 4 | k IN (3, 70, 99)      | SiftAgg read 17 pruned 83 |           2 |              0
+ sm   | sum(id) | 5 | k >= 98               | SiftAgg read 12 pruned 88 |           2 |              0
+ sm   | sum(id) | 6 | k < 0                 | normal                    |           0 |              0
+ sm   | sum(id) | 7 | k = 40 AND id > 10000 | SiftAgg read 4 pruned 96  |           1 |              0
+ sm   | sum(id) | 8 | k BETWEEN 0 AND 99    | SiftAgg read 100 pruned 0 |           3 |              0
+(48 rows)
+
+DROP FUNCTION same(text, text, text), units_of(text);
+DROP TABLE sm_q, sm, sm_o, sm_z;
+DROP EXTENSION pg_sift;
