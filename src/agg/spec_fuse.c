@@ -1030,5 +1030,8 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	spec->postsets = f.postsets;
 	spec->key[nk] = (SiftAggKey) {.kind = SAK_SET, .leaf = -1, .typid = INT4OID, .typmod = -1, .eqop = Int4EqualOperator, .desc = "grouping set"};
 	spec->nkeys = nk + 1;
+	/* the arms were planned with workers one by one: the aggregates of another arm (a count of the lookup's column) may be ones the leader cannot merge */
+	if (!sift_aggspec_parallel_ok(spec))
+		spec->nworkers = 0;
 	return spec;
 }
