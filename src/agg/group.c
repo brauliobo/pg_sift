@@ -325,15 +325,20 @@ hash_group_generic(AggExec *ex, const uint32 *ids)
 }
 
 void
-hash_init(AggExec *ex)
+hash_init(AggExec *ex, uint32 groups)
 {
 	int         nk = ex->spec->nkeys;
 
 	ex->hash = true;
 	ex->hashg = nk <= lengthof(hash_group_fns) ? hash_group_fns[nk - 1] : hash_group_generic;
-	ex->nhslot = 1024;
+	ex->nhslot = groups > 1024 ? pg_nextpower2_32(groups * 2) : 1024;
 	ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 	ex->ngroups = 0;
+	if (groups > 1024)
+	{
+		ex->hkcap = groups;
+		ex->hkey = MemoryContextAlloc(ex->tcxt, (Size) groups * nk * sizeof(uint32));
+	}
 }
 
 /* the arrays of `total` slots are far more than the groups the planner expects: the capacity of the keys multiplies, the groups do not */
@@ -377,7 +382,7 @@ direct_grow(AggExec *ex)
 	if (total > ex->direct_max)
 	{
 		/* the existing groups keep their ids in the hash table */
-		hash_init(ex);
+		hash_init(ex, 1024);
 		for (uint32 g = 0; g < oldcap; g++)
 		{
 			uint32		ids[SIFT_AGG_MAX_KEYS] = {0};

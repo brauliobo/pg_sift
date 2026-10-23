@@ -21,6 +21,7 @@ TupleTableSlot *spill_output(AggExec *ex, TupleTableSlot *slot, bool (*next) (Ag
 bool spill_rescan(AggExec *ex);
 void spill_end(AggExec *ex);
 bool spill_presize_ok(const AggExec *ex);
+uint32 spill_keep(const AggExec *ex);
 bool spill_started(const AggExec *ex);
 bool spill_would(AggExec *ex, struct AggSpill *sp);
 
