@@ -91,6 +91,8 @@ CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_kernels_active' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_level' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_simd_detected() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_simd_detected' LANGUAGE C STRICT;
 
 -- Aggregation operators module (src/agg/kern_test.c): bit-exact SIMD checks through sift.simd.
 CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
