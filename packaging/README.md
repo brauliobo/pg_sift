@@ -8,7 +8,7 @@ What this directory and the repository root hold for each way of installing pg_s
 | RHEL family (PostgreSQL 18) | `pg_sift_18.spec` | `scripts/package.sh`, the `release` workflow | released with every tag |
 | Arch (AUR) | `PKGBUILD`, `PKGBUILD.local` | `scripts/release-aur.sh` | released with every tag |
 | Homebrew (macOS arm64, HEAD) | `../Formula/pg_sift.rb` | `brew test` ([docs/RELEASE.md](../docs/RELEASE.md#homebrew-tap)) | HEAD formula in this repository |
-| Container image, PostgreSQL 17, 18 (19 with its tag) | `docker/` | `docker/build.sh`, `bench/bench kit` | recipe; no image is published ([docs/CONTAINERS.md](../docs/CONTAINERS.md)) |
+| Container image, PostgreSQL 17, 18 and 19 | `docker/` | `docker/build.sh`, `bench/bench kit` | recipe; no image is published ([docs/CONTAINERS.md](../docs/CONTAINERS.md)) |
 | CloudNativePG, Kubernetes image volume (PostgreSQL 18) | `docker/Dockerfile`, target `extension` | `docker/build.sh -e` | recipe; layout checked with a docker image mount, not on a cluster |
 | pgxman | `pgxman.yaml` | `pgxman build -f packaging/pgxman.yaml` | buildkit file written to the published format; not built with the tool |
 | PGXN | `../META.json` | `git archive`, then upload to pgxn.org | fields checked against the meta spec; not uploaded |

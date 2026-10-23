@@ -32,7 +32,7 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The formula in this repository builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
+The formula in this repository builds for Homebrew PostgreSQL 17 and 18 (Homebrew has no PostgreSQL 19 formula yet), with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
 The HEAD-only formula builds `main` and supports macOS arm64; CI builds it and runs `brew test` on PostgreSQL 17 and 18.
 The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
 For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
