@@ -90,7 +90,10 @@ gen_case(pg_prng_state *rs, Case *c)
 		c->tf[s] = pg_prng_uint32(rs) % 4 ? 1 : 1 + pg_prng_uint32(rs) % 255;
 	}
 	c->count = pg_prng_uint32(rs) % NTF;
-	c->p0 = (SiftTfPos) {pg_prng_uint32(rs) % 64, pg_prng_uint32(rs) % 64, pg_prng_uint32(rs) % 16};
+	/* one draw per statement: the order of the operands of a call or an initializer is the compiler's, and the digest of the regress test is pinned */
+	c->p0.rank = pg_prng_uint32(rs) % 64;
+	c->p0.nib = pg_prng_uint32(rs) % 64;
+	c->p0.esc = pg_prng_uint32(rs) % 16;
 	c->l1n = (c->p0.rank + c->count + 7) / 8;
 	c->nibn = (c->p0.nib + c->count + 1) / 2;
 	for (uint32 i = 0; i < c->count; i++)
@@ -100,9 +103,14 @@ gen_case(pg_prng_state *rs, Case *c)
 
 		sift_kern_tf_encode(c->stream, c->stream + c->l1n, c->stream + c->l1n + c->nibn, &p, tf, c->count);
 	}
-	sift_kern_bm25_init(&c->bm, (float4) (pg_prng_double(rs) * 3), (float4) pg_prng_double(rs),
-						(float4) (1 + pg_prng_double(rs) * 500));
-	c->w = (float4) (pg_prng_double(rs) * 50);
+	{
+		const float4 avgdl = (float4) (1 + pg_prng_double(rs) * 500);
+		const float4 b = (float4) pg_prng_double(rs);
+		const float4 k1 = (float4) (pg_prng_double(rs) * 3);
+
+		sift_kern_bm25_init(&c->bm, k1, b, avgdl);
+	}
+	c->w =(float4) (pg_prng_double(rs) * 50);
 	c->theta = c->sc[pg_prng_uint32(rs) % NSLOTS];
 	for (int i = 0; i < 8; i++)
 	{
