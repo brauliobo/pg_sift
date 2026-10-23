@@ -26,7 +26,7 @@ if ! perl -I"$PERL5" -MIPC::Run -e1 2>/dev/null; then
 	dl=$(mktemp -d)
 	trap 'rm -rf "$dl"' EXIT
 	curl -fsSL -o "$dl/ipc-run.tgz" "https://cpan.metacpan.org/authors/id/T/TO/TODDR/$IPC_RUN.tar.gz"
-	echo "$IPC_RUN_SHA256  $dl/ipc-run.tgz" | sha256sum -c --quiet
+	echo "$IPC_RUN_SHA256  $dl/ipc-run.tgz" | "$REPO/scripts/sha256.sh" -c --quiet
 	tar xzf "$dl/ipc-run.tgz" -C "$dl" "$IPC_RUN/lib"
 	mkdir -p "$PERL5" && cp -r "$dl/$IPC_RUN/lib/." "$PERL5/"
 fi
