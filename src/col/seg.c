@@ -1909,14 +1909,16 @@ sift_cseg_preagg_units(SiftColSegment *seg)
 }
 
 void
-sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, SiftCPaggCensus *c)
+sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, uint32 sample, SiftCPaggCensus *c)
 {
 	/* the segment is minor 7 only when the setting allows and the kinds of its rows are known: what a rewrite of it writes */
 	bool		minmax = spec->minmax && spec->ndims > 0 && setting >= SIFT_COL_FORMAT_MINMAX && sift_cseg_kinds_exact(seg);
+	uint32		n = sample > 0 ? Min(sample, seg->nsb) : seg->nsb;
 
 	memset(c, 0, sizeof(*c));
-	for (uint32 u = 0; u < seg->nsb; u++)
+	for (uint32 k = 0; k < n; k++)
 	{
+		uint32		u = (uint64) k * seg->nsb / n;	/* the units counted are spread over the segment */
 		uint32		len,
 					elen;
 		const uint8 *cube = sift_cseg_cube(seg, u, &len);
