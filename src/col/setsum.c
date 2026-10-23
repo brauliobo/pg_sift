@@ -221,6 +221,7 @@ pres_any(const SiftCSet *s, int64 lo, int64 hi)
 	if (a >= s->nbits)
 		return false;
 	b = Min(b, s->nbits - 1);
+	/* check-memory: allow b is below nbits, a count of bits of a summary, so b / 64 is far from the maximum */
 	for (uint64 w = a / 64; w <= b / 64; w++)
 	{
 		uint64		m = pres_word(s, w);
