@@ -240,7 +240,7 @@ assets() { # the downloads are the files the workflow built: names with the vers
 	local d=$W/assets f n
 	[[ -z $DRY ]] || { echo "dry run: nothing is published to download"; return 0; }
 	mkdir -p "$d" && gh release download "$TAG" -D "$d" || return 1
-	( cd "$d" && sha256sum -c SHA256SUMS ) || return 1
+	( cd "$d" && "$REPO/scripts/sha256.sh" -c SHA256SUMS ) || return 1
 	ls "$d"/*pg-sift_"$VERSION"-*.deb "$d"/*pg_sift*-"$VERSION"-*.rpm >/dev/null || { echo "a package of $VERSION is missing"; ls "$d"; return 1; }
 	for f in sqlite mariadb; do
 		[[ ! -f $R/$f/VERSION ]] || [[ -f $d/sift-$f-$VERSION-linux-x86_64.tar.gz ]] || { echo "the $f tarball of $VERSION is missing"; return 1; }

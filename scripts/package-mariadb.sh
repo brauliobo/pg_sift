@@ -64,7 +64,7 @@ all() { # all [REF [OUTDIR]]
 	rm -f "$out"/sift-mariadb-*.tar.gz
 	build "$ref" "$out"
 	test_tarball "$out"/sift-mariadb-*.tar.gz
-	(cd "$out" && sha256sum sift-mariadb-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
+	(cd "$out" && "$REPO/scripts/sha256.sh" sift-mariadb-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
 }
 
 case ${1:-all} in

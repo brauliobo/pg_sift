@@ -50,9 +50,9 @@ if [[ $(cat "$PREFIX/.recipe" 2>/dev/null) == "$RECIPE" ]]; then echo "$PREFIX";
 [[ -z $VALGRIND ]] || [[ -e /usr/include/valgrind/memcheck.h || -e /usr/local/include/valgrind/memcheck.h ]] ||
 	{ echo "pg-assert: valgrind/memcheck.h not found (install the valgrind development files)" >&2; exit 1; }
 TARBALL=$CACHE/src/postgresql-$V.tar.bz2
-if ! echo "$SUM  $TARBALL" | sha256sum -c --quiet 2>/dev/null; then
+if ! echo "$SUM  $TARBALL" | "$(dirname "$0")/sha256.sh" -c --quiet 2>/dev/null; then
 	curl -fsSL -o "$TARBALL" "https://ftp.postgresql.org/pub/source/v$V/postgresql-$V.tar.bz2"
-	echo "$SUM  $TARBALL" | sha256sum -c --quiet
+	echo "$SUM  $TARBALL" | "$(dirname "$0")/sha256.sh" -c --quiet
 fi
 
 WORK=$(mktemp -d "${SIFT_TMP:-/tmp}/sift-pg-assert-XXXXXX")
