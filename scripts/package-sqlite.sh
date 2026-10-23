@@ -60,7 +60,7 @@ all() { # all [REF [OUTDIR]]
 	rm -f "$out"/sift-sqlite-*.tar.gz
 	build "$ref" "$out"
 	test_tarball "$out"/sift-sqlite-*.tar.gz
-	(cd "$out" && sha256sum sift-sqlite-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
+	(cd "$out" && "$REPO/scripts/sha256.sh" sift-sqlite-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
 }
 
 case ${1:-all} in
