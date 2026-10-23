@@ -103,6 +103,7 @@
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
 #define AGG_START_MS		2750.0	/* a millisecond in this path's estimates: AGG_SETUP_FACTOR times the default parallel_setup_cost is 8 ms */
+#define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
@@ -1340,14 +1341,15 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		native = combo_entries(c, s, cb, k->agg_rows, false) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		run = AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
 
 			/*
 			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
 			 * inputs are counted by what the index holds of the elements and of the tuples the scan reads, as the rows PostgreSQL expects of the join
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
-			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
