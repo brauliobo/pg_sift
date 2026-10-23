@@ -21,10 +21,10 @@ SELECT count(*) AS segments FROM sift._test_col_formats('cs_idx');
 SELECT units, dim_units, mm_units FROM sift._test_col_pre_stats('cs_idx') WHERE leaf = 1;
 
 -- two units of each segment, in a backend that has not counted them yet (the count is kept for the backend): the counts stand for the units of the segment
-SELECT format('ALTER DATABASE %I SET sift.test_limits = ''pre_census_units=2''', current_database()) \gexec
+DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET sift.test_limits = ''pre_census_units=2''', current_database()); END $$;
 \connect
 SELECT units, dim_units, mm_units FROM sift._test_col_pre_stats('cs_idx') WHERE leaf = 1;
-SELECT format('ALTER DATABASE %I RESET sift.test_limits', current_database()) \gexec
+DO $$ BEGIN EXECUTE format('ALTER DATABASE %I RESET sift.test_limits', current_database()); END $$;
 
 DROP TABLE cs;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
