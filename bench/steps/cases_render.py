@@ -46,6 +46,12 @@ def collect(rows, registry, root=REPO):
     return out
 
 
+def same_plan(f):
+    """the planner kept PostgreSQL's plan: no ratio of the optimization, but the cost of deciding, when it shows"""
+    r = f['native'] / f['sift'] if f['native'] and f['sift'] else 1
+    return 'same plan' + (' (%s slower)' % speed(1 / r) if r <= 1 - TIE else '')
+
+
 def verdict(f):
     if f['kept'] or not f['native'] or not f['sift']:
         return None
@@ -75,7 +81,7 @@ def takeaway(figs):
     if flat:
         text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
     if kept:
-        text += '; the planner kept the normal plan (the same plan as PostgreSQL\'s, no ratio) on %d: %s' % (len(kept), ', '.join('%s %s' % (f['case'].id, UNIT[f['metric']]) for f in kept))
+        text += '; the planner kept the normal plan (the same plan as PostgreSQL\'s, no ratio; the slower ones are pg_sift\'s time with that plan) on %d: %s' % (len(kept), ', '.join('%s %s%s' % (f['case'].id, UNIT[f['metric']], same_plan(f)[len('same plan'):]) for f in kept))
     return text + '.'
 
 
@@ -93,7 +99,7 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
     body = []
     for f in figs:
         r = verdict(f)
-        sp = 'same plan' if f['kept'] else '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
+        sp = same_plan(f) if f['kept'] else '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
         if r and isinstance(f['others'].get('bulk_off'), float) and f['sift']:
             sp += ' (`sift.table_bulk_groups` on vs off: %s lower)' % speed(f['others']['bulk_off'] / f['sift'])
         first = f['metric'] == f['case'].metrics[0]
