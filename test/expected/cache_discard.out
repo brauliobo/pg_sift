@@ -19,6 +19,11 @@ CREATE TABLE dims (id int, name text) WITH (autovacuum_enabled = off);
 INSERT INTO dims SELECT g, 'n' || g FROM generate_series(1, 50) g;
 ANALYZE events;
 ANALYZE dims;
+CREATE TABLE blobs (id int PRIMARY KEY, grp int, body text, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO blobs SELECT i, i % 5, (SELECT string_agg(md5(i::text || j), ' ') FROM generate_series(1, 200) j),
+	jsonb_build_object('v', CASE WHEN i % 6 = 0 THEN to_jsonb('8.5'::text) ELSE to_jsonb((i % 17) + 0.5) END) FROM generate_series(1, 60) i;
+CREATE INDEX blobs_col ON blobs USING sift_col (id, grp, body, doc) WITH (paths = 'doc.v float8', write_buffer_limit = 4096);
+ANALYZE blobs;
 CREATE TABLE notes (id serial, body text, kind int) WITH (autovacuum_enabled = off);
 INSERT INTO notes (body, kind) SELECT 'word' || g % 40 || ' item' || g % 7 || ' common', g % 5 FROM generate_series(1, 600) g;
 CREATE INDEX notes_sift ON notes USING sift (body);
@@ -131,6 +136,41 @@ SELECT count(*) FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.kind = 4
 RESET sift.enable_col_scan;
 RESET enable_seqscan;
 RESET enable_indexscan;
+-- the aggregate scan reads the rows with a value the index cannot store again from the heap (a string in a float8 path), and the toasted text of the
+-- row is read while its index row is built
+SELECT count(*) FILTER (WHERE pg_column_toast_chunk_id(body) IS NOT NULL) AS toasted FROM blobs;
+ toasted 
+---------
+      60
+(1 row)
+
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET sift.enable_agg = on;
+SELECT grp, sum((doc ->> 'v')::float8), count(*) FROM blobs GROUP BY grp ORDER BY grp;
+ grp | sum | count 
+-----+-----+-------
+   0 | 101 |    12
+   1 | 101 |    12
+   2 |  84 |    12
+   3 | 101 |    12
+   4 | 101 |    12
+(5 rows)
+
+SET sift.enable_agg = off;
+SELECT grp, sum((doc ->> 'v')::float8), count(*) FROM blobs GROUP BY grp ORDER BY grp;
+ grp | sum | count 
+-----+-----+-------
+   0 | 101 |    12
+   1 | 101 |    12
+   2 |  84 |    12
+   3 | 101 |    12
+   4 | 101 |    12
+(5 rows)
+
+RESET sift.enable_agg;
+RESET seq_page_cost;
+RESET random_page_cost;
 -- sift (BM25): insert, promote, delete, update, vacuum, merge, queries
 INSERT INTO notes (body, kind) SELECT 'late' || g % 9 || ' common word' || g % 40, g % 5 FROM generate_series(1, 40) g;
 SELECT sift.promote('notes_sift') >= 0 AS promoted;
@@ -229,5 +269,5 @@ SELECT count(*) FROM rows_t;
 \if :discard
 RESET debug_discard_caches;
 \endif
-DROP TABLE items, events, dims, notes, rows_t;
+DROP TABLE items, events, dims, blobs, notes, rows_t;
 DROP EXTENSION pg_sift;
