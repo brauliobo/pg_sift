@@ -62,6 +62,8 @@
 	  "LIMIT + OFFSET a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
 	X(topn_keys, "SIFT_TOPN_MAX_KEYS", "agg/topn.h", SIFT_TOPN_MAX_KEYS, "columns", \
 	  "ORDER BY columns a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
+	X(topn_code_entries, "ORD_MAX_ENTRIES", "agg/topn.c", 1048576, "entries", \
+	  "entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time)", "the rows of its units are compared with the bar as bytes, as before the order code", "-", 1) \
 	X(first_keys, "FIRST_MAX_KEYS", "agg/plan_order.c", 4, "columns", \
 	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
 	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec.h", SIFT_AGG_MAX_FORD, "columns", \

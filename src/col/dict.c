@@ -112,6 +112,8 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 #define DICT_HASH_AFTER		8
 #define DICT_SORT_AFTER		16
 #define DICT_SORT_MIN		1024
+/* ... and sorted for the rows of a top-N once the scans have compared this many times its entries as bytes (a sort costs about that many compares) */
+#define DICT_ORDER_ROWS		4
 
 int64
 sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
@@ -682,6 +684,16 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	return cdict_from(mcxt, head[1], (const uint32 *) p, (const char *) (p + sizeof(uint32) * ((Size) head[1] + 1)));
 }
 
+static const uint32 *
+cdict_order(const void *octx, uint64 rows)
+{
+	SiftCDict  *d = (SiftCDict *) octx;
+
+	if (d->sorted == NULL && (d->orows += rows) >= (uint64) DICT_ORDER_ROWS * d->n)
+		cdict_sort(d);
+	return d->sorted;
+}
+
 void
 sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view)
 {
@@ -689,4 +701,6 @@ sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view)
 	view->off = d->off;
 	view->bytes = d->bytes;
 	view->id = id;
+	view->order = cdict_order;
+	view->octx = d;
 }
