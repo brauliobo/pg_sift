@@ -270,11 +270,11 @@ updates() { # SIZE: last, it changes the data; at the budget of the load
   point "$CPUS"
   locked py updates --rows "$1" --out "$(szdir "$1")" --cpus "$CPUS" "${extra[@]}"
 }
-section() { # SIZES: the update, delete and VACUUM section (store.py section): S_REPS repetitions (3) of the sizes up to 200,000 orders, with the churn and insert windows, one of the larger ones
+section() { # SIZES: the update, delete and VACUUM section (store.py section): S_REPS repetitions (5) of the sizes up to 200,000 orders, with the churn and insert windows, S_REPS_BIG (3) of the larger ones, which have none
   local s r extra=() secs
   mapfile -t extra < <(engine_args "${S_ENGINES:-pg,sift,sift_maint,sift_table}"; flags)
   for s in ${SIZES//,/ }; do
-    for (( r = 1; r <= (s > 200000 ? 1 : ${S_REPS:-3}); r++ )); do
+    for (( r = 1; r <= (s > 200000 ? ${S_REPS_BIG:-3} : ${S_REPS:-5}); r++ )); do
       secs=$(( s > 200000 ? 0 : ${S_CHURN_SECONDS:-20} ))
       mkdir -p "$(szdir "$s")"
       up "$s"
