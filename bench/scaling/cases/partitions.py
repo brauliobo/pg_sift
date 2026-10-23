@@ -1,9 +1,9 @@
-"""Partitions: P range partitions of 20 rows each; the size is P. Planning time is the cost under test."""
+"""Partitions: P range partitions of 500 rows each; the size is P. Planning time is the cost under test."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import Case, Query
 
-ROWS = 20
+ROWS = 500
 
 
 def setup(size):
@@ -17,6 +17,6 @@ analyze t;"""
 
 CASES = [Case('partitions', [16, 64, 256, 1024, 4096], setup=setup, unit='partitions', quick=3, per_size=True,
               queries=[
-    Query('one_partition', lambda p: "select count(*), sum(v) from t where k between 5 and 10", 'linear', needs_sift=False),
+    Query('one_partition', lambda p: "select count(*), sum(v) from t where k between 5 and 10", 'linear'),
     Query('all_partitions', lambda p: "select count(*), sum(v) from t", 'linear'),
 ])]

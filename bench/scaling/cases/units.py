@@ -18,7 +18,7 @@ vacuum freeze t;"""
 
 
 def at(size):
-    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v) where id <= {size * ROWS};"
+    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v) with (point_columns = 'id') where id <= {size * ROWS};"
 
 
 def q(name, body, target='flat'):
