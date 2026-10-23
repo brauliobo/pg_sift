@@ -42,6 +42,7 @@
 #define COL_SCAN_UNIT_COST	40.0
 
 bool		sift_enable_col_scan = false;
+double		sift_plan_scale = 1.0;
 
 /*
  * One scan of the index, as a bitmap (amgetbitmap) or tuple by tuple (amgettuple): the source, the predicates of the keys and, for amgettuple, the rows of
@@ -1004,13 +1005,28 @@ static get_relation_info_hook_type prev_info_hook;
 static void
 col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
 {
+	bool		indexed = false;
+
 	if (prev_info_hook)
 		prev_info_hook(root, relid, inhparent, rel);
-	if (sift_enable_col_scan)
-		return;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->relam == sift_col_am_oid())
-			ii->amhasgetbitmap = ii->amhasgettuple = false;
+		{
+			indexed = true;
+			if (!sift_enable_col_scan)
+				ii->amhasgetbitmap = ii->amhasgettuple = false;
+		}
+	/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
+	if (indexed && sift_plan_scale > 1.0)
+	{
+		rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+		rel->tuples *= sift_plan_scale;
+		foreach_node(IndexOptInfo, ii, rel->indexlist)
+		{
+			ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+			ii->tuples *= sift_plan_scale;
+		}
+	}
 }
 
 void

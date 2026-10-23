@@ -130,6 +130,7 @@ extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, ui
 
 /* col/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
 extern bool sift_enable_col_scan;
+extern double sift_plan_scale;
 extern void sift_col_scan_init(void);
 extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
 extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
