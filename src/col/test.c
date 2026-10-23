@@ -528,9 +528,10 @@ Datum
 sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		v[5] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes()),
-						Int64GetDatum(sift_cdict_cache_stats.head_loads), Int64GetDatum(sift_cdict_cache_stats.head_hits)};
-	bool		nulls[5] = {false};
+	Datum		v[7] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes()),
+						Int64GetDatum(sift_cdict_cache_stats.head_loads), Int64GetDatum(sift_cdict_cache_stats.head_hits),
+						Int64GetDatum(sift_cdict_cache_stats.zone_loads), Int64GetDatum(sift_cdict_cache_stats.zone_hits)};
+	bool		nulls[7] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -590,7 +591,7 @@ sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 	sift_colsrc_stats(rel, &st);
 	for (int i = 0; i < nleaves; i++)
 	{
-		Datum		v[5] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
+		Datum		v[7] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
 		Float8GetDatum(st.elems_per_row[i])};
 		bool		nulls[5] = {false, false, false, false, false};
 
@@ -627,7 +628,7 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 				rows = 0;
 	SiftCI128	total = 0;
 	Datum		v[5];
-	bool		nulls[5] = {false};
+	bool		nulls[7] = {false};
 	char		buf[64];
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1131,8 +1132,8 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
 	{
-		Datum		v[5] = {Int32GetDatum(c), Float8GetDatum(pre->units), Float8GetDatum(pre->dim[c]), Float8GetDatum(pre->mm[c]), Float8GetDatum(pre->roll[c])};
-		bool		nulls[5] = {false};
+		Datum		v[7] = {Int32GetDatum(c), Float8GetDatum(pre->units), Float8GetDatum(pre->dim[c]), Float8GetDatum(pre->mm[c]), Float8GetDatum(pre->roll[c])};
+		bool		nulls[7] = {false};
 
 		if (pre->dim[c] > 0 || pre->roll[c] > 0)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);

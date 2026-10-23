@@ -14,7 +14,7 @@ SELECT count(*) > 0 AS has_segment FROM sift.col_segments('sh_idx'::regclass) WH
  t
 (1 row)
 
--- a scan finds the heads of the segments the build and the last scan opened
+-- a scan finds the heads and the zone arrays of the segments the build and the last scan opened
 SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
  rows 
 ------
@@ -33,10 +33,10 @@ SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
   600
 (1 row)
 
-SELECT head_loads = 0 AS none_read, head_hits > 0 AS found FROM sift._test_col_dict_cache(true);
- none_read | found 
------------+-------
- t         | t
+SELECT head_loads = 0 AS none_read, head_hits > 0 AS found, zone_loads = 0 AS no_zones_read, zone_hits > 0 AS zones_found FROM sift._test_col_dict_cache(true);
+ none_read | found | no_zones_read | zones_found 
+-----------+-------+---------------+-------------
+ t         | t     | t             | t
 (1 row)
 
 -- a scan that fails keeps nothing half made, and the next one finds the head
@@ -111,10 +111,10 @@ SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
   600
 (1 row)
 
-SELECT head_loads >= 2 AS read_each_time, head_hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
- read_each_time | none_found 
-----------------+------------
- t              | t
+SELECT head_loads >= 2 AS read_each_time, head_hits = 0 AS none_found, zone_loads >= 2 AS zones_read_each_time, zone_hits = 0 AS no_zones_found FROM sift._test_col_dict_cache(true);
+ read_each_time | none_found | zones_read_each_time | no_zones_found 
+----------------+------------+----------------------+----------------
+ t              | t          | t                    | t
 (1 row)
 
 RESET sift.test_limits;
@@ -131,3 +131,5 @@ SELECT count(*) AS rows, sum(grp) AS total FROM sh WHERE grp BETWEEN 3 AND 9;
 (1 row)
 
 DROP TABLE sh;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -186,19 +186,16 @@ sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHead
 	return hd;
 }
 
-/* Keeps the head made in cx, a child of mcxt (it stays there when the cache has no room), and pins it for mcxt */
-void
-sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
+/* Keeps obj, made in cx (a child of mcxt: it stays there when the cache has no room), under k, and pins it for mcxt; an entry of k that nobody pins is replaced */
+static void
+obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
 {
-	DictKey		k;
 	DictEnt    *e;
 	Size		size = MemoryContextMemAllocated(cx, true);
 
-	CDICT_STAT(head_loads);
 	if (cache == NULL)
 		cache_init();
-	entry_key(&k, index, entry, HEAD_COL, UINT32_MAX);
-	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	if ((e = hash_search(cache, k, HASH_FIND, NULL)) != NULL)
 	{
 		/* the entry of a header that has changed since */
 		if (e->pins > 0)
@@ -208,13 +205,56 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
 		return;
 	MemoryContextSetParent(cx, cache_cx);
-	e = hash_search(cache, &k, HASH_ENTER, NULL);
+	e = hash_search(cache, k, HASH_ENTER, NULL);
 	e->cx = cx;
-	e->obj = hd;
+	e->obj = obj;
 	e->size = size;
 	e->pins = 0;
+	dlist_push_tail(&lru, &e->node);
 	cache_bytes += size;
 	dict_pin(e, mcxt);
+}
+
+void
+sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
+{
+	DictKey		k;
+
+	CDICT_STAT(head_loads);
+	entry_key(&k, index, entry, HEAD_COL, UINT32_MAX);
+	obj_keep(&k, cx, hd, mcxt);
+}
+
+/*
+ * The zone arrays of a leaf of a segment (min, max, sums, counts, flags, filters of every unit: the bytes a scan tests whatever few units it reads) are
+ * the entry of the leaf at unit UINT32_MAX - 1. They are found without the header: a scan has opened the segment, whose head was checked against it.
+ */
+#define ZONES_UNIT	(UINT32_MAX - 1)
+
+const ZoneArrays *
+sift_cseg_zones_find(SiftColSegment *seg, int col)
+{
+	DictKey		k;
+	DictEnt    *e;
+
+	if (cache == NULL)
+		return NULL;
+	dict_key(&k, seg, col, ZONES_UNIT);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
+		return NULL;
+	CDICT_STAT(zone_hits);
+	dict_pin(e, seg->mcxt);
+	return e->obj;
+}
+
+void
+sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
+{
+	DictKey		k;
+
+	CDICT_STAT(zone_loads);
+	dict_key(&k, seg, col, ZONES_UNIT);
+	obj_keep(&k, cx, z, seg->mcxt);
 }
 
 /*
