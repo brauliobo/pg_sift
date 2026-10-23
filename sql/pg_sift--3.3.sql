@@ -977,6 +977,34 @@ COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index the caller 
 -- it lists what the caller can read (has_table_privilege on the table), so every role may select from it
 GRANT SELECT ON sift.workers TO PUBLIC;
 
+-- What a DBA watches on a sift_col index of a large table, one row per index the caller can read: sizes (the file, the segments, the free and the
+-- reusable blocks), segments against the directory limit, units listed against units covered (more than 1 is the overlap of promoted segments),
+-- the segments and rows a VACUUM left dead, the rows waiting in write buffers, the state of the maintenance (sift.worker_state) and the chain of
+-- sift.col_maintenance_status (the last VACUUM, why a rewrite is due and what blocks it). Each query reads the directory and the header of every segment.
+CREATE VIEW sift.col_index_status AS
+	SELECT c.oid::regclass AS index, m.heap AS "table",
+		   pg_relation_size(c.oid) AS index_bytes, x.bytes AS segment_bytes,
+		   x.free_blocks * bs.n AS free_bytes, x.reusable_blocks * bs.n AS reusable_bytes,
+		   x.rows AS segment_rows, x.segments, x.max_segments, s.largest_segment_bytes, x.units, s.listed_units,
+		   s.dirty_segments, s.dead_rows, round(100.0 * s.dead_rows / NULLIF(x.rows, 0), 2) AS dead_pct,
+		   s.buffer_rows, w.sealed AS sealed_buffers, w.running, w.failures, w.next_retry,
+		   m.last_vacuum, m.changed_rows, m.vacuum_at, m.rewrite_due AS due, m.last_request, m.blocked_by
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
+	JOIN pg_index i ON i.indexrelid = c.oid
+	CROSS JOIN (SELECT current_setting('block_size')::int8 AS n) bs
+	CROSS JOIN LATERAL sift.col_index_info(c.oid) x
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	CROSS JOIN LATERAL sift.col_maintenance_status(c.oid) m
+	CROSS JOIN LATERAL (SELECT max(bytes) FILTER (WHERE kind = 'immutable') AS largest_segment_bytes,
+							   sum(units) AS listed_units, count(*) FILTER (WHERE dirty) AS dirty_segments,
+							   coalesce(sum(dead_rows), 0) AS dead_rows,
+							   coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) AS buffer_rows
+						FROM sift.col_segments(c.oid)) s
+	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
+COMMENT ON VIEW sift.col_index_status IS 'One row per sift_col index the caller can read, for the DBA of a large table: file, segment, free and reusable bytes, segments against the limit, rows in the segments (dead ones included), units listed against covered, dirty segments and dead rows, rows in write buffers, the maintenance state and the chain of sift.col_maintenance_status (last VACUUM, why a rewrite is due, what blocks it).';
+GRANT SELECT ON sift.col_index_status TO PUBLIC;
+
 -- Logical replication of a sift_table needs pg_sift in shared_preload_libraries (docs/COL-TAM.md section 5): a custom resource manager can only
 -- be registered at preload time. Without it the first DML on a published table fails; this trigger refuses CREATE/ALTER PUBLICATION instead, when
 -- the publication would carry a sift_table (wal_level = logical, a permanent table, a publication that publishes inserts, updates or deletes).

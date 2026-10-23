@@ -99,7 +99,7 @@ $$);
 REVOKE USAGE ON SCHEMA sift FROM rm_own;
 GRANT USAGE ON SCHEMA sift TO PUBLIC;
 
--- what a role that owns and may read nothing can do with the relations of the schema sift: read the four views and nothing else
+-- what a role that owns and may read nothing can do with the relations of the schema sift: read the five views and nothing else
 SELECT c.relname, c.relkind, has_table_privilege('rm_nos', c.oid, 'SELECT') AS can_select
 	FROM pg_class c WHERE c.relnamespace = 'sift'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S', 'p', 'f')
 	  AND has_table_privilege('rm_nos', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') ORDER BY 1;
