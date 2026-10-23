@@ -17,3 +17,4 @@ records why a per-unit key presence summary	records a design that was not built;
 leave the visibility map of the table empty	the same measurement as cluster_visibility_map (a scan priced for a heap check after CLUSTER, 320 ms against 82 ms forced)
 the UNION ALL arms of a two-level or fused scan go from 4 to 16	a limit on the width of a plan shape (slug shape_width), not a speed
 the group table of a `Custom Scan (SiftAgg)` is bounded by `hash_mem`	bounds peak memory (VmHWM) and spills by design, so it is slower where it spills; the case would measure memory, which the runner does not
+the reloption `return_columns = 's, u'` of a `sift_col` index makes the named text	an access-method index-only scan, off by default; its own numbers are a loss in memory (0.055 against 0.155 ms), timed by bench/col_scan.py like the other access-method scans

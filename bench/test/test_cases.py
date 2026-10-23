@@ -71,3 +71,10 @@ class Takeaway(unittest.TestCase):
         slow['kept'] = True
         self.assertEqual(r.same_plan(slow), 'same plan (1.5x slower)')
         self.assertEqual(r.same_plan(figs[2]), 'same plan')
+
+    def test_ranked_puts_losses_before_ties_and_wins(self):
+        import cases_render as r
+        win, loss, tie = self.fig('w', 20.0, 2.0, {}, 'Top-N'), self.fig('l', 1.0, 2.0, {}, 'Top-N'), self.fig('t', 1.0, 1.0, {}, 'Seq Scan')
+        slow_kept = self.fig('k', 1.0, 1.5, {}, 'Seq Scan')
+        slow_kept['kept'] = True
+        self.assertEqual([r.ranked(f) for f in (win, loss, tie, slow_kept)], [2, 0, 1, 0])

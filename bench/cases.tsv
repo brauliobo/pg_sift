@@ -31,3 +31,13 @@ dict_equality	finds its dictionary codes without testing every string	orders	def
 dict_prefix	a byte-order permutation of the dictionary	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 partitions_scan	the planner prices the opening of the partitions of a partitioned table, which grows faster than their number	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 partitions_many	3,200 takes it too	orders	default	Append|Seq Scan	native	-	ms	faster33	no
+topn_join_filter	a top-N over an inner join to a table that only filters	events	-	Top-N	native	-	ms	faster33	no
+spine_array_key	takes each element of an integer, date or text type that equals a column of the joined table as a hash key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+lateral_first_row	a `LIMIT 1` child with an `ORDER BY`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+lateral_dim_test	a `LIMIT 1` child that tests its row besides the unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+filter_few_rows	when the filters of the source keep under a 32nd of a unit's rows	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+topn_sorted_runs_filter	a top-N scan with `order_columns` reads the sorted run of a unit also when a `WHERE` leaves few of its rows	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	no
+superunit_total	the merged sums and cube of every group of that many consecutive units of a segment are stored once more	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Seq Scan on orders	native	-	ms	faster33	no

@@ -35,6 +35,8 @@ from store_lib import sections  # noqa: E402  (`--@ name` sections)
 BENCH = os.path.dirname(HERE)
 REPO = os.path.dirname(BENCH)
 GEN = os.path.join(BENCH, 'sql', 'store', 'gen.sql')
+EVENTS_GEN = os.path.join(REPO, 'test', 'plan', 'gen.sql')   # the events dataset of the plan-choice gate: one schema, c_events, for every case of the dataset
+BUILT = set()
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']
 DERIVED = ['segment_id', 'order_date']   # int with 6,313 values and the date of the order: the keys of the key-presence and calendar cases
@@ -72,6 +74,9 @@ class Case:
         if lane == 'pg_duckdb':
             return self.sec.get('duck', self.sec['pg'])
         return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
+
+    def schema(self):
+        return 'c_events' if self.dataset == 'events' else 'c_' + self.id
 
     def table_index(self):
         m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
@@ -126,6 +131,18 @@ def build(case, rows):
     if case.load:
         psql('DROP SCHEMA IF EXISTS c_%s CASCADE; CREATE SCHEMA c_%s' % (case.id, case.id))
         return
+    if case.dataset == 'events':
+        if rows not in BUILT:
+            psql('DROP SCHEMA IF EXISTS c_events CASCADE; CREATE SCHEMA c_events')
+            gen = open(EVENTS_GEN).read().replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)')   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range
+            r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
+                               env={**ENV, 'PGOPTIONS': '-c search_path=c_events,public -c client_min_messages=warning'})
+            if r.returncode:
+                die('test/plan/gen.sql: %s' % r.stderr.strip()[:500])
+            BUILT.add(rows)
+        if case.sec.get('setup'):
+            psql('SET search_path = c_events, public;\n' + case.sec['setup'] + ';\n')
+        return
     ddl = ['DROP SCHEMA IF EXISTS c_{0} CASCADE', 'CREATE SCHEMA c_{0}', 'SET search_path = c_{0}, public',
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
@@ -149,7 +166,7 @@ def lane_sessions(case, engines, duck_port):
     out = {}
     for lane, sets in lanes.items():
         s = server_session(TIMEOUT)
-        for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
+        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
             s.run(st)
         out[lane] = s
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:

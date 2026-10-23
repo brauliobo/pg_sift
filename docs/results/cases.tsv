@@ -2,12 +2,12 @@
 # orders: 200000
 # postgresql: 18.6
 # pg_sift: 3.3
-# build: 6810fbb69067
+# build: 7845f5c1fa1c
 # date: 2026-10-22
 # cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
 # method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
-# host_load_before: load 20.13 19.97 22.77 cpu_psi 0.45%
-# host_load_after: load 20.00 19.97 22.68 cpu_psi 0.30%
+# host_load_before: load 28.97 24.24 24.15 cpu_psi 5.24%
+# host_load_after: load 28.88 24.96 24.40 cpu_psi 2.97%
 version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_page_totals	sift	ms	1.748	1.460	2.654	15	16.51	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount) NOISY
 3.3	topn_page_totals	native	ms	19.925	17.118	28.591	15	16.51	Bitmap Heap Scan on orders NOISY
@@ -84,3 +84,27 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	partitions_scan	native	ms	37.747	35.261	51.608	15	20.13	Seq Scan on orders_p_0 NOISY
 3.3	partitions_many	sift	ms	128.940	111.881	167.913	15	20.00	Seq Scan on orders_p_0 NOISY
 3.3	partitions_many	native	ms	88.290	73.243	113.717	15	20.00	Seq Scan on orders_p_0 NOISY
+3.3	topn_join_filter	sift	ms	1.784	1.334	2.631	15	28.58	Top-N: ts DESC (limit 10) NOISY
+3.3	topn_join_filter	native	ms	7.575	5.762	10.740	15	28.58	Seq Scan on dims NOISY
+3.3	spine_array_key	sift	ms	606.727	525.330	647.978	15	28.58	Group Keys: ts: (g.d)::date; Pushed Aggregates: count(e.id) NOISY
+3.3	spine_array_key	native	ms	451.649	386.374	544.552	15	28.58	Seq Scan on events NOISY
+3.3	lateral_first_row	sift	ms	8.118	5.233	10.310	15	28.69	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val) NOISY
+3.3	lateral_first_row	native	ms	79.327	64.487	127.357	15	28.69	Seq Scan on events NOISY
+3.3	lateral_dim_test	sift	ms	4.140	2.999	5.180	15	28.69	Group Keys: parent_id: l.tier; Pushed Aggregates: count(*), sum(amount) NOISY
+3.3	lateral_dim_test	native	ms	75.752	59.619	92.658	15	28.69	Seq Scan on events NOISY
+3.3	cte_two_readers	sift	ms	4.475	2.732	6.400	15	28.15	Group Keys: parent_id, kind; Pushed Aggregates: count(*), sum(amount) NOISY
+3.3	cte_two_readers	native	ms	77.617	57.281	103.043	15	28.15	Seq Scan on events NOISY
+3.3	filter_few_rows	sift	ms	0.969	0.757	2.001	15	28.15	Group Keys: kind; Pushed Aggregates: count(*), sum(amount) NOISY
+3.3	filter_few_rows	native	ms	2.547	2.200	3.439	15	28.15	Bitmap Heap Scan on events NOISY
+3.3	list_elements	sift	ms	3.429	2.581	5.005	15	28.15	Group Keys: doc.parts[].kind; Pushed Aggregates: count(*) NOISY
+3.3	list_elements	native	ms	154.057	125.869	180.134	15	28.15	Seq Scan on events NOISY
+3.3	topn_sorted_runs_filter	sift	ms	1.951	1.158	2.681	15	28.78	Top-N: customer_id (limit 100) NOISY
+3.3	topn_sorted_runs_filter	native	ms	7.576	6.022	12.430	15	28.78	Bitmap Heap Scan on orders NOISY
+3.3	topn_sorted_runs_filter	runs_off	ms	2.055	1.221	2.991	15	28.78	Top-N: customer_id (limit 100) NOISY
+3.3	topn_sorted_runs_filter	pg_duckdb	ms	11.231	9.787	15.773	15	28.78	DuckDBScan NOISY
+3.3	superunit_total	sift	ms	0.132	0.107	0.590	15	28.78	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.3	superunit_total	native	ms	20.717	19.227	30.258	15	28.78	Seq Scan on orders NOISY
+3.3	superunit_total	scan	ms	2.419	1.551	3.231	15	28.78	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.3	superunit_total	pg_duckdb	ms	33.047	27.715	43.856	15	28.78	DuckDBScan NOISY
+3.3	numeric_sum	sift	ms	41.679	34.617	53.520	15	28.88	Seq Scan on orders NOISY
+3.3	numeric_sum	native	ms	40.845	37.136	62.703	15	28.88	Seq Scan on orders NOISY
