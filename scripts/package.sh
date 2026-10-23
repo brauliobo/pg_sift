@@ -20,7 +20,7 @@ TEST_RPM=${TEST_RPM:-rockylinux/rockylinux:9 almalinux:9 almalinux:10}
 
 run() { # run IMAGE OUTDIR MODE [docker args...]: packaging/container.sh MODE in a throwaway container
 	local image=$1 out=$2 mode=$3; shift 3
-	docker run --rm --cpus 4 -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
+	docker run --rm --cpus 4 -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
 }
 
 build() {
@@ -38,13 +38,21 @@ test_package() {
 	run "$image" "$(dirname "$pkg")" test -e PKG="$(basename "$pkg")"
 }
 
+# test_all PACKAGE IMAGE...: the images in parallel (each waits on its own mirrors), their output in the order of the list
+test_all() {
+	local pkg=$1 image n=0 pids=() rc=0; shift
+	for image in "$@"; do test_package "$image" "$pkg" >"$TMP/test.$n" 2>&1 & pids+=($!); n=$((n + 1)); done
+	for n in "${!pids[@]}"; do wait "${pids[n]}" || rc=1; cat "$TMP/test.$n"; done
+	return $rc
+}
+
 all() {
-	local ref=${1:-HEAD} out=${2:-$REPO/dist} fam image b t
+	local ref=${1:-HEAD} out=${2:-$REPO/dist} fam b t
 	for fam in ${FAMILIES:-deb rpm}; do
 		b=BUILD_${fam^^} t=TEST_${fam^^}
 		rm -f "$out"/*."$fam"
 		build "${!b}" "$ref" "$out"
-		for image in ${!t}; do test_package "$image" "$out"/*."$fam"; done
+		test_all "$out"/*."$fam" ${!t}
 	done
 	(cd "$out" && shopt -s nullglob && "$REPO/scripts/sha256.sh" *.deb *.rpm > SHA256SUMS && cat SHA256SUMS)
 }
