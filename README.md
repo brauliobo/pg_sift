@@ -44,10 +44,10 @@ against PostgreSQL's.
 - 3.3 optimizations on 200,000 orders, one backend, against PostgreSQL on
   the same rows (sift.enable_agg = off): A page of rows with the total of
   its set (11x); ORDER BY coalesce(column, constant) LIMIT n (14x);
-  count(DISTINCT key) of a whole table from the key presence of its units
-  (67x); COPY into a sift_table, written as column groups, against a heap
-  COPY (4.1x less WAL); ORDER BY an unsorted integer column LIMIT n from the
-  sorted run of each unit (order_columns) (7.4x).
+  count(DISTINCT key) of a whole table from the key lists and bitmaps of its
+  units (67x); COPY into a sift_table, written as column groups, against a
+  heap COPY (4.1x less WAL); ORDER BY an unsorted integer column LIMIT n
+  from the sorted run of each unit (order_columns) (7.4x).
 - Where it does not win:
   - Cold (caches emptied), not the fastest on 3 of 10 questions: point
     lookup (PostgreSQL, 1.4x), average shipped order (ClickHouse, 1.3x), big
@@ -209,6 +209,7 @@ The full tables, with range, context and description, are in [docs/USAGE.md](doc
 | `sift.col_format_minor` | sift_col, sift_table | int 3..15 | 15 (was 6 in 3.2) | the newest column format the segments written use; 6 keeps them readable by a 3.2 library, 4 by 3.1 | the options that write a minor above the setting are ignored; a 3.2 library refuses segments of minor 7 and above | [FORMATS 4](docs/FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table) |
 | `sift.col_auto_{merge,merge_dirty_pct,merge_fragmentation,merge_buffer_pct,merge_min_churn_pct,merge_max_active,merge_partition_kb,merge_max_workers}` | sift_col |  | merge=off, merge_dirty_pct=30, merge_fragmentation=2, merge_buffer_pct=1, merge_min_churn_pct=0 (new in 3.3), merge_max_active=0 (new in 3.3), merge_partition_kb=0 (new in 3.3), merge_max_workers=0 (new in 3.3) | after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round, 0-3 of 54 units answerable become 54 of 54 | the whole index is rewritten each time and the table is vacuumed every five naptimes while it keeps changing: WAL per round +49% at 200k rows and +10-16% at 1M rows (3% churn per round); the file is about twice its live size until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed | [USAGE](docs/USAGE.md#maintenance-and-operations) |
 | `sift.enable_agg` | sift_col, sift_table | bool | on | GROUP BY aggregates run as Custom Scan (SiftAgg) over the column index | none; off gives the plan PostgreSQL has without sift | [USAGE](docs/USAGE.md#column-indexes-aggregates-and-sift_table) |
+| `sift.agg_left_lateral` | sift_col, sift_table | bool | on (new in 3.3) | a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns | none; off keeps the normal plan of such a query (the way to compare it and to isolate a wrong result) | [AGG](docs/AGG.md) |
 | `sift.agg_{preagg,preagg_distinct,super}` | sift_col, sift_table |  | preagg=on, preagg_distinct=on (new in 3.3), super=on (new in 3.3) | units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary | none on the index; off scans every unit | [COL-PREAGG 4](docs/COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer) |
 | `sift.{enable_topn,topn_walk,topn_zone_keys,topn_runs}` | sift_col, sift_table |  | enable_topn=on, topn_walk=on, topn_zone_keys=on (new in 3.3), topn_runs=on (new in 3.3) | ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs | none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns | [COL-SEARCH](docs/COL-SEARCH.md#facets-and-top-n) |
 | `sift.agg_{lookup_pushdown,lookup_cache_kb,lookup_shared_kb,lookup_max_kb,lookup_max_rows,share_lookups}` | sift_col, sift_table |  | lookup_pushdown=on, lookup_cache_kb=262144 kB, lookup_shared_kb=-1 (new in 3.3), lookup_max_kb=262144 kB (new in 3.3), lookup_max_rows=-1 (was 1000000 in 3.2), share_lookups=on | the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory) | memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded | [SET-FILTERS 4](docs/SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown) |
@@ -592,5 +593,5 @@ Measured against the CPU on the store table: [docs/GPU.md](docs/GPU.md#when-it-h
 
 ## Testing, security, license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->398 regression tests (`test/sql`), 38 isolation specs, 70 TAP tests (`test/t`), 837 column fixtures and 240 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->410 regression tests (`test/sql`), 39 isolation specs, 73 TAP tests (`test/t`), 961 column fixtures and 243 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

@@ -74,6 +74,7 @@ sift.col_auto_merge_max_active	sift_col	col-auto-merge					USAGE.md#maintenance-
 sift.col_auto_merge_partition_kb	sift_col	col-auto-merge					USAGE.md#maintenance-and-operations
 sift.col_auto_merge_max_workers	sift_col	col-auto-merge					USAGE.md#maintenance-and-operations
 sift.enable_agg	sift_col, sift_table				GROUP BY aggregates run as Custom Scan (SiftAgg) over the column index	none; off gives the plan PostgreSQL has without sift	USAGE.md#column-indexes-aggregates-and-sift_table
+sift.agg_left_lateral	sift_col, sift_table				a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns	none; off keeps the normal plan of such a query (the way to compare it and to isolate a wrong result)	AGG.md
 sift.agg_preagg	sift_col, sift_table	agg-preagg			units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary	none on the index; off scans every unit	COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer
 sift.agg_preagg_distinct	sift_col, sift_table	agg-preagg					COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer
 sift.agg_super	sift_col, sift_table	agg-preagg					COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16
