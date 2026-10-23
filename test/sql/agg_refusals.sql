@@ -124,6 +124,9 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
 SELECT arm, used, slug, scan_cost > normal_cost AS dearer FROM sift.explain_why('SELECT count(*) FROM events WHERE id = 5');
+-- the costs are those of the grouping stage: a LIMIT above it leaves them as they are
+SELECT a.scan_cost = b.scan_cost AND a.normal_cost = b.normal_cost AS stage_costs
+FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1') a, sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1 ORDER BY 1 LIMIT 3') b;
 -- the settings that give up before any shape is looked at
 SET sift.enable_agg = off;
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1');

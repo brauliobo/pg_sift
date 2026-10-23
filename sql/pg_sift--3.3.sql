@@ -555,7 +555,8 @@ COMMENT ON FUNCTION sift.stats_reset() IS 'Resets the session counters that sift
 
 -- Why each candidate path (arm) of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run (docs/USAGE.md "Why a
 -- query kept the normal plan"): one row per arm, used = the arm is in the plan, slug and reason = the first reason it gave up for (NULL when used),
--- scan_cost and normal_cost = the costs of the path that was built and of the normal plan it was compared with (NULL when there was no such path).
+-- scan_cost and normal_cost = the costs of the path that was built and of the cheapest normal path it was compared with, both of the grouping stage (the
+-- total before an ORDER BY or a LIMIT above it: PostgreSQL chooses the plan of the statement by the cost of its top node); NULL when there was no such path.
 -- Needs the privilege to select from the tables of the query; it changes no setting of the session.
 CREATE FUNCTION sift.explain_why(query text, OUT arm text, OUT used bool, OUT slug text, OUT reason text, OUT scan_cost float8, OUT normal_cost float8)
 	RETURNS SETOF record
