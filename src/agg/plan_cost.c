@@ -114,6 +114,9 @@
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves (docs/COL.md 2.9) */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
 #define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
+#define AGG_KEY_ENTRY		40.0	/* an entry of a unit's dictionary given the id of a group key (the text built, hashed and looked up) in a table of 2,000 ids: 39 ns measured, which the read of the leaf prices; 90 ns at 20,000 ids and 200 ns at 200,000, as the table outgrows the caches (the 0.35 power of the ids over AGG_KEY_IDS): the excess over the first is charged */
+#define AGG_KEY_IDS			2000.0
+#define AGG_ID_SWEEP		8.0		/* an id of the key table, per spill of the group table: the table is walked and its arrays reset whatever number of its groups hold rows (45 ns measured), in cpu_operator_cost */
 
 double
 elems_of(AggCtx *c, int grp)
@@ -863,9 +866,9 @@ leaf_heap_width(AggCtx *c, int leaf)
 	return e && IsA(e, Var) ? get_attavgwidth(planner_rt_fetch(c->relid, c->root)->relid, ((Var *) e)->varattno) : 0;
 }
 
-/* the share of the rows of a leaf that PostgreSQL's statistics expect to hold a distinct value (1: no statistics) */
+/* the share of the rows of a leaf that PostgreSQL's statistics expect to hold a distinct value; 0 when it has none (a path of a document, an expression) */
 static double
-leaf_distinct_frac(AggCtx *c, int leaf, double rows)
+leaf_stat_frac(AggCtx *c, int leaf, double rows)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -873,14 +876,23 @@ leaf_distinct_frac(AggCtx *c, int leaf, double rows)
 	double		nd = 0;
 
 	if (e == NULL || !IsA(e, Var))
-		return 1.0;
+		return 0;
 	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
 						  Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tup))
-		return 1.0;
+		return 0;
 	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
 	ReleaseSysCache(tup);
-	return nd > 0 ? Min(nd / Max(rows, 1.0), 1.0) : nd < 0 ? Min(-nd, 1.0) : 1.0;
+	return nd > 0 ? Min(nd / Max(rows, 1.0), 1.0) : Min(-nd, 1.0);
+}
+
+/* ... 1 when it has none */
+static double
+leaf_distinct_frac(AggCtx *c, int leaf, double rows)
+{
+	double		frac = leaf_stat_frac(c, leaf, rows);
+
+	return frac > 0 ? frac : 1.0;
 }
 
 /*
@@ -1107,6 +1119,45 @@ wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
 		image = typmod < 0 || precision > 38 || scale < 0 || scale > 38;
 	}
 	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? AGG_WIDE_IMAGE : AGG_WIDE_ENTRY);
+}
+
+/*
+ * A key read as dictionary codes gives an id to every entry of the dictionary of each unit read, whether a row that passes the filters holds it
+ * or not: a near-unique text column mapped over the units the zones leave costs its rows in entries, and the table of ids outgrows the groups
+ * the query has. Returns the entries mapped; *ids: the ids they make (the most of one key); *ops: what mapping them costs.
+ */
+static double
+key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, double *ops)
+{
+	double		units = Max(k->units, 1.0),
+				read = Max(k->zone_kept, 1.0 / units) * units,
+				total = 0;
+
+	*ids = 0;
+	*ops = 0;
+	for (int i = 0; i < s->nkeys; i++)
+	{
+		const SiftSrcLeaf *lf;
+		double		frac,
+					nd,
+					entries;
+
+		if ((s->key[i].kind != SAK_LEAF && s->key[i].kind != SAK_LUT) || s->key[i].leaf < 0)
+			continue;
+		lf = &c->lay->leaf[s->key[i].leaf];
+		/* without statistics the values are not known to be many */
+		if (lf->vtype != SCV_CODE || lf->wide)
+			continue;
+		frac = leaf_stat_frac(c, s->key[i].leaf, k->rows);
+		if (frac <= 0)
+			continue;
+		nd = Max(frac * k->rows, 1.0);
+		entries = nd * -expm1(-k->rows / units / nd) * read;
+		total += entries;
+		*ops += entries * AGG_KEY_ENTRY * (pow(Max(Min(entries, nd) / AGG_KEY_IDS, 1.0), 0.35) - 1.0);
+		*ids = Max(*ids, Min(entries, nd));
+	}
+	return total;
 }
 
 static void
@@ -1404,23 +1455,24 @@ group_table_bytes(const SiftAggSpec *s, double groups, double *state)
  * The group table of a spillable spec (agg/spill.c) that outgrows the memory a hash aggregate gets writes the partial states of its groups
  * to partitions on disk and reads them back by the end: the price is that of the spill of the normal plan (cost_agg): the pages of what is
  * written and read back and the tuples through them. A group in no partition is in the table: the states written are the share of the
- * rows whose group is not in it, and no more than a state for each group of each time the table fills.
+ * rows whose group is not in it, and no more than a state for each group of each time the table fills. The table holds the ids of the keys
+ * (key_entries), not only the groups that have rows: it fills with them, and each time it is walked for the groups it writes.
  */
 static double
-group_spill_cost(const SiftAggSpec *s, double groups, double rows, double *table)
+group_spill_cost(const SiftAggSpec *s, double groups, double ids, double rows, double *table)
 {
 	double		mem = (double) get_hash_memory_limit(),
 				state,
 				runs,
 				written;
 
-	*table = group_table_bytes(s, groups, &state);
+	*table = group_table_bytes(s, Max(groups, ids), &state);
 	if (*table <= mem || !sift_aggspec_spillable(s))
 		return 0;
 	runs = ceil(*table / mem);
 	written = Min(rows * (1.0 - mem / *table), groups * runs);
 	return written * state / BLCKSZ * (random_page_cost + seq_page_cost) + 2.0 * cpu_tuple_cost * written +
-		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost;
+		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost + runs * ids * AGG_ID_SWEEP * cpu_operator_cost;
 }
 
 void
@@ -1432,7 +1484,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				vet,
 				spill,
 				table,
-				groups;
+				groups,
+				entries,
+				key_ops,
+				ids;
 	Cost		startup;
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
@@ -1446,6 +1501,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	cost_tuples(c, s, input_rel, &k);
 	cost_joins(c, s, &k);
 	cost_work(c, s, &k);
+	entries = key_entries(c, s, &k, &ids, &key_ops);
+	k.scan_cost += key_ops;
 	/* the reads of the lookup tables are PostgreSQL's own, priced as its plans are */
 	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
@@ -1480,7 +1537,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		cost_parallel(s, &k, &startup);
 	/* each process holds a table of its own (and spills it) */
 	groups = group_count(c, s);
-	spill = group_spill_cost(s, groups, k.agg_rows / (s->nworkers + 1), &table);
+	/* a top-N reads a fraction of the units, and makes the ids of those */
+	spill = group_spill_cost(s, groups, Min(ids, entries / (s->nworkers + 1)) * (s->topn ? c->topn_frac : 1.0), k.agg_rows / (s->nworkers + 1), &table);
 	k.scan_cost += spill;
 	agg_arm_spill(spill, groups, table);
 	agg_arm_vet(vet, vis * 100.0);
