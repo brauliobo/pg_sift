@@ -43,7 +43,7 @@
 #define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
 #define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
-#define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN groups) hold at most this many slots for each group in use, else the hash table: their growth multiplies the capacity of the keys, not the groups */
+#define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN slots, and 4 slots for each group expected) hold at most this many slots for each group in use, else the hash table: their size multiplies the capacity of the keys, not the groups */
 #define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
 #define LANE_DIRECT_MAX	(1 << 15)	/* a lane is built and folded or dumped sixteen times: sparse group spaces go to the hash table */
 #define NDICT_SLOTS	8

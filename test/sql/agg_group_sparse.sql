@@ -1,7 +1,7 @@
 -- A scan that groups by several keys starts with room for four ids of each and doubles a key's room as its ids come; the arrays of the groups are
 -- indexed by the keys' ids together, so the room is the product of the keys' rooms, not the groups the data makes. Keys that follow one another
 -- (a date and the period and week it belongs to) make a few groups in a product of hundreds of thousands, and every doubling copied and zeroed the
--- arrays of all of it. Past 4,096 slots, when the planner expects fewer than a quarter of them groups, the arrays go to the hash table as soon as fewer than a sixteenth of the slots hold one. The result is the same.
+-- arrays of all of it. Past 4,096 slots, when the planner expects fewer than a quarter of them groups, the arrays go to the hash table from the start (seven keys start with 4^7 slots) or as soon as fewer than a sixteenth of the slots hold one. The result is the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
@@ -32,6 +32,8 @@ END $$;
 SELECT * FROM same_rows('SELECT ts, wk, dow, count(*) AS n, sum(amount) AS s, count(DISTINCT parent_id) AS p FROM sp_facts GROUP BY ts, wk, dow');
 -- the same with a key that varies on its own: the groups fill the slots they are given
 SELECT * FROM same_rows('SELECT ts, parent_id, dow, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY ts, parent_id, dow');
+-- seven keys: 16,384 slots at the start, the 90 groups of the days
+SELECT * FROM same_rows('SELECT ts, wk, dow, quarter, wk + 1 AS w1, dow + 1 AS d1, quarter + 1 AS q1, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY 1, 2, 3, 4, 5, 6, 7');
 
 DROP FUNCTION same_rows(text);
 DROP TABLE sp_facts;
