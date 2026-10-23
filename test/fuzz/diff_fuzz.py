@@ -203,10 +203,10 @@ def render_preagg(p):
 
 
 def gen_keys(r, ctx):
-    """A flat (or lightly grouped) count(DISTINCT parent_id) under random filters: the units that keep the key list or bitmap of the column (key_columns) answer it from the list when every filter holds for the whole unit."""
-    t = 'events' if r.random() < 0.85 else 'ev_part'
+    """A flat (or lightly grouped) count(DISTINCT parent_id) under random filters: the units that keep the key list or bitmap of the column (key_columns) answer it from the list when every filter holds for the whole unit, the others (table kc) from the histogram of the cube."""
+    t = r.choice(['events', 'events', 'events', 'ev_part', 'kc', 'kc'])
     cols = EVENTS if t == 'events' else COLUMNS
-    n = ctx['rows'] if t == 'events' else ctx['rows'] // 2
+    n = ctx['rows'] // 2 if t == 'ev_part' else ctx['rows']
     ag = ['count(DISTINCT e.parent_id)'] + aggs(r, 'e', cols, r.randrange(0, 4))
     if r.random() < 0.3:
         ag.append('count(DISTINCT e.parent_id) FILTER (WHERE e.amount > %d00)' % r.randrange(6))

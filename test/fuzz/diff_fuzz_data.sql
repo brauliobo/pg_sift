@@ -77,4 +77,11 @@ CREATE FUNCTION fz.gen_part(lo bigint, hi bigint, salt int) RETURNS SETOF ev_par
 INSERT INTO ev_part SELECT * FROM fz.gen_part(1, @ROWS@ / 2, 7);
 CREATE INDEX ev_part_col ON ev_part USING sift_col (id, parent_id, kind, grp, ts, amount, val);
 
-VACUUM (FREEZE, ANALYZE) items, events, ev_part, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup;
+-- a key some units keep a bitmap of and others keep nothing of (a sparse key list is beyond the share of a unit), and a cube histogram of in all: the units
+-- without it answer from the cube (a pad of 1500 bytes a row makes units of about 1,300 rows)
+CREATE TABLE kc (id int, parent_id int, kind text, grp int, ts date, amount int, val float8, pad text) WITH (autovacuum_enabled = false);
+ALTER TABLE kc ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kc SELECT id, CASE WHEN id <= @ROWS@ / 3 THEN id % 150 ELSE (id % 150) * 1000003 END, kind, grp, ts, amount, val, repeat('x', 1500) FROM fz.gen_events(1, @ROWS@, 3);
+CREATE INDEX kc_col ON kc USING sift_col (id, parent_id, kind, grp, ts, amount, val) WITH (preagg = 'cube(parent_id: amount)', key_columns = 'parent_id');
+
+VACUUM (FREEZE, ANALYZE) items, events, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup;

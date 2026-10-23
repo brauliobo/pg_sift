@@ -636,6 +636,17 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 			why = SPW_OK;
 		}
 	}
+	/* a unit that keeps no key list or bitmap of a count(DISTINCT) leaf answers from the histogram of the cube when the leaf is a dim of it too */
+	for (int i = 0; dim < 0 && hdim < 0 && cleaf < 0 && s->nkeys == 0 && why == SPW_OK && i < s->naggs; i++)
+	{
+		int			pd = distinct_leaf(&s->agg[i], lay) && pa_pres(pa, s->agg[i].leaf) ? pa_dim(pa, s->agg[i].leaf) : -1;
+		SiftPaWhy	pwhy = pd >= 0 && hist_leaf_ok(lay, nbase, s->agg[i].leaf) ? SPW_OK : SPW_AGG_DISTINCT;
+
+		for (int j = 0; pwhy == SPW_OK && j < s->naggs; j++)
+			pwhy = cube_agg_ok(&s->agg[j], lay, nbase, pa, pd);
+		if (pwhy == SPW_OK)
+			hdim = s->agg[i].leaf;
+	}
 	/* ... or from the cells of a date or timestamp it compares, whose span decides each cell (a unit with a cell the comparison cuts is scanned) */
 	if (dim < 0 && hdim < 0 && cleaf < 0 && why == SPW_OK)
 	{
