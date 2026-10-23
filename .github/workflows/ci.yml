@@ -180,14 +180,26 @@ jobs:
         if: ${{ matrix.pg == 17 }}
         run: echo "SIFT_SUDO=sudo env PATH=$PATH" >> "$GITHUB_ENV"
 
-      # the older releases the compatibility tests build (tags do not move; about 70 CPU seconds each); PostgreSQL 17 cannot hold two builds, and the
-      # git build of the server changes with every run
-      - name: Cache the older releases
+      # the older releases the compatibility tests build (tags do not move; about 70 CPU seconds each, seven of them); PostgreSQL 17 cannot hold two builds, and the
+      # git build of the server changes with every run. A root is by commit (scripts/old-lib-check.sh), so what an earlier cache holds stays valid: the key follows
+      # the compiler and the tags (a release adds a library), the tests that build them change it too, and the shard of the same key prefix restores the
+      # last cache and builds only what it lacks. The cache is saved after a failed run as well: the builds are the cost, not the tests
+      - name: Key of the older releases
+        id: oldlib
         if: ${{ matrix.pg != 17 && !matrix.git }}
-        uses: actions/cache@v5
+        run: |
+          prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/old_lib_refusal.sh', 'test/t/pg_upgrade.sh') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the older releases
+        id: oldlib-cache
+        if: ${{ matrix.pg != 17 && !matrix.git }}
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/sift/old-lib/*/root
-          key: old-lib-${{ runner.os }}-${{ runner.arch }}-pg${{ matrix.pg }}-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_31_column.sh', 'test/t/compat_matrix.sh', 'test/t/old_lib_refusal.sh') }}
+          key: ${{ steps.oldlib.outputs.key }}
+          restore-keys: ${{ steps.oldlib.outputs.prefix }}
 
       - name: Build
         run: |
@@ -206,6 +218,13 @@ jobs:
           SIFT_CI_JOBS: ${{ matrix.only }}
           SIFT_CI_NO_HARNESS: ${{ matrix.tier == 'fast' && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+
+      - name: Keep the older releases
+        if: ${{ !cancelled() && steps.oldlib-cache.outcome == 'success' && steps.oldlib-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/sift/old-lib/*/root
+          key: ${{ steps.oldlib.outputs.key }}
 
       - name: Keep the logs of a failed run
         if: failure() || cancelled()
