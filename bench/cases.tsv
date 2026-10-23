@@ -28,3 +28,5 @@ group_numeric_key	a group key that is an `int8` or a `numeric(p,s)` column	order
 rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_dims = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 dict_equality	finds its dictionary codes without testing every string	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 dict_prefix	a byte-order permutation of the dictionary	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+partitions_scan	the planner prices the opening of the partitions of a partitioned table, which grows faster than their number	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+partitions_many	3,200 takes it too	orders	default	Append|Seq Scan	native	-	ms	faster33	no

@@ -282,8 +282,8 @@ def summarize(results, cases):
             continue
         speed = float(n['value']) / float(s['value']) if float(s['value']) else float('inf')
         lines.append('%-26s %-10s %10s %10s %7.1fx  %s' % (c.id, m, n['value'], s['value'], speed, s['note'][:60]))
-        if speed < 1 and n['note'].replace(' NOISY', '') != s['note'].replace(' NOISY', ''):   # the same plan as native's is noise, not a loss
-            losses.append('%s: sift %s %s against native %s (%.1fx slower)' % (c.id, s['value'], m, n['value'], 1 / speed))
+        if speed < 0.95:
+            losses.append('%s: sift %s %s against native %s (%.1fx slower%s)' % (c.id, s['value'], m, n['value'], 1 / speed, ', the same plan' * (n['note'].replace(' NOISY', '') == s['note'].replace(' NOISY', ''))))
     if losses:
         lines += ['', 'slower than native on %d of %d numbers:' % (len(losses), sum(len(c.metrics) for c in cases))] + ['  ' + l for l in losses]
     return '\n'.join(lines)
