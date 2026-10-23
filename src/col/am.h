@@ -185,8 +185,7 @@ extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */
-#define SIFT_COL_GATE_SIZE	1
-#define SIFT_COL_GATE_HELD	2
+#define SIFT_COL_GATE_HELD	1
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);

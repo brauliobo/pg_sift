@@ -72,8 +72,8 @@ SELECT 'dirty units' AS rule, fa_due('facts_a_col', 99, 1000, 100) AS at_99, fa_
 WITH b AS (SELECT buffer_rows * 100.0 / (buffer_rows + (SELECT sum(rows) FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable')) AS pct FROM fa_index('facts_a_col'))
 SELECT 'write buffer rows' AS rule, fa_due('facts_a_col', 100, 1000, greatest(floor(pct * 100) / 100 - 0.01, 0.01)) AS below, fa_due('facts_a_col', 100, 1000, ceil(pct * 100) / 100) AS at_pct FROM b;
 SELECT 'nothing due' AS rule, fa_due('facts_a_col', 100, 1000, 100) AS thresholds_off, fa_due('facts_a_col', 30, 2, 1) AS defaults;
--- the server's own rewrite leaves an index over sift.vacuum_rewrite_limit alone, the explicit one does not
-SET sift.vacuum_rewrite_limit = 0;
+-- an index over sift.vacuum_rewrite_limit is due like any other (its rewrite goes by partitions of that size), for the server's own rule and the explicit one
+SET sift.vacuum_rewrite_limit = 1;
 SELECT sift.col_maintenance_due('facts_a_col') AS automatic, sift.col_maintenance_due('facts_a_col', false) AS explicit;
 RESET sift.vacuum_rewrite_limit;
 

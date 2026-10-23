@@ -94,12 +94,12 @@ SELECT 'nothing due' AS rule, fa_due('facts_a_col', 100, 1000, 100) AS threshold
  nothing due | not due        | dirty units
 (1 row)
 
--- the server's own rewrite leaves an index over sift.vacuum_rewrite_limit alone, the explicit one does not
-SET sift.vacuum_rewrite_limit = 0;
+-- an index over sift.vacuum_rewrite_limit is due like any other (its rewrite goes by partitions of that size), for the server's own rule and the explicit one
+SET sift.vacuum_rewrite_limit = 1;
 SELECT sift.col_maintenance_due('facts_a_col') AS automatic, sift.col_maintenance_due('facts_a_col', false) AS explicit;
-     automatic     |  explicit   
--------------------+-------------
- write buffer rows | dirty units
+  automatic  |  explicit   
+-------------+-------------
+ dirty units | dirty units
 (1 row)
 
 RESET sift.vacuum_rewrite_limit;
