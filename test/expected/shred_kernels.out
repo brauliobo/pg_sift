@@ -18,7 +18,7 @@ SELECT :scalar_digest;
 (1 row)
 
 SET sift.simd = avx2;
-SELECT sift._test_shred_kern_level() IN ('scalar', CASE sift._test_simd_detected() WHEN 'avx512' THEN 'avx2' ELSE sift._test_simd_detected() END) AS avx2_capped,
+SELECT sift._test_shred_kern_level() = CASE sift._test_simd_detected() WHEN 'avx512' THEN 'avx2' ELSE sift._test_simd_detected() END AS avx2_capped,
 	   sift._test_shred_kern_digest(1, 400) = :scalar_digest AS avx2_same;
  avx2_capped | avx2_same 
 -------------+-----------

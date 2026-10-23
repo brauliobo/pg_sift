@@ -10,7 +10,7 @@ N       ?= 2
 
 LIB      = $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c \
            $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c $(SRC)/col/kern_neon.c \
-           $(SRC)/col/shred_kern.c $(SRC)/col/shred_kern_avx2.c $(SRC)/col/shred_kern_avx512.c \
+           $(SRC)/col/shred_kern.c $(SRC)/col/shred_kern_avx2.c $(SRC)/col/shred_kern_avx512.c $(SRC)/col/shred_kern_neon.c \
            $(SRC)/col/codec_kern.c $(SRC)/col/codec_avx2.c $(SRC)/col/codec_avx512.c \
            $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c \
            $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c
