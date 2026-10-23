@@ -83,6 +83,7 @@
  * MORSEL_SBS superblocks, and a participant keeps one table for all its items.
  */
 #define MORSEL_SBS	2
+#define MORSEL_SUPER_DIV	4
 
 Size
 shared_size(const SiftAggSpec *s, uint32 norder)
@@ -128,8 +129,9 @@ shared_init(ScanShared *sh, AggExec *ex)
 		sift_aggpart_offsets(ex->src, sh->partoff);
 	sh->ordered = sift_aggspec_ordered(ex->spec);
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
+	/* a superunit is taken whole by one item (a scan that has workers shares the span of four, so that the participants find more than two items) */
 	if (ex->super_on)
-		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src));
+		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src) / (ex->spec->nworkers > 0 ? MORSEL_SUPER_DIV : 1));
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
 	if (part_flush_on(ex))
 		sh->nitems = ex->spec->nparts;
