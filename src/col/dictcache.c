@@ -11,6 +11,7 @@
  */
 #include "postgres.h"
 
+#include "lib/ilist.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -48,7 +49,7 @@ typedef struct DictEnt
 	void	   *obj;			/* a SiftCDict, or a SiftCLens */
 	Size		size;
 	int			pins;
-	uint64		used;
+	dlist_node	node;			/* in lru: least recently used first */
 } DictEnt;
 
 typedef struct Unpin
@@ -60,7 +61,7 @@ typedef struct Unpin
 static HTAB *cache;
 static MemoryContext cache_cx;
 static Size cache_bytes;
-static uint64 cache_clock;
+static dlist_head lru = DLIST_STATIC_INIT(lru);
 
 #ifdef SIFT_TESTING
 Size
@@ -74,6 +75,7 @@ static void
 dict_drop(DictEnt *e)
 {
 	cache_bytes -= e->size;
+	dlist_delete(&e->node);
 	MemoryContextDelete(e->cx);
 	hash_search(cache, &e->key, HASH_REMOVE, NULL);
 }
@@ -94,17 +96,23 @@ dict_room(Size need)
 {
 	while (cache_bytes + need > CDICT_CACHE_BYTES)
 	{
-		HASH_SEQ_STATUS seq;
-		DictEnt    *e,
-				   *lru = NULL;
+		dlist_iter	it;
+		DictEnt    *victim = NULL;
 
-		hash_seq_init(&seq, cache);
-		while ((e = hash_seq_search(&seq)) != NULL)
-			if (e->pins == 0 && (lru == NULL || e->used < lru->used))
-				lru = e;
-		if (lru == NULL)
+		/* a pinned entry was used by the scan that holds it, so it is at the tail: the walk is as long as the entries dropped */
+		dlist_foreach(it, &lru)
+		{
+			DictEnt    *e = dlist_container(DictEnt, node, it.cur);
+
+			if (e->pins == 0)
+			{
+				victim = e;
+				break;
+			}
+		}
+		if (victim == NULL)
 			return false;
-		dict_drop(lru);
+		dict_drop(victim);
 	}
 	return true;
 }
@@ -115,7 +123,7 @@ dict_pin(DictEnt *e, MemoryContext mcxt)
 	Unpin	   *u = MemoryContextAlloc(mcxt, sizeof(Unpin));
 
 	e->pins++;
-	e->used = ++cache_clock;
+	dlist_move_tail(&lru, &e->node);
 	u->cb = (MemoryContextCallback) {dict_unpin, u, NULL};
 	u->key = e->key;
 	MemoryContextRegisterResetCallback(mcxt, &u->cb);
@@ -235,6 +243,7 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	e->obj = d;
 	e->size = size;
 	e->pins = 0;
+	dlist_push_tail(&lru, &e->node);
 	cache_bytes += size;
 	dict_pin(e, seg->mcxt);
 	return d;
@@ -287,6 +296,6 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 	e->obj = l;
 	e->size = size;
 	e->pins = 0;
-	e->used = ++cache_clock;
+	dlist_push_tail(&lru, &e->node);
 	cache_bytes += size;
 }
