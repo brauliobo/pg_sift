@@ -66,6 +66,7 @@ void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldca
 void direct_layout(AggExec *ex);
 void hash_init(AggExec *ex);
 void direct_grow(AggExec *ex);
+bool direct_oversized(AggExec *ex, uint64 total);
 uint32 ident_add(AggExec *ex, KeyState *k, int64 v);
 uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
 void ident_go_wide(AggExec *ex, KeyState *k);

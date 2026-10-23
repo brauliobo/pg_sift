@@ -282,7 +282,7 @@ table_init(AggExec *ex)
 		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
-	if (total > ex->direct_max)
+	if (total > ex->direct_max || direct_oversized(ex, total))
 	{
 		hash_init(ex);
 		total = 1024;
