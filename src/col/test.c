@@ -523,13 +523,14 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* (reset bool) The dictionaries this backend parsed from segments and found in its cache since the last reset, and the bytes it keeps */
+/* (reset bool) The dictionaries and segment heads this backend parsed from segments and found in its cache since the last reset, and the bytes it keeps */
 Datum
 sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		v[3] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes())};
-	bool		nulls[3] = {false};
+	Datum		v[5] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes()),
+						Int64GetDatum(sift_cdict_cache_stats.head_loads), Int64GetDatum(sift_cdict_cache_stats.head_hits)};
+	bool		nulls[5] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");

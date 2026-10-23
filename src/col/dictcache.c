@@ -140,16 +140,81 @@ cache_init(void)
 }
 
 static void
-dict_key(DictKey *k, SiftColSegment *seg, int col, uint32 unit)
+entry_key(DictKey *k, Relation index, const SiftSegEntry *entry, int col, uint32 unit)
 {
 	/* the table hashes the bytes of the key, padding included */
 	memset(k, 0, sizeof(*k));
-	k->rel = seg->index->rd_locator;
-	k->gen = seg->entry.gen;
-	k->ndocs = seg->entry.ndocs;
-	k->header_blk = seg->entry.header_blk;
+	k->rel = index->rd_locator;
+	k->gen = entry->gen;
+	k->ndocs = entry->ndocs;
+	k->header_blk = entry->header_blk;
 	k->col = col;
 	k->unit = unit;
+}
+
+static void
+dict_key(DictKey *k, SiftColSegment *seg, int col, uint32 unit)
+{
+	entry_key(k, seg->index, &seg->entry, col, unit);
+}
+
+/* The head of a segment is the entry of leaf -1 */
+#define HEAD_COL	(-1)
+
+/*
+ * The schema and unit directory of a segment that open checked, found when the header page read again is the one they were made under (the
+ * extents, rows and sections are in it, so a segment rewritten in place or a damaged header misses). The pages of the schema and of the
+ * directory are not read again.
+ */
+const SegHead *
+sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHeaderData *h, MemoryContext mcxt)
+{
+	DictKey		k;
+	DictEnt    *e;
+	const SegHead *hd;
+
+	if (cache == NULL)
+		return NULL;
+	entry_key(&k, index, entry, HEAD_COL, UINT32_MAX);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
+		return NULL;
+	hd = e->obj;
+	if (hd->hdrlen != SEG_HDRLEN(h) || memcmp(hd->hdr, h, hd->hdrlen) != 0)
+		return NULL;
+	CDICT_STAT(head_hits);
+	dict_pin(e, mcxt);
+	return hd;
+}
+
+/* Keeps the head made in cx, a child of mcxt (it stays there when the cache has no room), and pins it for mcxt */
+void
+sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
+{
+	DictKey		k;
+	DictEnt    *e;
+	Size		size = MemoryContextMemAllocated(cx, true);
+
+	CDICT_STAT(head_loads);
+	if (cache == NULL)
+		cache_init();
+	entry_key(&k, index, entry, HEAD_COL, UINT32_MAX);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		/* the entry of a header that has changed since */
+		if (e->pins > 0)
+			return;
+		dict_drop(e);
+	}
+	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+		return;
+	MemoryContextSetParent(cx, cache_cx);
+	e = hash_search(cache, &k, HASH_ENTER, NULL);
+	e->cx = cx;
+	e->obj = hd;
+	e->size = size;
+	e->pins = 0;
+	cache_bytes += size;
+	dict_pin(e, mcxt);
 }
 
 /*
