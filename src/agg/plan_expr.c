@@ -843,6 +843,23 @@ sift_aggkey_cal(const SiftAggKey *k, uint8 *mask)
 	return sift_aggexpr_cal(k->expr, mask);
 }
 
+/*
+ * The span of a leaf's values for an estimate: the smallest and largest value the index holds (its zones, rows deleted since included) when it has them,
+ * else the histogram and most common values of pg_statistic, which a sample of the table made.
+ */
+bool
+leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi)
+{
+	if (leaf < SIFT_COLSRC_MAX_LEAVES && c->stats.ndistinct[leaf] > 0 && c->stats.max[leaf] >= c->stats.min[leaf] &&
+		(c->stats.min[leaf] != 0 || c->stats.max[leaf] != 0))
+	{
+		*lo = (int64) c->stats.min[leaf];
+		*hi = (int64) c->stats.max[leaf];
+		return true;
+	}
+	return leaf_stats_range(c, leaf, lo, hi);
+}
+
 /* the groups of a bucket key from the statistics of its column; 0: unknown */
 static double
 bucket_key_groups(AggCtx *c, const SiftAggKey *k)
@@ -850,7 +867,7 @@ bucket_key_groups(AggCtx *c, const SiftAggKey *k)
 	int64		lo,
 				hi;
 
-	if (!leaf_stats_range(c, k->leaf, &lo, &hi))
+	if (!leaf_span(c, k->leaf, &lo, &hi))
 		return 0;
 	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
 }

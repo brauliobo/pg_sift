@@ -362,7 +362,7 @@ bucket_count(AggCtx *c, const SiftAggKey *k, double tuples)
 	int64		lo,
 				hi;
 
-	return leaf_stats_range(c, k->leaf, &lo, &hi) ? Min(tuples, (double) (hi - lo) / USECS_PER_SEC / k->bucket + 1) : tuples;
+	return leaf_span(c, k->leaf, &lo, &hi) ? Min(tuples, (double) (hi - lo) / USECS_PER_SEC / k->bucket + 1) : tuples;
 }
 
 /* a lookup per tuple of a bucket key, and PostgreSQL evaluating the expression once per bucket */
