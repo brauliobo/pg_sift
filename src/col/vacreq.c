@@ -35,8 +35,13 @@
 #include "col/am.h"
 #include "bm25/maint.h"
 
-/* Percent of the rows of the table, dead or written since its last VACUUM, from which it is vacuumed: a row changed per page of a thousand rows is enough to send every row to the heap check (autovacuum starts at 20) */
+/*
+ * The rows of a table, dead or written since its last VACUUM, from which it is vacuumed: CHURN_PCT percent of it (a row changed per page of a thousand rows
+ * is enough to send every row to the heap check), and never more than CHURN_ROWS, because a scan checks a row in the heap in 0.085 us: 100,000 stale rows
+ * are 8.5 ms a query whatever the size of the table. autovacuum waits for 20% of it: 20 million rows of 100 million.
+ */
 #define CHURN_PCT		0.1
+#define CHURN_ROWS		100000
 /* A scan that checked fewer rows than this in the heap saved nothing worth a look */
 #define MIN_VETTED		1000
 /* Rows changed under which a table is clean whatever its size (autovacuum_vacuum_threshold) */
@@ -78,7 +83,7 @@ table_state(Oid heapoid, bool asked)
 	if (tab == NULL)
 		return asked ? TABLE_DUE : TABLE_CLEAN;
 	changed = (double) Max(tab->dead_tuples, 0) + (double) Max(tab->ins_since_vacuum, 0);
-	if (!asked && (changed < MIN_CHANGED || changed * 100.0 < CHURN_PCT * Max((double) tab->live_tuples, 1.0)))
+	if (!asked && changed < Max(MIN_CHANGED, Min(CHURN_PCT / 100.0 * (double) Max(tab->live_tuples, 0), CHURN_ROWS)))
 		return TABLE_CLEAN;
 #if PG_VERSION_NUM >= 180000
 	if (tab->vacuum_count + tab->autovacuum_count > 0)
