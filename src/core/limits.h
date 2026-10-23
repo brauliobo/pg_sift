@@ -112,8 +112,8 @@
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
 	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry", "-", 1) \
 	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write.c", 1024, "strings", \
-	  "strings a segment dictionary needs before it is written with the codes in byte order, so that a lookup reads it in place (column format minor 14)", \
-	  "the dictionary is written in the compact form and a lookup loads it whole", "dict_lookup option", 1) \
+	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
+	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
 	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \

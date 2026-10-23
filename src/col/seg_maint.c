@@ -575,7 +575,7 @@ verify_run_kinds(SiftColSegment *seg)
 	}
 }
 
-/* A dictionary stored for a lookup: its order names every code once and the strings ascend in it, and the segment says so in its minor */
+/* A dictionary stored in blocks is in a segment of minor 14; if it has an order, that names every code once and the strings ascend in it */
 static void
 verify_dicts(SiftColSegment *seg)
 {
@@ -587,10 +587,12 @@ verify_dicts(SiftColSegment *seg)
 		if (seg->schema->cols[c].store != SIFT_COLS_STR)
 			continue;
 		d = sift_cseg_dict(seg, c);
-		if (!d->stored_order)
+		if (!d->blocked)
 			continue;
 		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
-			corrupt(seg, "The dictionary of leaf %d is stored for a lookup in a segment of column format 1.%d.", c, seg->entry.format);
+			corrupt(seg, "The dictionary of leaf %d is stored in blocks in a segment of column format 1.%d.", c, seg->entry.format);
+		if (!d->stored_order)
+			continue;
 		seen = palloc0(SIFT_COL_NWORDS(d->n) * sizeof(uint64));
 		for (uint32 i = 0; i < d->n; i++)
 		{

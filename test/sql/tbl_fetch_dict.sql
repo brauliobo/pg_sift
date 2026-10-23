@@ -1,9 +1,7 @@
--- (sift.table_dict_lookup: the default writes the compact form, which is smaller and a row fetch loads whole.)
--- The strings a sift_table row fetch reads from a segment whose dictionary is stored for a lookup are read in
+-- The strings a sift_table row fetch reads from a segment whose dictionary is stored in blocks are read in
 -- place, one by one: the first SELECT or UPDATE of a backend does not load the dictionary. After many such reads of a segment the dictionary is loaded and
 -- cached as before, and the rows read are the same either way: NULL, empty, long (stored inline), non-ASCII, varchar, and after DML.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.table_dict_lookup = on;
 
 CREATE TABLE tf (id int PRIMARY KEY, s text, v varchar(40), n int) USING sift_table;
 INSERT INTO tf
@@ -55,13 +53,26 @@ SELECT s, v FROM tf WHERE id = 7005;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf EXCEPT SELECT id, s, v, n FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf) d;
 
--- the default writes the compact form (smaller; a row fetch loads the dictionary whole) and reads the same rows
-RESET sift.table_dict_lookup;
+-- the setting 13 writes the compact form, which a row fetch loads whole; sift.table_dict_lookup adds the order of the strings (4 bytes each) to search them in place: the same rows
+SET sift.col_format_minor = 13;
 CREATE TABLE tf_c USING sift_table AS SELECT * FROM tf_heap;
 VACUUM tf_c;
-SELECT min(format) < 14 AS compact_by_default FROM sift.table_segments('tf_c') WHERE kind = 'columns';
+RESET sift.col_format_minor;
+SET sift.table_dict_lookup = on;
+CREATE TABLE tf_o USING sift_table AS SELECT * FROM tf_heap;
+VACUUM tf_o;
+RESET sift.table_dict_lookup;
+CREATE TABLE tf_b USING sift_table AS SELECT * FROM tf_heap;
+VACUUM tf_b;
+SELECT t, min(format) AS format FROM (SELECT 'compact' AS t, format FROM sift.table_segments('tf_c') WHERE kind = 'columns'
+	UNION ALL SELECT 'blocks', format FROM sift.table_segments('tf_b') WHERE kind = 'columns'
+	UNION ALL SELECT 'order', format FROM sift.table_segments('tf_o') WHERE kind = 'columns') x GROUP BY t ORDER BY t;
+SELECT (SELECT sum(bytes) FROM sift.table_segments('tf_o') WHERE kind = 'columns') > (SELECT sum(bytes) FROM sift.table_segments('tf_b') WHERE kind = 'columns') AS order_costs_bytes;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_c EXCEPT SELECT id, s, v, n FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf_c) d;
+SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_o EXCEPT SELECT id, s, v, n FROM tf_heap) d;
+SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf_o) d;
+SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_b EXCEPT SELECT id, s, v, n FROM tf_heap) d;
 
-DROP TABLE tf, tf_heap, tf_c;
+DROP TABLE tf, tf_heap, tf_c, tf_o, tf_b;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -114,7 +114,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 11 | a `sift_table` write buffer that took a row over the buffer (`sift.table_wide_rows`, on by default; a 3.2 library reads it, writes beside it and promotes it, but the preflight lists it until it is promoted) | `SET sift.table_wide_rows = off` (a row over the buffer is refused again) |
 | 12 | a `sift_col` index with `superunit` (16 by default) | `WITH (superunit = 0)`, or `sift.col_format_minor` 11 or less |
 | 13 | `order_columns` (option, off) | do not set it, or `sift.col_format_minor` 12 or less |
-| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid) of a column in `set_columns`, `point_columns` or `return_columns`, of any column with `dict_lookup = on`, or in a `sift_table` with `sift.table_dict_lookup = on` (all off by default); `point_columns` (option, off) | do not set them, `WITH (dict_lookup = off)`, or `sift.col_format_minor` 13 or less |
+| 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid) that is stored in blocks to be read in place, which the writer does where that adds at most 3% to the segment (ids, hashes, uuids, long strings; short strings that repeat words stay compact), and with the order of the strings for a column in `set_columns`, `point_columns` or `return_columns`, for any column with `dict_lookup = on`, or in a `sift_table` with `sift.table_dict_lookup = on`; `point_columns` (option, off) | `sift.col_format_minor` 13 or less |
 | 15 | `key_presence` (option, off) | do not set it, or `sift.col_format_minor` 14 or less |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
@@ -185,7 +185,7 @@ An existing index or table keeps what it holds; the new default applies to the u
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |
-| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`), 14 (a string dictionary of 1,024 strings or more, stored for a lookup in place), 15 (`key_presence`) | 3.3 |
+| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`set_columns`), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`), 14 (a string dictionary of 1,024 strings or more, stored in blocks to be read in place), 15 (`key_presence`) | 3.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

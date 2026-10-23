@@ -172,7 +172,7 @@ typedef struct ZoneArrays
 
 #define DICT_PARSE_AFTER	32	/* tests of a dictionary searched in the stream, over the queries of a backend, before it is parsed and cached */
 
-/* A dictionary stored plain or for a lookup (DICT_PLAIN, DICT_LOOKUP): where its parts lie in the stream */
+/* A dictionary stored plain or in blocks (DICT_PLAIN, DICT_BLOCKS, DICT_LOOKUP): where its parts lie in the stream */
 typedef struct DictLook
 {
 	SiftCDictLook look;
@@ -183,7 +183,7 @@ typedef struct DictLook
 	uint32		nbytes;
 	uint64		offs_at;		/* stream offsets: plain (form 0): u32 off[n + 1], the strings */
 	uint64		bytes_at;
-	uint64		boff_at;		/* the searched form (2): u32 boff[blocks + 1], the blocks of DICT_BLOCK strings, u32 code[n] in byte order */
+	uint64		boff_at;		/* the block forms (2, 3): u32 boff[blocks + 1], the blocks of DICT_BLOCK strings, and for form 2 u32 code[n] in byte order */
 	uint64		blk_at;
 	uint64		blk_len;
 	uint64		perm_at;
@@ -192,7 +192,7 @@ typedef struct DictLook
 	uint8		blkraw[DICT_BLOCK_RAW_MAX];
 	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	bool		searchable;		/* form 2: find and match read the stream */
-	bool		blocked;		/* form 2: the strings are in blocks */
+	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
