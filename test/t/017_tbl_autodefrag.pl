@@ -165,14 +165,18 @@ subtest 'the pass waits while the clients are busy' => sub {
 	fill('m');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM m WHERE id % 10 < 4');
 	$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.table_auto_defrag_max_active = 1; SELECT pg_reload_conf()');
-	my @busy = map { my $b = $node->background_psql('postgres'); $b->query_until(qr/started/, "\\echo started\nSELECT pg_sleep(60);\n"); $b } 1 .. 2;
+	# two sessions run a statement for as long as a third holds an advisory lock: they end by themselves. Cancelling a sleep would stop psql
+	# (ON_ERROR_STOP), and quit then writes to a dead pipe, which IPC::Run turns into an exit of the whole test
+	my $holder = $node->background_psql('postgres');
+	$holder->query_safe('SELECT pg_advisory_lock(17)');
+	my @busy = map { my $b = $node->background_psql('postgres'); $b->query_until(qr/started/, "\\echo started\nSELECT pg_advisory_lock(17), pg_advisory_unlock(17);\n"); $b } 1 .. 2;
 	my $offset = -s $node->logfile;
 	sleep 1;
 	$node->safe_psql('postgres', 'SELECT count(*) FROM m');
 	ok(quiet_for($offset, 3), 'no pass while two other clients run a statement');
-	$node->safe_psql('postgres', "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(60)%' AND pid <> pg_backend_pid()");
+	$holder->query_safe('SELECT pg_advisory_unlock(17)');
 	ok(fired($offset), 'the pass ran when they were done');
-	$_->quit for @busy;
+	$_->quit for @busy, $holder;
 	$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.table_auto_defrag_max_active; SELECT pg_reload_conf()');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM m'), $rows * 6 / 10, 'the live rows are all there');
 };
