@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 8
+plan 11
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -46,7 +46,16 @@ check "a prepared statement is not left with the plan made without the hook" tes
 multi=$(session "SELECT 1" "$Q")
 check "a statement after one that did not touch the index is planned the same" test "$(scans "$multi")" -ge 1
 param=$(session "PREPARE p(int) AS SELECT count(*) FROM facts WHERE entity_id = \$1" "EXECUTE p(3)" "SELECT count(*) FROM facts WHERE entity_id = 3")
-check "a statement with parameters keeps its plan and its rows" test "$(grep -c '^[0-9]' <<<"$param")" == 2
+check "a prepared statement with a parameter returns the rows of the literal one" test "$(grep -c '^[0-9]' <<<"$param")" == 2
+
+# the same statement with a parameter, as the extended protocol (psql \bind) and EXECUTE send it: planned with the parameters' types and values
+QP="${Q/IS NULL)/IS NULL AND f.day >= \$1::date)}"
+bound=$({ printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af)
+check "the first statement of a session with a bound parameter runs in the scan" test "$(scans "$bound")" -ge 1
+boundoff=$({ echo "SET sift.enable_agg = off;"; printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; } | sql af | grep -v '^SET$')
+check "its rows are those of the normal plan" test "$(grep -v '^scans|' <<<"$bound" | "$REPO/scripts/sha256.sh")" == "$("$REPO/scripts/sha256.sh" <<<"$boundoff")"
+prep=$(session "PREPARE pq(date) AS $QP" "EXECUTE pq('2026-01-05')" "EXECUTE pq('2026-01-05')" "EXECUTE pq('2026-01-05')")
+check "a prepared statement with a parameter runs in the scan from its first execution" test "$(scans "$prep")" -ge 3
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir af)/postgres.log")" == 0
 
 finish
