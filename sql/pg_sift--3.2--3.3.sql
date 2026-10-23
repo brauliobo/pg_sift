@@ -414,7 +414,7 @@ CREATE FUNCTION sift.worker_state(index regclass,
 	AS 'MODULE_PATHNAME', 'sift_worker_state' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of an index: segments and sealed write buffers waiting for promotion, whether a step runs now, and the last background failure with its retry time.';
 
--- One row per sift and sift_col index of the database whose table the caller can read; due: why a sift_col index would be rewritten now
+-- One row per sift and sift_col index (not the storage-less index of a partitioned table) of the database whose table the caller can read; due: why a sift_col index would be rewritten now
 -- (sift.col_maintenance_due). A failed step of a sift_col worker is kept like a BM25 one.
 CREATE VIEW sift.workers AS
 	SELECT c.oid::regclass AS index, a.amname::text AS kind, w.segments, w.sealed, w.running, w.failures, w.failed_at, w.next_retry,
@@ -424,7 +424,7 @@ CREATE VIEW sift.workers AS
 	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
 	JOIN pg_index i ON i.indexrelid = c.oid
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
-	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
+	WHERE c.relkind = 'i' AND has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
 COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index the caller can read: its maintenance state (sift.worker_state) and, for a sift_col index, why it would be rewritten now.';
 -- it lists what the caller can read (has_table_privilege on the table), so every role may select from it; the two rollup views of 3.2 list what
 -- functions open to every role return, and only superusers could read them
