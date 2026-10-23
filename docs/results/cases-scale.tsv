@@ -1,0 +1,237 @@
+# Benchmark cases of the 3.3 optimizations (bench/cases.tsv) at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS): pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.
+# orders: 100000
+# postgresql: 18.6
+# pg_sift: 3.3
+# build: 70a1ba967e90
+# date: 2026-10-23
+# cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
+# method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
+# host_load_before: load 5.90 6.85 8.94 cpu_psi 6.14%
+# host_load_after: load 4.84 4.55 6.63 cpu_psi 4.68%
+# work_mem: 64MB
+# scales: 1,3,10,20
+version	case	arm	metric	value	min	max	n	load	note
+3.3	topn_page_totals@100000	sift	ms	1.185	0.776	3.417	15	5.90	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	topn_page_totals@100000	native	ms	8.756	6.529	17.337	15	5.90	Bitmap Heap Scan on orders
+3.3	topn_coalesce@100000	sift	ms	0.693	0.572	1.087	15	5.90	Top-N: coalesce(customer_id, 0) DESC (limit 10)
+3.3	topn_coalesce@100000	native	ms	6.529	5.995	8.898	15	5.90	Seq Scan on orders
+3.3	key_presence_distinct@100000	sift	ms	0.138	0.120	0.275	15	6.23	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	key_presence_distinct@100000	native	ms	11.161	10.322	12.742	15	6.23	Seq Scan on orders
+3.3	key_presence_distinct@100000	scan	ms	0.674	0.544	1.252	15	6.23	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	bulk_copy_wal@100000	sift	wal_bytes	15.600	15.560	15.673	3	6.23	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@100000	sift	ms	162.928	162.357	171.855	3	6.23	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@100000	sift	cpu_ms	162.335	161.876	171.342	3	6.23	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@100000	native	wal_bytes	84.714	84.709	84.726	3	6.23	heap
+3.3	bulk_copy_wal@100000	native	ms	86.001	83.133	86.485	3	6.23	heap
+3.3	bulk_copy_wal@100000	native	cpu_ms	85.685	82.904	86.204	3	6.23	heap
+3.3	bulk_copy_wal@100000	bulk_off	wal_bytes	235.536	235.523	235.576	3	6.23	sift_table, bulk_off
+3.3	bulk_copy_wal@100000	bulk_off	ms	220.617	213.489	222.852	3	6.23	sift_table, bulk_off
+3.3	bulk_copy_wal@100000	bulk_off	cpu_ms	219.614	212.529	221.650	3	6.23	sift_table, bulk_off
+3.3	topn_sorted_runs@100000	sift	ms	0.671	0.583	1.702	15	6.23	Top-N: customer_id (limit 100)
+3.3	topn_sorted_runs@100000	native	ms	2.846	2.662	4.045	15	6.23	Seq Scan on orders
+3.3	topn_sorted_runs@100000	runs_off	ms	0.887	0.849	1.494	15	6.23	Top-N: customer_id (limit 100)
+3.3	lateral_first_row@100000	sift	ms	1.714	1.663	2.444	15	6.45	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val)
+3.3	lateral_first_row@100000	native	ms	24.452	23.052	26.974	15	6.45	Seq Scan on events
+3.3	cte_two_readers@100000	sift	ms	1.354	0.974	2.116	15	6.45	Group Keys: parent_id, kind; Pushed Aggregates: count(*), sum(amount)
+3.3	cte_two_readers@100000	native	ms	20.087	18.584	22.317	15	6.45	Seq Scan on events
+3.3	list_elements@100000	sift	ms	1.030	0.918	1.819	15	6.45	Group Keys: doc.parts[].kind; Pushed Aggregates: count(*)
+3.3	list_elements@100000	native	ms	28.238	27.258	31.457	15	6.45	Seq Scan on events
+3.3	cte_series_arms@100000	sift	ms	61.266	59.482	65.194	15	6.45	Group Keys: id, parent_id, ts: periods.period, lookup output, doc.parts[].kind, doc.parts[].sub: m.mapped_kind, lookup output, doc.parts[].k (the first plan of a backend was Index Only Scan using dims_pkey on dims)
+3.3	cte_series_arms@100000	native	ms	214.200	205.534	237.464	15	6.45	Index Only Scan using dims_pkey on dims
+3.3	grouping_sets_report@100000	sift	ms	4.316	4.088	5.607	15	6.34	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	grouping_sets_report@100000	native	ms	20.797	20.009	21.393	15	6.34	Seq Scan on orders
+3.3	grouping_sets_report@100000	scan	ms	4.547	4.206	6.219	15	6.34	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	ranked_top_per_group@100000	sift	ms	1.896	1.532	2.714	15	6.34	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	ranked_top_per_group@100000	native	ms	16.854	16.311	20.866	15	6.34	Seq Scan on orders
+3.3	ranked_top_per_group@100000	scan	ms	1.687	1.564	2.490	15	6.34	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	window_json_report@100000	sift	ms	3.811	3.698	5.509	15	6.34	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	window_json_report@100000	native	ms	21.443	21.138	24.066	15	6.34	Seq Scan on orders
+3.3	window_json_report@100000	scan	ms	4.125	3.929	5.205	15	6.34	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	two_level_spend@100000	sift	ms	7.047	6.930	9.335	15	6.15	Group Keys: customer_id; Pushed Aggregates: sum(orders.amount)
+3.3	two_level_spend@100000	native	ms	21.588	20.902	23.443	15	6.15	Seq Scan on orders
+3.3	group_by_id_top@100000	sift	ms	17.624	16.686	19.051	15	6.15	Group Keys: id; Pushed Aggregates: sum((orders.amount * (orders.quantity)::numeric))
+3.3	group_by_id_top@100000	native	ms	70.591	66.110	92.863	15	6.15	Seq Scan on orders
+3.3	count_distinct_unique@100000	sift	ms	0.578	0.455	1.195	15	6.15	Group Keys: country; Pushed Aggregates: count
+3.3	count_distinct_unique@100000	native	ms	56.394	54.168	64.279	15	6.15	Seq Scan on orders
+3.3	semi_exists_self@100000	sift	ms	1.123	0.860	1.565	15	6.15	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount) (the first plan of a backend was Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount))
+3.3	semi_exists_self@100000	native	ms	11.074	10.244	13.719	15	6.15	Seq Scan on orders
+3.3	anti_not_in_self@100000	sift	ms	2.668	2.551	3.810	15	5.98	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	anti_not_in_self@100000	native	ms	11.138	10.978	12.840	15	5.98	Seq Scan on orders
+3.3	keyset_page@100000	sift	ms	0.141	0.131	0.284	15	5.98	Index Scan
+3.3	keyset_page@100000	native	ms	0.119	0.099	0.208	15	5.98	Index Scan
+3.3	keyset_page@100000	forced	ms	0.854	0.803	1.498	15	5.98	Top-N: created_at DESC, id DESC (limit 50)
+3.3	point_agg_fk@100000	sift	ms	0.222	0.210	0.403	15	5.98	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	point_agg_fk@100000	native	ms	2.306	2.262	3.373	15	5.98	Seq Scan on orders
+3.3	point_agg_id@100000	sift	ms	0.093	0.086	0.156	15	5.98	Index Scan using orders_pkey on orders
+3.3	point_agg_id@100000	native	ms	0.048	0.044	0.103	15	5.98	Index Scan using orders_pkey on orders
+3.3	point_agg_id@100000	forced	ms	0.130	0.118	0.231	15	5.98	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*)
+3.3	jsonb_each_member@100000	sift	ms	1.405	1.111	1.833	15	5.98	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a)
+3.3	jsonb_each_member@100000	native	ms	36.138	34.675	38.467	15	5.98	Seq Scan on events
+3.3	topn_page_totals@300000	sift	ms	1.915	1.449	2.687	15	5.98	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	topn_page_totals@300000	native	ms	22.329	21.465	27.135	15	5.98	Bitmap Heap Scan on orders
+3.3	topn_coalesce@300000	sift	ms	1.071	0.883	1.727	15	5.90	Top-N: coalesce(customer_id, 0) DESC (limit 10)
+3.3	topn_coalesce@300000	native	ms	19.332	19.141	21.661	15	5.90	Seq Scan on orders
+3.3	key_presence_distinct@300000	sift	ms	0.273	0.234	0.420	15	5.90	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	key_presence_distinct@300000	native	ms	30.738	30.158	34.347	15	5.90	Seq Scan on orders
+3.3	key_presence_distinct@300000	scan	ms	1.430	1.294	1.947	15	5.90	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	bulk_copy_wal@300000	sift	wal_bytes	15.179	15.176	15.187	3	5.90	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@300000	sift	ms	456.033	454.503	464.867	3	5.90	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@300000	sift	cpu_ms	454.660	451.724	463.165	3	5.90	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@300000	native	wal_bytes	84.522	84.509	84.522	3	5.90	heap
+3.3	bulk_copy_wal@300000	native	ms	241.615	241.080	242.533	3	5.90	heap
+3.3	bulk_copy_wal@300000	native	cpu_ms	240.882	240.481	241.606	3	5.90	heap
+3.3	bulk_copy_wal@300000	bulk_off	wal_bytes	248.149	248.149	248.154	3	5.90	sift_table, bulk_off
+3.3	bulk_copy_wal@300000	bulk_off	ms	788.118	787.755	825.808	3	5.90	sift_table, bulk_off
+3.3	bulk_copy_wal@300000	bulk_off	cpu_ms	785.762	785.323	822.493	3	5.90	sift_table, bulk_off
+3.3	topn_sorted_runs@300000	sift	ms	1.068	0.932	1.619	15	5.83	Top-N: customer_id (limit 100)
+3.3	topn_sorted_runs@300000	native	ms	10.846	9.732	12.914	15	5.83	Seq Scan on orders
+3.3	topn_sorted_runs@300000	runs_off	ms	1.828	1.670	2.551	15	5.83	Top-N: customer_id (limit 100)
+3.3	lateral_first_row@300000	sift	ms	4.448	4.346	6.328	15	5.47	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val)
+3.3	lateral_first_row@300000	native	ms	69.827	68.344	71.406	15	5.47	Seq Scan on events
+3.3	cte_two_readers@300000	sift	ms	2.629	2.369	3.759	15	5.47	Group Keys: parent_id, kind; Pushed Aggregates: count(*), sum(amount)
+3.3	cte_two_readers@300000	native	ms	60.791	58.956	64.900	15	5.47	Seq Scan on events
+3.3	list_elements@300000	sift	ms	2.442	2.250	4.227	15	5.19	Group Keys: doc.parts[].kind; Pushed Aggregates: count(*)
+3.3	list_elements@300000	native	ms	75.613	73.909	79.046	15	5.19	Seq Scan on events
+3.3	cte_series_arms@300000	sift	ms	61.558	60.610	65.628	15	5.19	Group Keys: id, parent_id, ts: periods.period, lookup output, doc.parts[].kind, doc.parts[].sub: m.mapped_kind, lookup output, doc.parts[].k (the first plan of a backend was Index Only Scan using dims_pkey on dims)
+3.3	cte_series_arms@300000	native	ms	198.138	193.004	204.725	15	5.19	Index Only Scan using dims_pkey on dims
+3.3	grouping_sets_report@300000	sift	ms	9.577	9.184	12.264	15	4.94	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	grouping_sets_report@300000	native	ms	57.392	56.122	62.492	15	4.94	Seq Scan on orders
+3.3	grouping_sets_report@300000	scan	ms	9.701	9.173	12.974	15	4.94	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	ranked_top_per_group@300000	sift	ms	2.858	2.635	4.142	15	5.02	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	ranked_top_per_group@300000	native	ms	46.112	45.764	51.405	15	5.02	Seq Scan on orders
+3.3	ranked_top_per_group@300000	scan	ms	2.773	2.668	4.037	15	5.02	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	window_json_report@300000	sift	ms	5.012	4.927	7.227	15	5.02	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	window_json_report@300000	native	ms	56.610	55.758	57.478	15	5.02	Seq Scan on orders
+3.3	window_json_report@300000	scan	ms	5.266	4.937	6.743	15	5.02	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	two_level_spend@300000	sift	ms	21.585	20.492	23.684	15	5.02	Group Keys: customer_id; Pushed Aggregates: sum(orders.amount)
+3.3	two_level_spend@300000	native	ms	94.840	91.124	108.593	15	5.02	Seq Scan on orders
+3.3	group_by_id_top@300000	sift	ms	46.754	46.410	48.459	15	5.10	Group Keys: id; Pushed Aggregates: sum((orders.amount * (orders.quantity)::numeric))
+3.3	group_by_id_top@300000	native	ms	211.344	199.981	225.510	15	5.10	Seq Scan on orders
+3.3	count_distinct_unique@300000	sift	ms	1.374	1.145	1.942	15	4.93	Group Keys: country; Pushed Aggregates: count
+3.3	count_distinct_unique@300000	native	ms	187.651	173.988	225.903	15	4.93	Seq Scan on orders
+3.3	semi_exists_self@300000	sift	ms	2.050	1.929	3.546	15	4.70	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount) (the first plan of a backend was Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount))
+3.3	semi_exists_self@300000	native	ms	31.141	28.025	34.306	15	4.70	Seq Scan on orders
+3.3	anti_not_in_self@300000	sift	ms	10.329	8.883	11.745	15	4.70	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	anti_not_in_self@300000	native	ms	37.444	36.377	44.318	15	4.70	Seq Scan on orders
+3.3	keyset_page@300000	sift	ms	0.166	0.151	0.231	15	4.48	Index Scan
+3.3	keyset_page@300000	native	ms	0.111	0.105	0.141	15	4.48	Index Scan
+3.3	keyset_page@300000	forced	ms	1.745	1.424	2.006	15	4.48	Top-N: created_at DESC, id DESC (limit 50)
+3.3	point_agg_fk@300000	sift	ms	0.333	0.291	0.898	15	4.48	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	point_agg_fk@300000	native	ms	8.080	7.852	9.263	15	4.48	Seq Scan on orders
+3.3	point_agg_id@300000	sift	ms	0.089	0.079	0.333	15	4.48	Index Scan using orders_pkey on orders
+3.3	point_agg_id@300000	native	ms	0.057	0.042	0.121	15	4.48	Index Scan using orders_pkey on orders
+3.3	point_agg_id@300000	forced	ms	0.125	0.102	0.263	15	4.48	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*)
+3.3	jsonb_each_member@300000	sift	ms	3.335	2.693	4.871	15	4.48	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a)
+3.3	jsonb_each_member@300000	native	ms	102.537	99.754	113.096	15	4.48	Seq Scan on events
+3.3	topn_page_totals@1000000	sift	ms	3.279	2.992	4.472	15	4.33	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	topn_page_totals@1000000	native	ms	75.410	74.122	79.347	15	4.33	Bitmap Heap Scan on orders
+3.3	topn_coalesce@1000000	sift	ms	1.414	0.906	1.978	15	4.33	Top-N: coalesce(customer_id, 0) DESC (limit 10)
+3.3	topn_coalesce@1000000	native	ms	64.910	62.972	68.862	15	4.33	Seq Scan on orders
+3.3	key_presence_distinct@1000000	sift	ms	0.450	0.315	0.796	15	4.22	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	key_presence_distinct@1000000	native	ms	101.786	100.367	106.157	15	4.22	Seq Scan on orders
+3.3	key_presence_distinct@1000000	scan	ms	5.227	4.325	6.254	15	4.22	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id)
+3.3	bulk_copy_wal@1000000	sift	wal_bytes	15.295	15.290	15.298	3	4.28	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@1000000	sift	ms	1439.309	1417.177	1484.938	3	4.28	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@1000000	sift	cpu_ms	1432.831	1410.904	1478.430	3	4.28	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@1000000	native	wal_bytes	84.465	84.464	84.465	3	4.28	heap
+3.3	bulk_copy_wal@1000000	native	ms	767.750	753.140	771.356	3	4.28	heap
+3.3	bulk_copy_wal@1000000	native	cpu_ms	765.586	751.197	766.496	3	4.28	heap
+3.3	bulk_copy_wal@1000000	bulk_off	wal_bytes	254.286	254.285	254.287	3	4.28	sift_table, bulk_off
+3.3	bulk_copy_wal@1000000	bulk_off	ms	2791.291	2770.093	2860.921	3	4.28	sift_table, bulk_off
+3.3	bulk_copy_wal@1000000	bulk_off	cpu_ms	2779.816	2761.689	2851.288	3	4.28	sift_table, bulk_off
+3.3	topn_sorted_runs@1000000	sift	ms	1.348	1.105	2.290	15	4.42	Top-N: customer_id (limit 100)
+3.3	topn_sorted_runs@1000000	native	ms	34.901	32.650	40.814	15	4.42	Seq Scan on orders
+3.3	topn_sorted_runs@1000000	runs_off	ms	3.435	2.905	4.254	15	4.42	Top-N: customer_id (limit 100)
+3.3	lateral_first_row@1000000	sift	ms	17.157	15.700	20.508	15	3.80	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val)
+3.3	lateral_first_row@1000000	native	ms	245.970	239.032	261.387	15	3.80	Seq Scan on events
+3.3	cte_two_readers@1000000	sift	ms	9.099	8.705	11.145	15	4.22	Group Keys: parent_id, kind; Pushed Aggregates: count(*), sum(amount)
+3.3	cte_two_readers@1000000	native	ms	218.489	209.174	224.222	15	4.22	Seq Scan on events
+3.3	list_elements@1000000	sift	ms	7.806	7.612	9.475	15	4.84	Group Keys: doc.parts[].kind; Pushed Aggregates: count(*)
+3.3	list_elements@1000000	native	ms	256.447	243.397	266.086	15	4.84	Seq Scan on events
+3.3	cte_series_arms@1000000	sift	ms	77.378	74.308	83.068	15	4.69	Group Keys: id, parent_id, ts: periods.period, lookup output, doc.parts[].kind, doc.parts[].sub: m.mapped_kind, lookup output, doc.parts[].k (the first plan of a backend was Index Only Scan using dims_pkey on dims)
+3.3	cte_series_arms@1000000	native	ms	212.490	209.190	234.884	15	4.69	Index Only Scan using dims_pkey on dims
+3.3	grouping_sets_report@1000000	sift	ms	28.752	28.128	33.321	15	4.74	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	grouping_sets_report@1000000	native	ms	194.608	185.936	202.220	15	4.74	Seq Scan on orders
+3.3	grouping_sets_report@1000000	scan	ms	28.603	28.351	32.558	15	4.74	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	ranked_top_per_group@1000000	sift	ms	7.165	6.626	9.446	15	5.08	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	ranked_top_per_group@1000000	native	ms	153.501	150.340	157.714	15	5.08	Seq Scan on orders
+3.3	ranked_top_per_group@1000000	scan	ms	7.331	6.849	11.168	15	5.08	Group Keys: country, category; Pushed Aggregates: sum(orders.amount)
+3.3	window_json_report@1000000	sift	ms	9.094	8.872	9.660	15	4.92	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	window_json_report@1000000	native	ms	177.927	177.243	182.491	15	4.92	Seq Scan on orders
+3.3	window_json_report@1000000	scan	ms	9.432	9.130	13.620	15	4.92	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*)
+3.3	two_level_spend@1000000	sift	ms	84.102	82.738	88.587	15	4.47	Group Keys: customer_id; Pushed Aggregates: sum(orders.amount)
+3.3	two_level_spend@1000000	native	ms	360.913	349.870	428.615	15	4.47	Seq Scan on orders
+3.3	group_by_id_top@1000000	sift	ms	166.028	163.090	170.862	15	4.08	Group Keys: id; Pushed Aggregates: sum((orders.amount * (orders.quantity)::numeric))
+3.3	group_by_id_top@1000000	native	ms	390.658	376.797	403.887	15	4.08	Index Scan using orders_pkey on orders
+3.3	count_distinct_unique@1000000	sift	ms	3.655	3.437	5.792	15	3.76	Group Keys: country; Pushed Aggregates: count
+3.3	count_distinct_unique@1000000	native	ms	761.644	692.500	863.716	15	3.76	Seq Scan on orders
+3.3	semi_exists_self@1000000	sift	ms	6.697	5.810	7.771	15	3.67	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount) (the first plan of a backend was Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount))
+3.3	semi_exists_self@1000000	native	ms	100.742	99.996	103.990	15	3.67	Seq Scan on orders
+3.3	anti_not_in_self@1000000	sift	ms	36.173	32.238	40.356	15	3.70	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	anti_not_in_self@1000000	native	ms	130.623	124.023	143.967	15	3.70	Seq Scan on orders
+3.3	keyset_page@1000000	sift	ms	0.175	0.136	0.314	15	3.59	Index Scan
+3.3	keyset_page@1000000	native	ms	0.122	0.104	0.215	15	3.59	Index Scan
+3.3	keyset_page@1000000	forced	ms	3.577	3.363	5.554	15	3.59	Top-N: created_at DESC, id DESC (limit 50)
+3.3	point_agg_fk@1000000	sift	ms	1.003	0.771	1.954	15	3.59	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.3	point_agg_fk@1000000	native	ms	28.718	27.812	31.446	15	3.59	Seq Scan on orders NOISY
+3.3	point_agg_id@1000000	sift	ms	0.085	0.075	0.118	15	3.62	Index Scan using orders_pkey on orders NOISY
+3.3	point_agg_id@1000000	native	ms	0.049	0.044	0.065	15	3.62	Index Scan using orders_pkey on orders NOISY
+3.3	point_agg_id@1000000	forced	ms	0.178	0.169	0.223	15	3.62	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*) NOISY
+3.3	jsonb_each_member@1000000	sift	ms	8.562	8.267	9.597	15	3.62	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a) NOISY
+3.3	jsonb_each_member@1000000	native	ms	327.665	317.150	334.576	15	3.62	Seq Scan on events NOISY
+3.3	topn_page_totals@2000000	sift	ms	7.276	6.137	9.572	15	3.73	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	topn_page_totals@2000000	native	ms	150.657	147.857	157.948	15	3.73	Bitmap Heap Scan on orders
+3.3	topn_coalesce@2000000	sift	ms	0.822	0.792	1.257	15	3.61	Top-N: coalesce(customer_id, 0) DESC (limit 10) NOISY
+3.3	topn_coalesce@2000000	native	ms	127.749	126.580	132.945	15	3.61	Seq Scan on orders NOISY
+3.3	key_presence_distinct@2000000	sift	ms	0.599	0.491	1.020	15	3.36	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id) NOISY
+3.3	key_presence_distinct@2000000	native	ms	209.588	208.618	214.213	15	3.36	Seq Scan on orders NOISY
+3.3	key_presence_distinct@2000000	scan	ms	8.688	8.441	11.258	15	3.36	Custom Scan (SiftAgg); Pushed Aggregates: count(DISTINCT segment_id) NOISY
+3.3	bulk_copy_wal@2000000	sift	wal_bytes	42.274	42.273	42.275	3	3.41	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@2000000	sift	ms	4317.576	4271.230	4542.502	3	3.41	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@2000000	sift	cpu_ms	4303.133	4245.832	4525.468	3	3.41	sift_table, segments written: columns, tombstones
+3.3	bulk_copy_wal@2000000	native	wal_bytes	84.454	84.454	84.454	3	3.41	heap
+3.3	bulk_copy_wal@2000000	native	ms	1570.466	1546.815	1641.364	3	3.41	heap
+3.3	bulk_copy_wal@2000000	native	cpu_ms	1560.561	1542.448	1634.727	3	3.41	heap
+3.3	bulk_copy_wal@2000000	bulk_off	wal_bytes	254.632	254.632	254.633	3	3.41	sift_table, bulk_off
+3.3	bulk_copy_wal@2000000	bulk_off	ms	5854.566	5757.339	6053.952	3	3.41	sift_table, bulk_off
+3.3	bulk_copy_wal@2000000	bulk_off	cpu_ms	5829.511	5740.537	6033.031	3	3.41	sift_table, bulk_off
+3.3	topn_sorted_runs@2000000	sift	ms	2.371	1.718	3.290	15	3.44	Top-N: customer_id (limit 100)
+3.3	topn_sorted_runs@2000000	native	ms	69.715	67.587	76.992	15	3.44	Seq Scan on orders
+3.3	topn_sorted_runs@2000000	runs_off	ms	5.902	5.235	8.032	15	3.44	Top-N: customer_id (limit 100)
+3.3	lateral_first_row@2000000	sift	ms	36.983	35.986	41.084	15	3.45	Group Keys: kind; Pushed Aggregates: count(*), sum(l.val)
+3.3	lateral_first_row@2000000	native	ms	487.857	471.385	510.783	15	3.45	Seq Scan on events
+3.3	cte_two_readers@2000000	sift	ms	18.227	17.524	21.591	15	3.38	Group Keys: parent_id, kind; Pushed Aggregates: count(*), sum(amount)
+3.3	cte_two_readers@2000000	native	ms	430.953	426.128	452.834	15	3.38	Seq Scan on events
+3.3	list_elements@2000000	sift	ms	15.710	15.595	18.672	15	3.79	Group Keys: doc.parts[].kind; Pushed Aggregates: count(*)
+3.3	list_elements@2000000	native	ms	542.866	501.162	561.182	15	3.79	Seq Scan on events
+3.3	cte_series_arms@2000000	sift	ms	214.595	208.781	225.974	15	3.89	Index Only Scan using dims_pkey on dims
+3.3	cte_series_arms@2000000	native	ms	210.652	205.760	220.842	15	3.89	Index Only Scan using dims_pkey on dims
+3.3	grouping_sets_report@2000000	sift	ms	57.153	54.678	64.367	15	3.83	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	grouping_sets_report@2000000	native	ms	373.574	368.476	387.796	15	3.83	Seq Scan on orders
+3.3	grouping_sets_report@2000000	scan	ms	57.326	55.802	64.441	15	3.83	Group Keys: country, category, grouping set; Pushed Aggregates: count(*), sum(orders.amount), avg(orders.amount)
+3.3	ranked_top_per_group@2000000	sift	ms	12.424	12.060	14.130	15	3.41	Group Keys: country, category; Pushed Aggregates: sum(orders.amount) NOISY
+3.3	ranked_top_per_group@2000000	native	ms	303.599	300.404	309.339	15	3.41	Seq Scan on orders NOISY
+3.3	ranked_top_per_group@2000000	scan	ms	12.729	12.005	14.470	15	3.41	Group Keys: country, category; Pushed Aggregates: sum(orders.amount) NOISY
+3.3	window_json_report@2000000	sift	ms	15.976	15.595	18.040	15	3.10	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*) NOISY
+3.3	window_json_report@2000000	native	ms	364.290	358.656	369.314	15	3.10	Seq Scan on orders NOISY
+3.3	window_json_report@2000000	scan	ms	15.668	15.049	19.455	15	3.10	Group Keys: category, country; Pushed Aggregates: sum(orders.amount), count(*) NOISY
+3.3	two_level_spend@2000000	sift	ms	201.056	179.517	250.976	15	2.92	Group Keys: customer_id; Pushed Aggregates: sum(orders.amount) NOISY
+3.3	two_level_spend@2000000	native	ms	887.204	828.481	931.272	15	2.92	Seq Scan on orders NOISY
+3.3	group_by_id_top@2000000	sift	ms	471.809	380.668	509.753	15	3.10	Group Keys: id; Pushed Aggregates: sum((orders.amount * (orders.quantity)::numeric))
+3.3	group_by_id_top@2000000	native	ms	813.188	761.201	853.040	15	3.10	Index Scan using orders_pkey on orders
+3.3	count_distinct_unique@2000000	sift	ms	7.549	6.783	9.600	15	4.31	Group Keys: country; Pushed Aggregates: count
+3.3	count_distinct_unique@2000000	native	ms	1733.323	1559.192	2029.541	15	4.31	Seq Scan on orders
+3.3	semi_exists_self@2000000	sift	ms	18.575	16.802	20.418	15	4.83	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount) (the first plan of a backend was Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(o.amount))
+3.3	semi_exists_self@2000000	native	ms	250.798	228.773	286.196	15	4.83	Seq Scan on orders
+3.3	anti_not_in_self@2000000	sift	ms	83.243	73.864	90.253	15	4.93	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.3	anti_not_in_self@2000000	native	ms	306.371	283.788	337.813	15	4.93	Seq Scan on orders NOISY
+3.3	keyset_page@2000000	sift	ms	0.147	0.136	0.279	15	5.01	Index Scan
+3.3	keyset_page@2000000	native	ms	0.092	0.086	0.154	15	5.01	Index Scan
+3.3	keyset_page@2000000	forced	ms	6.182	6.000	6.749	15	5.01	Top-N: created_at DESC, id DESC (limit 50)
+3.3	point_agg_fk@2000000	sift	ms	1.806	1.269	2.776	15	4.93	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.3	point_agg_fk@2000000	native	ms	60.724	59.333	63.118	15	4.93	Seq Scan on orders NOISY
+3.3	point_agg_id@2000000	sift	ms	0.097	0.090	0.137	15	5.08	Index Scan using orders_pkey on orders NOISY
+3.3	point_agg_id@2000000	native	ms	0.063	0.054	0.169	15	5.08	Index Scan using orders_pkey on orders NOISY
+3.3	point_agg_id@2000000	forced	ms	0.205	0.187	0.328	15	5.08	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*) NOISY
+3.3	jsonb_each_member@2000000	sift	ms	18.622	17.886	23.139	15	5.08	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a) NOISY
+3.3	jsonb_each_member@2000000	native	ms	750.099	728.459	784.263	15	5.08	Seq Scan on events NOISY

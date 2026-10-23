@@ -169,9 +169,10 @@ def lane_sessions(case, engines, duck_port):
     for name, settings in case.variants:
         lanes[name] = ['SET %s' % s for s in settings.split(';')]
     out = {}
+    wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # production runs 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
         s = server_session(TIMEOUT)
-        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
+        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
             s.run(st)
         out[lane] = s
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
@@ -439,7 +440,7 @@ def write_results(args, cases, results, load_before):
     meta = {'orders': args.rows, 'postgresql': psql('SHOW server_version', 'postgres'), 'pg_sift': version, 'build': sha, 'date': datetime.date.today().isoformat(),
             'cpu': host(), 'method': 'client-side milliseconds of one psql session per lane, interleaved: %d rounds of 1 untimed and %d timed runs, median of all; the sift lane is the '
             'planner\'s own choice, native is sift.enable_agg = off on the same table; %s parallel workers; every answer compared with native' % (args.rounds, args.runs, os.environ.get('CASES_WORKERS', '2')),
-            'host_load_before': load_before, 'host_load_after': host_load()}
+            'host_load_before': load_before, 'host_load_after': host_load(), 'work_mem': os.environ.get('CASES_WORK_MEM', '64MB')}
     for r in results:
         r['version'] = version
     path = args.out
@@ -448,11 +449,11 @@ def write_results(args, cases, results, load_before):
         if os.path.exists(path):   # a run of some cases replaces only their rows, at the size of the others
             old_meta, old = extras.read(path)
             ran = {r['case'] for r in results}
-            if not args.scales and str(args.rows) != old_meta.get('orders') and {c.id for c in cases} != {r['case'] for r in old}:
+            if not args.scales and str(args.rows) != old_meta.get('orders') and {c.id for c in cases} != {c.id for c in read_registry()}:
                 die('docs/results/cases.tsv holds %s orders: run every case at --rows %d, or these at --rows %s' % (old_meta.get('orders'), args.rows, old_meta.get('orders')))
             if args.scales and str(args.rows) != old_meta.get('orders'):
                 die('docs/results/cases-scale.tsv has its 1x at %s orders: run with --rows %s' % (old_meta.get('orders'), old_meta.get('orders')))
-            results = [r for r in old if r['case'] not in ran] + results
+            results = [r for r in old if r['case'] not in ran and str(args.rows) == old_meta.get('orders')] + results   # a run of every case at another size replaces the file
     if args.scales:
         meta['scales'] = args.scales
     extras.write(path, 'Benchmark cases of the 3.3 optimizations (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
@@ -570,6 +571,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(BENCH, 'out', 'cases-%s.tsv' % time.strftime('%Y%m%dT%H%M%S')))
     ap.add_argument('--scales', help='run every case at ROWS times each of these (1,10,100): the curve of docs/results/cases-scale.tsv, the planner\'s plan at each size')
     ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
+    ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; production 4GB): written to the file as the work_mem meta')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)
@@ -577,6 +579,8 @@ def main():
     ap.add_argument('--strict', action='store_true')
     ap.add_argument('--changed')
     args = ap.parse_args()
+    if args.work_mem:
+        os.environ['CASES_WORK_MEM'] = args.work_mem
     if args.strict:
         args.changed = None
     sys.exit({'run': cmd_run, 'list': cmd_list, 'check': cmd_check, 'plan': cmd_plan}[args.cmd](args))
