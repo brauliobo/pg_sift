@@ -509,3 +509,13 @@ $do$;
 
 COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of one sift or sift_col index: directory entries, sealed write buffers, whether maintenance runs and, when the last background step failed, the failures in a row, when, the earliest retry, the SQLSTATE and the message. Read through sift.workers.';
 COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index whose table you can read: segments, sealed write buffers, whether maintenance runs, the failures in a row of the background, when, the next retry, the SQLSTATE and the last error, and why a sift_col index would be rewritten (due).';
+
+-- Where the chain stands that keeps a sift_col index answerable under churn (sift.col_auto_merge): the table is vacuumed when the rows changed since its last
+-- VACUUM (changed_rows; NULL while the statistics have no entry) reach vacuum_at, and the index is rewritten after that VACUUM (rewrite_due, as the server's
+-- own rule sees it). blocked_by is what keeps a worker from doing either, empty when nothing does.
+CREATE FUNCTION sift.col_maintenance_status(index regclass,
+											OUT heap regclass, OUT last_vacuum timestamptz, OUT changed_rows int8, OUT vacuum_at int8,
+											OUT rewrite_due text, OUT last_request timestamptz, OUT blocked_by text[])
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_maintenance_status' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite, an index over the rewrite limit).';
