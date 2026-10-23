@@ -51,10 +51,12 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		case INT4OID:
 		case DATEOID:
 			return lf->vtype == SCV_I32 || lf->vtype == SCV_I64;
+		case NUMERICOID:
+			/* a wide numeric is read through the dictionary of its datums (agg/wide.c), a NaN among them, which numeric_cmp sorts last */
+			return lf->vtype == SCV_I64 || (lf->wide && lf->vtype == SCV_CODE);
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
-		case NUMERICOID:
 		case CASHOID:
 		case TIMEOID:
 			return lf->vtype == SCV_I64;
