@@ -161,9 +161,33 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 		}
 }
 
+/*
+ * Room for n calendar cells in the default cube: the cap is 16 dimensions and the default fills it with the plain columns in their order, which left the
+ * cells of the dates out of an index of more than 16 columns (a GROUP BY of a month then scans every unit). The plain dimensions of the default give way, the
+ * date and timestamp columns first (the cells of a day answer what their own histogram does) and then the last columns; none gives way when all fit, or
+ * for a cube(...) the user wrote.
+ */
+static void
+make_room(const SiftColSchema *s, SiftCPaggSpec *spec, int n)
+{
+	for (int pass = 0; pass < 2 && !spec->fixed; pass++)
+		for (int d = spec->ndims - 1; d >= 0 && spec->ndims + n > SIFT_PAGG_MAX_DIMS; d--)
+		{
+			if (spec->dim[d].cal || sift_cpagg_cal_type(s, spec->dim[d].leaf) != (pass == 0))
+				continue;
+			memmove(spec->dim + d, spec->dim + d + 1, (spec->ndims - d - 1) * sizeof(spec->dim[0]));
+			spec->ndims--;
+		}
+}
+
 void
 sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec)
 {
+	int			ncal = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+		ncal += sift_cpagg_cal_type(s, c) && depth1(s, &s->cols[c]) && plain_type(&s->cols[c]);
+	make_room(s, spec, ncal);
 	for (int c = 0; c < s->ncols; c++)
 	{
 		SiftCPaggDim *sd;
@@ -662,6 +686,7 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 		for (int j = 0; j < spec->ndims; j++)
 			if (spec->dim[j].leaf == leaf && spec->dim[j].cal)
 				return psprintf("\"%s\" is named twice", dn);
+		make_room(s, spec, 1);
 		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
 			return "too many dimensions";
 		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true, .lean = SIFT_PAGG_DEF_MEAS};
