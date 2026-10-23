@@ -547,3 +547,13 @@ CREATE VIEW sift.col_index_status AS
 	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
 COMMENT ON VIEW sift.col_index_status IS 'One row per sift_col index the caller can read, for the DBA of a large table: file, segment, free and reusable bytes, segments against the limit, rows in the segments (dead ones included), units listed against covered, dirty segments and dead rows, rows in write buffers, the maintenance state and the chain of sift.col_maintenance_status (last VACUUM, why a rewrite is due, what blocks it).';
 GRANT SELECT ON sift.col_index_status TO PUBLIC;
+
+-- The profile of the columns of a sift_col index and what its options could still use, one row per column and per pair of dimensions: kind (dimension, key,
+-- unique, date, measure, text, list), what the index holds of it, the units looked at (32 evenly spaced ones: the same answer for the same index), the share
+-- of them that satisfy the rule of a dimension (at most 256 distinct values) or of a pair (its combinations fit a rollup of the rows of the unit), and the advice
+-- when a rule holds in 90% of them. Nothing is changed.
+CREATE FUNCTION sift.index_advice(index regclass,
+								  OUT leaf text, OUT kind text, OUT held text, OUT sampled int4, OUT share int4, OUT advice text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_col_index_advice' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.index_advice(regclass) IS 'The profile of the columns of a sift_col index and what its options could still use: per column its kind (dimension, key, unique, date, measure, text, list), what the index holds of it and, over 32 evenly spaced units, the share that satisfy the rule of a dimension (at most 256 distinct values) or, per pair of dimensions, of a rollup of the rows; advice only, nothing is changed.';
