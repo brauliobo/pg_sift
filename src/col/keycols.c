@@ -15,6 +15,7 @@
 #include "catalog/pg_index.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
+#include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
@@ -87,6 +88,8 @@ set_option(Relation index, const char *value)
 				repl[Natts_pg_class] = {false};
 	List	   *def = list_make1(makeDefElem("key_columns", (Node *) makeString(pstrdup(value)), -1));
 
+	/* the lock an update of an index's pg_class row expects on its table (checked in assert builds); the ShareLock of the build already excludes every other holder of it */
+	LockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
 	CommandCounterIncrement();
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: no pg_class row for index %u", RelationGetRelid(index));
