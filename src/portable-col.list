@@ -31,6 +31,7 @@ col/ver.c
 col/preagg.c
 col/preagg_opt.c
 col/preagg_read.c
+col/preagg_super.c
 col/point.c
 col/runs.c
 col/setsum.c

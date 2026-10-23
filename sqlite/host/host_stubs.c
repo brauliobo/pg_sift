@@ -33,6 +33,19 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	return load(seg, col, seg->mcxt);
 }
 
+SiftCDict *
+sift_cseg_dict_peek(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+/* nothing is counted: every dictionary that is tested is parsed whole, as it is once the backend has asked often */
+uint32
+sift_cseg_dict_asked(SiftColSegment *seg, int col)
+{
+	return UINT32_MAX;
+}
+
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
 
 bool
