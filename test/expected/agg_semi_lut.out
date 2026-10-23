@@ -264,8 +264,9 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE entity_id IN (SELECT entity_id FR
  SiftAgg semi tables 1
 (1 row)
 
--- from workers: each builds its table
+-- from workers: each builds its table (the join key filters left out, so that the scan reads every unit and the workers share a scan that pays for them)
 ALTER TABLE ev SET (parallel_workers = 2);
+SET sift.agg_join_filter = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -282,6 +283,7 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT
  SiftAgg with workers semi tables 1 |           4 |               0 |              0
 (1 row)
 
+RESET sift.agg_join_filter;
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;

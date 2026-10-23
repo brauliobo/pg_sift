@@ -571,11 +571,54 @@ lookup_rows(AggCtx *c, const JoinCtx *jc)
 	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
 }
 
+static bool lookup_counted(AggCtx *c, JoinCtx *jc);
+
+/*
+ * The share of the units that hold one of `keys` values of the leaf (nd distinct): a unit whose zone is the width w (as a share of the leaf's
+ * range) has one in it with the probability 1 - (1 - w)^keys, counted on the sample of the real zones, where the mean width (a few wide
+ * zones among narrow ones make a mean that keeps every unit) would say keys times it. The units that pass keep a summary of their values
+ * (set_cover of them): the n values of a unit, set_keys on average and in proportion to its zone's width (at least one, at most the
+ * values the zone spans), hold one of the keys with the probability 1 - exp(-keys * n / nd). A source with no sample has the mean width.
+ */
+static double
+zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
+{
+	const SiftSrcZones *z = c->stats.zones;
+	double		range = c->stats.max[leaf] - c->stats.min[leaf] + 1.0,
+				cover = c->stats.set_cover[leaf],
+				mean_w = 0,
+				kept = 0;
+
+	if (z == NULL || z->n == 0 || z->lo[leaf] == NULL || range <= 1.0)
+		return c->stats.zone_span[leaf] > 0 ? Min(keys * c->stats.zone_span[leaf], 1.0) : zone_overlap(c, leaf, Min(keys / nd, 1.0));
+	for (int i = 0; i < z->n; i++)
+		mean_w += Max(((double) z->hi[leaf][i] - (double) z->lo[leaf][i] + 1.0) / range, 0.0) / z->n;
+	for (int i = 0; i < z->n; i++)
+	{
+		double		w = ((double) z->hi[leaf][i] - (double) z->lo[leaf][i] + 1.0) / range,
+					in_zone,
+					n,
+					held = 1.0;
+
+		if (w <= 0)
+			continue;
+		in_zone = w >= 1.0 ? 1.0 : -expm1(keys * log1p(-w));
+		if (cover > 0)
+		{
+			n = Min(Max(c->stats.set_keys[leaf] * w / mean_w, 1.0), Max(w * nd, 1.0));
+			held = 1.0 - cover + cover * -expm1(-keys * n / nd);
+		}
+		kept += in_zone * held;
+	}
+	return z->covered * kept / z->n + (1.0 - z->covered);
+}
+
 /*
  * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
- * a comparison. *n: the filters the scan applies.
+ * a comparison. A lookup whose count is a default guess (the output of a plan) has the keys lookup_set_ratio takes: the geometric mean
+ * of the count and the leaf's distinct values. *n: the filters the scan applies.
  */
 static double
 join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
@@ -600,14 +643,13 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 			double		nd,
-						f;
+						nkeys;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
-			f = Min(keys / nd, 1.0);
-			/* a key is a point of the range: it meets the zones that hold it, a zone's width a key */
-			kept = Min(kept, c->stats.zone_span[leaf] > 0 ? Min(keys * c->stats.zone_span[leaf], 1.0) : zone_overlap(c, leaf, f));
+			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
+			kept = Min(kept, zone_keys_kept(c, leaf, nkeys, nd));
 			(*n)++;
 		}
 	}
