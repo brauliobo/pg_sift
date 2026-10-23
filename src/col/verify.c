@@ -152,7 +152,8 @@ collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftCo
 		if (cl->n == cl->cap)
 		{
 			cl->cap = Max(1024, cl->cap * 2);
-			cl->rows = cl->rows ? repalloc(cl->rows, cl->cap * sizeof(RowHash)) : palloc(cl->cap * sizeof(RowHash));
+			cl->rows = cl->rows ? repalloc_huge(cl->rows, cl->cap * sizeof(RowHash)) :
+				MemoryContextAllocHuge(CurrentMemoryContext, cl->cap * sizeof(RowHash));
 		}
 		sift_cbatch_row(b, r, &row);
 		check_wide(index, sc, &row);
