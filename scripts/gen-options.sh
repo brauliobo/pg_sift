@@ -292,6 +292,9 @@ def check(opts, notes, errors):
     docs = [o for o in opts if not o['testing']]
     keys = {o['key'] for o in docs}
     minor_now = next((o['default'] for o in docs if o['key'] == 'sift.col_format_minor'), 0)
+    # an option may stamp the one minor above the default (point_tid_columns: 16), which the library reads (SIFT_COL_FORMAT_MAX_READ)
+    m = re.search(r'#define SIFT_COL_FORMAT_POINTTID\s+(\d+)', open('src/col/col.h').read())
+    minor_max = max(int(minor_now), int(m.group(1))) if m else int(minor_now)
     for o in docs:
         if o['key'] not in notes:
             errors.append('%s: %s has no row in docs/options.tsv (applies, buys, cost, link: what it is for, what it costs; `-` in applies hides an alias)' % (o['where'], o['key']))
@@ -313,8 +316,8 @@ def check(opts, notes, errors):
         for c in ('buys', 'cost'):
             if not (r[c] or first[c]):
                 errors.append('%s: no %s' % (n, c))
-        if r['minor'] and not (o['am'] == 'sift_col' and r['minor'].isdigit() and 7 <= int(r['minor']) <= minor_now):
-            errors.append('%s: minor %s is not a column format minor of a sift_col option (7 to %s)' % (n, r['minor'], minor_now))
+        if r['minor'] and not (o['am'] == 'sift_col' and r['minor'].isdigit() and 7 <= int(r['minor']) <= minor_max):
+            errors.append('%s: minor %s is not a column format minor of a sift_col option (7 to %s)' % (n, r['minor'], minor_max))
         if o['type'] == 'string' and not r['values']:
             errors.append('%s: a string option needs its values (the grammar in a few words)' % n)
         if r['link']:

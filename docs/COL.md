@@ -686,7 +686,7 @@ wants values (an index-only scan) uses the addresses only to cut the units, whic
 is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
 row of each unit is listed under its key.
 
-An index written at `sift.col_format_minor` 15 or below lists the rows (minor 14), whatever the option, and one written before the option is read as before: `REINDEX`
+An index written at `sift.col_format_minor` 14 or below lists the rows (minor 14), whatever the option (the default setting, 15, writes the addresses for a leaf of the option and stamps only that segment minor 16), and one written before the option is read as before: `REINDEX`
 and the merges write the addresses (`sift.upgrade_commands()` lists the `REINDEX` of an index whose segments are older than the option). The size is that of the rows
 within 3%: 8 bytes a slot is most of both for keys that are nearly unique, and a key of many rows costs 1 to 3 bytes a row in a list instead of 4 (1,000,000 rows of the benchmark table, five
 leaves, four of them unique: 91.4 MB against 93.7 MB for rows, about 30 MB without a directory; the six btrees of the benchmark are 170 MB). The build takes 65% longer than the index without a directory (1.32 s against 0.80 s for 1,000,000 rows, the
