@@ -557,7 +557,7 @@ dist_narrow_room(AggExec *ex, Dist *d, uint32 g, int64 lo, int64 hi)
 				nlo = lo & ~(int64) 63,
 				nhi = (hi | 63) + 1;
 	uint32		nk,
-				nng = g < d->nng ? d->nng : Max(Max(g + 1, d->nng * 2), 64);
+				nng = g < d->nng ? d->nng : Max(Max(g + 1, d->nng * 2), d->nng ? 64 : Max(64, spill_keep(ex)));
 	uint64	   *nw;
 
 	if (d->nk)
