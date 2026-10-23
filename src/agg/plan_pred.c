@@ -150,6 +150,38 @@ new_pred(AggCtx *c, SiftAggPredKind kind)
 	return p;
 }
 
+#define EXPLAIN_FULL_ELEMS	1000	/* elements of a constant array that EXPLAIN shows whole */
+#define EXPLAIN_HEAD_ELEMS	8
+
+/* a constant array of many elements shows its first ones and its length: deparsing all of it is a pass over the list at every plan, for text nobody reads */
+static Node *
+short_array_const(Const *k)
+{
+	Oid			elem = k->constisnull ? InvalidOid : get_element_type(k->consttype),
+				outfn;
+	ArrayType  *a;
+	int			upper = EXPLAIN_HEAD_ELEMS,
+				lower = 1;
+	bool		up = true,
+				lp = true,
+				isvar,
+				ebyval;
+	int16		elen;
+	char		ealign,
+			   *txt;
+
+	if (elem == InvalidOid)
+		return NULL;
+	a = DatumGetArrayTypeP(k->constvalue);
+	if (ARR_NDIM(a) != 1 || ARR_DIMS(a)[0] <= EXPLAIN_FULL_ELEMS)
+		return NULL;
+	get_typlenbyvalalign(elem, &elen, &ebyval, &ealign);
+	getTypeOutputInfo(k->consttype, &outfn, &isvar);
+	txt = OidOutputFunctionCall(outfn, array_get_slice(PointerGetDatum(a), 1, &upper, &lower, &up, &lp, -1, elen, ebyval, ealign));
+	txt[strlen(txt) - 1] = '\0';
+	return (Node *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(psprintf("%s,...} (%d elements)", txt, ARR_DIMS(a)[0])), false, false);
+}
+
 /* a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows) */
 static Node *
 display_expr_mutator(Node *n, void *context)
@@ -158,6 +190,8 @@ display_expr_mutator(Node *n, void *context)
 
 	if (n == NULL)
 		return NULL;
+	if (IsA(n, Const) && (arm = short_array_const((Const *) n)) != NULL)
+		return arm;
 	if (IsA(n, PlaceHolderVar))
 		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
 	if ((arm = null_guarded_arm(n)) != NULL)
@@ -386,6 +420,19 @@ compile_cmp(AggCtx *c, OpExpr *op)
 
 #define AGG_MAX_NUM_IN		64		/* constants of a numeric IN list that are one comparison each: a longer list is a hash set */
 
+/*
+ * The selectivity of a condition of the scanned table. The planner has estimated it for the table's rows and kept the result in the condition's
+ * RestrictInfo; an IN list takes a pass over its elements against the statistics, so a second estimate would double the planning time of a long list.
+ */
+static double
+qual_sel(AggCtx *c, Node *clause)
+{
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+		if (equal(ri->clause, clause))
+			return clause_selectivity(c->root, (Node *) ri, c->relid, JOIN_INNER, NULL);
+	return clause_selectivity(c->root, clause, c->relid, JOIN_INNER, NULL);
+}
+
 /* numeric leaf IN (constants) is the OR of its equalities, NOT IN the AND of its inequalities: every operand is scaled like a comparison's */
 static SiftAggPred *
 compile_num_in(AggCtx *c, ScalarArrayOpExpr *sa, int leaf, Node *arr)
@@ -423,7 +470,7 @@ compile_num_in(AggCtx *c, ScalarArrayOpExpr *sa, int leaf, Node *arr)
 		p->expr = arr;
 		p->argtype = NUMERICOID;
 		p->desc = psprintf("%s %s %s (hash set)", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, arr));
-		p->sel = clause_selectivity(c->root, (Node *) sa, c->relid, JOIN_INNER, NULL);
+		p->sel = qual_sel(c, (Node *) sa);
 		return p;
 	}
 	p = new_pred(c, sa->useOr ? SAP_OR : SAP_AND);
@@ -475,7 +522,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	p->expr = r;
 	p->argtype = rt;
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, r));
-	p->sel = clause_selectivity(c->root, (Node *) sa, c->relid, JOIN_INNER, NULL);
+	p->sel = qual_sel(c, (Node *) sa);
 	return p;
 }
 
