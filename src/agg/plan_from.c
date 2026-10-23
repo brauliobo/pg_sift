@@ -577,14 +577,40 @@ part_index_facts(Oid indexoid)
 	return pc;
 }
 
+/* a partition a column index can be read through: a heap table without row security, and an index of the kind that is usable now */
+static bool
+part_readable(AggCtx *c, RelOptInfo *leaf)
+{
+	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
+
+	return rte->relkind == RELKIND_RELATION && get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID && rte->securityQuals == NIL;
+}
+
+static bool
+part_index_usable(const IndexOptInfo *ii)
+{
+	return sift_colsrc_can_part(ii->relam) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK);
+}
+
+/* does the partition have a column index at all? Only its list of indexes is looked at, nothing of the index is read */
+static bool
+part_has_index(AggCtx *c, RelOptInfo *leaf)
+{
+	if (!part_readable(c, leaf))
+		return false;
+	foreach_node(IndexOptInfo, ii, leaf->indexlist)
+		if (part_index_usable(ii))
+			return true;
+	return false;
+}
+
 /* The candidates of a leaf partition: its sift_col indexes, with the layouts in the terms of the partitioned table; none when it cannot be read */
 static List *
 part_candidates(AggCtx *c, RelOptInfo *leaf)
 {
-	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
 	List	   *cands = NIL;
 
-	if (rte->relkind != RELKIND_RELATION || get_rel_relam(rte->relid) != HEAP_TABLE_AM_OID || rte->securityQuals != NIL)
+	if (!part_readable(c, leaf))
 		return NIL;
 	foreach_node(IndexOptInfo, ii, leaf->indexlist)
 	{
@@ -593,7 +619,7 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 		PartVars	pv = {c->root, leaf->relid, c->relid, true};
 		List	   *exprs = NIL;
 
-		if (!sift_colsrc_can_part(ii->relam) || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
+		if (!part_index_usable(ii))
 			continue;
 		facts = part_index_facts(ii->indexoid);
 		pc = palloc(sizeof(PartCand));
@@ -754,6 +780,10 @@ part_source(AggCtx *c)
 		return agg_refuse_on(PARTITION_SOURCE, "no partition is left after the pruning");
 	if (n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
 		return agg_refuse_limit(PARTITION_COUNT, partitions, sift_limit(partitions, SIFT_AGG_MAX_PARTS), "%d partitions are left after the pruning", n);
+	/* a partition without a column index is the reason, whatever the cost: the one a user can act on */
+	foreach_ptr(RelOptInfo, leaf, leaves)
+		if (!part_has_index(c, leaf))
+			return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
 	/* opening the partitions alone can cost more than the normal plan: nothing of them is read to find that out */
 	if (agg_open_cost(n) > agg_stage_normal)
 		return agg_refuse_f(COST, "opening %d partitions costs the scan %.2f, the normal plan %.2f", n, agg_open_cost(n), agg_stage_normal);
