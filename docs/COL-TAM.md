@@ -445,7 +445,7 @@ and also covers the free space, which autovacuum's counters do not see.
 
 ## 9. Limits
 
-BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`, and so does an `ALTER TABLE` that adds a column or brings declared paths back past it, by the event trigger `sift_table_ddl_check`; `DROP COLUMN` is not checked, so that a table made too wide by 3.2, whose writes fail with the same error, can be narrowed); 128 directory entries (under directory pressure every write buffer becomes an unfrozen group whatever wrote it, and the groups merge, so a load of any size by any mix of commands, writers and savepoints is not bounded by them; what still waits is a write buffer that holds a deleted row VACUUM has not seen or a speculative insertion in progress, and the insert that cannot open a write buffer then fails with the error of section 2.1); rows up to 1 GB (varlena limit); vblocks
+BLCKSZ 8192; PostgreSQL 17, 18 and 19; at most 127 columns (`CREATE TABLE` fails past it, error code `54000`, and so does an `ALTER TABLE` that adds a column or brings declared paths back past it, by the event trigger `sift_table_ddl_check`; `DROP COLUMN` is not checked, so that a table made too wide by 3.2, whose writes fail with the same error, can be narrowed); 128 directory entries (under directory pressure every write buffer becomes an unfrozen group whatever wrote it, and the groups merge, so a load of any size by any mix of commands, writers and savepoints is not bounded by them; what still waits is a write buffer that holds a deleted row VACUUM has not seen or a speculative insertion in progress, and the insert that cannot open a write buffer then fails with the error of section 2.1); rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
 `xmin/xmax/cmin/cmax` (they read zero), multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
@@ -485,7 +485,7 @@ Run by `scripts/ci.sh` like the BM25 tests:
   with the hint for a published table without preload, replication of insert / update / delete / TRUNCATE / subtransactions / `ON CONFLICT` to a
   heap and to a sift_table subscriber with preload, and a physical standby of the publisher. `test/t/008_tbl_promote.pl`: autovacuum promotes an insert-only
   table and reclaims updates and deletes, parallel workers over write buffer pages and column groups, a repeatable-read reader across a promotion, a standby of a promoted table.
-  Everything runs on PostgreSQL 17 and 18.
+  Everything runs on PostgreSQL 17, 18 and 19.
 - `SANITIZE=1` (ASan + UBSan) runs the same jobs through `scripts/ci.sh`. BM25 A/B: `bench/ab-query.sh` compares two builds on a heap
   table (the BM25 paths differ only by `sift_vis_nblocks` and the non-heap branch of the page filter).
 

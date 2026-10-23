@@ -12,12 +12,12 @@ created (`initdb.sql`), so every later `CREATE DATABASE` has it too.
 
 ```sh
 packaging/docker/build.sh 17 18            # pg_sift:pg17, pg_sift:pg18 and pg_sift:<version>-pg<major>; JOBS=2 for fewer compiler jobs
-packaging/docker/build.sh 19rc1            # PostgreSQL 19 from the release-candidate tag; use 19 once the official tag exists
+packaging/docker/build.sh 19rc1            # PostgreSQL 19: the `19rc1` tag until the official `19` tag exists
 docker run -d --name sift -e POSTGRES_PASSWORD=example -p 127.0.0.1:5432:5432 pg_sift:pg18
 docker exec -it sift psql -U postgres -c '\dx pg_sift'
 ```
 
-The argument is a tag of the official image (`18`, `18-trixie`, `17`, `19rc1`): the build installs `postgresql-server-dev-<major>` from the PGDG repository that image
+The argument is a tag of the official image (`18`, `18-trixie`, `17`, `19rc1`, and `19` once the official tag exists): the build installs `postgresql-server-dev-<major>` from the PGDG repository that image
 already uses. `IMAGE_REPO=registry.example.com/team/pg_sift` renames the repository.
 
 - The data directory of the PostgreSQL 18 image is under `/var/lib/postgresql`, the one of 17 under `/var/lib/postgresql/data`: mount the volume accordingly.

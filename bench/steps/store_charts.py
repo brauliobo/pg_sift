@@ -4,13 +4,9 @@ Called by steps/charts.py (bench/bench charts). Every chart is written twice, `N
 the surface of its GitHub theme (README.md picks one with <picture>); the palette is the validated one of the dataviz guidance, the systems keep their
 colour and marker everywhere, and every chart names its data file and the host it was measured on. Same results, same bytes.
 
-  store-latency      the ten questions, one dot per system on a log axis (median of the warm runs, whiskers minimum to maximum)
-  store-speedup      the same medians as a factor over PostgreSQL, warm and cold, one cell per question and system
   store-cpus         1 CPU against 3 CPUs: what each system gains from more CPUs
   store-size         bytes on disk per system, the heap and primary key apart from the index or columnar data, with the load time
   store-updates      size after the changes and after the maintenance step, against before
-  duckdb-speedup     pg_duckdb against PostgreSQL and pg_sift (its own run, its own PostgreSQL)
-  store-scaling      the ten questions at 25,000 to 10,000,000 orders (written when bench/results/store-scaling.json exists)
   scaling-partitions, scaling-workers   pg_sift against PostgreSQL by number of partitions and parallel workers (bench/results/scaling.tsv)
 """
 import csv
@@ -24,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 QUERIES = os.path.join(os.path.dirname(HERE), 'sql', 'store', 'queries')
 
+SEARCH = ('08', '09', '10')   # the full-text questions of the store set: measured with the search benchmarks, not part of the aggregate set
 WIDTH = 880
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
 
@@ -170,7 +167,7 @@ class Store:
             self.tiers.update(d['meta']['tiers'])
             for r in d['rows']:
                 self.rows[(r['tier'], r['engine'], r['class'], r['variant'], r['metric'])] = r
-        self.queries = sorted({k[2] for k in self.rows if k[4] == 'latency_ms' and k[2] != '-'})
+        self.queries = sorted({k[2] for k in self.rows if k[4] == 'latency_ms' and k[2] not in ('-',) + SEARCH})
 
     def get(self, tier, engine, cls='-', variant='-', metric=None):
         return self.rows.get((tier, engine, cls, variant, metric))
@@ -213,48 +210,6 @@ def source_lines(S, tier, what, files='bench/results/store.json'):
 
 # ---- charts --------------------------------------------------------------------------------------------------------------------------------
 
-def latency_chart(S, theme, tier):
-    c, slug = Canvas(theme), question_slugs()
-    engines, qs = S.engines(tier), S.queries
-    t = S.tiers[tier]
-    c.head('Ten questions on 1,000,000 orders: time per question', f'milliseconds, median of {t["runs"]} warm runs, logarithmic axis, left is faster; whiskers: fastest and slowest run')
-    y = c.legend(20, 74, engines)
-    left, right, top, rowh = 210, 190, y + 46, 38
-    pw = WIDTH - left - right
-    lo, hi = 0.1, 1000
-    X = lambda v: left + (math.log10(v) - math.log10(lo)) / (math.log10(hi) - math.log10(lo)) * pw
-    for d in (0.1, 1, 10, 100, 1000):
-        c.line(X(d), top - 8, X(d), top + rowh * len(qs))
-        c.text(X(d), top - 14, f'{d:,g}', 11, 'middle', c.t['muted'])
-    c.text(left + pw / 2, top + rowh * len(qs) + 22, 'milliseconds (log scale)', 11, 'middle', c.t['muted'])
-    c.text(WIDTH - 20, top - 14, 'best pg_sift layout against', 10, 'end', c.t['muted'])
-    c.text(WIDTH - 20, top - 2, 'the fastest other system', 10, 'end', c.t['muted'])
-    off = {e: (i - (len(engines) - 1) / 2) * 5 for i, e in enumerate(engines)}
-    for i, q in enumerate(qs):
-        cy = top + rowh * i + rowh / 2
-        if i % 2 == 0:
-            c.rect(14, cy - rowh / 2, WIDTH - 28, rowh, c.t['neutral'], 4)
-        c.text(22, cy + 4, f'Q{q} {slug[q]}', 12)
-        mine = {e: S.lat(tier, e, q)['value'] for e in engines if e in ('sift', 'sift_table') and S.lat(tier, e, q)}
-        others = {e: S.lat(tier, e, q)['value'] for e in engines if e not in ('sift', 'sift_table') and S.lat(tier, e, q)}
-        for e in engines:
-            r = S.lat(tier, e, q)
-            if not r:
-                continue
-            ey = cy + off[e]
-            c.line(X(max(r['min'], lo)), ey, X(min(r['max'], hi)), ey, c.color(e), 2, opacity=0.55)
-            c.marker(X(r['value']), ey, e, f'Q{q} {slug[q]}: {SYSTEMS[e][0]} {ms_text(r["value"])} ms (fastest {ms_text(r["min"])}, slowest {ms_text(r["max"])})')
-        if mine and others:
-            best, rival = min(mine, key=mine.get), min(others, key=others.get)
-            ratio = others[rival] / mine[best]
-            word = f'{factor_text(ratio)} faster' if ratio >= 1.05 else 'tie' if ratio > 0.95 else f'{factor_text(1 / ratio)} slower'
-            c.text(WIDTH - 20, cy + 4, f'{word}, {SYSTEMS[rival][0]}', 11, 'end', c.t['ink'] if ratio >= 0.95 else c.t['down'], 'bold' if ratio < 0.95 else None)
-    bottom = top + rowh * len(qs) + 52
-    end = c.foot(bottom, source_lines(S, tier, f'{S.tiers[tier]["cpus"]} CPUs per server (quota), one client, same rows in every system. Elasticsearch: request cache off.'))
-    height = end + 6
-    return c.render(height, 'Time per question on 1,000,000 orders', 'Median warm latency of ten questions on PostgreSQL, pg_sift, Elasticsearch, ClickHouse and Citus columnar.')
-
-
 def strip_color(c, r, span=2.0):
     """a factor over the baseline: blue when faster, orange when slower, gray around 1 (log scale, saturated at 10^span)"""
     t = min(1, abs(math.log10(r)) / span)
@@ -277,42 +232,6 @@ def strip_cells(c, x, y, cols, rows_, cw, rh, title_fn):
             ink = '#1f2328' if luminance(fill) > 0.28 else '#ffffff'
             c.rect(cx + 1, cy + 1, cw - 2, rh - 2, fill, 3, title_fn(ri, ci, r))
             c.text(cx + cw / 2, cy + rh / 2 + 4, factor_text(r), 12, 'middle', ink, 'bold' if r < 0.95 else None)
-
-
-def strip_legend(c, x, y, caption='than the baseline'):
-    """the colour scale: factor over the baseline, slower (orange) to faster (blue)"""
-    steps = [0.01, 0.1, 0.5, 1, 2, 10, 100]
-    for i, r in enumerate(steps):
-        c.rect(x + i * 46, y - 11, 44, 14, strip_color(c, r), 2)
-        c.text(x + i * 46 + 22, y + 22, factor_text(r), 10, 'middle', c.t['muted'])
-    c.text(x + len(steps) * 46 + 8, y, f'orange: slower, blue: faster {caption}', 11, fill=c.t['muted'])
-    c.text(x + len(steps) * 46 + 8, y + 16, 'gray: within 15%', 11, fill=c.t['muted'])
-
-
-def speedup_chart(S, theme, tier):
-    c, slug = Canvas(theme), question_slugs()
-    engines = [e for e in S.engines(tier) if e != 'pg']
-    qs = S.queries
-    c.head('Ten questions: how many times faster than PostgreSQL', 'median time of PostgreSQL divided by the system\'s, warm runs and first run after the memory was emptied; blue: faster, orange: slower')
-    left, cw, rh, gap = 200, 54, 28, 24
-    top = 112
-    for pi, (variant, name) in enumerate((('warm', 'warm'), ('cold', 'cold (first run)'))):
-        x0 = left + pi * (len(engines) * cw + gap)
-        c.text(x0 + len(engines) * cw / 2, top - 40, name, 12, 'middle', c.t['ink'], 'bold')
-        for ci, e in enumerate(engines):
-            c.marker(x0 + ci * cw + cw / 2, top - 22, e)
-            c.text(x0 + ci * cw + cw / 2, top - 6, SHORT[e], 10, 'middle', c.t['muted'])
-        rows_ = []
-        for q in qs:
-            base = S.lat(tier, 'pg', q, variant)
-            rows_.append([(base['value'] / S.lat(tier, e, q, variant)['value']) if base and S.lat(tier, e, q, variant) else None for e in engines])
-        strip_cells(c, x0, top, engines, rows_, cw, rh, lambda ri, ci, r, v=variant: f'Q{qs[ri]} {slug[qs[ri]]} ({v}): {SYSTEMS[engines[ci]][0]} is {factor_text(r)} PostgreSQL ({ms_text(S.lat(tier, engines[ci], qs[ri], v)["value"])} ms against {ms_text(S.lat(tier, "pg", qs[ri], v)["value"])} ms)')
-    for ri, q in enumerate(qs):
-        c.text(22, top + ri * rh + rh / 2 + 4, f'Q{q} {slug[q]}', 12)
-    y = top + rh * len(qs) + 28
-    strip_legend(c, 20, y)
-    end = c.foot(y + 44, source_lines(S, tier, f'{S.tiers[tier]["cpus"]} CPUs per server, 1,000,000 orders. Cold: caches emptied (Elasticsearch: container restart).'))
-    return c.render(end + 6, 'Speed-up over PostgreSQL per question', 'Factor over PostgreSQL for each system and question, warm and cold.')
 
 
 def cpus_chart(S, theme):
@@ -428,34 +347,6 @@ def read_tsv(path):
     return meta, list(csv.DictReader(lines, delimiter='\t'))
 
 
-def duckdb_chart(theme, path):
-    c, slug = Canvas(theme), question_slugs()
-    meta, rows = read_tsv(path)
-    get = lambda case, arm, m: next((float(r['value']) for r in rows if (r['case'], r['arm'], r['metric']) == (case, arm, m) and r['value'] not in ('NA', 'error', '')), None)
-    cases = []
-    for r in rows:
-        if r['case'] != 'load' and r['case'] not in cases:
-            cases.append(r['case'])
-    cols = ['sift', 'duckdb_heap', 'duckdb_parquet']
-    c.head('pg_duckdb, PostgreSQL and pg_sift on the same ten questions', 'median time of PostgreSQL divided by the system\'s, in this run\'s own PostgreSQL; blue: faster, orange: slower')
-    left, cw, rh, gap, top = 200, 76, 28, 24, 100
-    for pi, (m, name) in enumerate((('warm_ms', 'warm'), ('cold_ms', 'cold (new session, buffers emptied)'))):
-        x0 = left + pi * (len(cols) * cw + gap)
-        c.text(x0 + len(cols) * cw / 2, top - 32, name, 12, 'middle', c.t['ink'], 'bold')
-        for ci, e in enumerate(cols):
-            c.marker(x0 + ci * cw + 10, top - 12, e if e != 'sift' else 'sift')
-            c.text(x0 + ci * cw + 20, top - 8, {'sift': 'sift_col', 'duckdb_heap': 'duck heap', 'duckdb_parquet': 'duck Parquet'}[e], 10)
-        grid = [[(get(cs, 'pg', m) / get(cs, a, m)) if get(cs, 'pg', m) and get(cs, a, m) else None for a in cols] for cs in cases]
-        strip_cells(c, x0, top, cols, grid, cw, rh, lambda ri, ci, r, mm=m: f'{cases[ri]}: {SYSTEMS[cols[ci]][0]} {factor_text(r)} PostgreSQL')
-    for ri, cs in enumerate(cases):
-        c.text(22, top + ri * rh + rh / 2 + 4, f'Q{cs.split(" ")[0]} {slug[cs.split(" ")[0]]}', 12)
-    strip_legend(c, 20, top + rh * len(cases) + 20)
-    host = f'{meta.get("cpu", "?").split(" (")[0].replace(" 8-Core Processor", "")}'
-    end = c.foot(top + rh * len(cases) + 66, [f'Data: bench/results/duckdb.tsv, {meta.get("date", "?")}. Host: {host}. pg_duckdb {meta.get("pg_duckdb", "?").split(",")[0]} next to PostgreSQL, one container each, same CPU quota.',
-                                                'Its own run (psql timing, median of 3): not comparable with the other charts; n/a: pg_duckdb cannot run the statement.'])
-    return c.render(end + 6, 'pg_duckdb against PostgreSQL and pg_sift', 'Factor over PostgreSQL for pg_sift and the two pg_duckdb modes, warm and cold.')
-
-
 def lines_panels(c, panels, xs, top, ncols=5, pw=150, ph=88, xfmt=None, yfmt=ms_text):
     """small multiples: panels [(title, {sid: [y per x or None]})], log-log lines; shared x positions xs; y axis per panel"""
     lx = lambda v: math.log10(v)
@@ -487,20 +378,6 @@ def lines_panels(c, panels, xs, top, ncols=5, pw=150, ph=88, xfmt=None, yfmt=ms_
 
 def rows_label(v):
     return f'{v / 1_000_000:g}M' if v >= 1_000_000 else f'{v / 1000:g}k'
-
-
-def scaling_chart(S, theme):
-    """the ten questions by number of orders (3 CPUs, warm medians): needs result sets of several sizes"""
-    c, slug = Canvas(theme), question_slugs()
-    sizes_ = sorted({m['rows'] for t, m in S.tiers.items() if m.get('cpus') == 3})
-    tiers = {n: S.tier_of(n, 3) for n in sizes_}
-    engines = [e for e in ORDER if any(S.lat(t, e, S.queries[0]) for t in tiers.values())]
-    c.head('Time per question from 25,000 to 10,000,000 orders', 'median warm milliseconds, logarithmic axes, 3 CPUs per server; every panel is one question')
-    y = c.legend(20, 74, engines)
-    panels = [(f'Q{q} {slug[q]}', {e: [S.lat(tiers[n], e, q)['value'] if S.lat(tiers[n], e, q) else None for n in sizes_] for e in engines}) for q in S.queries]
-    end = lines_panels(c, panels, sizes_, y + 36, xfmt=rows_label)
-    end = c.foot(end - 22, source_lines(S, tiers[sizes_[-1]], f'Same harness and rows at every size ({", ".join(rows_label(n) for n in sizes_)}).', 'bench/results/store.json and store-scaling.json'))
-    return c.render(end + 6, 'Time per question by number of orders', 'Warm median latency of the ten questions at several table sizes.')
 
 
 def scaling_tsv_chart(theme, path, dim, title, sub):
@@ -535,19 +412,12 @@ def make(results):
         return out
     S = Store(store)
     tier = S.tier_of(1_000_000, 3)
-    scaling = os.path.join(results, 'store-scaling.json')
     for theme in THEMES:
         add = lambda name, svg: out.__setitem__(f'{name}-{theme}.svg', svg)
-        add('store-latency', latency_chart(S, theme, tier))
-        add('store-speedup', speedup_chart(S, theme, tier))
         if S.tier_of(1_000_000, 1):
             add('store-cpus', cpus_chart(S, theme))
         add('store-size', size_chart(S, theme, tier))
         add('store-updates', updates_chart(S, theme, tier))
-        if os.path.exists(os.path.join(results, 'duckdb.tsv')):
-            add('duckdb-speedup', duckdb_chart(theme, os.path.join(results, 'duckdb.tsv')))
-        if os.path.exists(scaling):
-            add('store-scaling', scaling_chart(Store(store, scaling), theme))
         sc = os.path.join(results, 'scaling.tsv')
         if os.path.exists(sc):
             add('scaling-partitions', scaling_tsv_chart(theme, sc, 'partitions', 'Aggregates by number of partitions, 1,000,000 orders', 'median milliseconds, logarithmic axes; the table is split by a hash of the id into N partitions'))

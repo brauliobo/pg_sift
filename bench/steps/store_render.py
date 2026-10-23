@@ -3,13 +3,14 @@ import benchlib
 import json
 import os
 import re
-from store_charts import picture
+from store_charts import SEARCH, picture
 from store_lib import CHUNK, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, PG_ENGINES, UPDATE_ENGINES, load_queries
 
 
 class Results:
     def __init__(self, path):
         d = json.load(open(path))
+        self.dir = os.path.dirname(os.path.abspath(path))
         self.meta, self.rows = d['meta'], d['rows']
         self.scaling = os.path.exists(os.path.join(os.path.dirname(path), 'store-scaling.json'))   # the sizes other than 1,000,000 orders are measured in their own file
         tm = self.meta['tiers']
@@ -34,10 +35,11 @@ class Results:
     def engines(self, tier, among):
         return [e for e in among if any(r['tier'] == tier and r['engine'] == e and r['metric'] in ('latency_ms', 'load_s') for r in self.rows)]
 
-    def queries(self, tier):
+    def queries(self, tier, search=False):
+        """the aggregate questions of a result set; search=True: the full-text ones, which the search benchmarks own"""
         out = {}
         for r in self.rows:
-            if r['tier'] == tier and r['metric'] == 'latency_ms':
+            if r['tier'] == tier and r['metric'] == 'latency_ms' and (r['class'] in SEARCH) == search:
                 out[r['class']] = None
         return sorted(out)
 
@@ -75,10 +77,10 @@ def best_bold(values, cells):
     return [f'**{c}**' if v is not None and v <= best * 1.05 else c for v, c in zip(values, cells)]
 
 
-def bench_table(R, tier, engines, labels, detail=False, variant='warm'):
+def bench_table(R, tier, engines, labels, detail=False, variant='warm', search=False):
     head = ['question' if detail else 'query'] + [labels[e] for e in engines]
     body = []
-    for qid in R.queries(tier):
+    for qid in R.queries(tier, search):
         title = (QUERY_TITLES if detail else QUERY_LABELS)[qid]
         rs = [R.get(tier, e, qid, variant, 'latency_ms') for e in engines]
         vals = [r['value'] if r else None for r in rs]
@@ -273,12 +275,24 @@ def citus_notes(R, tier):
             '(columnar tables take btree and hash indexes only, so the three searches scan the title column). Columnar tables are append-only, so Citus is not in the update table.']
 
 
+def duck_best(R, q, variant):
+    """the faster pg_duckdb mode on a question (bench/results/duckdb.tsv, its own run), or None"""
+    path = os.path.join(R.dir, 'duckdb.tsv')
+    if not os.path.exists(path):
+        return None
+    from store_charts import read_tsv
+    rows = read_tsv(path)[1]
+    m = 'warm_ms' if variant == 'warm' else 'cold_ms'
+    v = [float(r['value']) for r in rows if r['case'].split(' ')[0] == q and r['arm'] in ('duckdb_heap', 'duckdb_parquet') and r['metric'] == m and r['value'] not in ('NA', 'error', '')]
+    return min(v) if v else None
+
+
 def ahead(R, tier, engines, variant):
-    """(questions where the faster layout of pg_sift is the fastest or within 5% of it, questions)"""
+    """(questions where the faster layout of pg_sift is the fastest or within 5% of it, questions); pg_duckdb counts among the others"""
     mine = [e for e in ('sift', 'sift_table') if e in engines]
     others = [e for e in engines if e not in ('sift', 'sift_table', 'es_cached')]
     qs = [q for q in R.queries(tier) if any(R.num(tier, e, q, variant, 'latency_ms') for e in mine)]
-    n = sum(1 for q in qs if min(R.num(tier, e, q, variant, 'latency_ms') or 1e99 for e in mine) <= min((R.num(tier, e, q, variant, 'latency_ms') or 1e99) for e in others) * 1.05)
+    n = sum(1 for q in qs if min(R.num(tier, e, q, variant, 'latency_ms') or 1e99 for e in mine) <= min([(R.num(tier, e, q, variant, 'latency_ms') or 1e99) for e in others] + [duck_best(R, q, variant) or 1e99]) * 1.05)
     return n, len(qs)
 
 
@@ -286,11 +300,11 @@ def takeaway(R, tier, engines):
     """one line: where pg_sift stands, warm and cold, and against PostgreSQL"""
     w, c = ahead(R, tier, engines, 'warm'), ahead(R, tier, engines, 'cold')
     pg = [R.num(tier, 'pg', q, 'warm', 'latency_ms') / min(R.num(tier, e, q, 'warm', 'latency_ms') for e in ('sift', 'sift_table') if R.num(tier, e, q, 'warm', 'latency_ms')) for q in R.queries(tier) if R.num(tier, 'pg', q, 'warm', 'latency_ms')]
-    return (f'**Takeaway:** the faster layout of pg_sift is the fastest system, or within 5% of it, on {w[0]} of {w[1]} questions warm' + (f' and {c[0]} of {c[1]} cold' if c[1] else '')
+    return (f'**Takeaway:** the faster layout of pg_sift is the fastest system (pg_duckdb included), or within 5% of it, on {w[0]} of {w[1]} questions warm' + (f' and {c[0]} of {c[1]} cold' if c[1] else '')
             + f'; against PostgreSQL it is {ratio(min(pg), 1)} to {ratio(max(pg), 1)} faster.')
 
 
-def caveat_lines(R, tier, engines, labels, size_rows_shown=True):
+def caveat_lines(R, tier, engines, labels, size_rows_shown=True, brief=False):
     """the caveats of the store results, short bullets: where pg_sift is behind, what the settings change, what the numbers are not"""
     out = []
     lo, cold = losses(R, tier, engines, labels), losses(R, tier, engines, labels, 'cold')
@@ -304,6 +318,8 @@ def caveat_lines(R, tier, engines, labels, size_rows_shown=True):
         out.append('Elasticsearch runs with its shard request cache off (a repeated aggregation would otherwise be answered from memory); with it on' + (f' it is faster than pg_sift on {", ".join(behind)}.' if behind else ' it is not faster than pg_sift on any question.'))
     rd = R.get(tier, 'es', '06', '-', 'rel_diff')
     out.append('Every result is compared with PostgreSQL\'s before it is timed and the run stops on a difference; Elasticsearch counts distinct customers approximately (HyperLogLog++' + (f', off by at most {rd["value"]:.2%} here' if rd else '') + '), every other result matched exactly or within rounding.')
+    if brief:
+        return out
     if size_rows_shown:
         out.append(size_note(R, tier, engines)[len('- '):])
     plain = [q for q in R.queries(tier) if 'Seq Scan' in (R.get(tier, 'sift_table', q, '-', 'plan') or {}).get('value', '') and R.num(tier, 'sift_table', q, 'warm', 'latency_ms') and R.num(tier, 'pg', q, 'warm', 'latency_ms')]
@@ -319,21 +335,24 @@ def caveat_lines(R, tier, engines, labels, size_rows_shown=True):
 
 
 def readme_block(R):
+    """the aggregate questions of the README: the two charts, the takeaway, the few caveats that change a decision; the machine and the method are the footnote [^store]"""
     tier = R.tiers[-1]
     t = R.meta['tiers'][tier]
     s = t['servers']
     labels = {e: LANES[e][0] for e in LANES}
     engines = R.engines(tier, SHOWN)
     host = R.meta.get('host', {})
-    out = [f'{t["rows"]:,} orders (country, category, status, amount, date, a product title) and ten questions, the same seeded rows in every system, each alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory '
-           f'and the same thread budget ([method](docs/BENCHMARKS.md#configuration)), one client over a local connection. Median of {t["runs"]} warm runs in milliseconds, lower is better, the fastest of a row and anything within 5% of it in bold. '
-           f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}. Host at the start of the warm runs: {host_noise(t["parts"]["warm"])}.', '',
-           picture('store-latency', 'Median time per question and system on a logarithmic axis, 1,000,000 orders'), '']
-    head, body = bench_table(R, tier, engines, dagger(R, tier, labels))
-    out += md_table(head, body + load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
-                                                                  picture('store-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold'), '', '**Caveats**', '']
-    out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]
-    out += ['', 'Raw results: [bench/results/store.json](bench/results/store.json); every table, the cold runs and the configuration: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#aggregates-an-online-store); reproduce with `bench/bench store all`.']
+    qs = R.queries(tier)
+    out = [f'{len(qs)} aggregate questions (a point lookup, counts and sums by group, distinct counts, a filtered average, a range count) on {t["rows"]:,} orders, the same rows in every system, one client, warm medians[^store]. '
+           'The full-text questions of the same set are in [Search](#search).', '',
+           picture('agg-latency', f'Median time per question and system on a logarithmic axis, {t["rows"]:,} orders'), '', takeaway(R, tier, engines), '',
+           picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold'), '']
+    out += ['- ' + c for c in caveat_lines(R, tier, engines, labels, brief=True)]
+    out += ['', 'Every table, the cold runs, sizes and the configuration: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#aggregates-an-online-store); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
+            f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](docs/BENCHMARKS.md#configuration)), '
+            f'a local connection; median of {t["runs"]} warm runs; the first run after the server\'s memory was emptied is "cold". Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), '
+            f'PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}; host at the start of the warm runs: {host_noise(t["parts"]["warm"])}. '
+            'pg_duckdb is its own run (the better of its heap and Parquet modes, a different PostgreSQL build next to it, [docs/BENCHMARKS.md](docs/BENCHMARKS.md#pg_duckdb)): its factor is against the PostgreSQL of that run.']
     return out
 
 
@@ -379,14 +398,16 @@ def benchmarks_block(R):
     t = R.meta['tiers'][tier]
     s = t['servers']
     engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'es', 'ch', 'citus'])
-    out = [f'{t["rows"]:,} orders and ten questions, {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs in milliseconds with the fastest and slowest run in parentheses; the fastest of a row and anything within 5% of it in bold. '
+    out = [f'{t["rows"]:,} orders and {len(R.queries(tier))} aggregate questions (the {len(R.queries(tier, search=True))} full-text ones are in the search section), {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs in milliseconds with the fastest and slowest run in parentheses; the fastest of a row and anything within 5% of it in bold. '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")}, PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}'
            + (f', Citus {s["citus_columnar"]}' if 'citus' in engines else '') + f'; seeded data sha256 `{t["data_sha256"][:16]}`; {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared).', '']
     head, body = bench_table(R, tier, engines, dagger(R, tier, labels), detail=True)
     out += md_table(head, body + load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
-                                                                   picture('store-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
+                                                                   picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]
-    out += ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
+    head, body = bench_table(R, tier, engines, dagger(R, tier, labels), detail=True, search=True)
+    out += ['', '#### Search with filters', '', 'The three full-text questions of the same set, a text search with filters on the same rows (the search benchmarks proper are in the [README](../README.md#search)); they are not part of the aggregates above.', '']
+    out += md_table(head, body) + ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
     last = R.tiers[-1]
     t = R.meta['tiers'][last]
     s = t['servers']
@@ -559,33 +580,22 @@ def upd_sentences(R, tier, engines):
     return out
 
 
-README_UPDATE_ROWS = ('update 10%', 'delete 5%', 'single-row change: seen by', 'revenue per month while 0 rows/s', 'revenue per month while 10,000 rows/s')   # the rows of the README table; the others are in docs/BENCHMARKS.md
-
-
-def growth_row(R, tier, engines, v, label):
-    """the size after a step over the size before: a ratio, so the sizes themselves (the total on disk of each point) stay in docs/BENCHMARKS.md"""
-    vals = [R.num(tier, e, '-', v, 'size_mib') / R.num(tier, e, '-', 'before', 'size_mib') if R.num(tier, e, '-', v, 'size_mib') and R.num(tier, e, '-', 'before', 'size_mib') else None for e in engines]
-    return [label] + best_bold(vals, [f'{x:.2f}x' if x else 'n/a' for x in vals])
-
-
 def updates_readme(R):
+    """the README's changes of data: the cost chart (rows/s of the 10% update is in it), the size growth chart, the takeaway and the losses; the table is in docs/BENCHMARKS.md"""
     tier = upd_tier(R)
     if not tier:
         return ['No update numbers yet: `bench/bench store all` measures them.']
     engines = upd_engines(R, tier)
     t = R.meta['tiers'][tier]
-    rows = [r for r in upd_rows(R, tier, engines, False) if r[0].startswith(README_UPDATE_ROWS)]
-    rows += [growth_row(R, tier, engines, 'after churn', 'size on disk after the changes, against before'), growth_row(R, tier, engines, 'after maintenance', 'size after VACUUM / merge / OPTIMIZE, against before')]
-    out = [f'On the {t["rows"]:,}-order table, after the read tests, each system changes its rows the way its documentation recommends for the job (below); the state after each step is compared with PostgreSQL\'s. '
-           f'Query: revenue per month, timed while a second connection updates rows at the rate shown. Medians; the best of a row in bold.', '']
-    out += md_table(['{:,} orders'.format(t['rows'])] + [dagger(R, tier, UPD_LABELS)[e] for e in engines], rows) + ['']
     sentences = upd_sentences(R, tier, engines)
-    out += ['**Takeaway:** ' + sentences[0], '', picture('store-updates', 'Size after the changes and after the maintenance step, against before, per system'), '', '**Caveats**', '']
+    out = [f'On the {t["rows"]:,}-order table, after the read tests, each system changes its rows the way its documentation recommends for the job; the state after each step is compared with PostgreSQL\'s.', '',
+           '**Takeaway:** ' + sentences[0], '', picture('cost-per-row', 'Index bytes per row, load microseconds per row and rows per second of a 10% update, per system'), '',
+           picture('store-updates', 'Size after the changes and after the maintenance step, against before, per system'), '']
     out += ['- ' + x for x in sentences[1:2] + cache_note(R, tier)]
     loss = upd_losses(R, tier, engines)
     if loss:
         out += ['- **Where pg_sift loses:** ' + '; '.join(loss) + '.']
-    out += ['', 'Raw results: [bench/results/store.json](bench/results/store.json); every row, the update path of each system and the official pages: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).']
+    out += ['', 'Every row, the update path of each system and the official pages: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
     return out
 
 

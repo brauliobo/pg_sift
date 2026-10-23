@@ -458,18 +458,6 @@ def duckdb_cases(rows):
     return cases
 
 
-def duckdb_brief(meta, rows):
-    cases = duckdb_cases(rows)
-    best = duck_summary(rows, cases, 'warm_ms')
-    return ['pg_duckdb %s (DuckDB reading the heap, and a Parquet file it writes) on the %s orders and ten questions of the store benchmark above, in a container with the same CPU and memory budget as pg_sift, '
-            'median of 3 warm runs, %s.' % (meta.get('pg_duckdb', '?').split(',')[0], '{:,}'.format(int(meta.get('orders', 0))), meta.get('date', '?')), '',
-            picture('duckdb-speedup', 'pg_duckdb and pg_sift against PostgreSQL on the ten questions, warm and cold'), '',
-            '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', '**Caveats**', '',
-            '- ' + best[1][2:],
-            '- The full-text questions (Q08 to Q10) run in DuckDB as a substring match, not an index; Q01 to Q10 are the questions of the store table above.', '',
-            'Raw results: [bench/results/duckdb.tsv](bench/results/duckdb.tsv); every question, both pg_duckdb modes, the cold runs and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#pg_duckdb).']
-
-
 def duckdb_section(meta, rows):
     cases = duckdb_cases(rows)
     load = []
@@ -487,14 +475,14 @@ def duckdb_section(meta, rows):
         '%s PostgreSQL 18 with the same CPU quota (3), memory limit (8g) and flags in every container; pg_duckdb %s (the official image, unmodified), DuckDB %s.' % (
             '{:,}'.format(int(meta.get('orders', 0))), footer(meta), meta.get('pg_duckdb', '?'), meta.get('duckdb', '?')),
         '', '"pg_duckdb heap" is `duckdb.force_execution = on` reading the same heap; "pg_duckdb Parquet" a view over `read_parquet()` of a file pg_duckdb wrote from that table.', ''] + duck_table(rows, cases, 'warm_ms') + [
-        '', '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', picture('duckdb-speedup', 'pg_duckdb and pg_sift against PostgreSQL on the ten questions, warm and cold', 'img/'), '', '**Caveats**', '']
+        '', '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', picture('agg-speedup', 'The aggregate questions on every system, pg_duckdb included, warm and cold', 'img/'), '', '**Caveats**', '']
     lines += ['- ' + f for f in foot] + [
         '- The client is `psql`, not the client of the store table above, so sub-millisecond cells differ from it; numbers of the two tables are not mixed.',
         '- Cold = median of 3 first runs in a new session after the buffer cache was emptied (the OS page cache stays); statement timeout 30 s.']
     lines += ['- ' + x[2:] for x in best[1:2] + best[3:]]
     lines += [''] + (fold('Cold (new session, buffer cache emptied)', duck_table(rows, cases, 'cold_ms') + [''] + duck_summary(rows, cases, 'cold_ms')) if get(rows, metric='cold_ms') else []) + [
         '', 'Load and size (the Parquet file is written from the PostgreSQL table):', ''] + table(['lane', 'load s', 'index build s', 'data MiB', 'index MiB'], load, ['---', '---:', '---:', '---:', '---:'])
-    return lines + ['', 'Raw results: [results/duckdb.tsv](results/duckdb.tsv); the questions: [perf/AGGREGATES.md](perf/AGGREGATES.md#the-ten-questions); reproduce with `bench/bench duckdb`.']
+    return lines + ['', 'Raw results: [results/duckdb.tsv](results/duckdb.tsv); the questions: [perf/AGGREGATES.md](perf/AGGREGATES.md#the-questions); reproduce with `bench/bench duckdb`.']
 
 
 def wrap(a):
@@ -540,13 +528,11 @@ def main():
                 replace_block(a.benchmarks, name, lines)
             for doc in ALSO.get(name, []):   # the other documents that carry the block
                 if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
-                    readme = os.path.basename(doc) == 'README.md'
-                    replace_block(doc, name, BRIEF[name](meta, rows) if readme and name in BRIEF else [l.replace('](results/', '](bench/results/') for l in lines] if readme else lines)
+                    replace_block(doc, name, lines)
 
 
 ALSO_ONLY = {'gpu'}   # kept in docs/GPU.md, labelled with the build it was measured on
-BRIEF = {'duckdb': duckdb_brief}   # the shorter block of README.md
-ALSO = {'gpu': [os.path.join(REPO, 'docs', 'GPU.md')], 'duckdb': [os.path.join(REPO, 'README.md')]}
+ALSO = {'gpu': [os.path.join(REPO, 'docs', 'GPU.md')]}
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
             'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section, 'duckdb': duckdb_section}
 

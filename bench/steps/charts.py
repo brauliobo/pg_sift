@@ -29,6 +29,7 @@ from xml.sax.saxutils import escape
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import store_charts  # noqa: E402
+import bench_charts  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 
 DATASETS = ('articles', 'places')
@@ -332,6 +333,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     charts = make(rows, args.tier)
     charts.update(store_charts.make(args.results))   # the aggregate benchmarks: light and dark variants
+    charts.update(bench_charts.make(args.results))
     for name, svg in charts.items():
         with open(os.path.join(args.out, name), 'w', newline='\n') as f:
             f.write(svg)

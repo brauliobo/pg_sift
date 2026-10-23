@@ -14,7 +14,17 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 # release | text kind of the jsonb path (3.0 has no astext) | sift_table (3.1 on) | newest column minor it reads
-MATRIX=("v3.0.2 text no 3" "v3.1.0 astext yes 4" "v3.2.0 astext yes 6")
+# Every release tag of the 3.0 to 3.2 series, so that a new release joins the matrix with its tag; SIFT_COMPAT_EXTRA_REFS adds refs of a release in preparation
+# (origin/release/3.2.3) and SIFT_COMPAT_REFS limits the run to the refs it lists (a change of the test)
+MATRIX=()
+for ref in ${SIFT_COMPAT_REFS:-$(git -C "$REPO" tag -l 'v3.*' --sort=v:refname) ${SIFT_COMPAT_EXTRA_REFS:-}}; do
+	case $ref in
+		*3.0.*) MATRIX+=("$ref text no 3") ;;
+		*3.1.*) MATRIX+=("$ref astext yes 4") ;;
+		*3.2.*) MATRIX+=("$ref astext yes 6") ;;
+	esac
+done
+((${#MATRIX[@]})) || { echo '1..0 # SKIP no release tag of the 3.0 to 3.2 series in this clone'; exit 0; }
 for row in "${MATRIX[@]}"; do
 	git -C "$REPO" rev-parse --verify -q "${row%% *}^{commit}" >/dev/null || { echo "1..0 # SKIP released library source ${row%% *} is unavailable"; exit 0; }
 done
