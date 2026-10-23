@@ -1,7 +1,7 @@
 # PostgreSQL with pg_sift for a laptop or a test environment. From the repository root:
 #   docker compose -f packaging/docker/compose.yaml up --build -d
 #   docker compose -f packaging/docker/compose.yaml exec db psql -U postgres -d app
-# PG_TAG picks the official image tag (17 or 18). PostgreSQL 18 images keep the data directory under /var/lib/postgresql, 17 under
+# PG_TAG picks the official image tag (17, 18 or 19rc1). PostgreSQL 18 images keep the data directory under /var/lib/postgresql, 17 under
 # /var/lib/postgresql/data: for 17 mount the volume there.
 services:
   db:
