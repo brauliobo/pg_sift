@@ -162,6 +162,40 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	return dead;
 }
 
+static bool share_superblock(const SiftColSegment *a, const SiftColSegment *b, int allowed);
+
+/*
+ * The tier merge of segments that are clean and share at most the superblock at their edge gain a reader nothing (the same units with the same pre-aggregates, one file
+ * fewer to open) and writes all their bytes: a parallel build leaves such a tier, and at 100 million rows the first VACUUM after it would rewrite the index.
+ * They are left alone when they total more than sift.vacuum_rewrite_limit and the directory has room for the ones that come.
+ */
+static bool
+clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel, int n)
+{
+	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
+	uint64		bytes = 0;
+	bool		apart = true;
+
+	if (snap->nsegs > SIFT_MERGE_ENTRIES(SIFT_MERGE_FANIN))
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		if (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS))
+			return false;
+		bytes += sel[i].bytes;
+	}
+	if (bytes <= ((uint64) sift_vacuum_rewrite_limit << 20))
+		return false;
+	for (int i = 0; i < n; i++)
+		seg[i] = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
+	for (int i = 0; i < n && apart; i++)
+		for (int j = i + 1; j < n && apart; j++)
+			apart = !share_superblock(seg[i], seg[j], 1);
+	for (int i = 0; i < n; i++)
+		sift_cseg_close(seg[i]);
+	return apart;
+}
+
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
@@ -170,8 +204,13 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	int			n,
 				k = 0;
 
-	if (force || sift_col_auto_merge_partition_kb == 0)
-		return sift_merge_pick(index, &pol, snap, force, sel);
+	if (force)
+		return sift_merge_pick(index, &pol, snap, true, sel);
+	if (sift_col_auto_merge_partition_kb == 0)
+	{
+		n = sift_merge_pick(index, &pol, snap, false, sel);
+		return n > 0 && clean_apart(index, snap, sel, n) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
+	}
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
 	overlays = palloc(sizeof(SiftDirSnapshot));
 	*overlays = *snap;
@@ -181,7 +220,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	overlays->nsegs = k;
 	n = sift_merge_pick(index, &pol, overlays, false, sel);
 	pfree(overlays);
-	return n > 0 ? n : sift_merge_pick_dead(index, &pol, snap, sel);
+	return n > 0 && !clean_apart(index, snap, sel, n) ? n : sift_merge_pick_dead(index, &pol, snap, sel);
 }
 
 /* Units of the segment that hold a dead row */
@@ -195,20 +234,22 @@ dirty_units(SiftColSegment *seg)
 	return d;
 }
 
-/* Do the two segments hold a unit of the same superblock? */
+/* Do the two segments hold a unit of more than `allowed` superblocks in common? */
 static bool
-share_superblock(const SiftColSegment *a, const SiftColSegment *b)
+share_superblock(const SiftColSegment *a, const SiftColSegment *b, int allowed)
 {
+	int			shared = 0;
+
 	for (uint32 i = 0, j = 0; i < a->nsb && j < b->nsb;)
 	{
 		uint32		x = a->sbdir[i].sb,
 					y = b->sbdir[j].sb;
 
-		if (x == y)
+		if (x == y && ++shared > allowed)
 			return true;
-		if (x < y)
+		if (x <= y)
 			i++;
-		else
+		if (x >= y)
 			j++;
 	}
 	return false;
@@ -247,7 +288,7 @@ view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			uint64		di = v->imm[i].ndocs * v->seg[j]->nsb,
 						dj = v->imm[j].ndocs * v->seg[i]->nsb;
 
-			v->over[i] = j != i && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(v->seg[i], v->seg[j]);
+			v->over[i] = j != i && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(v->seg[i], v->seg[j], 0);
 		}
 	return v;
 }
@@ -304,7 +345,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	else if (nover == 1 && (double) listed >= sift_col_auto_merge_fragmentation * (double) sift_cseg_dir_units(snap))
 	{
 		for (int i = 0; i < v->n; i++)
-			take[i] = i == over || dirty_part[i] || share_superblock(v->seg[i], v->seg[over]);
+			take[i] = i == over || dirty_part[i] || share_superblock(v->seg[i], v->seg[over], 0);
 		*cut = true;
 	}
 	else if (worst >= 0)
