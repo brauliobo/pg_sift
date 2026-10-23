@@ -110,6 +110,9 @@ FROM unnest(ARRAY['not_ignored', 'phrase_as_and', 'float8_score', 'idf_df_plus1'
 	'dismax_sum', 'topk_short', 'count_plus', 'nofold_query', 'tf_cap15', 'prefix_trunc', 'fuzzy_no_firstchar']) m;
 DROP TABLE ref_docs;
 RESET sift_ref.tokenizer;
+SET client_min_messages = warning;
+DROP SCHEMA sift_ref CASCADE;
+RESET client_min_messages;
 \endif
 CREATE TABLE rw (id int PRIMARY KEY, body text);
 INSERT INTO rw
