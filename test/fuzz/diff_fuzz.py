@@ -444,12 +444,16 @@ def gen_twolevel(r, ctx):
     return dict(spans=r.sample(SPANS, r.randrange(1, 4)), parent=r.choice(['', 'JOIN items pa ON pa.id = e.parent_id AND pa.enabled', 'LEFT JOIN items pa ON pa.id = e.parent_id']),
                 lookup=r.choice(['lookup', 'lookup', 'lookup_dup', 'lookup_empty', None]), where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)),
                 spine=r.choice([None, None, 'JOIN', 'LEFT JOIN']), spinesrc=r.choice(['TABLE buckets', "VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), (NULL, NULL, 'd'), ('k7', NULL, 'e')"]),
-                total=r.random() < 0.8, keys=[], aggs=[], having=[], ordered=True)
+                total=r.random() < 0.8, keys=[], aggs=[], having=[], ordered=True,
+                # a group key that holds a sub-select: each arm plans one of its own
+                dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]))
 
 
 def render_twolevel(p):
     w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
-    scoped = (f"WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.parent_id, e.doc, e.kind, p.span FROM events e JOIN (VALUES {', '.join(p['spans'])}) p(span, range) "
+    dim = p.get('dim')
+    dim_col = f", CASE WHEN e.parent_id {dim} THEN jsonb_build_object('id', e.parent_id) END AS dim" if dim else ''
+    scoped = (f"WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.parent_id, e.doc, e.kind, p.span{dim_col} FROM events e JOIN (VALUES {', '.join(p['spans'])}) p(span, range) "
               f"ON e.ts <@ p.range {p['parent']}{w}), ")
 
     def arm(cat):
@@ -459,8 +463,8 @@ def render_twolevel(p):
             c = 'rm.derived_cat' if cat else 'NULL::text'
         else:
             lk, c = '', 'o.cat' if cat else 'NULL::text'
-        g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (f', {c}' if cat else '')
-        return (f"SELECT s.id, s.parent_id, s.kind, s.span, {c} AS category, avg(o.score) AS score, count(s.id) AS n FROM scoped s "
+        g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (', s.dim' if dim else '') + (f', {c}' if cat else '')
+        return (f"SELECT s.id, s.parent_id, s.kind, s.span, {'s.dim, ' if dim else ''}{c} AS category, avg(o.score) AS score, count(s.id) AS n FROM scoped s "
                 f"CROSS JOIN LATERAL jsonb_to_recordset(s.doc -> 'parts') o(cat text, dir_a text, score float8) {lk} {g}")
 
     flag_a = f"flag_a AS ({arm(True)}{' UNION ALL ' + arm(False) if p['total'] else ''}) "
@@ -471,8 +475,9 @@ def render_twolevel(p):
         sql = sql.replace('FROM sp', 'FROM sp').replace('(score)', '(m.score)').replace('sum(n)', 'sum(m.n)').replace('count(DISTINCT id)', 'count(DISTINCT m.id)') \
                  .replace("coalesce(category,", "coalesce(m.category,")
     else:
-        sql = (scoped + flag_a + "SELECT coalesce(category, 'all_cats') AS category, span, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, "
-               'count(DISTINCT id) AS ids, count(id) AS idn, count(DISTINCT parent_id) AS parents FROM flag_a GROUP BY category, span ORDER BY 1, 2')
+        sql = (scoped + flag_a + f"SELECT coalesce(category, 'all_cats') AS category, span{', dim' if dim else ''}, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, "
+               f"count(DISTINCT id) AS ids, count(id) AS idn, count(DISTINCT parent_id) AS parents FROM flag_a GROUP BY category, span{', dim' if dim else ''} "
+               f"ORDER BY 1, 2{', 3' if dim else ''}")
     return sql, True
 
 
