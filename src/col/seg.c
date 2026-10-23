@@ -647,6 +647,8 @@ zone_arrays(SiftColSegment *seg, int col)
 	SegPriv    *pv = PRIV(seg);
 	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
 
+	if (pv->zones[col] == NULL && HEAD_CACHED())
+		pv->zones[col] = sift_cseg_zones_find(seg, col);
 	if (pv->zones[col] == NULL)
 	{
 		const SiftColDef *def = &seg->schema->cols[col];
@@ -655,7 +657,8 @@ zone_arrays(SiftColSegment *seg, int col)
 					off;
 		Size		sz = zone_block_size(def, seg->nsb);
 		char	   *blk;
-		ZoneArrays *z = MemoryContextAllocZero(seg->mcxt, sizeof(ZoneArrays));
+		MemoryContext cx = AllocSetContextCreate(seg->mcxt, "sift cache segment zones", ALLOCSET_SMALL_SIZES);
+		ZoneArrays *z = MemoryContextAllocZero(cx, sizeof(ZoneArrays));
 
 		seg_read(seg, s->off, sizeof(hdr), hdr);
 		if (hdr[0] != ZONES_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
@@ -664,7 +667,7 @@ zone_arrays(SiftColSegment *seg, int col)
 		off = tab[col];
 		if (off % 8 != 0 || off + sz > s->len)
 			corrupt(seg, "The zones of leaf %d (%llu, %zu bytes) lie outside the section.", col, ULL(off), sz);
-		blk = MemoryContextAlloc(seg->mcxt, sz);
+		blk = MemoryContextAlloc(cx, sz);
 		seg_read(seg, s->off + off, sz, blk);
 		z->min = (const int64 *) blk;
 		z->max = z->min + seg->nsb;
@@ -677,6 +680,8 @@ zone_arrays(SiftColSegment *seg, int col)
 		for (uint32 u = 0; u < seg->nsb; u++)
 			z->any_ovf |= (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0, z->any_inl |= (z->flags[u] & SIFT_COLZ_INLINE) != 0;
 		pv->zones[col] = z;
+		if (HEAD_CACHED())
+			sift_cseg_zones_keep(seg, col, cx, z);
 	}
 	return pv->zones[col];
 }
