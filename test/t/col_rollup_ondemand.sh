@@ -58,7 +58,7 @@ sleep 1
 refresh_panics() { ! sql primary "SELECT sift.col_rollup_refresh('o_col')" >/dev/null 2>&1; }
 check "the refresh PANICs" refresh_panics
 for _ in $(seq 300); do [[ -f $(dir primary)/data/postmaster.pid ]] || break; sleep 0.1; done
-sed -i '/^sift.test_col_rollup_panic/d' "$(dir primary)/data/postgresql.conf"
+sed_i '/^sift.test_col_rollup_panic/d' "$(dir primary)/data/postgresql.conf"
 check "the primary restarts through crash recovery" node_start primary
 check "the index verifies after the crash" test -z "$(sql primary "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "its segments are those it had" test "$(sql primary "$SEGS")" == "$BEFORE"

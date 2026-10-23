@@ -13,7 +13,7 @@
 #                                                       freezes and drops them
 #
 # Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
-# to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
+# to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
 # the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
@@ -35,6 +35,8 @@ build() {
 	local rev dir major
 	major=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 	((major == 18)) || skip "PostgreSQL $major: 17 cannot hold two builds (no extension_control_path) and the released libraries do not build on 19"
+	# their CPU probes are x86 only: 3.2.0 is the first release that builds elsewhere
+	[[ $(uname -m) == x86_64 || $(printf '%s\n' "${OLD_REF#v}" 3.2.0 | sort -V | head -1) == 3.2.0 ]] || skip "$OLD_REF builds on x86-64 only (AArch64 since 3.2.0)"
 	if [[ -n ${SIFT_OLD_SRC:-} ]]; then
 		rev=$(git -C "$SIFT_OLD_SRC" rev-parse --short HEAD 2>/dev/null || echo src)
 	else
@@ -45,7 +47,7 @@ build() {
 		mkdir -p "$dir/src"
 		# the tests that need the same older release start together on two lanes: the second waits for the build of the first
 		exec 9>"$dir.lock"
-		flock 9
+		! command -v flock >/dev/null || flock 9
 		if [[ ! -f $dir/root/.flavor ]]; then
 			if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
 			# the release flavor, the library users get (not the ASan one of a sanitized run: the older server does not preload the runtime); its own

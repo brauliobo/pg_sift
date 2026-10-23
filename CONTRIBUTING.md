@@ -10,7 +10,7 @@ scripts/ci.sh affected              # the same, only the jobs your diff against 
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
-`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only.
+`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only. Where a host cannot run a stage it says so and skips it: the Perl TAP tests (Homebrew's PostgreSQL has no `src/test/perl`), the compatibility tests that build a release older than 3.2.0 (x86-64 only) and the benchmark generators (Python 3.12).
 
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
