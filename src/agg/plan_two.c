@@ -492,7 +492,7 @@ distinct_key(SiftAggSpec *s, Aggref *oa, ArmIn *arms, int narms, int col)
 	return sgc->eqop == s->key[key].eqop && oa->inputcollid == s->key[key].collid ? key : -1;
 }
 
-/* The outer aggregate: avg/sum of a float8 or int8 column of the arms, count(DISTINCT id or a key), count(*), with a FILTER of comparisons of columns */
+/* The outer aggregate: avg/sum of a float8 or int8 column of the arms, count(DISTINCT id or a key), count(*) and count(id), with a FILTER of comparisons of columns */
 static bool
 outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int narms, SiftAggAgg *out)
 {
@@ -531,13 +531,20 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 	}
 	if (fid == F_COUNT_ && oa->aggdistinct == NIL)
 		out->kind = SAA_O_COUNT_STAR;
-	else if (fid == F_COUNT_ANY && oa->aggdistinct != NIL)
+	else if (fid == F_COUNT_ANY)
 	{
 		bool		ids = true;
 
 		for (int k = 0; k < narms; k++)
 			ids &= equal(list_nth(arms[k].cols, out->col), arms[k].id);
-		if (ids)
+		/* the id of a row is never NULL: count(id) counts the inner groups, as count(*) does */
+		if (oa->aggdistinct == NIL)
+		{
+			if (!ids)
+				return false;
+			out->kind = SAA_O_COUNT_STAR;
+		}
+		else if (ids)
 			out->kind = SAA_O_COUNT_ROWS;
 		else if ((out->slot = distinct_key(s, oa, arms, narms, out->col)) >= 0)
 			out->kind = SAA_O_COUNT_KEY;
