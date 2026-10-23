@@ -257,26 +257,30 @@ sift_cseg_lens_find(SiftColSegment *seg, uint32 unit, int col, MemoryContext are
 }
 
 void
-sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, const uint32 *eoff)
+sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, uint32 nelems)
 {
 	DictKey		k;
 	DictEnt    *e;
 	MemoryContext cx;
 	SiftCLens  *l;
-	Size		size = sizeof(SiftCLens) + (SIFT_CC_CAP32(n) + 1 + SIFT_CC_CAP32(n + 1)) * sizeof(uint32);
+	uint16	   *kept;
+	Size		size = sizeof(SiftCLens) + (Size) n * sizeof(uint16);
 
 	if (cache == NULL)
 		cache_init();
 	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
 		return;
+	for (uint32 i = 0; i < n; i++)
+		if (counts[i] > PG_UINT16_MAX)
+			return;
 	dict_key(&k, seg, col, unit);
 	cx = AllocSetContextCreate(cache_cx, "sift cache segment lengths", ALLOCSET_SMALL_SIZES);
-	l = MemoryContextAllocZero(cx, size);
-	l->counts = (uint32 *) (l + 1) + 1;		/* the slot before the counts is the one the running ends are summed from */
-	l->eoff = l->counts + SIFT_CC_CAP32(n);
-	l->nelems = eoff[n];
-	memcpy(l->counts, counts, n * sizeof(uint32));
-	memcpy(l->eoff, eoff, (n + 1) * sizeof(uint32));
+	l = MemoryContextAlloc(cx, size);
+	kept = (uint16 *) (l + 1);
+	for (uint32 i = 0; i < n; i++)
+		kept[i] = (uint16) counts[i];
+	l->counts = kept;
+	l->nelems = nelems;
 	CDICT_STAT(loads);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);
 	e->cx = cx;
