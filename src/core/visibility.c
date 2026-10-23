@@ -89,13 +89,17 @@ sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
 		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
 		const char *map = PageGetContents(BufferGetPage(buf));
 		uint32		len = Min(left, VM_MAPSIZE);
+		uint32		off = 0;
 
-		for (uint32 off = 0; off < len; off += sizeof(uint64))
+		/* the all-visible bit of each page, not its all-frozen bit; the contents of a page are 8-aligned */
+		for (; off + sizeof(uint64) <= len; off += sizeof(uint64))
+			count += sift_pc64(*(const uint64 *) (map + off) & UINT64CONST(0x5555555555555555));
+		if (off < len)
 		{
 			uint64		w = 0;
 
-			memcpy(&w, map + off, Min(len - off, sizeof(w)));
-			count += sift_pc64(w & UINT64CONST(0x5555555555555555));	/* the all-visible bit of each page, not its all-frozen bit */
+			memcpy(&w, map + off, len - off);
+			count += sift_pc64(w & UINT64CONST(0x5555555555555555));
 		}
 		ReleaseBuffer(buf);
 		left -= len;
