@@ -486,6 +486,7 @@ the `orders` table of the store benchmark with two derived columns (`segment_id`
 bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
 bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
 bench/bench cases --docs --rows 1000000    # the published size: docs/results/cases.tsv and the generated blocks (steps/cases.sh)
+bench/bench cases --scales 1,10,100 --docs # the curve: every case at 1x, 10x and 100x of --rows (20 million orders at 100x of 200,000), the planner's plan at each size, docs/results/cases-scale.tsv and the block "What got faster in 3.3, by size" with the crossover of each case; a host with the memory and the hours: `bench/bench refresh --stages scale --budget 0`
 bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict]   # the coverage gate (scripts/check-bench-cases.sh), no measurement
 ```
 
