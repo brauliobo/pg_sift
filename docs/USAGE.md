@@ -677,7 +677,9 @@ of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 h
 `ALTER INDEX ... SET (cluster_advice = off)`.
 
 Rewriting the table: `CLUSTER` and `VACUUM FULL` lock it exclusively and work for heap tables with every sift index and for a `sift_table`. `pg_repack` (online, `--order-by`, 1.5.3 tested on PostgreSQL 18) rebuilds the
-`sift`, `sift_col` indexes and keeps their options and the results of the scans, also under concurrent writes, as a non-superuser table owner and on a standby; it needs a primary key or a not-null unique index. It
+`sift`, `sift_col` indexes and keeps their options and the results of the scans, also under concurrent writes, as a non-superuser table owner and on a standby; it needs a primary key or a not-null unique index. Its copy is an `INSERT .. SELECT .. ORDER BY`, which
+fills the tail of a page through the free space map, so a table of rows of unequal width keeps a small share of rows out of place (0.5% of the rows of a test table of 900,000 wide rows, enough to double the units of a key and
+year window); `CLUSTER`, `VACUUM FULL` and `CREATE TABLE .. AS .. ORDER BY` write the exact order. It
 cannot rewrite a `sift_table` (it swaps in a heap copy): an event trigger refuses it, and `pg_repack --only-indexes` is fine. `pg_squeeze` only supports heap tables.
 After any of them run `VACUUM (ANALYZE) t` (`pg_repack` runs only the `ANALYZE`).
 
