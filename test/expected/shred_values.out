@@ -578,11 +578,6 @@ FROM (VALUES (1, '{"items":[{"category":"x","qty":1},{"category":"y","qty":2},{"
   6 |                 1
 (6 rows)
 
--- the shared database of a plain installcheck goes on with the next test
-SET client_min_messages = warning;
-DROP SCHEMA public CASCADE;
-CREATE SCHEMA public;
-GRANT USAGE ON SCHEMA public TO PUBLIC;
-RESET client_min_messages;
+DROP FUNCTION sh(jsonb, text, int, int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
