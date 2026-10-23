@@ -1536,6 +1536,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				spill,
 				table,
 				groups,
+				share,
 				entries,
 				key_ops,
 				ids;
@@ -1591,7 +1592,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* each process holds a table of its own (and spills it) */
 	groups = group_count(c, s);
 	/* a top-N reads a fraction of the units, and makes the ids of those */
-	spill = group_spill_cost(s, groups, Min(ids, entries / (s->nworkers + 1)) * (s->topn ? c->topn_frac : 1.0), k.agg_rows / (s->nworkers + 1), &table);
+	/* a serial scan that finishes the groups of a partition when its units end (part_flush_on) holds the table of one partition at a time */
+	share = s->part_final && s->nparts > 0 && s->nworkers == 0 ? s->nparts : 1;
+	spill = group_spill_cost(s, groups / share, Min(ids, entries / (s->nworkers + 1)) * (s->topn ? c->topn_frac : 1.0) / share, k.agg_rows / (s->nworkers + 1), &table);
 	k.scan_cost += spill;
 	agg_arm_spill(spill, groups, table);
 	agg_arm_vet(vet, vis * 100.0);

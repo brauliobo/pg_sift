@@ -70,7 +70,7 @@ spill_begin(AggExec *ex)
 {
 	AggSpill   *sp;
 
-	if (!sift_aggspec_spillable(ex->spec) || ex->par != NULL || ex->be != &sift_agg_cpu_backend)
+	if (!sift_aggspec_spillable(ex->spec) || ex->par != NULL || part_flush_on(ex) || ex->be != &sift_agg_cpu_backend)
 		return;
 	sp = MemoryContextAllocZero(ex->cxt, sizeof(AggSpill));
 	sp->budget = get_hash_memory_limit();
