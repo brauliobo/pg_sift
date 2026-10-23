@@ -1,5 +1,5 @@
--- The small-set summary of a leaf in every unit (column format minor 10, docs/COL.md 2.13): an index with the option set_columns keeps, per unit and
--- leaf, the distinct keys exactly up to set_limit and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
+-- The summary of the keys of a leaf in every unit (column format minor 10, docs/COL.md 2.13): an index with the option key_columns keeps, per unit and
+-- leaf that is not an int2, int4 or date column (those keep a key list or bitmap: col_key_presence), the distinct keys exactly up to 32 and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
 -- match where the zone (a minimum and a maximum) cannot tell. Written only under sift.col_format_minor = 10 and for the leaves of the option, so that
 -- an older library keeps reading what an index without it, or under a lower setting, writes; read back by the decoder that refuses a damaged summary;
 -- recomputed by sift.col_verify; kept by promotion, merge and VACUUM; counted in EXPLAIN.
@@ -13,7 +13,7 @@ SET statement_timeout = '60s';
 -- range and says nothing); parent_id: scattered over 5,000 values (a unit holds about 1,100 of them); cat: one of 3,000 texts for each run of 25 rows (about
 -- a thousand in the dictionary, so the 256 bits of the zone cannot tell them apart); big: wide offsets; id: ascending (every unit holds a run of
 -- consecutive ids)
-CREATE TABLE ss (id int, kind int, parent_id int, cat text, big bigint, val int, pad text) WITH (autovacuum_enabled = off);
+CREATE TABLE ss (id int, kind bigint, parent_id bigint, cat text, big bigint, val int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE ss ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ss
 SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000,
@@ -28,9 +28,9 @@ INSERT INTO ss_b SELECT * FROM ss ORDER BY id;
 -- the minor of the segments: 4 (this schema has no jsonb paths) without the option or under a lower setting, 10 with both, and the option writes nothing else
 CREATE INDEX ss_off ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 7;
-CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, set_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
-CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, set_columns = 'id, kind, parent_id, cat, big', set_limit = 16, cube_minmax = false, superunit = 0);
+CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
 SELECT 'ss_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ss_off')
 UNION ALL SELECT 'ss_seven', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_seven')
 UNION ALL SELECT 'ss_on', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_on') ORDER BY 1;
@@ -44,12 +44,12 @@ SELECT bytes > 0 AS sets_take_bytes FROM sift.col_sections('ss_on') WHERE sectio
 SELECT pg_relation_size('ss_on') > pg_relation_size('ss_off') AS index_is_larger;
 
 -- the options are checked
-CREATE INDEX ss_bad1 ON ss USING sift_col (id, kind) WITH (set_columns = 'nosuch', cube_minmax = false, superunit = 0);
-CREATE INDEX ss_bad2 ON ss USING sift_col (id, kind, val) WITH (set_columns = 'kind,,val', cube_minmax = false, superunit = 0);
-CREATE INDEX ss_bad3 ON ss USING sift_col (id, kind, big) WITH (set_limit = 1, set_columns = 'kind', cube_minmax = false, superunit = 0);
-CREATE INDEX ss_bad4 ON ss USING sift_col (id, kind, big) WITH (set_limit = 2000, set_columns = 'kind', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad1 ON ss USING sift_col (id, kind) WITH (key_columns = 'nosuch', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad2 ON ss USING sift_col (id, kind, val) WITH (key_columns = 'kind,,val', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad3 ON ss USING sift_col (id, kind, big) WITH (key_columns = 'auto: nosuch', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad4 ON ss USING sift_col (id, kind, big) WITH (key_columns = 'kind, auto', cube_minmax = false, superunit = 0);
 CREATE TABLE ss_f (id int, f float8);
-CREATE INDEX ss_bad5 ON ss_f USING sift_col (id, f) WITH (set_columns = 'f', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad5 ON ss_f USING sift_col (id, f) WITH (key_columns = 'f', cube_minmax = false, superunit = 0);
 DROP TABLE ss_f;
 
 -- three ways: the summaries on, the zones alone (the same rows in a table of their own), the plain plan; the units the summaries alone skipped
@@ -229,12 +229,12 @@ FROM sift._test_col_set_damage('ss_on', 6);
 
 -- an index of the old kind takes the option later: the units written before keep their minor and have no summary, the ones after are minor 10, a merge
 -- writes one segment of minor 10; the option switched off, the next merge writes the old minor; under a lower setting nothing of it is written
-CREATE TABLE sa (id int, kind int, parent_id int, val int, pad text) WITH (autovacuum_enabled = off);
+CREATE TABLE sa (id int, kind bigint, parent_id bigint, val int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sa ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(1, 12000) g;
 CREATE INDEX sa_idx ON sa USING sift_col (id, kind, parent_id, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sa_idx');
-ALTER INDEX sa_idx SET (set_columns = 'kind, parent_id');
+ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
 INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(12001, 24000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
@@ -250,14 +250,14 @@ SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
 SELECT blobs > 0 AS has_summaries FROM sift._test_col_set_damage('sa_idx', 3);
 SELECT sift.col_verify('sa_idx', true);
-ALTER INDEX sa_idx SET (set_columns = '');
+ALTER INDEX sa_idx SET (key_columns = '');
 INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(24001, 28000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
 SELECT blobs AS summaries FROM sift._test_col_set_damage('sa_idx', 3);
 SELECT sift.col_verify('sa_idx', true);
-ALTER INDEX sa_idx SET (set_columns = 'kind, parent_id');
+ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
 SET sift.col_format_minor = 6;
 INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(28001, 30000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
@@ -267,10 +267,10 @@ RESET sift.col_format_minor;
 SELECT sift.col_verify('sa_idx', true);
 
 -- with the rollup of the rows (minor 9) on one index: the segments are minor 10, verify, and the answers are the heap's
-CREATE TABLE sr (id int, a int, b int, k int, val numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
+CREATE TABLE sr (id int, a int, b int, k bigint, val numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sr SELECT g, g % 9, g % 7, g * 7919 % 5000, g % 1000 / 8.0, repeat('x', 1000) FROM generate_series(1, 30000) g;
-CREATE INDEX sr_idx ON sr USING sift_col (id, a, b, k, val) WITH (rollup_dims = 'a, b', set_columns = 'k', cube_minmax = false, superunit = 0);
+CREATE INDEX sr_idx ON sr USING sift_col (id, a, b, k, val) WITH (rollup_dims = 'a, b', key_columns = 'k', cube_minmax = false, superunit = 0);
 VACUUM ANALYZE sr;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sr_idx');
 SELECT sift.col_verify('sr_idx', true);
@@ -291,7 +291,7 @@ INSERT INTO su SELECT g, CASE WHEN g % 53 = 0 THEN NULL ELSE md5(((hashint4(g) &
 CREATE TABLE su_b (LIKE su) WITH (autovacuum_enabled = off);
 ALTER TABLE su_b ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO su_b SELECT * FROM su;
-CREATE INDEX su_on ON su USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, set_columns = 'u', cube_minmax = false, superunit = 0);
+CREATE INDEX su_on ON su USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, key_columns = 'u', cube_minmax = false, superunit = 0);
 CREATE INDEX su_off ON su_b USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 VACUUM ANALYZE su;
 VACUUM ANALYZE su_b;

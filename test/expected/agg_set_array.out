@@ -15,6 +15,9 @@ SELECT i,
 FROM generate_series(1, 400000) i;
 CREATE INDEX ev_entity ON ev (entity_id, day);
 CREATE INDEX ev_col ON ev USING sift_col (entity_id, small_id, big_id, kind, amount, day);
+NOTICE:  sift_col index ev_col keeps the keys of entity_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 60264 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: small_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- the plan of a statement, EXPLAIN without the numbers
 CREATE FUNCTION plan_kind(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -1234,6 +1234,9 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 					memcpy(copy, orig, len);
 					if (copy[i] == vals[k])
 						continue;
+					/* a list read as an exact summary of the same layout is one, and a correct one while it holds at most SIFT_CSET_LIMIT_MAX keys */
+					if (i == 0 && orig[0] == SIFT_CSET_PLIST && vals[k] == SIFT_CSET_EXACT)
+						continue;
 					copy[i] = vals[k];
 					damaged++;
 					if (sift_cset_open(copy, len, &s))
@@ -1254,14 +1257,14 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 					case 0: copy[2] = 1; break;							/* flag bits */
 					case 1: copy[3] = 0x80; break;
 					case 2: copy[0] = 0; break;							/* kind */
-					case 3: copy[0] = 4; break;
+					case 3: copy[0] = 5; break;
 					case 4: memcpy(copy + 4, &n, 4); break;				/* no keys */
 					case 5: n = UINT32_MAX; memcpy(copy + 4, &n, 4); break;	/* a count that overflows 32 bits when multiplied */
 					case 6: if (orig[0] == SIFT_CSET_PRES) continue; copy[1] = 0; break;							/* width or probes 0 */
-					case 7: copy[1] = orig[0] == SIFT_CSET_EXACT ? 3 : 17; break;
+					case 7: copy[1] = orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST ? 3 : 17; break;
 					case 8: memcpy(copy + 8, &big, 8); break;			/* the bits of a filter; the base of an exact set (whose first offset then is not its smallest key) is not damage */
 					case 9:
-						if (orig[0] == SIFT_CSET_EXACT)					/* unsorted: the first two offsets swapped, the larger first */
+						if (orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST)	/* unsorted: the first two offsets swapped, the larger first */
 						{
 							if (orig[1] > 8 || len < SIFT_CSET_HDR + 2 * orig[1])
 								continue;
@@ -1276,7 +1279,7 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 						named_accepted += sift_cset_open(copy, len - 1, &s);
 						continue;
 				}
-				if (f == 8 && orig[0] == SIFT_CSET_EXACT)
+				if (f == 8 && (orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST))
 					continue;
 				named++;
 				named_accepted += sift_cset_open(copy, len, &s);

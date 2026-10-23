@@ -75,7 +75,7 @@ struct SiftColSegWriter
 	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
 	bool		anysets;
-	bool		anypres;		/* some unit keeps the presence of a leaf (minor 15) */
+	bool		anypres;		/* some unit keeps a key list or bitmap of a leaf (minor 15) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
@@ -226,7 +226,7 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			memmove(w->pagg.rollup, w->pagg.rollup + 1, w->pagg.nrollups * sizeof(SiftCPaggRollup));
 		}
 	}
-	/* a leaf asks for its small-set summary, its key presence or its sorted run: minor 10, 15 or 13 when some unit gets one (sift_colw_finish) */
+	/* a leaf asks for its keys (a summary, or a key list or bitmap) or its sorted run: minor 10, 15 or 13 when some unit gets one (sift_colw_finish) */
 	if (w->setting < SIFT_COL_FORMAT_PRESENCE)
 		memset(w->pagg.pres, 0, sizeof(w->pagg.pres));
 	if (w->setting >= SIFT_COL_FORMAT_SETS && w->set == NULL)
@@ -296,35 +296,42 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols)
 }
 
 /*
- * The small-set summary of each leaf that asks for one, from the keys of the unit just encoded (in the segment's codes for a dictionary leaf; none for an
- * inline one). A leaf of key_presence keeps all its keys as a bitmap where that takes a few percent of the unit's bytes (unit_bytes), else its set summary.
+ * The keys of each leaf of key_columns, from the keys of the unit just encoded (in the segment's codes for a dictionary leaf; none for an inline one): all of
+ * them as a bitmap or a list where that takes the share of the unit's bytes (unit_bytes) that the leaves left, else, for a leaf the user named, a summary
+ * (up to SIFT_CSET_LIMIT keys exactly, a bloom filter beyond). A leaf the build chose (keyauto) has no summary: it was chosen for its lists.
  */
 static void
 add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 {
 	int64	   *keys = NULL;
+	Size		left = unit_bytes / 100 * SIFT_CSET_PRES_PCT;	/* the key lists and bitmaps of all the leaves of a unit share this, the first leaves first */
 
 	for (int c = 0; w->set && c < w->schema->ncols; c++)
 	{
 		SetAcc	   *a = &w->set[c];
 		uint32		nd;
+		Size		had = a->blobs.len;
 
 		if (a->blobs.data == NULL)
 			continue;
 		a->off[w->nsb] = a->blobs.len;
 		if (cols[c].ready && cols[c].n > 1)
 		{
-			keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
-			nd = sift_cset_keys(&cols[c], keys);
-			if (w->pagg.pres[c] && nd > 0 && sift_cset_build_pres(keys, nd, unit_bytes / 100 * SIFT_CSET_PRES_PCT, &a->blobs))
+			if (w->pagg.pres[c] && sift_cset_build_pres(&cols[c], left, &a->blobs))
 			{
+				left -= a->blobs.len - had;
 				a->any = w->anysets = w->anypres = true;
 				a->kinds |= SETS_PRES;
 			}
-			else if (w->pagg.set[c] && sift_cset_build(keys, nd, w->pagg.set_limit ? w->pagg.set_limit : SIFT_CSET_LIMIT, &a->blobs))
+			else if (w->pagg.set[c] && !w->pagg.keyauto)
 			{
-				a->any = w->anysets = true;
-				a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CSET_EXACT ? SETS_EXACT : SETS_BLOOM;
+				keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
+				nd = sift_cset_keys(&cols[c], keys);
+				if (sift_cset_build(keys, nd, SIFT_CSET_LIMIT, &a->blobs))
+				{
+					a->any = w->anysets = true;
+					a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CSET_EXACT ? SETS_EXACT : SETS_BLOOM;
+				}
 			}
 		}
 		a->off[w->nsb + 1] = a->blobs.len;

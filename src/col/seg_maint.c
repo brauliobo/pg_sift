@@ -546,7 +546,7 @@ verify_set_kinds(SiftColSegment *seg)
 			const uint8 *blob = sift_cseg_set(seg, c, u, &len);
 
 			if (blob != NULL && len > 0)
-				have |= blob[0] == SIFT_CSET_EXACT ? SETS_EXACT : blob[0] == SIFT_CSET_BLOOM ? SETS_BLOOM : SETS_PRES;
+				have |= blob[0] == SIFT_CSET_EXACT ? SETS_EXACT : blob[0] == SIFT_CSET_BLOOM ? SETS_BLOOM : SETS_PRES; /* PRES and PLIST */
 		}
 		if (have != want)
 			corrupt(seg, "The record of the small-set summaries of leaf %d lists kinds %u, its units hold %u.", c, want, have);

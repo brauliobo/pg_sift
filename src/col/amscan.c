@@ -926,7 +926,7 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 }
 
 /*
- * The share of the units the small-set summaries (set_columns, docs/COL.md 2.13) of the columns an equality or an IN list tests leave, as SiftAgg counts it
+ * The share of the units the small-set summaries (key_columns, docs/COL.md 2.13) of the columns an equality or an IN list tests leave, as SiftAgg counts it
  * (plan_cost.c set_kept): a test on the share s of a leaf's distinct values (the clause's selectivity) keeps a unit that holds n keys of it with the
  * probability 1 - exp(-s * n); a unit without a summary stays, and a summary that keeps nearly every unit is not counted.
  */

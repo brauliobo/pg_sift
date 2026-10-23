@@ -2,7 +2,7 @@
 """col-scan-table.py [--write docs/COL-SCAN.md]: the "which btree can be dropped" table of docs/COL-SCAN.md, from docs/results/col-scan.tsv and
 col-scan-space.tsv. Without --write it prints the table; with it, it replaces the text between the two table markers of the file.
 Times are the planner's pick, execution time in ms (the first query of a new backend, and the median of the last three of 24 runs of one session); sift_col is
-the index with the operator classes and set_columns. Regenerate the data with bench/col_scan.py."""
+the index with the operator classes and key_columns. Regenerate the data with bench/col_scan.py."""
 import csv
 import os
 import sys
@@ -41,8 +41,8 @@ def load(column="exec_median_ms"):
 
 
 def pick(t, n, key, index):
-    """the planner's pick on the index; the set_columns index where it was measured, else the classes' index"""
-    for idx in ("sift_col classes + set_columns", "sift_col classes"):
+    """the planner's pick on the index; the key_columns index where it was measured, else the classes' index"""
+    for idx in ("sift_col classes + key_columns", "sift_col classes"):
         v = t.get((n, key, idx, "planner")) if index == "sift" else None
         if v is not None:
             return v

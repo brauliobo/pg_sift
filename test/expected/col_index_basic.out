@@ -361,6 +361,9 @@ SELECT count(*) AS overflowed FROM sift._test_col_read('jl_idx', 0, '') WHERE va
 
 DROP TABLE jl;
 CREATE INDEX o_col ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty);
+NOTICE:  sift_col index o_col keeps the keys of store_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 432 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX o_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT leaves, segments, buffers, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
  leaves | segments | buffers | rows_match 
 --------+----------+---------+------------
@@ -489,8 +492,14 @@ SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_wbuf_same FR
 CREATE INDEX o_bad ON orders USING sift_col (store_id) WITH (compression = 'bogus');
 ERROR:  invalid compression option "bogus": unknown compression: expected auto, none, lz4[:N], zstd[:N] or for, delta, rle, dict, alp joined by '+'
 CREATE INDEX o_none ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty) WITH (compression = 'none');
+NOTICE:  sift_col index o_none keeps the keys of store_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 432 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX o_none SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX o_mixed ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty)
 	WITH (compression = 'zstd:3; status=lz4; amount=for+zstd; express=rle');
+NOTICE:  sift_col index o_mixed keeps the keys of store_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 432 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX o_mixed SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT sift.col_verify('o_none', true), sift.col_verify('o_mixed', true);
  col_verify | col_verify 
 ------------+------------
@@ -725,6 +734,9 @@ COMMIT;
 -- Partial and expression indexes
 -- ---------------------------------------------------------------------------------------------------------
 CREATE INDEX o_partial ON orders USING sift_col (store_id, status) WHERE express;
+NOTICE:  sift_col index o_partial keeps the keys of store_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 400 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX o_partial SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT sift.col_verify('o_partial', true);
  col_verify 
 ------------

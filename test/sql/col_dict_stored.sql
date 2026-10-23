@@ -149,7 +149,7 @@ SET max_parallel_maintenance_workers = 0;
 CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
 CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = off);
 CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops);
-CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (set_columns = 's');
+CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (key_columns = 's');
 CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 'u');
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (return_columns = 's, v');
 CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = off);

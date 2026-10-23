@@ -40,8 +40,11 @@ extern bool sift_col_rollup_on_demand;
 extern bool sift_cluster_advice;
 extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
-/* A NOTICE for each cap of the options (cube(...) groups per unit, set_limit) that leaves 10% of the units or more without a histogram or the keys of a set; after a build and a refresh */
+/* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
 extern void sift_col_report_caps(Relation index);
+/* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
+extern bool sift_col_auto_keys(Relation heap, Relation index);
+extern void sift_col_auto_keys_report(Relation index);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
@@ -55,13 +58,12 @@ extern void sift_col_validate_preagg(const char *value);
 extern void sift_col_validate_rollup(const char *value);
 extern void sift_col_validate_rollup_dims(const char *value);
 extern void sift_col_validate_calendar_columns(const char *value);
-extern void sift_col_validate_set_columns(const char *value);
+extern void sift_col_validate_key_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);
 /* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
 extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);
-extern void sift_col_validate_key_presence(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */
