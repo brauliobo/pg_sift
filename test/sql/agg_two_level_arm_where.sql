@@ -94,8 +94,17 @@ END $$;
 SELECT same(report()) AS third_arm_unfiltered;
 -- the first arm is the one without WHERE
 SELECT same(report('true', 'CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL', 'CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL')) AS first_arm_unfiltered;
--- a NOT NULL test of the lookup itself makes its outer join an inner one in the arms that have it: they are not arms of one scan
-SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL'), scan => false) AS join_types_differ;
+-- a NOT NULL test of the lookup itself makes its outer join an inner one in the arms that have it: the scan keeps the outer join (a row the lookup has no
+-- row for is a tuple of NULLs, which the third arm counts) and the other arms test the NOT NULL
+SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS join_types_differ;
+SELECT same(report('true', 'rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS inner_in_the_last_two;
+SELECT same(report('rm.derived_cat IS NOT NULL', 'true', 'rm.derived_cat IS NOT NULL')) AS inner_in_the_ends;
+SELECT same(report('rm.derived_cat IS NOT NULL AND o.score > 2', 'true', 'true')) AS inner_in_one_with_a_condition;
+SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS inner_in_all;
+-- the number of tuples the lookup has no row for: the third arm counts them, the others do not
+SELECT same($q$SELECT count(*) FILTER (WHERE rm.derived_cat IS NULL) AS unmatched, count(*) AS tuples
+	FROM events s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, dir_a text, score float8)
+	LEFT JOIN LATERAL (SELECT derived_cat FROM lookup m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true$q$) AS unmatched_exist;
 -- every arm has the same WHERE: it is the scan's
 SELECT same(report('CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL', 'CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL', 'CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL')) AS all_alike;
 SELECT same(report('true', 'true', 'true')) AS none;
@@ -119,6 +128,18 @@ SELECT same(report()) AS dirty_rows;
 SELECT same(report('CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL AND o.score > 2', 'CASE WHEN o.dir_a = ''p'' THEN o.cat ELSE rm.derived_cat END IS NOT NULL', 'o.dir_a = ''p''')) AS dirty_own_conditions;
 UPDATE lookup SET derived_cat = 'm9' WHERE cat = 'cat_1';
 SELECT same(report()) AS dirty_lookup;
+SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS dirty_join_types_differ;
+UPDATE lookup SET derived_cat = NULL WHERE cat = 'cat_3';
+SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS null_lookup_values;
+DELETE FROM lookup WHERE kind = 'k2';
+SELECT same(report('rm.derived_cat IS NOT NULL', 'rm.derived_cat IS NOT NULL')) AS missing_lookup_rows;
+
+-- a table joined by an outer join in one arm and an inner one in another is not a lateral LIMIT 1 child: they are not arms of one scan
+SELECT same($q$WITH flag_a AS (
+	    SELECT e.id, l.derived_cat AS category, count(*) AS n FROM events e LEFT JOIN lookup l ON l.kind = e.kind WHERE l.derived_cat IS NOT NULL GROUP BY e.id, l.derived_cat
+	    UNION ALL
+	    SELECT e.id, NULL::text, count(*) FROM events e LEFT JOIN lookup l ON l.kind = e.kind GROUP BY e.id)
+	  SELECT category, sum(n) AS n, count(DISTINCT id) AS ids FROM flag_a GROUP BY category$q$, scan => false) AS joined_table;
 
 -- an arm that does not join the lookup is not an arm of the same scan, and the refusal says which
 CREATE FUNCTION unlike() RETURNS text LANGUAGE sql AS $$

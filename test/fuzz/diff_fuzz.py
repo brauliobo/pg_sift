@@ -446,7 +446,9 @@ def gen_twolevel(r, ctx):
                 spine=r.choice([None, None, 'JOIN', 'LEFT JOIN']), spinesrc=r.choice(['TABLE buckets', "VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), (NULL, NULL, 'd'), ('k7', NULL, 'e')"]),
                 total=r.random() < 0.8, keys=[], aggs=[], having=[], ordered=True,
                 # a group key that holds a sub-select: each arm plans one of its own
-                dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]))
+                dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]),
+                # the total arm counts the rows the lookup has none for: its join is an outer one next to the inner joins of the arms with the NOT NULL test
+                unmatched=r.random() < 0.4)
 
 
 def render_twolevel(p):
@@ -459,7 +461,7 @@ def render_twolevel(p):
     def arm(cat):
         if p['lookup']:
             lk = (f"LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true "
-                  "WHERE rm.derived_cat IS NOT NULL")
+                  + ("" if p['unmatched'] and not cat else "WHERE rm.derived_cat IS NOT NULL"))
             c = 'rm.derived_cat' if cat else 'NULL::text'
         else:
             lk, c = '', 'o.cat' if cat else 'NULL::text'

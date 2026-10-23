@@ -239,15 +239,16 @@ scan_from(Node *n, FromScan *f)
 	}
 	else if (IsA(n, JoinExpr) && scan_preserved((JoinExpr *) n, f))
 		return;
-	else if (IsA(n, JoinExpr) && (((JoinExpr *) n)->jointype == JOIN_LEFT || ((JoinExpr *) n)->jointype == JOIN_SEMI ||
-								  ((JoinExpr *) n)->jointype == JOIN_ANTI) && right_table(((JoinExpr *) n)->rarg) != NULL)
+	else if (IsA(n, JoinExpr) && right_table(((JoinExpr *) n)->rarg) != NULL &&
+			 (((JoinExpr *) n)->jointype == JOIN_LEFT || ((JoinExpr *) n)->jointype == JOIN_SEMI || ((JoinExpr *) n)->jointype == JOIN_ANTI ||
+			  (((JoinExpr *) n)->jointype == JOIN_INNER && bms_is_member(right_table(((JoinExpr *) n)->rarg)->rtindex, f->outer))))
 	{
 		JoinExpr   *j = (JoinExpr *) n;
 		LeftJoin   *lj = palloc(sizeof(LeftJoin));
 		RangeTblRef *r = right_table(j->rarg);
 
 		scan_from(j->larg, f);
-		lj->kind = j->jointype == JOIN_LEFT ? SJ_LEFT : j->jointype == JOIN_SEMI ? SJ_SEMI : SJ_ANTI;
+		lj->kind = j->jointype == JOIN_SEMI ? SJ_SEMI : j->jointype == JOIN_ANTI ? SJ_ANTI : SJ_LEFT;
 		lj->rti = r->rtindex;
 		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
 		/* the WHERE of a pulled up sub-select that is the right side filters the table's rows before the join: more of the ON clause */
