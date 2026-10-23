@@ -10,7 +10,7 @@ INSERT INTO items SELECT i, 'k' || fz.h(i, 90) % 5, fz.h(i, 91) % 7 <> 3, CASE W
 FROM generate_series(0, 599) i;
 
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, grp int, a int, b int, ts date, amount int, big int8, val float8, num numeric(12,2),
-                     flag bool, doc jsonb, metrics jsonb, ref uuid, blob bytea, title text) WITH (autovacuum_enabled = false, fillfactor = 75);
+                     flag bool, doc jsonb, metrics jsonb, ref uuid, blob bytea, title text, wnum numeric(30,4), inum numeric) WITH (autovacuum_enabled = false, fillfactor = 75);
 CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF events LANGUAGE sql AS $$
 	SELECT i::int,
 	       CASE WHEN fz.h(i, 1 + salt) % 100 < 3 THEN NULL ELSE fz.h(i, 2 + salt) % 600 END,
@@ -40,10 +40,16 @@ CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF even
 	       CASE WHEN fz.h(i, 37 + salt) % 100 < 4 THEN NULL ELSE md5((fz.h(i, 38 + salt) % 3000)::text)::uuid END,
 	       CASE WHEN fz.h(i, 39 + salt) % 100 < 4 THEN NULL ELSE decode(substr(md5((fz.h(i, 40 + salt) % 2500)::text) || md5('x'), 1, 2 * (fz.h(i, 40 + salt) % 41)), 'hex') END,
 	       CASE WHEN fz.h(i, 41 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 41 + salt) % 100 < 7 THEN '' WHEN fz.h(i, 41 + salt) % 100 < 10 THEN 'item_' || fz.h(i, 42 + salt) % 4
-	            ELSE 'item_' || substr(md5((fz.h(i, 42 + salt) % 4000)::text), 1, 3 + fz.h(i, 43 + salt) % 20) END
+	            ELSE 'item_' || substr(md5((fz.h(i, 42 + salt) % 4000)::text), 1, 3 + fz.h(i, 43 + salt) % 20) END,
+	       -- sort keys of numbers the lanes hold in two words (more than 18 digits; a NaN is NULL plus a flag) and of a numeric image (spellings of one value, infinities)
+	       CASE WHEN fz.h(i, 44 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 44 + salt) % 100 < 6 THEN 'NaN'::numeric
+	            ELSE ((fz.h(i, 45 + salt) % 700)::numeric * 100000000000000 + fz.h(i, 46 + salt) % 9 / 10000.0) * CASE WHEN fz.h(i, 47 + salt) % 5 = 0 THEN -1 ELSE 1 END END,
+	       CASE WHEN fz.h(i, 48 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 48 + salt) % 100 < 6 THEN 'NaN'::numeric WHEN fz.h(i, 48 + salt) % 100 < 7 THEN 'Infinity'::numeric
+	            WHEN fz.h(i, 48 + salt) % 100 < 8 THEN '-Infinity'::numeric
+	            ELSE round((fz.h(i, 49 + salt) % 400)::numeric / 8, fz.h(i, 50 + salt) % 5) * CASE WHEN fz.h(i, 51 + salt) % 6 = 0 THEN 100000000000000000000 ELSE 1 END END
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO events SELECT * FROM fz.gen_events(1, @ROWS@, 0);
-CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title)
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum)
 	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8');
 
 -- first-row lookups: a unique key, a key some rows repeat, three versions of a key (unique with the version), versions with a NULL one

@@ -1,0 +1,150 @@
+-- ORDER BY a numeric of more than 18 digits (two integer lanes), a numeric of any precision (an image) or a numeric(38, s) at the edge of the lanes LIMIT n: the top-N
+-- reads the key through the dictionary of its datums, a NaN among them (numeric_cmp sorts it last, the lanes keep it as NULL plus an overflow flag), and compares
+-- the entries with numeric_cmp. Every query runs twice, the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows, spelling included
+-- (1.0 and 1.00 are equal and shown as stored), are compared in order, after the build, with more segments, with rows in the write buffer, after updates and
+-- deletes, a merge and VACUUM, with a dictionary cache that keeps almost nothing, with workers and a spilling sort, on a sift_table and a partitioned table.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+-- a: lanes, NULL, NaN, ties, negative, around zero; b: 38 digits at both edges; c: an image with spellings and infinities; d: five values in all the rows;
+-- pad makes a unit hold about 1300 rows, so that a segment has several units and the bar of one is a value of another
+CREATE TABLE nm (id int PRIMARY KEY, g int, a numeric(30,4), b numeric(38,0), c numeric, d numeric(25,2), pad text DEFAULT repeat('x', 1500));
+CREATE FUNCTION nm_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
+	INSERT INTO nm (id, g, a, b, c, d)
+	SELECT i, i % 7,
+		CASE WHEN i % 17 = 0 THEN NULL WHEN i % 101 = 0 THEN 'NaN' WHEN i % 5 = 0 THEN (hashint4(i) % 40)::numeric * 1000000000000000000000
+			 ELSE (hashint4(i) % 100000)::numeric * 100000000000000 + (i % 9) / 10000.0 - 3 END,
+		CASE WHEN i % 13 = 0 THEN NULL WHEN i % 103 = 0 THEN 99999999999999999999999999999999999999 WHEN i % 107 = 0 THEN -99999999999999999999999999999999999999
+			 ELSE (hashint4(i * 3) % 1000)::numeric * 10000000000000000000000000000000 END,
+		CASE WHEN i % 11 = 0 THEN NULL WHEN i % 109 = 0 THEN 'NaN' WHEN i % 113 = 0 THEN 'Infinity' WHEN i % 127 = 0 THEN '-Infinity'
+			 WHEN i % 4 = 0 THEN (hashint4(i * 5) % 500)::numeric WHEN i % 4 = 1 THEN (hashint4(i * 5) % 500)::numeric(40, 1)
+			 WHEN i % 4 = 2 THEN (hashint4(i * 5) % 500)::numeric(40, 3) ELSE (hashint4(i * 5) % 50000)::numeric / 1000000000000000000000000 END,
+		(i % 5)::numeric * 12345678901234567890.12
+	FROM generate_series(lo, hi) i $$;
+SELECT nm_rows(1, 6000);
+CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
+VACUUM (ANALYZE) nm;
+
+CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
+CREATE FUNCTION nm_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS nm_a, nm_b;
+	PERFORM nm_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE nm_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM nm_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE nm_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM nm_a EXCEPT ALL SELECT pos, r FROM nm_b) UNION ALL (SELECT pos, r FROM nm_b EXCEPT ALL SELECT pos, r FROM nm_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM nm_b);
+END $$;
+
+CREATE TABLE nm_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO nm_q VALUES
+	('a_asc',          $q$SELECT id, a FROM nm ORDER BY a, id LIMIT 25$q$),
+	('a_desc',         $q$SELECT id, a FROM nm ORDER BY a DESC, id LIMIT 25$q$),
+	('a_nulls_first',  $q$SELECT id, a FROM nm ORDER BY a NULLS FIRST, id LIMIT 25$q$),
+	('a_nulls_last',   $q$SELECT id, a FROM nm ORDER BY a DESC NULLS LAST, id DESC LIMIT 25$q$),
+	('a_offset',       $q$SELECT id, a FROM nm ORDER BY a, id LIMIT 20 OFFSET 900$q$),
+	('a_nan_offset',   $q$SELECT id, a FROM nm ORDER BY a, id LIMIT 30 OFFSET 5000$q$),
+	('a_filter',       $q$SELECT id, a FROM nm WHERE g IN (1, 3) AND id > 2000 ORDER BY a DESC, id LIMIT 30$q$),
+	('a_ties',         $q$SELECT id, g, a FROM nm ORDER BY g, a, id LIMIT 40 OFFSET 11$q$),
+	('a_other_cols',   $q$SELECT id, a, d, g FROM nm ORDER BY a DESC NULLS LAST, id LIMIT 25$q$),
+	('b_asc',          $q$SELECT id, b FROM nm ORDER BY b, id LIMIT 25$q$),
+	('b_desc',         $q$SELECT id, b FROM nm ORDER BY b DESC NULLS LAST, id LIMIT 25$q$),
+	('b_offset',       $q$SELECT id, b FROM nm ORDER BY b DESC, id LIMIT 20 OFFSET 1500$q$),
+	('c_asc',          $q$SELECT id, c, c::text AS t FROM nm ORDER BY c, id LIMIT 40$q$),
+	('c_desc',         $q$SELECT id, c, c::text AS t FROM nm ORDER BY c DESC, id LIMIT 40$q$),
+	('c_nulls_first',  $q$SELECT id, c FROM nm ORDER BY c NULLS FIRST, id LIMIT 25$q$),
+	('c_offset',       $q$SELECT id, c FROM nm ORDER BY c DESC NULLS LAST, id LIMIT 30 OFFSET 2500$q$),
+	('c_filter',       $q$SELECT id, c FROM nm WHERE g = 2 ORDER BY c, id LIMIT 30$q$),
+	('d_few_asc',      $q$SELECT id, d FROM nm ORDER BY d, id LIMIT 30$q$),
+	('d_few_desc',     $q$SELECT id, d FROM nm ORDER BY d DESC, id DESC LIMIT 30$q$),
+	-- the key leaf is read by something else too
+	('a_same_leaf',    $q$SELECT id, a FROM nm WHERE a > 0 ORDER BY a, id LIMIT 25$q$),
+	('a_expression',   $q$SELECT id, a FROM nm ORDER BY a + 1, id LIMIT 25$q$),
+	('two_keys',       $q$SELECT id, a, c FROM nm ORDER BY a DESC, c, id LIMIT 30$q$),
+	('second_key',     $q$SELECT id, g, a FROM nm ORDER BY g DESC, a, id LIMIT 30$q$),
+	('all_rows',       $q$SELECT id, a FROM nm ORDER BY a, id LIMIT 200000$q$);
+
+CREATE FUNCTION nm_stage(stage text, workers int DEFAULT 0) RETURNS TABLE (stage text, tag text, result text) LANGUAGE sql AS $$
+	SELECT stage, tag, nm_check(q, workers) FROM nm_q ORDER BY tag COLLATE "C" $$;
+
+SELECT * FROM nm_stage('build');
+SELECT tag, nm_check(q, 2) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
+
+-- more segments: each promotion turns the rows of the write buffer into a segment of its own, with a dictionary of its own
+SELECT nm_rows(6001, 9000);
+SELECT sift.col_promote('nm_col') >= 0 AS promoted;
+SELECT nm_rows(9001, 12000);
+SELECT sift.col_promote('nm_col') >= 0 AS promoted;
+SELECT * FROM nm_stage('segments');
+SELECT tag, nm_check(q, 2) FROM nm_q WHERE tag IN ('a_asc', 'b_desc', 'c_filter') ORDER BY tag COLLATE "C";
+
+-- rows of the write buffer and dirty units
+SELECT nm_rows(12001, 12400);
+UPDATE nm SET a = (id % 1000)::numeric * 3000000000000000000000, c = 'NaN' WHERE id % 97 = 0;
+DELETE FROM nm WHERE id % 89 = 0;
+SELECT * FROM nm_stage('buffer');
+
+-- a heap of keys wider than work_mem sorts instead, and the rows past work_mem spill to a tuplesort
+SET work_mem = '64kB';
+SELECT nm_check($q$SELECT id, a, c FROM nm ORDER BY a, c DESC, id LIMIT 30 OFFSET 9000$q$) AS spilled_two_keys,
+	   nm_check($q$SELECT id, a FROM nm ORDER BY a, id LIMIT 4000$q$) AS wide_heap;
+RESET work_mem;
+
+-- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
+SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT tag, nm_check(q) FROM nm_q WHERE tag IN ('a_asc', 'a_filter', 'b_desc', 'c_desc', 'two_keys') ORDER BY tag COLLATE "C";
+RESET sift.test_limits;
+
+SELECT sift.col_merge('nm_col', true) >= 0 AS merged;
+SELECT * FROM nm_stage('merged');
+VACUUM nm;
+SELECT * FROM nm_stage('vacuumed');
+SELECT sift.col_verify('nm_col', true);
+
+-- a partitioned table: the partitions have their own segments and dictionaries
+CREATE TABLE np (id int, g int NOT NULL, a numeric(30,4), b numeric(38,0), c numeric, d numeric(25,2), pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
+CREATE TABLE np_a PARTITION OF np FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
+CREATE TABLE np_b PARTITION OF np FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
+INSERT INTO np (id, g, a, b, c, d) SELECT id, g, a, b, c, d FROM nm WHERE id <= 5000;
+CREATE INDEX np_col ON np USING sift_col (id, g, a, b, c, d);
+VACUUM (ANALYZE) np;
+SELECT tag, nm_check(replace(q, 'FROM nm ', 'FROM np ')) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'b_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
+
+-- a sift_table keeps its numerics by size, and reads the key the same way
+CREATE TABLE nt (id int, g int, a numeric(30,4), c numeric, pad text DEFAULT repeat('x', 1500)) USING sift_table;
+INSERT INTO nt (id, g, a, c) SELECT id, g, a, c FROM nm WHERE id <= 5000;
+VACUUM (ANALYZE) nt;
+SELECT nm_check($q$SELECT id, a FROM nt ORDER BY a, id LIMIT 25$q$) AS table_a_asc,
+	   nm_check($q$SELECT id, a FROM nt ORDER BY a DESC NULLS LAST, id LIMIT 25$q$) AS table_a_desc,
+	   nm_check($q$SELECT id, c, c::text AS t FROM nt ORDER BY c, id LIMIT 40$q$) AS table_c_asc,
+	   nm_check($q$SELECT id, a FROM nt WHERE g = 3 ORDER BY a DESC, id LIMIT 30 OFFSET 100$q$) AS table_filter;
+
+-- a numeric the lanes cannot hold in their index (the byte budget of a unit lowered to 64 kB): the unit keeps the value as overflow
+CREATE TABLE nv (id int PRIMARY KEY, a numeric(30,4));
+INSERT INTO nv SELECT i, (hashint4(i) % 5000)::numeric * 100000000000000 FROM generate_series(1, 3000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX nv_col ON nv USING sift_col (id, a);
+RESET sift.test_limits;
+ANALYZE nv;
+SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lanes_overflow;
+
+DROP FUNCTION nm_check, nm_mode, nm_rows, nm_stage;
+DROP TABLE nm, nm_q, np, nt, nv;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
