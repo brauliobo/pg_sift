@@ -1,5 +1,5 @@
 /*
- * col/vacreq.c - the heap VACUUM that churn and scans ask for (sift.col_auto_vacuum)
+ * col/vacreq.c - the heap VACUUM that churn and scans ask for (sift.col_auto_merge)
  *
  * A sift_col index answers a scan from its units only where the visibility map says that every row of the heap page is visible; a row on any
  * other page goes to the heap, 0.085 us each and a few us for every page (docs/COL.md 3). One UPDATE or DELETE per page of rows is enough to
@@ -7,10 +7,10 @@
  * the map again, and autovacuum comes for it after 20% of the rows changed.
  *
  * A backend that inserts a row version into the index (an INSERT, or an UPDATE) looks at the statistics of the table once per naptime, and so does
- * a scan that checked many rows in the heap: when the rows changed since the last VACUUM (dead, or new) are sift.col_auto_vacuum_churn_pct
+ * a scan that checked many rows in the heap: when the rows changed since the last VACUUM (dead, or new) are CHURN_PCT
  * percent of the table, a worker is started. It vacuums as autovacuum's does (cost delay, SKIP_LOCKED), at most once per five
  * naptimes, or ten times the average VACUUM of the table where PostgreSQL keeps it, and stays until the table is clean, so that the end of a burst of
- * changes is vacuumed too. The VACUUM calls the index back (docs/COL.md 2.6): the dead rows are marked and, with sift.col_auto_merge, rewritten.
+ * changes is vacuumed too. The VACUUM calls the index back (docs/COL.md 2.6): the dead rows are marked and the index rewritten.
  * A DELETE alone calls nothing and waits for a scan or the next insert.
  */
 #include "postgres.h"
@@ -35,9 +35,8 @@
 #include "col/am.h"
 #include "bm25/maint.h"
 
-bool		sift_col_auto_vacuum = false;
-double		sift_col_auto_vacuum_churn_pct = 0.1;
-
+/* Percent of the rows of the table, dead or written since its last VACUUM, from which it is vacuumed: a row changed per page of a thousand rows is enough to send every row to the heap check (autovacuum starts at 20) */
+#define CHURN_PCT		0.1
 /* A scan that checked fewer rows than this in the heap saved nothing worth a look */
 #define MIN_VETTED		1000
 /* Rows changed under which a table is clean whatever its size (autovacuum_vacuum_threshold) */
@@ -79,7 +78,7 @@ table_state(Oid heapoid, bool asked)
 	if (tab == NULL)
 		return asked ? TABLE_DUE : TABLE_CLEAN;
 	changed = (double) Max(tab->dead_tuples, 0) + (double) Max(tab->ins_since_vacuum, 0);
-	if (!asked && (changed < MIN_CHANGED || changed * 100.0 < sift_col_auto_vacuum_churn_pct * Max((double) tab->live_tuples, 1.0)))
+	if (!asked && (changed < MIN_CHANGED || changed * 100.0 < CHURN_PCT * Max((double) tab->live_tuples, 1.0)))
 		return TABLE_CLEAN;
 #if PG_VERSION_NUM >= 180000
 	if (tab->vacuum_count + tab->autovacuum_count > 0)
@@ -114,7 +113,7 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 	TimestampTz now;
 	Relation	index;
 
-	if (!sift_col_auto_vacuum || (vetted > 0 && vetted < MIN_VETTED) || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() ||
+	if (!sift_col_auto_merge || (vetted > 0 && vetted < MIN_VETTED) || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() ||
 		RecoveryInProgress())
 		return;
 	now = GetCurrentTimestamp();
@@ -128,6 +127,25 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 		sift_maint_register_worker(index, vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main");
 	index_close(index, AccessShareLock);
+}
+
+/* The reloptions of a heap table are StdRdOptions */
+static bool
+autovacuum_enabled(Relation heap)
+{
+	return heap->rd_options == NULL || ((StdRdOptions *) heap->rd_options)->autovacuum.enabled;
+}
+
+/* CREATE INDEX on a heap table that opted out of autovacuum: the worker leaves it alone, and the merge waits for a VACUUM nobody runs */
+void
+sift_col_vacuum_notice(Relation heap, Relation index)
+{
+	if (sift_col_auto_merge && !autovacuum_enabled(heap))
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": sift.col_auto_merge does not vacuum \"%s\", whose autovacuum_enabled is false",
+						RelationGetRelationName(index), RelationGetRelationName(heap)),
+				 errdetail("The units answer from their pre-aggregates again only after a VACUUM of the table, and the merge of the index follows that VACUUM."),
+				 errhint("Run VACUUM on it from a job, or RESET autovacuum_enabled.")));
 }
 
 /* The heap of the index when it is one to vacuum, else InvalidOid: not another table AM's, and not one that opted out of vacuum */
@@ -146,8 +164,7 @@ vacuum_heap_of(Oid indexoid)
 	if (!OidIsValid(heapoid) || (heap = try_relation_open(heapoid, AccessShareLock)) == NULL)
 		return InvalidOid;
 	/* the reloptions of another table AM are not StdRdOptions, and a sift_table has its own pass */
-	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID || heap->rd_rel->relkind != RELKIND_RELATION ||
-		(heap->rd_options != NULL && !((StdRdOptions *) heap->rd_options)->autovacuum.enabled))
+	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID || heap->rd_rel->relkind != RELKIND_RELATION || !autovacuum_enabled(heap))
 		heapoid = InvalidOid;
 	relation_close(heap, AccessShareLock);
 	return heapoid;
