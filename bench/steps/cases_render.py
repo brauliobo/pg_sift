@@ -52,6 +52,12 @@ def same_plan(f):
     return 'same plan' + (' (%s slower)' % speed(1 / r) if r <= 1 - TIE else '')
 
 
+def ranked(f):
+    """0 a loss (the scan slower than PostgreSQL, or its time with the same plan), 1 a tie or no ratio, 2 a win"""
+    r = f['native'] / f['sift'] if f['native'] and f['sift'] else 1
+    return 0 if r <= 1 - TIE else 2 if r >= 1 + TIE and not f['kept'] else 1
+
+
 def verdict(f):
     if f['kept'] or not f['native'] or not f['sift']:
         return None
@@ -95,6 +101,10 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
     if not figs:
         return ['Not measured at this build yet: `bench/bench cases --docs` writes this block.']
     n = len({f['case'].id for f in figs})
+    worst = {}
+    for f in figs:
+        worst[f['case'].id] = min(worst.get(f['case'].id, 2), ranked(f))
+    figs = sorted(figs, key=lambda f: worst[f['case'].id])   # losses first, then ties and kept plans, then the wins, each in the registry's order
     head = ['| case | shape | unit | PostgreSQL | pg_sift | other engines and variants | speed-up | plan |', '|---|---|---|---:|---:|---|---:|---|']
     body = []
     for f in figs:
@@ -107,7 +117,7 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
                                                                   ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
-    out = ['%d cases of the 3.3 optimizations (`bench/cases.tsv`) on %s orders of the store benchmark, one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
+    out = ['%d cases of the 3.3 optimizations (`bench/cases.tsv`) on %s rows (the orders of the store benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
         n, '{:,}'.format(int(meta.get('orders', 0))), rounds(meta), extras.footer(meta)), ''] + head + body + [
         '', '**Takeaway:** ' + takeaway(figs), '', '**Caveats**', '',
         '- PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store\'s PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).',
