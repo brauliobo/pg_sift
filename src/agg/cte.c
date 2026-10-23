@@ -42,8 +42,8 @@
 /* A plan above the scans priced this many times the shared plan has an estimate that cannot be trusted (a nested loop over a join of rows it takes for one). */
 #define CTE_INLINE_ABOVE	20.0
 
-/* ... and where an ordinary plan still reads the table, the inline plan may total this many times the shared one at most (priced 1.06 times above it, run 1.35 times faster) */
-#define CTE_INLINE_TOTALS	1.1
+/* ... and where an ordinary plan still reads the table, the inline plan may total this many times the shared one at most (priced 1.06 to 1.22 times above it, run 1.2 to 1.5 times faster) */
+#define CTE_INLINE_TOTALS	1.25
 
 static planner_hook_type prev_planner_hook;
 
