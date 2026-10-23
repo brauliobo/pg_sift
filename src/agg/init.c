@@ -61,11 +61,12 @@ init_param_mutator(Node *n, AggExec *ex)
 }
 
 /*
- * The expression of a lookup table. A sub-plan in it (its state, hash table and the scans it starts) lives in the query's memory: PostgreSQL ends
- * the sub-plans after this node, which frees its own memory.
+ * The state of an expression of the scan that is kept for it (a lookup table, a combination). A sub-plan in it (its state, hash table, the scans
+ * it starts and the slots it puts in the executor's tuple table) lives in the query's memory: PostgreSQL ends the sub-plans after this node,
+ * which frees its own memory.
  */
 static ExprState *
-init_lut_expr(AggExec *ex, Node *expr)
+init_expr(AggExec *ex, Node *expr)
 {
 	MemoryContext old = MemoryContextSwitchTo(contain_subplans(expr) ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ExprState  *e = ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
@@ -223,7 +224,7 @@ register_pred(AggExec *ex, SiftAggPred *p)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-		st->expr = init_lut_expr(ex, p->expr);
+		st->expr = init_expr(ex, p->expr);
 		st->param = find_param(p->expr);
 		rt_init(&st->rt, 1);
 		if (ex->lay->leaf[p->leaf].vtype == SCV_I32)
@@ -268,7 +269,7 @@ register_key(AggExec *ex, int ki)
 		k->ident = true;
 	else if (sk->kind == SAK_LUT)
 	{
-		k->expr = init_lut_expr(ex, sk->expr);
+		k->expr = init_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
 		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
 		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
@@ -337,7 +338,7 @@ register_combos(AggExec *ex)
 		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
-			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, EXPR_PARENT(ex));
+			cs->slot[sl] = init_expr(ex, (Node *) cb->slot[sl].expr);
 			get_typlenbyval(exprType(cb->slot[sl].expr), &cs->tlen[sl], &cs->tbyval[sl]);
 		}
 		for (int p = 0; p < cb->nleaves; p++)
@@ -366,10 +367,10 @@ register_combos(AggExec *ex)
 		combo_reset(ex, ci);
 		if (cb->join >= 0)
 			foreach_ptr(Node, arg, s->join[cb->join].args)
-				cs->args = lappend(cs->args, ExecInitExpr((Expr *) arg, EXPR_PARENT(ex)));
+				cs->args = lappend(cs->args, init_expr(ex, arg));
 		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
 			if (s->join[cb->join].keyexpr[k])
-				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
+				cs->kx[k] = init_expr(ex, (Node *) s->join[cb->join].keyexpr[k]);
 		ex->clbase[ci] = ex->ncl;
 		ex->ncl += cb->nleaves;
 		if (cb->join >= 0 && !s->join[cb->join].scoped)
