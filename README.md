@@ -73,7 +73,7 @@ https://github.com/brauliobo/pg_sift/blob/main/docs/perf/AGGREGATES.md
 
 ## Install
 
-Supports PostgreSQL 17, 18 and 19 on Linux (19 tested on its release candidate) and PostgreSQL 17 and 18 on macOS arm64. Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
+Supports PostgreSQL 17, 18 and 19 on Linux, x86-64 and arm64 (19 tested on its release candidate) and PostgreSQL 17 and 18 on macOS arm64. Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
 
 Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container image recipes (PostgreSQL 17 and 18, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: [docs/SUPPORT.md](docs/SUPPORT.md).
 
@@ -572,7 +572,7 @@ SELECT sift_count('news', 'power AND plant');
 
 ## Limits
 
-- **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
+- **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested; arm64 tested with 18); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
 - **Ports:** search only; the column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
 - **Replication:** publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
 - **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite ([What is covered](#what-is-covered)).

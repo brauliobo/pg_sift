@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (the whole suite) and macOS arm64 (the Homebrew build and its test, and a few regression tests, in CI). The chunk codec of the column engine links `liblz4` and `libzstd` when their
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (the whole suite), Linux arm64 (PostgreSQL 18, the fast tier of every labeled pull request in CI) and macOS arm64 (the Homebrew build and its test, and a few regression tests, in CI). The chunk codec of the column engine links `liblz4` and `libzstd` when their
 development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
 
 ```sh
@@ -743,7 +743,7 @@ its own docker container.
 
 Every fixed limit of the code, with its value, what happens at it and the setting that changes it, is in the generated table [LIMITS.md](LIMITS.md); the list below adds the context.
 
-- PostgreSQL 17, 18 and 19; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- PostgreSQL 17, 18 and 19; x86-64 tested, arm64 tested with PostgreSQL 18 (Linux in CI, macOS by the formula's test), other architectures untested; heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE`, and an `ALTER TABLE` that adds a column or brings declared paths back past it, fail with `54000`; `DROP COLUMN` is not checked, so a table that 3.2 let grow too wide can be narrowed), 128 directory entries, `BLCKSZ` 8192;
   - a single `COPY` or `INSERT ... SELECT` writes any number of rows in one transaction (the write buffers of one command become column groups that carry their writer while it runs, and `VACUUM` freezes them once it is committed or drops them if it aborted; a 10,000,000-row `COPY` takes about 180 MB in the backend). a transaction of many commands (a loop of single-row `INSERT`s, savepoints, several sessions into the same write buffers) is not bounded either: once the directory is half full every write buffer it closes becomes such a group, and only a write buffer that holds a row deleted since the last `VACUUM` or a speculative insertion in progress waits (the insert that cannot open another write buffer then fails with `54000`, and the message says to `VACUUM` or to end the transaction); writers merge the column segments as they go;
