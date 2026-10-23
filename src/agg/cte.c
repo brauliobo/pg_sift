@@ -24,6 +24,7 @@
 #include "nodes/plannodes.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
+#include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/plancache.h"
@@ -657,19 +658,32 @@ reads_indexed_plan(PlannedStmt *ps)
  * inside planner() and after it decided there was no hook: that one statement of the backend is planned without sift_planner (no inline CTE,
  * no flattened laterals) and the aggregates that every later statement runs in the scan run their ordinary plan. The statement is planned
  * again here, from its text, when it is a plain SELECT of the top level; the same text through the hook gives the plan the next statement of
- * the session gets. Anything else (a statement with parameters, EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
+ * the session gets. The parameters of the extended protocol and of EXECUTE are planned as a custom plan is (their types and values are the
+ * statement's own). Anything else (EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
  */
 static PlannedStmt *
 replan(QueryDesc *qd)
 {
 	PlannedStmt *ps = qd->plannedstmt;
+	ParamListInfo params = qd->params;
 	RawStmt    *raw = NULL;
+	Oid		   *ptypes = NULL;
 	List	   *trees,
 			   *plans;
 
-	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->params != NULL || qd->sourceText == NULL ||
+	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL ||
 		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
 		return NULL;
+	/* the parameters of a function's query are named by parser hooks, which the text alone does not give back: that statement keeps its plan */
+	if (params != NULL && (ActivePortal == NULL || qd->sourceText != ActivePortal->sourceText))
+		return NULL;
+	if (params != NULL && params->numParams > 0)
+	{
+		ptypes = palloc(params->numParams * sizeof(Oid));
+		for (int i = 0; i < params->numParams; i++)
+			if (!OidIsValid(ptypes[i] = params->params[i].ptype))
+				return NULL;
+	}
 	foreach_node(RawStmt, r, pg_parse_query(qd->sourceText))
 		if (r->stmt_location == ps->stmt_location)
 			raw = r;
@@ -684,10 +698,10 @@ replan(QueryDesc *qd)
 	}
 	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
 		return NULL;
-	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, NULL, 0, qd->queryEnv);
+	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, ptypes, params ? params->numParams : 0, qd->queryEnv);
 	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT)
 		return NULL;
-	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, NULL);
+	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, params);
 	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
 		return NULL;
 	return linitial_node(PlannedStmt, plans);

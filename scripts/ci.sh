@@ -182,9 +182,10 @@ if [[ $MODE == --selftest ]]; then
 	# the loud failures: bash older than 4 (the check made to fail), and a run that selects no job, stop before anything is built
 	t=$(mktemp)
 	sed 's/>= 4/>= 99/' "$0" >"$t"
-	out=$(bash "$t" quick 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
+	out=$(env -u SIFT_CI_TMP bash "$t" quick 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
 	[[ $out == *'needs bash 4+'* ]] || { echo "FAIL: ci.sh does not say it needs bash 4+: $out"; bad=1; }
-	out=$(SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
+	# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
+	out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
 	rm -f "$t"
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
@@ -386,7 +387,10 @@ tidy() {
 # running (the first job always fits); returns 1 when the queue is empty, 2 when nothing fits yet. The lock is a directory: macOS has no flock
 claim() {
 	local rc
-	until mkdir "$BASE/claim.lock" 2>/dev/null; do sleep 0.02; done
+	until mkdir "$BASE/claim.lock" 2>/dev/null; do
+		[[ -d $BASE ]] || { echo "ci: $BASE is gone, the lane stops" >&2; exit 1; }
+		sleep 0.02
+	done
 	claim_locked && rc=0 || rc=$?
 	rmdir "$BASE/claim.lock"
 	return $rc
