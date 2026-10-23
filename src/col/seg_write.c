@@ -134,6 +134,9 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
+	/* a sift_table has no option for its dictionaries: every leaf may have one stored for a lookup, when the format setting its caller passes allows (table/seg_int.h) */
+	for (int c = 0; c < schema->ncols; c++)
+		w->pagg.lookup[c] = true;
 	/* a sift_table has no index option for its pre-aggregates and writes this default (a sift_col index sets its own spec, which has calendar dims when it asks) */
 	if (format >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
 	{
@@ -984,12 +987,12 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
-	/* a dictionary of many strings is written to be searched in place when the setting allows it, the index has not turned it off and the kinds are complete */
-	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->pagg.nolookup && !w->inexact)
+	/* a dictionary of many strings is written to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
+	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{
 		w->lookup = palloc0(w->schema->ncols * sizeof(bool));
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (w->dict[c] != NULL && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+			if (w->dict[c] != NULL && w->pagg.lookup[c] && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
 			{
 				w->lookup[c] = true;
 				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);

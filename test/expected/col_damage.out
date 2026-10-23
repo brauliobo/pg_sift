@@ -27,7 +27,7 @@ SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE (g * 1234567.12345)::numeric(30, 5)
        make_interval(mins => g, days => g % 40, months => g % 5), CASE WHEN g % 17 = 0 THEN 'NaN'::numeric ELSE g / 7.0 END, make_time(g % 24, g % 60, 0),
        md5(g::text)::uuid, (ARRAY['sad', 'ok', 'happy'])[1 + g % 3]::dw_mood, decode(md5(g::text), 'hex')
 FROM generate_series(1, 2000) g;
-CREATE INDEX dw_col ON dw USING sift_col (id, big, m, iv, anynum, t, u, e, b) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX dw_col ON dw USING sift_col (id, big, m, iv, anynum, t, u, e, b) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, dict_lookup = on);
 CREATE TABLE dc (id int, kind int, grp text, val bigint, small int) WITH (autovacuum_enabled = off);
 INSERT INTO dc SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END, g % 1000 - 400
 FROM generate_series(1, 3000) g;

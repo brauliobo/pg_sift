@@ -531,8 +531,9 @@ Index size at 1 000 000 rows: 2 bytes a row for each leaf whose rows do not asce
 
 A dictionary of the compact form (forms 0 and 1 of section 2.3) is parsed whole by the first scan of a backend that needs a code of the leaf: the cost of the first
 equality or prefix test on a text or uuid column of a million rows (tens to hundreds of milliseconds) is the parse, not the test. A dictionary of
-`CDICT_LOOKUP_MIN` (1,024, the registry limit `dict_lookup_min`) strings or more is written, under `sift.col_format_minor = 14` and unless the index has `dict_lookup = off`,
-in a third form, searched where it lies in the stream:
+`CDICT_LOOKUP_MIN` (1,024, the registry limit `dict_lookup_min`) strings or more is written, under `sift.col_format_minor = 14`, in a third form, searched where it lies in the stream,
+for the leaves that ask for it: the option `dict_lookup` is `auto` by default (the leaves named in `point_columns`, `set_columns` or `return_columns`, whose lookups and returned strings
+read it), `on` (every leaf) or `off` (none); a `sift_table` writes it only under `sift.table_dict_lookup`. Every other dictionary has the compact form, because the form is larger (see its cost below):
 
 ```
 u32 form = 2, u32 n, u32 fixed, u32 nbytes,
@@ -553,12 +554,31 @@ scan tests (a set of at most 256 codes, or a bit per code of the dictionary) is 
 the dictionary is already there (a scan that reads the strings, such as a `GROUP BY` of the column, parses and caches it as before). The parser of the form (`sift_cdict_parse`) refuses a length, an
 offset or a code out of range; `sift.col_verify` checks that `code[]` names every code once and that the strings ascend in it.
 
-A segment is minor 14 when some dictionary has the form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small, and
-`dict_lookup = off` are read by the releases that read their other sections, and a 3.2 library refuses a segment with the form with the REINDEX hint (minor 14 is above its 6). An index
+A segment is minor 14 when some dictionary has the form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small, an index that
+asks for none (the default without a lookup structure on a text column) and `dict_lookup = off` are read by the releases that read their other sections, and a 3.2 library refuses a segment with the form with the REINDEX hint (minor 14 is above its 6). An index
 written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new form where the setting allows it. The merge
 of a segment of the new form with one of the old makes a new dictionary and writes it in the new form. The form costs 4 bytes for each code, 4 for each 32 strings, and what the compression of
 blocks of 32 strings saves less than that of the whole dictionary: a dictionary of random uuids, which does not compress, grows by 4 bytes a string, and one of hex digests or words by about a fifth
 (60,000 texts of `'text ' ||` an md5, a `sift_table`: 1.16 MB of segments in the compact form, 1.49 MB in this one; stored uncompressed they took 2.53 MB).
+
+That cost is why the form is not the default. Measured on the tip (2026-10-22, 200,000 rows, one segment, `dict_lookup = on` against `off`; the index is `(id, column)`, the second figure
+adds an int, an int, a date and a numeric column):
+
+| column | dictionary compact / stored (bytes) | index growth, narrow | index growth, with four more columns | first query of a new backend, equality: stored / compact (ms) |
+|---|---|---|---|---|
+| 20,000 distinct titles (43 bytes) | 319,080 / 591,376 | +40.0% | +15.9% | 1.99 / 5.45 |
+| 100,000 distinct titles | 1,595,848 / 2,955,888 | +74.8% | +48.5% | 1.99 / 14.83 |
+| 200,000 unique, 18 bytes | 1,871,968 / 2,888,632 | +51.4% | +34.3% | 2.23 / 10.20 |
+| 200,000 unique, 37 bytes | 3,645,376 / 4,738,864 | +29.1% | +23.0% | 2.96 / 15.80 |
+| 200,000 uuids | 3,200,048 / 4,050,024 | +25.6% | +19.9% | 55.4 / 59.0 (a count; by the access method 1.45 / 8.24) |
+| 1,024 distinct, 12 bytes | 928 / 7,760 | +5.9% | +0.7% | 1.78 / 2.15 |
+
+Warm queries are the same or slower (a dictionary tested more than 32 times is parsed and cached, and until then a lookup reads blocks), so the form buys the first statement of a backend and nothing
+after it; the 4-client write mix of a `sift_table` did not move (3,528 tps before the form, 3,186 with it, 3,627 with the in-place row fetch). A `sift_table` of the same columns grows by 36.7% (titles),
+63.1%, 35.4%, 23.7% and 2.4% (its segments each carry their own dictionary), and a uuid column of a `sift_table` has no dictionary. A simulation of the block size and of a `code[]` of
+`ceil(log2 n)` bits (bytes of the dictionary, 20,000 titles / 200,000 unique 18-byte / 200,000 unique 37-byte: 546,407 / 2,895,670 / 4,436,126 as it is, 503,907 / 2,545,670 / 4,086,126 packed,
+449,690 / 2,209,642 / 3,729,656 with blocks of 256 strings packed, against 309,446 / 1,850,774 / 3,534,044 compact) says no tuning gets the form under a few percent of such an index: the permutation of
+the byte order costs at least log2 n bits a string.
 
 A `sift_table` row fetch (`sift_tbl_gscan_fill`) takes the strings of a segment with such a dictionary the same way, one at a time from the stream (`sift_col_read_codes`, `sift_col_code_str`), while the strings read from the segment are fewer than a sixteenth of its dictionary (the same count as the reads of `sift_col_read_text`); then the dictionary is loaded and cached and the reads come from it.
 
