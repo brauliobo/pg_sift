@@ -221,6 +221,10 @@ sift_col_init(void)
 							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
 							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
+	DefineCustomRealVariable("sift.plan_scale",
+							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
+							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",
+							 &sift_plan_scale, 1.0, 1.0, 1e6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_on_demand",
 							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
 							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",

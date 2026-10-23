@@ -467,6 +467,16 @@ sift_agg_memo_end(MemoryContext cx)
 	MemoryContextDelete(cx);
 }
 
+/* sift.plan_scale: the source has that many times the rows, units and bytes */
+static void
+stats_scaled(Relation rel, SiftSrcStats *st)
+{
+	sift_colsrc_stats(rel, st);
+	st->nrows *= sift_plan_scale;
+	st->nunits *= sift_plan_scale;
+	st->bytes *= sift_plan_scale;
+}
+
 /* what is read of a partition's index: its layout in the terms of the partition, and the statistics and pre-aggregates, packed, in cx */
 static void
 read_facts(Relation rel, MemoryContext cx, PartCand *pc)
@@ -475,7 +485,7 @@ read_facts(Relation rel, MemoryContext cx, PartCand *pc)
 	SiftSrcPreagg *pa;
 	MemoryContext old;
 
-	sift_colsrc_stats(rel, full);
+	stats_scaled(rel, full);
 	old = MemoryContextSwitchTo(cx);
 	pc->indexoid = RelationGetRelid(rel);
 	pc->lay = sift_colsrc_layout(rel);
@@ -802,7 +812,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	{
 		rel = table_open(rte->relid, NoLock);
 		c->lay = sift_colsrc_layout(rel);
-		sift_colsrc_stats(rel, &c->stats);
+		stats_scaled(rel, &c->stats);
 		sift_colsrc_preagg(rel, &c->pa);
 		table_close(rel, NoLock);
 		c->indexoid = InvalidOid;
@@ -816,7 +826,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		return false;
 	rel = index_open((*ixout)->indexoid, AccessShareLock);
 	c->lay = sift_colsrc_layout(rel);
-	sift_colsrc_stats(rel, &c->stats);
+	stats_scaled(rel, &c->stats);
 	sift_colsrc_preagg(rel, &c->pa);
 	index_close(rel, AccessShareLock);
 	c->indexoid = (*ixout)->indexoid;
