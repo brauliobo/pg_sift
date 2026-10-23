@@ -91,7 +91,7 @@ seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDi
 	return sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, out);
 }
 
-/* The histogram of dim of a superunit: from its merged cube (the dims of lists are not merged) */
+/* The histogram of dim of a superunit: from its merged cube (the dims of lists and the calendar cells are not merged) */
 static bool
 super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, SiftCHistDim *out)
 {
@@ -99,7 +99,7 @@ super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, SiftCHist
 	const uint8 *blob;
 	int			found;
 
-	if (seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
 		return false;
 	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
 		corrupt_cube(seg, k);
