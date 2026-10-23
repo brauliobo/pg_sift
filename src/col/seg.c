@@ -810,6 +810,16 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->inl |= z->any_inl;
 		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
 	}
+	{
+		const PointLeaf *pl = points_read(seg);
+
+		if (pl != NULL && pl[col].nslots != 0)
+		{
+			acc->point_units += seg->nsb;
+			acc->point_keys += pl[col].nkeys;
+			acc->point_rows += pl[col].count;
+		}
+	}
 	if (set_leaf(seg, col) != NULL)
 	{
 		uint32		stride = Max(seg->nsb / SET_STATS_UNITS, 1);

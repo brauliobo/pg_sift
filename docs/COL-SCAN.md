@@ -36,10 +36,15 @@ NaN is stored as a NULL with the overflow flag, a candidate of every test), a Na
 wildcard after its prefix are replaced by `IS NOT NULL` or a prefix test and the heap scan applies the clause. Text is compared bytewise: `CREATE INDEX` refuses
 `col_text_ops` on a column of a nondeterministic collation, and a query's collation must equal the index column's for the planner to use the index.
 
-**Cost** (`sift_col_amcostestimate`): the share of the units whose zones can hold the constants of the quals, counted on the real zones of a sample of the
-units (`sift_col_zones`, the sample SiftAgg's planner uses), times the rows and columns they decode, plus a fixed price per unit; quals the zones cannot
-judge (text, uuid, a parameter) count every unit, and an equality or `IN` on a column named by `key_columns` (docs/COL.md 2.13) keeps the share of the units
-that the small-set summaries leave, as SiftAgg counts it (`1 - exp(-s * n)` for a test on the share `s` of a column's values and `n` keys in a unit). The planner compares it with SiftAgg and the heap: 12 of 96 (query, size) picks in the table below were
+**Cost** (`sift_col_amcostestimate`): the planner's cost units are about microseconds of a warm run, and the scan is priced in them: a start-up (24 for opening the
+index, the snapshot and the directory of the segment, plus 0.03 a unit for the zones and summaries of every unit, or 4 a key and 0.002 a unit when the point
+directory answers) which a `LIMIT` does not wait for, then, for each unit kept, 22 for reading its head and the pages of it, and 0.009 for each value of the
+columns of the quals that it filters. The units kept are the share whose zones can hold the constants of the quals, counted on the real zones of a sample of the
+units (`sift_col_zones`, the sample SiftAgg's planner uses; an `IN` list is bisected, so a list of 50,000 values adds about 3 ms to the planning, not seconds),
+and, for an equality or `IN` on a column named by `key_columns` (docs/COL.md 2.13), the share that the small-set summaries leave, as SiftAgg counts it (`1 - exp(-s * n)`
+for a test on the share `s` of a column's values and `n` keys in a unit). A column with a point directory (`point_columns`) keeps the units that hold the rows of its
+keys, `1 - exp(-rows / units)` of them for a random layout, and only those rows are filtered; the rows come from the selectivity of the clause, so a parameter
+(a generic plan) is priced as its constant is, and an `IN` list of more than 64 keys is not answered by the directory. The planner compares it with SiftAgg and the heap: 12 of 96 (query, size) picks in the table below were
 more than 1.3 times slower than the best of the other plans, none by more than 0.5 ms (the worst: a `count(*)` with an `IN` list of 100 values at 25,000
 rows, SiftAgg 0.27 ms against 0.74 ms). The one larger loss measured is `count(*) WHERE rnd IS NULL` on 1,000,000 rows with no NULL, where the
 planner keeps SiftAgg (2.45 ms) and the bitmap scan takes 0.06 ms (the zones hold no NULL). A range of rows at 0.1% to 80% of the table picks the
