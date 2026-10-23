@@ -403,7 +403,7 @@ def cmd_plan(args):
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
     events = sum(c.dataset in DATASETS for c in cases)
-    tmp = os.environ.get('CASES_TMP', '/var/tmp/sift-cases')
+    tmp = os.environ.get('CASES_TMP', '/dev/shm/sift-cases')
     probe = tmp
     while not os.path.exists(probe):
         probe = os.path.dirname(probe)
@@ -416,7 +416,7 @@ def cmd_plan(args):
         t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 10e-6 + 5.0 * sc)
         gb = (n * (120 + 85 + 350) + (n * 1000 if events else 0)) / 2**30 + 4
         seconds, peak = seconds + t, max(peak, gb)
-        print('  %14s orders (%dx): generate%s, %d builds and measures, about %4.0f min, up to %4.0f GB on disk' % (format(n, ','), sc, ' orders and events' if events else ' orders', len(cases), t / 60, gb))
+        print('  %14s orders (%dx): generate%s, %d builds and measures, about %4.0f min, up to %4.0f GB of scratch' % (format(n, ','), sc, ' orders and events' if events else ' orders', len(cases), t / 60, gb))
     print('  total about %.1f h; the largest point needs about %.0f GB under CASES_TMP=%s (%.0f GB free there); memory cap CASES_MEM=%s' % (seconds / 3600, peak, tmp, free, os.environ.get('CASES_MEM', '8G')))
     print('  the schema of each orders case is dropped after its measure; the events schema (one for the dataset) stays until the next size')
     return 0 if free > peak else 1
