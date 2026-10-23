@@ -54,7 +54,8 @@ areas_regex() {
 # areas_fast_regex FILE...: areas_regex, except that a file a `fast:` row matches runs only the jobs of that row (the tests of its own area, not of the
 # stack above it); the other files run what areas_regex gives them
 areas_fast_regex() {
-	local f row hit out=() AREA_JOBS AREA_OWNER_MODE=0
+	local f row hit out=() AREA_JOBS AREA_OWNER_MODE=0 alt
+	local -A seen=()   # the same: a branch of hundreds of files made 134 KB, past the 128 KB limit of one argument of the jq call that builds the matrix
 	local -a AREA_CAPTURES
 	for f in "$@"; do
 		hit=
@@ -63,10 +64,12 @@ areas_fast_regex() {
 			AREA_CAPTURES=("${BASH_REMATCH[@]}")
 			hit=1
 			areas_expand "${row#*$'\t'}"
-			out+=("$AREA_JOBS")
+			[[ -n ${seen[$AREA_JOBS]:-} ]] || { seen[$AREA_JOBS]=1; out+=("$AREA_JOBS"); }
 			break
 		done
-		[[ -n $hit ]] || out+=("$(areas_regex "$f")")
+		[[ -n $hit ]] && continue
+		alt=$(areas_regex "$f")
+		[[ -n ${seen[$alt]:-} ]] || { seen[$alt]=1; out+=("$alt"); }
 	done
 	local IFS='|'
 	echo "^\$${out[*]:+|${out[*]}}"
