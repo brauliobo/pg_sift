@@ -305,6 +305,9 @@ typedef struct SiftColLeafStats
 	double		set_sampled;	/* the units looked at for a small-set summary of the leaf (an even sample of each segment that has any) */
 	double		set_units;		/* ... the ones that have it, */
 	double		set_keys;		/* ... and the distinct keys they hold together */
+	double		point_units;	/* the units of the segments that list the leaf's rows by value (point_columns) ... */
+	double		point_keys;		/* ... the distinct keys of those lists ... */
+	double		point_rows;		/* ... and the rows they list */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;

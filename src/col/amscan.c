@@ -35,11 +35,20 @@
 
 #include "col/am.h"
 #include "col/pg.h"
+#include "col/point.h"
 
-/* the cost of the filter of one value of an integer or dictionary column, in operator costs (measured: docs/COL-SCAN.md) */
-#define COL_SCAN_ROW_COST	0.35
-/* the zones of a unit and the set up of its scan */
-#define COL_SCAN_UNIT_COST	40.0
+/*
+ * The cost of a scan, in microseconds of an ordinary run (cost units are about that on the default settings: a cached b-tree lookup of 8 units takes 6-8 us and a
+ * bitmap heap scan of 1,700 units about 1.7 ms; the figures below are measured, docs/COL-SCAN.md, and scale with cpu_operator_cost like the rest of the planner's costs).
+ */
+#define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
+#define COL_SCAN_WALK		0.03	/* the zones and summaries of one unit tested against the constants */
+#define COL_SCAN_WORD		0.002	/* ... when the point directory answered, so only the bits of the kept units are walked */
+#define COL_SCAN_PROBE		4.0		/* one key looked up in a point directory: its slots are a page or two of a table the lookups of other keys do not share */
+#define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
+#define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
+#define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
+#define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
 
 bool		sift_enable_col_scan = false;
 double		sift_plan_scale = 1.0;
@@ -785,6 +794,15 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 
 /* ---- the cost ---- */
 
+static int
+cmp_int64(const void *a, const void *b)
+{
+	int64		x = *(const int64 *) a,
+				y = *(const int64 *) b;
+
+	return (x > y) - (x < y);
+}
+
 /* The range of key values a clause keeps when its operand is a constant of an integer-like type (false: it is not, or the clause is not a comparison) */
 static bool
 clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi, int64 **set, int *nset)
@@ -863,23 +881,34 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 		for (int j = 0; j < n; j++)
 			if (!nl[j])
 				vals[m++] = et == INT2OID ? DatumGetInt16(el[j]) : et == INT4OID || et == DATEOID ? DatumGetInt32(el[j]) : DatumGetInt64(el[j]);
+		qsort(vals, m, sizeof(int64), cmp_int64);
 		*set = vals;
 		*nset = m;
 		return true;
 	}
 }
 
+/* does the zone [zlo, zhi] hold a key of the sorted set (or lie in [lo, hi] when there is no set)? */
 static bool
 range_meets(int64 lo, int64 hi, const int64 *set, int nset, int64 zlo, int64 zhi)
 {
+	int			a = 0,
+				b = nset;
+
 	if (zlo > zhi || zhi < lo || zlo > hi)
 		return false;
 	if (set == NULL)
 		return true;
-	for (int i = 0; i < nset; i++)
-		if (set[i] >= zlo && set[i] <= zhi)
-			return true;
-	return false;
+	while (a < b)
+	{
+		int			m = a + (b - a) / 2;
+
+		if (set[m] < zlo)
+			a = m + 1;
+		else
+			b = m;
+	}
+	return a < nset && set[a] <= zhi;
 }
 
 /*
@@ -962,6 +991,57 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	return kept;
 }
 
+/*
+ * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
+ * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS), the rows of the keys the selectivity of the clause (misses and the keys with many rows
+ * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole.
+ */
+static double
+point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes)
+{
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	IndexOptInfo *index = path->indexinfo;
+	double		kept = 1.0;
+
+	*nprobes = 0;
+	foreach_node(IndexClause, ic, path->indexclauses)
+	{
+		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
+
+		if (l->point_units <= 0 || l->nunits <= 0)
+			continue;
+		foreach_node(RestrictInfo, ri, ic->indexquals)
+		{
+			Oid			opno = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->opno :
+				IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->opno : InvalidOid;
+			double		nkeys = 1.0,
+						cover = Min(l->point_units / l->nunits, 1.0),
+						rows,
+						share;
+
+			if (!OidIsValid(opno) || get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) != BTEqualStrategyNumber)
+				continue;
+			if (IsA(ri->clause, ScalarArrayOpExpr))
+				nkeys = estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
+			if (nkeys > SIFT_CPOINT_MAX_KEYS)
+				continue;
+			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
+			share = 1.0 - exp(-rows / units);
+			if (1.0 - cover + cover * share < kept)
+			{
+				kept = 1.0 - cover + cover * share;
+				*nprobes = (int) ceil(nkeys);
+			}
+		}
+	}
+	return kept;
+}
+
+/*
+ * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
+ * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
+ * values (only the rows the directory lists, when it is what keeps them) and handing the rows over. The start is separate so that a LIMIT stops the scan early: the units are read one at a time.
+ */
 void
 sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
 						Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
@@ -970,21 +1050,29 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	GenericCosts costs = {0};
 	Relation	irel;
 	double		kept,
+				pkept,
 				units,
-				cand_rows;
-	int			ncols = list_length(path->indexclauses);
+				kept_units,
+				idx_rows,
+				scale = cpu_operator_cost / 0.0025;
+	int			ncols = list_length(path->indexclauses),
+				nprobes;
 
 	genericcostestimate(root, path, loop_count, &costs);
 	irel = index_open(index->indexoid, AccessShareLock);
-	kept = Min(zones_kept(root, path, irel), sets_kept(root, path, irel));
-	index_close(irel, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
-	cand_rows = kept * index->rel->tuples;
-	costs.indexStartupCost = random_page_cost;
-	costs.indexTotalCost = random_page_cost + units * COL_SCAN_UNIT_COST * cpu_operator_cost
-		+ kept * index->pages * seq_page_cost
-		+ cand_rows * ncols * COL_SCAN_ROW_COST * cpu_operator_cost
-		+ costs.numIndexTuples * cpu_index_tuple_cost;
+	pkept = point_kept(root, path, irel, units, &nprobes);
+	kept = Min(Min(zones_kept(root, path, irel), sets_kept(root, path, irel)), pkept);
+	index_close(irel, AccessShareLock);
+	kept_units = kept * units;
+	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one */
+	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans, 1);
+	costs.indexStartupCost = scale * (COL_SCAN_FIXED + (pkept < 1.0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
+	costs.indexTotalCost = costs.indexStartupCost
+		+ kept_units * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ (pkept <= kept ? idx_rows : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
+		+ index->pages * cpu_tuple_cost
+		+ idx_rows * (scale * COL_SCAN_EMIT + cpu_index_tuple_cost);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
 	*indexSelectivity = costs.indexSelectivity;
