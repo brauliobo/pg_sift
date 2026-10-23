@@ -175,7 +175,7 @@ sift.async_maintenance = off'
 	((newest >= 4)) && formats+=("ke 4")
 	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "df 12")
 	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [rd]=", rollup_dims = 'g, n'" [sc]=", set_columns = 's'" [kp]=", key_presence = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+		[ca]=", calendar_columns = 'at'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", set_columns = 's'" [kp]=", key_presence = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
 	docsonly=" h4 ke cm ca rd sc su rn dk kp df "
