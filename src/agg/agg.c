@@ -94,6 +94,7 @@
 #include "agg/agg_int.h"
 
 bool		sift_enable_agg = true;
+double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
 bool		sift_agg_super = true;
 bool		sift_agg_dense = true;
@@ -123,6 +124,11 @@ sift_agg_init(void)
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.agg_scale_horizon",
+							 "Size, as a multiple of the table, up to which an inline shared CTE that is a close call must stay the better plan (1: only the size it is).",
+							 "Used where the scans of the inline plan cost less than the work of the shared CTE but not by the margin: the plans are made again at the square root of the horizon and at the horizon times the rows (sift.plan_scale), and the inline one is kept if it wins at both.",
+							 &sift_agg_scale_horizon, 100.0, 1.0, 1e6,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_preagg",
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
