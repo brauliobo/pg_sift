@@ -29,9 +29,12 @@ maintain_panics() { ! sql pc "SET sift.test_col_merge_panic = on" "SELECT sift.c
 restarted() { for _ in $(seq 300); do [[ -f $(dir pc)/data/postmaster.pid ]] || break; sleep 0.1; done; node_start pc; }
 # a mismatch puts both sides in the TAP diagnostics
 same() { [[ $1 == "$2" ]] || diag "got:"$'\n'"$1"$'\n'"want:"$'\n'"$2"; [[ $1 == "$2" ]]; }
-OLD="SELECT gen, rows, dirty, dead_rows FROM sift.col_segments('facts_idx') WHERE kind = 'immutable' ORDER BY gen"
+# col_maintain first promotes the write buffer into a segment of a later generation, which the log may or may not have kept when the rewrite PANICs (as
+# for the orphan partition below): "untouched" is of the segments there were before
+old() { sql pc "SELECT gen, rows, dirty, dead_rows FROM sift.col_segments('facts_idx') WHERE kind = 'immutable' AND gen <= $MAXGEN ORDER BY gen"; }
+MAXGEN=$(sql pc "SELECT max(gen) FROM sift.col_segments('facts_idx')")
 HEAP=$(answer off)
-BEFORE=$(sql pc "$OLD")
+BEFORE=$(old)
 check "scattered: the rewrite is due and the answers are the heap's" test "$(due)|$(answer on)" == "dirty units|$HEAP"
 
 SIFT_TMP=$(dir pc) leak_expect 2 'PANIC:'
@@ -39,7 +42,7 @@ SIFT_TMP=$(dir pc) leak_expect 2 'terminated by signal 6'
 check "the rewrite PANICs once the first partition is written" maintain_panics
 check "the server restarts through crash recovery" restarted
 check "the index verifies after the crash" test -z "$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)"
-check "the segment the rewrite was to replace is untouched" same "$(sql pc "$OLD")" "$BEFORE"
+check "the segment the rewrite was to replace is untouched" same "$(old)" "$BEFORE"
 check "the answers are the heap's and the rewrite is still due" test "$(answer on)|$(due)" == "$HEAP|dirty units"
 
 # the partition the first step wrote is an orphan the log may or may not have kept: two VACUUMs leave no block unaccounted for
@@ -52,10 +55,11 @@ check "the index verifies, the answers are the heap's and every block is account
 # the churn of the newest rows dirties the last partition: its rewrite PANICs after it wrote its partition, the other three are as they were
 churn 76000 2
 sql pc "CHECKPOINT" >/dev/null
+MAXGEN=$(sql pc "SELECT max(gen) FROM sift.col_segments('facts_idx')")
 HEAP=$(answer off)
-BEFORE=$(sql pc "$OLD")
+BEFORE=$(old)
 check "the window of churn makes the last partition due" test "$(due)" == "dirty units"
 check "the rewrite of that partition PANICs too" maintain_panics
 check "the server restarts" restarted
-check "the partitions are as they were, the answers the heap's, the index verifies" same "$(sql pc "$OLD")|$(answer on)|$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)" "$BEFORE|$HEAP|"
+check "the partitions are as they were, the answers the heap's, the index verifies" same "$(old)|$(answer on)|$(sql pc "SELECT sift.col_verify('facts_idx', true)" 2>&1)" "$BEFORE|$HEAP|"
 finish
