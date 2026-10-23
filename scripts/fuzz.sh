@@ -23,7 +23,8 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 eval "$("$REPO/scripts/pgtest.sh" env)"
-export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=1
+# LeakSanitizer is Linux only: ASan on macOS stops at start when asked for it
+export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=$([[ $(uname -s) == Linux ]] && echo 1 || echo 0)
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$TMP/fuzz
 SCALE=10 SEED=1 BUDGET=0

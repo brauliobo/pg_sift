@@ -18,6 +18,7 @@ sift_cpu_register(SiftDispatchRebind fn)
 void
 kt_cpu_init(void)
 {
+#if defined(__x86_64__)
 	uint32		f = 0;
 	const uint32 avx2 = SIFT_CPU_AVX2 | SIFT_CPU_BMI2 | SIFT_CPU_POPCNT;
 	const uint32 avx512 = avx2 | SIFT_CPU_AVX512 | SIFT_CPU_AVX512_VPOPCNT | SIFT_CPU_AVX512_VBMI2;
@@ -33,6 +34,7 @@ kt_cpu_init(void)
 	sift_cpu.flags = f;
 	sift_cpu.detected = (f & avx512) == avx512 ? SIFT_SIMD_AVX512 :
 		(f & avx2) == avx2 ? SIFT_SIMD_AVX2 : SIFT_SIMD_SCALAR;
+#endif
 	sift_cpu.active = sift_cpu.detected;
 	sift_kernels_init();
 }

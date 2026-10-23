@@ -41,9 +41,9 @@ DSAN    += -fno-sanitize=pointer-overflow
 endif
 DEFS    ?= -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
 COLZ    ?= -lzstd -llz4
-CFLAGS  += -std=gnu11 -O1 -g $(SAN) -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I. -I$(PGINC) $(DEFS) -D_GNU_SOURCE
-LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon
+CFLAGS  += -std=gnu11 -O1 -g $(SAN) $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
+           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I. -I$(PGINC) $(SIFT_PGCPP) $(DEFS) -D_GNU_SOURCE
+LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon $(SIFT_PGLIBS)
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
 CORE     = col/codec col/codec_policy col/codec_write col/codec_parse col/codec_blob col/codec_kern col/codec_avx2 col/codec_avx512 col/compress col/kern col/kern_avx2 \
