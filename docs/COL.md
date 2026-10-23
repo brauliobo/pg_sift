@@ -432,7 +432,7 @@ choice (a mode after the name of a column, not a second option); `point_columns`
 When a unit is served from its list or bitmap for a `count(DISTINCT k)`: the aggregate has no `GROUP BY` key (it may sit beside `count(*)`, `sum` and the other aggregates of the pre-aggregates), the
 unit is exact (every row live and visible to the scan: not a row of a write buffer, no dead row) and every filter holds for the whole unit, that is, the zone (minimum and maximum) of each
 conjunct's leaf lies inside the predicate. A filter that cuts through a unit's zone, a unit with a dead row and a superunit (its members are tried one by one) are scanned as before: the
-list is of all the rows of the unit and is not repaired for a row a filter or a delete removes. The answers are those of the normal plan (`col_key_presence` checks 20 shapes three ways).
+list is of all the rows of the unit and is not repaired for a row a filter or a delete removes. The answers are those of the normal plan (`col_key_presence` checks 20 shapes three ways). A unit that keeps no list or bitmap of the leaf (its keys are beyond the 3%) is answered from the histogram of the cube when the leaf is a dim of it too, so a list in some units never makes the others scan (`agg_key_cube_fallback`).
 
 Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 3 in a segment of minor 10 or more and ends with the offset and the bytes of the
 keys. The section is a header `{u32 'COLT', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}` (kinds: bit 0 some unit has an exact set, bit 1 a filter, bit 2 a list or bitmap; a hint that lets a wide range skip a leaf of filters) per leaf (ascending) and per leaf
