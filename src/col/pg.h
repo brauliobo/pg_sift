@@ -118,7 +118,7 @@ typedef struct SiftColOptions
 	int			key_presence;	/* offset of the "key_presence" string (the leaves that keep every distinct key of a unit as a bitmap, docs/COL.md 2.15), 0 = none */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string (the leaves that get a point directory in every segment, docs/COL.md 2.17), 0 = none */
-	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored to be searched in place (column format minor 14) */
+	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */

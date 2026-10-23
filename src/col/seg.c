@@ -474,7 +474,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint6
 	return to - from;
 }
 
-/* Where the dictionary of leaf col lies when it is stored plain or for a lookup (forms 0 and 2); NULL for the compact form, which is read whole */
+/* Where the dictionary of leaf col lies when it is stored plain or in blocks (forms 0, 2 and 3); NULL for the compact form, which is read whole */
 static DictLook *
 dict_look(SiftColSegment *seg, int col)
 {
@@ -494,7 +494,7 @@ dict_look(SiftColSegment *seg, int col)
 	if (len < DICT_HEAD)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	seg_read(seg, off, DICT_HEAD, head);
-	if (head[0] != DICT_LOOKUP && head[0] != DICT_PLAIN)
+	if (head[0] != DICT_LOOKUP && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = MemoryContextAllocZero(seg->mcxt, sizeof(DictLook));
 	l->seg = seg;
@@ -527,13 +527,18 @@ dict_look(SiftColSegment *seg, int col)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
 		l->blk_len = blen;
-		l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
-		if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
+		if (head[0] == DICT_LOOKUP)
+		{
+			l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
+			if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
+				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			l->look = (SiftCDictLook) {look_find, look_match};
+			l->stub.n = l->n;
+			l->stub.look = &l->look;
+			l->searchable = true;
+		}
+		else if (l->blk_at + blen > off + len)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-		l->look = (SiftCDictLook) {look_find, look_match};
-		l->stub.n = l->n;
-		l->stub.look = &l->look;
-		l->searchable = true;
 	}
 	pv->look[col] = l;
 	return l;

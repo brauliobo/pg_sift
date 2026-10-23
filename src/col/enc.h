@@ -49,6 +49,7 @@ typedef struct SiftCDict
 	uint32		finds;			/* linear finds so far, before the table is worth building */
 	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
 	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
+	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 } SiftCDict;
@@ -103,19 +104,23 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_PLAIN		0
 #define DICT_STRS		1
 #define DICT_LOOKUP		2
+#define DICT_BLOCKS		3
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
-#define DICT_BLOCK		32			/* strings in a block of the searched form: the unit of compression and of a read in place */
+#define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
 #define DICT_BLOCK_RAW_MAX	(DICT_BLOCK * (SIFT_COL_DICT_MAX_ENTRY + 1))	/* the most bytes of a block before compression: a length and the string of each */
 #define DICT_BLOCK_HEAD		4			/* u8 algorithm (0: raw, else SIFT_CC_ALG_*), u8 0, u16 raw bytes */
 /*
  * DICTS section entry: u32 form, u32 n, then the plain dictionary (u32 off[n + 1], bytes) or, when the policy is not "none" and it is
- * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. lookup: the form that is
- * searched in place (docs/COL.md 2.15): u32 form 2, u32 n, u32 length of every string (0: they differ), u32 bytes of the strings, u32 boff[blocks + 1],
- * the blocks of DICT_BLOCK strings each (a length byte for each string unless they have one length, then the strings, compressed when that is smaller;
- * DICT_BLOCK_HEAD bytes of header), u32 code[n] in byte order of the strings (4-aligned)
+ * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. form: 0 for these, or the form that
+ * is read in place (docs/COL.md 2.15): u32 form 3 (DICT_BLOCKS), u32 n, u32 length of every string (0: they differ), u32 bytes of the strings,
+ * u32 boff[blocks + 1], the blocks of DICT_BLOCK strings each in code order (a length byte for each string unless they have one length, then the strings,
+ * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned),
+ * which the search of a string reads
  */
-extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringInfo out);
+extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
+/* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
+extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);

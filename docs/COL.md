@@ -46,7 +46,7 @@ of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index with the reloption `set_columns`, under the same conditions; 15 for a segment whose units hold the key presence of a leaf (section 2.16), written only for an index with the reloption `key_presence`, under the same conditions; 13 for a segment whose units hold the sorted run of a leaf, written only for an index with the reloption `order_columns`, under the same conditions; 14 for a segment with a dictionary of 1,024 strings or more stored for a lookup in place, section 2.15, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index with the reloption `set_columns`, under the same conditions; 15 for a segment whose units hold the key presence of a leaf (section 2.16), written only for an index with the reloption `key_presence`, under the same conditions; 13 for a segment whose units hold the sorted run of a leaf, written only for an index with the reloption `order_columns`, under the same conditions; 14 for a segment with a dictionary of 1,024 strings or more stored in blocks to be read in place, section 2.15, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
   as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -527,60 +527,65 @@ first key of a range, and what is left at n = 1 000 is the heap fetch of the row
 Index size at 1 000 000 rows: 2 bytes a row for each leaf whose rows do not ascend with the column (`int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`, `float4`, `float8` alike:
 2 001 320 bytes each), 1 320 bytes for a leaf that does (`id`, a timestamp loaded in order). An index of 10 columns, 8 of them unordered, grows from 31 875 072 to 48 070 656 bytes (+50.8%).
 
-### 2.15 Dictionary stored for a lookup in place (column format minor 14, 3.3)
+### 2.15 Dictionary stored in blocks, read in place (column format minor 14, 3.3)
 
-A dictionary of the compact form (forms 0 and 1 of section 2.3) is parsed whole by the first scan of a backend that needs a code of the leaf: the cost of the first
-equality or prefix test on a text or uuid column of a million rows (tens to hundreds of milliseconds) is the parse, not the test. A dictionary of
-`CDICT_LOOKUP_MIN` (1,024, the registry limit `dict_lookup_min`) strings or more is written, under `sift.col_format_minor = 14`, in a third form, searched where it lies in the stream,
-for the leaves that ask for it: the option `dict_lookup` is `auto` by default (the leaves named in `point_columns`, `set_columns` or `return_columns`, whose lookups and returned strings
-read it), `on` (every leaf) or `off` (none); a `sift_table` writes it only under `sift.table_dict_lookup`. Every other dictionary has the compact form, because the form is larger (see its cost below):
+A dictionary of the compact form (forms 0 and 1 of section 2.3) is parsed whole by the first scan of a backend that needs a string of the leaf or a code of a string: the first fetch of a
+row's text, or the first equality test on a text or uuid column of a million rows, costs tens to hundreds of milliseconds, the parse, not the read or the test, and the parsed dictionary
+(about 2.5 times its stored size) is kept by the backend up to `dict_cache_kb` (64 MB), half of it for one dictionary. At 200,000 unique strings of 110 bytes a `sift_table` row fetch is 47 ms
+in a new backend (the dictionary is 8.9 MB, 23 MB parsed), and 90 to 96 ms for every statement that reads another unit when the cache cannot hold it (measured with a 16 MB cache; a segment
+of 700,000 such rows has a dictionary over the 32 MB one entry may take): a point fetch whose cost follows the size of the segment. So a dictionary of `CDICT_LOOKUP_MIN` (1,024, the
+registry limit `dict_lookup_min`) strings or more may be written, under `sift.col_format_minor = 14`, in one of two forms that are read where they lie in the stream:
 
 ```
-u32 form = 2, u32 n, u32 fixed, u32 nbytes,
-u32 boff[blocks + 1]  where each block starts, from the first (blocks = ceil(n / 32)),
-blocks               32 strings each in code order (the last fewer): u8 algorithm (0 raw, 2 zstd), u8 0, u16 raw bytes, then
-                     [u8 length[count]  only when fixed = 0] followed by the strings, compressed as a whole when that is smaller,
-(padding to 4 bytes)
-u32 code[n]          the codes in the byte order of their strings (equal strings do not occur: a dictionary has each once)
+form 3 (blocks)      u32 form = 3, u32 n, u32 fixed, u32 nbytes,
+                     u32 boff[blocks + 1]  where each block starts, from the first (blocks = ceil(n / 64)),
+                     blocks               64 strings each in code order (the last fewer): u8 algorithm (0 raw, 2 zstd), u8 0, u16 raw bytes, then
+                                          [u8 length[count]  only when fixed = 0] followed by the strings, compressed as a whole when that is smaller
+form 2 (searched)    form 3, then padding to 4 bytes and u32 code[n], the codes in the byte order of their strings (equal strings do not occur: a dictionary has each once)
 ```
 
-`fixed` is the length of every string when they all have one (a uuid: 16, an md5: 32) and then no lengths are stored; `nbytes` is the bytes of all the strings. A string is read by decompressing its block
-(about 1.3 kB, the one block the backend keeps for the dictionary) and a bisection reads a handful of them; the writer compresses a block with zstd unless the compression policy of the index is `none` or the
-block does not shrink, and a build without zstd writes raw blocks and cannot read compressed ones (the error says so). Codes keep their first-seen
-order, so the units, the zones, the small-set summaries and the sorted runs do not change. A test of a predicate on a stored segment (`sift_cseg_dict_search`) asks the dictionary for
-what it needs and nothing else: an equality or a member of an `IN` list bisects `code[]`, reading about log2(n) strings one at a time (`seg_read` of the page that holds
-them, which the segment keeps pinned), and a prefix or range bisects it twice and reads the codes between, so the work follows the matches. The lookup table of codes the unit
-scan tests (a set of at most 256 codes, or a bit per code of the dictionary) is built as before. The backend's cache of parsed dictionaries is not asked, and nothing is parsed, unless
-the dictionary is already there (a scan that reads the strings, such as a `GROUP BY` of the column, parses and caches it as before). The parser of the form (`sift_cdict_parse`) refuses a length, an
-offset or a code out of range; `sift.col_verify` checks that `code[]` names every code once and that the strings ascend in it.
+`fixed` is the length of every string when they all have one (a uuid: 16, an md5: 32) and then no lengths are stored; `nbytes` is the bytes of all the strings. A string is read by decompressing its
+block (up to 16 kB; the one block the backend keeps for the dictionary): the fetch of a row reads the strings of its codes one by one (`sift_cseg_dict_lazy`, `sift_cseg_dict_get`) and parses nothing, a
+scan that reads many (a `GROUP BY` of the column, a merge) parses it whole as before and a build without zstd writes raw blocks and cannot read compressed ones (the error says so). The blocks are
+compressed with zstd level 1 (the writer makes 3,000 of them for 200,000 strings; the contexts of zstd are reused, `col/compress.c`) unless the compression policy of the index is `none` or the block does not shrink.
+Codes keep their first-seen order, so the units, the zones, the small-set summaries and the sorted runs do not change.
 
-A segment is minor 14 when some dictionary has the form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small, an index that
-asks for none (the default without a lookup structure on a text column) and `dict_lookup = off` are read by the releases that read their other sections, and a 3.2 library refuses a segment with the form with the REINDEX hint (minor 14 is above its 6). An index
-written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new form where the setting allows it. The merge
-of a segment of the new form with one of the old makes a new dictionary and writes it in the new form. The form costs 4 bytes for each code, 4 for each 32 strings, and what the compression of
-blocks of 32 strings saves less than that of the whole dictionary: a dictionary of random uuids, which does not compress, grows by 4 bytes a string, and one of hex digests or words by about a fifth
-(60,000 texts of `'text ' ||` an md5, a `sift_table`: 1.16 MB of segments in the compact form, 1.49 MB in this one; stored uncompressed they took 2.53 MB).
+Form 3 is for the strings of a row. Form 2 is for the search of a string: a test of a predicate on a stored segment (`sift_cseg_dict_search`) asks the dictionary for what it needs and nothing else: an
+equality or a member of an `IN` list bisects `code[]`, reading about log2(n) strings one at a time (`seg_read` of the page that holds them, which the segment keeps pinned), and a prefix or range bisects it twice and
+reads the codes between, so the work follows the matches. The lookup table of codes the unit scan tests (a set of at most 256 codes, or a bit per code of the dictionary) is built as before. The backend's cache of
+parsed dictionaries is not asked, and nothing is parsed, unless the dictionary is already there. A dictionary without `code[]` is parsed on the first test, as the compact one. The parser (`sift_cdict_parse`) refuses a length, an
+offset or a code out of range; `sift.col_verify` checks that a segment with the forms is minor 14 and, for form 2, that `code[]` names every code once and that the strings ascend in it.
 
-That cost is why the form is not the default. Measured on the tip (2026-10-22, 200,000 rows, one segment, `dict_lookup = on` against `off`; the index is `(id, column)`, the second figure
-adds an int, an int, a date and a numeric column):
+Which form a dictionary gets. Form 2 costs 4 bytes for each code and is written for the leaves that ask for it: the option `dict_lookup` is `auto` by default (the leaves named in `point_columns`, `set_columns` or
+`return_columns`, whose lookups and returned strings read it), `on` (every leaf) or `off` (none), and a `sift_table` writes it under `sift.table_dict_lookup` (default off). Form 3 is written for every other
+dictionary of that size when it adds at most 3% to the segment (`write_dicts`, `sift_cdict_blocks_extra`), and then the segment is minor 14. The blocks lose to the compact form what the whole dictionary
+saves by repeating words across strings (short titles and names: +20% to +60% of the dictionary, whether the blocks are 32, 64 or 256 strings and with a zstd dictionary trained on them), and
+tie with it for ids, hashes, uuids and long strings, so those get form 3 and titles keep the compact form. The estimate is from 16 blocks and the first megabyte (the estimate is above the real
+extra for what it accepts); a dictionary whose estimate is clear is written once, in the form it got, and only one in between is written in both and the smaller allowed one kept. Measured on the tip
+(2026-10-22, 200,000 rows, one segment; the index is `(id, column)`):
 
-| column | dictionary compact / stored (bytes) | index growth, narrow | index growth, with four more columns | first query of a new backend, equality: stored / compact (ms) |
-|---|---|---|---|---|
-| 20,000 distinct titles (43 bytes) | 319,080 / 591,376 | +40.0% | +15.9% | 1.99 / 5.45 |
-| 100,000 distinct titles | 1,595,848 / 2,955,888 | +74.8% | +48.5% | 1.99 / 14.83 |
-| 200,000 unique, 18 bytes | 1,871,968 / 2,888,632 | +51.4% | +34.3% | 2.23 / 10.20 |
-| 200,000 unique, 37 bytes | 3,645,376 / 4,738,864 | +29.1% | +23.0% | 2.96 / 15.80 |
-| 200,000 uuids | 3,200,048 / 4,050,024 | +25.6% | +19.9% | 55.4 / 59.0 (a count; by the access method 1.45 / 8.24) |
-| 1,024 distinct, 12 bytes | 928 / 7,760 | +5.9% | +0.7% | 1.78 / 2.15 |
+| column | compact dictionary (bytes) | blocks | index growth if blocks were always written | written by default | index growth, form 2 |
+|---|---|---|---|---|---|
+| 20,000 distinct synthetic titles | 319,032 | 485,536 | +21.3% | compact | +31.9% |
+| 100,000 distinct synthetic titles | 1,595,784 | 2,427,304 | +47.2% | compact | +69.9% |
+| 71,049 distinct titles of real text | 809,872 | 1,306,024 | +30.1% | compact | +45.8% |
+| 131,226 distinct names of real text | 913,392 | 1,225,880 | +18.6% | compact | +50.5% |
+| 200,000 unique, 18 bytes | 1,871,968 | 1,941,280 | +3.4% | compact | +44.4% |
+| 200,000 unique, 37 bytes | 3,645,376 | 3,730,688 | +2.2% | blocks | +23.6% |
+| 200,000 unique, 110 bytes | 8,941,560 | 8,773,864 | -1.9% | blocks | +7.0% |
+| 200,000 uuids | 3,200,048 | 3,225,024 | +0.8% | blocks | +25.1% |
+| 1,024 distinct, 12 bytes | 928 | 2,736 | 0% | compact | +10.0% |
 
-Warm queries are the same or slower (a dictionary tested more than 32 times is parsed and cached, and until then a lookup reads blocks), so the form buys the first statement of a backend and nothing
-after it; the 4-client write mix of a `sift_table` did not move (3,528 tps before the form, 3,186 with it, 3,627 with the in-place row fetch). A `sift_table` of the same columns grows by 36.7% (titles),
-63.1%, 35.4%, 23.7% and 2.4% (its segments each carry their own dictionary), and a uuid column of a `sift_table` has no dictionary. A simulation of the block size and of a `code[]` of
-`ceil(log2 n)` bits (bytes of the dictionary, 20,000 titles / 200,000 unique 18-byte / 200,000 unique 37-byte: 546,407 / 2,895,670 / 4,436,126 as it is, 503,907 / 2,545,670 / 4,086,126 packed,
-449,690 / 2,209,642 / 3,729,656 with blocks of 256 strings packed, against 309,446 / 1,850,774 / 3,534,044 compact) says no tuning gets the form under a few percent of such an index: the permutation of
-the byte order costs at least log2 n bits a string.
+The `sift_table` of 200,000 orders with a 110-byte unique text and a 20,000-title column (segment 10.1 MB) grows by 0.7% with the forms it got, and the fetch of a row in a new backend takes 1.0 ms
+for the first statement, 1.2 ms for a page of 50 rows (47.4 and 58.7 ms in the compact form), whether the cache holds 64 or 16 MB (in the compact form every statement that reads a new unit parses again:
+89 to 96 ms at 16 MB), with 8 kB of the backend's memory for the dictionary where the parsed one is 23 MB; warm, a row is 0.04 ms and a page of 50 rows 0.28 ms (0.11 ms parsed: each row decompresses its block). Form 2 keeps the
+benefit it had for a search (the first equality on a new backend: 3.5 ms at 20,000 titles, 12.8 ms at 100,000, 8 to 18 ms unique, 0.4 ms at 1,024 saved) at the sizes of the last column; warm queries
+are the same or slower and the 4-client write mix of a `sift_table` did not move (3,528 tps before the form, 3,186 with it, 3,627 with the in-place row fetch).
 
-A `sift_table` row fetch (`sift_tbl_gscan_fill`) takes the strings of a segment with such a dictionary the same way, one at a time from the stream (`sift_col_read_codes`, `sift_col_code_str`), while the strings read from the segment are fewer than a sixteenth of its dictionary (the same count as the reads of `sift_col_read_text`); then the dictionary is loaded and cached and the reads come from it.
+A segment is minor 14 when some dictionary has either form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small or compress across strings
+and `sift.col_format_minor` 13 or less are read by the releases that read their other sections, and a 3.2 library refuses a segment with the forms with the REINDEX hint (minor 14 is above its 6, as
+the minors 7 to 12 that 3.3 writes by default are). An index written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new
+forms where the setting allows it. The merge of segments of the new forms with others makes a new dictionary and gives it a form by the same rule.
 
 ### 2.16 Key presence of a leaf in a unit (column format minor 15, 3.3; opt-in)
 
@@ -953,7 +958,7 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 - 2026-10 (col minor 6, complete kinds): `SIFT_COL_FORMAT_MINOR` 6, `SIFT_COL_FORMAT_KINDS`, `sift_col_write_minor` (the minor of a segment from the setting, the schema's `kinds` and `wide`, and whether every input keeps its kinds), `sift_cseg_kinds_exact`, `SiftColLeafStats.nokinds` and `SiftSrcStats.nokinds[]`; `unit_kinds` trusts minor 6 and batches without uncertain kinds only; `sift.col_format_minor` takes 3, 4 or 6; the leaf statistics cache of an index is keyed by its relfilenumber and the format of its segments (REINDEX starts the generations over).
 
 - 2026-10 (col minor 15, key presence): `SIFT_COL_FORMAT_MINOR` 15, `SIFT_COL_FORMAT_PRESENCE`; the `COLT` blob kind `SIFT_CSET_PRES` (3) and the record kinds bit `SETS_PRES`, `SiftCPaggSpec.pres`, `sift_cseg_presence`, `sift_col_unit_presence`, `SiftSrcPresence`/`unit_presence`, `dist_or_words`; no directory version change (the `COLP` directory is version 5 from minor 13).
-- 2026-10 (col minor 14, dictionaries stored for a lookup in place): `SIFT_COL_FORMAT_MINOR` 14, `SIFT_COL_FORMAT_DICTIDX`, the dictionary form `DICT_LOOKUP` (`sift_cdict_serialize(.., lookup, ..)`, `parse_lookup`), `sift_cseg_dict_search` and the `SiftCDictLook` find and match that read the stream, `sift_csorted_range` (the bisections of the sorted order, shared by the parsed and the stored dictionary), the reloption `dict_lookup`, the limit `dict_lookup_min`, the check of `sift.col_verify` (`verify_dicts`). Tests `col_dict_stored`, `col_enc`.
+- 2026-10 (col minor 14, dictionaries stored in blocks to be read in place): `SIFT_COL_FORMAT_MINOR` 14, `SIFT_COL_FORMAT_DICTIDX`, the dictionary forms `DICT_BLOCKS` (form 3, the strings in blocks of `DICT_BLOCK` codes, written by `write_dicts` where `sift_cdict_blocks_extra` says it adds at most 3% to the segment) and `DICT_LOOKUP` (form 2, the blocks and the order; `sift_cdict_serialize(.., form, ..)`, `parse_blocks`), `sift_cseg_dict_search` and the `SiftCDictLook` find and match that read the stream, `sift_csorted_range` (the bisections of the sorted order, shared by the parsed and the stored dictionary), the reloption `dict_lookup`, the limit `dict_lookup_min`, the check of `sift.col_verify` (`verify_dicts`). Tests `col_dict_stored`, `col_enc`.
 - 2026-10 (col minor 13, sorted runs): `SIFT_COL_FORMAT_MINOR` 13, `SIFT_COL_FORMAT_RUNS`; the `COLP` directory is version 5 (`runs_off`, `runs_bytes` after the superunit entries) in a minor 13 segment: a `COLR` section laid out like the small-set summaries, per unit and leaf a blob of the rows' ordinals in the order of the key (`col/runs.[ch]`; `sift_cseg_run`, `sift_cseg_run_read`, the `run_info` and `run_read` hooks of the column source, `sift_col_run_info`, `sift_col_run_read`); `SiftCPaggSpec.run[]` and the reloption `order_columns`; `sift.topn_runs`; `sift.col_sections` row `runs`; EXPLAIN `Units Read By Sorted Run`. The sorted run is minor 13 because 11 is the write buffer of a table with a wide row and 12 the superunits.
 - 2026-10 (col minor 12, superunits): `SIFT_COL_FORMAT_MINOR` 12 (11 is the format of the write buffer of a table with a wide row, never of a segment), `SIFT_COL_FORMAT_SUPER`; the `COLP` directory is version 4 (`superdir_off`, `super_bytes` after the small-set summaries) in a minor 12 segment: per group of `superunit` units the page masks, the merged sums of the INT leaves and the merged cube (docs/COL-PREAGG.md section 10); reloption `superunit`, `SiftCPaggSpec.super`, `sift_cseg_super_*`, `sift_col_super`/`sift_col_unit_split`, `SiftColUnit.nsu`, `sift.agg_super`.
 - 2026-10 (col minor 6): zone flag `SIFT_COLZ_JNULL`, `SiftColLeafStats.has_jnull`, `SiftSrcStats.jnull`: the planner knows whether a leaf holds a JSON null, whose cast to a number raises before PostgreSQL 18.

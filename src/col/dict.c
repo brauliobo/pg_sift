@@ -327,14 +327,13 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
  */
 
 /*
- * The form searched in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a
- * string is one read of its block, the work of a bisection is a few of them), and the codes in byte order of the strings
+ * The forms read in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a string
+ * is one read of its block), and for DICT_LOOKUP the codes in byte order of the strings (the work of a bisection is a few block reads)
  */
 static void
-serialize_lookup(SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
+serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out)
 {
-	uint32		form = DICT_LOOKUP,
-				fixed = d->n > 0 ? cdict_len(d, 0) : 0,
+	uint32		fixed = d->n > 0 ? cdict_len(d, 0) : 0,
 				nbytes = (uint32) d->nbytes,
 				nblk = (d->n + DICT_BLOCK - 1) / DICT_BLOCK,
 				zero = 0;
@@ -349,7 +348,7 @@ serialize_lookup(SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
 	for (uint32 c = 1; c < d->n && fixed != 0; c++)
 		if (cdict_len(d, c) != fixed)
 			fixed = 0;
-	if (d->sorted == NULL)
+	if (form == DICT_LOOKUP && d->sorted == NULL)
 		cdict_sort(d);
 	if (zip)
 		z = palloc(zcap);
@@ -375,7 +374,7 @@ serialize_lookup(SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
 		memcpy(raw + rawlen, d->bytes + d->off[lo], d->off[lo + cnt] - d->off[lo]);
 		rawlen += d->off[lo + cnt] - d->off[lo];
 		if (zip)
-			clen = (uint32) sift_colz_compress(SIFT_CC_ALG_ZSTD, 0, raw, rawlen, z, zcap);
+			clen = (uint32) sift_colz_compress(SIFT_CC_ALG_ZSTD, 1, raw, rawlen, z, zcap);
 		hdr[2] = (uint8) rawlen;
 		hdr[3] = (uint8) (rawlen >> 8);
 		if (clen > 0 && clen < rawlen)
@@ -392,25 +391,90 @@ serialize_lookup(SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
 		boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
 	}
 	memcpy(out->data + tab, boff, (nblk + 1) * sizeof(uint32));
-	while ((out->len - start) % sizeof(uint32))
-		appendStringInfoChar(out, '\0');
-	put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
+	if (form == DICT_LOOKUP)
+	{
+		while ((out->len - start) % sizeof(uint32))
+			appendStringInfoChar(out, '\0');
+		put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
+	}
 	pfree(boff);
 	pfree(raw);
 	if (z)
 		pfree(z);
 }
 
+#define BLOCKS_SAMPLE	16				/* blocks spread over the dictionary that sift_cdict_blocks_extra compresses */
+#define COMPACT_SAMPLE	(1 << 20)		/* bytes from the start of the dictionary that it encodes in the compact form */
+
+Size
+sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes)
+{
+	uint32		nblk = (d->n + DICT_BLOCK - 1) / DICT_BLOCK,
+				ns = Min(nblk, BLOCKS_SAMPLE),
+				fixed = d->n > 0 ? cdict_len(d, 0) : 0,
+				pn = 0;
+	uint8	   *raw = palloc(DICT_BLOCK_RAW_MAX),
+			   *z = NULL;
+	Size		zcap = sift_colz_bound(SIFT_CC_ALG_ZSTD, DICT_BLOCK_RAW_MAX),
+				blocks = 0,
+				plain,
+				compact;
+	bool		zip = pol != NULL && pol->mode != SIFT_CCM_NONE && sift_colz_available(SIFT_CC_ALG_ZSTD);
+
+	for (uint32 c = 1; c < d->n && fixed != 0; c++)
+		if (cdict_len(d, c) != fixed)
+			fixed = 0;
+	if (zip)
+		z = palloc(zcap);
+	for (uint32 k = 0; k < ns; k++)
+	{
+		uint32		lo = (uint32) ((uint64) k * nblk / ns) * DICT_BLOCK,
+					cnt = Min(DICT_BLOCK, d->n - lo),
+					rawlen = 0,
+					clen = 0;
+
+		if (fixed == 0)
+			for (uint32 i = 0; i < cnt; i++)
+				raw[rawlen++] = (uint8) cdict_len(d, lo + i);
+		memcpy(raw + rawlen, d->bytes + d->off[lo], d->off[lo + cnt] - d->off[lo]);
+		rawlen += d->off[lo + cnt] - d->off[lo];
+		if (zip)
+			clen = (uint32) sift_colz_compress(SIFT_CC_ALG_ZSTD, 1, raw, rawlen, z, zcap);
+		blocks += sizeof(uint32) + DICT_BLOCK_HEAD + (clen > 0 && clen < rawlen ? clen : rawlen);
+	}
+	/* a block is the same size wherever it lies; the compact form is not (it compresses better with its length), so it is encoded from the start for as many bytes as it is cheap to */
+	while (pn < d->n && d->off[pn] < COMPACT_SAMPLE)
+		pn++;
+	plain = sizeof(uint32) * (pn + 1) + d->off[pn];
+	compact = plain;
+	if (zip && plain >= SIFT_CC_MIN_WRAP)
+	{
+		StringInfoData e;
+
+		initStringInfo(&e);
+		sift_cc_encode_strs(&e, d->off, d->bytes, pn, pol);
+		compact = Min(compact, (Size) e.len);
+		pfree(e.data);
+	}
+	compact = (Size) ((double) compact * d->nbytes / Max(d->off[pn], 1));
+	blocks = (Size) ((double) blocks * nblk / ns);
+	*compact_bytes = compact;
+	pfree(raw);
+	if (z)
+		pfree(z);
+	return blocks > compact ? blocks - compact : 0;
+}
+
 void
-sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, bool lookup, StringInfo out)
+sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 blocks, StringInfo out)
 {
 	Size		plain = sizeof(uint32) * (d->n + 1) + d->nbytes;
 	uint32		form = DICT_PLAIN;
 	StringInfoData z;
 
-	if (lookup && d->n > 0)
+	if (blocks != 0 && d->n > 0)
 	{
-		serialize_lookup(d, pol, out);
+		serialize_blocks(d, pol, blocks, out);
 		return;
 	}
 	z.data = NULL;
@@ -457,9 +521,9 @@ cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
 	return d;
 }
 
-/* The dictionary of the searched form in memory, with its order (the codes are checked: the order is trusted to find and match, sift.col_verify checks that it is one) */
+/* The dictionary of a blocks form in memory, with its order for DICT_LOOKUP (the codes are checked: the order is trusted to find and match, sift.col_verify checks that it is one) */
 static SiftCDict *
-parse_lookup(MemoryContext mcxt, const uint8 *p, Size len, Size *used)
+parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *used)
 {
 	uint32		head[4],
 				n,
@@ -490,7 +554,9 @@ parse_lookup(MemoryContext mcxt, const uint8 *p, Size len, Size *used)
 		return NULL;
 	boff = palloc(((Size) nblk + 1) * sizeof(uint32));
 	memcpy(boff, p + DICT_HEAD_LOOKUP, ((Size) nblk + 1) * sizeof(uint32));
-	total = (blk0 + boff[nblk] + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) n * sizeof(uint32);
+	total = blk0 + boff[nblk];
+	if (form == DICT_LOOKUP)
+		total = (total + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) n * sizeof(uint32);
 	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
 		pfree(boff);
@@ -564,6 +630,12 @@ parse_lookup(MemoryContext mcxt, const uint8 *p, Size len, Size *used)
 	pfree(raw);
 	if (d == NULL)
 		return NULL;
+	d->blocked = true;
+	if (form == DICT_BLOCKS)
+	{
+		*used = total;
+		return d;
+	}
 	d->stored_order = true;
 	d->sorted = MemoryContextAlloc(mcxt, (Size) n * sizeof(uint32));
 	memcpy(d->sorted, p + (total - (uint64) n * sizeof(uint32)), (Size) n * sizeof(uint32));
@@ -584,8 +656,8 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (len < DICT_HEAD)
 		return NULL;
 	memcpy(head, p, DICT_HEAD);
-	if (head[0] == DICT_LOOKUP)
-		return parse_lookup(mcxt, p, len, used);
+	if (head[0] == DICT_LOOKUP || head[0] == DICT_BLOCKS)
+		return parse_blocks(mcxt, p, len, head[0], used);
 	p += DICT_HEAD;
 	len -= DICT_HEAD;
 	if (head[0] == DICT_STRS)
