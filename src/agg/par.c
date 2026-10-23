@@ -676,10 +676,14 @@ par_receive(AggExec *ex)
 			if (r == SHM_MQ_WOULD_BLOCK)
 				break;
 			if (r == SHM_MQ_DETACHED)
+			{
+				/* a worker that failed sent its error before it exited, but the signal that makes the interrupt raise it may not have been handled yet: read the error queues now, so that the error of the worker is the one raised */
+				ProcessParallelMessages();
 				ereport(ERROR,
 						(errcode(ERRCODE_CONNECTION_FAILURE),
 						 errmsg("sift: a worker of a parallel aggregate stopped without its result"),
 						 errhint("More details may be available in the server log.")));
+			}
 			par_message(ex, w, data, len);
 			any = true;
 		}
