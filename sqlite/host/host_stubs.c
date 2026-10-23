@@ -46,6 +46,30 @@ sift_cseg_dict_asked(SiftColSegment *seg, int col)
 	return UINT32_MAX;
 }
 
+/* ---------- segment heads and zone arrays (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
+
+const SegHead *
+sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHeaderData *h, MemoryContext mcxt)
+{
+	return NULL;
+}
+
+void
+sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
+{
+}
+
+const ZoneArrays *
+sift_cseg_zones_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
+{
+}
+
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
 
 bool
