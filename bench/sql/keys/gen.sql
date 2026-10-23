@@ -39,6 +39,7 @@ CREATE INDEX events_w_bt ON events_w (wid);
 
 -- key sets of n items (keyset) and of n values of the wide key (keyset_w: half of them are in the table, so the list matches rows)
 CREATE TABLE keyset (n int, id int);
+INSERT INTO keyset SELECT 256, id FROM items ORDER BY pg_temp.u(id, 14) LIMIT 256;
 INSERT INTO keyset SELECT 50000, id FROM items ORDER BY pg_temp.u(id, 11) LIMIT 50000;
 INSERT INTO keyset SELECT 500000, id FROM items ORDER BY pg_temp.u(id, 12) LIMIT 500000;
 CREATE INDEX ON keyset (n, id);
