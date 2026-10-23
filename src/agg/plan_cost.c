@@ -41,6 +41,7 @@
 #include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
+#include "storage/bufmgr.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -104,6 +105,9 @@
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows of a flagged unit the source reads again from the heap when no sample of the unit's overflow slots says (statistics: ovf_frac) */
 #define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again (measured at 100,000 items of 3 parts, docs/COL-DIRTY-UNITS.md) */
+#define AGG_VET_PAGE		400.0	/* a heap page the check reads from shared buffers: the buffer lookup, its lock and the line pointers (1 to 1.5 us measured on 1,000 to 24,000 pages, 185 rows or 8 to a page), in the operators AGG_SCAN_SPEED scales */
+#define AGG_VET_OS_PAGE		1000.0	/* ... from the cache of the operating system: the read call and the copy of the page (3.5 us measured, a heap of 185 MB under 16 MB of buffers) */
+#define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
 #define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
@@ -1475,6 +1479,31 @@ group_spill_cost(const SiftAggSpec *s, double groups, double ids, double rows, d
 		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost + runs * ids * AGG_ID_SWEEP * cpu_operator_cost;
 }
 
+/*
+ * The heap check of the rows on pages that are not all-visible (vis is their share), a page at a time: the pages of the units the zones keep
+ * (zone_kept) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
+ * (PostgreSQL's own assumption for it is effective_cache_size), or read from the disk: a sequential read when the scan reaches most of the pages it
+ * passes and a random one when it skips them.
+ */
+static double
+vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
+{
+	double		pages = Max(rel_pages(c), 1.0),
+				vet_pages = vis * Min(Max(pages * zone_kept, 1.0), pages),
+				rows = vis * sel_rows,
+				buffered = Min(NBuffers / pages, 1.0),
+				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
+				touched,
+				disk,
+				op = AGG_SCAN_SPEED * cpu_operator_cost;
+
+	if (vet_pages <= 0)
+		return 0;
+	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
+	disk = seq_page_cost + (random_page_cost - seq_page_cost) * (1.0 - touched / vet_pages);
+	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
+}
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -1521,8 +1550,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		k.scan_cost *= Max(sqrt(input_rel->rows / (k.sel_rows * k.elems)), 1.0);
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	k.scan_cost += k.gen_cost * cpu_operator_cost;
-	/* rows on pages that are not all-visible are checked in the heap, a page at a time: the pages of the units the zones leave, not of the table */
-	vet = vis * Min(k.sel_rows, Max(rel_pages(c) * Min(Max(k.zone_kept, 1.0 / k.units), 1.0), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	/* rows on pages that are not all-visible are checked in the heap */
+	vet = vet_cost(c, vis, k.sel_rows, Min(Max(k.zone_kept, 1.0 / k.units), 1.0)) * (s->topn ? c->topn_frac : 1.0);
 	k.scan_cost += vet;
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);
