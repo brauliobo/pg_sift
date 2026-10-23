@@ -74,6 +74,7 @@
 #include "agg/topn.h"
 #include "core/visibility.h"
 #include "core/popcount.h"
+#include "core/limits.h"
 #include "agg/agg_int.h"
 
 #define DSET_PAIR(g, v)		(UINT64CONST(1) << 63 | (uint64) (g) << 32 | (uint32) (v))
@@ -146,7 +147,7 @@ dist_new(AggExec *ex, bool sgn)
 {
 	Dist	   *d = MemoryContextAllocZero(ex->tcxt, sizeof(Dist));
 
-	d->mode = DD_BITS;
+	d->mode = DD_WORDS;
 	d->sgn = sgn;
 	d->budget = get_hash_memory_limit();
 	d->wmark = PG_INT64_MIN;
@@ -179,7 +180,7 @@ dist_note_spill(AggExec *ex)
 		Dist	   *d = ex->dist[ai];
 		uint64		pairs = 0;
 
-		if (d == NULL || ex->spec->agg[ai].kind != SAA_COUNT_DISTINCT)
+		if (d == NULL || d->mode == DD_WORDS || ex->spec->agg[ai].kind != SAA_COUNT_DISTINCT)
 			continue;
 		if (d->mode == DD_BITS)
 			for (uint32 g = 0; g < n; g++)
@@ -201,7 +202,14 @@ typedef void (*DistFn) (void *arg, uint32 g, uint32 v);
 static void
 dist_walk(const Dist *d, DistFn fn, void *arg)
 {
-	if (d->mode == DD_BITS)
+	if (d->mode == DD_WORDS)
+	{
+		for (uint32 g = 0; g < d->nng; g++)
+			for (uint32 w = 0; w < d->nk; w++)
+				for (uint64 m = d->nw[(size_t) g * d->nk + w]; m; m &= m - 1)
+					fn(arg, g, (uint32) (d->nlo + w * 64 + pg_rightmost_one_pos64(m)));
+	}
+	else if (d->mode == DD_BITS)
 	{
 		for (uint32 g = 0; g < d->ngd; g++)
 		{
@@ -299,15 +307,24 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	}
 	memset(&d->ds, 0, sizeof(DSet));
 	d->mode = to;
+	d->nw = NULL;
+	d->nk = d->nng = 0;
 	d->gd = NULL;
 	d->ngd = d->ncd = 0;
 	d->arena = NULL;
 	d->arena_left = 0;
 	d->bytes = 0;
 	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);	/* the table is at most half full, and a power of 2 */
-	dist_walk(&old, dist_move, &mv);
+	/* a window is aligned to 64 values: its words go into the chunks as words, not a bit at a time */
+	if (old.mode == DD_WORDS && to == DD_BITS)
+		for (uint32 g = 0; g < old.nng; g++)
+			(void) dist_or_words(ex, d, g, old.nlo / 64, (const uint8 *) (old.nw + (size_t) g * old.nk), old.nk);
+	else
+		dist_walk(&old, dist_move, &mv);
 	if (old.mode == DD_BITS)
 		dist_free_bits(&old);
+	else if (old.nw)
+		pfree(old.nw);
 	else if (old.ds.slot)
 		pfree(old.ds.slot);
 }
@@ -532,6 +549,60 @@ dist_bits_slow(AggExec *ex, Dist *d, uint32 g, int64 x)
 	return 1;
 }
 
+/* DD_WORDS: room for group g and the values lo..hi; false when the window would pass the limit, and the caller makes the set a bitmap */
+static bool
+dist_narrow_room(AggExec *ex, Dist *d, uint32 g, int64 lo, int64 hi)
+{
+	int64		maxk = sift_limit(dist_narrow_words, DIST_NARROW_WORDS),
+				nlo = lo & ~(int64) 63,
+				nhi = (hi | 63) + 1;
+	uint32		nk,
+				nng = g < d->nng ? d->nng : Max(Max(g + 1, d->nng * 2), 64);
+	uint64	   *nw;
+
+	if (d->nk)
+	{
+		nlo = Min(nlo, d->nlo);
+		nhi = Max(nhi, d->nlo + (int64) d->nk * 64);
+	}
+	if ((nhi - nlo) / 64 > maxk)
+		return false;
+	/* a window that widens goes to the widest at once: each step copies the words of every group */
+	nk = (uint32) (d->nk && nhi - nlo > (int64) d->nk * 64 ? maxk : (nhi - nlo) / 64);
+	if (nk == d->nk && nng == d->nng)
+		return true;
+	nw = MemoryContextAllocZero(ex->tcxt, (size_t) nng * nk * sizeof(uint64));
+	for (uint32 i = 0; i < d->nng && d->nk; i++)
+		memcpy(nw + (size_t) i * nk + (d->nlo - nlo) / 64, d->nw + (size_t) i * d->nk, d->nk * sizeof(uint64));
+	if (d->nw)
+		pfree(d->nw);
+	d->nw = nw;
+	d->nlo = nlo;
+	d->nk = nk;
+	d->nng = nng;
+	return true;
+}
+
+/* DD_WORDS: the bit of x in group g; 1 if it was not set, 0 if it was, -1 when the set became a bitmap (the pair is not added) */
+static int
+dist_narrow_bit(AggExec *ex, Dist *d, uint32 g, int64 x)
+{
+	uint64	   *w;
+	uint64		m = UINT64CONST(1) << (x & 63);
+
+	if (!d->nk || (uint64) (x - d->nlo) >= (uint64) d->nk * 64 || g >= d->nng)
+		if (!dist_narrow_room(ex, d, g, x, x))
+		{
+			dist_convert(ex, d, DD_BITS);
+			return -1;
+		}
+	w = &d->nw[(size_t) g * d->nk + (x - d->nlo) / 64];
+	if (*w & m)
+		return 0;
+	*w |= m;
+	return 1;
+}
+
 static bool
 dist_hash_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 {
@@ -563,6 +634,13 @@ dist_hash_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 bool
 dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 {
+	if (d->mode == DD_WORDS)
+	{
+		int			r = dist_narrow_bit(ex, d, g, dist_x(d, v));
+
+		if (r >= 0)
+			return r == 1;
+	}
 	if (d->mode == DD_BITS)
 	{
 		int			r = dist_bits_slow(ex, d, g, dist_x(d, v));
@@ -585,6 +663,9 @@ dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, u
 {
 	uint64		n = 0;
 
+	/* whole chunks of another bitmap (a unit's key bitmap, a worker's dense chunk) do not fit a window */
+	if (d->mode == DD_WORDS && nwords > (uint64) sift_limit(dist_narrow_words, DIST_NARROW_WORDS))
+		dist_convert(ex, d, DD_BITS);
 	for (uint64 i = 0; i < nwords;)
 	{
 		int64		xc = (wbase + (int64) i) >> (DB_SHIFT - 6);
@@ -627,6 +708,17 @@ dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 ne
 		if (d->ds.slot)
 			dset_grow(ex, &d->ds, remap);
 		return;
+	}
+	if (d->mode == DD_WORDS && d->nw)
+	{
+		uint64	   *nw = MemoryContextAllocZero(ex->tcxt, (size_t) Max(newcap, 1) * d->nk * sizeof(uint64));
+
+		for (uint32 g = 0; g < Min(oldcap, d->nng); g++)
+			if (remap[g] != UINT32_MAX)
+				memcpy(nw + (size_t) remap[g] * d->nk, d->nw + (size_t) g * d->nk, d->nk * sizeof(uint64));
+		pfree(d->nw);
+		d->nw = nw;
+		d->nng = Max(newcap, 1);
 	}
 	if (d->mode == DD_BITS && d->gd)
 	{
@@ -691,6 +783,58 @@ dist_word(const DistView *vw, uint32 g, int64 x, uint64 *m)
 	return &dir[c][(x >> 6) & (DB_WORDS - 1)];
 }
 
+/*
+ * Do the zones of an integer leaf span more than the widest window? A column that grows with the heap order (a date, a serial) would fit one
+ * for most of the scan and pay for the bitmap at the end: its set starts as one.
+ */
+static bool
+dist_narrow_spans(AggExec *ex, int leaf)
+{
+	SiftSrcZone z;
+
+	if (leaf < 0 || leaf >= ex->nbase || ex->lay->leaf[leaf].vtype != SCV_I32 || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src))
+		return false;
+	return sift_colsrc_zone_range(ex->src, ex->tid_sb_lo, Min(sift_colsrc_nsb(ex->src), ex->tid_sb_hi), leaf, &z) > 0 && !z.inexact &&
+		z.nnull < z.nvals && z.max - z.min >= 64 * sift_limit(dist_narrow_words, DIST_NARROW_WORDS);
+}
+
+/* DD_WORDS: the first batch sets the window; the tuple it stopped at (nsel, or the one that made the set a bitmap) */
+static int
+dist_update_narrow(AggExec *ex, Dist *d, int ai, int64 *cnt, const uint64 *ok, int nsel, const uint32 *v)
+{
+	int64		lo = INT64_MAX,
+				hi = INT64_MIN;
+	int			j;
+
+	if (d->nk == 0)
+	{
+		for (j = 0; j < nsel; j++)
+			if (!ok || sift_colsrc_bit(ok, j))
+			{
+				lo = Min(lo, dist_x(d, v[j]));
+				hi = Max(hi, dist_x(d, v[j]));
+			}
+		if (lo > hi)
+			return nsel;
+		if ((d->sgn && dist_narrow_spans(ex, ex->spec->agg[ai].leaf)) || !dist_narrow_room(ex, d, 0, lo, hi))
+		{
+			dist_convert(ex, d, DD_BITS);
+			return 0;
+		}
+	}
+	for (j = 0; j < nsel && d->mode == DD_WORDS; j++)
+	{
+		int			r;
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if ((r = dist_narrow_bit(ex, d, ex->gid[j], dist_x(d, v[j]))) < 0)
+			break;
+		cnt[ex->gid[j]] += r;
+	}
+	return j;
+}
+
 /* adds the selected values (v[j] of tuple j, in the group ex->gid[j]); the count of a group goes up for each new one */
 void
 dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
@@ -698,8 +842,8 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 	Dist	   *d = ex->dist[ai];
 	int64	   *cnt = ex->acc[ai].n;
 	const uint32 *gid = ex->gid;
+	int			j = d->mode == DD_WORDS ? dist_update_narrow(ex, d, ai, cnt, ok, nsel, v) : 0;
 	DistView	vw = dist_view(d);
-	int			j = 0;
 
 	/* bits that fit the cache are set one by one; past that, a batch at a time: the words are found and prefetched first, since each is a miss */
 	for (; j < nsel && d->mode == DD_BITS && d->bytes < DB_PREFETCH; j++)
