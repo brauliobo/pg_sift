@@ -66,4 +66,8 @@ class Takeaway(unittest.TestCase):
         text = r.takeaway(figs)
         self.assertIn('faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 2 of 2 numbers (10x to 10x)', text)
         self.assertIn('brings no gain (its variant is as fast, within 5%) on 1: b ms `zone_off`', text)
-        self.assertIn('kept the normal plan (the same plan as PostgreSQL\'s, no ratio) on 1: c ms', text)
+        self.assertIn("on 1: c ms", text)
+        slow = self.fig('d', 1.0, 1.5, {}, 'Seq Scan')
+        slow['kept'] = True
+        self.assertEqual(r.same_plan(slow), 'same plan (1.5x slower)')
+        self.assertEqual(r.same_plan(figs[2]), 'same plan')
