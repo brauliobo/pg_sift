@@ -8,9 +8,11 @@
 #
 # Connection: the usual PG* variables (PGHOST, PGPORT, PGUSER), database CHURN_DB (default churn, created if missing).
 # Settings (environment): N rows (50000), CYCLES (6), RATE percent of the live rows touched per cycle (2), MIX upd:del:ins (40:30:30), HOT touch share:newest
-# percent of the ids, e.g. 90:10 (0 = uniform), BATCH rows per transaction (200), ARMS (none worker force reindex), SCN name of the scenario (s1), QUERIES every
+# percent of the ids, e.g. 90:10 (0 = uniform), PAD md5 repeats of the payload (12: a 400-byte pad; 0: a light row), BATCH rows per transaction (200), ARMS (none worker force reindex), SCN name of the scenario (s1), QUERIES every
 # cycle (1) or only the first and last (0). An arm may have index options (ARM_OPTS_<arm>, e.g. "merge_fanin = 4") and session settings for its
 # VACUUM and maintenance steps (ARM_GUC_<arm>, e.g. "sift.col_auto_merge_dirty_pct=10 sift.maintenance_cost_delay=2").
+#
+# CHECKPOINT_EACH=1 checkpoints before the DML of every cycle (every cycle then pays the full-page images of the pages it touches, as a server whose checkpoint interval is a cycle).
 #
 # CHURN_LOG: the server log file of a cluster started with sift.log_min_duration = 0; with it each step also records how many merge steps it ran and the
 # longest (churn.log merges, max_merge_ms): a step holds the maintenance lock for its merge, so that is how long VACUUM and the writers waited at most.
@@ -26,7 +28,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 DB=${CHURN_DB:-churn}
 N=${N:-50000} CYCLES=${CYCLES:-6} RATE=${RATE:-2} MIX=${MIX:-40:30:30} HOT=${HOT:-0} BATCH=${BATCH:-200}
 ARMS=${ARMS:-none worker force reindex} SCN=${SCN:-s1} QUERIES=${QUERIES:-1}
-export PGOPTIONS="-c statement_timeout=60s"
+export PGOPTIONS="-c statement_timeout=60s -c churn.pad=${PAD:-12}"
 q() { psql -X -q -At -d "$DB" -v ON_ERROR_STOP=1 "$@"; }
 
 # arm_psql ARM SQL: a session with the settings of the arm
@@ -63,10 +65,11 @@ maint() {
 	esac
 }
 
-# measure under the perf lock when the host is quiet enough: the timed queries are the only thing that holds it
+# measure under the perf lock when the host is quiet enough: the timed queries are the only thing that holds it (a measure without queries takes none)
 measure() {
 	local a=$1 c=$2 stage=$3 queries=$4
-	flock -o -w 3600 /tmp/sift-perf.lock nice psql -X -q -d "$DB" -v ON_ERROR_STOP=1 -c "set sift.async_maintenance = off" -c "select churn.measure('$SCN','$a',$c,'$stage',$queries)" >/dev/null
+	local lock=(); [[ $queries != true ]] || lock=(flock -o -w 3600 /tmp/sift-perf.lock)
+	"${lock[@]}" nice psql -X -q -d "$DB" -v ON_ERROR_STOP=1 -c "set sift.async_maintenance = off" -c "select churn.measure('$SCN','$a',$c,'$stage',$queries)" >/dev/null
 }
 
 run() {
@@ -84,6 +87,7 @@ run() {
 	done
 	for c in $(seq 1 "$CYCLES"); do
 		for a in $ARMS; do
+			[[ -z ${CHECKPOINT_EACH:-} ]] || q -c checkpoint
 			step "$a" "$c" dml "call churn.dml('$a', $c, $RATE, $upd, $del, $ins, $hot, $hotpct, $BATCH)"
 			measure "$a" "$c" dml false
 			step "$a" "$c" vacuum "vacuum (analyze) ev_$a"

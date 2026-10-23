@@ -179,7 +179,7 @@ extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
 extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
-extern PGDLLIMPORT double sift_col_auto_merge_min_churn_pct;
+extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;
 extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
@@ -187,6 +187,7 @@ extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */
 #define SIFT_COL_GATE_HELD	1
+#define SIFT_COL_GATE_WAL	2
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);

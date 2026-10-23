@@ -110,8 +110,9 @@ SELECT sift.col_maintain('facts_b_col');
 ROLLBACK;
 SELECT sift.col_maintain('facts_b_col') AS rewritten, sift.col_maintenance_due('facts_b_col') AS due_again;
 
--- sift.col_auto_merge_min_churn_pct: the rewrite of the server's own waits until that share of the rows changed since the last rewrite (here 1% updated, so
--- about 2% of the rows are dead or new); the call from a session does not wait, and neither does the promotion of a write buffer
+-- sift.col_auto_merge_wal_pct: the rewrite of the server's own waits until the server has written 100 / that percent times the bytes of the index since the
+-- index was written (here a thousandth of a percent: a hundred thousand times, which this cluster never writes); the call from a session does not wait,
+-- and neither does the promotion of a write buffer
 CREATE TABLE facts_d (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_d SELECT * FROM facts_a ORDER BY id LIMIT 40000;
 CREATE INDEX facts_d_col ON facts_d USING sift_col (id, key, kind, amount);
@@ -120,11 +121,13 @@ UPDATE facts_d SET amount = amount + 1 WHERE id % 100 = 1;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_d;
 CREATE FUNCTION fa_churn_due(idx regclass, pct numeric, automatic bool) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.col_auto_merge_min_churn_pct', pct::text, true), set_config('sift.col_auto_merge_buffer_pct', '100', true);
+	PERFORM set_config('sift.col_auto_merge_wal_pct', pct::text, true), set_config('sift.col_auto_merge_buffer_pct', '100', true);
 	RETURN coalesce(sift.col_maintenance_due(idx, automatic), 'not due');
 END $$;
-SELECT fa_churn_due('facts_d_col', 0, true) AS no_wait, fa_churn_due('facts_d_col', 1, true) AS at_1, fa_churn_due('facts_d_col', 4, true) AS at_4,
-       fa_churn_due('facts_d_col', 4, false) AS at_4_explicit;
+SELECT fa_churn_due('facts_d_col', 0, true) AS no_budget, fa_churn_due('facts_d_col', 0.001, true) AS over_budget,
+       fa_churn_due('facts_d_col', 0.001, false) AS over_budget_explicit;
+-- and sift.col_maintenance_status says what it waits for
+SELECT set_config('sift.col_auto_merge_wal_pct', '0.001', true) IS NOT NULL AND EXISTS (SELECT 1 FROM sift.col_maintenance_status('facts_d_col') m, unnest(m.blocked_by) b WHERE b LIKE '%col_auto_merge_wal_pct%') AS status_names_the_budget;
 DROP FUNCTION fa_churn_due(regclass, numeric, bool);
 
 -- only the write buffer is large: promoting it is what the rewrite does, the segment the last rewrite made stays and the answers do not change
@@ -142,7 +145,16 @@ SELECT sift.col_maintenance_due('facts_e_col') AS due_again;
 SELECT 'promoted' AS step, * FROM fa_state('facts_e');
 SELECT sift.col_verify('facts_e_col', true);
 
-DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e;
+-- on, within 5% of the WAL, unless the server says otherwise (the test clusters turn it off and the budget away)
+SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.col_auto_merge', 'sift.col_auto_merge_wal_pct') ORDER BY name;
+
+-- CREATE INDEX says what the worker does with the index and how to stop it
+SET sift.col_auto_merge = on;
+CREATE TABLE facts_f (LIKE facts_a);
+CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
+RESET sift.col_auto_merge;
+
+DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f;
 DROP FUNCTION fa_state(text);
 DROP FUNCTION fa_index(regclass);
 DROP FUNCTION fa_due(regclass, int, numeric, numeric);

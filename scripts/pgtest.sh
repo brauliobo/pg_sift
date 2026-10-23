@@ -79,6 +79,10 @@ conf() {
 	# the background pass of a sift_table is on by default; a test counts the segments, blocks and dead rows its own statements leave, so the
 	# clusters run without it as without autovacuum, and the tests of the pass switch it on
 	echo "sift.table_auto_defrag = off"
+	# likewise the worker that vacuums the tables of sift_col indexes and rewrites the indexes (on by default)
+	echo "sift.col_auto_merge = off"
+	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
+	echo "sift.col_auto_merge_wal_pct = 0"
 	# 19 can aggregate below a join (eager aggregation) and prices that plan under some of those of the pushdown tests, which then keep the normal plan
 	(( PG_MAJOR < 19 )) || echo "enable_eager_aggregate = off"
 	(( PG_MAJOR >= 18 )) || return 0

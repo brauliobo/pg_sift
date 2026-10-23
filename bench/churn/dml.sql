@@ -38,7 +38,7 @@ begin
 	while i <= n_ins loop
 		execute format($f$insert into %I select %s + g, timestamptz '2026-04-01' + (%s - 1) * interval '1 day' + g * interval '1 second', mod(abs(hashint8(g * 31 + %s)::bigint), 10000)::int,
 			'cat_' || chr(97 + mod(g, 8)), (mod(abs(hashint8(g * 17 + %s)::bigint), 100000) / 100.0)::numeric(12,2),
-			jsonb_build_object('m', mod(g, 1000) / 100.0, 'tag', 'catg_' || chr(97 + mod(g, 5)), 'pad', repeat(md5(g::text), 12)) from generate_series($1, $2) g$f$,
+			jsonb_build_object('m', mod(g, 1000) / 100.0, 'tag', 'catg_' || chr(97 + mod(g, 5)), 'pad', repeat(md5(g::text), coalesce(nullif(current_setting('churn.pad', true), ''), '12')::int)) from generate_series($1, $2) g$f$,
 			t, maxid, p_cycle, p_cycle, p_cycle) using i, least(i + p_batch - 1, n_ins);
 		commit;
 		i := i + p_batch;
