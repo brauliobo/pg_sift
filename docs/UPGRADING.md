@@ -154,6 +154,10 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
 - The catalog keeps the extension at 3.3 (see "After the downgrade" below). The access methods, `sift.col_verify`, `sift.verify` and the other functions 3.2 has work on the downgraded database (tested), and writes, promotion,
   merge and `REINDEX` by the 3.2 library work.
 - A standby that stays on 3.2 needs steps 2 and 3 on its primary, and `sift.col_format_minor` set there for every later write.
+- **`point_tid_columns` (minor 16).** The segments of such an index are minor 16 and no older library reads them: 3.2, 3.1 and 3.0 refuse them with a format error and the `REINDEX` hint (the matrix test checks the three, and that no answer is ever wrong), and the planner of
+  that library falls back to the other plans only for an index it can open, so an index it refuses fails the query until it is rewritten. The setting of step 2 (6, 4 or 3) writes no point directory, so the `REINDEX` of step 3 drops the heap addresses; the index keeps the option in
+  `pg_class`, which a 3.2 library ignores when it reads (tested) but a restore into 3.2 reports as `unrecognized parameter`. To roll back: `ALTER INDEX x RESET (point_tid_columns)` (before the dump if there is one), then the `REINDEX` of step 3. To go forward again: `ALTER INDEX x SET (point_tid_columns = 'col')`
+  and `REINDEX INDEX x` with the setting reset: the option is not applied to the segments written before it. `REINDEX`, `sift.col_refresh` and the merges of 3.3 keep the option and write minor 16 again (tested).
 - For 3.1 use 4 and for 3.0 use 3 in step 2 and `--to 3.1` or `--to 3.0` in steps 1 and 4 (the matrix test checks that those releases read what the settings 4 and 3 write, not the full sequence).
 
 ### After the downgrade: the catalog, pg_dump and the way forward
@@ -175,7 +179,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 15, its default) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16; the default setting is 15, and minor 16 is written only for an index with `point_tid_columns`) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
