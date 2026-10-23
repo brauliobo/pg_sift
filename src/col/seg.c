@@ -1483,6 +1483,28 @@ sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 	}
 	return true;
 }
+
+/* The same for the point directories: 2 for the header, the records of the leaves and the footer, 1 for the tables of slots and the lists */
+bool
+sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used)
+{
+	const PointLeaf *pl = points_read(seg);
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
+	uint32		hdr[4];
+
+	if (pl == NULL)
+		return false;
+	*off = s->off + PRIV(seg)->dict_end;
+	*len = s->len - PRIV(seg)->dict_end;
+	seg_read(seg, *off, sizeof(hdr), hdr);
+	*used = palloc0(*len);
+	memset(*used, 2, sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN);
+	memset(*used + *len - 16, 2, 16);
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (pl[c].nslots > 0)
+			memset(*used + (pl[c].at - *off), 1, (uint64) pl[c].nslots * sizeof(uint64) + (uint64) pl[c].words * sizeof(uint32));
+	return true;
+}
 #endif
 
 void
