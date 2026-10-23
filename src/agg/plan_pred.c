@@ -257,6 +257,8 @@ use_leaf(AggCtx *c, int leaf)
 	c->cast_pending = 0;
 	c->txt_pending = 0;
 	c->io_pending = 0;
+	if (bms_is_member(leaf, c->used))
+		c->reused = bms_add_member(c->reused, leaf);
 	c->used = bms_add_member(c->used, leaf);
 	c->read = bms_add_member(c->read, leaf);
 	if (leaf_of(c, leaf)->parent >= 0 && leaf_of(c, leaf)->parent != c->group)
