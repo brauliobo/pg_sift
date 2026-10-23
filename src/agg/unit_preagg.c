@@ -888,6 +888,20 @@ preagg_arith(AggExec *ex)
 	return true;
 }
 
+/* the unit answered from the histogram of hdim (its calendar cells when hcal) */
+static bool
+preagg_hist_hdim(AggExec *ex)
+{
+	bool		ok;
+
+	ex->pa.dim = ex->pa.hdim;
+	ex->pa.cal = ex->pa.hcal;
+	ok = preagg_zones(ex) && preagg_hist(ex);
+	ex->pa.dim = -1;
+	ex->pa.cal = false;
+	return ok;
+}
+
 bool
 preagg_unit(AggExec *ex)
 {
@@ -903,22 +917,18 @@ preagg_unit(AggExec *ex)
 		ex->n_rollup_miss += ex->pa_miss;
 		return false;
 	}
+	/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
 	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
-	{
-		bool		ok;
-
-		/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
-		ex->pa.dim = ex->pa.hdim;
-		ex->pa.cal = ex->pa.hcal;
-		ok = preagg_zones(ex) && preagg_hist(ex);
-		ex->pa.dim = -1;
-		ex->pa.cal = false;
-		return ok;
-	}
+		return preagg_hist_hdim(ex);
 	if (!preagg_zones(ex))
 		return false;
 	if (ex->pa.list < 0)
-		return ex->pa.dim < 0 ? preagg_sums(ex) : preagg_hist(ex);
+	{
+		if (ex->pa.dim >= 0)
+			return preagg_hist(ex);
+		/* the sums lack something the unit does not keep (the key list of a leaf of key_columns): its histogram of hdim may hold it */
+		return preagg_sums(ex) || (ex->pa.hdim >= 0 && preagg_hist_hdim(ex));
+	}
 	if (preagg_rollup(ex))
 		return true;
 	/* the unit is clean but its rollup lacks something: scan it now, and ask for the rollup it should have */
