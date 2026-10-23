@@ -69,29 +69,12 @@ sift_vis_nblocks(Relation heap)
 	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
 }
 
-/* The all-visible bit of each page (not its all-frozen bit) among the n words of a map page; the contents of a page are 8-aligned. The popcnt instruction where the CPU has it */
-#if defined(__x86_64__)
-__attribute__((target("popcnt")))
-static uint32
-count_words_popcnt(const uint64 *w, uint32 n)
-{
-	uint32		count = 0;
-
-	for (uint32 i = 0; i < n; i++)
-		count += (uint32) __builtin_popcountll(w[i] & UINT64CONST(0x5555555555555555));
-	return count;
-}
-#endif
-
+/* The all-visible bit of each page (not its all-frozen bit) among the n words of a map page; the contents of a page are 8-aligned. No popcnt instruction: this object is baseline x86-64 (scripts/isa_check.sh) */
 static uint32
 count_allvisible_words(const uint64 *w, uint32 n)
 {
 	uint32		count = 0;
 
-#if defined(__x86_64__)
-	if (sift_cpu.flags & SIFT_CPU_POPCNT)
-		return count_words_popcnt(w, n);
-#endif
 	for (uint32 i = 0; i < n; i++)
 		count += sift_pc64(w[i] & UINT64CONST(0x5555555555555555));
 	return count;
