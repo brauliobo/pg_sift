@@ -707,6 +707,8 @@ extern bool sift_colsrc_can_tids(Oid relam, bool index);
 extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 extern uint32 sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+/* Does the source give the zone of a range of superblocks (zone_range is optional: a source without a top-N has none)? */
+extern bool sift_colsrc_has_zone_range(SiftSrcSource *src);
 extern bool sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
 extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 /* The sorted run of a leaf of the unit (SiftSrcProvider.run_info): false when there is none to use, then the rows of the run [pos, pos + cnt) */
