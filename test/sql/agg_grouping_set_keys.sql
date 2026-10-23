@@ -34,6 +34,19 @@ SELECT * FROM check_query($q$
  LEFT JOIN parsed p ON p.day = d.day
  GROUP BY ROLLUP (p.category, d.day)
 $q$);
+
+-- a constant key: the empty set nulls it in the output (before PostgreSQL 18 only a column of the scan tuple is nulled, never a bare constant; from 18 the planner wraps it and the normal plan answers)
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 'cur'::text AS label, kind, count(*) FROM gs_facts GROUP BY GROUPING SETS ((1, 2), ()) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST
+$q$);
+-- a ROLLUP over a constant and a column; a constant that is no key stays the constant, and so does one read through an expression
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 'cur'::text AS label, 7 AS seven, kind, 'x' || kind AS tagged, count(*) FROM gs_facts GROUP BY ROLLUP (1, kind) ORDER BY 1 NULLS FIRST, 3 NULLS FIRST
+$q$);
+-- two constants, one of them the key of a set of its own
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 1 AS one, 'cur'::text AS label, count(*) FROM gs_facts GROUP BY GROUPING SETS ((1), (2), ())
+$q$);
 DROP FUNCTION check_query(text);
 DROP TABLE gs_facts;
 DROP EXTENSION pg_sift;

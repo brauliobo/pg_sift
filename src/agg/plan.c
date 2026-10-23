@@ -1124,6 +1124,39 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 	return planned;
 }
 
+#if PG_VERSION_NUM < 180000
+/*
+ * A set without a constant key nulls it. PostgreSQL's Agg reads the key as a column of its input, found by its sort-group reference; the output of a
+ * custom scan is matched by expression, and setrefs.c never swaps a bare Const for a column, so the output would keep the constant. A relabel to the
+ * type it has is no Const: the output reads the column of the scan tuple, which the scan sets to NULL in the sets without the key. (The path keeps
+ * its target: the plan above, built for the Const, needs no projection.)
+ */
+static void
+const_keys_as_columns(PlannerInfo *root, CustomScan *cs)
+{
+	foreach_node(TargetEntry, te, cs->scan.plan.targetlist)
+	{
+		bool		key = false;
+
+		if (!IsA(te->expr, Const) || te->ressortgroupref == 0)
+			continue;
+		foreach_node(SortGroupClause, sgc, root->parse->groupClause)
+			key |= sgc->tleSortGroupRef == te->ressortgroupref;
+		if (!key)
+			continue;
+		foreach_node(TargetEntry, st, cs->custom_scan_tlist)
+			if (IsA(st->expr, Const) && equal(st->expr, te->expr))
+			{
+				Node	   *k = (Node *) te->expr;
+
+				st->expr = (Expr *) makeRelabelType((Expr *) copyObject(k), exprType(k), exprTypmod(k), exprCollation(k), COERCE_IMPLICIT_CAST);
+				te->expr = (Expr *) copyObject(st->expr);
+				break;
+			}
+	}
+}
+#endif
+
 static Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
@@ -1137,6 +1170,10 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	cs->scan.scanrelid = 0;
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = copyObject(scan_tlist);
+#if PG_VERSION_NUM < 180000
+	if (root->parse->groupingSets != NIL)
+		const_keys_as_columns(root, cs);
+#endif
 	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
 	cs->methods = &sift_agg_plan_methods;
 	if (root->hasHavingQual && root->parse->havingQual)
