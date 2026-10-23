@@ -81,6 +81,7 @@ typedef struct ColSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
 	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
+	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
 	Relation	heap;
 	Relation	index;
 	Snapshot	snapshot;
@@ -125,6 +126,14 @@ extern bool col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *
 extern uint64 col_set_filters(void *impl, const SiftSrcFilter *f, int nf);
 extern bool col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void col_tolerate_ovf(void *impl, int leaf);
+extern void col_set_raw(void *impl, int leaf);
+
+/* a leaf read through the per-unit dictionary of datums (agg/wide.h) */
+static inline bool
+col_wide(const ColSource *src, int leaf)
+{
+	return src->lay->leaf[leaf].wide && !src->raw[leaf];
+}
 extern bool col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 extern void col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);

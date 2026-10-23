@@ -320,6 +320,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
+	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
 	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
 	src->ugen = 1;
@@ -600,7 +601,7 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint3
 	ColSource  *src = impl;
 
 	
-	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || src->lay->leaf[leaf].wide || unit->nrow != src->unit.nrows)
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows)
 		return false;
 	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
 }
@@ -616,7 +617,7 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	SiftColZone cz;
 
-	if (((ColSource *) impl)->lay->leaf[leaf].wide || ((ColSource *) impl)->unit.nsu > 0)
+	if (col_wide(impl, leaf) || ((ColSource *) impl)->unit.nsu > 0)
 		return false;				/* a NaN is a dictionary entry; a superunit holds no overflow value */
 	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
 	return cz.has_ovf;
@@ -809,6 +810,7 @@ static const SiftSrcProvider col_provider = {
 	.narrow = col_narrow,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
+	.set_raw = col_set_raw,
 	.set_recheck = col_set_recheck,
 	.overflow_raise = col_overflow_raise,
 	.recheck_rows = col_recheck_rows,

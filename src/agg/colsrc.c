@@ -241,6 +241,20 @@ sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf)
 	src->prov->tolerate_ovf(src->impl, leaf);
 }
 
+bool
+sift_colsrc_can_raw(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->set_raw != NULL;
+}
+
+void
+sift_colsrc_set_raw(SiftSrcSource *src, int leaf)
+{
+	src->prov->set_raw(src->impl, leaf);
+}
+
 void
 sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {

@@ -153,7 +153,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 	SiftColLaneInfo info;
 
-	if (l->wide)
+	if (col_wide(src, leaf))
 	{
 		wide_fill(src, leaf, NULL, 0, buf, vec);
 		return;
@@ -331,7 +331,7 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	col_sel(src, unit, bits, &sel);
 	idx = MemoryContextAlloc(src->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&sel, idx);
-	if (src->lay->leaf[leaf].wide)
+	if (col_wide(src, leaf))
 		wide_scatter(src, leaf, &sel, idx, unit->nrow, vec);
 	else
 	{
@@ -350,7 +350,7 @@ col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	SiftColVec	v;
 	ColLeafBuf *b;
 
-	if (src->lay->leaf[leaf].wide)
+	if (col_wide(src, leaf))
 	{
 		b = leaf_buf(src, leaf, n);
 		wide_fill(src, leaf, rows, n, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
