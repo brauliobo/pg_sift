@@ -110,12 +110,11 @@ densities d = 1, 0.25, 0.03 and 291 tuples per page at 0.5:
 |---|---|---|---|---|
 | `bm25_accum` | 258 / 141 | 98 / 98 | 43 / 22 | 1188 / 1000 |
 | `bm25_accum`, tf = 1 | 266 / 117 | 98 / 94 | 41 / 21 | 1125 / 906 |
-| `bm25_sel` | 273 / 164 | 98 / 113 | 41 / 23 | 1250 / 1156 |
 | `prune_gt` | 195 / 78 | 78 / 66 | 41 / 19 | 969 / 938 |
 | `knorm` | 180 / 106 | 74 / 74 | 39 / 23 | 906 / 594 |
 | `max_merge` | 188 / 74 | 70 / 63 | 39 / 20 | 969 / 516 |
 
-`bm25_sel` is 0.86x of scalar at d = 0.25, where most bytes hold one or two slots. `ub_accum` has no NEON kernel (1.0x: the compiler vectorizes the loop as well),
+`bm25_sel` has no NEON kernel: the version written was 0.86x of the scalar loop at d = 0.25, where most bytes hold one or two slots, and no gain end to end. `ub_accum` has none either (1.0x: the compiler vectorizes the loop as well),
 nor have `expand` (a deposit), `tf_decode` (a variable length decode), `select_gt` (a compaction) and `vm_allvisible` (a bit gather): NEON has no instruction for them
 and the scalar loops are what they were.
 
