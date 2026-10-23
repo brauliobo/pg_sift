@@ -61,7 +61,7 @@ s_gap() {
 s_updates() { bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes 200000,1000000 ${DOCS:+--docs}; }
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 s_cases() { bench cases --engines pg_duckdb --rows "$P_ROWS" ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass (docs/results/cases.tsv, the block "What got faster in 3.3")
-s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${DOCS:+--docs}; }   # opt-in: not in ALL_STAGES
+s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }
 minutes() { # STAGE: the minutes it takes when everything is measured
@@ -74,7 +74,7 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     gap) echo "${P_MIN_GAP:-4}" ;;
     search) echo "$P_MIN_SEARCH" ;;
     cases) echo "${P_MIN_CASES:-3}" ;;
-    scale) echo "${P_MIN_SCALE:-240}" ;;
+    scale) echo "${P_MIN_SCALE:-430}" ;;
     sets) echo "${P_MIN_SETS:-25}" ;;
     extras) echo "${P_MIN_EXTRAS:-100}" ;;
   esac
@@ -89,6 +89,7 @@ plan() { # the stages that will run, their minutes, the total against the budget
     if stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
     else printf '  %-12s about %2d min\n' "$s" "$m"; total=$(( total + m )); fi
   done
+  [[ " $STAGES " != *" scale "* ]] || "$BENCH/bench" cases --plan --rows 200000 --scales 1,10,100 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} | sed 's/^/  /' || true   # the points, the disk and the time of the scale stage
   printf 'Total about %d min, budget %s min.\n' "$total" "$BUDGET"
   TOTAL=$total
 }

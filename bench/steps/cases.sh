@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--timeout S] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
-#        bench/bench cases --list | --check [--strict]
+#        bench/bench cases --list | --check [--strict] | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases of the 3.3 optimizations (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
 # EXPLAIN), on PostgreSQL with sift.enable_agg = off (the same table and statement), on the sift variants of its row and, with --engines pg_duckdb, on a pg_duckdb container that holds a
@@ -20,6 +20,7 @@ ROWS=200000 ROUNDS=3 RUNS=5 CPUS=1 DOCS='' KEEP='' ENGINES='' PY=() DISC='' DISC
 while (( $# )); do
   case $1 in
     --list) exec python3 -I "$STEPS/cases.py" list ;;
+    --plan) shift; exec python3 -I "$STEPS/cases.py" plan "$@" ;;
     --discover) DISC=1; shift; DISCOVER=("$@"); break ;;
     --check) shift; exec "$REPO/scripts/check-bench-cases.sh" "$@" ;;
     --rows) ROWS=$2; shift ;;
@@ -42,7 +43,7 @@ export SIFT_TMP=${CASES_TMP:-/var/tmp/sift-cases} SIFT_PORT=${CASES_PORT:-56262}
 export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
-SETTINGS=(shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
+SETTINGS=(max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
           parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB checkpoint_timeout=30min)
 
 cleanup() {
