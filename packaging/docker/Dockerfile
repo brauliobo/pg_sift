@@ -9,7 +9,7 @@ ARG PG_TAG=18
 FROM postgres:${PG_TAG} AS build
 ARG JOBS=4
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential postgresql-server-dev-${PG_MAJOR} liblz4-dev libzstd-dev \
+ && apt-get install -y --no-install-recommends build-essential postgresql-server-dev-${PG_MAJOR} liblz4-dev libzstd-dev libicu-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

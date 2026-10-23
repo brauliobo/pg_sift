@@ -34,7 +34,7 @@ container_nodes() {
 	(cd "$REPO" && git ls-files -z Makefile pg_sift.control 'sql/pg_sift--*.sql' src scripts/harden.mk | tar --null -T - -cf -) | tar -xf - -C "$ctx"
 	cat >"$ctx/Dockerfile" <<-EOF
 		FROM ${PG_IMAGE:-postgres:18}
-		RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev postgresql-server-dev-\$PG_MAJOR
+		RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev libicu-dev postgresql-server-dev-\$PG_MAJOR
 		COPY . /src
 		RUN make -C /src -j4 USE_PGXS=1 install && rm -rf /src
 	EOF
