@@ -38,7 +38,8 @@
 #define VECW		SIFT_AGG_VECW
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
-#define ZONE_SET_MAX	256			/* members of a byte-table IN list that still travel with its zone test */
+#define ZONE_SET_MAX	256			/* members of an IN list that travel with its zone test, at least (zone_set_max) */
+#define ZONE_SET_CAP	(1 << 16)	/* ... and at most */
 #define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
 #define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */

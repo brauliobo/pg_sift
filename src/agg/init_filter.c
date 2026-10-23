@@ -9,12 +9,25 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 
+#include "port/pg_bitutils.h"
+
 #include "agg/part.h"
 #include "agg/wide.h"
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 
-/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, or a hash table of values far apart), sorted */
+/*
+ * The members of an IN list that travel with its zone test. A set prunes the units whose zone holds none of its members: a unit meets one of n
+ * members with probability about 1 - exp(-n / units) when the keys are clustered, so a set of more than a few times the units prunes almost none
+ * and is left to its range. The least is what a few units already gain from a handful of members.
+ */
+static uint32
+zone_set_max(AggExec *ex)
+{
+	return Min(Max(ZONE_SET_MAX, 2 * sift_colsrc_nsb(ex->src)), ZONE_SET_CAP);
+}
+
+/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, a bit table, or a hash table of values far apart), sorted */
 static int64 *
 set_values(const PredState *st, int *n)
 {
@@ -28,6 +41,12 @@ set_values(const PredState *st, int *n)
 			if (st->in_hused[h])
 				vals[(*n)++] = st->in_htab[h];
 		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
+	}
+	else if (st->in_bits)
+	{
+		for (uint64 w = 0; w < (st->in_nbits + 63) / 64; w++)
+			for (uint64 b = st->in_bits[w]; b != 0; b &= b - 1)
+				vals[(*n)++] = (int64) ((uint64) st->in_lo + w * 64 + pg_rightmost_one_pos64(b));
 	}
 	else
 		for (uint32 i = 0; i < st->in_nlut; i++)
@@ -64,10 +83,8 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 		{
 			lo = st->in_lo;
 			hi = st->in_hi;
-			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell. A byte table longer than
-			 * ZONE_SET_MAX is left to its range: the values are sorted again at each begin of a range of units, about 1 us each, and a
-			 * set that long meets the zone of almost every unit */
-			if (!st->in_dense && (st->in_htab || st->in_nv <= ZONE_SET_MAX))
+			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell */
+			if (!st->in_dense && st->in_nv <= zone_set_max(ex))
 				z->vals = set_values(st, &z->nvals);
 		}
 	}
