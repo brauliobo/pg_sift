@@ -377,11 +377,54 @@ plain_reader_stmt(PlannedStmt *stmt)
 	return false;
 }
 
+/*
+ * A plan keeps every path and relation the planner built for it, several times the size of the plan itself, and a statement is planned up to
+ * four times (shared or inline CTEs, as it is or flattened) of which one is kept. Each plan is made in a context of its own, a child of the
+ * caller's, which is deleted when its plan loses: the statement holds the memory of one planning, not of all.
+ */
+static PlannedStmt *
+plan_in_own_context(SIFT_PLANNER_PARAMS, MemoryContext *cx)
+{
+	MemoryContext old;
+	PlannedStmt *stmt;
+
+	*cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan variant", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(*cx);
+	stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
+	MemoryContextSwitchTo(old);
+	return stmt;
+}
+
+/*
+ * The contexts of the plans that lost are deleted when the hook is done: the memory they free then is the executor's to reuse, where a free
+ * between two plans returns it to the system (and the next plan fills fresh pages).
+ */
+static List *discarded;
+
+static void
+discard_plan(MemoryContext cx)
+{
+	discarded = lappend(discarded, cx);
+}
+
+static void
+delete_discarded(void)
+{
+	List	   *dead = discarded;
+
+	discarded = NIL;
+	foreach_ptr(MemoryContextData, cx, dead)
+		MemoryContextDelete(cx);
+	list_free(dead);
+}
+
 /* the plans of a statement with its shared CTEs and with them inlined, and what the scans of the inline plan and the work of the shared one cost */
 typedef struct CteVariants
 {
 	PlannedStmt *plain,
 			   *inlined;
+	MemoryContext plain_cx,
+				inlined_cx;
 	ScanArms	scans;
 	double		plain_cost,
 				work;
@@ -394,11 +437,9 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	const char *outer_variant;
 
 	memset(v, 0, sizeof(*v));
-	v->plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(parse));
+	v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
 	outer_variant = agg_variant_push("inline");
-	v->inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
+	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
 	agg_variant = outer_variant;
 	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	sift_agg_arms(v->inlined->planTree, &v->scans);
@@ -444,6 +485,8 @@ inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
 			sift_plan_scale = saved * (i == 0 ? sqrt(horizon) : horizon);
 			plan_variants(SIFT_PLANNER_ARGS(copyObject(parse)), copyObject(pristine_inline), names, &v);
 			wins = inline_wins(&v);
+			discard_plan(v.plain_cx);
+			discard_plan(v.inlined_cx);
 		}
 	}
 	PG_FINALLY();
@@ -455,8 +498,9 @@ inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
 	return wins;
 }
 
+/* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
 static PlannedStmt *
-plan_cte(SIFT_PLANNER_PARAMS)
+plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 {
 	Query	   *inline_parse,
 			   *pristine = NULL,
@@ -466,8 +510,7 @@ plan_cte(SIFT_PLANNER_PARAMS)
 
 	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
-		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
-			standard_planner(SIFT_PLANNER_ARGS(parse));
+		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
@@ -481,11 +524,15 @@ plan_cte(SIFT_PLANNER_PARAMS)
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
 		inline_won = true;
+		discard_plan(v.plain_cx);
+		*cx = v.inlined_cx;
 		return v.inlined;
 	}
 	if (sift_explain_refusals && v.scans.n > 0)
 		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
 				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work), false);
+	discard_plan(v.inlined_cx);
+	*cx = v.plain_cx;
 	return v.plain;
 }
 
@@ -513,22 +560,28 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	Query	   *flat = NULL;
 	PlannedStmt *plain,
 			   *flatplan;
+	MemoryContext plain_cx,
+				flat_cx;
 
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		flat = copyObject(parse);
 		sift_agg_flatten_laterals(flat);
 	}
-	plain = plan_cte(SIFT_PLANNER_ARGS(parse));
+	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
 	if (flat == NULL)
 		return plain;
-	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat));
-	if (!uses_sift_agg(flatplan->planTree) && !any_sift_agg(flatplan->subplans))
-		return plain;
+	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
-	if (inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans))
+	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
+		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
+		 flatplan->planTree->total_cost < plain->planTree->total_cost))
+	{
+		discard_plan(plain_cx);
 		return flatplan;
-	return flatplan->planTree->total_cost < plain->planTree->total_cost ? flatplan : plain;
+	}
+	discard_plan(flat_cx);
+	return plain;
 }
 
 /*
@@ -542,6 +595,12 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PlannedStmt *stmt;
 
 	hook_ran = true;
+	discarded = NIL;			/* those of a plan that failed are gone with its context */
+	/*
+	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
+	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards).
+	 */
+	parse = copyObject(parse);
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
@@ -551,6 +610,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 		sift_agg_memo_end(memo);
 	}
 	PG_END_TRY();
+	delete_discarded();
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 		stmt->jitFlags = PGJIT_NONE;
 	return stmt;
