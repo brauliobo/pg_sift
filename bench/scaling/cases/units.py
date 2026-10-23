@@ -1,9 +1,12 @@
-"""Units: a table of one row per heap page, so that one unit (256 pages) costs 256 rows. The index of each size is a partial sift_col index on id <= size * 256 (same heap)."""
+"""Units: a table of one row per heap page, so that one unit costs as many rows as it has pages. The index of each size is a partial sift_col index on id <= size * pages (same heap).
+SCALING_UNIT_PAGES is the pages of a unit of the build under test (256, the default; 8 in a build with SIFT_SB_SHIFT=3, which reaches 64k units in 4 GB); the output says it."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import Case, Query
 
-ROWS = 256                                   # rows (= pages) of a unit
+PAGES = int(os.environ.get('SCALING_UNIT_PAGES', 256))
+ROWS = PAGES                                 # rows (= pages) of a unit
+print(f'# units: {PAGES} heap pages a unit', file=sys.stderr)
 IN51 = ', '.join(str(1000 + 37 * i) for i in range(51))
 
 
@@ -22,7 +25,8 @@ def q(name, body, target='flat'):
     return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", target)
 
 
-CASES = [Case('units', [512, 1024, 2048, 4096], setup=setup, at=at, native=False, unit='units', queries=[
+CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 16384, 65536], setup=setup, at=at, native=False, unit='units',
+              check=lambda size: f"select count(*), sum(v) from t where id <= {size * ROWS}", queries=[
     q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g"),
     q('nothing', "count(*), sum(v) from t where id <= {bound} and v > 100000", 'linear'),
     q('count', "count(*) from t where id <= {bound}", 'linear'),
