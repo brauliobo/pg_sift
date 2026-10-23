@@ -52,3 +52,18 @@ class Ranking(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Takeaway(unittest.TestCase):
+    def fig(self, case, native, sift, others, plan):
+        c = type('C', (), dict(id=case))
+        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False)
+
+    def test_wins_ties_kept_plans_and_settings_that_do_not_help(self):
+        import cases_render as r
+        figs = [self.fig('a', 20.0, 2.0, {'scan': 5.0}, 'Top-N'), self.fig('b', 20.0, 2.0, {'zone_off': 1.9}, 'Top-N'), self.fig('c', 1.0, 1.0, {}, 'Seq Scan')]
+        figs[2]['kept'] = True
+        text = r.takeaway(figs)
+        self.assertIn('faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 2 of 2 numbers (10x to 10x)', text)
+        self.assertIn('brings no gain (its variant is as fast, within 5%) on 1: b ms `zone_off`', text)
+        self.assertIn('kept the normal plan (the same plan as PostgreSQL\'s, no ratio) on 1: c ms', text)

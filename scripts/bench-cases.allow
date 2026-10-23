@@ -2,3 +2,18 @@
 # Format: a phrase of the line (it must stay in the Unreleased section), a tab, the reason. A line that a case measures needs no entry here (its row of bench/cases.tsv names it);
 # an entry whose phrase matches no claim, or that has no reason, fails the check. Short on purpose: a speed that can be measured gets a case, not a line here.
 `point_columns` (`sift_col` reloption, default none	an access-method lookup (sift.enable_col_scan on, a few rows returned), timed per query by bench/col_scan.py (kind point, next to the btree, classes and set_columns kinds); the cases of bench/cases time aggregate plans (SiftAgg), which a point lookup does not use
+an index scan of `sift_col` that selects a few rows of a unit	an access-method lookup, timed per query by bench/col_scan.py (kinds point, classes, set); the cases of bench/cases time aggregate plans, which a point lookup does not use
+the `sift.col_*_ops` classes of a `sift_col` index cover boolean	an access-method scan, timed by bench/col_scan.py (kind classes) next to the btree
+a `sift_col` index built with the operator classes `sift.col_int2_ops`	a bitmap index scan, timed by bench/col_scan.py (kind classes) next to the btree
+the aggregate scan counts the tuples of a chunk once	measured in user instructions per execution (2 to 7% of one query), below what the wall-clock rounds of a case resolve; the counts are in the line
+the aggregate scan finds the NULL tuples of an integer	measured in user instructions and branch mispredictions per execution (+1.1% instructions), not in time
+is read by walking the elements the key marks	measured in user instructions (-3.7%), below what the wall-clock rounds of a case resolve
+translated the bound of each partition again	measured in instructions of the start of a scan of 4000 partitions (48 to 30 million), not in time
+the table `VACUUM` honours the cost delay	a throttle: the VACUUM is slower on purpose, as an autovacuum worker is; no speed is claimed for it
+the extension SQL goes from 3.2 to 3.3	an upgrade notice; the numbers in the line are version numbers
+`scripts/plangate.sh`, a plan-choice gate	a test gate that times its own shapes (win, tie or lose at 1 ms) for a human to read; not a benchmark of one optimization
+`test/t/pg_upgrade.sh` runs `pg_upgrade --check`	a test script; the numbers are PostgreSQL versions
+records why a per-unit key presence summary	records a design that was not built; its 7.8x and 2.0x are from a prototype
+leave the visibility map of the table empty	the same measurement as cluster_visibility_map (a scan priced for a heap check after CLUSTER, 320 ms against 82 ms forced)
+the UNION ALL arms of a two-level or fused scan go from 4 to 16	a limit on the width of a plan shape (slug shape_width), not a speed
+the group table of a `Custom Scan (SiftAgg)` is bounded by `hash_mem`	bounds peak memory (VmHWM) and spills by design, so it is slower where it spills; the case would measure memory, which the runner does not

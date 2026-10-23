@@ -74,8 +74,8 @@ class Case:
         return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
 
     def table_index(self):
-        cols = '(%s)' % INDEX_COLUMNS
-        return cols + self.index[len('default'):] if self.index.startswith('default') else self.index
+        m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
+        return '(%s)%s' % (', '.join([INDEX_COLUMNS] + [c[1:] for c in re.findall(r'\+\w+', m.group(1))]), m.group(2)) if m else self.index
 
 
 def read_registry(root=REPO):
@@ -130,7 +130,7 @@ def build(case, rows):
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
-    sql = ';\n'.join(d.format(case.id) for d in ddl) + ';\n' + case.sec.get('setup', '') + ';\n'
+    sql = ';\n'.join(d.format(case.id) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
     if case.opt.get('vacuum', 'yes') == 'yes':
         sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
     psql(sql)
@@ -283,7 +283,7 @@ def summarize(results, cases):
             continue
         speed = float(n['value']) / float(s['value']) if float(s['value']) else float('inf')
         lines.append('%-26s %-10s %10s %10s %7.1fx  %s' % (c.id, m, n['value'], s['value'], speed, s['note'][:60]))
-        if speed < 1:
+        if speed < 1 and n['note'].replace(' NOISY', '') != s['note'].replace(' NOISY', ''):   # the same plan as native's is noise, not a loss
             losses.append('%s: sift %s %s against native %s (%.1fx slower)' % (c.id, s['value'], m, n['value'], 1 / speed))
     if losses:
         lines += ['', 'slower than native on %d of %d numbers:' % (len(losses), sum(len(c.metrics) for c in cases))] + ['  ' + l for l in losses]
