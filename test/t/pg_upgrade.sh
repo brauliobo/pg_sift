@@ -112,7 +112,7 @@ CREATE TABLE facts (id int, g int, n numeric(12,2), t tone, w interval, u uuid, 
 INSERT INTO facts SELECT g, g % 9, g % 1000 / 8.0, (ARRAY['lo', 'mid', 'hi'])[g % 3 + 1]::tone, make_interval(secs => g), md5(g::text)::uuid,
 	timestamptz '2026-01-01' + g * interval '1 minute',
 	jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || g % 4, 'qty', g % 5))) FROM generate_series(1, 5000) g;
-CREATE INDEX facts_col ON facts USING sift_col (id, g, n, t, w, u, ts) WITH (cube_minmax = true, order_columns = 'g, n', key_presence = 'g');
+CREATE INDEX facts_col ON facts USING sift_col (id, g, n, t, w, u, ts) WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g');
 CREATE INDEX facts_json ON facts USING sift_col (id, doc) WITH (paths = 'doc.items[]{category text, qty int4}') $TSC;
 CREATE TABLE tbl (id int, g int, n numeric(12,2), t tone) USING sift_table;
 INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0, (ARRAY['lo', 'mid', 'hi'])[g % 3 + 1]::tone FROM generate_series(1, 5000) g;

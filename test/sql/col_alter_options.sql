@@ -27,13 +27,11 @@ ALTER INDEX ao_paths SET (calendar_columns = 'd');
 ALTER INDEX ao_paths SET (calendar_columns = 'all');
 -- a column that is not in the index, and one of a type the option does not take
 \c
-ALTER INDEX ao_paths SET (set_columns = 'nope');
+ALTER INDEX ao_paths SET (key_columns = 'nope');
 \c
-ALTER INDEX ao_paths SET (set_columns = 'f');
+ALTER INDEX ao_paths SET (key_columns = 'f');
 \c
-ALTER INDEX ao_paths SET (key_presence = 'nope');
-\c
-ALTER INDEX ao_paths SET (key_presence = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
 \c
 ALTER INDEX ao_paths SET (rollup_dims = 'nope, pid');
 \c
@@ -66,7 +64,7 @@ VACUUM ao;
 
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (set_columns = 'pid', key_presence = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;

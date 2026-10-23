@@ -8,6 +8,9 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 900 ELSE 1 + abs(hashint4(i)) % 530 END, 'c' || abs(hashint4(i + 7)) % 6, (i % 100) / 4.0
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (ent_id, cat, amount);
+NOTICE:  sift_col index facts_col keeps the keys of ent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 136 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX facts_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 CREATE TABLE ents (id int PRIMARY KEY, kind text, tier int, score float8) WITH (autovacuum_enabled = false);
 INSERT INTO ents

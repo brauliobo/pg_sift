@@ -25,6 +25,9 @@ SELECT 9000 + i, i, 'wide', jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_
                                                          FROM generate_series(1, CASE WHEN i = 1 THEN 5000 ELSE 40 END) j))
 FROM generate_series(1, 4) i;
 CREATE INDEX items_col ON items USING sift_col (id, parent_id, region, doc) WITH (paths = 'doc.parts[]{k text, tag text, n int4, x float8}');
+NOTICE:  sift_col index items_col keeps the keys of parent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 864 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX items_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE kinds (k text, mk text);
 INSERT INTO kinds VALUES ('a', 'm0'), ('b', 'm0'), ('c', 'm1');
 CREATE TABLE kinds_u (k text PRIMARY KEY, mk text);

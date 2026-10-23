@@ -1,10 +1,9 @@
-# Per-unit key presence: built as an opt-in option (October 2026)
+# Per-unit key presence: key lists and bitmaps, chosen by default (October 2026)
 
 The idea: store in each unit's sidecar the distinct values of a column, so that a flat `count(DISTINCT key)` is the union of the units' sets and reads no key
-chunk. It is the reloption `key_presence` (column format minor 15, [COL.md](../COL.md) section 2.16), off by default, for top-level `int2`, `int4` and `date`
-columns. A unit keeps the keys as a bitmap from its smallest key to its largest, only when that takes at most 3% of the unit's bytes. The unit must be exact and every filter
-of the query must hold for the whole of it; any other unit is scanned as before. Key lists (`k IN (..)`) are not served: the `set_columns` summary of
-[COL.md](../COL.md) section 2.13 prunes nearly as many units as the exact set, and a second structure would add under 1.1x.
+chunk. It is part of the reloption `key_columns` (column format minor 15, [COL.md](../COL.md) section 2.13), for top-level `int2`, `int4` and `date`
+columns. A unit keeps the keys as a bitmap from its smallest key to its largest (or, where the keys are few and spread, a sorted list), only when that takes at most 3% of the unit's bytes. The unit must be exact and every filter
+of the query must hold for the whole of it; any other unit is scanned as before. Equality and `IN` tests are served by the exact set or bloom summary of the same option ([COL.md](../COL.md) section 2.13), which prunes nearly as many units as the exact set; a second structure would add under 1.1x.
 
 ## Measured
 
@@ -39,7 +38,7 @@ window) at 8,130 rows per unit, and would have failed a 5x bar. Repeated alone u
 
 The numbers that decided the density: at 1,020 rows per unit (a wide row) the gain was 2.0 to 2.7x and the sets were 1.7 to 8.2% of the index, a miss on both counts; narrow rows hold 5,000
 to 50,000 rows per unit, where one set is amortised over many more rows. A key list is useful only where a unit holds few of the column's values: `parent_id IN (1 / 10 / 100 keys)`
-read 6.2 / 6.5 / 8.2 ms on zones alone and 5.7 / 7.5 / 9.2 ms with `set_columns`; exact presence keeps 54.2 / 120.9 / 123 of 123 units, and for 6,313 values one key is in 44% of the units or
+read 6.2 / 6.5 / 8.2 ms on zones alone and 5.7 / 7.5 / 9.2 ms with the summary; exact presence keeps 54.2 / 120.9 / 123 of 123 units, and for 6,313 values one key is in 44% of the units or
 more, so no summary can skip them.
 
 A soft-delete filter (`deleted_at IS NULL`) with 1.6% of the rows deleted, spread evenly, covers no unit, so the units are scanned; per-key row counts would repair that at about 2.4x the
@@ -50,3 +49,11 @@ bytes and are not built. A `GROUP BY` of an independent dimension would need a s
 200,000 facts, 442,754 elements, scanned. Of the node's user cycles the distinct is 21.5% (`dist_bits_slow` 16.2%, `dist_chunk_for` 5.3%), `arm_chunk`
 18.7%, `cell_into` 12.6%; the presence summary can remove at most that share (1.0 to 1.2x), and it is not used there. An inline fast path for the bitmap test and set in
 `dist_add` removes 3.6% of the instructions and moves its cycles into `cell_into`: the time is in the miss on the bitmap word of the group, not in the call, so it is not built.
+
+## The default (`key_columns = auto`)
+
+The measurements above name the column. The default picks them: the `int2`, `int4` and `date` columns that are foreign keys or are named `*_id`, are not unique and are not a dimension of the unit's cube (a cube already answers its `count(DISTINCT)`; a list for a `kind_id` of 12 values, ran 0.7x), kept while the lists of all the columns take at most 3% of the unit. The build counts, after the units are written, the columns whose list or bitmap is in at least half of them and writes that set to the option (`auto: parent_id, owner_id`); a `NOTICE` names what it kept and what it left out, with the bytes an explicit list would cost.
+
+Measured on three 200,000-row tables with foreign keys (one backend, interleaved runs): the index grows 1.1%, 1.4% and 1.1%, and `count(DISTINCT fk)` of a kept foreign key runs 2.0x to 8.6x faster. A random key with no repeats (`id`, 200,000 distinct) gets no list: its bitmap or list is over the 3%.
+
+Looking up one key (`WHERE fk = ?`) still goes through the zones and the per-unit summary; the point directory behind `point_columns` is the structure to tune to replace a b-tree there, and `key_columns` is where it will join the choice.

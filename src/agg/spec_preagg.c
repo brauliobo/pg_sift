@@ -121,7 +121,7 @@ pa_dim(const SiftSrcPreagg *pa, int dim)
 	return -1;
 }
 
-/* does the index keep the presence of the integer leaf in its units (key_presence) */
+/* does the index keep the key list or bitmap of the integer leaf in its units (key_columns) */
 static bool
 pa_pres(const SiftSrcPreagg *pa, int leaf)
 {
@@ -585,7 +585,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	for (int i = 0; i < s->naggs; i++)
 		if (distinct_leaf(&s->agg[i], lay))
 		{
-			/* without a key, the units of a leaf with key_presence give its values as a bitmap each (preagg_presence) */
+			/* without a key, the units of a leaf of key_columns give its values as a bitmap each (preagg_presence) */
 			if (s->nkeys == 0 && pa_pres(pa, s->agg[i].leaf))
 				continue;
 			if (cleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))

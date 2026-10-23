@@ -14,7 +14,7 @@ CREATE INDEX items_col ON items USING sift_col (id, kind, grp, val, amt, doc)
 CREATE TABLE events (id int, kind int, parent_id int, cat text, big bigint, val int) WITH (autovacuum_enabled = off);
 INSERT INTO events SELECT g, (g / 100) % 20, g % 500, 'c' || g % 300, g::bigint * 1000, g % 1000 FROM generate_series(1, 1500) g;
 CREATE INDEX events_col ON events USING sift_col (id sift.col_int4_ops, kind sift.col_int4_ops, parent_id sift.col_int4_ops, cat sift.col_text_ops, big sift.col_int8_ops, val sift.col_int4_ops)
-	WITH (write_buffer_limit = 4096, set_columns = 'kind,parent_id,cat');
+	WITH (write_buffer_limit = 4096, key_columns = 'kind,parent_id,cat');
 CREATE TABLE dims (id int, name text) WITH (autovacuum_enabled = off);
 INSERT INTO dims SELECT g, 'n' || g FROM generate_series(1, 50) g;
 ANALYZE events;

@@ -181,7 +181,7 @@ preagg_zones(AggExec *ex)
 }
 
 /*
- * count(DISTINCT leaf) of a leaf with key_presence: the bitmap of the unit's values added to the aggregate's set. False when the unit has none; the values
+ * count(DISTINCT leaf) of a leaf of key_columns: the bitmap or list of the unit's values added to the aggregate's set. False when the unit has none; the values
  * added so far do no harm, the scan of the unit adds them again to a set.
  */
 static bool
@@ -191,7 +191,14 @@ preagg_presence(AggExec *ex, int ai, int leaf)
 
 	if (!sift_colsrc_unit_presence(ex->src, &ex->unit, leaf, &p))
 		return false;
-	ex->acc[ai].n[0] += dist_or_words(ex, ex->dist[ai], 0, p.wbase, p.words, p.nwords);
+	if (p.nkeys > 0)
+	{
+		for (uint32 i = 0; i < p.nkeys; i++)
+			ex->acc[ai].n[0] += dist_add(ex, ex->dist[ai], 0, (uint32) p.keys[i]);
+		pfree((int64 *) p.keys);
+	}
+	else
+		ex->acc[ai].n[0] += dist_or_words(ex, ex->dist[ai], 0, p.wbase, p.words, p.nwords);
 	return true;
 }
 

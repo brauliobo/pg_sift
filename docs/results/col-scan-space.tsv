@@ -1,4 +1,4 @@
 table_rows	columns	index	index_bytes	bytes_per_row
 1000000	a btree on each of id, rnd, (grp, ts), s_short, u, amount	btree (6 indexes)	170221568	170.22
 1000000	id, rnd, grp, ts, s_short, u, amount: one index	sift_col classes	29122560	29.12
-1000000	the same with set_columns = 'id, rnd, s_short, u'	sift_col classes + set_columns	30269440	30.27
+1000000	the same with key_columns = 'id, rnd, s_short, u'	sift_col classes + key_columns	30269440	30.27

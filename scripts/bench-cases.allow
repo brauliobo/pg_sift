@@ -1,7 +1,7 @@
 # CHANGELOG lines that claim a speed and that no benchmark case measures, each with the reason (scripts/check-bench-cases.sh).
 # Format: a phrase of the line (it must stay in the Unreleased section), a tab, the reason. A line that a case measures needs no entry here (its row of bench/cases.tsv names it);
 # an entry whose phrase matches no claim, or that has no reason, fails the check. Short on purpose: a speed that can be measured gets a case, not a line here.
-`point_columns` (`sift_col` reloption, default none	an access-method lookup (sift.enable_col_scan on, a few rows returned), timed per query by bench/col_scan.py (kind point, next to the btree, classes and set_columns kinds); the cases of bench/cases time aggregate plans (SiftAgg), which a point lookup does not use
+`point_columns` (`sift_col` reloption, default none	an access-method lookup (sift.enable_col_scan on, a few rows returned), timed per query by bench/col_scan.py (kind point, next to the btree, classes and key_columns kinds); the cases of bench/cases time aggregate plans (SiftAgg), which a point lookup does not use
 an index scan of `sift_col` that selects a few rows of a unit	an access-method lookup, timed per query by bench/col_scan.py (kinds point, classes, set); the cases of bench/cases time aggregate plans, which a point lookup does not use
 the `sift.col_*_ops` classes of a `sift_col` index cover boolean	an access-method scan, timed by bench/col_scan.py (kind classes) next to the btree
 a `sift_col` index built with the operator classes `sift.col_int2_ops`	a bitmap index scan, timed by bench/col_scan.py (kind classes) next to the btree

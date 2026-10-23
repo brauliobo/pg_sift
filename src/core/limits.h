@@ -137,11 +137,11 @@
 	X(rollup_tuples, "SIFT_PAGG_ROLLUP_TUPLES", "col/preagg.h", SIFT_PAGG_ROLLUP_TUPLES, "tuples", \
 	  "tuples of an explicit rollup in one unit", "the unit has no rollup (it is scanned)", "rollup option", 0) \
 	X(set_keys, "SIFT_CSET_LIMIT", "col/setsum.h", SIFT_CSET_LIMIT, "keys", \
-	  "distinct keys of a set column a unit keeps exactly (default)", "no pruning by the set", "set_limit option", 0) \
+	  "distinct keys of a column of key_columns a unit keeps exactly in a summary, a bloom filter beyond", "a filter instead of the keys", "-", 0) \
 	X(set_keys_max, "SIFT_CSET_LIMIT_MAX", "col/setsum.h", SIFT_CSET_LIMIT_MAX, "keys", \
-	  "largest value of the set_limit option", "option rejected at CREATE or ALTER INDEX", "set_limit option", 0) \
+	  "distinct keys of a stored exact summary", "the summary is a bloom filter", "-", 0) \
 	X(presence_pct, "SIFT_CSET_PRES_PCT", "col/setsum.h", SIFT_CSET_PRES_PCT, "percent", \
-	  "share of a unit's bytes its key presence bitmap may take", "the unit has no presence for the column (it is scanned)", "key_presence option", 0) \
+	  "share of a unit's bytes the key lists and bitmaps of all its key_columns may take together", "a column past the share has no key list or bitmap in the unit (it is scanned)", "key_columns option", 0) \
 	X(super_fan_max, "SIFT_SUPER_MAX_FAN", "col/preagg.h", SIFT_SUPER_MAX_FAN, "units", \
 	  "largest value of the superunit option: units in one group summary", "option rejected at CREATE or ALTER INDEX", "superunit option", 0) \
 	X(shred_spec_bytes, "SIFT_SHRED_MAX_SPEC_BYTES", "col/shred.h", SIFT_SHRED_MAX_SPEC_BYTES, "bytes", \
