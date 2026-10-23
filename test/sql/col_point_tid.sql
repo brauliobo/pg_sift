@@ -111,8 +111,8 @@ SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitma
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pt_t', 1000000000);
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 997);
 
--- the setting 15 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
-SET sift.col_format_minor = 15;
+-- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
+SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, s, u');
 RESET sift.col_format_minor;
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
