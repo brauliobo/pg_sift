@@ -16,6 +16,7 @@
 #include "access/relation.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/index.h"
 #include "executor/tuptable.h"
 #include "funcapi.h"
@@ -51,11 +52,11 @@ int			sift_test_col_refresh_sleep_armed = 0;
 #define WHY_BUFFER	"write buffer rows"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
-bool		sift_col_auto_merge = false;
+bool		sift_col_auto_merge = true;
 int			sift_col_auto_merge_dirty_pct = 30;
 double		sift_col_auto_merge_fragmentation = 2.0;
 double		sift_col_auto_merge_buffer_pct = 1.0;
-double		sift_col_auto_merge_min_churn_pct = 0.0;
+double		sift_col_auto_merge_wal_pct = 5.0;
 int			sift_col_auto_merge_max_active = 0;
 int			sift_col_auto_merge_partition_kb = 0;
 int			sift_col_auto_merge_max_workers = 0;
@@ -619,14 +620,51 @@ vacuum_truncates(Relation index)
 	return sift_col_options(index)->vacuum_truncate;
 }
 
+static bool rewrite_all(const char *why);
+
+/* The LSN of the write of a segment: its header block, written once with the rest of the segment */
+static XLogRecPtr
+header_lsn(Relation index, const SiftSegEntry *e)
+{
+	Buffer		buf = ReadBuffer(index, e->header_blk);
+	XLogRecPtr	lsn;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	lsn = PageGetLSN(BufferGetPage(buf));
+	UnlockReleaseBuffer(buf);
+	return lsn;
+}
+
+/*
+ * A rewrite writes about the bytes of the segments. The automatic one waits until the server has written 100 / sift.col_auto_merge_wal_pct times that
+ * since its oldest large segment was written (the last rewrite, or the build): the WAL of the churn, whatever the width of the rows, the full-page
+ * images or the other indexes make it, is the measure of the churn that a rewrite is worth. The segments of a wal_level = minimal cluster carry no LSN.
+ */
+static bool
+wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, int n, uint64 bytes)
+{
+	uint64		large = 0;
+	XLogRecPtr	base = InvalidXLogRecPtr,
+				now;
+
+	if (sift_col_auto_merge_wal_pct <= 0 || RecoveryInProgress())
+		return false;
+	for (int i = 0; i < n; i++)
+		large = Max(large, sbytes[i]);
+	for (int i = 0; i < n; i++)
+		if (sbytes[i] * 2 >= large && lsn[i] != InvalidXLogRecPtr && (base == InvalidXLogRecPtr || lsn[i] < base))
+			base = lsn[i];
+	now = GetXLogInsertRecPtr();
+	return base != InvalidXLogRecPtr && now > base && (double) (now - base) * sift_col_auto_merge_wal_pct < 100.0 * (double) bytes;
+}
+
 /*
  * Is the index worth a rewrite of all its segments (docs/COL.md 2.6)? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
  * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite waits until sift.col_auto_merge_min_churn_pct percent of the rows changed since the last rewrite: the dead ones, and those of its write buffer and of
- * its segments but the largest (the one a rewrite leaves). It waits too while the blocks the last rewrite freed are held back by a snapshot.
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent). It waits too while the blocks the last rewrite freed are held back by a snapshot.
  * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with dirty_pct of its units dirty is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
@@ -645,17 +683,18 @@ rewrite_check(Relation index, bool automatic, int *gates)
 				rows = 0,
 				bytes = 0,
 				buffered = 0,
-				changed = 0,
-				largest = 0,
-				part_rows = 0,
 				over_listed = 0,
 				over_dirty = 0,
 				covered;
+	XLogRecPtr	lsn[SIFT_MAX_SEGMENTS];
+	uint64		sbytes[SIFT_MAX_SEGMENTS];
+	int			nseg;
 
 	sift_dir_read(index, snap);
 	use_partitions(snap);
 	partitioned = part_kb > 0;
 	v = view_open(index, snap, cx);
+	nseg = v->n;
 	for (int i = 0; i < v->n; i++)
 	{
 		const SiftSegEntry *e = &v->imm[i];
@@ -664,19 +703,16 @@ rewrite_check(Relation index, bool automatic, int *gates)
 
 		rows += e->ndocs;
 		bytes += e->bytes;
+		sbytes[i] = e->bytes;
+		lsn[i] = automatic ? header_lsn(index, e) : InvalidXLogRecPtr;
 		listed += seg->nsb;
-		largest = Max(largest, e->ndocs);
 		if (e->flags & SIFT_SEG_DIRTY)
 		{
 			d = dirty_units(seg);
 			dirty += d;
-			changed += e->ndocs - sift_cseg_live_rows(seg);
 		}
 		if (!v->over[i])
-		{
-			part_rows += e->ndocs;
 			part_dirty |= (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * seg->nsb;
-		}
 		else
 		{
 			over_listed += seg->nsb;
@@ -696,18 +732,20 @@ rewrite_check(Relation index, bool automatic, int *gates)
 	covered = sift_cseg_dir_units(snap);
 	MemoryContextDelete(cx);
 	pfree(snap);
-	changed += rows - (partitioned ? part_rows : largest) + buffered;
-	/* the churn bounds what a rewrite of all the segments costs, not the promotion of a write buffer */
-	if (!automatic || (double) changed * 100 >= sift_col_auto_merge_min_churn_pct * (double) (rows + buffered))
-	{
-		if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
-			listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
-			why = "dirty units";
-		else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
-			why = "fragmented units";
-	}
+	if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
+		listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
+		why = "dirty units";
+	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
+		why = "fragmented units";
 	if (why == NULL && buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
 		why = WHY_BUFFER;
+	/* the budget is of the rewrite of the segments; the promotion of a write buffer costs its rows */
+	if (why != NULL && automatic && rewrite_all(why) && wal_budget_spent(lsn, sbytes, nseg, bytes))
+	{
+		if (gates != NULL)
+			*gates |= SIFT_COL_GATE_WAL;
+		return NULL;
+	}
 	/*
 	 * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
 	 * answers no more units and leaves as much again behind (the file grew 1.6 times faster, for 5% more WAL, under a snapshot held through 16 rounds
@@ -983,6 +1021,8 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 		blocked[nblocked++] = CStringGetTextDatum("temporary table");
 	if (!sift_col_autovacuum_enabled(heap))
 		blocked[nblocked++] = CStringGetTextDatum("autovacuum_enabled is false");
+	if (gates & SIFT_COL_GATE_WAL)
+		blocked[nblocked++] = CStringGetTextDatum("the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last");
 	if (gates & SIFT_COL_GATE_HELD)
 		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
 	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
