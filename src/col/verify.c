@@ -176,6 +176,7 @@ bool		sift_test_col_verify_inval = false;
 typedef struct HeapCheck
 {
 	Relation	index;
+	SiftColRel *r;				/* a private copy: the cached state of the index is freed whenever its relcache entry is reloaded */
 	const Collect *cl;
 	MemoryContext tmp;
 	int64		checked;
@@ -186,7 +187,6 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 {
 	HeapCheck  *hc = state;
 	SiftColRow	row;
-	SiftColRel *r;
 	RowHash		key = {sift_key_from_tid(tid)},
 				heap;
 	const RowHash *found;
@@ -204,10 +204,8 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 	found = bsearch(&key, hc->cl->rows, hc->cl->n, sizeof(RowHash), rowhash_cmp);
 	if (found == NULL)
 		corrupt(hc->index, "Heap tuple (%u,%u) is not in the index.", ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
-	/* the index's cached state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: not kept across tuples */
-	r = sift_col_rel(hc->index);
-	sift_col_make_row(r, tid, values, isnull, &row, hc->tmp);
-	heap = row_hash(r->schema, &row, key.key);
+	sift_col_make_row(hc->r, tid, values, isnull, &row, hc->tmp);
+	heap = row_hash(hc->r->schema, &row, key.key);
 	if (found->strovf ? found->rest != heap.rest : found->hash != heap.hash)
 		corrupt(hc->index, "The values of heap tuple (%u,%u) differ from the index's.", ItemPointerGetBlockNumber(tid),
 				ItemPointerGetOffsetNumber(tid));
@@ -234,7 +232,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 
 	if (!sift_col_is_index(index))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
-	r = sift_col_rel(index);
+	r = sift_col_rel_private(index, cxt);
 	batch = sift_cbatch_create(cxt, r->schema);
 	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
@@ -284,7 +282,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 	{
 		Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 		IndexInfo  *info = BuildIndexInfo(index);
-		HeapCheck	hc = {index, &cl, AllocSetContextCreate(cxt, "sift_col verify tuple", ALLOCSET_DEFAULT_SIZES), 0};
+		HeapCheck	hc = {index, r, &cl, AllocSetContextCreate(cxt, "sift_col verify tuple", ALLOCSET_DEFAULT_SIZES), 0};
 
 		info->ii_Concurrent = true;
 		table_index_build_scan(heap, index, info, false, false, heap_cb, &hc, NULL);
