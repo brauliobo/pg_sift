@@ -28,7 +28,7 @@ TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
            PGOPTIONS='-c client_min_messages=warning')
 
-BASE = 'seq_page_cost=1000;random_page_cost=1000'
+BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
 REF = 'sift.enable_agg=off;max_parallel_workers_per_gather=0'
 
 
@@ -334,6 +334,43 @@ def render_dirty(p):
     return grouped(q, frm), bool(q['keys'])
 
 
+def gen_leftlateral(r, ctx):
+    cols = EVENTS
+    p = dict(form=r.randrange(3), func=r.choice(['jsonb_to_recordset', 'jsonb_array_elements']), cond=r.choice(['', '', 'o.score > %d' % r.randrange(9), "o.dir_a = 'p'",
+                                                                                                              "o.cat <> 'cat_%d'" % r.randrange(6), 'o.score IS NOT NULL']),
+             inner=r.random() < 0.3, where=preds(r, 'e', ctx['rows'], cols, r.randrange(0, 3)), keys=[], aggs=[], having=[], ordered=True)
+    p['keys'] = r.sample(['o.cat', 'o.dir_a'], r.randrange(0, 2)) + keys(r, 'e', cols, r.randrange(0, 2))
+    p['aggs'] = ['count(*)', 'count(o.score)', 'avg(o.score)'] + r.sample(['sum(o.score)', 'max(o.score)', 'min(o.cat)', 'count(DISTINCT e.id)', 'count(DISTINCT o.cat)'], r.randrange(0, 3))
+    p['aggs'] = p['aggs'] + aggs(r, 'e', cols, r.randrange(0, 2))
+    return p
+
+
+def render_leftlateral(p):
+    cond = p['cond']
+    if p['func'] == 'jsonb_to_recordset':
+        lat = "jsonb_to_recordset(e.doc -> 'parts') AS o(cat text, dir_a text, score float8)"
+        sub = lambda t: t
+    else:
+        lat = "jsonb_array_elements(e.doc -> 'parts') AS o"
+        sub = lambda t: re.sub(r'o\.score', "(o ->> 'score')::float8", t).replace('o.dir_a', "(o ->> 'dir_a')").replace('o.cat', "(o ->> 'cat')")
+    join = 'JOIN' if p['inner'] else 'LEFT JOIN'
+    on = ' ON ' + (sub(cond) if cond and not p['inner'] else 'true')
+    frm = f"events e {join} LATERAL {lat}{on}"
+    if p['inner'] and cond:
+        p = dict(p, where=p['where'] + [cond])
+    q = dict(p, keys=[sub(k) for k in p['keys']], aggs=[sub(a) for a in p['aggs']], where=[sub(w) for w in p['where']])
+    if q['aggs'] == ['count(*)'] and not q['keys']:
+        q['aggs'] = q['aggs'] + ['count(DISTINCT e.id)']
+    if p['form'] == 0:
+        return grouped(q, frm), bool(q['keys'])
+    # per row, then over the rows: the row keeps its group when it has no element
+    inner = (f"SELECT e.id, e.grp, e.kind, max(e.amount) AS amount, {sub('avg(o.score)')} AS sc, count(*) AS n FROM {frm} "
+             f"{where(q)} GROUP BY e.id, e.grp, e.kind")
+    if p['form'] == 1:
+        return f"SELECT s.grp, s.kind, count(s.id) AS ids, avg(s.amount) AS amount, avg(s.sc) AS sc, sum(s.n) AS n FROM ({inner}) s GROUP BY 1, 2 ORDER BY 1, 2", True
+    return f"SELECT count(s.id) AS ids, avg(s.amount) AS amount, avg(s.sc) AS sc FROM ({inner}) s", False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -537,6 +574,7 @@ FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']

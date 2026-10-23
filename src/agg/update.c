@@ -914,7 +914,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	int			nw = (n + 63) / 64;
 
 	combo_trim(ex);
-	if (ex->dense && !ex->hash && ex->rsel == NULL && dense_chunk(ex, start, n, mask))
+	if (ex->dense && !ex->hash && ex->rsel == NULL && !ex->nullpass && dense_chunk(ex, start, n, mask))
 		return;
 	t->n = sift_colk->bits_to_idx(mask, nw, 0, t->sel);
 	if (t->n == 0)
@@ -923,7 +923,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	ex->cn = n;
 	for (int j = 0; j < t->n; j++)
 		t->tidx[j] = start + t->sel[j];
-	if (ex->spec->group >= 0)
+	if (ex->spec->group >= 0 && !ex->nullpass)
 	{
 		const uint32 *par = unit_parent(ex);
 

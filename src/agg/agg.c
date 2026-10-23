@@ -104,6 +104,7 @@ bool		sift_agg_two_level_on = true;
 int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
+bool		sift_agg_left_lateral = true;
 bool		sift_agg_key_skew = true;
 bool		sift_agg_share_lookups = true;
 bool		sift_agg_fuse = true;
@@ -130,6 +131,10 @@ sift_agg_init(void)
 							 "Used where the scans of the inline plan cost less than the work of the shared CTE but not by the margin: the plans are made again at the square root of the horizon and at the horizon times the rows (sift.plan_scale), and the inline one is kept if it wins at both.",
 							 &sift_agg_scale_horizon, 100.0, 1.0, 1e6,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_left_lateral",
+							 "Pushes down LEFT JOIN LATERAL over a jsonb_to_recordset or jsonb_array_elements list of the scanned row: a row none of whose elements passes is one tuple with NULL element columns.",
+							 NULL, &sift_agg_left_lateral, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_preagg",
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
@@ -878,6 +883,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	extend_layout(ex);
 	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
 	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
 	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
