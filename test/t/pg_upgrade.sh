@@ -63,7 +63,7 @@ OLD_MAJOR=$("$OLDCFG" --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan $((19 + (${#OLD_REF} ? 3 : 0)))
+plan $((20 + (${#OLD_REF} ? 3 : 0)))
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
@@ -173,6 +173,8 @@ CREATE FUNCTION tblq_off(t regclass) RETURNS text LANGUAGE sql SET sift.enable_a
 SQL
 )
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
+# stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
+q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE postgres IN DATABASE postgres SET sift.enable_agg = on" >/dev/null || bail "stored settings"
 VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true)"
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
@@ -213,6 +215,7 @@ if [[ -n $TSC ]]; then
 	check "the relations of the tablespace are under it, with the same file names" test "$(q new postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')" |
 	sed 's#PG_[0-9]*_[0-9]*#V#g')" == "$(sed 's#PG_[0-9]*_[0-9]*#V#g' <<<"$FILES_BEFORE")"
 else skip 1 "no tablespace"; fi
+check "the stored settings of the database and of the role in it survived pg_upgrade" test "$(q new postgres "LOAD 'pg_sift'" "SHOW sift.simd" "SHOW sift.enable_agg" | tr '\n' ' ')" == "scalar on "
 check "sift.verify and sift.col_verify pass on every index" quiet q new postgres "$VERIFY_SQL"
 AFTER=$(fingerprint new)
 check "BM25 answers and scores are identical" test "$(head -n 1 <<<"$AFTER")" == "$(head -n 1 <<<"$BEFORE")"
