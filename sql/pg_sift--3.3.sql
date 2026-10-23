@@ -204,6 +204,16 @@ CREATE FUNCTION sift.col_maintain(index regclass) RETURNS bool
 CREATE FUNCTION sift.col_maintenance_due(index regclass, automatic bool DEFAULT true) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_col_maintenance_due' LANGUAGE C STRICT VOLATILE;
 
+-- Where the chain stands that keeps a sift_col index answerable under churn (sift.col_auto_merge): the table is vacuumed when the rows changed since its last
+-- VACUUM (changed_rows; NULL while the statistics have no entry) reach vacuum_at, and the index is rewritten after that VACUUM (rewrite_due, as the server's
+-- own rule sees it). blocked_by is what keeps a worker from doing either, empty when nothing does.
+CREATE FUNCTION sift.col_maintenance_status(index regclass,
+											OUT heap regclass, OUT last_vacuum timestamptz, OUT changed_rows int8, OUT vacuum_at int8,
+											OUT rewrite_due text, OUT last_request timestamptz, OUT blocked_by text[])
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_maintenance_status' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite, an index over the rewrite limit).';
+
 -- The sift_table table access method (docs/COL-TAM.md): CREATE TABLE ... USING sift_table.
 CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
 	AS 'MODULE_PATHNAME', 'sift_table_handler' LANGUAGE C STRICT;

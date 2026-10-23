@@ -68,6 +68,14 @@ table_lock_tag(LOCKTAG *tag, Oid heapoid)
 	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId, TABLE_LOCK_KEY, heapoid, 3);
 }
 
+/* The rows changed since the last VACUUM (dead, or new), and the number from which the table is vacuumed */
+static void
+churn_of(const PgStat_StatTabEntry *tab, int64 *changed, int64 *threshold)
+{
+	*changed = (int64) Max(tab->dead_tuples, 0) + Max(tab->ins_since_vacuum, 0);
+	*threshold = (int64) Max(MIN_CHANGED, Min(CHURN_PCT / 100.0 * (double) Max(tab->live_tuples, 0), CHURN_ROWS));
+}
+
 /*
  * What the statistics say of the table; they lag the changes by a second or so, and have no entry for a table nothing has touched. A scan that
  * checked many rows in the heap (asked) is the better witness: the table is due unless it was vacuumed lately.
@@ -78,12 +86,13 @@ table_state(Oid heapoid, bool asked)
 	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(heapoid);
 	TimestampTz last;
 	int64		wait_ms = (int64) NAPTIMES * sift_maintenance_naptime;
-	double		changed;
+	int64		changed,
+				threshold;
 
 	if (tab == NULL)
 		return asked ? TABLE_DUE : TABLE_CLEAN;
-	changed = (double) Max(tab->dead_tuples, 0) + (double) Max(tab->ins_since_vacuum, 0);
-	if (!asked && changed < Max(MIN_CHANGED, Min(CHURN_PCT / 100.0 * (double) Max(tab->live_tuples, 0), CHURN_ROWS)))
+	churn_of(tab, &changed, &threshold);
+	if (!asked && changed < threshold)
 		return TABLE_CLEAN;
 #if PG_VERSION_NUM >= 180000
 	if (tab->vacuum_count + tab->autovacuum_count > 0)
@@ -91,6 +100,19 @@ table_state(Oid heapoid, bool asked)
 #endif
 	last = Max(tab->last_vacuum_time, tab->last_autovacuum_time);
 	return last != 0 && GetCurrentTimestamp() - last < wait_ms * 1000 ? TABLE_WAIT : TABLE_DUE;
+}
+
+/* What the statistics of the table say (sift.col_maintenance_status): false when it has no entry */
+bool
+sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last)
+{
+	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(heapoid);
+
+	if (tab == NULL)
+		return false;
+	churn_of(tab, changed, threshold);
+	*last = Max(tab->last_vacuum_time, tab->last_autovacuum_time);
+	return true;
 }
 
 /* Is a worker at the table (it holds the lock for as long as it lives)? */
@@ -135,8 +157,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 }
 
 /* The reloptions of a heap table are StdRdOptions */
-static bool
-autovacuum_enabled(Relation heap)
+bool
+sift_col_autovacuum_enabled(Relation heap)
 {
 	return heap->rd_options == NULL || ((StdRdOptions *) heap->rd_options)->autovacuum.enabled;
 }
@@ -145,7 +167,7 @@ autovacuum_enabled(Relation heap)
 void
 sift_col_vacuum_notice(Relation heap, Relation index)
 {
-	if (sift_col_auto_merge && !autovacuum_enabled(heap))
+	if (sift_col_auto_merge && !sift_col_autovacuum_enabled(heap))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": sift.col_auto_merge does not vacuum \"%s\", whose autovacuum_enabled is false",
 						RelationGetRelationName(index), RelationGetRelationName(heap)),
@@ -169,7 +191,7 @@ vacuum_heap_of(Oid indexoid)
 	if (!OidIsValid(heapoid) || (heap = try_relation_open(heapoid, AccessShareLock)) == NULL)
 		return InvalidOid;
 	/* the reloptions of another table AM are not StdRdOptions, and a sift_table has its own pass */
-	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID || heap->rd_rel->relkind != RELKIND_RELATION || !autovacuum_enabled(heap))
+	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID || heap->rd_rel->relkind != RELKIND_RELATION || !sift_col_autovacuum_enabled(heap))
 		heapoid = InvalidOid;
 	relation_close(heap, AccessShareLock);
 	return heapoid;

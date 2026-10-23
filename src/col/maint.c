@@ -571,7 +571,7 @@ vacuum_truncates(Relation index)
  * a rewrite leaves are the partitions.
  */
 static const char *
-rewrite_due(Relation index, bool automatic)
+rewrite_check(Relation index, bool automatic, int *gates)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
@@ -634,6 +634,8 @@ rewrite_due(Relation index, bool automatic)
 	MemoryContextDelete(cx);
 	pfree(snap);
 	changed += rows - (partitioned ? part_rows : largest) + buffered;
+	if (gates != NULL && automatic && !partitioned && bytes > ((uint64) sift_vacuum_rewrite_limit << 20))
+		*gates |= SIFT_COL_GATE_SIZE;
 	/* the size and the churn bound what a rewrite of all the segments costs, not the promotion of a write buffer */
 	if (!automatic || ((partitioned || bytes <= ((uint64) sift_vacuum_rewrite_limit << 20)) &&
 					   (double) changed * 100 >= sift_col_auto_merge_min_churn_pct * (double) (rows + buffered)))
@@ -652,8 +654,18 @@ rewrite_due(Relation index, bool automatic)
 	 * of churn). The rewrite waits for the horizon when the blocks held back are half the index.
 	 */
 	if (why != NULL && automatic && sift_store_held_blocks(index) * BLCKSZ * 2 >= bytes)
+	{
+		if (gates != NULL)
+			*gates |= SIFT_COL_GATE_HELD;
 		return NULL;
+	}
 	return why;
+}
+
+static const char *
+rewrite_due(Relation index, bool automatic)
+{
+	return rewrite_check(index, automatic, NULL);
 }
 
 /* Only the write buffer is large: promoting it is the cost of its rows, a rewrite is the cost of the index */
@@ -875,6 +887,61 @@ sift_col_maintenance_due(PG_FUNCTION_ARGS)
 	if (why == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(why));
+}
+
+/*
+ * sift.col_maintenance_status(index): where the chain stands (the table is vacuumed when the rows changed since its last VACUUM reach vacuum_at, the
+ * index is rewritten after that VACUUM), and blocked_by: what keeps a worker from vacuuming it or rewriting the index, empty when nothing does.
+ */
+Datum
+sift_col_maintenance_status(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	Datum		v[7],
+				blocked[8];
+	bool		nulls[7] = {0};
+	int64		changed = 0,
+				threshold = 0;
+	TimestampTz last = 0;
+	const char *why;
+	int			gates = 0,
+				nblocked = 0;
+
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
+	sift_dir_read(index, snap);
+	why = rewrite_check(index, true, &gates);
+	if (!sift_col_auto_merge)
+		blocked[nblocked++] = CStringGetTextDatum("sift.col_auto_merge is off");
+	if (!sift_async_maintenance)
+		blocked[nblocked++] = CStringGetTextDatum("sift.async_maintenance is off");
+	if (RecoveryInProgress())
+		blocked[nblocked++] = CStringGetTextDatum("standby");
+	if (index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		blocked[nblocked++] = CStringGetTextDatum("temporary table");
+	if (!sift_col_autovacuum_enabled(heap))
+		blocked[nblocked++] = CStringGetTextDatum("autovacuum_enabled is false");
+	if (gates & SIFT_COL_GATE_SIZE)
+		blocked[nblocked++] = CStringGetTextDatum("index over sift.vacuum_rewrite_limit");
+	if (gates & SIFT_COL_GATE_HELD)
+		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
+	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
+	nulls[1] = nulls[2] = nulls[3] = !sift_col_table_churn(RelationGetRelid(heap), &changed, &threshold, &last);
+	nulls[1] |= last == 0;
+	v[1] = TimestampTzGetDatum(last);
+	v[2] = Int64GetDatum(changed);
+	v[3] = Int64GetDatum(threshold);
+	nulls[4] = why == NULL;
+	if (why != NULL)
+		v[4] = CStringGetTextDatum(why);
+	nulls[5] = snap->meta.maint_requested_at == 0;
+	v[5] = TimestampTzGetDatum(snap->meta.maint_requested_at);
+	v[6] = PointerGetDatum(construct_array(blocked, nblocked, TEXTOID, -1, false, TYPALIGN_INT));
+	relation_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, v, nulls)));
 }
 
 /* sift.col_maintain(index): the rewrite of sift.col_auto_merge, now and in this session, whatever that setting says; false when nothing is due or the maintenance lock is held */
