@@ -378,7 +378,7 @@ point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
  * The units that hold the rows the point directory lists for the predicate i, on leaf col, of the segment (the test t), when the directory has a short
  * answer: the other units are cut, and the cursor keeps the rows for the units that remain (sift_col_point_sel). One directory per segment answers.
  */
-static void
+static bool
 prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
 {
 	int64		keys[SIFT_CPOINT_MAX_KEYS];
@@ -389,7 +389,7 @@ prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *
 	uint64	   *has;
 
 	if (c->prow != NULL || !point_keys(t, keys, &nkeys) || !sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
-		return;
+		return false;
 	has = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 k = 0; k < nrows; k++)
 	{
@@ -405,6 +405,7 @@ prune_point(SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *
 	c->nprow = nrows;
 	c->pat = 0;
 	c->ppred = i;
+	return true;
 }
 
 static void
@@ -428,9 +429,9 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			seg_test(src, seg, def, &preds[i], &t);
 		else
 			make_test(src, def, NULL, &preds[i], &t);
-		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
-		if (pr->top != NULL)
-			prune_point(seg, pr->top, i, preds[i].col, &t, keep);
+		/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
+		if (pr->top == NULL || !prune_point(seg, pr->top, i, preds[i].col, &t, keep))
+			sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
 		range[i] = t.kind == SIFT_CT_RANGE;
 		lo[i] = t.lo;
 		hi[i] = t.hi;
@@ -491,8 +492,9 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->prow = NULL;
 	c->nosuper_to = 0;
 	c->keep = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
-	for (uint32 i = 0; i < seg->nsb; i++)
-		sift_col_bit_set(c->keep, i);
+	memset(c->keep, 0xFF, SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	if (seg->nsb % 64)
+		c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
 	prune_preds(src, seg, preds, npreds, c->keep, &pr);
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
@@ -535,12 +537,20 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 static bool
 cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 {
-	while (c->cur < c->end && !sift_col_bit_test(c->keep, c->cur))
+	while (c->cur < c->end)
 	{
-		src->cnt.units_pruned++;
-		/* a unit the summaries cleared that no other test keeps (an OR's other arm may) */
-		src->cnt.units_set += sift_col_bit_test(c->setcut, c->cur);
-		c->cur++;
+		uint32		w = c->cur / 64,
+					b = c->cur % 64,
+					run;
+		uint64		kept = c->keep[w] >> b;
+
+		if (kept & 1)
+			break;
+		/* the pruned units up to the next kept one, or the end of the word, in one step; a unit the summaries cleared that no other test keeps (an OR's other arm may) is also counted */
+		run = Min(kept ? pg_rightmost_one_pos64(kept) : 64 - b, c->end - c->cur);
+		src->cnt.units_pruned += run;
+		src->cnt.units_set += pg_popcount64(c->setcut[w] >> b & (run == 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << run) - 1));
+		c->cur += run;
 	}
 	if (c->cur >= c->end)
 		return false;

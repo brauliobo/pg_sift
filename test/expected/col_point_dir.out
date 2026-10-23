@@ -743,6 +743,43 @@ SELECT (SELECT count(*) FROM sift._test_col_tids('px_i', '1:eq:92233720368547758
 (1 row)
 
 DROP TABLE px;
+-- the units a lookup reads, over a segment of 65 units (a second word of the keep bitmap holds the last unit): the units pruned are skipped a word at a time, so a key in
+-- the first, the last of a word, the first of the next word, in two adjacent ones across the words, in a middle one and in none reads exactly those units, with the
+-- directory, with the zones alone, and the rows are the heap's. A page holds one row, so unit n holds the rows 256 * n .. 256 * n + 255
+CREATE TABLE pw (id int, k int, pad text) WITH (fillfactor = 10);
+INSERT INTO pw SELECT i, CASE i / 256 WHEN 0 THEN 1 WHEN 63 THEN 2 WHEN 64 THEN 3 ELSE 100 + i / 256 END, repeat('x', 600) FROM generate_series(0, 65 * 256 - 1) i;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX pw_k ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
+RESET max_parallel_maintenance_workers;
+SELECT units FROM sift.col_segments('pw_k') WHERE kind = 'immutable';
+ units 
+-------
+    65
+(1 row)
+
+SELECT w.preds, d.units AS dir_units, d.units_pruned AS dir_pruned, z.units AS zone_units, z.units_pruned AS zone_pruned, d.rows = h.n AS dir_rows_ok, z.rows = h.n AS zone_rows_ok
+FROM (VALUES ('0:eq:1', ARRAY[1]), ('0:eq:2', ARRAY[2]), ('0:eq:3', ARRAY[3]), ('0:in:1|3', ARRAY[1, 3]), ('0:in:2|3', ARRAY[2, 3]), ('0:in:1|2|3', ARRAY[1, 2, 3]),
+			 ('0:eq:117', ARRAY[117]), ('0:in:101|162', ARRAY[101, 162]), ('0:eq:5', ARRAY[5]), ('0:in:5|6', ARRAY[5, 6])) w (preds, keys),
+	 LATERAL sift._test_col_counters('pw_k', w.preds, 8) d,
+	 LATERAL sift._test_col_counters('pw_n', w.preds, 0) z,
+	 LATERAL (SELECT count(*) AS n FROM pw WHERE k = ANY (w.keys)) h
+ORDER BY w.preds;
+    preds     | dir_units | dir_pruned | zone_units | zone_pruned | dir_rows_ok | zone_rows_ok 
+--------------+-----------+------------+------------+-------------+-------------+--------------
+ 0:eq:1       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:117     |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:2       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:3       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:5       |         0 |         65 |          0 |          65 | t           | t
+ 0:in:101|162 |         2 |         63 |          2 |          63 | t           | t
+ 0:in:1|2|3   |         3 |         62 |          3 |          62 | t           | t
+ 0:in:1|3     |         2 |         63 |          2 |          63 | t           | t
+ 0:in:2|3     |         2 |         63 |          2 |          63 | t           | t
+ 0:in:5|6     |         0 |         65 |          0 |          65 | t           | t
+(10 rows)
+
+DROP TABLE pw;
 -- the option names plain integer, text and uuid columns of the top level (a date is an integer leaf)
 CREATE TABLE pe (id int, f float8, j jsonb, d date);
 CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_columns = 'f');
