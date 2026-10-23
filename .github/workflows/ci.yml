@@ -214,13 +214,14 @@ jobs:
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
       # includes the regression tests against the production library (SIFT_TESTING off, stage production-regress), with its own leak gate
       # the jobs: the ones scripts/areas.tsv picks for the diff (all of them in the nightly entries), and this runner's share of them (shard k of n)
+      # the checks of the harness (lint's scripts, the selftests: 3 minutes of the 4 cores) run in the first shard of the PostgreSQL 18 quick tier only; `lint` runs them for every run
       - name: ${{ matrix.tier == 'full' && 'Full test tier (make check-full)' || 'Quick test tier (make check, with the leak gate)' }}
         run: make ${{ matrix.tier == 'full' && 'check-full' || 'check' }}
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
           SIFT_CI_AFFECTED: ${{ matrix.jobs }}
           SIFT_CI_JOBS: ${{ matrix.only }}
-          SIFT_CI_NO_HARNESS: ${{ matrix.tier == 'fast' && '1' || '' }}
+          SIFT_CI_NO_HARNESS: ${{ (matrix.tier != 'quick' || matrix.pg != 18 || matrix.arm) && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
 
