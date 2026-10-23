@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 55
+plan 54
 # the test clusters run with sift.table_auto_defrag = off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on"
@@ -71,22 +71,20 @@ check "a release that is not major.minor is refused" test "$(uc --to three clean
 # options that only the units written afterwards follow
 q clean "CREATE INDEX facts_late ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late SET (cube_minmax = true)" \
 	"CREATE INDEX facts_old_opt ON docs USING sift (body) WITH (mutable_limit = 1024)" \
-	"CREATE INDEX facts_late_set ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_set SET (set_columns = 'g')" \
-	"CREATE INDEX facts_late_key ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_key SET (key_presence = 'g')" \
+	"CREATE INDEX facts_late_set ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_set SET (key_columns = 'g')" \
 	"CREATE INDEX facts_late_roll ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_roll SET (rollup_dims = 'g, n')" \
 	"CREATE INDEX facts_late_ord ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_ord SET (order_columns = 'n')" \
 	"CREATE TABLE scat (id int, k int, g int, n int)" "INSERT INTO scat SELECT i, i * 7919 % 100003, i % 9, i % 100 FROM generate_series(1, 3000) i" \
-	"CREATE INDEX scat_new_opts ON scat USING sift_col (id, k, g, n) WITH (set_columns = 'k', rollup_dims = 'g, n')" >/dev/null
+	"CREATE INDEX scat_new_opts ON scat USING sift_col (id, k, g, n) WITH (key_columns = 'k', rollup_dims = 'g, n')" >/dev/null
 out=$(uc clean)
 check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
-check "set_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +set_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
+check "key_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +key_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
 check "rollup_dims set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_dims with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
 check "order_columns set after the build warns that the old units have no sorted run, with the REINDEX" grep -q -E '^warn +facts_late_ord +option +order_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_ord;' <<<"$out"
-check "key_presence set after the build warns that the old units have no key presence, with the REINDEX" grep -q -E '^warn +facts_late_key +option +key_presence with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_key;' <<<"$out"
-check "an index built with set_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
+check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
 check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
-	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_key; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_ord; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
+	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_ord; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 # cube_minmax and superunit are on unless the index says otherwise: an index written before 3.3 lacks them, and a REINDEX gives them
 q clean "SET sift.col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
 out=$(uc clean)
@@ -97,7 +95,7 @@ q clean "DROP INDEX facts_legacy" >/dev/null
 check "the deprecated mutable_limit warns" grep -q -E '^warn +facts_old_opt +option +mutable_limit' <<<"$out"
 check "a warning alone exits 0, and 1 with --strict" test "$(uc clean >/dev/null; echo $?)$(uc --strict clean >/dev/null; echo $?)" == 01
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
-q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (set_columns = 'k')" >/dev/null
+q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null
 check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1
 q clean "REINDEX INDEX CONCURRENTLY public.scat_late" >/dev/null
 check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 0

@@ -1248,6 +1248,9 @@ set_leaf(SiftColSegment *seg, int col)
 			prev = r->leaf;
 			sets[r->leaf] = *r;
 		}
+		/* the records are all there are: one fewer would leave the last leaf's summaries unread and unnoticed */
+		if (lowest != PAGG_SETS(h) + room)
+			corrupt(seg, "The small-set summaries end at %llu, not at the %llu the section has.", ULL(lowest), ULL(PAGG_SETS(h) + room));
 		pfree(rec);
 		pv->setdir = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
 		pv->sets = sets;
@@ -1260,13 +1263,20 @@ sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 {
 	const SetsLeaf *sl = set_leaf(seg, col);
 	SegPriv    *pv = PRIV(seg);
+	const uint8 *blob;
 
 	*len = 0;
-	return sl ? unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len) : NULL;
+	if (sl == NULL)
+		return NULL;
+	blob = unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len);
+	/* the blobs of a leaf end where its record says: a smaller end would drop the last unit's blob unnoticed */
+	if (pv->setdir[col] != NULL && pv->setdir[col][seg->nsb] != sl->bytes)
+		corrupt(seg, "The directory of the small-set summaries of leaf %d ends at %llu, not at %llu.", col, (unsigned long long) pv->setdir[col][seg->nsb], (unsigned long long) sl->bytes);
+	return blob;
 }
 
 bool
-sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, int64 *wbase, uint64 *nwords, const uint8 **words)
+sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPresence *p)
 {
 	uint32		len;
 	const uint8 *blob = sift_cseg_set(seg, col, u, &len);
@@ -1276,11 +1286,19 @@ sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, int64 *wbase, uint64 
 		return false;
 	if (!sift_cset_open(blob, len, &s))
 		corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
+	memset(p, 0, sizeof(*p));
+	if (s.kind == SIFT_CSET_PLIST)
+	{
+		p->nkeys = s.n;
+		p->keys = palloc(s.n * sizeof(int64));
+		sift_cset_members(&s, p->keys);
+		return true;
+	}
 	if (s.kind != SIFT_CSET_PRES)
 		return false;
-	*wbase = s.base / 64;
-	*nwords = s.nbits / 64;
-	*words = s.data;
+	p->wbase = s.base / 64;
+	p->nwords = s.nbits / 64;
+	p->words = s.data;
 	return true;
 }
 

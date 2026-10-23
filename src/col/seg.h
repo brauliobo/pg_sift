@@ -243,8 +243,19 @@ extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r
 extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
 extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);
-/* The key presence of leaf col in unit u (a PRES summary): the key of bit 0 divided by 64, the words and their number, valid until the next call on seg; false when the unit has none */
-extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, int64 *wbase, uint64 *nwords, const uint8 **words);
+/*
+ * The key presence of leaf col in unit u: a bitmap (the key of bit 0 divided by 64, the words and their number, valid until the next call on seg) or a list
+ * (nkeys > 0: the ascending keys, in memory of the caller's context). False when the unit has neither.
+ */
+typedef struct SiftCPresence
+{
+	int64		wbase;
+	uint64		nwords;
+	const uint8 *words;
+	uint32		nkeys;
+	int64	   *keys;
+} SiftCPresence;
+extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPresence *p);
 
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);

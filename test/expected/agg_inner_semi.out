@@ -11,6 +11,9 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 30000 EN
        (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, day, kind, amount);
+NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 26376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- a dimension with a unique key, the same with a repeated key and a NULL key, and the same keys as text
 CREATE TABLE dims (id int PRIMARY KEY, country int, tier int2, active boolean);

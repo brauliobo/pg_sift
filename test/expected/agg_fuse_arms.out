@@ -14,6 +14,9 @@ SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3]
                                     FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, qty, price, doc) WITH (paths = 'doc.lines[]{k text, p text, v float8}');
+NOTICE:  sift_col index ev_col keeps the keys of zone_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 24 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE zones;
 -- the most arms one scan served in the plan; the rows must be those of the normal plan

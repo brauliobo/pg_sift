@@ -38,7 +38,7 @@ wildcard after its prefix are replaced by `IS NOT NULL` or a prefix test and the
 
 **Cost** (`sift_col_amcostestimate`): the share of the units whose zones can hold the constants of the quals, counted on the real zones of a sample of the
 units (`sift_col_zones`, the sample SiftAgg's planner uses), times the rows and columns they decode, plus a fixed price per unit; quals the zones cannot
-judge (text, uuid, a parameter) count every unit, and an equality or `IN` on a column named by `set_columns` keeps the share of the units
+judge (text, uuid, a parameter) count every unit, and an equality or `IN` on a column named by `key_columns` keeps the share of the units
 that the small-set summaries leave, as SiftAgg counts it (`1 - exp(-s * n)` for a test on the share `s` of a column's values and `n` keys in a unit). The planner compares it with SiftAgg and the heap: 12 of 96 (query, size) picks in the table below were
 more than 1.3 times slower than the best of the other plans, none by more than 0.5 ms (the worst: a `count(*)` with an `IN` list of 100 values at 25,000
 rows, SiftAgg 0.27 ms against 0.74 ms). The one larger loss measured is `count(*) WHERE rnd IS NULL` on 1,000,000 rows with no NULL, where the
@@ -137,17 +137,17 @@ primary keys; any index that serves single-row lookups of a high-cardinality key
 microseconds count; covering indexes that avoid the heap; `LIKE 'abc%'` row lookups.
 
 **What would make it a drop-in for the rest.** The point lookup of a random int at 1,000,000 rows reads the one unit that holds the key (the summary of
-`set_columns = 'rnd'` leaves it; without one every unit is read), after the cost of opening the source: a lookup inside the unit (a sorted run or a hash per
+`key_columns = 'rnd'` leaves it; without one every unit is read), after the cost of opening the source: a lookup inside the unit (a sorted run or a hash per
 unit, a change of the format) is what is left, see the generated tables below. Text and uuid equality and `LIKE 'abc%'` go through the segment dictionary of
 the column: a backend parses it once (the cost is that of the distinct values, so a new connection pays it on its first query), and the dictionary it keeps
 (`dict_cache_kb`, docs/LIMITS.md) gets a table of its codes after 8 equalities and its codes in byte order after 16 prefix or range tests, so a repeated
-lookup is a probe and a prefix costs the matches (`set_columns` takes uuid columns since 3.3). What a new connection still pays needs the lookup structure to be
+lookup is a probe and a prefix costs the matches (`key_columns` takes uuid columns since 3.3). What a new connection still pays needs the lookup structure to be
 stored with the dictionary (a change of the format). The classes could become the default ones for their types once this is done.
 
 ## Which of your btree indexes can be dropped
 
 18.6, release build of the 3.3 branch, the neutral generator of the tables above, `shared_buffers` 256 MB, `jit` off, no parallel workers, a host at a load
-average of 30 to 40, so a ratio under 1.5 is noise): the planner's pick on a `sift_col` index with the classes and `set_columns = 'id, rnd, s_short, u'`, against the
+average of 30 to 40, so a ratio under 1.5 is noise): the planner's pick on a `sift_col` index with the classes and `key_columns = 'id, rnd, s_short, u'`, against the
 btree on the column, `sift.enable_col_scan = on`. Two tables, because they answer different clients: one that opens a connection for each query (the first
 query of a backend parses what it reads), and one that keeps its connection (the same query after 24 runs). A btree that serves several rows of a table can go
 only if every one of them says drop.
@@ -200,5 +200,5 @@ columns and fills its caches.
 |---|---|---|---|
 | btree (6 indexes) | 170,221,568 | 170.22 | 1.00x |
 | sift_col classes | 29,122,560 | 29.12 | 0.17x |
-| sift_col classes + set_columns | 30,269,440 | 30.27 | 0.18x |
+| sift_col classes + key_columns | 30,269,440 | 30.27 | 0.18x |
 <!-- col-scan-table:end -->

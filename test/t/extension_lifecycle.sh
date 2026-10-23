@@ -171,7 +171,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE items (id int, kind int, val int)" \
 		"INSERT INTO items SELECT g, g % 5, g FROM generate_series(1, 5000) g" "SET sift.col_format_minor = 6" "CREATE INDEX items_col ON items USING sift_col (id, kind, val)" \
 		"SELECT sift.col_promote('items_col')" "CREATE INDEX items_late ON items USING sift_col (id, kind, val)" \
-		"ALTER INDEX items_late SET (set_columns = 'kind')" "CREATE TABLE tbl32 (id int, at timestamp) USING sift_table" \
+		"ALTER INDEX items_late SET (key_columns = 'kind')" "CREATE TABLE tbl32 (id int, at timestamp) USING sift_table" \
 		"INSERT INTO tbl32 SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32" >/dev/null
 	q life upg32 "CREATE TABLE tbl32_new (id int, at timestamp) USING sift_table" \
 		"INSERT INTO tbl32_new SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32_new" >/dev/null
@@ -209,7 +209,7 @@ if (( PG_MAJOR >= 18 )); then
 	# 22 indexes: the first 20 commands and the count of the rest; an index that another session holds is never waited for
 	q life postgres "CREATE DATABASE cap32" "CREATE DATABASE lock32" >/dev/null
 	q life cap32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
-		"SET sift.col_format_minor = 6" "DO \$\$ BEGIN FOR i IN 1..22 LOOP EXECUTE format('CREATE INDEX f_%s ON f USING sift_col (id, g)', i); EXECUTE format('ALTER INDEX f_%s SET (set_columns = ''g'')', i); END LOOP; END \$\$" >/dev/null
+		"SET sift.col_format_minor = 6" "DO \$\$ BEGIN FOR i IN 1..22 LOOP EXECUTE format('CREATE INDEX f_%s ON f USING sift_col (id, g)', i); EXECUTE format('ALTER INDEX f_%s SET (key_columns = ''g'')', i); END LOOP; END \$\$" >/dev/null
 	upd=$(LC_ALL=C q life cap32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
 	check "the update lists 20 commands" test "$(grep -c 'REINDEX INDEX CONCURRENTLY' <<<"$upd")" == 20
 	check "the update counts the rest" grep -qx "and 2 more" <<<"$upd"
@@ -219,7 +219,7 @@ if (( PG_MAJOR >= 18 )); then
 	upd32=$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
 	check "an update with nothing to do says so, and that a 3.2 library cannot read what 3.3 writes next" test "$(grep -cF -e "nothing to REINDEX or rewrite" -e "a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6" <<<"$upd32")" == 2
 	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
-		"SET sift.col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (set_columns = 'g')" >/dev/null
+		"SET sift.col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (key_columns = 'g')" >/dev/null
 	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
 	for _ in $(seq 100); do
 		[[ $(q life lock32 "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND mode = 'AccessExclusiveLock' AND granted AND relation = 'f_1'::regclass") != 0 ]] && break
@@ -284,10 +284,10 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
 	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
 		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
-	# minor 10 segments (the small-set summary of a leaf; opt-in) join an index of minor 3 segments: the units written before are read, the others skip by their summary, the results are the heap's
-	q life upg "CREATE TABLE cols8 (id int, grp int, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+	# minor 10 segments (the small-set summary of a bigint leaf; opt-in) join an index of minor 3 segments: the units written before are read, the others skip by their summary, the results are the heap's
+	q life upg "CREATE TABLE cols8 (id int, grp bigint, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
 		"SET sift.col_format_minor = 3" "CREATE INDEX cols8_col ON cols8 USING sift_col (id, grp, v) WITH (superunit = 0)" "RESET sift.col_format_minor" \
-		"ALTER INDEX cols8_col SET (set_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"ALTER INDEX cols8_col SET (key_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols8_col')" >/dev/null
 	S8Q="SELECT count(*) || ':' || sum(v) FROM cols8 WHERE grp = 7919"
 	S8OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S8Q" | tail -n 1)
@@ -318,10 +318,10 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "REINDEX INDEX cols13_col" >/dev/null
 	check "after REINDEX every segment of the index is minor 13 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")/$(q life upg \
 		"SELECT sift.col_verify('cols13_col', true)" "SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "13/$S13OFF"
-	# minor 15 segments (the key presence of a leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
+	# minor 15 segments (the key list or bitmap of an int leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
 	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
 		"SET sift.col_format_minor = 3" "CREATE INDEX cols15_col ON cols15 USING sift_col (id, k, v)" "RESET sift.col_format_minor" \
-		"ALTER INDEX cols15_col SET (key_presence = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"ALTER INDEX cols15_col SET (key_columns = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols15_col')" >/dev/null
 	S15Q="SELECT count(DISTINCT k), count(*), sum(v) FROM cols15"
 	S15OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S15Q" | tail -n 1)

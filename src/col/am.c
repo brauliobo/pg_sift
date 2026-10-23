@@ -116,15 +116,6 @@ sift_col_validate_calendar_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option \"%s\": %s", value, err)));
 }
 
-void
-sift_col_validate_set_columns(const char *value)
-{
-	const char *err = sift_cset_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option \"%s\": %s", value, err)));
-}
-
 /* 'a, b': the names of the text, varchar and uuid columns a tuple scan returns; r NULL: just the syntax. Empty or 'off': none */
 static const char *
 return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
@@ -174,12 +165,17 @@ sift_col_validate_return_columns(const char *value)
 }
 
 void
-sift_col_validate_key_presence(const char *value)
+sift_col_validate_key_columns(const char *value)
 {
-	const char *err = sift_cset_syntax(value);
+	const char *err;
+
+	/* the validator also checks the default, which is NULL: the option is not set until CREATE INDEX chooses it */
+	if (value == NULL)
+		return;
+	err = sift_cset_keys_syntax(value);
 
 	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_presence option \"%s\": %s", value, err)));
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option \"%s\": %s", value, err)));
 }
 
 void
@@ -283,7 +279,7 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written (15, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option set_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one with the option key_presence.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option key_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one whose key_columns keep a key list or a bitmap.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -344,7 +340,7 @@ sift_col_init(void)
 					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
-					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, set_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
+					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
 					   dict_lookup_names, SIFT_COL_DICT_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
@@ -356,12 +352,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "calendar_columns",
 						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
 						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
-	add_string_reloption(col_relopt_kind, "set_columns",
-						 "the plain integer and text columns whose distinct values every unit written from now on keeps (a small-set summary that lets an equality or IN test skip units); the segments are column format minor 10 (default none)",
-						 "", sift_col_validate_set_columns, ShareUpdateExclusiveLock);
-	add_string_reloption(col_relopt_kind, "key_presence",
-						 "the plain int2, int4 and date columns whose distinct values every unit written from now on keeps as a bitmap, so that a count(DISTINCT column) over whole units reads no row; the segments are column format minor 15 (default none)",
-						 "", sift_col_validate_key_presence, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_columns",
+						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4 and date foreign key columns and the columns named *_id that are not unique and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, and 15 for a key list or bitmap (default auto)",
+						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
@@ -371,9 +364,6 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
-	add_int_reloption(col_relopt_kind, "set_limit",
-					  "Up to this many distinct values a unit keeps a column's small-set summary exactly, beyond it as a bloom filter",
-					  SIFT_CSET_LIMIT, 2, SIFT_CSET_LIMIT_MAX, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "superunit",
 					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
 					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
@@ -396,12 +386,10 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
-	{"set_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, set_columns)},
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
-	{"set_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, set_limit)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
-	{"key_presence", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_presence)},
+	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 };
 
@@ -468,19 +456,11 @@ sift_col_alter_check(Relation index)
 }
 
 const char *
-sift_col_options_set_columns(Relation index)
+sift_col_options_key_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return o->set_columns ? (const char *) o + o->set_columns : "";
-}
-
-const char *
-sift_col_options_key_presence(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->key_presence ? (const char *) o + o->key_presence : "";
+	return o->key_columns ? (const char *) o + o->key_columns : NULL;
 }
 
 const char *
@@ -623,12 +603,9 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
-		if ((err = sift_cset_spec_parse(sift_col_options_set_columns(index), r->schema, (const char *const *) names, r->pagg.set)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid set_columns option: %s", err)));
-		r->pagg.set_limit = sift_col_options(index)->set_limit;
+		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
 		r->pagg.super = sift_col_options(index)->superunit;
-		if ((err = sift_cset_pres_parse(sift_col_options_key_presence(index), r->schema, (const char *const *) names, r->pagg.pres)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_presence option: %s", err)));
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)

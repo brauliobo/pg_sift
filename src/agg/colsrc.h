@@ -290,12 +290,17 @@ typedef struct SiftSrcUnitAgg
 	bool		is_const;		/* every non-NULL value equal */
 } SiftSrcUnitAgg;
 
-/* The distinct non-NULL values of a leaf in one unit as a bitmap: bit i of word w (little endian, not aligned) is the value 64 * (wbase + w) + i */
+/*
+ * The distinct non-NULL values of a leaf in one unit: a bitmap (bit i of word w, little endian and not aligned, is the value 64 * (wbase + w) + i) or,
+ * with nkeys > 0, the list of them in ascending order
+ */
 typedef struct SiftSrcPresence
 {
 	int64		wbase;
 	uint64		nwords;
 	const uint8 *words;
+	uint32		nkeys;
+	const int64 *keys;
 } SiftSrcPresence;
 
 /* GROUP BY dim over one unit: count of rows per group and, per stored measure, the non-NULL count and the sum. The NULL group, when there is one, is last */
@@ -366,7 +371,7 @@ typedef struct SiftSrcRollupNeed
 typedef struct SiftSrcPreagg
 {
 	bool		aggs;
-	int			npres;			/* the integer leaves whose units keep every distinct value as a bitmap (key_presence), answered by unit_presence */
+	int			npres;			/* the integer leaves whose units keep every distinct value as a key list or bitmap (key_columns), answered by unit_presence */
 	int			pres[SIFT_SRC_MAX_DIMS];
 	int			ndims;
 	struct

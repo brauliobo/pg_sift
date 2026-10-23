@@ -93,7 +93,7 @@ extern void sift_col_shred_recheck_member(struct SiftShredRecheck *rc, const Sif
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
  * ------------------------------------------------------------------------- */
 
-/* The values of the option dict_lookup: auto stores the dictionaries of the leaves a lookup structure reads (point_columns, set_columns, return_columns) */
+/* The values of the option dict_lookup: auto stores the dictionaries of the leaves a lookup structure reads (point_columns, key_columns, return_columns) */
 enum
 {
 	SIFT_COL_DICT_AUTO,
@@ -112,10 +112,8 @@ typedef struct SiftColOptions
 	int			calendar_columns;	/* offset of the "calendar_columns" string (the date and timestamp columns that get calendar cells in every unit, docs/COL-PREAGG.md section 2; column format minor 8), 0 = none */
 	int			rollup_dims;	/* offset of the "rollup_dims" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
-	int			set_columns;	/* offset of the "set_columns" string, 0 = none */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
-	int			set_limit;		/* up to this many distinct keys a unit keeps exactly, else a bloom filter (0 = the default) */
-	int			key_presence;	/* offset of the "key_presence" string, 0 = none */
+	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
@@ -136,8 +134,7 @@ extern const char *sift_col_options_preagg(Relation index);	/* "" when none (def
 extern const char *sift_col_options_rollup(Relation index);	/* "" when none (automatic) */
 extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
-extern const char *sift_col_options_set_columns(Relation index);	/* "" when none */
-extern const char *sift_col_options_key_presence(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */

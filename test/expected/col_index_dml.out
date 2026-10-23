@@ -43,6 +43,9 @@ INSERT INTO orders (tenant_id, status, qty, express)
 SELECT (i * 7919) % 1000 - 500, (ARRAY['new', 'paid', 'shipped'])[1 + i % 3], (i::bigint * 104729) % 100000, i % 2 = 0 FROM generate_series(1, 15000) i;
 UPDATE orders SET status = NULL WHERE id % 17 = 0;
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (write_buffer_limit = 64);
+NOTICE:  sift_col index o_col keeps the keys of tenant_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX o_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT 'build', stage('o_col');
  ?column? |     stage     
 ----------+---------------

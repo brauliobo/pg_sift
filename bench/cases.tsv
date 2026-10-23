@@ -12,7 +12,7 @@
 topn_page_totals	a page of rows with the total of its set	orders	default	Top-N: created_at DESC.*Pushed Aggregates: count\(\*\), sum	native,pg_duckdb	-	ms	faster33	yes
 topn_coalesce	`ORDER BY coalesce(<int2, int4, int8, date, timestamp or timestamptz column>	orders	default	Top-N: coalesce\(customer_id, 0\) DESC	native,pg_duckdb	-	ms	faster33	yes
 topn_lower	`lower(<text or varchar column>)` and `upper(<text or varchar column>)`	orders	default	Top-N: lower\(category\)	native,pg_duckdb	-	ms	faster33	no
-key_presence_distinct	`key_presence` (`sift_col` reloption	orders	default WITH (key_presence = 'segment_id')	count\(DISTINCT segment_id\).*Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+key_presence_distinct	`key_columns` (`sift_col` reloption	orders	default WITH (key_columns = 'segment_id')	count\(DISTINCT segment_id\).*Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
 cube_minmax_groupby	`cube_minmax` and `superunit` are on by default	orders	default	Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 calendar_month	`calendar_columns` of a `sift_col` index defaults to every date	orders	default	date_trunc\('month'.*Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 bulk_copy_wal	`sift.table_bulk_groups` (on by default since 3.3	orders	-	^columns$	native	bulk_off:sift.table_bulk_groups = off	wal_bytes,ms,cpu_ms	faster33	yes

@@ -9,6 +9,9 @@ CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, amount int, pad text) WITH (a
 INSERT INTO ev SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i - 1) / 20 END, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) || md5((i + 3)::text)
 FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, amount, pad);
+NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 488 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE ents (id int PRIMARY KEY, grp int);
 INSERT INTO ents SELECT i, i % 3 FROM generate_series(1, 3000) i;
 VACUUM (FREEZE, ANALYZE) ev, ents;

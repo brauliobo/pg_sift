@@ -4,8 +4,8 @@
 # through the indexes equal to the plain plan and to what the release answered, sift.verify and sift.col_verify clean, REINDEX, writes (insert,
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
 # (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
-# REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 set_columns, 12 superunit,
-# 13 order_columns, 14 a stored dictionary, 15 key_presence), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 key_columns (a summary), 12 superunit,
+# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
 # and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
@@ -175,7 +175,7 @@ sift.async_maintenance = off'
 	((newest >= 4)) && formats+=("ke 4")
 	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "df 12")
 	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", set_columns = 's'" [kp]=", key_presence = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+		[ca]=", calendar_columns = 'at'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
 	docsonly=" h4 ke cm ca rd sc su rn dk kp df "

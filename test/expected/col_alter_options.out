@@ -25,17 +25,14 @@ ALTER INDEX ao_paths SET (calendar_columns = 'all');
 ERROR:  invalid calendar_columns option: needs a schema without paths or kinds
 -- a column that is not in the index, and one of a type the option does not take
 \c
-ALTER INDEX ao_paths SET (set_columns = 'nope');
-ERROR:  invalid set_columns option: unknown column
+ALTER INDEX ao_paths SET (key_columns = 'nope');
+ERROR:  invalid key_columns option: unknown column
 \c
-ALTER INDEX ao_paths SET (set_columns = 'f');
-ERROR:  invalid set_columns option: not a plain integer, text or uuid column
+ALTER INDEX ao_paths SET (key_columns = 'f');
+ERROR:  invalid key_columns option: not a plain integer, text or uuid column
 \c
-ALTER INDEX ao_paths SET (key_presence = 'nope');
-ERROR:  invalid key_presence option: unknown column
-\c
-ALTER INDEX ao_paths SET (key_presence = 'cc');
-ERROR:  invalid key_presence option: not a plain int2, int4 or date column
+ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
+ERROR:  invalid key_columns option: unknown column
 \c
 ALTER INDEX ao_paths SET (rollup_dims = 'nope, pid');
 ERROR:  invalid rollup_dims option: "nope" is not a column of the index
@@ -88,7 +85,7 @@ SELECT count(*) FROM ao;
 VACUUM ao;
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (set_columns = 'pid', key_presence = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;

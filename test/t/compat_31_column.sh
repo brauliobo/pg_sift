@@ -61,11 +61,11 @@ sift.async_maintenance = off'
 	check "$ref rewritten null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
 	check "$ref rewritten astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
 	if [[ $ref == v3.1.0 ]]; then
-		# the small-set summary (minor 10, opt-in): under the setting 4 the new library writes what 3.1 reads, under the default the 3.1 library refuses it
+		# the small-set summary of a bigint column (minor 10, opt-in): under the setting 4 the new library writes what 3.1 reads, under the default the 3.1 library refuses it
 		SETQ="SELECT count(*) || ':' || sum(id) FROM setlow WHERE k = 2919"
-		sql legacy "CREATE TABLE setlow AS SELECT i AS id, i * 7919 % 5000 AS k FROM generate_series(1, 3000) i" "CREATE TABLE sethigh AS TABLE setlow" \
-			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (set_columns = 'k')" "RESET sift.col_format_minor" \
-			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (set_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
+		sql legacy "CREATE TABLE setlow AS SELECT i AS id, (i * 7919 % 5000)::bigint AS k FROM generate_series(1, 3000) i" "CREATE TABLE sethigh AS TABLE setlow" \
+			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (key_columns = 'k')" "RESET sift.col_format_minor" \
+			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (key_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
 		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
 		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 12, with the sections that are on by default)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:12
 		# the sorted run (minor 13, opt-in): the setting 4 writes no run, the default one writes what 3.1 refuses
@@ -75,11 +75,11 @@ sift.async_maintenance = off'
 			"CREATE INDEX ordhigh_idx ON ordhigh USING sift_col (id, k) WITH (order_columns = 'k')" "VACUUM ANALYZE ordlow" "VACUUM ANALYZE ordhigh" >/dev/null || bail 'minor 13 setup'
 		ordwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$ORDQ")
 		check 'the setting 4 writes no run and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('ordlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('ordhigh_idx') WHERE kind = 'immutable')")" == 4:13
-		# the key presence (minor 15, opt-in): the setting 4 writes none, the default one writes what 3.1 refuses
+		# the key list or bitmap of an int column (minor 15, opt-in): the setting 4 writes none, the default one writes what 3.1 refuses
 		KPQ="SELECT count(DISTINCT k), count(*) FROM kplow"
 		sql legacy "CREATE TABLE kplow AS SELECT i AS id, i % 200 AS k, i * 7919 % 100003 AS v FROM generate_series(1, 3000) i" "CREATE TABLE kphigh AS TABLE kplow" \
-			"SET sift.col_format_minor = 4" "CREATE INDEX kplow_idx ON kplow USING sift_col (id, k, v) WITH (key_presence = 'k')" "RESET sift.col_format_minor" \
-			"CREATE INDEX kphigh_idx ON kphigh USING sift_col (id, k, v) WITH (key_presence = 'k')" "VACUUM ANALYZE kplow" "VACUUM ANALYZE kphigh" >/dev/null || bail 'minor 15 setup'
+			"SET sift.col_format_minor = 4" "CREATE INDEX kplow_idx ON kplow USING sift_col (id, k, v) WITH (key_columns = 'k')" "RESET sift.col_format_minor" \
+			"CREATE INDEX kphigh_idx ON kphigh USING sift_col (id, k, v) WITH (key_columns = 'k')" "VACUUM ANALYZE kplow" "VACUUM ANALYZE kphigh" >/dev/null || bail 'minor 15 setup'
 		kpwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$KPQ")
 		check 'the setting 4 writes no key presence and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('kplow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('kphigh_idx') WHERE kind = 'immutable')")" == 4:15
 		node_stop legacy
@@ -90,13 +90,13 @@ sift.async_maintenance = off'
 		check '3.1 refuses a minor 12 index (complete kinds and the default sections) with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
 		err=$(sql legacy "SELECT count(*) FROM oldtbl" 2>&1)
 		check '3.1 refuses minor 6 table groups' grep -q 'format 1.6' <<<"$err"
-		check '3.1 reads an index written with set_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
+		check '3.1 reads an index written with key_columns on a bigint column under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('sethigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 12 set summary index with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
 		check '3.1 reads an index written with order_columns under the setting 4' test "$(sql legacy "SELECT sift.col_verify('ordlow_idx', true)" "SET sift.enable_agg = on" "$ORDQ" | tail -n 1)" == "$ordwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('ordhigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 13 index with a format error and REINDEX hint' test "$(grep -c 'format 1.13\|REINDEX' <<<"$err")" -ge 2
-		check '3.1 reads an index written with key_presence under the setting 4' test "$(sql legacy "SELECT sift.col_verify('kplow_idx', true)" "SET sift.enable_agg = on" "$KPQ" | tail -n 1)" == "$kpwant"
+		check '3.1 reads an index written with key_columns on an int column under the setting 4' test "$(sql legacy "SELECT sift.col_verify('kplow_idx', true)" "SET sift.enable_agg = on" "$KPQ" | tail -n 1)" == "$kpwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('kphigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 15 index with a format error and REINDEX hint' test "$(grep -c 'format 1.15\|REINDEX' <<<"$err")" -ge 2
 	fi

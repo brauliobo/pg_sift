@@ -10,6 +10,9 @@ CREATE INDEX dims_slug ON dims (slug);
 CREATE TABLE events (id int, dim_id int NOT NULL, ts date NOT NULL, kind text, amount float8);
 INSERT INTO events SELECT i, 1 + i % 300, date '2024-01-01' + i % 600, 'cat_' || chr(97 + i % 4), i % 13 + 0.5 FROM generate_series(1, 30000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind, amount);
+NOTICE:  sift_col index events_col keeps the keys of dim_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 56 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) events, dims;
 \ir test/agg_helpers.sql
 \set ECHO none

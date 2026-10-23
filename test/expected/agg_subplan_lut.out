@@ -11,6 +11,9 @@ SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 300 END, 1 + i % 
        (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2024-01-01' + i % 90, (i % 500) / 10.0
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, tenant_id, big_id, region, kind, day, amount);
+NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 56 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: tenant_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE tenants (id int PRIMARY KEY, kind text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3] FROM generate_series(1, 40) i;
 -- the sub-selects: values with a duplicate and without NULL, with a NULL, none, text values with a NULL, dates
@@ -244,6 +247,9 @@ SELECT * FROM same($$WITH s AS MATERIALIZED (SELECT id FROM tenants WHERE id < 2
 CREATE TABLE wide (id int PRIMARY KEY, dim_a_id int, kind text) WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT i, 1 + (i * 7919) % 300, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_series(1, 6000) i;
 CREATE INDEX wide_col ON wide USING sift_col (dim_a_id, kind);
+NOTICE:  sift_col index wide_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 56 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX wide_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) wide;
 INSERT INTO wide VALUES (10001, -5, 'a'), (10002, 2147483640, 'b'), (10003, 1000000000, 'c'), (10004, NULL, 'a');
 VACUUM (FREEZE) wide;

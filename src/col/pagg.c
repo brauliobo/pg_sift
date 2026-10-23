@@ -49,7 +49,7 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 }
 
 bool
-sift_col_unit_presence(const SiftColUnit *unit, int col, int64 *wbase, uint64 *nwords, const uint8 **words)
+sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
 {
 	SiftColSegment *seg;
 	uint32		u;
@@ -57,7 +57,7 @@ sift_col_unit_presence(const SiftColUnit *unit, int col, int64 *wbase, uint64 *n
 	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
-	return sift_cseg_presence(seg, col, u, wbase, nwords, words);
+	return sift_cseg_presence(seg, col, u, p);
 }
 
 static void

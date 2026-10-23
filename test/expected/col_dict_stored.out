@@ -521,12 +521,12 @@ SET max_parallel_maintenance_workers = 0;
 CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
 CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = off);
 CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops);
-CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (set_columns = 's');
-NOTICE:  sift_col index ds_auto_set: the set summary of "s" is a bloom filter, not its keys, in 50% of 4 units, which hold more than set_limit = 32 distinct keys
-HINT:  A unit holds up to 2898 distinct keys, more than the 1024 that set_limit can take: the filter stays.
-NOTICE:  sift_col index ds_auto_set: set_columns wrote no summary of "s" in 50% of 4 units, whose keys are one value, or every integer of a range, or inline text
+CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (key_columns = 's');
+NOTICE:  sift_col index ds_auto_set: the keys of "s" are a bloom filter, not a list, in 50% of 4 units, which hold more than 32 distinct keys
+DETAIL:  The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to 2898 distinct keys.
+NOTICE:  sift_col index ds_auto_set: key_columns wrote no summary of "s" in 50% of 4 units, whose keys are one value, or every integer of a range, or inline text
 DETAIL:  A summary that could not skip a unit is not stored; a query that filters by the column scans those units.
-HINT:  Leave "s" out of set_columns, or sort the table by it before REINDEX.
+HINT:  Leave "s" out of key_columns, or sort the table by it before REINDEX.
 CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 'u');
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (return_columns = 's, v');
 CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = off);

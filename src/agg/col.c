@@ -657,7 +657,12 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 static bool
 col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
 {
-	return sift_col_unit_presence(&((ColSource *) impl)->unit, leaf, &p->wbase, &p->nwords, &p->words);
+	SiftCPresence c;
+
+	if (!sift_col_unit_presence(&((ColSource *) impl)->unit, leaf, &c))
+		return false;
+	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
+	return true;
 }
 
 /* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */

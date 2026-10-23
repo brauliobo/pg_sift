@@ -1,0 +1,125 @@
+-- The default of the option key_columns: an index created without the option, or with key_columns = 'auto', keeps the
+-- key list or bitmap of the foreign key columns and of the columns named *_id that are int2, int4 or date, not unique and not held by the cube; CREATE INDEX
+-- writes the columns to the option as 'auto: a, b' (a rebuild of the same heap keeps them), the build keeps those that hold a list or a bitmap in half of the
+-- units, never a bloom filter, and a NOTICE says which, with the bytes, and how to turn it off.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = notice;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '120s';
+
+-- about 8 units of 7,500 rows (the constraints are added after the rows, NOT VALID: the parent table is empty). parent_id, set_id: foreign keys over a dense range; sparse_fk: 600 values spread over 2^30 (a list, not a bitmap); ext_fk: a
+-- different value in every row (no bitmap or list fits); region_id: named like a key, no constraint; uniq_id: unique; wide_fk: a bigint; plain: neither; low_id: 12 values, a dimension of the cube
+CREATE TABLE au_p (id int PRIMARY KEY);
+CREATE TABLE au (id int PRIMARY KEY, parent_id int, set_id int2, sparse_fk int, ext_fk int, region_id int, uniq_id int UNIQUE, wide_fk bigint, plain int, low_id int,
+                 txt_id text, d date, ts date, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE au ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO au
+SELECT i, (hashint4(i) & 2147483647) % 900 + 1, ((hashint4(i + 1) & 2147483647) % 300)::int2, ((hashint4(i + 2) & 2147483647) % 600) * 1667000,
+       hashint4(i + 3) & 2147483647, (hashint4(i + 4) & 2147483647) % 400, i, i, (hashint4(i + 5) & 2147483647) % 1000, (hashint4(i + 7) & 2147483647) % 12, 'k' || i % 50,
+       date '2025-01-01' + (hashint4(i + 6) & 2147483647) % 900, date '2024-01-01' + i / 150, i % 1000, repeat('x', 200)
+FROM generate_series(1, 60000) i;
+ALTER TABLE au ADD FOREIGN KEY (parent_id) REFERENCES au_p NOT VALID;
+ALTER TABLE au ADD FOREIGN KEY (set_id) REFERENCES au_p NOT VALID;
+ALTER TABLE au ADD FOREIGN KEY (sparse_fk) REFERENCES au_p NOT VALID;
+ALTER TABLE au ADD FOREIGN KEY (ext_fk) REFERENCES au_p NOT VALID;
+ALTER TABLE au ADD FOREIGN KEY (wide_fk) REFERENCES au_p NOT VALID;
+VACUUM (FREEZE, ANALYZE) au;
+
+CREATE FUNCTION au_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION au_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		n := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, n);
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION au_option(i text) RETURNS text LANGUAGE sql AS
+$$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'key_columns=%'), 'not set') $$;
+CREATE FUNCTION au_minors(i text) RETURNS text LANGUAGE sql AS
+$$ SELECT array_agg(DISTINCT format ORDER BY format)::text FROM sift._test_col_formats(i::regclass) $$;
+
+-- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
+CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096);
+SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
+SELECT sift.col_verify('au_i', true);
+
+-- the answers are the heap's, and the units come from their lists and bitmaps (low_id from the cube, which holds it)
+SELECT c AS col, au_rows(format('SELECT count(DISTINCT %s) FROM au', c), true) = au_rows(format('SELECT count(DISTINCT %s) FROM au', c), false) AS same,
+       au_scanned(format('SELECT count(DISTINCT %s) FROM au', c)) < 5000 AS from_presence
+FROM unnest(ARRAY['parent_id', 'set_id', 'sparse_fk', 'region_id', 'ext_fk', 'uniq_id', 'plain', 'low_id']) c ORDER BY 1;
+
+-- a rebuild of the same heap keeps the same columns, and says so again
+REINDEX INDEX au_i;
+SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
+
+-- 'off', or the columns by name, is the way out; neither chooses anything
+CREATE INDEX au_off ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'off');
+CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'plain_none');
+CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, plain, val) WITH (write_buffer_limit = 4096, key_columns = 'plain');
+SELECT au_option('au_off') AS off_option, au_minors('au_off') AS off_minors, au_option('au_named') AS named_option, au_minors('au_named') AS named_minors;
+
+-- 'auto' by name decides again at the next build, and an index of an older release (no option) does at its REINDEX
+ALTER INDEX au_named SET (key_columns = 'auto');
+REINDEX INDEX au_named;
+SELECT au_option('au_named') AS option;
+ALTER INDEX au_off RESET (key_columns);
+SELECT au_option('au_off') AS before_reindex;
+REINDEX INDEX au_off;
+SELECT au_option('au_off') AS after_reindex, au_minors('au_off') AS minors;
+DROP INDEX au_off, au_named;
+
+-- a setting below 15 chooses nothing (the index stays readable by the release that reads that setting) and a later REINDEX does
+SET sift.col_format_minor = 6;
+CREATE INDEX au_old ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+RESET sift.col_format_minor;
+SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
+REINDEX INDEX au_old;
+SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
+DROP INDEX au_old;
+
+-- no column of the index qualifies: nothing written, no notice
+CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, wide_fk, txt_id, val);
+SELECT au_option('au_none') AS option, au_minors('au_none') AS minors;
+DROP INDEX au_none;
+
+-- the workers of a parallel build see the columns, and CREATE INDEX CONCURRENTLY chooses them too
+SET max_parallel_maintenance_workers = 3;
+SET min_parallel_table_scan_size = 0;
+SET parallel_setup_cost = 0;
+ALTER TABLE au SET (parallel_workers = 3);
+CREATE INDEX au_par ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+RESET max_parallel_maintenance_workers;
+RESET min_parallel_table_scan_size;
+RESET parallel_setup_cost;
+CREATE INDEX CONCURRENTLY au_conc ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+SELECT au_option('au_par') AS par_option, au_minors('au_par') AS par_minors, au_option('au_conc') AS conc_option, au_minors('au_conc') AS conc_minors;
+SELECT sift.col_verify('au_par', true), sift.col_verify('au_conc', true);
+SELECT au_scanned('SELECT count(DISTINCT parent_id) FROM au') < 5000 AS par_from_presence, au_rows('SELECT count(DISTINCT parent_id) FROM au', true) = au_rows('SELECT count(DISTINCT parent_id) FROM au', false) AS same;
+DROP INDEX au_par, au_conc;
+
+-- a table with many foreign keys: the presence of all of them shares 3% of a unit
+CREATE TABLE au_m (id int PRIMARY KEY, a_id int, b_id int, c_id int, d_id int, e_id int, f_id int, g_id int, h_id int, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE au_m ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO au_m SELECT i, (hashint4(i) & 2147483647) % 3000, (hashint4(i + 1) & 2147483647) % 3000, (hashint4(i + 2) & 2147483647) % 3000, (hashint4(i + 3) & 2147483647) % 3000,
+       (hashint4(i + 4) & 2147483647) % 3000, (hashint4(i + 5) & 2147483647) % 3000, (hashint4(i + 6) & 2147483647) % 3000, (hashint4(i + 7) & 2147483647) % 3000, i % 100,
+       repeat('x', 200)
+FROM generate_series(1, 60000) i;
+CREATE INDEX au_m_i ON au_m USING sift_col (id, a_id, b_id, c_id, d_id, e_id, f_id, g_id, h_id, val) WITH (write_buffer_limit = 4096);
+SELECT au_option('au_m_i') AS option;
+SELECT bytes * 100 < pg_relation_size('au_m_i') * 3 AS sets_under_3_percent FROM sift.col_sections('au_m_i') WHERE section = 'sets';
+SELECT sift.col_verify('au_m_i', true);
+
+DROP TABLE au, au_m, au_p CASCADE;
+DROP FUNCTION au_rows(text, bool), au_scanned(text), au_option(text), au_minors(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

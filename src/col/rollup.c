@@ -454,11 +454,11 @@ leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n
 
 /*
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
- * has no histogram in a unit with more groups than max_groups, a set_columns leaf keeps a bloom filter instead of its keys where a unit holds more
- * than set_limit of them and nothing where its keys are one value or fill their range, a key_presence leaf keeps no bitmap where that would take
+ * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
+ * holds more than SIFT_CSET_LIMIT of them and nothing where its keys are one value or fill their range, and no key list or bitmap where that would take
  * more than a few percent of the unit, a rollup_dims rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
- * leaves out the date columns past the 16 dimensions of the cube. Read from the headers of the stored sidecar, like the census of a refresh;
- * sift.col_rollup_misses counts the scans that paid.
+ * leaves out the date columns past the 16 dimensions of the cube. The leaves the build chose for key_columns are reported by it (col/keycols.c). Read from
+ * the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
  */
 void
 sift_col_report_caps(Relation index)
@@ -529,7 +529,7 @@ sift_col_report_caps(Relation index)
 				}
 				if (spec->set[l] && sets_ok && !open)
 					no_set[l]++;
-				if (spec->pres[l] && pres_ok && !(open && s.kind == SIFT_CSET_PRES))
+				if (spec->pres[l] && pres_ok && !(open && (s.kind == SIFT_CSET_PRES || s.kind == SIFT_CSET_PLIST)))
 					no_pres[l]++;
 			}
 		sift_cseg_close(seg);
@@ -541,28 +541,22 @@ sift_col_report_caps(Relation index)
 									name, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), share_pct(units - with_dim[d], units), units, spec->max_groups),
 							 errdetail("A query that groups or filters by it scans those units (sift.col_rollup_misses counts them)."),
 							 errhint("Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.")));
-	for (int l = 0; units > 0 && l < rel->schema->ncols; l++)
+	for (int l = 0; units > 0 && !spec->keyauto && l < rel->schema->ncols; l++)
 	{
-		if (bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
-		{
-			uint32		limit = spec->set_limit ? spec->set_limit : SIFT_CSET_LIMIT;
-
-			ereport(NOTICE, (errmsg("sift_col index %s: the set summary of \"%s\" is a bloom filter, not its keys, in %d%% of %u units, which hold more than set_limit = %u distinct keys",
-									name, leaf_label(index, &rel->schema->cols[l]), share_pct(bloom[l], units), units, limit),
-							 keys[l] <= SIFT_CSET_LIMIT_MAX ?
-							 errhint("ALTER INDEX %s SET (set_limit = %u), then REINDEX.", name, pg_nextpower2_32(keys[l])) :
-							 errhint("A unit holds up to %u distinct keys, more than the %d that set_limit can take: the filter stays.", keys[l], SIFT_CSET_LIMIT_MAX)));
-		}
+		if (!spec->pres[l] && bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
+			ereport(NOTICE, (errmsg("sift_col index %s: the keys of \"%s\" are a bloom filter, not a list, in %d%% of %u units, which hold more than %d distinct keys",
+									name, leaf_label(index, &rel->schema->cols[l]), share_pct(bloom[l], units), units, SIFT_CSET_LIMIT),
+							 errdetail("The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to %u distinct keys.", keys[l])));
 		if (cap_hits(no_set[l], sets_units))
-			ereport(NOTICE, (errmsg("sift_col index %s: set_columns wrote no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
+			ereport(NOTICE, (errmsg("sift_col index %s: key_columns wrote no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
 									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_set[l], sets_units), sets_units),
 							 errdetail("A summary that could not skip a unit is not stored; a query that filters by the column scans those units."),
-							 errhint("Leave \"%s\" out of set_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
 		if (cap_hits(no_pres[l], pres_units))
-			ereport(NOTICE, (errmsg("sift_col index %s: key_presence wrote no bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
+			ereport(NOTICE, (errmsg("sift_col index %s: key_columns wrote no key list or bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
 									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_pres[l], pres_units), pres_units, SIFT_CSET_PRES_PCT),
-							 errdetail("The bitmap takes a bit for each integer from the smallest key of a unit to its largest; a count(DISTINCT) of the column scans those units."),
-							 errhint("Leave \"%s\" out of key_presence, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+							 errdetail("A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than %d, else exact or, where they fill their range, nothing.", SIFT_CSET_LIMIT),
+							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
 	}
 	for (int r = 0; rows_units > 0 && r < spec->nrollups; r++)
 		if (spec->rollup[r].list < 0 && cap_hits(rows_units - with_roll[r], rows_units))

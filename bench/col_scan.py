@@ -5,7 +5,7 @@
   bench/col_scan.py run  DB ROWS KIND [--only=a,b] >> col-scan.tsv   time the queries with only the indexes of KIND
   bench/col_scan.py space DB ROWS > col-scan-space.tsv   the size of every kind of index
 
-KIND: btree (one per query column), classes (one sift_col index with the operator classes), set (the same with set_columns = $SET_COLUMNS, default 'id, rnd, s_short, u'),
+KIND: btree (one per query column), classes (one sift_col index with the operator classes), set (the same with key_columns = $SET_COLUMNS, default 'id, rnd, s_short, u'),
 point (the same with point_columns = $POINT_COLUMNS, default 'id, rnd, s_short, u').
 PG* variables pick the server. Each query and plan runs RUNS = 24 times in one session: the median of the last three is exec_median_ms (EXPLAIN (ANALYZE, TIMING OFF) Execution
 Time), a backend that has run the query before (and has asked a dictionary often enough for the lookup structures built beside it, col/dict.c: 8
@@ -17,7 +17,7 @@ heap, or the btree, as PostgreSQL plans it without the column scan. No parallel 
 import json, os, random, statistics, subprocess, sys
 
 ENV = dict(os.environ, LC_ALL="C")
-NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + set_columns", "point": "sift_col classes + point_columns"}
+NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + key_columns", "point": "sift_col classes + point_columns"}
 OPS = ("id sift.col_int4_ops, rnd sift.col_int4_ops, grp sift.col_int4_ops, ts sift.col_timestamptz_ops, "
        "s_short sift.col_text_ops, u sift.col_uuid_ops, amount sift.col_numeric_ops")
 SET_COLUMNS = os.environ.get("SET_COLUMNS", "id, rnd, s_short, u")
@@ -26,7 +26,7 @@ INDEXES = {
     "btree": ["CREATE INDEX b_id ON T (id)", "CREATE INDEX b_rnd ON T (rnd) INCLUDE (id)", "CREATE INDEX b_grp_ts ON T (grp, ts)",
               "CREATE INDEX b_s ON T (s_short)", "CREATE INDEX b_u ON T (u)"],
     "classes": [f"CREATE INDEX c_scan ON T USING sift_col ({OPS})"],
-    "set": [f"CREATE INDEX c_set ON T USING sift_col ({OPS}) WITH (set_columns = '{SET_COLUMNS}')"],
+    "set": [f"CREATE INDEX c_set ON T USING sift_col ({OPS}) WITH (key_columns = '{SET_COLUMNS}')"],
     "point": [f"CREATE INDEX c_point ON T USING sift_col ({OPS}) WITH (point_columns = '{POINT_COLUMNS}')"],
 }
 DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point")
@@ -160,7 +160,7 @@ def space(n):
     print("table_rows\tcolumns\tindex\tindex_bytes\tbytes_per_row")
     for kind, label, cols in (("btree", "btree (6 indexes)", "a btree on each of id, rnd, (grp, ts), s_short, u, amount"),
                               ("classes", "sift_col classes", "id, rnd, grp, ts, s_short, u, amount: one index"),
-                              ("set", "sift_col classes + set_columns", f"the same with set_columns = '{SET_COLUMNS}'"),
+                              ("set", "sift_col classes + key_columns", f"the same with key_columns = '{SET_COLUMNS}'"),
                               ("point", "sift_col classes + point_columns", f"the same with point_columns = '{POINT_COLUMNS}'")):
         psql(*[f"DROP INDEX IF EXISTS {i}" for i in DROP])
         for d in INDEXES[kind] + (["CREATE INDEX b_amount ON T (amount)"] if kind == "btree" else []):
