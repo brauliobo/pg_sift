@@ -117,6 +117,7 @@
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
+#define AGG_IN_TABLE_BYTE	0.75	/* a byte of the table of an IN list over a range of values, allocated and cleared when the scan starts: 1.9 ns measured (a 1 MB table costs 1.9 ms, 4 KB nothing visible), the pages it faults in */
 #define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
 #define AGG_KEY_ENTRY		40.0	/* an entry of a unit's dictionary given the id of a group key (the text built, hashed and looked up) in a table of 2,000 ids: 39 ns measured, which the read of the leaf prices; 90 ns at 20,000 ids and 200 ns at 200,000, as the table outgrows the caches (the 0.35 power of the ids over AGG_KEY_IDS): the excess over the first is charged */
 #define AGG_KEY_IDS			2000.0
@@ -1504,6 +1505,20 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
 }
 
+/* The tables of the IN lists the scan builds when it starts: they depend on the range of the values, not on the rows read or the units kept */
+static double
+in_tables_cost(AggCtx *c, const SiftAggPred *p)
+{
+	double		bytes = 0;
+
+	if (p->kind == SAP_AND || p->kind == SAP_OR)
+		for (int i = 0; i < p->nchild; i++)
+			bytes += in_tables_cost(c, p->child[i]);
+	else
+		bytes = in_list_table_bytes(c, p) * AGG_IN_TABLE_BYTE * cpu_operator_cost;
+	return bytes;
+}
+
 /* What every path of the scan pays to start, whatever it reads: its source and the partitions it opens. No path costs less in total. */
 Cost
 agg_open_cost(int nparts)
@@ -1569,6 +1584,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
 	startup = agg_open_cost(c->nparts) + k.child_cost + c->subplan_cost;
+	for (int i = 0; i < s->npred; i++)
+		startup += in_tables_cost(c, s->pred[i]);
 	if (s->nworkers > 0)
 		cost_parallel(s, &k, &startup);
 	/* each process holds a table of its own (and spills it) */
