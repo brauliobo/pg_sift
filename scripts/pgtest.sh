@@ -10,7 +10,8 @@
 #   scripts/pgtest.sh env        print exports for libpq clients (eval "$(...)")
 #   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
-#                                each in its own database and output directory $SIFT_TMP/regress/<t> (parallel runs)
+#                                in one database per call (contrib_regression_<first>) and an output directory $SIFT_TMP/regress/<t> per test (parallel
+#                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database)
@@ -145,14 +146,34 @@ clean() {
 	done
 }
 
-# regress [TEST...]: without names, make installcheck (the Makefile's database and test list)
+# regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, one pg_regress run per test in one
+# database for all, each followed by a look at what it left in the database (scripts/leftovers.sql): a test that leaves something fails the run,
+# unless scripts/leftovers.allow gives the object and the reason, and the next test starts in a fresh database so that the one that left it is
+# the only failure and not also those that find it there
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
-	local out=$TMP/regress/$1 rc=0
-	pg_regress "$out" "contrib_regression_$1" "$@" || rc=$?
-	[[ $rc == 0 ]] || cat "$out/regression.diffs" 2>/dev/null
+	local db=contrib_regression_$1 t out rc=0 reuse=() before= now left
+	for t in "$@"; do
+		out=$TMP/regress/$t
+		if ! pg_regress "$out" "$db" "${reuse[@]}" "$t"; then
+			rc=1; cat "$out/regression.diffs" 2>/dev/null; reuse=() before=
+			continue
+		fi
+		now=$(db_left "$db")
+		left=$({ grep -vxFf <(echo "$before") <<<"$now" || true; } | { grep -vEf <(sed -n "s/^$t: \(.*[^ ]\) *# .*/\1/p" "$REPO/scripts/leftovers.allow") || true; })
+		if [[ -n $left ]]; then
+			rc=1; reuse=() before=
+			sed "s/^/LEFTOVER $t: /" <<<"$left"
+			echo "not ok - $t leaves objects behind: end it with the DROPs of what it creates (the extension last), or give the object and the reason in scripts/leftovers.allow"
+		else
+			reuse=(--use-existing) before=$now
+		fi
+	done
 	return $rc
 }
+
+# db_left DB: what scripts/leftovers.sql finds in DB (the objects of the database, not those of the cluster)
+db_left() { psql -U postgres -d "$1" -X -qAt -v cluster=off -f "$REPO/scripts/leftovers.sql"; }
 
 # pg_regress OUTDIR DB TEST...: pg_regress in a database it creates, the output in a fresh OUTDIR
 pg_regress() {
@@ -171,9 +192,9 @@ leftovers() {
 	before=$(cluster_left)
 	for t in "$@"; do
 		db=contrib_regression_$t
-		pg_regress "$TMP/regress/$t" "$db" "$t" >/dev/null || echo "$t: FAILED, what it left may come from that (diffs in $TMP/regress/$t)"
+		pg_regress "$TMP/regress/$t" "$db" "$t" >/dev/null 2>&1 || echo "$t: FAILED, what it left may come from that (diffs in $TMP/regress/$t)"
 		now=$(cluster_left)
-		left=$(psql -U postgres -d "$db" -X -qAt -v cluster=off -f "$REPO/scripts/leftovers.sql"; comm -13 <(echo "$before") <(echo "$now"))
+		left=$(db_left "$db"; grep -vxFf <(echo "$before") <<<"$now" || true)
 		[[ -z ${left//$'\n'/} ]] || { bad=1; echo "$left" >"$TMP/regress/$t/leftovers"; sed "s/^/$t: /" <<<"$left" | head -12; (( $(wc -l <<<"$left") <= 12 )) || echo "$t: ... all $(wc -l <<<"$left") in $TMP/regress/$t/leftovers"; }
 		before=$now
 		dropdb -U postgres --force "$db"
@@ -209,5 +230,5 @@ case ${1:-} in
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
-	*) sed -n '2,30p' "$0"; exit 1 ;;
+	*) sed -n '2,31p' "$0"; exit 1 ;;
 esac
