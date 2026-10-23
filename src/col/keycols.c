@@ -188,7 +188,7 @@ append_bytes(StringInfo s, uint64 n)
 void
 sift_col_auto_keys_report(Relation index)
 {
-	const SiftColRel *rel = sift_col_rel(index);
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the relcache frees the cached state on a reload, and the loop calls into readers */
 	const SiftCPaggSpec *spec = &rel->pagg;
 	const char *name = quote_identifier(RelationGetRelationName(index));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
