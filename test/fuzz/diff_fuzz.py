@@ -350,10 +350,10 @@ def gen_topn(r, ctx):
              'val': lambda c: r.choice([f'{c} * {k2}', f'-{c}', f'{c} + {k1}', f'{c} / {k2}']),
              'num': lambda c: r.choice([f'{c} * {k2}', f'{c} + 1.5', f'{c} / {k2}', f'{c}::float8', f'{c}::text', f'-{c}']),
              'ts': lambda c: r.choice([f"coalesce({c}, DATE '{r.choice(['2025-01-01', '2025-09-15', '2026-03-01'])}')", f'{c} + {k1}', f'{c} - {k2}', f"{c} - DATE '2025-06-01'"]),
-             'kind': lambda c: r.choice([f"{r.choice(['lower', 'upper'])}({c})", f"CASE WHEN {c} = 'k1' THEN 0 WHEN {c} < 'k3' THEN 1 ELSE 2 END", f'length({c})', f"{c} IN ('k1', 'k4')", f"coalesce({c}, 'zz')", f"nullif({c}, 'k2')"])}
+             'kind': lambda c: r.choice([f"{r.choice(['lower', 'upper'])}({c})", f"CASE WHEN {c} = 'k1' THEN 0 WHEN {c} < 'k3' THEN 1 ELSE 2 END", f'length({c})', f"{c} IN ('k1', 'k4')", f"coalesce({c}, 'zz')", f"nullif({c}, 'k2')", f"lower(upper({c}))", f"{c} || '-' || e.grp::text", f'left({c}, 1)', f'md5({c})', f"replace({c}, 'k', 'K')", f"upper({c}) || lower(e.kind)"])}
     two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a', ('c', 'd'): 'coalesce(e.parent_id, e.grp, e.a)',
            ('e', 'f'): 'CASE WHEN e.a > e.b THEN e.a ELSE e.b END', ('g', 'h'): 'greatest(e.a, e.b, e.grp)', ('i', 'j'): 'coalesce(e.kind, e.id::text)',
-           ('k', 'l'): 'e.a IS NULL OR e.b IS NULL', ('m', 'n'): 'least(e.ts, DATE \'2025-06-01\')'}
+           ('k', 'l'): 'e.a IS NULL OR e.b IS NULL', ('o', 'p'): 'abs(e.a - e.b)', ('q', 'r'): 'round(e.num, 1)', ('s', 't'): 'date_trunc(\'month\', e.ts)', ('u', 'v'): 'mod(e.id, 10) + e.grp', ('m', 'n'): 'least(e.ts, DATE \'2025-06-01\')'}
     order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}'} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     if r.random() < 0.15:
         order[0] = f"{two[r.choice(list(two))]} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip()

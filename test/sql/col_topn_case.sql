@@ -158,7 +158,6 @@ SELECT k, w.used, w.slug, w.reason
 FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('stable',      $q$SELECT id FROM tb ORDER BY CASE WHEN d > current_date THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('volatile',    $q$SELECT id FROM tb ORDER BY CASE WHEN random() > 2 THEN 1 ELSE g END, id LIMIT 5$q$),
-			 ('text result', $q$SELECT id FROM tb ORDER BY CASE WHEN s IS NULL THEN '' ELSE left(s, 3) END, id LIMIT 5$q$),
 			 ('allowed',     $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";

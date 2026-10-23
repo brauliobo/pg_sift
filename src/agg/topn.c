@@ -143,7 +143,7 @@ typedef struct TopExpr
 } TopExpr;
 
 static SiftSrcVecType expr_vtype(Oid typid);
-static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, MemoryContext cxt);
+static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt);
 
 typedef struct TopKey
 {
@@ -385,7 +385,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			.xk = xk, .xc = (int64) (((uint64) xhi << 32) | xlo), .xcoll = xcoll};
 		if (xk == TXK_EXPR)
 		{
-			k->x = expr_open(list_nth(SPEC_EXPRS(spec), (int) xlo), lay, xcoll, cxt);
+			k->x = expr_open(list_nth(SPEC_EXPRS(spec), (int) xlo), lay, xcoll, econtext, cxt);
 			t->nexpr++;
 		}
 		if (xk == TXK_LOWER || xk == TXK_UPPER)
@@ -772,7 +772,7 @@ expr_vtype(Oid typid)
 
 /* xs: the expression over Vars numbered 1.. and the leaves they stand for, in that order */
 static TopExpr *
-expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, MemoryContext cxt)
+expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	TopExpr    *x = palloc0(sizeof(TopExpr));
@@ -793,6 +793,8 @@ expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, MemoryContext cxt)
 	x->slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	x->econtext = CreateStandaloneExprContext();
 	x->econtext->ecxt_scantuple = x->slot;
+	/* the parameters of the statement (the leader only: the planner does not give a sort expression with one to workers) */
+	x->econtext->ecxt_param_list_info = outer->ecxt_param_list_info;
 	/* no parent: the Vars are of the slot above whatever the scan's own tuple is */
 	x->state = ExecInitExpr((Expr *) linitial(xs), NULL);
 	x->rtype = rtype;

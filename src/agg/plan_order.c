@@ -415,9 +415,10 @@ typedef struct TopXprWalk
 	AggCtx	   *c;
 	List	   *leaves;			/* the leaves the Vars stand for, in the order of their numbers in the evaluator's row */
 	const char *why;
+	bool		serial;			/* the expression needs the leader: a parameter of the statement */
 } TopXprWalk;
 
-/* The types the numbers of a sort expression are of: an operator or function over them gives a number, not a string */
+/* The types of a number: a column of one is read as an integer, a float or a scaled numeric */
 static bool
 topn_num_type(Oid t)
 {
@@ -516,38 +517,21 @@ topn_expr_walker(Node *n, TopXprWalk *w)
 		case T_DistinctExpr:
 		case T_ScalarArrayOpExpr:
 			break;
+		/* an immutable function or operator of any types, a cast: only the leaves and the result are stored, and the evaluator is PostgreSQL's */
 		case T_CoerceViaIO:
-			{
-				CoerceViaIO *cv = (CoerceViaIO *) n;
-				Oid			from = exprType((Node *) cv->arg);
-
-				if (!(topn_num_type(from) || topn_str_type(from)) || !(topn_num_type(cv->resulttype) || topn_str_type(cv->resulttype)))
-				{
-					w->why = "casts a type that is not a number or a string";
-					return true;
-				}
-				break;
-			}
 		case T_OpExpr:
 		case T_FuncExpr:
+		case T_ArrayExpr:
+			break;
+		case T_Param:
+			if (((Param *) n)->paramkind != PARAM_EXTERN)
 			{
-				List	   *args = IsA(n, OpExpr) ? ((OpExpr *) n)->args : ((FuncExpr *) n)->args;
-				bool		cast = IsA(n, FuncExpr) && ((FuncExpr *) n)->funcformat != COERCE_EXPLICIT_CALL;
-
-				/* an operator or function gives a number from numbers; a cast may read or give a string (its text form) */
-				if (!(topn_num_type(exprType(n)) || (cast && topn_str_type(exprType(n)))))
-				{
-					w->why = "calls a function or operator whose result is not a number";
-					return true;
-				}
-				foreach_ptr(Node, a, args)
-					if (!IsA(a, Const) && !topn_val_type(exprType(a)))
-					{
-						w->why = "calls a function or operator on a type the scan does not hold";
-						return true;
-					}
-				break;
+				w->why = "reads a parameter of a sub-select";
+				return true;
 			}
+			/* the value of a parameter of the statement is in the leader's executor state: the workers cannot evaluate it */
+			w->serial = true;
+			return false;
 		default:
 			w->why = "has a construct the scan does not evaluate";
 			return true;
@@ -593,12 +577,12 @@ static bool
 topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
 {
 	Oid			rtype = exprType(e);
-	TopXprWalk	w = {c, NIL, NULL};
+	TopXprWalk	w = {c, NIL, NULL, false};
 	TopXprMut	m;
 	QualCost	qc;
 	double		ops;
 
-	if (!(topn_num_type(rtype) || topn_str_type(rtype) || rtype == UUIDOID || rtype == BYTEAOID || rtype == INETOID))
+	if (!topn_val_type(rtype))
 		return agg_refuse_on(TOPN_SHAPE, "the sort expression has a result type the scan does not hold as a key");
 	if (contain_mutable_functions(e))
 		return agg_refuse_on(TOPN_SHAPE, "the sort expression calls a function that is not immutable");
@@ -606,6 +590,8 @@ topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
 		return agg_refuse_f(TOPN_SHAPE, "the sort expression %s", w.why);
 	if (w.leaves == NIL)
 		return agg_refuse_on(TOPN_SHAPE, "the sort expression reads no column");
+	if (w.serial || !is_parallel_safe(c->root, e))
+		c->topn_xserial = true;
 	m.c = c;
 	m.leaves = w.leaves;
 	foreach_int(leaf, w.leaves)
@@ -1027,6 +1013,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	collid = palloc(nkey * sizeof(Oid));
 	xf = palloc0(nkey * sizeof(SiftTopXform));
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
+	c->topn_xserial = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
@@ -1085,7 +1072,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
-		nworkers = c->joins == NIL && s->naggs == 0 ? parallel_workers(c, s, input_rel, output_rel) : 0;
+		nworkers = c->joins == NIL && s->naggs == 0 && !c->topn_xserial ? parallel_workers(c, s, input_rel, output_rel) : 0;
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 		if (rows <= TOPN_SORT_ROWS)
