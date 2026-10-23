@@ -26,6 +26,7 @@ class Case:
     per_size: bool = False                    # setup(size) is called for each size (the schema is rebuilt), not once for the largest
     native: bool = True                       # also measure the reference engine (sift off, no sift index scan)
     unit: str = 'size'
+    check: Callable[[int], str] | None = None   # size -> a query whose result must be the same under the sift and the native engine (run at the first size)
 
 
 def fit(points):
