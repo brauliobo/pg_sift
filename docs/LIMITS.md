@@ -38,6 +38,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |
 | `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |
 | `bits_set_values` | members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table; a shorter list is a hash table | 1,024 | values | a hash table of the values |  | `agg/pred_in.c` `MIN_BITS_VALUES` | yes |
+| `dist_narrow_words` | words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off | 8 | words | the set is a bitmap, a directory and chunks of 4096 bits a group |  | `agg/dist_int.h` `DIST_NARROW_WORDS` | yes |
 | `arms` | UNION ALL arms of a fused or two-level scan | 16 | arms | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` | yes |
 | `virtual_leaves` | virtual leaves (expressions) per scan | 16 | leaves | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` | yes |
 | `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_LEAVES` |  |

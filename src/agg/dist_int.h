@@ -19,9 +19,13 @@ typedef struct DSet
 } DSet;
 
 /*
- * The distinct values of count(DISTINCT x) per group, x an integer, or the id (dense, from 0) of a dictionary or numeric value. Three
+ * The distinct values of count(DISTINCT x) per group, x an integer, or the id (dense, from 0) of a dictionary or numeric value. Four
  * structures, each bounded by hash_mem (work_mem times hash_mem_multiplier); the aggregate moves to the next one when its structure
  * would outgrow that, and nothing is lost on the way:
+ *
+ *   DD_WORDS a few words of bits per group (DIST_NARROW_WORDS at most, 64 values a word) over one window of consecutive values, the same for
+ *            every group: a column of statuses, months or small ids costs 8 to 64 bytes a group where a bitmap costs a directory and a chunk
+ *            (1,024 bytes). A value outside the window widens it; past DIST_NARROW_WORDS words the set becomes a DD_BITS one.
  *
  *   DD_BITS  a bitmap per group, in chunks of 4096 bits allocated when a value falls in them, under a directory of chunk pointers that
  *            covers the range of values seen so far (the same for every group). A value costs one bit when the domain is dense (customer
@@ -44,8 +48,11 @@ typedef struct DSet
 #define DB_BATCH		32				/* values whose bits are prefetched together */
 #define DB_ARENA		255				/* chunks per arena block; the first chunk of a block links to the previous block */
 
+#define DIST_NARROW_WORDS	8				/* words of a group in DD_WORDS: a window of 512 values, 64 bytes, 16 times less than the smallest bitmap */
+
 typedef enum DistMode
 {
+	DD_WORDS,
 	DD_BITS,
 	DD_HASH,
 	DD_SORT
@@ -59,6 +66,11 @@ struct Dist
 	bool		sgn;			/* the values are int32 */
 	bool		done;			/* DD_SORT: sorted and counted */
 	uint64		budget;			/* bytes the bitmaps or the set may take */
+	/* DD_WORDS: group g's words are nw[g * nk .. g * nk + nk - 1], the first holding the values from nlo (a multiple of 64) */
+	uint64	   *nw;
+	int64		nlo;
+	uint32		nk;				/* words of a group (0: no value yet) */
+	uint32		nng;			/* groups with room in nw */
 	/* DD_BITS */
 	int64		cbase;			/* chunk number of directory entry 0 */
 	uint32		ncd;			/* entries of a directory (0: nothing yet) */
