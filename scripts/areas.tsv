@@ -62,7 +62,7 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
-^scripts/(check-neutral|check-errors|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|options-released|limits\.allow|refusals\.allow)	-
+^scripts/(check-neutral|check-errors|check-memory|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|options-released|limits\.allow|refusals\.allow)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/upgrade[-_]check\.(sh|sql)$	^tap-shell-upgrade_check$
 ^scripts/(static\.baseline|build-bench\.sql)	-

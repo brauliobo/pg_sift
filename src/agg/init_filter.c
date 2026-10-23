@@ -23,6 +23,7 @@ set_values(const PredState *st, int *n)
 	*n = 0;
 	if (st->in_htab)
 	{
+		/* check-memory: allow in_hmask is the capacity of a hash table minus one (pred_in.c) */
 		for (uint64 h = 0; h <= st->in_hmask; h++)
 			if (st->in_hused[h])
 				vals[(*n)++] = st->in_htab[h];
