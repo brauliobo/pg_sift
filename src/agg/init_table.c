@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "executor/nodeAgg.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
@@ -245,6 +246,13 @@ table_init(AggExec *ex)
 
 	ex->hash = false;
 	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	/*
+	 * The arrays of the direct table are allocated for every slot of the product of the key ranges, whether a group falls in it or not: a
+	 * statement of 28 aggregates over keys that fill 1,200 of a million slots holds 218 MB. Past twice hash memory the groups go to the hash
+	 * table, which holds what they use (at least the slots a lane gets).
+	 */
+	ex->direct_max = Min((uint64) ex->direct_max,
+						 Max((uint64) LANE_DIRECT_MAX, 2 * (uint64) get_hash_memory_limit() / (sizeof(int64) * (1 + Max(s->naggs, 1)))));
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;

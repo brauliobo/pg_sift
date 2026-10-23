@@ -1,0 +1,44 @@
+-- The arrays of the direct group table hold every aggregate of every slot of the product of the keys' rooms, used or not. A statement of many
+-- aggregates over ten keys (four ids of room each: a million slots) held about 200 bytes for each, 200 MB for a few hundred groups. Past twice
+-- hash memory (work_mem times hash_mem_multiplier) the slots' arrays are those of the hash table, which holds the groups there are. The result
+-- is the same whichever table holds them.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE wd_facts (id int, k1 int, k2 int, k3 int, k4 int, k5 int, k6 int, k7 int, k8 int, k9 int, k10 int, a float8, b float8, c int) WITH (autovacuum_enabled = false);
+INSERT INTO wd_facts SELECT i, g % 3, g % 5, g % 7, g % 6, g % 2, g % 9, g % 4, g % 8, g % 3, g % 10, i % 17 + 0.5, i % 5 + 0.25, i % 29
+FROM (SELECT i, i % 40 AS g FROM generate_series(1, 30000) i) s;
+CREATE INDEX wd_facts_col ON wd_facts USING sift_col (id, k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, a, b, c);
+VACUUM (FREEZE, ANALYZE) wd_facts;
+
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
+	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
+	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	rows_pushed := (SELECT count(*) FROM on_rows);
+	differences := (SELECT count(*) FROM ((TABLE on_rows EXCEPT TABLE off_rows) UNION ALL (TABLE off_rows EXCEPT TABLE on_rows)) d);
+	DROP TABLE on_rows, off_rows;
+	RETURN NEXT;
+END $$;
+
+\set q 'SELECT k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, count(*) AS n, sum(a) AS sa, avg(a) AS aa, sum(b) AS sb, avg(b) AS ab, sum(c) AS sc, min(a) AS lo, max(b) AS hi, count(DISTINCT id) AS di, count(c) AS cc, sum(a * b) AS sab FROM wd_facts GROUP BY k1, k2, k3, k4, k5, k6, k7, k8, k9, k10'
+
+-- the least memory a hash aggregate gets: the groups are in the hash table from the start
+SET work_mem = '64kB';
+SELECT * FROM same_rows(:'q');
+-- the usual size of a hash aggregate, and one that holds the direct arrays
+SET work_mem = '4MB';
+SELECT * FROM same_rows(:'q');
+SET work_mem = '1GB';
+SELECT * FROM same_rows(:'q');
+RESET work_mem;
+
+DROP FUNCTION same_rows(text);
+DROP TABLE wd_facts;
+DROP EXTENSION pg_sift;
