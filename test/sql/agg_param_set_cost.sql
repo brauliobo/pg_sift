@@ -1,0 +1,36 @@
+-- A generic plan does not see the array of `key = ANY($1)`: its scan is priced for sift.agg_param_set_size elements, as the paths that fetch the rows
+-- one key at a time are charged them. That covers the rows the scan selects and the table the scan clears to test the list, a byte table over the range of
+-- the values (a list that is not known is taken over the whole range of the column). A scan priced for the 10 elements PostgreSQL assumes and no table took the
+-- generic plan at 256 keys over a range of a million, where the index plan is several times faster; the plan cache then keeps the custom plans.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE items (id int PRIMARY KEY, key int NOT NULL, kind int NOT NULL, amount float8 NOT NULL);
+SELECT setseed(0.42);
+INSERT INTO items SELECT g, 1 + (random() * 999999)::int, g % 9, random() * 100 FROM generate_series(1, 200000) g;
+CREATE INDEX items_key ON items (key);
+CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount);
+VACUUM (FREEZE, ANALYZE) items;
+
+CREATE FUNCTION key_list(n int) RETURNS text LANGUAGE sql AS $$
+	SELECT (SELECT string_agg(key::text, ',') FROM (SELECT key FROM items ORDER BY id LIMIT n) k)
+$$;
+
+-- the plan cache: five custom plans, then the generic plan if it is not dearer than their average
+CREATE FUNCTION executions(n int) RETURNS TABLE (generic_plans bigint, custom_plans bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	DEALLOCATE ALL;
+	PREPARE by_keys (int4[]) AS SELECT kind, count(*), max(amount) FROM items WHERE key = ANY ($1) GROUP BY 1;
+	FOR i IN 1..12 LOOP
+		EXECUTE format('EXECUTE by_keys(%L)', '{' || key_list(n) || '}');
+	END LOOP;
+	RETURN QUERY SELECT p.generic_plans, p.custom_plans FROM pg_prepared_statements p WHERE p.name = 'by_keys';
+END $$;
+
+-- the keys of the list are spread over a range of a million: 8 and 256 of them keep the custom plans (1,000 of them, the size the generic plan assumes, are a tie)
+SELECT n, generic_plans, custom_plans FROM unnest(ARRAY[8, 256]) n, LATERAL executions(n) ORDER BY n;
+
+DEALLOCATE ALL;
+DROP FUNCTION executions(int), key_list(int);
+DROP TABLE items;
+DROP EXTENSION pg_sift;
