@@ -821,6 +821,61 @@ spine_key(TwoLevel *t, SortGroupClause *sgc, Var *v, SiftAggKey *k)
 	return true;
 }
 
+typedef struct SubShape
+{
+	PlannerGlobal *glob;
+	List	   *params;			/* the output Params of the sub-plan being walked */
+	List	   *subs;			/* the sub-select of each sub-plan met */
+	bool		bad;
+} SubShape;
+
+/* x with what each arm's own planning gave its sub-plans (the number, the name, the costs, the Param ids) left out; the sub-selects are collected to be compared */
+static Node *
+sub_shape(Node *n, SubShape *w)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, SubPlan))
+	{
+		SubPlan    *sp = makeNode(SubPlan);
+		List	   *outer = w->params;
+
+		*sp = *(SubPlan *) n;
+		if (sp->plan_id < 1 || sp->plan_id > list_length(w->glob->subroots))
+			w->bad = true;
+		else
+			w->subs = lappend(w->subs, ((PlannerInfo *) list_nth(w->glob->subroots, sp->plan_id - 1))->parse);
+		w->params = sp->paramIds;
+		sp->testexpr = sub_shape(sp->testexpr, w);
+		w->params = outer;
+		sp->plan_id = 0;
+		sp->plan_name = NULL;
+		sp->paramIds = NIL;
+		sp->startup_cost = sp->per_call_cost = 0;
+		return (Node *) sp;
+	}
+	n = expression_tree_mutator(n, sub_shape, w);
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		foreach_int(id, w->params)
+			if (id == ((Param *) n)->paramid)
+				((Param *) n)->paramid = foreach_current_index(id);
+	return n;
+}
+
+/*
+ * Whether two arms group by the same expression. Each arm plans a sub-select of the expression (x IN (SELECT ..)) as a sub-plan of its own, so the
+ * expressions are equal when they differ in nothing but what that planning numbered, and the sub-selects themselves are equal.
+ */
+static bool
+same_key(const TwoLevel *t, Node *a, Node *b)
+{
+	SubShape	wa = {t->root->glob, NIL, NIL, false},
+				wb = wa;
+
+	return equal(a, b) ||
+		(contain_subplans(a) && equal(sub_shape(a, &wa), sub_shape(b, &wb)) && !wa.bad && !wb.bad && equal(wa.subs, wb.subs));
+}
+
 /* a group column of the arms: every arm groups by the same expression or has NULL */
 static bool
 arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
@@ -844,9 +899,9 @@ arm_key(TwoLevel *t, SortGroupClause *sgc, Node *e, SiftAggKey *key)
 
 		if (null_const(x))
 			continue;
-		if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !equal(x, def)))
+		if (!list_member(t->arms[k].group, x) || equal(x, t->arms[k].id) || (def != NULL && !same_key(t, x, def)))
 			return agg_refuse_f(TWO_KEYS, "output column %d of arm %d is not an expression every arm groups by (or NULL)%s", col + 1, k + 1,
-								contain_subplans(x) ? ": it holds a sub-select, which each arm plans on its own" : "");
+								contain_subplans(x) ? ": it holds a sub-select that is not the same in every arm" : "");
 		def = x;
 		t->arms[k].used = lappend(t->arms[k].used, x);
 		t->arms[k].kexpr = lappend(t->arms[k].kexpr, x);
