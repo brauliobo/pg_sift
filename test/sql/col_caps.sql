@@ -24,12 +24,18 @@ CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid);
 CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many');
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
 CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid');
--- a calendar list that does not fit the cube, 'all' that leaves the last date columns out
+-- the cube holds 16 dimensions: the cells of the dates come first and the plain columns give way (the NOTICE names them); 'all' leaves date columns out only when the dates alone are more than 16
 CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;
 CREATE INDEX caps_cal_all ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2) WITH (calendar_columns = 'all');
 -- the default is the same list
 CREATE INDEX caps_cal_default ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
+-- the dates alone past the cap
+CREATE TABLE caps_dates (d1 date, d2 date, d3 date, d4 date, d5 date, d6 date, d7 date, d8 date, d9 date, d10 date, d11 date, d12 date, d13 date, d14 date, d15 date, d16 date, d17 date) WITH (autovacuum_enabled = off);
+INSERT INTO caps_dates SELECT date '2024-01-01' + g % 30, date '2024-01-01' + g % 20, date '2024-01-01' + g % 10, date '2024-01-01' + g % 9, date '2024-01-01' + g % 8, date '2024-01-01' + g % 7,
+	date '2024-01-01' + g % 6, date '2024-01-01' + g % 5, date '2024-01-01' + g % 4, date '2024-01-01' + g % 3, date '2024-01-01' + g % 2, date '2024-01-01', date '2024-02-01' + g % 12, date '2024-03-01' + g % 13,
+	date '2024-04-01' + g % 14, date '2024-05-01' + g % 15, date '2024-06-01' + g % 16 FROM generate_series(1, 5000) g;
+CREATE INDEX caps_dates_all ON caps_dates USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17);
 -- all of them fit
 CREATE INDEX caps_cal_two ON caps_cal USING sift_col (c1, c2, d1, d2) WITH (calendar_columns = 'all');
 -- off says nothing
@@ -38,5 +44,5 @@ REINDEX INDEX caps_a;
 -- a refresh tells the same, whether or not it rewrote a segment
 ALTER INDEX caps_c SET (preagg = 'cube(few: id; many: id)');
 SELECT * FROM sift.col_refresh('caps_c');
-DROP TABLE caps, caps_cal;
+DROP TABLE caps, caps_cal, caps_dates;
 DROP EXTENSION pg_sift;

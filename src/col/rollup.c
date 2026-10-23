@@ -480,7 +480,21 @@ sift_col_report_caps(Relation index)
 				no_set[SIFT_COL_MAX_COLS] = {0},
 				no_pres[SIFT_COL_MAX_COLS] = {0};
 	bool		any = spec->fixed && spec->ndims > 0;
+	int			nleft = 0;
+	StringInfoData left;
 
+	/* the default cube holds 16 dimensions: the plain columns past them (the cells of the dates came first) have no histogram */
+	initStringInfo(&left);
+	for (int c = 0; !spec->fixed && !spec->off && c < rel->schema->ncols; c++)
+	{
+		bool		have = false;
+
+		for (int d = 0; d < spec->ndims; d++)
+			have |= spec->dim[d].leaf == c && !spec->dim[d].cal;
+		if (!have && rel->schema->cols[c].parent < 0 && sift_cpagg_dim_ok(rel->schema, &rel->schema->cols[c]))
+			appendStringInfo(&left, "%s\"%s\"", nleft++ ? ", " : "", leaf_label(index, &rel->schema->cols[c]));
+	}
+	any |= nleft > 0;
 	for (int c = 0; c < SIFT_COL_MAX_COLS; c++)
 		any |= spec->set[c] || spec->pres[c];
 	for (int r = 0; r < spec->nrollups; r++)
@@ -565,6 +579,10 @@ sift_col_report_caps(Relation index)
 									share_pct(rows_units - with_roll[r], rows_units), rows_units),
 							 errdetail("A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", SIFT_PAGG_ROWS_CELLS),
 							 errhint("Name fewer columns, or columns with fewer values per unit.")));
+	if (nleft > 0)
+		ereport(NOTICE, (errmsg("sift_col index %s: the cube holds %d dimensions and left out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
+						 errdetail("The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units."),
+						 errhint("Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).")));
 	if (spec->cal_all)
 	{
 		int			missing[SIFT_COL_MAX_COLS];
