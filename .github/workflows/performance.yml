@@ -85,6 +85,9 @@ jobs:
             echo 'Explicit acceptance: unchanged and controlled slowdown; see gate report for both verdicts.' >> "$ARTIFACTS/workflow-summary.md"
           fi
 
+      - uses: ./.github/actions/apt-limits
+        if: steps.scope.outputs.run == 'true'
+
       - name: Install PostgreSQL 18 and measurement dependencies
         if: steps.scope.outputs.run == 'true'
         run: |
