@@ -82,8 +82,8 @@ mem_watch(MemoryContext cxt)
 #define MEM_SAMPLE()	mem_sample()
 
 /* With sift_test_phase_gate set, entering a phase of the build waits for the advisory lock gate + phase (held by the test) */
-static void
-test_phase_gate(int phase)
+void
+sift_test_phase_wait(int phase)
 {
 	if (sift_test_phase_gate > 0)
 	{
@@ -93,7 +93,7 @@ test_phase_gate(int phase)
 		DirectFunctionCall1(pg_advisory_unlock_int8, key);
 	}
 }
-#define TEST_PHASE_GATE(phase)	test_phase_gate(phase)
+#define TEST_PHASE_GATE(phase)	sift_test_phase_wait(phase)
 #else
 #define MEM_SAMPLE()	((void) 0)
 #define TEST_PHASE_GATE(phase)	((void) 0)

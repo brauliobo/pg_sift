@@ -17,6 +17,9 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
 #include "col/am.h"
 #include "col/build.h"
 #include "col/shred.h"
@@ -50,8 +53,7 @@ struct ColBuild
 	SiftSegEntry *segs;
 	int			nsegs;
 	int			maxsegs;
-	pg_atomic_uint64 *done;		/* parallel: the rows of all the participants */
-	bool		leader;
+	bool		shared;			/* a participant of a parallel build */
 	double		indexed;
 	double		reported;
 };
@@ -88,7 +90,7 @@ end_segment(ColBuild *b)
 static uint64
 next_gen(ColBuild *b)
 {
-	return b->done ? sift_store_new_gen(b->index) : b->nsegs + 1;
+	return b->shared ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
 static void
@@ -180,17 +182,12 @@ flush_page(ColBuild *b)
 	CHECK_FOR_INTERRUPTS();
 }
 
-/* The rows indexed so far are added to the total of the participants; the serial build and the leader show it */
+/* The rows indexed since the last report; a worker's go to the progress of the leader */
 static void
 report_rows(ColBuild *b)
 {
-	uint64		total = b->indexed;
-
-	if (b->done)
-		total = pg_atomic_add_fetch_u64(b->done, (uint64) (b->indexed - b->reported));
+	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (b->indexed - b->reported));
 	b->reported = b->indexed;
-	if (b->done == NULL || b->leader)
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) total);
 }
 
 static void
@@ -222,7 +219,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 }
 
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, pg_atomic_uint64 *done, bool leader)
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -245,8 +242,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->page = InvalidBlockNumber;
 	b->segs = segs;
 	b->maxsegs = maxsegs;
-	b->done = done;
-	b->leader = leader;
+	b->shared = shared;
 	return b;
 }
 
@@ -257,6 +253,7 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	double		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
 
 	MemoryContextSwitchTo(old);
+	report_rows(b);
 	return tuples;
 }
 
@@ -276,6 +273,8 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
 	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
 	MemoryContextSwitchTo(old);
+	pgstat_progress_parallel_incr_param(PROGRESS_SCAN_BLOCKS_DONE, Min(SIFT_SB_PAGES, nblocks - start));
+	report_rows(b);
 	return tuples;
 }
 
@@ -349,7 +348,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, NULL, true);
+	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, false);
 	int			nsegs;
 
 	if (heap->rd_rel->reltuples > 0)
@@ -357,6 +356,9 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
 	res->heap_tuples = sift_colb_scan(b, heap, info);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
+#endif
 	nsegs = sift_colb_end(b);
 	res->index_tuples = sift_colb_rows(b);
 	sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
