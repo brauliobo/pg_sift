@@ -52,6 +52,7 @@ TESTING_REGRESS += col_dict_cache col_zone_jnull col_dict_lookup col_dict_stored
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits
+TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql
