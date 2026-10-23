@@ -1,0 +1,41 @@
+-- sift.index_advice(index): the profile of the columns of a sift_col index (kind, what the index holds, the share of 32 evenly spaced units that satisfy the
+-- rule of a dimension or of a pair of them) and the advice where a rule holds in 90% of them. Advice only: the same rows after a REINDEX, nothing changed.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+-- about 8 units of 7,500 rows. dim_a_id: 100 values, a few in each unit (a foreign key shaped column the cube holds); source: 4 values; region: 300 values in every
+-- unit (past the 256 groups of a histogram); parent_id: a key list; val: 100,000 values; label: 20 text values; d: a date
+CREATE TABLE ad (id int PRIMARY KEY, dim_a_id int, source int, region int, parent_id int, val int, d date, label text, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE ad ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ad SELECT i, i / 600, i % 4, (hashint4(i) & 2147483647) % 300, (hashint4(i + 1) & 2147483647) % 900, (hashint4(i + 2) & 2147483647) % 100000,
+                      date '2024-01-01' + i / 200, 'l' || i % 20, repeat('x', 200) FROM generate_series(1, 60000) i;
+VACUUM (FREEZE, ANALYZE) ad;
+CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label);
+
+SELECT * FROM sift.index_advice('ad_col');
+
+-- the same rows after a REINDEX (the decisions are a function of the data)
+CREATE TEMP TABLE ad_before AS SELECT * FROM sift.index_advice('ad_col');
+REINDEX INDEX ad_col;
+SELECT (SELECT count(*) FROM (TABLE ad_before EXCEPT SELECT * FROM sift.index_advice('ad_col')) x) +
+       (SELECT count(*) FROM (SELECT * FROM sift.index_advice('ad_col') EXCEPT TABLE ad_before) y) AS rows_that_differ;
+
+-- a rollup that holds a pair is not advised again; key_columns = 'off' leaves the foreign key column to the advice
+CREATE INDEX ad_roll ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_dims = 'dim_a_id, source', key_columns = 'off');
+SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE kind = 'pair' OR leaf = 'parent_id' ORDER BY leaf;
+
+-- the advice is what the build then finds: the advised pair is written in every unit, a pair with a column the advice leaves out (300 values in a unit) is not
+SET client_min_messages = notice;
+CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off');
+CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off');
+SET client_min_messages = warning;
+
+-- no unit yet, a wrong object
+CREATE TABLE ad_empty (id int, k int) WITH (autovacuum_enabled = off);
+CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k);
+SELECT leaf, kind, held, sampled, share, advice FROM sift.index_advice('ad_empty_col');
+SELECT * FROM sift.index_advice('ad_pkey');
+
+DROP TABLE ad, ad_empty;
+DROP EXTENSION pg_sift CASCADE;

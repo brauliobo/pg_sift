@@ -26,8 +26,6 @@
 #include "col/seg.h"
 #include "col/setsum.h"
 
-#define AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept */
-
 static bool
 is_fk_column(Relation heap, AttrNumber attno)
 {
@@ -121,6 +119,31 @@ leaf_name(Relation index, const SiftColDef *d)
 	return NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
 }
 
+/* the heap column of a leaf (0: a path of a document, which no constraint names) */
+static AttrNumber
+heap_attno(Relation index, const SiftColDef *d)
+{
+	return index->rd_index->indkey.values[d->attno - 1];
+}
+
+bool
+sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d)
+{
+	AttrNumber	hatt = heap_attno(index, d);
+
+	return hatt != 0 && is_unique_column(heap, hatt);
+}
+
+bool
+sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d)
+{
+	AttrNumber	hatt = heap_attno(index, d);
+	const char *name = leaf_name(index, d);
+
+	/* the option is a list split at commas, and its names are not quoted */
+	return hatt != 0 && sift_cset_pres_leaf_ok(schema, d) && strchr(name, ',') == NULL && (is_fk_column(heap, hatt) || ends_in_id(name)) && !is_unique_column(heap, hatt);
+}
+
 /* 'auto: a, b'; 'auto' for none, which the next REINDEX decides again */
 static void
 set_chosen(Relation index, const StringInfoData *list)
@@ -159,18 +182,8 @@ sift_col_auto_keys(Relation heap, Relation index)
 			return true;
 	initStringInfo(&list);
 	for (int c = 0; c < rel->schema->ncols; c++)
-	{
-		const SiftColDef *d = &rel->schema->cols[c];
-		AttrNumber	hatt;
-		const char *name;
-
-		if (!sift_cset_pres_leaf_ok(rel->schema, d) || (hatt = index->rd_index->indkey.values[d->attno - 1]) == 0)
-			continue;
-		name = leaf_name(index, d);
-		/* the option is a list split at commas, and its names are not quoted */
-		if (strchr(name, ',') == NULL && (is_fk_column(heap, hatt) || ends_in_id(name)) && !is_unique_column(heap, hatt))
-			append_name(&list, name);
-	}
+		if (sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]))
+			append_name(&list, leaf_name(index, &rel->schema->cols[c]));
 	if (list.len == 0)
 		return false;
 	set_chosen(index, &list);
@@ -184,7 +197,7 @@ append_bytes(StringInfo s, uint64 n)
 }
 
 /*
- * After a build that is the build's choice: the columns that hold a key list or a bitmap in AUTO_KEEP_PCT of the units stay in the option, the others go out
+ * After a build that is the build's choice: the columns that hold a key list or a bitmap in SIFT_COL_AUTO_KEEP_PCT of the units stay in the option, the others go out
  * of it (the cube answers a column it holds in as many units; a column whose keys fit no share of a unit is scanned), and a NOTICE says which, how many bytes
  * the lists take, what a filter of a column left out would take at most, and how to turn the default off.
  */
@@ -250,14 +263,14 @@ sift_col_auto_keys_report(Relation index)
 	{
 		if (!spec->pres[l])
 			continue;
-		if (units > 0 && cubed[l] * 100 >= (uint64) units * AUTO_KEEP_PCT)
+		if (units > 0 && cubed[l] * 100 >= (uint64) units * SIFT_COL_AUTO_KEEP_PCT)
 		{
 			cube_left = true;
 			append_name(&left, leaf_name(index, &rel->schema->cols[l]));
 			appendStringInfo(&why, "%s%s (the cube holds it in %u%% of the units)", why.len ? "; " : "", leaf_name(index, &rel->schema->cols[l]),
 							 (uint32) ((uint64) cubed[l] * 100 / units));
 		}
-		else if (units > 0 && have[l] * 100 < (uint64) units * AUTO_KEEP_PCT)
+		else if (units > 0 && have[l] * 100 < (uint64) units * SIFT_COL_AUTO_KEEP_PCT)
 		{
 			/* what a filter of the column would take at most in a unit: a bit for every integer of its range, or 10 bits for every row */
 			double		rows = Max(ls[l].nvals - ls[l].nnull, 0) / Max(units, 1);

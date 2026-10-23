@@ -43,8 +43,12 @@ extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
 extern void sift_col_report_caps(Relation index);
 /* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
+#define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
 extern void sift_col_auto_keys_report(Relation index);
+/* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
+extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
+extern bool sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
