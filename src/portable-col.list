@@ -6,6 +6,7 @@
 col/kern.c
 col/kern_avx2.c
 col/kern_avx512.c
+col/kern_neon.c
 col/enc.c
 col/schema.c
 col/dict.c

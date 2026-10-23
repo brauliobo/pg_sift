@@ -240,18 +240,6 @@ bits_and_count_avx2(const uint64 *a, const uint64 *b, uint32 nwords)
 	return c0 + c1 + c2 + c3;
 }
 
-/* Position of the j-th set bit of m (0 past the last), lane j of row m */
-#define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
-#define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
-#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
-#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
-#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
-#define POS(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
-#define LANE(m, j)	(POS(m, j, 0) + POS(m, j, 1) + POS(m, j, 2) + POS(m, j, 3) + \
-					 POS(m, j, 4) + POS(m, j, 5) + POS(m, j, 6) + POS(m, j, 7))
-#define POSROW(m)	{LANE(m, 0), LANE(m, 1), LANE(m, 2), LANE(m, 3), LANE(m, 4), LANE(m, 5), LANE(m, 6), LANE(m, 7)}
-const uint8 sift_colk_lut_pos[256][8] = {R256(POSROW)};
-
 F2 uint32
 bits_to_idx_avx2(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)
 {
