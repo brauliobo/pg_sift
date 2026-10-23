@@ -1986,57 +1986,73 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
 	return a < n && set[a] <= hi;
 }
 
+/*
+ * Narrows keep for the units [ulo, uhi) to those whose zone may pass t. The passes run over the words of keep that hold the range (the units of those words
+ * outside it are narrowed too, which is exact), so that a begin of two superblocks of a segment of thousands tests those only: an aggregate begins for every
+ * morsel, and a begin that tested the whole segment made the scan quadratic in its units.
+ */
 void
 sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
 {
 	const ZoneArrays *z = zone_arrays(seg, col);
-	uint32		n = seg->nsb,
-				nw = SIFT_COL_NWORDS(n);
-	uint64	   *tmp = palloc(nw * sizeof(uint64));
+	uint32		lo = ulo / 64 * 64,
+				hi,
+				n,
+				nw;
+	uint64	   *kw = keep + lo / 64;
+	uint64	   *tmp;
 	uint64	   *save = NULL;
 
+	uhi = Min(uhi, seg->nsb);
+	if (ulo >= uhi)
+		return;
+	hi = Min(seg->nsb, (uhi + 63) / 64 * 64);
+	n = hi - lo;
+	nw = (n + 63) / 64;
+	tmp = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
 	if (z->any_ovf || z->any_inl)
 	{
 		save = palloc(nw * sizeof(uint64));
-		memcpy(save, keep, nw * sizeof(uint64));
+		memcpy(save, kw, nw * sizeof(uint64));
 	}
 	switch (t->kind)
 	{
 		case SIFT_CT_NONE:
-			memset(keep, 0, nw * sizeof(uint64));
+			memset(kw, 0, nw * sizeof(uint64));
 			break;
 		case SIFT_CT_SET:			/* lo..hi bound the keys that can match; a unit whose zone holds none of them is out */
 		case SIFT_CT_RANGE:
-			sift_colk->zone_range(z->min, z->max, n, t->lo, t->hi, tmp);
-			sift_colk->bits_and(keep, tmp, nw);
+			sift_colk->zone_range(z->min + lo, z->max + lo, n, t->lo, t->hi, tmp);
+			for (uint32 w = 0; w < nw; w++)	/* not bits_and: its vectors round nw up and would reach the words past the window */
+				kw[w] &= tmp[w];
 			if (t->kind == SIFT_CT_SET)
-				for (uint32 u = 0; u < n; u++)
+				for (uint32 u = lo; u < hi; u++)
 					if ((keep[u / 64] >> (u % 64) & 1) && z->nnull[u] < z->nvals[u] && !set_meets(t->set, t->nset, z->min[u], z->max[u]))
 						keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
-			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
+			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
-				sift_colk->zone_set(z->set, n, t->fold, keep);
+				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
 			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
 			break;
 		case SIFT_CT_LUT:
-			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
+			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
-				sift_colk->zone_set(z->set, n, t->fold, keep);
+				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
 			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
 			break;
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:
 		case SIFT_CT_NSET:
 		case SIFT_CT_STRS:
-			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
+			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			break;
 		case SIFT_CT_ISNULL:
-			for (uint32 u = 0; u < n; u++)
+			for (uint32 u = lo; u < hi; u++)
 				if (z->nnull[u] == 0)
 					keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 			break;
 		case SIFT_CT_NRANGE:
-			for (uint32 u = 0; u < n; u++)
+			for (uint32 u = lo; u < hi; u++)
 				if (z->nnull[u] < z->nvals[u] && z->min[u] >= t->lo && z->max[u] <= t->hi)
 					keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 				else if (z->nnull[u] == z->nvals[u])
@@ -2046,20 +2062,20 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, 
 	if (save)
 	{
 		/* an inline unit has no codes: the passes above said nothing about it, its zone is the strings' */
-		for (uint32 u = 0; z->any_inl && u < n; u++)
+		for (uint32 u = lo; z->any_inl && u < hi; u++)
 			if (z->flags[u] & SIFT_COLZ_INLINE)
 			{
 				SiftCZone	uz = {.min = z->min[u], .max = z->max[u], .nnull = z->nnull[u], .nvals = z->nvals[u], .flags = z->flags[u]};
 
 				if (sift_ctest_zone(t, &uz))
-					keep[u / 64] |= save[u / 64] & (UINT64CONST(1) << (u % 64));
+					keep[u / 64] |= save[(u - lo) / 64] & (UINT64CONST(1) << (u % 64));
 				else
 					keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 			}
 		/* units with overflow values cannot be pruned by this leaf: their zone does not describe the heap */
-		for (uint32 u = 0; z->any_ovf && u < n; u++)
+		for (uint32 u = lo; z->any_ovf && u < hi; u++)
 			if (z->flags[u] & SIFT_COLZ_OVERFLOW)
-				keep[u / 64] |= save[u / 64] & (UINT64CONST(1) << (u % 64));
+				keep[u / 64] |= save[(u - lo) / 64] & (UINT64CONST(1) << (u % 64));
 		pfree(save);
 	}
 	pfree(tmp);

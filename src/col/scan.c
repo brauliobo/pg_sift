@@ -335,6 +335,27 @@ typedef struct PruneRange
 	ColCursor  *top;			/* the cursor of the segment, for the predicates that all rows must pass (not those of an OR): a point directory may answer one */
 } PruneRange;
 
+/* No unit of the range is kept: the tests that follow cannot change what a begin reads, and its other columns' zones are not touched */
+static bool
+window_empty(const uint64 *keep, const PruneRange *pr)
+{
+	uint32		a = pr->ulo / 64,
+				b = (pr->uhi + 63) / 64;
+
+	for (uint32 w = a; w < b; w++)
+	{
+		uint64		m = ~UINT64CONST(0);
+
+		if (w == a)
+			m &= ~UINT64CONST(0) << (pr->ulo % 64);
+		if (w == b - 1 && pr->uhi % 64)
+			m &= (UINT64CONST(1) << (pr->uhi % 64)) - 1;
+		if (keep[w] & m)
+			return false;
+	}
+	return true;
+}
+
 /* The keys a test can match, when they are few: the keys of the point directory to probe */
 static bool
 point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
@@ -420,6 +441,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		const SiftColDef *def = &seg->schema->cols[preds[i].col];
 		SiftCTest	t;
 
+		if (window_empty(keep, pr))
+			break;
 		if (sift_colw_is_wide_int(def))
 		{
 			sift_colw_prune(seg, &preds[i], keep);
@@ -444,6 +467,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 
 		if (!range[i])
 			continue;
+		if (window_empty(keep, pr))
+			break;
 		for (int j = i + 1; j < npreds; j++)
 			if (range[j] && preds[j].col == preds[i].col)
 			{
