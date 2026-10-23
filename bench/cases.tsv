@@ -19,6 +19,7 @@ bulk_copy_wal	`sift.table_bulk_groups` (on by default since 3.3	orders	-	^column
 cluster_visibility_map	the planner charges the heap check of the rows on pages that are not all-visible	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 topn_text_key	`ORDER BY` a text, varchar, uuid, bytea or inet column `LIMIT n` is a top-N of the column scan	orders	default+title	Top-N: title	native,pg_duckdb	-	ms	faster33	no
 topn_uuid_key	reads a uuid or bytea sort key as the codes of the dictionary the segment tenants	orders	default	Top-N: ref.*stored dictionary	native,pg_duckdb	-	ms	faster33	no
+topn_text_code	compares the rows of a unit with the bar by the order code of the dictionary of their segment	orders	default	Top-N: sku	native,pg_duckdb	-	ms	faster33	no
 topn_sorted_runs	`order_columns` (`sift_col` reloption, default none	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	yes
 topn_sorted_runs_btree	(a btree needs 0.35)	orders	default WITH (order_columns = 'customer_id')	Index Only Scan using orders_customer	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	no
 topn_zone_keys	bounds the units by the zones of the sort keys after the first too	orders	default	Top-N: status, customer_id	native,pg_duckdb	zone_off:sift.topn_zone_keys = off	ms	faster33	no

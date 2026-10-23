@@ -1380,6 +1380,8 @@ explain_run(AggExec *ex, ExplainState *es)
 		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
 		if (sift_topn_runs_read(ex->topn) > 0)
 			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
+		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
+			ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(ex->topn, 0), sift_topn_ord_units(ex->topn, 1), sift_topn_ord_units(ex->topn, 2)), es);
 		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
 		if (sift_topn_sorted(ex->topn) >= 0)
 			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);

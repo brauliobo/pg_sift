@@ -48,6 +48,7 @@ typedef struct SiftCDict
 	uint32		nslots;
 	uint32		finds;			/* linear finds so far, before the table is worth building */
 	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
+	uint64		orows;			/* rows of top-N scans compared with the strings so far (cdict_order) */
 	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
 	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */

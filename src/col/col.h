@@ -403,6 +403,11 @@ typedef struct SiftColDict
 	const uint32 *off;			/* n + 1 byte offsets */
 	const char *bytes;
 	uint64		id;				/* identifies (segment, leaf): equal ids mean the same codes */
+	/* the codes in byte order of their strings: stored (minor 14) or sorted already, else NULL; `rows`: the rows a scan is about to compare with the strings, which
+	 * the dictionary adds to those of the scans before it and sorts itself once they reach a few times its entries, as a dictionary tested often builds its
+	 * hash (cdict_find); octx is its argument */
+	const uint32 *(*order) (const void *octx, uint64 rows);
+	const void *octx;
 } SiftColDict;
 
 #define SIFT_COL_DICT_LEN(d, c)		((d)->off[(c) + 1] - (d)->off[(c)])

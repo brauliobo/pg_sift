@@ -144,6 +144,7 @@ extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
 extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
 extern const uint32 *sift_topn_walk_order(const SiftTopN *t);
 extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
+extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);
 extern void sift_topn_import(SiftTopN *t, const char *data, Size len);

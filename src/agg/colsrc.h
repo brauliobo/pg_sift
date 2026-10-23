@@ -145,6 +145,8 @@ typedef struct SiftSrcDict
 	uint32		n;
 	const uint32 *off;			/* n + 1 entries */
 	const char *bytes;
+	const uint32 *(*order) (const void *octx, uint64 rows);	/* the codes in byte order of their strings (SiftColDict.order), NULL: none */
+	const void *octx;
 } SiftSrcDict;
 
 /* One decoded leaf of a unit: n values (rows; elements for a child leaf), see the padding rules of agg/kern.h */
