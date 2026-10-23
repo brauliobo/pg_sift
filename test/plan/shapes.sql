@@ -211,7 +211,7 @@ ORDER BY 1;
 SELECT b.bucket, count(e.id) AS n FROM buckets b LEFT JOIN events e ON date_trunc('month', e.ts)::date = b.bucket AND e.kind = 'cat_a' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: f04_spine_span_kind
--- expect: normal -
+-- expect: scan 0.15 0.60
 SELECT b.span, e.kind, count(*) AS n, sum(e.amount) AS total FROM buckets b JOIN events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
 WHERE e.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2;
 
