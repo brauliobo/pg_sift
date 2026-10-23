@@ -126,13 +126,13 @@ conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 # use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
-# tree). Only this tree defines sift.table_auto_defrag, which scripts/pgtest.sh conf sets: a released library warns that "sift" is a reserved prefix
-# in the first statement of a session, and the test compares what the statements print.
+# tree). Only this tree defines the settings scripts/pgtest.sh conf sets (sift.table_auto_defrag, sift.col_auto_merge, sift.col_auto_merge_wal_pct): a released
+# library warns that "sift" is a reserved prefix in the first statement of a session, and the test compares what the statements print.
 use_root() {
-	local conf=$(dir "$1")/data/postgresql.conf
+	local conf=$(dir "$1")/data/postgresql.conf k
 	ROOT=$2
-	sed_i '/^sift\.table_auto_defrag = /d' "$conf"
-	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep '^sift\.table_auto_defrag = ' >>"$conf"
+	for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct; do sed_i "/^sift\.$k = /d" "$conf"; done
+	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.(table_auto_defrag|col_auto_merge|col_auto_merge_wal_pct) = ' >>"$conf"
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
