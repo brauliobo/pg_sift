@@ -11,6 +11,11 @@ extern const SiftCcKernels sift_cc_kernels_scalar;
 extern const SiftCcKernels sift_cc_kernels_avx2;
 extern const SiftCcKernels sift_cc_kernels_avx512;
 
+#if defined(SIFT_HAVE_NEON)
+extern const SiftCcKernels sift_cc_kernels_neon;
+extern void sift_cc_unpack32_neon(const uint32 *src, uint32 W, uint32 rows, uint32 base, uint32 *dst);
+#endif
+
 /* Rows of 32 values for n values */
 #define SIFT_CC_ROWS(n)		(((uint64) (n) + 31) >> 5)
 

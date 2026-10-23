@@ -6,7 +6,7 @@ pages, a heap, a snapshot or a relation. Why these encodings, the measurements a
 contract the engine (L1, `col/enc.[ch]`) is written against.
 
 Files: `col/codec.[ch]` (decoding, random access, filters on the encoded form), `col/codec_parse.c` (blob validation and node tree), `col/codec_write.c` (writer), `col/codec_policy.c` (policy parser), `col/codec_blob.c` (string and bit blobs), `col/codec_kern.c` (scalar kernels = the specification, dispatch),
-`col/codec_avx2.c`, `col/codec_avx512.c`, `col/codec_vec.h` (the unpacking written once with vector extensions), `col/codec_int.h` (layout
+`col/codec_avx2.c`, `col/codec_avx512.c`, `col/codec_neon.c`, `col/codec_vec.h` (the unpacking written once with vector extensions), `col/codec_int.h` (layout
 helpers shared by those), `col/compress.[ch]` (the LZ4 / zstd interface and its PostgreSQL implementation), `col/codec_test.c` (`sift._test_cc_*`) with `col/codec_gen.h` (its chunk generators, shared with the standalone test),
 `tools/colcodec/` (standalone test, benchmark and the research harness).
 
@@ -96,6 +96,10 @@ the AVX2 and AVX-512 tables are bit-identical, `sift_cc_kernels_for(level)` neve
 the active table and `sift_cc_kernels_init()` registers the rebind with `sift_cpu_register` (called from `_PG_init`, so `sift.simd` selects the level).
 The slots: `unpack32`, `unpack_range32` (fused), `prefix32/64`, `max32`, `alp_keys_f8/f4`, `rle_expand32`. The vertical bit-packing is written once
 (`col/codec_vec.h`) and compiled at 256 and 512 bits under the level's target options.
+
+On AArch64 `col/codec_neon.c` compiles it at 128 bits (the NEON level of `sift.simd`) and the other slots of the NEON table in `col/codec_kern.c` are the scalar kernels:
+`tools/colcodec bench` on an Apple M4 (clang `-O2`, items table, 1.25 M rows, 16384-row chunks) gives a decode of 0.784 ns/value with the scalar `unpack32` and 0.579 with the
+NEON one under the `auto` policy (0.747 / 0.544 with `lz4`, 0.725 / 0.538 with `zstd`), and no change under the `none` policy (0.098 either way). The other slots (the fused filter `unpack_range32`, the prefix sums, `max32`, the ALP slots, `rle_expand32`, `scale32/64`) are the scalar kernels: no NEON version of them has been written or measured.
 
 The codec has no copy of what the column engine's table `sift_colk` (`col/kern.h`) already does: range tests of the u8 to u64 arrays are
 `sift_colk->range[]`, the widening of u32 offsets `for_i64[SIFT_COLW_32]`, the dictionary gathers `gather_u32` and `for_i64_sel[SIFT_COLW_64]` (base 0),

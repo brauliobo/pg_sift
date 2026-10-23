@@ -22,6 +22,7 @@ col/codec_blob.c
 col/codec_kern.c
 col/codec_avx2.c
 col/codec_avx512.c
+col/codec_neon.c
 col/compress.c
 col/seg.c
 col/seg_write.c
