@@ -84,6 +84,7 @@ PG_FUNCTION_INFO_V1(sift_col_maintain);
 PG_FUNCTION_INFO_V1(sift_col_maintenance_due);
 PG_FUNCTION_INFO_V1(sift_col_maintenance_status);
 PG_FUNCTION_INFO_V1(sift_col_index_advice);
+PG_FUNCTION_INFO_V1(sift_col_suggest_paths);
 
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
