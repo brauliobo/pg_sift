@@ -526,6 +526,17 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way.
 
+### Memory of a backend
+
+A backend that plans and runs statements of many aggregate arms keeps far more memory after them than its memory contexts hold: the planner and the scan free blocks of tens of megabytes, and the C library of Linux (glibc) keeps them in the heap of the process for the next statement, because its threshold for mapping a block by itself grows to the largest block it has freed. For a server with hundreds of pooled backends that is the number to watch. Two clients replaying 258 statement shapes of a production mix (40 to 60 aggregate arms for the largest, 195,000 rows, 75 seconds, the same seed, run twice) hold on average per backend:
+
+| allocator setting | private memory of a backend | CPU per statement |
+|---|---|---|
+| default | 104 MB (116, 93) | 145 ms (154, 136) |
+| `MALLOC_MMAP_THRESHOLD_=131072` | 70 MB | 145 ms |
+
+(The same mix held 156 MB per backend before a statement kept the memory of one plan, not of the up to four it makes.) A fixed threshold of 128 kB gives every freed block above it back to the system, so a backend holds what its statements use. Set it for the server process, where the memory is the limit (a pool of hundreds of backends), not where the CPU is (the cost is the fresh pages the next block touches); `Environment=MALLOC_MMAP_THRESHOLD_=131072` in the systemd unit of PostgreSQL, or `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`. The library does not call `mallopt` or `malloc_trim` itself: both change the whole process, the server's own allocations too. Other allocators (musl, jemalloc) were not measured.
+
 ### Why a query kept the normal plan
 
 The pushdown refuses most shapes by design, and the planner gives up without a word. `SET sift.explain_refusals = on` makes it say why: for each candidate path (arm: `single`, `distinct`,
