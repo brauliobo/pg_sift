@@ -88,6 +88,7 @@
 #define AGG_DIRECT_CMP		1.0		/* the type's comparison of one (min, max): the same in both plans */
 #define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
+#define AGG_REAL_JSON		70.0	/* the same for a function that builds a jsonb value: 1,400 instructions measured for jsonb_build_array of one element, against 100 for an fmgr call */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
@@ -305,6 +306,17 @@ child_rows(Path *p)
 	}
 }
 
+/* what a test of the rest of an ON clause spends beyond the price of the slot: the jsonb values it builds, in operators PostgreSQL's executor runs */
+static bool
+json_build_walker(Node *n, double *ops)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr) && ((FuncExpr *) n)->funcresulttype == JSONBOID)
+		*ops += AGG_REAL_JSON;
+	return expression_tree_walker(n, json_build_walker, ops);
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
@@ -331,9 +343,13 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			/* Without equality keys, every cached input tests every child row. */
 			if (j->nkey == 0 && j->params == NIL)
 			{
-				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples;
+				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples,
+							built = 0;
 
-				cost += combo_entries(c, s, cb, scan_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
+				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
+				if (j->fslot >= 0)
+					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
+				cost += combo_entries(c, s, cb, scan_rows) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
 			}
 			continue;
 		}
