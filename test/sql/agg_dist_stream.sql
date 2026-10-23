@@ -1,0 +1,80 @@
+-- A count(DISTINCT x) of an integer column whose superblocks hold ranges of x that overlap little visits the superblocks in the order of the
+-- zone minimum of x, and drops from its sets the values below the minimum of the superblocks to come when the sets would outgrow hash memory:
+-- the answer is the normal plan's, with the sweep, without it, with rows written after the build, with rows moved by an update, and when the
+-- table of the groups outgrows hash memory and the sweep is given up. work_mem 256kB with hash_mem_multiplier 1 holds the sets of a superblock, not those of the table.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '60s';
+SET client_min_messages = warning;
+
+CREATE TABLE events (id int, k int, x int, xn int, xr int, xneg int, w int, f float8, pad text);
+INSERT INTO events
+SELECT i, i % 7, (i / 3) * 20, CASE WHEN i % 10 = 0 THEN NULL ELSE (i / 3) * 20 END, (i * 7919) % 400000, (i / 3) * 20 - 1500000, i % 100, (i % 977) * 0.5,
+       repeat('p', 400)
+FROM generate_series(1, 120000) i;
+CREATE INDEX events_col ON events USING sift_col (id, k, x, xn, xr, xneg, w, f);
+VACUUM (FREEZE, ANALYZE) events;
+
+-- one query as the scan with the sweep, as the scan without it, and as the normal plan: how the sweep went and whether the three agree
+CREATE FUNCTION stream_case(q text) RETURNS TABLE (how text, same boolean) LANGUAGE plpgsql AS $$
+DECLARE l text; h text := 'plain'; a boolean; b boolean;
+BEGIN
+	DROP TABLE IF EXISTS got;
+	DROP TABLE IF EXISTS plain;
+	DROP TABLE IF EXISTS want;
+	PERFORM set_config('work_mem', '256kB', false), set_config('hash_mem_multiplier', '1', false), set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
+	EXECUTE 'CREATE TABLE got AS ' || q;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Distinct Stream Given Up' THEN h := 'given up';
+		ELSIF l ~ 'Distinct Stream Superblocks' AND h = 'plain' THEN h := 'streamed';
+		END IF;
+	END LOOP;
+	SET sift.agg_dist_stream = off;
+	EXECUTE 'CREATE TABLE plain AS ' || q;
+	RESET sift.agg_dist_stream;
+	RESET work_mem; RESET hash_mem_multiplier; RESET enable_hashagg; RESET enable_sort;
+	SET sift.enable_agg = off;
+	EXECUTE 'CREATE TABLE want AS ' || q;
+	RESET sift.enable_agg;
+	SELECT NOT EXISTS ((TABLE got EXCEPT TABLE want) UNION ALL (TABLE want EXCEPT TABLE got)) INTO a;
+	SELECT NOT EXISTS ((TABLE plain EXCEPT TABLE want) UNION ALL (TABLE want EXCEPT TABLE plain)) INTO b;
+	RETURN QUERY SELECT h, a AND b;
+END $$;
+
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(*) AS c, count(DISTINCT x) AS d, sum(w) AS s, min(w) AS mn, max(w) AS mx, avg(w) AS a FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT count(DISTINCT x) AS d FROM events');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT xn) AS d, count(xn) AS c FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT xneg) AS d FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) FILTER (WHERE w < 50) AS d FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events WHERE id BETWEEN 20000 AND 90000 GROUP BY k');
+SELECT * FROM stream_case('SELECT k % 3 AS g, w % 5 AS h, count(DISTINCT x) AS d FROM events GROUP BY 1, 2');
+-- not streamed: x at random in every superblock, two sets, a float sum, a grouping set
+SELECT * FROM stream_case('SELECT k, count(DISTINCT xr) AS d FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d, count(DISTINCT w) AS e FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d, sum(f) AS s FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, w % 2 AS h, count(DISTINCT x) AS d FROM events GROUP BY ROLLUP (k, w % 2)');
+
+-- rows written after the build: the write buffer holds small and large values, an update moves rows far from their superblock's zone, a delete
+-- leaves dead rows in units that are no longer exact
+INSERT INTO events SELECT 200000 + i, i % 7, (i % 90) * 20 + 3, (i % 90) * 20 + 3, i, i, i % 100, 1.5, 'q' FROM generate_series(1, 700) i;
+UPDATE events SET x = x + 3000000, xn = xn + 3000000 WHERE id % 997 = 0;
+DELETE FROM events WHERE id % 1009 = 0;
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT k, count(*) AS c, count(DISTINCT xn) AS d, sum(w) AS s FROM events GROUP BY k');
+SELECT * FROM stream_case('SELECT count(DISTINCT x) AS d FROM events WHERE id BETWEEN 30000 AND 60000');
+VACUUM events;
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY k');
+SELECT sift.col_merge('events_col'::regclass, true) >= 0 AS merged;
+SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY k');
+
+-- a table without statistics expects few groups, and has many: the table of the groups outgrows hash memory, which a sweep does not spill, so
+-- the sweep is given up and the scan starts over in its plain order
+CREATE TABLE many (id int, g int, x int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO many SELECT i, i % 30000, i * 10, repeat('p', 100) FROM generate_series(1, 90000) i;
+CREATE INDEX many_col ON many USING sift_col (id, g, x);
+SELECT * FROM stream_case('SELECT g, count(DISTINCT x) AS d FROM many GROUP BY g');
+
+DROP TABLE got, plain, want, events, many;
+DROP FUNCTION stream_case(text);
+DROP EXTENSION pg_sift;

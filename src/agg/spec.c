@@ -374,6 +374,45 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 }
 
 /*
+ * The count(DISTINCT x) of a scan that may visit its superblocks in the order of the zone minimum of x (dist_stream_scan), -1 when there is no
+ * such aggregate: the only DISTINCT aggregate of the spec, over a leaf of the source, and every other aggregate exact in any order (counts,
+ * integer sums and averages, min and max), over plain keys, with no join, arm, grouping set, unnest, partition, match set or top-N, which read
+ * the superblocks in an order of their own.
+ */
+int
+sift_aggspec_dstream(const SiftAggSpec *s)
+{
+	int			found = -1;
+
+	if (s->topn || s->search || s->nsets > 0 || s->narms > 0 || s->spine || s->njoin > 0 || s->ncombo > 0 || s->nparts > 0 || s->group >= 0 ||
+		s->nvleaf > 0)
+		return -1;
+	for (int j = 0; j < s->nkeys; j++)
+		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_SET || s->key[j].kind == SAK_COMBO)
+			return -1;
+	for (int i = 0; i < s->naggs; i++)
+		switch (s->agg[i].kind)
+		{
+			case SAA_COUNT_DISTINCT:
+				if (found >= 0 || s->agg[i].num.n || s->agg[i].leaf < 0)
+					return -1;
+				found = i;
+				break;
+			case SAA_COUNT_STAR:
+			case SAA_COUNT:
+			case SAA_COUNT_ROWS:
+			case SAA_SUM_INT:
+			case SAA_AVG_INT:
+			case SAA_MIN:
+			case SAA_MAX:
+				break;
+			default:
+				return -1;
+		}
+	return found;
+}
+
+/*
  * Why the scan runs in one process whatever the cost (NULL: it can have workers), for EXPLAIN VERBOSE; *agg: the aggregate that decides it,
  * -1 when it is not an aggregate
  */
