@@ -3,10 +3,11 @@
 # scan of a sift_col index checks the rows in the heap one by one. A backend that inserts a row version, or whose scan checked many rows, looks at the
 # statistics of the table and starts a worker that vacuums it; the next scan checks almost none. Here: off, the scan checks the rows and nothing is
 # vacuumed; on, the table is vacuumed and the next scan is cheap and answers as the heap does; a change of a few rows (under 50) asks for nothing; a table
-# with autovacuum_enabled = false is left alone, and vacuumed once it is not; CREATE INDEX on such a table says so.
+# with autovacuum_enabled = false is left alone, and vacuumed once it is not; CREATE INDEX on such a table says so. CLUSTER and VACUUM FULL rebuild the heap
+# and the index and leave the visibility map empty (PostgreSQL's), and the first scan that checks the rows in the heap has the table vacuumed.
 . "$(dirname "$0")/lib.bash"
 
-plan 10
+plan 14
 # The least time between two VACUUMs of a table is five naptimes before PostgreSQL 18 (from 18, ten times the average one): a scan that checked many
 # rows in the heap after a change of ten rows asks for one, and must find the last within that time, so the naptime is not shorter
 node_init av 22 "autovacuum = off
@@ -64,6 +65,17 @@ sql av "ALTER TABLE facts RESET (autovacuum_enabled)" >/dev/null
 check "reset: vacuumed" await_vacuum "$T1"
 check "CREATE INDEX on a table with autovacuum_enabled = false: a notice" test "$(sql av "SET client_min_messages = notice" "CREATE TABLE facts_off (id int) WITH (autovacuum_enabled = false)" \
 	"CREATE INDEX facts_off_idx ON facts_off USING sift_col (id)" 2>&1 | grep -c 'does not vacuum')" == 1
+# 5. CLUSTER and VACUUM FULL write a new heap (an empty visibility map) and rebuild the index: the scan checks every row in the heap until the worker, which that
+# scan asked, has vacuumed the table. No VACUUM by hand.
+cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 10000 ]] && return 0; sleep 0.2; done; return 1; }
+repaired() { cheap && [[ $(groups on) == "$(groups off)" ]]; }
+sql av "CREATE INDEX facts_key ON facts (key)" >/dev/null
+for rebuild in "CLUSTER facts USING facts_key" "VACUUM FULL facts"; do
+	sleep 5.5
+	sql av "$rebuild" >/dev/null
+	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted)" -gt 100000
+	check "$rebuild: the worker vacuums the table, the next scan checks few rows and answers as the heap does" repaired
+done
 check "the index verifies" test "$(sql av "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
 
 finish
