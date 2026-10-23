@@ -1,0 +1,7 @@
+name: apt limits
+description: A stalled connection to an apt mirror fails after 20 s and is retried, instead of hanging for minutes (the install steps of the hosted runners sat 20 to 37 minutes on one llvm package)
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/99net >/dev/null
