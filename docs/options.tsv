@@ -125,3 +125,4 @@ sift.table_auto_defrag_max_active	sift_table	table-defrag					COL-TAM.md#7-maint
 sift.table_auto_defrag_wal_rate	sift_table	table-defrag					COL-TAM.md#7-maintenance
 sift.table_auto_defrag_coalesce	sift_table	table-defrag					COL-TAM.md#7-maintenance
 sift.table_auto_defrag_budget	sift_table	table-defrag					COL-TAM.md#7-maintenance
+sift.plan_scale	sift_col, sift_table				plan as if the tables with a sift_col index had this many times the pages and rows, to see the planner's choice at a larger size (PostgreSQL up to 18; ignored on 19, which has no relation info hook)	none at 1; a diagnostic	USAGE.md#column-indexes-aggregates-and-sift_table
