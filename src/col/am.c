@@ -567,30 +567,35 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 					 struct SiftShredRecheck *rc)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
-	int			ncols = r->schema->ncols;
+	/* detoasting a value locks the toast table and can reload the relcache entry, which frees r when it is the cached state: what the loop reads is taken first
+	 * (the schema and the arrays are apart in rd_indexcxt and stay) */
+	const SiftColSchema *schema = r->schema;
+	const int  *first = r->first,
+			   *nleaves = r->nleaves;
+	const bool *json = r->json,
+			   *name = r->name;
+	SiftColShredAdapter *shred = r->shred;
+	int			natts = r->natts,
+				ncols = schema->ncols;
 
 	row->tid = *tid;
 	row->ncols = ncols;
 	row->val = palloc0(ncols * sizeof(SiftColValue));
 	row->elem = palloc0(ncols * sizeof(SiftColValue *));
-	for (int a = 1; a <= r->natts; a++)
+	for (int a = 1; a <= natts; a++)
 	{
-		const SiftColDef *def = &r->schema->cols[r->first[a]];
+		const SiftColDef *def = &schema->cols[first[a]];
 
-		if (r->json[a])
+		if (json[a])
 			continue;
 		if (isnull[a - 1])
-			for (int k = 0; k < r->nleaves[a]; k++)
+			for (int k = 0; k < nleaves[a]; k++)
 				row->val[def->id + k].isnull = true;
 		else
-			sift_col_datum_values(def, values[a - 1], r->name[a], &row->val[def->id]);
+			sift_col_datum_values(def, values[a - 1], name[a], &row->val[def->id]);
 	}
-	if (r->shred)
-	{
-		int		   *first = r->first;
-
-		sift_col_shred_row_rc(r->shred, values, isnull, row, first, mcxt, rc);
-	}
+	if (shred)
+		sift_col_shred_row_rc(shred, values, isnull, row, first, mcxt, rc);
 	MemoryContextSwitchTo(old);
 }
 
