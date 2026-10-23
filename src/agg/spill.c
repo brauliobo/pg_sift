@@ -347,6 +347,9 @@ spill_more(AggExec *ex)
 		return false;
 	if (ex->glist)
 		pfree(ex->glist);
+	/* the sets of a partition that went through the sort have their counts when it is done */
+	dist_finish_all(ex);
+	dist_end_all(ex);
 	list_groups(ex);
 	ex->gpos = 0;
 	ex->spill->groups += ex->nglist;
