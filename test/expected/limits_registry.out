@@ -50,6 +50,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  part_key_tests       | KEYS_MAX_TESTS                  |      20000 | t         | t
  partitions           | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
  phrase_terms         | SIFT_MAX_PHRASE                 |        128 | t         | t
+ pre_census_units     | -                               |        256 | t         | t
  prefix_index         | SIFT_MAX_PREFIX_INDEX           |         15 | t         | f
  presence_pct         | SIFT_CSET_PRES_PCT              |          3 | t         | f
  query_bytes          | SIFT_QUERY_MAX_BYTES            |     262144 | t         | t
@@ -84,7 +85,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_conjuncts       | SIFT_AGG_MAX_WIDE               |          8 | t         | f
  wide_digits          | SIFT_COL_MAX_WIDE_SCALE         |         38 | t         | f
  write_buffer_kb      | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |       4096 | t         | f
-(80 rows)
+(81 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';

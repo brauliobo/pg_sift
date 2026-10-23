@@ -407,7 +407,7 @@ stale_segments(Relation index, uint64 *gens)
 		if (done)
 			continue;
 		seg = sift_cseg_open(index, e, cx);
-		sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, &c);
+		sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, 0, &c);
 		stale = sift_cseg_pre_stale(seg, &rel->pagg, sift_col_format_minor, &c);
 		sift_cseg_close(seg);
 		MemoryContextReset(cx);
@@ -505,7 +505,7 @@ sift_col_report_caps(Relation index)
 		sets_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_SETS;
 		pres_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE;
 		rows_ok = sift_cseg_kinds_exact(seg) && sift_col_format_minor >= SIFT_COL_FORMAT_ROWS;
-		sift_cseg_pre_census(seg, spec, sift_col_format_minor, &c);
+		sift_cseg_pre_census(seg, spec, sift_col_format_minor, 0, &c);
 		units += seg->nsb;
 		sets_units += sets_ok ? seg->nsb : 0;
 		pres_units += pres_ok ? seg->nsb : 0;

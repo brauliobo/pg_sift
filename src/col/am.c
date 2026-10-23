@@ -695,6 +695,15 @@ sift_col_att_expr(Relation index, int attno)
  */
 #define LEAF_STATS_CACHE	8192
 
+/*
+ * The planner needs the share of the units that hold each pre-aggregate section, not the count: reading the sections of every unit costs
+ * a few buffers each (2.5 for an index of seven leaves and a cube), on the first plan of every backend. The units of an index are counted
+ * up to PRE_CENSUS_UNITS together, shared out over its segments in proportion to their units and at least PRE_CENSUS_MIN of each, spread
+ * evenly; an index of fewer units is counted whole.
+ */
+#define PRE_CENSUS_UNITS	256
+#define PRE_CENSUS_MIN		2
+
 typedef struct LeafEntry
 {
 	Oid			index;			/* hash key */
@@ -814,6 +823,8 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
 		const SiftCPaggSpec *spec = &sift_col_rel(index)->pagg;
 		SiftColZones *zs = zones_new(d);
+		uint64		nunits = sift_cseg_dir_units(dir),
+					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS);
 
 		for (int c = 0; c < d->ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
@@ -821,6 +832,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		{
 			SiftColSegment *seg;
 			SiftCPaggCensus census;
+			double		w;
 
 			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 				continue;
@@ -828,18 +840,20 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 			for (int c = 0; c < d->ncols; c++)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
 			sift_cseg_zone_sample(seg, zs);
-			sift_cseg_pre_census(seg, spec, sift_col_format_minor, &census);
-			pre->units += census.units;
+			sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
+			/* the units counted stand for the units of the segment */
+			w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
+			pre->units += census.units * w;
 			for (int k = 0; k < spec->ndims; k++)
 			{
-				pre->dim[spec->dim[k].leaf] += census.dim[k];
-				pre->mm[spec->dim[k].leaf] += census.mm[k];
+				pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
+				pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
 			}
 			for (int k = 0; k < spec->nrollups; k++)
 				if (spec->rollup[k].list >= 0)
-					pre->roll[spec->rollup[k].list] += census.roll[k];
+					pre->roll[spec->rollup[k].list] += census.roll[k] * w;
 				else
-					pre->rows += census.roll[k];
+					pre->rows += census.roll[k] * w;
 			sift_cseg_close(seg);
 		}
 		for (int i = 0; i < dir->nsegs; i++)
