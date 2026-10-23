@@ -639,7 +639,7 @@ This lookup path (the directory and the access-method scan that reads it) is the
 measures. The choice of columns will join that of section 2.13 as a mode of a column in `key_columns` (not a second option); until then `point_columns` is set by hand.
 
 ```
-u32 magic 0x4B4C4F43, u32 version 2, u32 nleaves, u32 0
+u32 magic 0x4B4C4F43, u32 version 2 (3 with a table of heap addresses, below), u32 nleaves, u32 0
 {u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} x nleaves
 per leaf:
 u64 table[nslots]    (low 32 bits of hash(key)) << 32 | payload, or all ones: empty (nslots a power of two, at least 16, at most 3/4 full of the keys)
@@ -662,6 +662,41 @@ for each row of each unit, that probing its key lists the row. The merge of segm
 slots for the keys), and 4 bytes for each row of a key with several. 200,000 rows, one segment, the index of 5 columns is 1.23 MB without the option; a directory on one leaf adds 4.21 MB for a unique key (the
 slots are the cost), 0.97 MB for 9,000 keys (22 rows a key), 0.89 MB for 6,000 text keys (33 rows), 0.81 MB for 600 keys (333 rows) and 0.80 MB for 50 keys (4,000 rows): 4.0 bytes a row once a key repeats. A b-tree
 on the same column is 4.5, 1.6, 1.5 and 1.4 MB for the integer ones.
+
+#### Heap addresses instead of rows (column format minor 16, `point_tid_columns`; opt-in)
+
+A directory of rows still needs the unit: its row numbers become heap addresses only through the keys of the unit, which is one read of a unit (the
+chunk of keys, a few KB) for every unit that holds a row, and a read that grows with the units the rows are in. `point_tid_columns = 'col, col'` (the same
+leaves as `point_columns`; a leaf named in both gets the addresses) writes the table so that its slots hold the address of the row (`block << 16 | offset`, the
+document key of the unit) instead of its number in the segment, and a lookup returns the addresses with no unit read:
+
+```
+frame version 3 (a frame without such a leaf stays version 2, minor 14): record word 5 is the mode of the table, 0 rows (above), 1 heap addresses
+table[nslots]   u16 fingerprint (the low 16 bits of the hash) << 48 | payload (48 bits), or all ones: empty
+                payload: the only address of the key (block << 16 | offset, offset 1 to 511), or 0x8000 | word offset << 16: the list at that word
+u32 words[words]  the lists, {u32 count (2 or more), u32 bytes, bytes}, padded to 4: the first address as a code (block << 9 | offset) in LEB128, then the
+                differences of the codes after it (a key in rows of neighbouring pages costs 1 to 2 bytes a row)
+```
+
+The block of an address says the unit (`block >> 8` is the superblock), so a lookup knows the units of its rows without reading any. The fingerprint is 16 bits,
+so the table is a filter (about 1 in 65,000 for each other key in the probe sequence): the access method returns the addresses with the heap check of the condition
+(`xs_recheck`, a bitmap scan's recheck), as for rows. Three rules keep the answer the heap's. The units whose rows may have died are read instead (a unit with a dead
+row, `sift_cseg_dirty`: VACUUM frees an address to be used again by another row, listed under another key or none), as a segment without the directory would be. A scan that
+wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 64 keys,
+is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
+row of each unit is listed under its key.
+
+An index written at `sift.col_format_minor` 15 or below lists the rows (minor 14), whatever the option, and one written before the option is read as before: `REINDEX`
+and the merges write the addresses (`sift.upgrade_commands()` lists the `REINDEX` of an index whose segments are older than the option). The size is that of the rows
+within 3%: 8 bytes a slot is most of both for keys that are nearly unique, and a key of many rows costs 1 to 3 bytes a row in a list instead of 4 (1,000,000 rows of the benchmark table, five
+leaves, four of them unique: 91.4 MB against 93.7 MB for rows, about 30 MB without a directory; the six btrees of the benchmark are 170 MB). The build takes 65% longer than the index without a directory (1.32 s against 0.80 s for 1,000,000 rows, the
+sort of the keys of five leaves), a promotion of the write buffer 5% more (92 ms against 53 ms for 100,000 rows after an insert of 558 ms), and the inserts themselves nothing.
+
+A lookup of one row costs 11 to 13 microseconds at 26,700, 100,000 and 1,000,000 rows (6 for a btree), flat in the units, where the directory of rows grows from 15 to 22
+with the units (bench/col_scan.py, kind point_tid); 10 keys cost 22 against 52 and 13 for a btree; a uuid 42 against 78 and 7; a text 126 against 154 and 10 (its string is
+found in the dictionary first). It does not give an order: the table is a hash, so ORDER BY, ranges and `min`/`max` stay with the zones, the sorted runs and the top-N of the
+aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 64 keys, `EXISTS` and semi-joins on a key:
+lookups of a few rows by value; the single key, the `IN` list and the nested loop are the ones measured).
 
 ## 3. MVCC: when a row may be read from the index
 

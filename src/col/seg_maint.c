@@ -280,7 +280,7 @@ verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 
 /* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
 static void
-verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, uint64 *listed)
+verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys, uint64 *listed)
 {
 	uint32		base = (uint32) seg->sbdir[u].rank_base;
 
@@ -291,6 +291,12 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, uint
 	for (uint32 i = 0; col->ovf && i < SIFT_COL_NWORDS(col->n); i++)
 		if (col->ovf[i])
 			corrupt(seg, "Leaf %d has a point directory and an overflow value in the unit %u.", c, u);
+	if (sift_cseg_point_is_tid(seg, c))
+	{
+		if (!sift_cseg_point_check_tids(seg, c, col->key, col->nulls, keys, col->n, listed))
+			corrupt(seg, "The point directory of leaf %d does not list the address of a row of unit %u under its key.", c, u);
+		return;
+	}
 	for (uint32 i = 0; i < col->n; i++)
 	{
 		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
@@ -367,7 +373,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		}
 		verify_set(seg, c, u, &pcol[c]);
 		verify_run(seg, c, u, &pcol[c]);
-		verify_point(seg, c, u, &pcol[c], &listed[c]);
+		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
