@@ -159,7 +159,7 @@ The planner reads a wide leaf (numeric lanes, image, `money`, `interval`) and th
 dictionary of Datums (`src/agg/wide.c`): each unit decodes its lanes once into the distinct values (numeric in the short varlena form PostgreSQL
 builds, the `Interval` struct, the stored varlena or uuid bytes) and the leaf is a code vector of that dictionary, exposed to the executor as an
 ordinary `CODE` leaf whose entries *are* the Datums. Time is an `int64` vector and an enum an `int32` vector of OIDs. A wide leaf is not eligible
-for the dense or LUT key forms, native `count(DISTINCT)`, the pre-aggregates, the top-N scan (a numeric, wide or an image, and a uuid, bytea or inet are keys of it: their datums are compared with the type's own function) or the GPU; it goes through the code of PostgreSQL's
+for the dense or LUT key forms, native `count(DISTINCT)`, the pre-aggregates, the top-N scan (a numeric, wide or an image, and a uuid, bytea or inet are keys of it: their datums are compared with the type's own function; so is an enum, whose OIDs the scan ranks by the order of the type when it opens) or the GPU; it goes through the code of PostgreSQL's
 own functions (`SAA_GEN`: its transition and final functions on the Datums; `combo` keys: its expression per distinct tuple).
 
 | shape | `money` | `numeric` (wide and image) | `interval` | `time` | enum | `uuid`, `bytea`, arrays, ranges, network, `timetz`, bit strings |

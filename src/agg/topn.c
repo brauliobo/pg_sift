@@ -8,6 +8,7 @@
 #include "access/relation.h"
 #include "access/stratnum.h"
 #include "access/tableam.h"
+#include "catalog/pg_enum.h"
 #include "catalog/pg_opfamily_d.h"
 #include "executor/executor.h"
 #include "executor/nodeHash.h"
@@ -16,11 +17,13 @@
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
+#include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/numeric.h"
 #include "utils/tuplesort.h"
 #include "utils/uuid.h"
@@ -70,7 +73,8 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		case INETOID:
 			return lf->vtype == SCV_CODE;
 		default:
-			return false;
+			/* an enum is the vector of the OIDs of its values: the scan ranks them in the order of the type */
+			return type_is_enum(lf->typid) && lf->vtype == SCV_I32 && !lf->wide;
 	}
 }
 
@@ -171,6 +175,10 @@ typedef struct TopKey
 	const void *xid;
 	const char *xbytes;
 	uint32		xn;
+	/* a key of an enum: the OIDs of its values (ascending) and the position of each in the order of the type, which is the key */
+	uint32		nenum;
+	Oid		   *eoid;
+	uint32	   *erank;
 } TopKey;
 
 #define BK_TEXT		0			/* the bytes of a text: varstr_cmp under the collation of the query (byte order under C, strcoll then byte order else) */
@@ -387,6 +395,54 @@ fetch_begin(SiftTopN *t, int part)
 	MemoryContextSwitchTo(old);
 }
 
+typedef struct EnumItem
+{
+	Oid			oid;
+	float4		order;
+	uint32		rank;
+} EnumItem;
+
+static int
+enum_by_order(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const EnumItem *) a)->order, ((const EnumItem *) b)->order);
+}
+
+static int
+enum_by_oid(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const EnumItem *) a)->oid, ((const EnumItem *) b)->oid);
+}
+
+/* The values of an enum in the order of the type (pg_enum.enumsortorder, which ALTER TYPE ... ADD VALUE BEFORE/AFTER changes without touching a row), read when the scan opens */
+static void
+enum_ranks(TopKey *k, Oid typid)
+{
+	CatCList   *list = SearchSysCacheList1(ENUMTYPOIDNAME, ObjectIdGetDatum(typid));
+	EnumItem   *it = palloc(Max(list->n_members, 1) * sizeof(EnumItem));
+
+	for (int i = 0; i < list->n_members; i++)
+	{
+		Form_pg_enum e = (Form_pg_enum) GETSTRUCT(&list->members[i]->tuple);
+
+		it[i] = (EnumItem) {.oid = e->oid, .order = e->enumsortorder};
+	}
+	qsort(it, list->n_members, sizeof(EnumItem), enum_by_order);
+	for (int i = 0; i < list->n_members; i++)
+		it[i].rank = i;
+	qsort(it, list->n_members, sizeof(EnumItem), enum_by_oid);
+	k->nenum = list->n_members;
+	k->eoid = palloc(Max(k->nenum, 1) * sizeof(Oid));
+	k->erank = palloc(Max(k->nenum, 1) * sizeof(uint32));
+	for (uint32 i = 0; i < k->nenum; i++)
+	{
+		k->eoid[i] = it[i].oid;
+		k->erank[i] = it[i].rank;
+	}
+	pfree(it);
+	ReleaseCatCacheList(list);
+}
+
 SiftTopN *
 sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
 {
@@ -415,6 +471,8 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 
 		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = leaf >= 0 ? lay->leaf[leaf].vtype : expr_vtype(xcoll),
 			.xk = xk, .xc = (int64) (((uint64) xhi << 32) | xlo), .xcoll = xcoll};
+		if (leaf >= 0 && xk == TXK_NONE && type_is_enum(lay->leaf[leaf].typid))
+			enum_ranks(k, lay->leaf[leaf].typid);
 		if (xk == TXK_EXPR)
 		{
 			k->x = expr_open(list_nth(SPEC_EXPRS(spec), (int) xlo), lay, xcoll, econtext, cxt);
@@ -666,6 +724,27 @@ heap_push(const SiftTopN *t, TopEnt *h, int *n, const TopEnt *e)
 	h[i] = *e;
 }
 
+/* the position of the enum value oid in the order of its type */
+static inline int64
+enum_rank(const TopKey *k, Oid oid)
+{
+	uint32		lo = 0,
+				hi = k->nenum;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (k->eoid[mid] < oid)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo == k->nenum || k->eoid[lo] != oid)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("enum value %u was added while the scan was running", oid)));
+	return k->erank[lo];
+}
+
 /* the key of row i; floats map to integers of the same order (NaN last); a numeric NaN is PG_INT64_MAX in the vector (SiftSrcVec.ovf) */
 static inline bool
 row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
@@ -678,7 +757,7 @@ row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 	switch (k->vtype)
 	{
 		case SCV_I32:
-			*out = ((const int32 *) v->data)[i];
+			*out = k->nenum ? enum_rank(k, ((const int32 *) v->data)[i]) : ((const int32 *) v->data)[i];
 			break;
 		case SCV_I64:
 			*out = ((const int64 *) v->data)[i];
@@ -2143,7 +2222,9 @@ key_zone(const TopKey *k, const SiftSrcZone *z)
 {
 	SiftSrcZone o = *z;
 
-	if (k->xk != TXK_COALESCE || z->inexact || z->nnull == 0)
+	/* the zone is of OIDs, which are not in the order of the values */
+	o.inexact |= k->nenum > 0;
+	if (k->xk != TXK_COALESCE || o.inexact || z->nnull == 0)
 		return o;
 	if (z->nnull == z->nvals)
 		o.min = o.max = k->xc;
@@ -2159,7 +2240,7 @@ key_zone(const TopKey *k, const SiftSrcZone *z)
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
-	return !t->all && !t->totals && t->key[0].leaf >= 0 && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
+	return !t->all && !t->totals && t->key[0].leaf >= 0 && t->key[0].nenum == 0 && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
 }
 
 /*

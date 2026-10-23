@@ -394,7 +394,7 @@ def render_union(p):
 
 def gen_topn(r, ctx):
     cols = EVENTS
-    sortable = ['amount', 'ts', 'kind', 'grp', 'val', 'big', 'num', 'flag', 'parent_id', 'a', 'ref', 'blob', 'title', 'ref', 'blob', 'title', 'wnum', 'inum', 'wnum', 'inum']
+    sortable = ['amount', 'ts', 'kind', 'grp', 'val', 'big', 'num', 'flag', 'parent_id', 'a', 'ref', 'blob', 'title', 'ref', 'blob', 'title', 'wnum', 'inum', 'wnum', 'inum', 'lv', 'lv', 'lv']
     ks = r.sample(sortable, r.choice([1, 2, 2, 3, 5, 6]))  # more than 4 sort keys sort every row that passes
     # sort expressions the scan evaluates itself: coalesce of a column and a constant of its type, lower and upper of the text column, arithmetic and casts with
     # PostgreSQL's own evaluation (the data keeps them clear of overflow, division by a column and NaN into an integer)

@@ -5,12 +5,17 @@ CREATE SCHEMA fz;
 CREATE FUNCTION fz.h(i bigint, salt int) RETURNS int IMMUTABLE PARALLEL SAFE LANGUAGE sql AS
 $$ SELECT ((((i + salt::bigint * 1000003 + @SEED@::bigint * 7919) * 2654435761) % 4294967296) / 65536)::int $$;
 
+-- an enum whose order is neither the order of its OIDs nor the alphabetical one: min < mid < mid2 < high < low
+CREATE TYPE fz.lvl AS ENUM ('mid', 'high', 'low');
+ALTER TYPE fz.lvl ADD VALUE 'min' BEFORE 'mid';
+ALTER TYPE fz.lvl ADD VALUE 'mid2' AFTER 'mid';
+
 CREATE TABLE items (id int PRIMARY KEY, kind text, enabled bool, grp int) WITH (autovacuum_enabled = false);
 INSERT INTO items SELECT i, 'k' || fz.h(i, 90) % 5, fz.h(i, 91) % 7 <> 3, CASE WHEN fz.h(i, 92) % 10 = 0 THEN NULL ELSE fz.h(i, 93) % 12 END
 FROM generate_series(0, 599) i;
 
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, grp int, a int, b int, ts date, amount int, big int8, val float8, num numeric(12,2),
-                     flag bool, doc jsonb, metrics jsonb, ref uuid, blob bytea, title text, wnum numeric(30,4), inum numeric) WITH (autovacuum_enabled = false, fillfactor = 75);
+                     flag bool, doc jsonb, metrics jsonb, ref uuid, blob bytea, title text, wnum numeric(30,4), inum numeric, lv fz.lvl) WITH (autovacuum_enabled = false, fillfactor = 75);
 CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF events LANGUAGE sql AS $$
 	SELECT i::int,
 	       CASE WHEN fz.h(i, 1 + salt) % 100 < 3 THEN NULL ELSE fz.h(i, 2 + salt) % 600 END,
@@ -46,10 +51,11 @@ CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF even
 	            ELSE ((fz.h(i, 45 + salt) % 700)::numeric * 100000000000000 + fz.h(i, 46 + salt) % 9 / 10000.0) * CASE WHEN fz.h(i, 47 + salt) % 5 = 0 THEN -1 ELSE 1 END END,
 	       CASE WHEN fz.h(i, 48 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 48 + salt) % 100 < 6 THEN 'NaN'::numeric WHEN fz.h(i, 48 + salt) % 100 < 7 THEN 'Infinity'::numeric
 	            WHEN fz.h(i, 48 + salt) % 100 < 8 THEN '-Infinity'::numeric
-	            ELSE round((fz.h(i, 49 + salt) % 400)::numeric / 8, fz.h(i, 50 + salt) % 5) * CASE WHEN fz.h(i, 51 + salt) % 6 = 0 THEN 100000000000000000000 ELSE 1 END END
+	            ELSE round((fz.h(i, 49 + salt) % 400)::numeric / 8, fz.h(i, 50 + salt) % 5) * CASE WHEN fz.h(i, 51 + salt) % 6 = 0 THEN 100000000000000000000 ELSE 1 END END,
+	       CASE WHEN fz.h(i, 52 + salt) % 100 < 5 THEN NULL ELSE (enum_range(NULL::fz.lvl))[1 + fz.h(i, 53 + salt) % 5] END
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO events SELECT * FROM fz.gen_events(1, @ROWS@, 0);
-CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum)
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv)
 	WITH (paths = 'doc.parts[]{cat text, sign text, score float8}, metrics.* float8');
 
 -- first-row lookups: a unique key, a key some rows repeat, three versions of a key (unique with the version), versions with a NULL one
