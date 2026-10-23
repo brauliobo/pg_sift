@@ -23,7 +23,9 @@ typedef struct PredState
 	uint32		in_nv;
 	uint32		in_nlut;
 	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
-	int64	   *in_htab;		/* ... or, when the values are too far apart for one, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */
+	uint64	   *in_bits;		/* ... or, when the range is too wide for a byte table, a bit for each value of [in_lo, in_lo + in_nbits) ... */
+	uint64		in_nbits;
+	int64	   *in_htab;		/* ... or, when the values are too far apart for that, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */
 	uint8	   *in_hused;
 	uint64		in_hmask;
 	ExprState  *expr;			/* SAP_LUT */

@@ -32,12 +32,21 @@ ctest_range(SiftCTest *t, int64 lo, int64 hi)
 static void
 ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 {
-	uint32		m = 0;
+	uint32		m = 0,
+				asc = 1;
 
-	qsort(keys, n, sizeof(int64), sift_cmp_i64);
-	for (uint32 i = 0; i < n; i++)
-		if (m == 0 || keys[m - 1] != keys[i])
-			keys[m++] = keys[i];
+	/* the keys of a set the executor made arrive ascending, at every begin of a range of units: not sorted again */
+	while (asc < n && keys[asc - 1] < keys[asc])
+		asc++;
+	if (asc < n)
+	{
+		qsort(keys, n, sizeof(int64), sift_cmp_i64);
+		for (uint32 i = 0; i < n; i++)
+			if (m == 0 || keys[m - 1] != keys[i])
+				keys[m++] = keys[i];
+	}
+	else
+		m = n;
 	if (m == 0)
 		t->kind = negate ? SIFT_CT_NONNULL : SIFT_CT_NONE;
 	else if (m == 1)
