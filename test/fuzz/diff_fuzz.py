@@ -146,6 +146,7 @@ AGGS = [
     ({'amount'}, 'min({e}.amount)'), ({'amount'}, 'max({e}.amount)'), ({'val'}, 'min({e}.val)'), ({'val'}, 'max({e}.val)'), ({'ts'}, 'min({e}.ts)'),
     ({'ts'}, 'max({e}.ts)'), ({'kind'}, 'min({e}.kind)'), ({'kind'}, 'max({e}.kind)'), ({'big'}, 'min({e}.big)'), ({'big'}, 'max({e}.big)'),
     ({'num'}, 'max({e}.num)'), ({'flag'}, 'bool_and({e}.flag)'), ({'flag'}, 'bool_or({e}.flag)'),
+    ({'parent_id'}, 'count(DISTINCT {e}.parent_id)'), ({'parent_id', 'amount'}, 'count(DISTINCT {e}.parent_id) FILTER (WHERE {e}.amount > {k}00)'),
     ({'amount'}, 'count(DISTINCT {e}.amount)'), ({'amount'}, 'sum(DISTINCT {e}.amount)'), ({'amount'}, 'avg(DISTINCT {e}.amount)'), ({'num'}, 'count(DISTINCT {e}.num)'),
     ({'num'}, 'sum(DISTINCT {e}.num)'), ({'amount'}, 'count(DISTINCT 3 * {e}.amount)'),  # sets of numbers: the workers send them by value
     ({'kind'}, "count(*) FILTER (WHERE {e}.kind = 'k{k}')"), ({'kind'}, "count(*) FILTER (WHERE {e}.kind IS NULL)"),
@@ -199,6 +200,17 @@ def gen_preagg(r, ctx):
 
 def render_preagg(p):
     return grouped(p, f"{p['table']} e"), p['ordered'] and bool(p['keys'])
+
+
+def gen_keys(r, ctx):
+    """A flat (or lightly grouped) count(DISTINCT parent_id) under random filters: the units that keep the key list or bitmap of the column (key_columns) answer it from the list when every filter holds for the whole unit."""
+    t = 'events' if r.random() < 0.85 else 'ev_part'
+    cols = EVENTS if t == 'events' else COLUMNS
+    n = ctx['rows'] if t == 'events' else ctx['rows'] // 2
+    ag = ['count(DISTINCT e.parent_id)'] + aggs(r, 'e', cols, r.randrange(0, 4))
+    if r.random() < 0.3:
+        ag.append('count(DISTINCT e.parent_id) FILTER (WHERE e.amount > %d00)' % r.randrange(6))
+    return dict(table=t, keys=keys(r, 'e', cols, r.choice([0, 0, 0, 1])), aggs=list(dict.fromkeys(ag)), where=preds(r, 'e', n, cols, r.randrange(0, 4)), having=[], ordered=True)
 
 
 def gen_partition(r, ctx):
@@ -524,7 +536,7 @@ def render_same(p):
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
-    'samelookup': (gen_same, render_same, 5),
+    'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -536,6 +548,8 @@ def variants(r, fam):
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
+    if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
+        v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
     if fam in ('twolevel', 'union', 'lookup'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
