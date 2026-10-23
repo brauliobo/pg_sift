@@ -202,6 +202,7 @@ extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftS
 
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
+extern uint64 sift_store_held_blocks(Relation index);
 
 /*
  * The free-list pages in chain order, each share-locked and validated while visit runs on it (blk is its block);

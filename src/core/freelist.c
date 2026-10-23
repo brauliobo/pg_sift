@@ -715,6 +715,22 @@ sift_recycle(Relation index)
 	return c.cleared;
 }
 
+/* The blocks released that a snapshot may still read, so that they cannot be reused: what the rewrites since the horizon last moved left behind */
+uint64
+sift_store_held_blocks(Relation index)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	FreeChain	c;
+	uint64		held = 0;
+
+	read_chain(index, metabuf, &c, InvalidFullTransactionId);
+	for (int i = 0; i < c.n; i++)
+		if (FullTransactionIdIsValid(c.ext[i].safexid))
+			held += c.ext[i].nblocks;
+	UnlockReleaseBuffer(metabuf);
+	return held;
+}
+
 BlockNumber
 sift_store_tail_blocks(Relation index)
 {
