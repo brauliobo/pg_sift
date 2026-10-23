@@ -106,6 +106,7 @@ typedef struct AggCtx
 	Bitmapset  *func_ovf;		/* ... and the leaves that make the scan unfit when a unit holds what they cannot store (a document that is no object raises in jsonb_each) */
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
+	Bitmapset  *reused;			/* ... of those, the leaves that more than one use_leaf named */
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	Bitmapset  *jcast;			/* leaves read through the cast function of jsonb to a number or boolean (before PostgreSQL 18 it raises for a JSON null) */
 	List	   *dpctx;			/* deparse context of expr_text */

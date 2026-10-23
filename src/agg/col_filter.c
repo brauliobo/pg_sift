@@ -289,6 +289,12 @@ col_tolerate_ovf(void *impl, int leaf)
 	((ColSource *) impl)->tol[leaf] = true;
 }
 
+void
+col_set_raw(void *impl, int leaf)
+{
+	((ColSource *) impl)->raw[leaf] = true;
+}
+
 bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {

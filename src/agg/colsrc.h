@@ -578,6 +578,12 @@ typedef struct SiftSrcProvider
 	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 	void		(*tolerate_ovf) (void *impl, int leaf);
 	/*
+	 * Optional (sift_colsrc_can_raw). set_raw, called before `begin`, makes the reads of an image leaf (SiftSrcLeaf.wide: uuid, bytea) give the codes
+	 * of the dictionary the unit stores, whose entries are the stored images, instead of the per-unit dictionary of aligned datums: for a leaf the
+	 * executor only compares and copies, never hands to PostgreSQL's functions.
+	 */
+	void		(*set_raw) (void *impl, int leaf);
+	/*
 	 * Optional, both or neither: the rows of a unit that hold, in a leaf the query reads, a value the
 	 * leaf cannot store are read again from the heap as the query's SQL reads them. set_recheck, called before `begin`, says how the query reads
 	 * the leaf (a SiftSrcRecheck); the rows of a unit with such a value leave it (`live` does not have them) and the source returns them as the
@@ -883,6 +889,10 @@ extern bool sift_colsrc_can_types(Oid relam, bool index);
 extern bool sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 extern void sift_colsrc_read_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf);
+
+/* Can the source of this access method read an image leaf as the codes of its stored dictionary (SiftSrcProvider.set_raw)? */
+extern bool sift_colsrc_can_raw(Oid relam, bool index);
+extern void sift_colsrc_set_raw(SiftSrcSource *src, int leaf);
 
 /* Does the source of this access method tell a JSON null from a missing key per value of a leaf (SiftSrcProvider.read_jnull)? */
 extern bool sift_colsrc_can_jnull(Oid relam, bool index);

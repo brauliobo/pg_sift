@@ -95,13 +95,14 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 #define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
 #define SPEC_EXPRS(spec)	((List *) lfourth((List *) (spec)))
 
-/* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes */
+/* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
 char *
 sift_topn_limit_text(Node *spec)
 {
 	Node	   *count = SPEC_COUNT(spec),
 			   *offset = SPEC_OFFSET(spec);
-	const char *how = (llast_int(SPEC_KEYS(spec)) & TOPN_SORT) ? ", sorted" : "";
+	int			flags = llast_int(SPEC_KEYS(spec));
+	const char *how = psprintf("%s%s", (flags & TOPN_SORT) ? ", sorted" : "", (flags & TOPN_RAWKEY) ? ", stored dictionary" : "");
 	int64		n;
 
 	if (IsA(count, Const) && (offset == NULL || IsA(offset, Const)) &&
@@ -426,6 +427,8 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->skip = offset;
 	t->all = !bounded;
 	t->totals = (flags & TOPN_TOTALS) != 0;
+	if (flags & TOPN_RAWKEY)
+		sift_colsrc_set_raw(src, t->key[0].leaf);
 	if (t->all && t->nblob > 0)
 		t->sort = sort_begin(t);		/* byte strings do not fit the array of integers: the tuplesort holds them, in memory up to work_mem */
 	else if (t->all)

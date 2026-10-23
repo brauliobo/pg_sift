@@ -609,6 +609,19 @@ topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
 	return true;
 }
 
+/* A uuid or bytea first key that no other part of the scan reads is compared and copied as the bytes of the stored dictionary: the source need not build a dictionary of datums per unit */
+static bool
+topn_raw_key(AggCtx *c, int leaf, int xkind)
+{
+	const SiftSrcLeaf *lf;
+
+	if (leaf < 0 || xkind != TXK_NONE || bms_is_member(leaf, c->reused))
+		return false;
+	lf = leaf_of(c, leaf);
+	return lf->wide && (lf->typid == UUIDOID || lf->typid == BYTEAOID) &&
+		sift_colsrc_can_raw(get_rel_relam(OidIsValid(c->indexoid) ? c->indexoid : c->nparts > 0 ? c->partheap[0] : c->heapoid), OidIsValid(c->indexoid));
+}
+
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */
 static bool
 topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs)
@@ -1061,7 +1074,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	s->desc_topn = txt.data;
 
 	/* the heap holds the bound, or the scan sorts every row that passes: a heap of many rows costs more than the sort, so both are priced */
-	flags = (skip_offset ? TOPN_SKIP_OFFSET : 0) | (s->naggs > 0 ? TOPN_TOTALS : 0);
+	flags = (skip_offset ? TOPN_SKIP_OFFSET : 0) | (s->naggs > 0 ? TOPN_TOTALS : 0) | (topn_raw_key(c, leaf[0], xf[0].kind) ? TOPN_RAWKEY : 0);
 	if (nkey <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
