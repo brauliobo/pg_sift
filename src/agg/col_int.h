@@ -92,6 +92,8 @@ typedef struct ColSource
 	const SiftSrcPrune *zfor;	/* the prune entries of the last begin, and the zone trees made of those that are junctions */
 	SiftColPrune *zone;
 	int			nzone;
+	SiftColPred *zpred;			/* the zone tests of the other prune entries, two each, kept while the entries are the same (zone_tests) */
+	int			nzpred;
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
 	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */

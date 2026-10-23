@@ -395,6 +395,43 @@ zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftCol
 	}
 }
 
+/* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
+static bool
+zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z)
+{
+	if (p[0].col != z->leaf || p[0].vals[0].v.i != z->lo)
+		return false;
+	if (z->nvals == 0)
+		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
+	if (p[1].op != SIFT_COLOP_IN || p[1].nvals != z->nvals)
+		return false;
+	for (int i = 0; i < z->nvals; i++)
+		if (p[1].vals[i].v.i != z->vals[i])
+			return false;
+	return true;
+}
+
+/*
+ * The zone tests of the entries that are no junction, into src->zpred. A begin comes for every range of units a worker takes, and a set of many values
+ * is converted to column values and copied for each: the tests of the last begin stay while the entries hold the same ranges and values.
+ */
+static void
+zone_tests(ColSource *src, const SiftSrcPrune *prune, int nprune)
+{
+	int			n = 0;
+
+	if (src->zpred == NULL)
+		src->zpred = MemoryContextAllocZero(src->cxt, 2 * SIFT_COLSRC_MAX_LEAVES * sizeof(SiftColPred));
+	for (int k = 0; k < nprune; k++)
+		if (prune[k].nkids == 0)
+		{
+			if (n >= src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
+				zone_preds(src->cxt, &prune[k], MemoryContextAllocZero(src->cxt, 2 * sizeof(SiftColValue)), &src->zpred[n]);
+			n += 2;
+		}
+	src->nzpred = n;
+}
+
 /* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin) */
 static SiftColPrune
 zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
@@ -420,9 +457,8 @@ static void
 col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	ColSource  *src = impl;
-	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES];
 	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
-	int			n = 0;
+	int			n;
 
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
@@ -435,13 +471,9 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 			if (prune[k].nkids > 0)
 				src->zone[src->nzone++] = zone_tree(src->cxt, &prune[k]);
 	}
-	for (int k = 0; k < nprune; k++)
-		if (prune[k].nkids == 0)
-		{
-			memset(&vals[n], 0, 2 * sizeof(SiftColValue));
-			zone_preds(src->cxt, &prune[k], &vals[n], &preds[n]);
-			n += 2;
-		}
+	zone_tests(src, prune, nprune);
+	memcpy(preds, src->zpred, src->nzpred * sizeof(SiftColPred));
+	n = src->nzpred;
 	for (int i = 0; i < src->nspred; i++)
 		preds[n++] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)
