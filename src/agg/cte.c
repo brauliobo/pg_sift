@@ -10,6 +10,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/genam.h"
 #include "access/relation.h"
 #include "catalog/pg_class.h"
@@ -363,17 +365,92 @@ plain_reader_stmt(PlannedStmt *stmt)
 	return false;
 }
 
+/* the plans of a statement with its shared CTEs and with them inlined, and what the scans of the inline plan and the work of the shared one cost */
+typedef struct CteVariants
+{
+	PlannedStmt *plain,
+			   *inlined;
+	ScanArms	scans;
+	double		plain_cost,
+				work;
+} CteVariants;
+
+/* both queries are consumed by the planner */
+static void
+plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants *v)
+{
+	const char *outer_variant;
+
+	memset(v, 0, sizeof(*v));
+	v->plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(parse));
+	outer_variant = agg_variant_push("inline");
+	v->inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
+	agg_variant = outer_variant;
+	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
+	sift_agg_arms(v->inlined->planTree, &v->scans);
+	sift_agg_arms_list(v->inlined->subplans, &v->scans);
+	v->work = shared_work_cost(v->plain, names);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
+		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n);
+}
+
+/*
+ * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
+ * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
+ * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
+ */
+static bool
+inline_wins(const CteVariants *v)
+{
+	return v->scans.n > 0 && (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * v->scans.total < v->work && v->inlined->planTree->total_cost < CTE_INLINE_ABOVE * v->plain_cost :
+							  (CTE_INLINE_MARGIN * v->scans.total < v->work && v->inlined->planTree->total_cost < CTE_INLINE_TOTALS * v->plain_cost) ||
+							  v->scans.total < v->plain_cost - v->inlined->planTree->total_cost);
+}
+
+/*
+ * The scans cost less than the work they replace but not by the margin: a close call at this size. The choice that is right at 10 times the
+ * rows and at 100 times (sift.agg_scale_horizon) is right now: the scans grow with the rows they read, the plan of the shared CTE with its sorts
+ * and hash tables that outgrow work_mem grows faster, and a plan that is a tie today and a loss to the normal one at the size the table is going
+ * to have is not worth keeping. The statement is planned again at each size, from the untouched copies.
+ */
+static bool
+inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
+{
+	double		horizon = sift_agg_scale_horizon,
+				saved = sift_plan_scale;
+	bool		quiet = agg_quiet_reports(true),
+				wins = true;
+
+	PG_TRY();
+	{
+		for (int i = 0; i < 2 && wins; i++)
+		{
+			CteVariants v;
+
+			sift_plan_scale = saved * (i == 0 ? sqrt(horizon) : horizon);
+			plan_variants(SIFT_PLANNER_ARGS(copyObject(parse)), copyObject(pristine_inline), names, &v);
+			wins = inline_wins(&v);
+		}
+	}
+	PG_FINALLY();
+	{
+		sift_plan_scale = saved;
+		agg_quiet_reports(quiet);
+	}
+	PG_END_TRY();
+	return wins;
+}
+
 static PlannedStmt *
 plan_cte(SIFT_PLANNER_PARAMS)
 {
-	Query	   *inline_parse;
-	PlannedStmt *plain,
-			   *inlined;
-	const char *outer_variant;
+	Query	   *inline_parse,
+			   *pristine = NULL,
+			   *pristine_inline = NULL;
+	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
-	ScanArms	scans = {0};
-	double		plain_cost,
-				work;
 
 	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
@@ -381,35 +458,23 @@ plan_cte(SIFT_PLANNER_PARAMS)
 			standard_planner(SIFT_PLANNER_ARGS(parse));
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
-	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(parse));
-	outer_variant = agg_variant_push("inline");
-	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
-	agg_variant = outer_variant;
-	plain_cost = plan_cost_without_unread_ctes(plain);
-	sift_agg_arms(inlined->planTree, &scans);
-	sift_agg_arms_list(inlined->subplans, &scans);
-	work = shared_work_cost(plain, walk.names);
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
-		 plain_cost, inlined->planTree->total_cost, scans.total, work, scans.n);
-	/*
-	 * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
-	 * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
-	 * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
-	 */
-	if (scans.n > 0 && (!plain_reader_stmt(inlined) ? CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_ABOVE * plain_cost :
-						(CTE_INLINE_MARGIN * scans.total < work && inlined->planTree->total_cost < CTE_INLINE_TOTALS * plain_cost) ||
-						scans.total < plain_cost - inlined->planTree->total_cost))
+	if (sift_agg_scale_horizon > 1.0)
+	{
+		pristine = copyObject(parse);
+		pristine_inline = copyObject(inline_parse);
+	}
+	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
+	if (inline_wins(&v) ||
+		(pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names)))
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
 		inline_won = true;
-		return inlined;
+		return v.inlined;
 	}
-	if (sift_explain_refusals && scans.n > 0)
+	if (sift_explain_refusals && v.scans.n > 0)
 		agg_report("cte_inline", AGG_REFUSE_CTE_COST,
-				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", inlined->planTree->total_cost, scans.total, plain_cost, work), false);
-	return plain;
+				   psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work), false);
+	return v.plain;
 }
 
 /* does the query, or one it holds, read a table that has a column index? */
