@@ -13,9 +13,9 @@ KT       = ../kernels
 PGINC   := $(shell pg_config --includedir-server)
 PGLIB   := -L$(shell pg_config --libdir)
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I$(PGINC) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
-LDLIBS   = -lm -lzstd -llz4
+CFLAGS  += -std=gnu11 $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I$(PGINC) $(SIFT_PGCPP) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
+LDLIBS   = -lm $(SIFT_PGLIBS) -lzstd -llz4
 OUT     ?= /tmp/sift-col-compress/out
 ifdef SANITIZE
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined

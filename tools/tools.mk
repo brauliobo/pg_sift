@@ -6,8 +6,8 @@ SRC      = ../../src
 include $(SRC)/areas.mk
 KT       = ../kernels
 # Same code generation flags as the extension (Makefile PG_CFLAGS)
-CFLAGS   = -std=gnu11 -O2 -g -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wextra \
-           -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(shell pg_config --includedir-server)
+CFLAGS   = -std=gnu11 -O2 -g $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wextra \
+           -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(shell pg_config --includedir-server) $(SIFT_PGCPP)
 LDLIBS   = -lm -lpthread
 ifdef SANITIZE
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
