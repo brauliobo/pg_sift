@@ -102,11 +102,6 @@ SELECT * FROM sh('{"m":{"":1,"a":2}}', 'm.* int4') WHERE kind = 'col';
 SELECT id, sift._test_shred_count(doc, 'items[]{category text, qty int4}, tags[] text, m.* int4')
 FROM (VALUES (1, '{"items":[{"category":"x","qty":1},{"category":"y","qty":2},{"category":"z"}],"tags":["a","b"],"m":{"a":1,"b":2}}'::jsonb),
 			 (2, '{}'), (3, '{"tags":["c"]}'), (4, '{"items":[{"qty":9}]}'), (5, '[1]'), (6, '{"m":{"a":1}}')) v(id, doc) ORDER BY id;
--- the shared database of a plain installcheck goes on with the next test
-SET client_min_messages = warning;
-DROP SCHEMA public CASCADE;
-CREATE SCHEMA public;
-GRANT USAGE ON SCHEMA public TO PUBLIC;
-RESET client_min_messages;
+DROP FUNCTION sh(jsonb, text, int, int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

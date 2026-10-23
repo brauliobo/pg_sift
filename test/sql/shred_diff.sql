@@ -314,11 +314,8 @@ CREATE TABLE summ_want AS
 		  FROM docs d CROSS JOIN (SELECT DISTINCT path FROM cols) c LEFT JOIN got g ON g.id = d.id AND g.kind = 'col' AND g.path = c.path GROUP BY d.id, c.path) q;
 SELECT count(*) AS summary_mismatches FROM ((SELECT * FROM summ EXCEPT SELECT * FROM summ_want) UNION ALL (SELECT * FROM summ_want EXCEPT SELECT * FROM summ)) m;
 SELECT count(*) FILTER (WHERE min IS NOT NULL) > 1000 AS summaries_with_values FROM summ;
--- the shared database of a plain installcheck goes on with the next test
-SET client_min_messages = warning;
-DROP SCHEMA public CASCADE;
-CREATE SCHEMA public;
-GRANT USAGE ON SCHEMA public TO PUBLIC;
-RESET client_min_messages;
+DROP TABLE docs, got, want, cols, ovf_got, ovf_want, piv, rec, summ, summ_want;
+DROP FUNCTION rint(bigint, bigint), pick(text[]), gv(text, bool), el(jsonb), obj(VARIADIC jsonb[]), odd(jsonb, bool), noise(int), arr_of(int, text, bool), gen(bool),
+	walk(jsonb, VARIADIC text[]), fit(jsonb, bool, text), lst(jsonb, bool, text), efield(jsonb, text, text), oracle(jsonb);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
