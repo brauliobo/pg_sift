@@ -223,16 +223,19 @@ joined_distinct(AggCtx *c, JoinCtx *jc, int col)
  * distinct value combinations of the inputs of a combo among `tuples`: what the statistics say of the columns, the tuples when an input is
  * not one; a column of an earlier lookup has at most as many values as the lookup has rows. The combo of a lookup per element is not
  * evaluated for the tuples but for the combinations of the values of the elements (the index counts those of each leaf) and of the column
- * of the lookup it reads.
+ * of the lookup it reads. `counted` prices the elements of an unscoped lookup by those counts too, not by PostgreSQL's default.
  */
 static double
-combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples)
+combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted)
 {
 	List	   *exprs = NIL;
 	double		entries = 1.0,
 				elem_nd = 1.0;
 	Bitmapset  *lookups = NULL;
 	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
+	int			parents[SIFT_AGG_MAX_CLEAVES],
+				nparents = 0;
+	double		parent_nd[SIFT_AGG_MAX_CLEAVES] = {0};
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
@@ -253,20 +256,30 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 						double		rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
 
 						/* a correlated child gives its rows for each distinct input of its own combo */
-						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples) : rows;
+						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples, counted) : rows;
 					}
 					lookups = bms_add_member(lookups, jc->combo);
 				}
 			continue;
 		}
 		lf = leaf_of(c, cb->leaf[p]);
-		/* the values of a member or an element have no statistics: PostgreSQL's default number of distinct values, as for a column it knows nothing of */
+		/* the values of a member or an element have no statistics (but the counts of the index, where asked): PostgreSQL's default number of distinct values, as for a column it knows nothing of */
 		if (lf->parent >= 0 || lf->path != NIL)
 		{
-			nd = scoped && c->stats.ndistinct[cb->leaf[p]] > 0 ? c->stats.ndistinct[cb->leaf[p]] : DEFAULT_NUM_DISTINCT;
+			nd = (scoped || counted) && c->stats.ndistinct[cb->leaf[p]] > 0 ? c->stats.ndistinct[cb->leaf[p]] : DEFAULT_NUM_DISTINCT;
 			/* the fields of one element go together (a category and its kind): the combinations are about as many as the values of the widest */
 			if (scoped)
 				elem_nd = Max(elem_nd, nd);
+			else if (counted && lf->parent >= 0)
+			{
+				int			i = 0;
+
+				while (i < nparents && parents[i] != lf->parent)
+					i++;
+				if (i == nparents)
+					parents[nparents++] = lf->parent;
+				parent_nd[i] = Max(parent_nd[i], nd);
+			}
 			else
 				entries *= nd;
 			continue;
@@ -278,6 +291,8 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		else
 			exprs = lappend(exprs, e);
 	}
+	for (int i = 0; i < nparents; i++)
+		entries *= parent_nd[i];
 	if (exprs != NIL)
 		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
 	return Max(Min(entries * elem_nd, tuples), 1.0);
@@ -350,7 +365,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
 				if (j->fslot >= 0)
 					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
-				cost += combo_entries(c, s, cb, scan_rows) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
+				cost += combo_entries(c, s, cb, scan_rows, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
 			}
 			continue;
 		}
@@ -365,7 +380,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		if (wide == 0 && !direct)
 			continue;
 		tuples = filter ? rows : agg_rows;
-		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
+		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
 	}
 	return cost;
 }
@@ -1323,10 +1338,14 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		native = combo_entries(c, s, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		native = combo_entries(c, s, cb, k->agg_rows, false) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 
-			/* the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input */
-			f->use = f->ok && jc->frows * AGG_FIRST_ROW < native;
+			/*
+			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
+			 * inputs are counted by what the index holds of the elements and of the tuples the scan reads, as the rows PostgreSQL expects of the join
+			 * (a few for a filter it knows nothing of) are not what the child runs for
+			 */
+			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 			if (f->use)
 			{
 				k->load_rows += jc->frows;

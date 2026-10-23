@@ -526,6 +526,36 @@ $q$);
 (3 rows)
 
 DROP FUNCTION explain_first(text);
+-- the inputs of the child are counted from the elements the index holds: the filter on the elements is one PostgreSQL has no statistics for (it expects
+-- a fraction of an element a document), the elements that pass are a thousand, each with a key of its own, and the child run for each costs more than
+-- the table read once; the same statement over three documents keeps the child
+CREATE TABLE fr_docs (id int PRIMARY KEY, kind text NOT NULL, parts jsonb NOT NULL);
+INSERT INTO fr_docs SELECT i, 'k' || (i % 3), (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || ((i + j) % 8), 'sub', 's' || ((i * 7 + j * 13) % 3000), 'score', (i + j) % 5)) FROM generate_series(1, 4) j) FROM generate_series(1, 1500) i;
+CREATE INDEX fr_docs_col ON fr_docs USING sift_col (id, kind, parts) WITH (paths = 'parts[]{cat astext, sub astext, score float8}');
+CREATE TABLE fr_map (id int PRIMARY KEY, kind text NOT NULL, cat text NOT NULL, sub text NOT NULL, label text);
+INSERT INTO fr_map SELECT g, 'k' || (g % 3), 'c' || (g % 8), 's' || (g % 3000), 'm' || (g % 11) FROM generate_series(1, 24000) g;
+CREATE INDEX fr_map_key ON fr_map (kind, cat, sub);
+VACUUM (FREEZE, ANALYZE) fr_docs, fr_map;
+SELECT * FROM check_first($q$
+ SELECT m.label, count(*) AS n FROM fr_docs d CROSS JOIN LATERAL jsonb_to_recordset(d.parts) o(cat text, sub text, score float8)
+ LEFT JOIN LATERAL (SELECT label FROM fr_map WHERE fr_map.kind = d.kind AND fr_map.cat = o.cat AND fr_map.sub = o.sub ORDER BY fr_map.id LIMIT 1) m ON true
+ WHERE o.score >= 0 AND o.score = 1 GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT m.label, count(*) AS n FROM fr_docs d CROSS JOIN LATERAL jsonb_to_recordset(d.parts) o(cat text, sub text, score float8)
+ LEFT JOIN LATERAL (SELECT label FROM fr_map WHERE fr_map.kind = d.kind AND fr_map.cat = o.cat AND fr_map.sub = o.sub ORDER BY fr_map.id LIMIT 1) m ON true
+ WHERE o.score >= 0 AND o.score = 1 AND d.id <= 3 GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, pick, dims_label;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, pick, dims_label, fr_docs, fr_map;
 DROP EXTENSION pg_sift;
