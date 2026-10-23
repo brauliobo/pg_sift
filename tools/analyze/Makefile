@@ -8,11 +8,11 @@ SRC = ../../src
 include $(SRC)/areas.mk
 PGINC = $(shell pg_config --includedir-server)
 PGLIB = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
-CFLAGS = -O2 -g -march=x86-64 -mtune=generic -Wall -Wno-unused-function $(SIFT_INC) -I$(PGINC)
+CFLAGS = -O2 -g $(SIFT_BASE_ISA) -Wall -Wno-unused-function $(SIFT_INC) -I$(PGINC) $(SIFT_PGCPP)
 ifdef SANITIZE
 CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 endif
-LIBS = $(PGLIB) -lpgcommon -lpgport -lm
+LIBS = $(PGLIB) -lpgcommon -lpgport $(SIFT_PGLIBS) -lm
 DATA ?= data
 # LeakSanitizer is on: the stub frees its palloc arena at exit (../pgshim.c), so what it reports is a real malloc leak
 

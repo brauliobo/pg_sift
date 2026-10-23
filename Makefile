@@ -15,10 +15,7 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
 # -MMD records header dependencies (src/*/*.d) so a header edit rebuilds its users.
 PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS))
-PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement
-ifeq ($(shell uname -m),x86_64)
-PG_CFLAGS += -march=x86-64 -mtune=generic
-endif
+PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement $(SIFT_BASE_ISA)
 # PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
 # Off by default; SIFT_LTO=1 enables it with at most 4 jobs. Switching it needs `make clean`.
 ifdef SIFT_LTO
@@ -28,13 +25,6 @@ else
 PG_CFLAGS += -fno-lto
 SHLIB_LINK += -fno-lto
 endif
-# The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked when its header and library are found.
-# SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 build without one: chunks never use it, and one written elsewhere that does fails to open with a clear error.
-define colz_probe
-$(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) -include $(2).h -x c - -l$(2) -o /dev/null 2>/dev/null && echo ok),$(eval PG_CPPFLAGS += -DSIFT_HAVE_$(1))$(eval SHLIB_LINK += -l$(2))))
-endef
-$(call colz_probe,LZ4,lz4)
-$(call colz_probe,ZSTD,zstd)
 # VULKAN=1 (or SIFT_VULKAN=1) compiles the opt-in Vulkan compute backend (docs/GPU.md): libvulkan is opened with dlopen at first use, so there is no
 # link-time dependency beyond -ldl, and the Vulkan declarations and the SPIR-V are checked in (no SDK, no shader compiler). Off by default.
 # Switching it needs `make clean`.
@@ -83,6 +73,16 @@ PG_MIN_MAJOR = 17
 ifeq ($(shell test $(PG_MAJOR) -ge $(PG_MIN_MAJOR) && echo ok),)
 $(error pg_sift needs PostgreSQL $(PG_MIN_MAJOR) or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
 endif
+
+# The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked when its header and library are found.
+# SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 build without one: chunks never use it, and one written elsewhere that does fails to open with a clear error.
+# pg_config's flags carry the include and library directories of a package manager (Homebrew keeps lz4 and zstd out of the compiler's default paths)
+colz_flags := $(shell $(PG_CONFIG) --cppflags --ldflags)
+define colz_probe
+$(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) $(colz_flags) -include $(2).h -x c - -l$(2) -o /dev/null 2>/dev/null && echo ok),$(eval PG_CPPFLAGS += -DSIFT_HAVE_$(1))$(eval SHLIB_LINK += -l$(2))))
+endef
+$(call colz_probe,LZ4,lz4)
+$(call colz_probe,ZSTD,zstd)
 
 # SIFT_HARDEN=pkg|init|1: opt-in compiler hardening (scripts/harden.mk, docs/SAFETY.md)
 include $(dir $(SIFT_MK))scripts/harden.mk
