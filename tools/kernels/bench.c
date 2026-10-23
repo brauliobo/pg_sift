@@ -93,8 +93,10 @@ bench_block(const char *scen, int maxoff, double d)
 {
 	BenchBlock		b;
 	SiftBm25	bm;
+	uint64	   *cand = kt_alloc(NPAGES * 64);
 
 	block_init(&b, maxoff, d);
+	memcpy(cand, b.mask, NPAGES * 64);
 	sift_kern_bm25_init(&bm, 1.2f, 0.75f, 180);
 	for (int l = 0; l < nlevels; l++)
 	{
@@ -103,6 +105,9 @@ bench_block(const char *scen, int maxoff, double d)
 
 		row("bm25_accum", scen, n, BENCH(k->bm25_accum(b.sc, b.mask, NPAGES, b.tf, b.kn, 0.5f)), b.pop, 13);
 		row("bm25 tf=1", scen, n, BENCH(k->bm25_accum(b.sc, b.mask, NPAGES, NULL, b.kn, 0.5f)), b.pop, 12);
+		row("bm25_sel", scen, n, BENCH(k->bm25_sel(b.sc, b.mask, cand, NPAGES, b.tf, b.kn, 0.5f)), b.pop, 13);
+		/* a threshold below every score: the candidates stay, so each call does the same work */
+		row("prune_gt", scen, n, BENCH(k->prune_gt(cand, b.sc, NPAGES, -1.0f)), b.pop, 4);
 		row("knorm", scen, n, BENCH(k->knorm(b.kn, (const uint16 *const *) b.dl, b.mask, NPAGES, &bm)), b.pop, 6);
 		row("max_merge", scen, n, BENCH(k->max_merge(b.sc, b.other, b.mask, NPAGES)), b.pop, 12);
 		row("select 50%", scen, n, BENCH(k->select_gt(b.slot, b.vals, b.other, b.mask, NPAGES, 5.0f)), b.pop, 4);

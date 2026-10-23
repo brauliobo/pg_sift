@@ -609,6 +609,8 @@ main(int argc, char **argv)
 	}
 	if (sift_kernels_for(SIFT_SIMD_AVX512))
 		tabs[ntabs++] = (Tab) {"avx512", &sift_kernels_avx512};
+#elif defined(SIFT_HAVE_NEON)
+	tabs[ntabs++] = (Tab) {"neon", &sift_kernels_neon};
 #endif
 	printf("levels:");
 	for (int t = 0; t < ntabs; t++)

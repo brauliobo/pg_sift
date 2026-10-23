@@ -13,6 +13,7 @@ bm25/bitmap_avx512.c
 bm25/kernels.c
 bm25/kernels_avx2.c
 bm25/kernels_avx512.c
+bm25/kernels_neon.c
 bm25/analyze.c
 bm25/analyze_config.c
 bm25/analyze_stem.c
