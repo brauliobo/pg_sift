@@ -591,9 +591,9 @@ sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 	sift_colsrc_stats(rel, &st);
 	for (int i = 0; i < nleaves; i++)
 	{
-		Datum		v[7] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
-		Float8GetDatum(st.elems_per_row[i])};
-		bool		nulls[5] = {false, false, false, false, false};
+		Datum		v[6] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
+		Float8GetDatum(st.elems_per_row[i]), Float8GetDatum(st.allvisible_frac)};
+		bool		nulls[6] = {false, false, false, false, false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
