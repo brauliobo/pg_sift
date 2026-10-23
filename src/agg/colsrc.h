@@ -484,6 +484,12 @@ typedef struct SiftSrcProvider
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
+	/*
+	 * Optional: sets bit sb of kept for every superblock (below nspace) in which a begin with these prune entries would find a unit, and counts in pruned[sb] and
+	 * set[sb] the units it would count as pruned there; false when the source cannot tell. skipped adds the counts of the superblocks a scan did not begin.
+	 */
+	bool		(*kept) (void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set);
+	void		(*skipped) (void *impl, int64 pruned, int64 set);
 	bool		(*next) (void *impl, SiftSrcUnit *unit);
 	void		(*read) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
 	void		(*live) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
@@ -820,6 +826,8 @@ sift_colsrc_split(SiftSrcSource *src, const SiftSrcUnit *unit)
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */
 extern void sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
+extern bool sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set);
+extern void sift_colsrc_skipped(SiftSrcSource *src, int64 pruned, int64 set);
 extern bool sift_colsrc_next(SiftSrcSource *src, SiftSrcUnit *unit);
 
 /*

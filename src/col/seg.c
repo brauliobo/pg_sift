@@ -188,8 +188,31 @@ uint32
 sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb)
 {
 	uint32		lo = 0,
-				hi = seg->nsb;
+				hi = seg->nsb,
+				g,
+				step = 1;
 
+	if (seg->nsb == 0 || sb <= seg->sbdir[0].sb)
+		return 0;
+	if (sb > seg->sbdir[seg->nsb - 1].sb)
+		return seg->nsb;
+	/*
+	 * The superblocks of a segment are nearly evenly spaced (all of them, or every other one where two workers built it): the unit at the same share of the
+	 * directory is near, and a gallop from it brackets the answer in the steps of its distance, not of the directory.
+	 */
+	g = (uint32) ((uint64) (sb - seg->sbdir[0].sb) * (seg->nsb - 1) / (seg->sbdir[seg->nsb - 1].sb - seg->sbdir[0].sb));
+	if (seg->sbdir[g].sb < sb)
+	{
+		for (lo = g + 1; lo + step < seg->nsb && seg->sbdir[lo + step - 1].sb < sb; step <<= 1)
+			lo += step;
+		hi = Min(lo + step, seg->nsb);
+	}
+	else
+	{
+		for (hi = g; hi >= step && seg->sbdir[hi - step].sb >= sb; step <<= 1)
+			hi -= step;
+		lo = hi >= step ? hi - step + 1 : 0;
+	}
 	SIFT_BISECT(uint32, mid, lo, hi, seg->sbdir[mid].sb < sb);
 	return lo;
 }
