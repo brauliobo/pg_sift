@@ -166,6 +166,9 @@ typedef struct ZoneArrays
 	const uint32 *nvals;
 	const uint32 *flags;
 	const uint64 (*set)[4];
+	const int64 *wmin;			/* per word of 64 units: the smallest minimum and the largest maximum (NULL: not made, a text leaf or a short segment) */
+	const int64 *wmax;
+	const uint64 *wbad;			/* the words with an overflow or inline unit */
 	bool		any_ovf;		/* some unit flags SIFT_COLZ_OVERFLOW */
 	bool		any_inl;		/* some unit flags SIFT_COLZ_INLINE: its min and max are prefix keys, not codes */
 } ZoneArrays;

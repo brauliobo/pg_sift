@@ -743,12 +743,12 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 
 /*
  * The superblocks that hold a unit no test prunes, for the whole scan at once: an aggregate begins for every morsel of units, and the begin of a morsel that the
- * zones clear costs as much as the tests of its units. Sets bit sb of kept for each such unit (and each batch of the write buffer) and counts the units the
- * tests prune and those the summaries cleared in pruned[sb] and set[sb], as a cursor over that superblock would. Each unit is tested once, through the
- * cache of keep_cached. False (nothing to rely on) when the cache does not apply or a superblock lies past nspace.
+ * zones clear costs as much as the tests of its units. Sets bit sb of kept for each such unit (and each batch of the write buffer), and adds the units the
+ * tests prune, and those the summaries cleared, to *pruned and *set once for all: the cursors of the scan then leave them uncounted. Each unit is tested once,
+ * through the cache of keep_cached. False (nothing to rely on) when the cache does not apply or a superblock lies past nspace.
  */
 bool
-sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set)
+sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept)
 {
 	MemoryContext old;
 	bool		ok = true;
@@ -769,34 +769,23 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 	for (int i = 0; i < src->nseg && ok; i++)
 	{
 		ColCursor  *c = &src->seg[i];
+		uint32		nsb = c->seg->nsb;
 
 		prune_segment(src, c, preds, npreds, zones, nzones, 0, PG_UINT32_MAX, true);
-		for (uint32 u = 0; u < c->seg->nsb && ok; u++)
+		ok = nsb == 0 || c->seg->sbdir[nsb - 1].sb < nspace;
+		for (uint32 w = 0; w < (nsb + 63) / 64 && ok; w++)
 		{
-			uint32		sb = c->seg->sbdir[u].sb;
+			uint64		bits = c->keep[w];
 
-			ok = sb < nspace;
-			if (!ok)
-				break;
-			if (sift_col_bit_test(c->keep, u))
-				sift_col_bit_set(kept, sb);
-			else
-			{
-				pruned[sb]++;
-				set[sb] += sift_col_bit_test(c->setcut, u);
-			}
+			src->cnt.units_pruned += Min(64, nsb - w * 64) - pg_popcount64(bits);
+			src->cnt.units_set += pg_popcount64(c->setcut[w] & ~bits);
+			for (; bits; bits &= bits - 1)
+				sift_col_bit_set(kept, c->seg->sbdir[w * 64 + pg_rightmost_one_pos64(bits)].sb);
 		}
 	}
 	MemoryContextSwitchTo(old);
+	src->counted = ok ? src->sig_gen : 0;
 	return ok;
-}
-
-/* The units of superblocks a scan did not begin, counted as a cursor over them would have */
-void
-sift_col_skipped(SiftColSource *src, int64 pruned, int64 set)
-{
-	src->cnt.units_pruned += pruned;
-	src->cnt.units_set += set;
 }
 
 void
@@ -820,8 +809,11 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 			break;
 		/* the pruned units up to the next kept one, or the end of the word, in one step; a unit the summaries cleared that no other test keeps (an OR's other arm may) is also counted */
 		run = Min(kept ? pg_rightmost_one_pos64(kept) : 64 - b, c->end - c->cur);
-		src->cnt.units_pruned += run;
-		src->cnt.units_set += pg_popcount64(c->setcut[w] >> b & (run == 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << run) - 1));
+		if (src->counted == 0 || src->counted != src->sig_gen)
+		{
+			src->cnt.units_pruned += run;
+			src->cnt.units_set += pg_popcount64(c->setcut[w] >> b & (run == 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << run) - 1));
+		}
 		c->cur += run;
 	}
 	if (c->cur >= c->end)

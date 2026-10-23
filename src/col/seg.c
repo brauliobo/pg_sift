@@ -671,6 +671,35 @@ sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char 
 	return look_code_str(l, code, len, buf);
 }
 
+/* The smallest minimum and largest maximum of each word of 64 units, and the words with a unit whose zone does not describe its values (overflow, inline strings) */
+static void
+zone_words(MemoryContext cx, ZoneArrays *z, uint32 nsb)
+{
+	uint32		nw = (nsb + 63) / 64;
+	int64	   *wmin = MemoryContextAlloc(cx, 2 * nw * sizeof(int64)),
+			   *wmax = wmin + nw;
+	uint64	   *wbad = MemoryContextAllocZero(cx, ((nw + 63) / 64) * sizeof(uint64));
+
+	for (uint32 w = 0; w < nw; w++)
+	{
+		int64		mn = PG_INT64_MAX,
+					mx = PG_INT64_MIN;
+
+		for (uint32 u = w * 64; u < Min(nsb, (w + 1) * 64); u++)
+		{
+			mn = Min(mn, z->min[u]);
+			mx = Max(mx, z->max[u]);
+			if (z->flags[u] & (SIFT_COLZ_OVERFLOW | SIFT_COLZ_INLINE))
+				wbad[w / 64] |= UINT64CONST(1) << (w % 64);
+		}
+		wmin[w] = mn;
+		wmax[w] = mx;
+	}
+	z->wmin = wmin;
+	z->wmax = wmax;
+	z->wbad = wbad;
+}
+
 const ZoneArrays *
 zone_arrays(SiftColSegment *seg, int col)
 {
@@ -709,6 +738,8 @@ zone_arrays(SiftColSegment *seg, int col)
 			z->set = (const uint64 (*)[4]) (blk + ALIGN8(seg->nsb * (3 * sizeof(uint64) + 3 * sizeof(uint32))));
 		for (uint32 u = 0; u < seg->nsb; u++)
 			z->any_ovf |= (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0, z->any_inl |= (z->flags[u] & SIFT_COLZ_INLINE) != 0;
+		if (def->store != SIFT_COLS_STR && seg->nsb > 64)
+			zone_words(cx, z, seg->nsb);
 		pv->zones[col] = z;
 		if (HEAD_CACHED())
 			sift_cseg_zones_keep(seg, col, cx, z);
@@ -2267,25 +2298,15 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
  * outside it are narrowed too, which is exact), so that a begin of two superblocks of a segment of thousands tests those only: an aggregate begins for every
  * morsel, and a begin that tested the whole segment made the scan quadratic in its units.
  */
-void
-sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
+static void
+prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut, const ZoneArrays *z, uint32 lo, uint32 hi)
 {
-	const ZoneArrays *z = zone_arrays(seg, col);
-	uint32		lo = ulo / 64 * 64,
-				hi,
-				n,
-				nw;
+	uint32		n = hi - lo,
+				nw = (n + 63) / 64;
 	uint64	   *kw = keep + lo / 64;
-	uint64	   *tmp;
+	uint64	   *tmp = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
 	uint64	   *save = NULL;
 
-	uhi = Min(uhi, seg->nsb);
-	if (ulo >= uhi)
-		return;
-	hi = Min(seg->nsb, (uhi + 63) / 64 * 64);
-	n = hi - lo;
-	nw = (n + 63) / 64;
-	tmp = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
 	if (z->any_ovf || z->any_inl)
 	{
 		save = palloc(nw * sizeof(uint64));
@@ -2308,13 +2329,13 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, 
 			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
-			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
+			sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
 			break;
 		case SIFT_CT_LUT:
 			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
-			sift_cseg_prune_sets(seg, col, t, keep, ulo, uhi, setcut);
+			sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
 			break;
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:
@@ -2355,6 +2376,47 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, 
 		pfree(save);
 	}
 	pfree(tmp);
+}
+
+void
+sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
+{
+	const ZoneArrays *z = zone_arrays(seg, col);
+	uint32		lo = ulo / 64 * 64,
+				hi;
+	uint32		w0,
+				w1;
+
+	uhi = Min(uhi, seg->nsb);
+	if (ulo >= uhi)
+		return;
+	hi = Min(seg->nsb, (uhi + 63) / 64 * 64);
+	w0 = lo / 64;
+	w1 = (hi + 63) / 64;
+	/*
+	 * The zones of a word of 64 units (their smallest minimum and largest maximum) clear the whole word of a range or list that none of them meets, which a unit
+	 * by unit test would find word by word: a request that keeps a few units of a table in order tests the words, not the units. A word with an overflow unit is
+	 * left to the unit tests.
+	 */
+	if (z->wmin && (t->kind == SIFT_CT_RANGE || t->kind == SIFT_CT_SET))
+		for (uint32 w = w0; w < w1; w++)
+			if (keep[w] && !(z->wbad[w / 64] >> (w % 64) & 1) && (z->wmax[w] < t->lo || z->wmin[w] > t->hi))
+				keep[w] = 0;
+	/* the tests only clear bits: the words nothing keeps are left alone, and the others are tested in runs */
+	for (uint32 w = w0; w < w1;)
+	{
+		uint32		e;
+
+		if (!keep[w] && t->kind != SIFT_CT_NONE)
+		{
+			w++;
+			continue;
+		}
+		for (e = w + 1; e < w1 && (keep[e] || t->kind == SIFT_CT_NONE); e++)
+			;
+		prune_words(seg, col, t, keep, ulo, uhi, setcut, z, w * 64, Min(seg->nsb, e * 64));
+		w = e;
+	}
 }
 
 /* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
