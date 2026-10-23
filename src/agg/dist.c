@@ -666,6 +666,49 @@ dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, u
 	/* whole chunks of another bitmap (a unit's key bitmap, a worker's dense chunk) do not fit a window */
 	if (d->mode == DD_WORDS && nwords > (uint64) sift_limit(dist_narrow_words, DIST_NARROW_WORDS))
 		dist_convert(ex, d, DD_BITS);
+	if (d->mode == DD_WORDS)
+	{
+		uint64		m;
+
+		/* a window that does not cover the words is made to: for the words that have a bit only */
+		if (g >= d->nng || wbase * 64 < d->nlo || (wbase + (int64) nwords) * 64 > d->nlo + (int64) d->nk * 64)
+		{
+			uint64		first = 0,
+						end = nwords;
+
+			for (; first < end; first++)
+			{
+				memcpy(&m, words + first * sizeof(m), sizeof(m));
+				if (m)
+					break;
+			}
+			for (; end > first; end--)
+			{
+				memcpy(&m, words + (end - 1) * sizeof(m), sizeof(m));
+				if (m)
+					break;
+			}
+			if (first == end)
+				return 0;
+			wbase += first;
+			words += first * sizeof(m);
+			nwords = end - first;
+			if (!dist_narrow_room(ex, d, g, wbase * 64, (wbase + (int64) nwords) * 64 - 1))
+				dist_convert(ex, d, DD_BITS);
+		}
+		if (d->mode == DD_WORDS)
+		{
+			uint64	   *row = d->nw + (size_t) g * d->nk + (wbase - d->nlo / 64);
+
+			for (uint64 k = 0; k < nwords; k++)
+			{
+				memcpy(&m, words + k * sizeof(m), sizeof(m));
+				n += pg_popcount64(m & ~row[k]);
+				row[k] |= m;
+			}
+			return n;
+		}
+	}
 	for (uint64 i = 0; i < nwords;)
 	{
 		int64		xc = (wbase + (int64) i) >> (DB_SHIFT - 6);
