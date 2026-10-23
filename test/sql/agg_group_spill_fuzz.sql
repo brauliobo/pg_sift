@@ -7,7 +7,8 @@
 -- and negative values.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET statement_timeout = '120s';
+-- the DO block of all the seeds is one statement: 35 to 67 s on the runners, 120 s was not enough on a loaded one
+SET statement_timeout = '600s';
 SET client_min_messages = warning;
 
 CREATE TABLE fz AS
