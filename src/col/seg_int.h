@@ -257,6 +257,22 @@ extern bool unit_dirty(SiftColSegment *seg, uint32 u);
 extern const ZoneArrays *zone_arrays(SiftColSegment *seg, int col);
 extern const VersUnit *vers_units(SiftColSegment *seg);
 
+/* The bytes of a header page that mean something: up to its last extent */
+#define SEG_HDRLEN(h)	(offsetof(SiftSegHeaderData, extents) + (h)->nextents * sizeof(SiftExtent))
+
+/* What sift_cseg_open checks and parses from the header page (the schema and the unit directory), with the header it was made under */
+typedef struct SegHead
+{
+	SiftSegHeaderData *hdr;
+	Size		hdrlen;
+	SiftColSchema *schema;
+	SiftColSBRef *sbdir;		/* [hdr->dictroot_n] */
+} SegHead;
+
+/* The backend keeps them in the cache below: the head made under header h from the cache (pinned for mcxt), else NULL; keep takes the one made in cx, a child of mcxt */
+extern const SegHead *sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHeaderData *h, MemoryContext mcxt);
+extern void sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt);
+
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
 typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);
 extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load);
