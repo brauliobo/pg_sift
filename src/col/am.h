@@ -207,6 +207,8 @@ typedef struct SiftCDictCacheStats
 {
 	uint64		loads;			/* dictionaries parsed from a segment */
 	uint64		hits;			/* dictionaries found in the cache */
+	uint64		head_loads;		/* segment heads (schema, unit directory) read from a segment */
+	uint64		head_hits;		/* segment heads found in the cache */
 } SiftCDictCacheStats;
 extern SiftCDictCacheStats sift_cdict_cache_stats;
 extern Size sift_cdict_cache_bytes(void);

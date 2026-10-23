@@ -209,7 +209,8 @@ CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', f
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,
 										OUT heap_pages int8, OUT simd text, OUT tests_made int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_counters' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads int8, OUT hits int8, OUT bytes int8) RETURNS record
+CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads int8, OUT hits int8, OUT bytes int8,
+												 OUT head_loads int8, OUT head_hits int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_cache' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
 										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record

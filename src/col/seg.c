@@ -61,6 +61,52 @@ sec(const SiftColSegment *seg, SiftSection s)
 	return &seg->hdr->sections[s];
 }
 
+/* The head is not kept while a test flips a byte of what is read: the flipped one must not be found by the next open, nor the next one skip the read */
+#ifdef SIFT_TESTING
+#define HEAD_CACHED()	(sift_test_seg_flip_at == UINT64_MAX)
+#else
+#define HEAD_CACHED()	true
+#endif
+
+/* The schema and the unit directory of seg, read and checked against its header, made in cx */
+static SegHead *
+head_read(SiftColSegment *seg, MemoryContext cx)
+{
+	const SiftSegHeaderData *h = seg->hdr;
+	const SiftSectionRef *s = h->sections;
+	SegHead    *hd = MemoryContextAlloc(cx, sizeof(SegHead));
+	char	   *schema = palloc(h->dictroot_off);
+	SiftColSBRef *dir = MemoryContextAlloc(cx, (Size) h->dictroot_n * sizeof(SiftColSBRef));
+	uint64		rank = 0;
+
+	hd->hdrlen = SEG_HDRLEN(h);
+	hd->hdr = MemoryContextAlloc(cx, hd->hdrlen);
+	memcpy(hd->hdr, h, hd->hdrlen);
+	seg_read(seg, s[SIFT_SEC_DOCMAP].off, h->dictroot_off, schema);
+	hd->schema = sift_cschema_parse(cx, schema, h->dictroot_off);
+	if (hd->schema == NULL || hd->schema->ncols != (int) h->nterms)
+		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
+	if (hd->schema->wide && seg->entry.format < SIFT_COL_FORMAT_WIDE)
+		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", seg->entry.format);
+	pfree(schema);
+	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
+	for (uint32 i = 0; i < h->dictroot_n; i++)
+	{
+		const SiftColSBRef *r = &dir[i];
+
+		if (r->sb < h->sb_lo || r->sb > h->sb_hi || (i > 0 && r->sb <= dir[i - 1].sb) || r->off % 8 != 0 ||
+			r->nrows == 0 || r->nrows > SIFT_COL_UNIT_MAX_ROWS || r->rank_base != rank ||
+			r->off + r->len > s[SIFT_SEC_POSTINGS].len || (i > 0 && r->off < dir[i - 1].off + dir[i - 1].len))
+			corrupt(seg, "SBDIR entry %u (SB %u at %llu, %u rows, rank %llu) is out of order.", i, r->sb,
+					ULL(r->off), r->nrows, ULL(r->rank_base));
+		rank += r->nrows;
+	}
+	if (rank != h->ndocs)
+		corrupt(seg, "SBDIR lists %llu rows, the header %llu.", ULL(rank), ULL(h->ndocs));
+	hd->sbdir = dir;
+	return hd;
+}
+
 SiftColSegment *
 sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 {
@@ -68,9 +114,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	SiftColSegment *seg = palloc0(sizeof(SiftColSegment));
 	SegPriv    *pv = palloc0(sizeof(SegPriv));
 	SiftSegHeaderData *h;
-	uint64		size,
-				rank = 0;
-	char	   *schema;
+	uint64		size;
+	const SegHead *head;
 	const SiftSectionRef *s;
 
 	seg->index = index;
@@ -101,34 +146,19 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		s[SIFT_SEC_DOCMAP].off + s[SIFT_SEC_DOCMAP].len > size ||
 		h->dictroot_off + (uint64) h->dictroot_n * sizeof(SiftColSBRef) > s[SIFT_SEC_DOCMAP].len)
 		corrupt(seg, "Sections do not tile the %llu-byte stream.", ULL(size));
-	schema = palloc(h->dictroot_off);
-	seg_read(seg, s[SIFT_SEC_DOCMAP].off, h->dictroot_off, schema);
-	seg->schema = sift_cschema_parse(mcxt, schema, h->dictroot_off);
-	if (seg->schema == NULL || seg->schema->ncols != (int) h->nterms)
-		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
-	if (seg->schema->wide && entry->format < SIFT_COL_FORMAT_WIDE)
-		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", entry->format);
-	pfree(schema);
-	seg->nsb = h->dictroot_n;
+	head = HEAD_CACHED() ? sift_cseg_head_find(index, entry, h, mcxt) : NULL;
+	if (head == NULL)
 	{
-		SiftColSBRef *dir = palloc((Size) seg->nsb * sizeof(SiftColSBRef));
+		/* under the segment until it is kept: a head that does not check leaves nothing behind */
+		MemoryContext cx = AllocSetContextCreate(mcxt, "sift cache segment head", ALLOCSET_SMALL_SIZES);
 
-		seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) seg->nsb * sizeof(SiftColSBRef), dir);
-		for (uint32 i = 0; i < seg->nsb; i++)
-		{
-			const SiftColSBRef *r = &dir[i];
-
-			if (r->sb < h->sb_lo || r->sb > h->sb_hi || (i > 0 && r->sb <= dir[i - 1].sb) || r->off % 8 != 0 ||
-				r->nrows == 0 || r->nrows > SIFT_COL_UNIT_MAX_ROWS || r->rank_base != rank ||
-				r->off + r->len > s[SIFT_SEC_POSTINGS].len || (i > 0 && r->off < dir[i - 1].off + dir[i - 1].len))
-				corrupt(seg, "SBDIR entry %u (SB %u at %llu, %u rows, rank %llu) is out of order.", i, r->sb,
-						ULL(r->off), r->nrows, ULL(r->rank_base));
-			rank += r->nrows;
-		}
-		if (rank != h->ndocs)
-			corrupt(seg, "SBDIR lists %llu rows, the header %llu.", ULL(rank), ULL(h->ndocs));
-		seg->sbdir = dir;
+		head = head_read(seg, cx);
+		if (HEAD_CACHED())
+			sift_cseg_head_keep(index, entry, cx, (SegHead *) head, mcxt);
 	}
+	seg->schema = head->schema;
+	seg->nsb = h->dictroot_n;
+	seg->sbdir = head->sbdir;
 	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);
 	if (pv->vers_at > s[SIFT_SEC_DOCMAP].len)
 		corrupt(seg, "The DOCMAP section ends inside the unit directory.");
