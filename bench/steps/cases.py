@@ -3,6 +3,7 @@
 
     python3 -I cases.py run   [--cases ID,..] [--engines LIST] [--rows N] [--rounds R] [--runs N] [--duck-port P] [--out FILE] [--docs]
     python3 -I cases.py list
+    python3 -I cases.py plan  [--cases ..] [--rows N] [--scales L]      (what a run needs, no server)
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
@@ -133,7 +134,7 @@ def build(case, rows):
     if case.dataset == 'events':
         if rows not in BUILT:
             psql('DROP SCHEMA IF EXISTS c_events CASCADE; CREATE SCHEMA c_events')
-            gen = open(EVENTS_GEN).read().replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)')   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range
+            gen = open(EVENTS_GEN).read().replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
             r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
                                env={**ENV, 'PGOPTIONS': '-c search_path=c_events,public -c client_min_messages=warning'})
             if r.returncode:
@@ -199,6 +200,11 @@ def plan_note(text):
     return scans[0] if scans else 'DuckDBScan' if 'DuckDBScan' in text else 'unknown'
 
 
+def plan_shape(text):
+    """the nodes of a plan without their numbers (costs, rows, times, counters): two plans of the same shape are the same plan"""
+    return [re.sub(r'\s*[(:].*', '', l.strip()) for l in text.split('\n') if l.strip() and not l.strip().startswith(('Planning', 'Execution', 'Buffers', 'JIT', 'Memory', 'Heap Fetches', 'Rows Removed', 'Settings'))]
+
+
 def equal(a, b, ordered):
     """the same rows (numbers to a relative 1e-9), in the same order when the statement orders them"""
     return len(a) == len(b) and (all(same([x], [y]) for x, y in zip(a, b)) if ordered else same(a, b))
@@ -209,17 +215,26 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
     unless keep_plan is false (the scale points: the planner's choice at each size is what the curve shows)"""
     ordered = case.opt.get('ordered', 'no') == 'yes'
     sql = {lane: case.statement(lane) for lane in lanes}
-    notes, answers, times, errors = {}, {}, {lane: [] for lane in lanes}, {}
+    notes, answers, times, errors, texts = {}, {}, {lane: [] for lane in lanes}, {}, {}
     for lane, s in lanes.items():
-        text = plan_text(s, sql[lane], lane != 'pg_duckdb')
+        text = texts[lane] = plan_text(s, sql[lane], lane != 'pg_duckdb')
         notes[lane] = plan_note(text)
-        if lane == 'sift' and keep_plan and not re.search(case.plan, text, re.S):
-            errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
         if lane == 'pg_duckdb' and 'DuckDBScan' not in text:
             errors[lane] = 'not supported: it runs on the PostgreSQL executor'
         ms, answers[lane], err, _ = s.run(sql[lane])   # the warm-up, whose answer is checked
         if err:
             errors.setdefault(lane, err[:110])
+        if lane == 'sift':
+            # the plan of the runs that are timed is the one after the first: in a backend that has not loaded the library (it needs no shared_preload_libraries) the
+            # first statement is planned without it, and the note says so
+            again = plan_text(s, sql[lane])
+            if plan_shape(again) != plan_shape(text):
+                notes[lane] = '%s (the first plan of a backend was %s)' % (plan_note(again), notes[lane])
+                text = texts[lane] = again
+            if keep_plan and not re.search(case.plan, text, re.S):
+                errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
+    if 'native' in texts and 'sift' in texts and notes['sift'] == notes['native'] and plan_shape(texts['sift']) != plan_shape(texts['native']):
+        notes['sift'] += ' (a different plan below it)'   # the first scan is the same: a block must not call two different plans "the same plan"
     ref = answers.get('native')
     for lane in lanes:
         if lane not in errors and lane != 'native' and ref is not None and not equal(ref, answers[lane], ordered):
@@ -339,6 +354,8 @@ def run_point(args, cases, rows, engines, results, failed):
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
             lanes[lane].close()
+        if scaled and c.dataset != 'events':   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
+            psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
 
@@ -362,6 +379,30 @@ def cmd_run(args):
         cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
         subprocess.run([sys.executable, '-I', os.path.join(HERE, 'highlights.py')], check=True, stdout=subprocess.DEVNULL)
     return 1 if failed else 0
+
+
+def cmd_plan(args):
+    """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates from the 200,000-row trials: linear in the rows, a floor on a loaded host)"""
+    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
+    events = sum(c.dataset == 'events' for c in cases)
+    tmp = os.environ.get('CASES_TMP', '/var/tmp/sift-cases')
+    probe = tmp
+    while not os.path.exists(probe):
+        probe = os.path.dirname(probe)
+    free = os.statvfs(probe).f_bavail * os.statvfs(probe).f_frsize / 2**30
+    seconds, peak = 0.0, 0.0
+    print('cases plan: %d cases (%d on orders, %d on events) at %d point%s of %s orders, %d rounds of %d timed runs, statement timeout %d s' % (
+        len(cases), len(cases) - events, events, len(scales), 's' * (len(scales) > 1), ' x '.join([format(args.rows, ','), str(scales)]), args.rounds, args.runs, args.timeout))
+    for sc in scales:
+        n = args.rows * sc
+        t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 10e-6 + 5.0 * sc)
+        gb = (n * (120 + 85 + 350) + (n * 1000 if events else 0)) / 2**30 + 4
+        seconds, peak = seconds + t, max(peak, gb)
+        print('  %14s orders (%dx): generate%s, %d builds and measures, about %4.0f min, up to %4.0f GB on disk' % (format(n, ','), sc, ' orders and events' if events else ' orders', len(cases), t / 60, gb))
+    print('  total about %.1f h; the largest point needs about %.0f GB under CASES_TMP=%s (%.0f GB free there); memory cap CASES_MEM=%s' % (seconds / 3600, peak, tmp, free, os.environ.get('CASES_MEM', '8G')))
+    print('  the schema of each orders case is dropped after its measure; the events schema (one for the dataset) stays until the next size')
+    return 0 if free > peak else 1
 
 
 def host_load():
@@ -501,7 +542,7 @@ def cmd_check(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('cmd', choices=['run', 'list', 'check'])
+    ap.add_argument('cmd', choices=['run', 'list', 'check', 'plan'])
     ap.add_argument('--cases', type=lambda s: s.split(','), default=[])
     ap.add_argument('--engines', default='sift,native')
     ap.add_argument('--rows', type=int, default=200000)
@@ -520,7 +561,7 @@ def main():
     args = ap.parse_args()
     if args.strict:
         args.changed = None
-    sys.exit({'run': cmd_run, 'list': cmd_list, 'check': cmd_check}[args.cmd](args))
+    sys.exit({'run': cmd_run, 'list': cmd_list, 'check': cmd_check, 'plan': cmd_plan}[args.cmd](args))
 
 
 if __name__ == '__main__':

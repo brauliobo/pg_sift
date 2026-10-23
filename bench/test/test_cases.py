@@ -83,3 +83,10 @@ class Scale(unittest.TestCase):
         for p in pts:
             p['kept'] = True
         self.assertEqual(r.crossover(pts), "the planner keeps PostgreSQL's plan up to 2M rows")
+
+
+class PlanShape(unittest.TestCase):
+    def test_numbers_do_not_change_the_shape_but_a_node_does(self):
+        a = 'HashAggregate  (cost=1 rows=2) (actual time=1 rows=3 loops=1)\n  Group Key: x\n  ->  Seq Scan on t  (cost=1)\nPlanning Time: 0.1 ms'
+        self.assertEqual(cases.plan_shape(a), cases.plan_shape(a.replace('rows=3', 'rows=9').replace('0.1', '7')))
+        self.assertNotEqual(cases.plan_shape(a), cases.plan_shape(a.replace('Seq Scan on t', 'Index Scan using i on t')))
