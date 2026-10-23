@@ -237,33 +237,81 @@ set_agg(const SiftAggAgg *a)
 	return a->kind == SAA_COUNT_DISTINCT || ((a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM) && a->distinct);
 }
 
+/* a narrow set (DD_WORDS) goes as its words; the ids of a numeric expression are the worker's own and go as pairs */
+static bool
+set_words(const SiftAggAgg *a, const Dist *d)
+{
+	return d && d->mode == DD_WORDS && a->num.n == 0;
+}
+
 /*
- * The set of a count(DISTINCT) of aggregate ai in the groups of cidx (blob numbering), header {pairs, chunks}: the (group, value)
- * pairs, then the (group, chunk number) of each bitmap chunk and its bits. A set that is still a bitmap of raw values sends the chunks
- * with DB_DENSE bits or more as they are, so that the leader ORs them and counts by popcount, and the bits of the others as pairs;
- * what it sends is bounded by the memory of the bitmap, hash_mem. The values of a dictionary leaf go by value, and so do the numbers of a numeric
- * expression (the ids of the worker's table of them, which the leader gives its own).
+ * The set of a count(DISTINCT) of aggregate ai in the groups of cidx (blob numbering), header {pairs, chunks, rows of words, words of a row}:
+ * the (group, value) pairs, then the (group, chunk number) of each bitmap chunk and its bits. A set that is still a bitmap of raw values
+ * sends the chunks with DB_DENSE bits or more as they are, so that the leader ORs them and counts by popcount, and the bits of the others
+ * as pairs; what it sends is bounded by the memory of the bitmap, hash_mem. A narrow set sends no pairs: the first word of its window,
+ * the group (its place in gl) of each row that has a bit, and the rows, which the leader ORs in the same way. The values of a dictionary
+ * leaf go by value, and so do the numbers of a numeric expression (the ids of the worker's table of them, which the leader gives its own);
+ * a narrow set sends the values of the ids that have a bit, in order of id.
  */
 static void
-blob_set(AggExec *ex, int ai, const uint32 *cidx, const PartPairs *pre, StringInfo b)
+blob_set(AggExec *ex, int ai, const uint32 *gl, uint32 ng, const uint32 *cidx, const PartPairs *pre, StringInfo b)
 {
 	const SiftAggAgg *a = &ex->spec->agg[ai];
 	Dist	   *d = ex->dist[ai];
 	bool		dict = a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype == SCV_CODE,
-				num = a->num.n != 0;
+				num = a->num.n != 0,
+				words = set_words(a, d);
 	uint32		np,
 			   *pg,
 			   *pv,
-				hd[2],
+				hd[4],
 			   *old = NULL,
 				nused = 0,
 				nc = 0,
+				nwg = 0,
+			   *wg = NULL,
 				none[1] = {0},
 			   *cg = none,
 			   *cc = none;
+	uint64	   *wrows = NULL;
 	const uint64 **bits = NULL;
 
-	if (pre)
+	if (words)
+	{
+		uint32		nk = d->nk;
+		uint64	   *seen = palloc0(Max(nk, 1) * sizeof(uint64));
+
+		np = 0;
+		pg = pv = none;
+		wg = palloc(Max(ng, 1) * sizeof(uint32));
+		wrows = palloc(Max((Size) ng * nk, 1) * sizeof(uint64));
+		for (uint32 r = 0; r < ng; r++)
+		{
+			const uint64 *row;
+			uint32		w = 0;
+
+			if (gl[r] >= d->nng)
+				continue;
+			row = d->nw + (size_t) gl[r] * nk;
+			while (w < nk && row[w] == 0)
+				w++;
+			if (w == nk)
+				continue;
+			memcpy(wrows + (size_t) nwg * nk, row, nk * sizeof(uint64));
+			for (; w < nk; w++)
+				seen[w] |= row[w];
+			wg[nwg++] = r;
+		}
+		if (dict)
+		{
+			old = palloc(Max(nk * 64, 1) * sizeof(uint32));
+			for (uint32 w = 0; w < nk; w++)
+				for (uint64 m = seen[w]; m; m &= m - 1)
+					old[nused++] = (uint32) (d->nlo + w * 64 + pg_rightmost_one_pos64(m));
+		}
+		pfree(seen);
+	}
+	else if (pre)
 	{
 		pg = pre->pg ? pre->pg : none;
 		pv = pre->pv ? pre->pv : none;
@@ -310,12 +358,14 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, const PartPairs *pre, StringIn
 		dist_pairs(ex, ai, cidx, &pg, &pv, &np);
 	else
 		dset_pairs(ex, ai, cidx, &pg, &pv, &np);
-	if (dict)
+	if (!words && dict)
 		old = renumber(pv, np, ex->aot[ai].n, &nused);
-	else if (num)
+	else if (!words && num)
 		old = renumber(pv, np, ex->amap[ai].n, &nused);
 	hd[0] = np;
 	hd[1] = nc;
+	hd[2] = nwg;
+	hd[3] = words ? d->nk : 0;
 	bw_put(b, hd, sizeof(hd));
 	bw_put(b, pg, (Size) np * sizeof(uint32));
 	bw_put(b, pv, (Size) np * sizeof(uint32));
@@ -323,6 +373,14 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, const PartPairs *pre, StringIn
 	bw_put(b, cc, (Size) nc * sizeof(uint32));
 	for (uint32 i = 0; i < nc; i++)
 		appendBinaryStringInfo(b, (const char *) bits[i], DB_WORDS * sizeof(uint64));
+	if (nwg)
+	{
+		int64		wbase = d->nlo / 64;
+
+		bw_put(b, &wbase, sizeof(wbase));
+		bw_put(b, wg, (Size) nwg * sizeof(uint32));
+		bw_put(b, wrows, (Size) nwg * d->nk * sizeof(uint64));
+	}
 	if (dict)
 		bw_values(b, &ex->aot[ai], old, nused);
 	else if (num)
@@ -472,7 +530,7 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 	{
 		bw_acc(b, &ex->acc[i], gl, ng);
 		if (set_agg(&s->agg[i]))
-			blob_set(ex, i, cidx, pairs ? &pairs[i] : NULL, b);
+			blob_set(ex, i, gl, ng, cidx, pairs ? &pairs[i] : NULL, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
 			blob_key_set(ex, i, cidx, b);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
@@ -533,6 +591,8 @@ blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 *star
 	for (int i = 0; i < naggs; i++)
 		if (set_agg(&ex->spec->agg[i]))
 		{
+			if (set_words(&ex->spec->agg[i], ex->dist[i]))
+				continue;
 			if (ex->dist[i])
 				dist_pairs_split(ex, i, gpart, cidx, pp + i, naggs);
 			else
@@ -664,6 +724,11 @@ typedef struct BlobAgg
 	const uint32 *cg;
 	const uint32 *cc;
 	const uint64 *bits;
+	uint32		nwg;			/* a narrow set: the rows of words, of nk words, the first holding the values from 64 * wbase; the group of each */
+	uint32		nk;
+	int64		wbase;
+	const uint32 *wg;
+	const uint64 *wrows;
 	uint32	   *xv;				/* dictionary values: the ids in the table */
 	uint32		nrec;			/* ordered sets: the runs of the values */
 	const OsaRec *rec;
@@ -788,15 +853,23 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 	if (set_agg(&g->spec->agg[ai]))
 	{
 		const SiftAggAgg *a = &g->spec->agg[ai];
-		const uint32 *hd = br_get(p, 8);
+		const uint32 *hd = br_get(p, 16);
 
 		ba->npairs = hd[0];
 		ba->nchunks = hd[1];
+		ba->nwg = hd[2];
+		ba->nk = hd[3];
 		ba->pg = br_get(p, (Size) hd[0] * 4);
 		ba->pv = br_get(p, (Size) hd[0] * 4);
 		ba->cg = br_get(p, (Size) hd[1] * 4);
 		ba->cc = br_get(p, (Size) hd[1] * 4);
 		ba->bits = br_get(p, (Size) hd[1] * DB_WORDS * sizeof(uint64));
+		if (ba->nwg)
+		{
+			ba->wbase = *(const int64 *) br_get(p, sizeof(int64));
+			ba->wg = br_get(p, (Size) ba->nwg * 4);
+			ba->wrows = br_get(p, (Size) ba->nwg * ba->nk * sizeof(uint64));
+		}
 		if (a->leaf >= 0 && g->lay->leaf[a->leaf].vtype == SCV_CODE)
 		{
 			const uint32 *vh = (const uint32 *) *p;
@@ -835,6 +908,60 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 	}
 }
 
+/*
+ * The rows of words of a narrow set added to the sets of the leader. A dictionary leaf's ids are numbered by the table that wrote them, and
+ * ba->xv has the leader's id of each value the words hold, in order of id: where that is the id itself the words are ORed as they are,
+ * else each bit goes through the map.
+ */
+static void
+merge_words(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
+{
+	Dist	   *d = g->dist[ai];
+	uint32	   *lid = NULL;
+
+	if (ba->xv)
+	{
+		uint32		i = 0;
+		bool		same = true;
+
+		lid = palloc0((Size) ba->nk * 64 * sizeof(uint32));
+		for (uint32 w = 0; w < ba->nk; w++)
+		{
+			uint64		seen = 0;
+
+			for (uint32 k = 0; k < ba->nwg; k++)
+				seen |= ba->wrows[(Size) k * ba->nk + w];
+			for (; seen; seen &= seen - 1)
+			{
+				uint32		bit = w * 64 + pg_rightmost_one_pos64(seen);
+
+				lid[bit] = ba->xv[++i];
+				same &= (int64) lid[bit] == ba->wbase * 64 + bit;
+			}
+		}
+		if (same)
+		{
+			pfree(lid);
+			lid = NULL;
+		}
+	}
+	for (uint32 k = 0; k < ba->nwg; k++)
+	{
+		uint32		t = gids[ba->wg[k]];
+		const uint64 *row = ba->wrows + (Size) k * ba->nk;
+
+		if (lid == NULL)
+			g->acc[ai].n[t] += dist_or_words(g, d, t, ba->wbase, (const uint8 *) row, ba->nk);
+		else
+			for (uint32 w = 0; w < ba->nk; w++)
+				for (uint64 m = row[w]; m; m &= m - 1)
+					if (dist_add(g, d, t, lid[w * 64 + pg_rightmost_one_pos64(m)]))
+						g->acc[ai].n[t]++;
+	}
+	if (lid)
+		pfree(lid);
+}
+
 static void
 merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 {
@@ -859,6 +986,8 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 		}
 		return;
 	}
+	if (ba->nwg)
+		merge_words(g, ai, ba, gids);
 	for (uint32 i = 0; i < ba->nchunks; i++)
 	{
 		uint32		t = gids[ba->cg[i]];
