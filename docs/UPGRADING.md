@@ -117,7 +117,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 13 | `order_columns` (option, off) | do not set it, or `sift.col_format_minor` 12 or less |
 | 14 | a string dictionary of 1,024 strings or more (text, varchar, uuid) that is stored in blocks to be read in place, which the writer does where that adds at most 3% to the segment (ids, hashes, uuids, long strings; short strings that repeat words stay compact), and with the order of the strings for a column in `key_columns`, `point_columns` or `return_columns`, for any column with `dict_lookup = on`, or in a `sift_table` with `sift.table_dict_lookup = on`; `point_columns` (option, off) | `sift.col_format_minor` 13 or less |
 | 15 | `key_columns`: a key list or bitmap of an int2, int4 or date column (the foreign key and `_id` columns the default `auto` picks, or the ones named) | `WITH (key_columns = 'off')`, or `sift.col_format_minor` 14 or less |
-| 16 | `point_tid_columns` (option, off): the point directory lists heap addresses | `sift.col_format_minor` 15 or less (then it lists rows, minor 14) |
+| 16 | `point_tid_columns` (option, off): the point directory lists heap addresses | `sift.col_format_minor` 14 or less (then it lists rows, minor 14) |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.

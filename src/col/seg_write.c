@@ -257,7 +257,7 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
 				w->pt[c].want = true;
-				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_POINTTID;
+				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
 }
 
