@@ -101,6 +101,8 @@
 #define AGG_ARM_HIDDEN		330.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
+#define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
+#define AGG_START_MS		2750.0	/* a millisecond in this path's estimates: AGG_SETUP_FACTOR times the default parallel_setup_cost is 8 ms */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
@@ -1447,12 +1449,23 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 	double		arm = k->arm_cost * AGG_SCAN_SPEED * cpu_operator_cost,
 				serial = k->scan_cost,
 				setup = parallel_setup_cost * AGG_SETUP_FACTOR;
+	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
+	/*
+	 * Starting the workers takes 3 ms and 0.35 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
+	 * leader merges the pairs of a count(DISTINCT) into its own sets one by one, so they do not scale with the workers (below)
+	 */
+	if (priced)
+		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
 	k->scan_cost = (k->scan_cost + arm - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
+	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
+			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+	}
 	if (arm > 0)
 	{
 		/*
