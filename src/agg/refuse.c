@@ -235,6 +235,18 @@ agg_arm_end(void)
 	done = lappend(done, a);
 }
 
+static bool quiet_reports = false;
+
+/* the plans of a statement at another size (cte.c) report nothing: the arms of the statement are those of the plan at its own */
+bool
+agg_quiet_reports(bool quiet)
+{
+	bool		was = quiet_reports;
+
+	quiet_reports = quiet;
+	return was;
+}
+
 static void
 report(const ArmNote *a)
 {
@@ -242,6 +254,8 @@ report(const ArmNote *a)
 	const char *reason = a->why == AGG_REFUSE_NONE ? NULL :
 		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
 
+	if (quiet_reports)
+		return;
 	if (!a->used && a->why != AGG_REFUSE_NONE)
 		sift_stats_refusal(slug, a->limit);
 	if (why_store != NULL)
@@ -291,6 +305,7 @@ forget_arms(void)
 	arm = NULL;
 	done = NIL;
 	agg_variant = NULL;
+	quiet_reports = false;
 	stage_level = 0;
 	stage_volatile = false;
 }

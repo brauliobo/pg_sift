@@ -13,6 +13,7 @@
 
 extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT double sift_plan_scale;
+extern PGDLLIMPORT double sift_agg_scale_horizon;
 extern PGDLLIMPORT bool sift_agg_two_level_on;
 extern PGDLLIMPORT bool sift_agg_preagg;
 extern PGDLLIMPORT bool sift_agg_super;
