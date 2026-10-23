@@ -224,6 +224,13 @@ CREATE FUNCTION sift.index_advice(index regclass,
 	AS 'MODULE_PATHNAME', 'sift_col_index_advice' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.index_advice(regclass) IS 'The profile of the columns of a sift_col index and what its options could still use: per column its kind (dimension, key, unique, date, measure, text, list), what the index holds of it and, over 32 evenly spaced units, the share that satisfy the rule of a dimension (at most 256 distinct values) or, per pair of dimensions, of a rollup of the rows; advice only, nothing is changed.';
 
+-- The paths option (docs/COL-SHRED.md) that a jsonb column asks for, read from a sample of its documents (16 stretches of blocks evenly spaced over the table, so
+-- the same table gives the same answer): a key that is a scalar of one type in most of the documents that have it is a typed path, a map of more than 32 keys of
+-- one type a wildcard, an array of objects a group; a rare key or one without a single shape is left out. NULL when no key qualifies. Nothing is changed.
+CREATE FUNCTION sift.suggest_paths(rel regclass, column_name text, sample int4 DEFAULT 2000) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_col_suggest_paths' LANGUAGE C VOLATILE;
+COMMENT ON FUNCTION sift.suggest_paths(regclass, text, int4) IS 'The paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks, the same answer for the same table): typed paths for the scalar keys, a wildcard for a map of more than 32 keys of one type, a group for an array of objects; advice only, NULL when no key qualifies.';
+
 -- The sift_table table access method (docs/COL-TAM.md): CREATE TABLE ... USING sift_table.
 CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
 	AS 'MODULE_PATHNAME', 'sift_table_handler' LANGUAGE C STRICT;
