@@ -186,5 +186,5 @@ Measured against the CPU on the store table: [docs/GPU.md](docs/GPU.md#when-it-h
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->306 regression tests (`test/sql`), 30 isolation specs, 53 TAP tests (`test/t`), 744 column fixtures and 232 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->308 regression tests (`test/sql`), 30 isolation specs, 54 TAP tests (`test/t`), 744 column fixtures and 232 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
