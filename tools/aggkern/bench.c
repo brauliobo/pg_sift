@@ -8,7 +8,6 @@
 #define _GNU_SOURCE
 #include "harness.h"
 
-#include <sched.h>
 #include <time.h>
 
 #include "agg/kern_cases.h"
@@ -68,8 +67,6 @@ report(const char *name, const double *t)
 int
 main(void)
 {
-	cpu_set_t	set;
-	int			cpu = getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2;
 	int32	   *i32,
 			   *v2,
 			   *k32;
@@ -89,9 +86,7 @@ main(void)
 			   *iacc;
 	double	   *facc;
 
-	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
-	sched_setaffinity(0, sizeof(set), &set);
+	kt_pin(getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2);
 	kt_cpu_init();
 	sift_aggkern_init();
 	nbatch = getenv("AK_BATCHES") ? atoi(getenv("AK_BATCHES")) : nbatch;

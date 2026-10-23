@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 #include "bm25/kernels_int.h"
 #include "core/testrng.h"
@@ -26,6 +29,19 @@ kt_alloc(size_t n)
 	if (!p)
 		abort();
 	return p;
+}
+
+/* Pins the benchmark to one CPU where the system lets a process choose (Linux); elsewhere the scheduler decides */
+static inline void
+kt_pin(int cpu)
+{
+#ifdef __linux__
+	cpu_set_t	set;
+
+	CPU_ZERO(&set);
+	CPU_SET(cpu, &set);
+	sched_setaffinity(0, sizeof(set), &set);
+#endif
 }
 
 static inline double

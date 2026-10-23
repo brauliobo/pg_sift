@@ -527,7 +527,7 @@ sift_test_col_kernels_active(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_level(PG_FUNCTION_ARGS)
 {
-	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512; l++)
+	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_TOP; l++)
 		if (sift_colk == sift_col_kernels_for(l))
 			PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(l)));
 	elog(ERROR, "sift_col_kern: the active table is none of the levels");

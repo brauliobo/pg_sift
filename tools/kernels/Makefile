@@ -22,9 +22,9 @@ $(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OUT)/alt.
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 bench-col: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench col
+	$(FLOCK) $(OUT)/bench col
 
 bench-shred: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench shred
+	$(FLOCK) $(OUT)/bench shred
 
 .PHONY: bench-col bench-shred
