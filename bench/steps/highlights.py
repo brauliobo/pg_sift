@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""The "Performance highlights" block of README.md, from the committed results (docs/results), standard library only.
+"""The introduction of README.md (a few paragraphs of the strongest numbers with their conditions), from the committed results (docs/results), standard library only.
 
     python3 -I bench/steps/highlights.py [--results DIR] [--readme FILE]      (scripts/gen-docs.py runs it)
 
-Rewrites <!-- bench:highlights:begin --> ... <!-- bench:highlights:end -->. The text is meant to be copied into a plain-text e-mail: ASCII, bullets,
-no HTML, no tables, full https URLs, lines of at most 76 columns, the host, the data and the PostgreSQL version said once. Every number is computed
-here from store.json (the ten questions), duckdb.tsv, articles.tsv (search), store-scaling.json and scaling.tsv (scale); a line whose results file
-does not exist is left out, never typed by hand.
+Rewrites <!-- bench:intro:begin --> ... <!-- bench:intro:end -->: one paragraph each on the aggregates (against every system, with the growth of the median question), on search and the cost of a row,
+on the benchmark cases, and on where pg_sift does not win; the machine and the method are the footnote [^bench]. Every number is computed here from store.json, duckdb.tsv, articles.tsv,
+store-scaling.json, cases.tsv and cases-wm4g.tsv; a paragraph whose results file does not exist is left out, never typed by hand.
 """
 import argparse
 import os
@@ -16,9 +15,9 @@ import textwrap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import aggregates_page  # noqa: E402  (steps/aggregates_page.py: the shapes)
+import bench_charts  # noqa: E402  (steps/bench_charts.py: the scale points and slopes)
 import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
-import cases_render  # noqa: E402  (steps/cases_render.py: the headline cases)
+import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
 import store_charts  # noqa: E402  (steps/store_charts.py: Store, read_tsv, question_slugs)
@@ -77,25 +76,13 @@ def duckdb_line(results):
         return []
     meta, rows = store_charts.read_tsv(path)
     get = lambda case, arm: next((float(r['value']) for r in rows if (r['case'], r['arm'], r['metric']) == (case, arm, 'warm_ms') and r['value'] not in ('NA', 'error', '')), None)
-    cases = list(dict.fromkeys(r['case'] for r in rows if r['case'] != 'load'))
+    cases = list(dict.fromkeys(r['case'] for r in rows if r['case'] != 'load' and r['case'].split(' ')[0] not in store_charts.SEARCH))
     pairs = []
     for c in cases:
         duck = [v for v in (get(c, 'duckdb_heap'), get(c, 'duckdb_parquet')) if v]
         if duck and get(c, 'sift'):
             pairs.append((c.split(' ')[0], min(duck) / get(c, 'sift')))
     return bullet(verdict(pairs, 'pg_duckdb %s (its own run, best of its modes)' % meta['pg_duckdb'].split(',')[0]), 2) if pairs else []
-
-
-def aggregates(S, tier, results):
-    v = versions(S, tier)
-    qs = S.queries
-    n = S.tiers[tier]['rows']
-    out = bullet(f'Aggregates on {n:,} orders, {len(qs)} questions (count, sum, distinct, top-N, text search with filters); the faster of sift_col and sift_table against:')
-    for e, label in (('pg', f'PostgreSQL {v["pg"]}'), ('ch', f'ClickHouse {v["ch"]}'), ('es', f'Elasticsearch {v["es"]}'), ('citus', f'Citus {v["citus"]} columnar')):
-        pairs = [(q, S.lat(tier, e, q)['value'] / best_mine(S, tier, q)) for q in qs if S.lat(tier, e, q)]
-        out += bullet(verdict(pairs, label), 2)
-    out += duckdb_line(results)
-    return out
 
 
 def search(t):
@@ -110,74 +97,6 @@ def search(t):
     return out
 
 
-def sizes_and_load(S, tier):
-    sz = {e: store_charts.sizes(S, tier, e) for e in S.engines(tier)}
-    load = {e: S.v(tier, e, metric='load_s') for e in S.engines(tier)}
-    n = S.tiers[tier]['rows']
-    return (bullet(f'Size on {n:,} orders: sift_col adds {sz["sift"][1]:.1f} MiB to the table (PostgreSQL\'s btrees and GIN: {sz["pg"][1]:.1f} MiB); sift_table holds the table in {sz["sift_table"][2]:.0f} MiB '
-                   f'(ClickHouse {sz["ch"][2]:.0f}, Citus {sz["citus"][2]:.0f}, Elasticsearch {sz["es"][2]:.0f}). Load from one CSV: sift_col {load["sift"]:.1f} s, PostgreSQL {load["pg"]:.1f} s, '
-                   f'ClickHouse {load["ch"]:.1f} s, Elasticsearch {load["es"]:.0f} s.'))
-
-
-def updates(S, tier):
-    g = lambda e, v, m, c='-': S.v(tier, e, c, v, m)
-    if not g('sift', 'update 10%', 'phase_rows_s'):
-        return []
-    q = '03'
-    return bullet(f'Updates: 10% of the rows updated at {g("sift", "update 10%", "phase_rows_s"):,.0f} rows/s (PostgreSQL {g("pg", "update 10%", "phase_rows_s"):,.0f}); revenue per month '
-                  f'under 10,000 updated rows/s: {g("sift", "load 10000/s", "latency_ms", q):.0f} ms on sift_col, {g("pg", "load 10000/s", "latency_ms", q):.0f} ms on PostgreSQL.')
-
-
-def scale(results, S, tier):
-    """rows and partitions and workers: only what the results files hold"""
-    out = []
-    path = os.path.join(results, 'store-scaling.json')
-    if os.path.exists(path):
-        A = store_charts.Store(os.path.join(results, 'store.json'), path)
-        sizes_ = sorted({m['rows'] for m in A.tiers.values() if m.get('cpus') == 3})
-        tiers = {n: A.tier_of(n, 3) for n in sizes_}
-        lo, hi = tiers[sizes_[0]], tiers[sizes_[-1]]
-        grow = lambda e: statistics.median(A.lat(hi, e, q)['value'] / A.lat(lo, e, q)['value'] for q in A.queries if A.lat(hi, e, q) and A.lat(lo, e, q))
-        have = [q for q in A.queries if best_mine(A, hi, q) and any(A.lat(hi, e, q) for e in A.engines(hi) if e not in MINE)]
-        wins = sum(1 for q in have if best_mine(A, hi, q) <= min(A.lat(hi, e, q)['value'] for e in A.engines(hi) if e not in MINE and A.lat(hi, e, q)) * (1 + TIE))
-        out += bullet(f'Scale, {store_charts.rows_label(sizes_[0])} to {store_charts.rows_label(sizes_[-1])} orders ({sizes_[-1] // sizes_[0]:,}x the rows): the median question takes {grow("sift"):.0f}x as long on sift_col, '
-                      f'{grow("pg"):.0f}x on PostgreSQL, {grow("ch"):.0f}x on ClickHouse; at {sizes_[-1]:,} orders pg_sift is fastest or within 5% on {wins} of {len(have)} questions.')
-    path = os.path.join(results, 'scaling.tsv')
-    if os.path.exists(path):
-        meta, rows = store_charts.read_tsv(path)
-        by = lambda case, arm: next((float(r['value']) for r in rows if (r['case'], r['arm'], r['metric']) == (case, arm, 'median_ms')), None)
-        parts = sorted({int(r['case'].split()[1]) for r in rows if r['case'].startswith('partitions ')})
-        qs = sorted({r['arm'].split('_')[0] for r in rows} - {'q01'})   # the lookup by id is not an aggregate
-        if parts and qs:
-            gain = lambda p: statistics.median(by(f'partitions {p}', f'{q}_pg') / by(f'partitions {p}', f'{q}_sift') for q in qs)
-            g0, g1 = gain(parts[0]), gain(parts[-1])
-            out += bullet(f'Partitions, {parts[0]} to {parts[-1]:,}: the speed-up over PostgreSQL on {len(qs)} aggregate questions (median) goes from {x(g0)} to {x(g1) if g1 >= 1 else x(1 / g1) + " slower"} ({parts[-1]:,} partitions).')
-    return out
-
-
-def shapes(results):
-    found = aggregates_page.shape_cases(results)
-    if not found:
-        return []
-    meta, cases = found
-    gains = [(t['heap'] / t['col'], q, v) for q, v, t in cases if t['heap'] and t['col']]
-    faster, slower = [g for g, q, v in gains if g >= 1 + TIE], [(1 / g, v) for g, q, v in gains if g <= 1 - TIE]
-    out = f'Real query shapes (joins, lookups, top-N, distinct, time buckets, UNION ALL arms; {len(gains)} cases on {meta.get("tier", "?")} orders, one backend): faster than the PostgreSQL heap on {len(faster)} ({rng(faster)}, median {x(statistics.median(g for g, q, v in gains))})'
-    return bullet(out + (f', slower on {len(slower)} ({rng([r for r, v in slower])}; {sum(1 for r, v in slower if v == "K10")} of them with the smallest filter set)' if slower else '') + '.')
-
-
-def faster33(results):
-    """the headline cases of bench/cases.tsv (docs/results/cases.tsv) against PostgreSQL on the same rows, and the cases that lose, said plainly"""
-    path = os.path.join(results, 'cases.tsv')
-    found = cases_render.headline(extras.read(path)[1], cases_mod.read_registry()) if os.path.exists(path) else None
-    if not found:
-        return [], []
-    meta = extras.read(path)[0]
-    parts, slower = found
-    first = bullet(f'3.3 optimizations on {int(meta["orders"]):,} orders, one backend, against PostgreSQL on the same rows (sift.enable_agg = off): {parts}.')
-    return first, bullet('3.3 cases that are slower than PostgreSQL: ' + ', '.join(f'{c} ({r})' for c, r in slower) + '.', 2) if slower else []
-
-
 def behind(S, tier, variant):
     """the questions where neither layout of pg_sift is within 5% of the fastest other system: 'name (system, factor)'"""
     out = []
@@ -186,50 +105,100 @@ def behind(S, tier, variant):
         mine = best_mine(S, tier, q, variant)
         best = min(others, key=others.get)
         if mine and others[best] < mine * (1 - TIE):
-            out.append(f'{SLUG[q]} ({store_charts.SYSTEMS[best][0]}, {x(mine / others[best])})')
+            out.append(f'{SLUG[q]} by {store_charts.SYSTEMS[best][0]}, {x(mine / others[best])} faster')
     return out
 
 
-def losses(S, tier):
-    out = []
-    qs = S.queries
-    cold = behind(S, tier, 'cold')
-    if cold:
-        out += bullet(f'Cold (caches emptied), not the fastest on {len(cold)} of {len(qs)} questions: ' + ', '.join(cold) + '.', 2)
-    t1 = S.tier_of(S.tiers[tier]['rows'], 1)
-    one = behind(S, t1, 'warm') if t1 else []
-    if one:
-        out += bullet(f'With 1 CPU per server (warm), not the fastest on {len(one)} of {len(qs)} questions: ' + ', '.join(one) + '.', 2)
-    cached = [(q, S.lat(tier, 'es_cached', q)['value'] / best_mine(S, tier, q)) for q in qs if S.lat(tier, 'es_cached', q)]
-    ahead = [(q, 1 / r) for q, r in cached if r <= 1 - TIE]
-    if ahead:
-        out += bullet('Elasticsearch with its request cache on is ahead on ' + ', '.join(f'{SLUG[q]} ({x(r)})' for q, r in ahead) + ' (the cache is off in the other numbers).', 2)
-    pg, sc, ch = (store_charts.sizes(S, tier, e)[2] for e in ('pg', 'sift', 'ch'))
-    out += bullet(f'ClickHouse loads faster ({S.v(tier, "ch", metric="load_s"):.1f} s) and its table is smaller ({ch:.0f} MiB against {sc:.0f} MiB for sift_col, whose heap stays).', 2)
+def plain(bullets):
+    """the words of a bullet list item as one sentence"""
+    return ' '.join(l.strip().lstrip('- ').strip() for l in bullets)
+
+
+def cases_summary(results):
+    """one sentence on the cases of docs/results/cases.tsv (docs/results/cases-wm4g.tsv at the production work_mem): how many are faster than PostgreSQL on the same rows, by how much, and the ones that are not"""
+    path = os.path.join(results, 'cases.tsv')
+    if not os.path.exists(path):
+        return ''
+    meta, rows = extras.read(path)
+    figs = [f for f in cases_render.collect(rows, cases_mod.read_registry()) if f['metric'] == f['case'].metrics[0] and f['metric'] == 'ms' and f['native'] and f['sift']]
+    wins = [f['native'] / f['sift'] for f in figs if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
+    lose = [f for f in figs if f['native'] / f['sift'] <= 1 - TIE]
+    kept = [f for f in figs if f['kept']]
+    out = (f'Across {len(figs)} query shapes on {int(meta["orders"]):,} rows (reports with grouping sets and window functions, top-N, semi and anti joins, keyset pages, JSON arrays, lookups by key) pg_sift is faster than '
+           f'PostgreSQL on the same table on {len(wins)} (median {x(statistics.median(wins))}, up to {x(max(wins))}); the planner kept PostgreSQL\'s plan on {len(kept)}, and pg_sift is slower on {len(lose)}'
+           + (' (' + ', '.join(f'{f["case"].id} {x(f["sift"] / f["native"])}' for f in lose) + ')' if lose else '') + '.')
+    p4 = os.path.join(results, 'cases-wm4g.tsv')
+    if os.path.exists(p4):
+        m4, r4 = extras.read(p4)
+        f4 = [f for f in cases_render.collect(r4, cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
+        w4 = [f for f in f4 if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
+        out += f' At the production setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
     return out
 
 
-def updates_loss(S, tier):
-    rate = lambda e: S.v(tier, e, '-', 'delete 5%', 'phase_rows_s')
-    if rate('pg') and rate('sift') and rate('pg') > rate('sift') * (1 + TIE):
-        return bullet(f'Deleting 5% of the rows: PostgreSQL {rate("pg"):,.0f} rows/s against sift_col {rate("sift"):,.0f}.', 2)
-    return []
+def btree_loss(results):
+    """the lookup by primary key, where the planner keeps the btree: its time against the scan's (the case point_agg_id, the variant `forced` with the btree plans off)"""
+    path = os.path.join(results, 'cases.tsv')
+    if not os.path.exists(path):
+        return ''
+    rows = extras.read(path)[1]
+    g = lambda arm: extras.num(rows, case='point_agg_id', arm=arm, metric='ms')
+    nat, sift, forced = g('native'), g('sift'), g('forced')
+    if not (nat and sift):
+        return ''
+    return f'A btree still wins a lookup by key where the planner keeps it: {nat:.2f} ms for the primary key of {int(extras.read(path)[0]["orders"]):,} rows, {sift:.2f} ms with pg_sift' + (f' ({forced:.2f} ms when the scan is forced).' if forced else '.')
 
 
 def block(results):
+    """the introduction of the README: what is measured and the strongest numbers with their conditions, in a few paragraphs; the machine and the method are the footnote [^bench]"""
     S = store_charts.Store(os.path.join(results, 'store.json'))
     tier = S.tier_of(1_000_000, 3)
     t = S.tiers[tier]
     h = S.meta['host']
-    cpu = h['cpu'].replace(' 8-Core Processor', '')
+    v = versions(S, tier)
+    qs = S.queries
+    n = t['rows']
     rows = readme.load(results)
     tt = readme.Tier(rows, 'slim')
-    out = textwrap.wrap(f'BM25 search and column-store aggregates for PostgreSQL 17 and 18 in one extension. Measured {t["parts"]["warm"]["date"][:10]} on {cpu} ({h["threads"]} threads), PostgreSQL {versions(S, tier)["pg"]}, {t["cpus"]} CPUs per server, one client, warm medians; every result is checked against PostgreSQL\'s.', 76) + ['']
-    fast, slow = faster33(results)
-    out += aggregates(S, tier, results) + search(tt) + sizes_and_load(S, tier) + updates(S, tier) + scale(results, S, tier) + shapes(results) + fast
-    out += bullet('Where it does not win:') + losses(S, tier) + updates_loss(S, tier) + slow
-    out += ['', 'Results, charts and method:', URL + 'docs/perf/AGGREGATES.md']
-    return out
+    sz = {e: store_charts.sizes(S, tier, e) for e in S.engines(tier)}
+    load = {e: S.v(tier, e, metric='load_s') for e in S.engines(tier)}
+    g = lambda e, vr, m, c='-': S.v(tier, e, c, vr, m)
+    vs = []
+    for e, label in (('pg', 'PostgreSQL'), ('ch', 'ClickHouse'), ('es', 'Elasticsearch'), ('citus', 'Citus columnar')):
+        pairs = [S.lat(tier, e, q)['value'] / best_mine(S, tier, q) for q in qs if S.lat(tier, e, q)]
+        vs.append(f'{label} {rng(pairs)}')
+    duck = duckdb_line(results)
+    if duck:   # 'pg_duckdb 1.1.1 (its own run, best of its modes): faster on 7 of 7 (6.5x to 253x)'
+        text = plain(duck)
+        vs.append('pg_duckdb ' + text[text.index('(', text.index('faster on')) + 1:].split(')')[0])
+    d = bench_charts.load(results)
+    best = lambda q, variant: min([S.lat(tier, e, q, variant)['value'] for e in S.engines(tier) if e not in MINE + ('es_cached',) and S.lat(tier, e, q, variant)] + [d['D1'].best(q, 'warm_ms')] * bool(d['D1'] and d['D1'].best(q, 'warm_ms')))
+    front = sum(1 for q in qs if best_mine(S, tier, q) <= best(q, 'warm') * (1 + TIE))
+    pgr = [S.lat(tier, 'pg', q)['value'] / best_mine(S, tier, q) for q in qs]
+    first = (f'On {len(qs)} aggregate questions over {n:,} orders (a point lookup, counts and sums by group, distinct counts, a filtered average) the faster pg_sift layout is the fastest system, or within 5% of it, on {front} of {len(qs)} warm[^bench]: '
+             f'{rng(pgr)} the speed of PostgreSQL, and against the others {", ".join(vs[1:])}. {scale_sentence(results)}')
+    second = (plain(search(tt)).replace('Search on', 'Search on', 1) + ' ' if search(tt) else '') + (f'The column index adds {sz["sift"][1] / n * 1048576:.1f} bytes a row to the table (PostgreSQL\'s btrees and GIN: {sz["pg"][1] / n * 1048576:.1f}), '
+              f'loads in {load["sift"]:.1f} s against PostgreSQL\'s {load["pg"]:.1f} s, and 10% of the rows update at {g("sift", "update 10%", "phase_rows_s"):,.0f} rows/s ({g("pg", "update 10%", "phase_rows_s"):,.0f} on PostgreSQL).')
+    third = cases_summary(results)
+    cold = behind(S, tier, 'cold')
+    ch_size = sz['ch'][2]
+    fourth = ('Where it does not win: ' + (f'cold (caches emptied) it is not the fastest on {len(cold)} of {len(qs)} questions: {"; ".join(cold)}. ' if cold else '')
+              + f'ClickHouse loads faster ({load["ch"]:.1f} s) and stores the table in less space ({ch_size:.0f} MiB against {sz["sift"][2]:.0f} MiB for sift_col, whose heap stays). ' + btree_loss(results))
+    foot = (f'[^bench]: Measured {t["parts"]["warm"]["date"][:10]} on {h["cpu"]} ({h["threads"]} threads), PostgreSQL {v["pg"]}, {t["cpus"]} CPUs per server, one client, warm medians, every result checked against PostgreSQL\'s; '
+            'the method, the other systems\' versions and every table are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).')
+    return [first, '', second, '', third, '', fourth, '', foot]
+
+
+def scale_sentence(results):
+    """the growth of the median question from the smallest to the largest size, and its log-log slope, on sift_col and on PostgreSQL"""
+    d = bench_charts.load(results)
+    if not d['SS']:
+        return ''
+    sizes, pts = bench_charts.scale_points(d)
+    g = bench_charts.growth_of(pts, sizes, bench_charts.questions(d['SS']))
+    sl = lambda e: bench_charts.slope(sizes, g[e])
+    return (f'From {bench_charts.rows_label(sizes[0])} to {bench_charts.rows_label(sizes[-1])} orders ({sizes[-1] // sizes[0]}x the rows) the median question takes {g["sift"][-1]:.1f}x as long on sift_col (log-log slope {sl("sift"):.2f}) and '
+            f'{g["pg"][-1]:.0f}x on PostgreSQL ({sl("pg"):.2f}; 1.0 is time proportional to the rows).')
 
 
 def main():
@@ -238,8 +207,7 @@ def main():
     ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
     a = ap.parse_args()
     b = block(a.results)
-    assert max(len(l) for l in b) <= 78, max(b, key=len)
-    readme.replace_block(a.readme, 'highlights', b)
+    readme.replace_block(a.readme, 'intro', b)
     print('\n'.join(b))
 
 

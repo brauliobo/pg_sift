@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="441" viewBox="0 0 1000 441" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Cost per row</title>
+<desc id="d">Index size per row, load time per row and update rate for each system on 1,000,000 orders.</desc>
+<rect x="0.5" y="0.5" width="999" height="440" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">What a row costs: index bytes, load time and update rate</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">Per system on 1,000,000 orders. Left: bytes per row of what the system keeps beside the table (PostgreSQL: its btrees and GIN; the</text>
+<text x="20" y="72" font-size="13" text-anchor="start" fill="#59636e">column stores: all their data). Middle: load time of the CSV per row. Right: rows per second when 10% of the rows are updated.</text>
+<text x="20" y="112" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">bytes per row on disk</text>
+<text x="20" y="157" font-size="13" text-anchor="start" fill="#1f2328">PostgreSQL</text>
+<rect x="132" y="144" width="46.6" height="22" fill="#6e7781" rx="3"><title>PostgreSQL: 36.3 bytes per row on disk</title></rect>
+<text x="184.6" y="160" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">36.3</text>
+<text x="20" y="195" font-size="13" text-anchor="start" fill="#1f2328">sift_col</text>
+<rect x="132" y="182" width="25.4" height="22" fill="#2a78d6" rx="3"><title>pg_sift sift_col: 19.8 bytes per row on disk</title></rect>
+<text x="163.4" y="198" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">19.8</text>
+<text x="20" y="233" font-size="13" text-anchor="start" fill="#1f2328">sift_table</text>
+<rect x="132" y="220" width="33.8" height="22" fill="#1baf7a" rx="3"><title>pg_sift sift_table: 26.3 bytes per row on disk</title></rect>
+<text x="171.8" y="236" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">26.3</text>
+<text x="20" y="271" font-size="13" text-anchor="start" fill="#1f2328">ClickHouse</text>
+<rect x="132" y="258" width="50.6" height="22" fill="#eda100" rx="3"><title>ClickHouse: 39.4 bytes per row on disk</title></rect>
+<text x="188.6" y="274" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">39.4</text>
+<text x="20" y="309" font-size="13" text-anchor="start" fill="#1f2328">Citus</text>
+<rect x="132" y="296" width="33.3" height="22" fill="#e87ba4" rx="3"><title>Citus columnar: 25.9 bytes per row on disk</title></rect>
+<text x="171.3" y="312" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">25.9</text>
+<text x="20" y="347" font-size="13" text-anchor="start" fill="#1f2328">Elasticsearch</text>
+<rect x="132" y="334" width="150" height="22" fill="#6250d6" rx="3"><title>Elasticsearch: 116.8 bytes per row on disk</title></rect>
+<text x="288" y="350" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">116.8</text>
+<text x="350" y="112" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">load microseconds per row</text>
+<rect x="350" y="144" width="44.4" height="22" fill="#6e7781" rx="3"><title>PostgreSQL: 2.2 load microseconds per row</title></rect>
+<text x="400.4" y="160" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">2.2</text>
+<rect x="350" y="182" width="28.3" height="22" fill="#2a78d6" rx="3"><title>pg_sift sift_col: 1.4 load microseconds per row</title></rect>
+<text x="384.3" y="198" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.4</text>
+<rect x="350" y="220" width="62.6" height="22" fill="#1baf7a" rx="3"><title>pg_sift sift_table: 3.1 load microseconds per row</title></rect>
+<text x="418.6" y="236" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">3.1</text>
+<rect x="350" y="258" width="16.1" height="22" fill="#eda100" rx="3"><title>ClickHouse: 0.8 load microseconds per row</title></rect>
+<text x="372.1" y="274" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">0.8</text>
+<rect x="350" y="296" width="28.3" height="22" fill="#e87ba4" rx="3"><title>Citus columnar: 1.4 load microseconds per row</title></rect>
+<text x="384.3" y="312" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.4</text>
+<rect x="350" y="334" width="220" height="22" fill="#6250d6" rx="3"><title>Elasticsearch: 10.9 load microseconds per row</title></rect>
+<text x="576" y="350" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">10.9</text>
+<text x="680" y="112" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">rows per second, 10% updated</text>
+<rect x="680" y="144" width="123" height="22" fill="#6e7781" rx="3"><title>PostgreSQL: 88,281 rows per second, 10% updated</title></rect>
+<text x="809" y="160" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">88,281</text>
+<rect x="680" y="182" width="220" height="22" fill="#2a78d6" rx="3"><title>pg_sift sift_col: 157,905 rows per second, 10% updated</title></rect>
+<text x="906" y="198" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">157,905</text>
+<rect x="680" y="220" width="185.1" height="22" fill="#1baf7a" rx="3"><title>pg_sift sift_table: 132,845 rows per second, 10% updated</title></rect>
+<text x="871.1" y="236" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">132,845</text>
+<rect x="680" y="258" width="28.8" height="22" fill="#eda100" rx="3"><title>ClickHouse: 20,695 rows per second, 10% updated</title></rect>
+<text x="714.8" y="274" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">20,695</text>
+<text x="684" y="312" font-size="12" text-anchor="start" fill="#59636e">n/a</text>
+<rect x="680" y="334" width="39.3" height="22" fill="#6250d6" rx="3"><title>Elasticsearch: 28,188 rows per second, 10% updated</title></rect>
+<text x="725.3" y="350" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">28,188</text>
+<text x="20" y="382" font-size="12" text-anchor="start" fill="#59636e">Data: docs/results/store.json, 2026-10-22, AMD Ryzen 7 9700X, 16 threads, 3 CPUs per server. Citus columnar tables are append-only, so it is</text>
+<text x="20" y="399" font-size="12" text-anchor="start" fill="#59636e">not in the update step (n/a).</text>
+<text x="20" y="416" font-size="12" text-anchor="start" fill="#59636e">Bytes per row include the primary key only for the systems that hold the table themselves (sift_table, Citus columnar).</text>
+</svg>

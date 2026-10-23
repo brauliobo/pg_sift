@@ -1,0 +1,494 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1464" viewBox="0 0 1000 1464" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Scaling of the case families</title>
+<desc id="d">Time against the number of rows for PostgreSQL and pg_sift on several query shapes.</desc>
+<rect x="0.5" y="0.5" width="999" height="1463" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">Scaling of 21 query shapes: time against rows</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">Median ms, both axes logarithmic. The number at each line is its slope: 1.0 is time proportional to the rows, lower is better.</text>
+<rect x="19.5" y="71.5" width="9" height="9" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"></rect>
+<text x="36" y="80" font-size="13" text-anchor="start" fill="#1f2328">PostgreSQL</text>
+<circle cx="140" cy="76" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="152" y="80" font-size="13" text-anchor="start" fill="#1f2328">pg_sift</text>
+<text x="28" y="102" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">key_presence_distinct</text>
+<line x1="68" y1="234" x2="298" y2="234" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="238" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="68" y1="204" x2="298" y2="204" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="208" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="174" x2="298" y2="174" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="178" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="144" x2="298" y2="144" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="148" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="68" y1="114" x2="298" y2="114" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="118" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="68" y="249" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="249" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,172.6 152.3,159.4 244.8,143.8 298,134.4"/>
+<rect x="65" y="169.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: PostgreSQL 11.2 ms at 100k rows</title></rect>
+<rect x="149.3" y="156.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: PostgreSQL 30.7 ms at 300k rows</title></rect>
+<rect x="241.8" y="140.8" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: PostgreSQL 102 ms at 1M rows</title></rect>
+<rect x="295" y="131.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: PostgreSQL 210 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,229.8 152.3,220.9 244.8,214.4 298,210.7"/>
+<circle cx="68" cy="229.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: pg_sift sift_col 0.138 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="220.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: pg_sift sift_col 0.273 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="214.4" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: pg_sift sift_col 0.45 ms at 1M rows</title></circle>
+<circle cx="298" cy="210.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>key_presence_distinct: pg_sift sift_col 0.599 ms at 2M rows</title></circle>
+<text x="304" y="138.4" font-size="11" text-anchor="start" fill="#1f2328">0.98</text>
+<text x="304" y="214.7" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.48</text>
+<text x="348" y="102" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">count_distinct_unique</text>
+<line x1="388" y1="234" x2="618" y2="234" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="238" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="388" y1="210" x2="618" y2="210" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="214" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="388" y1="186" x2="618" y2="186" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="190" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="162" x2="618" y2="162" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="166" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="138" x2="618" y2="138" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="142" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<line x1="388" y1="114" x2="618" y2="114" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="118" font-size="10" text-anchor="end" fill="#59636e">10,000</text>
+<text x="388" y="249" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="249" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,168 472.3,155.4 564.8,140.8 618,132.3"/>
+<rect x="385" y="165" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: PostgreSQL 56.4 ms at 100k rows</title></rect>
+<rect x="469.3" y="152.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: PostgreSQL 188 ms at 300k rows</title></rect>
+<rect x="561.8" y="137.8" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: PostgreSQL 762 ms at 1M rows</title></rect>
+<rect x="615" y="129.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: PostgreSQL 1,733 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,215.7 472.3,206.7 564.8,196.5 618,188.9"/>
+<circle cx="388" cy="215.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: pg_sift sift_col 0.578 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="206.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: pg_sift sift_col 1.37 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="196.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: pg_sift sift_col 3.65 ms at 1M rows</title></circle>
+<circle cx="618" cy="188.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>count_distinct_unique: pg_sift sift_col 7.55 ms at 2M rows</title></circle>
+<text x="624" y="136.3" font-size="11" text-anchor="start" fill="#1f2328">1.14</text>
+<text x="624" y="192.9" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.85</text>
+<text x="668" y="102" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">topn_coalesce</text>
+<line x1="708" y1="234" x2="938" y2="234" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="238" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="708" y1="204" x2="938" y2="204" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="208" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="708" y1="174" x2="938" y2="174" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="178" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="144" x2="938" y2="144" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="148" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="114" x2="938" y2="114" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="118" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="708" y="249" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="249" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,179.6 792.3,165.4 884.8,149.6 938,140.8"/>
+<rect x="705" y="176.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: PostgreSQL 6.53 ms at 100k rows</title></rect>
+<rect x="789.3" y="162.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: PostgreSQL 19.3 ms at 300k rows</title></rect>
+<rect x="881.8" y="146.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: PostgreSQL 64.9 ms at 1M rows</title></rect>
+<rect x="935" y="137.8" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: PostgreSQL 128 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,208.8 792.3,203.1 884.8,199.5 938,206.6"/>
+<circle cx="708" cy="208.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: pg_sift sift_col 0.693 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="203.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: pg_sift sift_col 1.07 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="199.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: pg_sift sift_col 1.41 ms at 1M rows</title></circle>
+<circle cx="938" cy="206.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_coalesce: pg_sift sift_col 0.822 ms at 2M rows</title></circle>
+<text x="944" y="144.8" font-size="11" text-anchor="start" fill="#1f2328">0.99</text>
+<text x="944" y="210.6" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.10</text>
+<text x="28" y="292" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">jsonb_each_member</text>
+<line x1="68" y1="424" x2="298" y2="424" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="428" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="384" x2="298" y2="384" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="388" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="344" x2="298" y2="344" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="348" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="68" y1="304" x2="298" y2="304" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="308" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="68" y="439" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="439" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,361.7 152.3,343.6 244.8,323.4 298,309"/>
+<rect x="65" y="358.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: PostgreSQL 36.1 ms at 100k rows</title></rect>
+<rect x="149.3" y="340.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: PostgreSQL 103 ms at 300k rows</title></rect>
+<rect x="241.8" y="320.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: PostgreSQL 328 ms at 1M rows</title></rect>
+<rect x="295" y="306" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: PostgreSQL 750 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,418.1 152.3,403.1 244.8,386.7 298,373.2"/>
+<circle cx="68" cy="418.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: pg_sift sift_col 1.41 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="403.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: pg_sift sift_col 3.33 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="386.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: pg_sift sift_col 8.56 ms at 1M rows</title></circle>
+<circle cx="298" cy="373.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>jsonb_each_member: pg_sift sift_col 18.6 ms at 2M rows</title></circle>
+<text x="304" y="313" font-size="11" text-anchor="start" fill="#1f2328">1.00</text>
+<text x="304" y="377.2" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.85</text>
+<text x="348" y="292" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">list_elements</text>
+<line x1="388" y1="424" x2="618" y2="424" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="428" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="388" y1="384" x2="618" y2="384" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="388" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="344" x2="618" y2="344" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="348" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="304" x2="618" y2="304" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="308" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="388" y="439" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="439" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,366 472.3,348.9 564.8,327.6 618,314.6"/>
+<rect x="385" y="363" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: PostgreSQL 28.2 ms at 100k rows</title></rect>
+<rect x="469.3" y="345.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: PostgreSQL 75.6 ms at 300k rows</title></rect>
+<rect x="561.8" y="324.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: PostgreSQL 256 ms at 1M rows</title></rect>
+<rect x="615" y="311.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: PostgreSQL 543 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,423.5 472.3,408.5 564.8,388.3 618,376.2"/>
+<circle cx="388" cy="423.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: pg_sift sift_col 1.03 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="408.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: pg_sift sift_col 2.44 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="388.3" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: pg_sift sift_col 7.81 ms at 1M rows</title></circle>
+<circle cx="618" cy="376.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>list_elements: pg_sift sift_col 15.7 ms at 2M rows</title></circle>
+<text x="624" y="318.6" font-size="11" text-anchor="start" fill="#1f2328">0.99</text>
+<text x="624" y="380.2" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.91</text>
+<text x="668" y="292" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">point_agg_fk</text>
+<line x1="708" y1="424" x2="938" y2="424" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="428" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="708" y1="384" x2="938" y2="384" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="388" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="708" y1="344" x2="938" y2="344" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="348" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="304" x2="938" y2="304" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="308" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<text x="708" y="439" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="439" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,369.5 792.3,347.7 884.8,325.7 938,312.7"/>
+<rect x="705" y="366.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: PostgreSQL 2.31 ms at 100k rows</title></rect>
+<rect x="789.3" y="344.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: PostgreSQL 8.08 ms at 300k rows</title></rect>
+<rect x="881.8" y="322.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: PostgreSQL 28.7 ms at 1M rows</title></rect>
+<rect x="935" y="309.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: PostgreSQL 60.7 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,410.1 792.3,403.1 884.8,383.9 938,373.7"/>
+<circle cx="708" cy="410.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: pg_sift sift_col 0.222 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="403.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: pg_sift sift_col 0.333 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="383.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: pg_sift sift_col 1 ms at 1M rows</title></circle>
+<circle cx="938" cy="373.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_fk: pg_sift sift_col 1.81 ms at 2M rows</title></circle>
+<text x="944" y="316.7" font-size="11" text-anchor="start" fill="#1f2328">1.09</text>
+<text x="944" y="377.7" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.72</text>
+<text x="28" y="482" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">topn_sorted_runs</text>
+<line x1="68" y1="614" x2="298" y2="614" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="618" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="68" y1="574" x2="298" y2="574" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="578" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="534" x2="298" y2="534" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="538" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="494" x2="298" y2="494" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="498" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<text x="68" y="629" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="629" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,555.8 152.3,532.6 244.8,512.3 298,500.3"/>
+<rect x="65" y="552.8" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: PostgreSQL 2.85 ms at 100k rows</title></rect>
+<rect x="149.3" y="529.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: PostgreSQL 10.8 ms at 300k rows</title></rect>
+<rect x="241.8" y="509.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: PostgreSQL 34.9 ms at 1M rows</title></rect>
+<rect x="295" y="497.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: PostgreSQL 69.7 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,580.9 152.3,572.9 244.8,568.8 298,559"/>
+<circle cx="68" cy="580.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: pg_sift sift_col 0.671 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="572.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: pg_sift sift_col 1.07 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="568.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: pg_sift sift_col 1.35 ms at 1M rows</title></circle>
+<circle cx="298" cy="559" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs: pg_sift sift_col 2.37 ms at 2M rows</title></circle>
+<text x="304" y="504.3" font-size="11" text-anchor="start" fill="#1f2328">1.06</text>
+<text x="304" y="563" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.38</text>
+<text x="348" y="482" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">ranked_top_per_group</text>
+<line x1="388" y1="614" x2="618" y2="614" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="618" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="388" y1="574" x2="618" y2="574" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="578" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="534" x2="618" y2="534" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="538" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="494" x2="618" y2="494" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="498" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="388" y="629" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="629" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,564.9 472.3,547.4 564.8,526.6 618,514.7"/>
+<rect x="385" y="561.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: PostgreSQL 16.9 ms at 100k rows</title></rect>
+<rect x="469.3" y="544.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: PostgreSQL 46.1 ms at 300k rows</title></rect>
+<rect x="561.8" y="523.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: PostgreSQL 154 ms at 1M rows</title></rect>
+<rect x="615" y="511.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: PostgreSQL 304 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,602.9 472.3,595.8 564.8,579.8 618,570.2"/>
+<circle cx="388" cy="602.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: pg_sift sift_col 1.9 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="595.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: pg_sift sift_col 2.86 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="579.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: pg_sift sift_col 7.17 ms at 1M rows</title></circle>
+<circle cx="618" cy="570.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group: pg_sift sift_col 12.4 ms at 2M rows</title></circle>
+<text x="624" y="518.7" font-size="11" text-anchor="start" fill="#1f2328">0.97</text>
+<text x="624" y="574.2" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.64</text>
+<text x="668" y="482" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">cte_two_readers</text>
+<line x1="708" y1="614" x2="938" y2="614" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="618" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="708" y1="574" x2="938" y2="574" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="578" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="534" x2="938" y2="534" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="538" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="494" x2="938" y2="494" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="498" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="708" y="629" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="629" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,561.9 792.3,542.6 884.8,520.4 938,508.6"/>
+<rect x="705" y="558.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: PostgreSQL 20.1 ms at 100k rows</title></rect>
+<rect x="789.3" y="539.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: PostgreSQL 60.8 ms at 300k rows</title></rect>
+<rect x="881.8" y="517.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: PostgreSQL 218 ms at 1M rows</title></rect>
+<rect x="935" y="505.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: PostgreSQL 431 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,608.7 792.3,597.2 884.8,575.6 938,563.6"/>
+<circle cx="708" cy="608.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: pg_sift sift_col 1.35 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="597.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: pg_sift sift_col 2.63 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="575.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: pg_sift sift_col 9.1 ms at 1M rows</title></circle>
+<circle cx="938" cy="563.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_two_readers: pg_sift sift_col 18.2 ms at 2M rows</title></circle>
+<text x="944" y="512.6" font-size="11" text-anchor="start" fill="#1f2328">1.03</text>
+<text x="944" y="567.6" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.88</text>
+<text x="28" y="672" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">window_json_report</text>
+<line x1="68" y1="804" x2="298" y2="804" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="808" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="764" x2="298" y2="764" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="768" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="724" x2="298" y2="724" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="728" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="68" y1="684" x2="298" y2="684" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="688" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="68" y="819" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="819" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,750.7 152.3,733.9 244.8,714 298,701.5"/>
+<rect x="65" y="747.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: PostgreSQL 21.4 ms at 100k rows</title></rect>
+<rect x="149.3" y="730.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: PostgreSQL 56.6 ms at 300k rows</title></rect>
+<rect x="241.8" y="711" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: PostgreSQL 178 ms at 1M rows</title></rect>
+<rect x="295" y="698.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: PostgreSQL 364 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,780.8 152.3,776 244.8,765.6 298,755.9"/>
+<circle cx="68" cy="780.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: pg_sift sift_col 3.81 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="776" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: pg_sift sift_col 5.01 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="765.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: pg_sift sift_col 9.09 ms at 1M rows</title></circle>
+<circle cx="298" cy="755.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>window_json_report: pg_sift sift_col 16 ms at 2M rows</title></circle>
+<text x="304" y="705.5" font-size="11" text-anchor="start" fill="#1f2328">0.94</text>
+<text x="304" y="759.9" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.47</text>
+<text x="348" y="672" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">topn_page_totals</text>
+<line x1="388" y1="804" x2="618" y2="804" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="808" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="388" y1="764" x2="618" y2="764" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="768" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="724" x2="618" y2="724" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="728" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="684" x2="618" y2="684" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="688" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="388" y="819" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="819" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,766.3 472.3,750 564.8,728.9 618,716.9"/>
+<rect x="385" y="763.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: PostgreSQL 8.76 ms at 100k rows</title></rect>
+<rect x="469.3" y="747" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: PostgreSQL 22.3 ms at 300k rows</title></rect>
+<rect x="561.8" y="725.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: PostgreSQL 75.4 ms at 1M rows</title></rect>
+<rect x="615" y="713.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: PostgreSQL 151 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,801.1 472.3,792.7 564.8,783.4 618,769.5"/>
+<circle cx="388" cy="801.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: pg_sift sift_col 1.19 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="792.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: pg_sift sift_col 1.92 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="783.4" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: pg_sift sift_col 3.28 ms at 1M rows</title></circle>
+<circle cx="618" cy="769.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>topn_page_totals: pg_sift sift_col 7.28 ms at 2M rows</title></circle>
+<text x="624" y="720.9" font-size="11" text-anchor="start" fill="#1f2328">0.96</text>
+<text x="624" y="773.5" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.57</text>
+<text x="668" y="672" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">semi_exists_self</text>
+<line x1="708" y1="804" x2="938" y2="804" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="808" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="708" y1="764" x2="938" y2="764" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="768" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="724" x2="938" y2="724" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="728" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="684" x2="938" y2="684" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="688" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="708" y="819" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="819" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,762.2 792.3,744.3 884.8,723.9 938,708"/>
+<rect x="705" y="759.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: PostgreSQL 11.1 ms at 100k rows</title></rect>
+<rect x="789.3" y="741.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: PostgreSQL 31.1 ms at 300k rows</title></rect>
+<rect x="881.8" y="720.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: PostgreSQL 101 ms at 1M rows</title></rect>
+<rect x="935" y="705" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: PostgreSQL 251 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,802 792.3,791.5 884.8,771 938,753.2"/>
+<circle cx="708" cy="802" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: pg_sift sift_col 1.12 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="791.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: pg_sift sift_col 2.05 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="771" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: pg_sift sift_col 6.7 ms at 1M rows</title></circle>
+<circle cx="938" cy="753.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>semi_exists_self: pg_sift sift_col 18.6 ms at 2M rows</title></circle>
+<text x="944" y="712" font-size="11" text-anchor="start" fill="#1f2328">1.03</text>
+<text x="944" y="757.2" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.93</text>
+<text x="28" y="862" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">lateral_first_row</text>
+<line x1="68" y1="994" x2="298" y2="994" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="998" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="954" x2="298" y2="954" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="958" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="914" x2="298" y2="914" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="918" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="68" y1="874" x2="298" y2="874" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="878" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="68" y="1009" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="1009" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,938.5 152.3,920.2 244.8,898.4 298,886.5"/>
+<rect x="65" y="935.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: PostgreSQL 24.5 ms at 100k rows</title></rect>
+<rect x="149.3" y="917.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: PostgreSQL 69.8 ms at 300k rows</title></rect>
+<rect x="241.8" y="895.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: PostgreSQL 246 ms at 1M rows</title></rect>
+<rect x="295" y="883.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: PostgreSQL 488 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,984.6 152.3,968.1 244.8,944.6 298,931.3"/>
+<circle cx="68" cy="984.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: pg_sift sift_col 1.71 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="968.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: pg_sift sift_col 4.45 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="944.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: pg_sift sift_col 17.2 ms at 1M rows</title></circle>
+<circle cx="298" cy="931.3" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>lateral_first_row: pg_sift sift_col 37 ms at 2M rows</title></circle>
+<text x="304" y="890.5" font-size="11" text-anchor="start" fill="#1f2328">1.00</text>
+<text x="304" y="935.3" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">1.03</text>
+<text x="348" y="862" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">grouping_sets_report</text>
+<line x1="388" y1="994" x2="618" y2="994" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="998" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="388" y1="954" x2="618" y2="954" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="958" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="914" x2="618" y2="914" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="918" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="874" x2="618" y2="874" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="878" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="388" y="1009" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="1009" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,941.3 472.3,923.6 564.8,902.4 618,891.1"/>
+<rect x="385" y="938.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: PostgreSQL 20.8 ms at 100k rows</title></rect>
+<rect x="469.3" y="920.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: PostgreSQL 57.4 ms at 300k rows</title></rect>
+<rect x="561.8" y="899.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: PostgreSQL 195 ms at 1M rows</title></rect>
+<rect x="615" y="888.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: PostgreSQL 374 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,968.6 472.3,954.8 564.8,935.7 618,923.7"/>
+<circle cx="388" cy="968.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: pg_sift sift_col 4.32 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="954.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: pg_sift sift_col 9.58 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="935.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: pg_sift sift_col 28.8 ms at 1M rows</title></circle>
+<circle cx="618" cy="923.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>grouping_sets_report: pg_sift sift_col 57.2 ms at 2M rows</title></circle>
+<text x="624" y="895.1" font-size="11" text-anchor="start" fill="#1f2328">0.97</text>
+<text x="624" y="927.7" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.86</text>
+<text x="668" y="862" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">two_level_spend</text>
+<line x1="708" y1="994" x2="938" y2="994" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="998" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="708" y1="954" x2="938" y2="954" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="958" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="914" x2="938" y2="914" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="918" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="874" x2="938" y2="874" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="878" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="708" y="1009" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="1009" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,940.6 792.3,914.9 884.8,891.7 938,876.1"/>
+<rect x="705" y="937.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: PostgreSQL 21.6 ms at 100k rows</title></rect>
+<rect x="789.3" y="911.9" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: PostgreSQL 94.8 ms at 300k rows</title></rect>
+<rect x="881.8" y="888.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: PostgreSQL 361 ms at 1M rows</title></rect>
+<rect x="935" y="873.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: PostgreSQL 887 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,960.1 792.3,940.6 884.8,917 938,901.9"/>
+<circle cx="708" cy="960.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: pg_sift sift_col 7.05 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="940.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: pg_sift sift_col 21.6 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="917" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: pg_sift sift_col 84.1 ms at 1M rows</title></circle>
+<circle cx="938" cy="901.9" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>two_level_spend: pg_sift sift_col 201 ms at 2M rows</title></circle>
+<text x="944" y="880.1" font-size="11" text-anchor="start" fill="#1f2328">1.22</text>
+<text x="944" y="905.9" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">1.12</text>
+<text x="28" y="1052" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">anti_not_in_self</text>
+<line x1="68" y1="1184" x2="298" y2="1184" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1188" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<line x1="68" y1="1144" x2="298" y2="1144" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1148" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="68" y1="1104" x2="298" y2="1104" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1108" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="68" y1="1064" x2="298" y2="1064" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1068" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="68" y="1199" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="1199" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,1142.1 152.3,1121.1 244.8,1099.4 298,1084.6"/>
+<rect x="65" y="1139.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: PostgreSQL 11.1 ms at 100k rows</title></rect>
+<rect x="149.3" y="1118.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: PostgreSQL 37.4 ms at 300k rows</title></rect>
+<rect x="241.8" y="1096.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: PostgreSQL 131 ms at 1M rows</title></rect>
+<rect x="295" y="1081.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: PostgreSQL 306 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,1167 152.3,1143.4 244.8,1121.7 298,1107.2"/>
+<circle cx="68" cy="1167" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: pg_sift sift_col 2.67 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="1143.4" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: pg_sift sift_col 10.3 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="1121.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: pg_sift sift_col 36.2 ms at 1M rows</title></circle>
+<circle cx="298" cy="1107.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>anti_not_in_self: pg_sift sift_col 83.2 ms at 2M rows</title></circle>
+<text x="304" y="1088.6" font-size="11" text-anchor="start" fill="#1f2328">1.10</text>
+<text x="304" y="1111.2" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">1.13</text>
+<text x="348" y="1052" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">group_by_id_top</text>
+<line x1="388" y1="1184" x2="618" y2="1184" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1188" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="388" y1="1124" x2="618" y2="1124" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1128" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="388" y1="1064" x2="618" y2="1064" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1068" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="388" y="1199" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="1199" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,1133.1 472.3,1104.5 564.8,1088.5 618,1069.4"/>
+<rect x="385" y="1130.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: PostgreSQL 70.6 ms at 100k rows</title></rect>
+<rect x="469.3" y="1101.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: PostgreSQL 211 ms at 300k rows</title></rect>
+<rect x="561.8" y="1085.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: PostgreSQL 391 ms at 1M rows</title></rect>
+<rect x="615" y="1066.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: PostgreSQL 813 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,1169.2 472.3,1143.8 564.8,1110.8 618,1083.6"/>
+<circle cx="388" cy="1169.2" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: pg_sift sift_col 17.6 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="1143.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: pg_sift sift_col 46.8 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="1110.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: pg_sift sift_col 166 ms at 1M rows</title></circle>
+<circle cx="618" cy="1083.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>group_by_id_top: pg_sift sift_col 472 ms at 2M rows</title></circle>
+<text x="624" y="1073.4" font-size="11" text-anchor="start" fill="#1f2328">0.77</text>
+<text x="624" y="1087.6" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">1.08</text>
+<text x="668" y="1052" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">cte_series_arms</text>
+<line x1="708" y1="1184" x2="938" y2="1184" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1188" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="1124" x2="938" y2="1124" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1128" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="1064" x2="938" y2="1064" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1068" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<text x="708" y="1199" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="1199" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,1104.2 792.3,1106.2 884.8,1104.4 938,1104.6"/>
+<rect x="705" y="1101.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: PostgreSQL 214 ms at 100k rows</title></rect>
+<rect x="789.3" y="1103.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: PostgreSQL 198 ms at 300k rows</title></rect>
+<rect x="881.8" y="1101.4" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: PostgreSQL 212 ms at 1M rows</title></rect>
+<rect x="935" y="1101.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: PostgreSQL 211 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,1136.8 792.3,1136.6 884.8,1130.7 938,1104.1"/>
+<circle cx="708" cy="1136.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: pg_sift sift_col 61.3 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="1136.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: pg_sift sift_col 61.6 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="1130.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: pg_sift sift_col 77.4 ms at 1M rows</title></circle>
+<circle cx="938" cy="1104.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>cte_series_arms: pg_sift sift_col 215 ms at 2M rows</title></circle>
+<text x="944" y="1108.1" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.36</text>
+<text x="944" y="1121.1" font-size="11" text-anchor="start" fill="#1f2328">0.00</text>
+<text x="28" y="1242" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">point_agg_id</text>
+<line x1="68" y1="1374" x2="298" y2="1374" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1378" font-size="10" text-anchor="end" fill="#59636e">0.01</text>
+<line x1="68" y1="1254" x2="298" y2="1254" stroke="#e3e7eb" stroke-width="1"/>
+<text x="62" y="1258" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<text x="68" y="1389" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="298" y="1389" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,1292.3 152.3,1283.3 244.8,1291.2 298,1278.1"/>
+<rect x="65" y="1289.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: PostgreSQL 0.048 ms at 100k rows</title></rect>
+<rect x="149.3" y="1280.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: PostgreSQL 0.057 ms at 300k rows</title></rect>
+<rect x="241.8" y="1288.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: PostgreSQL 0.049 ms at 1M rows</title></rect>
+<rect x="295" y="1275.1" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: PostgreSQL 0.063 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="68,1257.8 152.3,1260.1 244.8,1262.5 298,1255.6"/>
+<circle cx="68" cy="1257.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: pg_sift sift_col 0.093 ms at 100k rows</title></circle>
+<circle cx="152.3" cy="1260.1" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: pg_sift sift_col 0.089 ms at 300k rows</title></circle>
+<circle cx="244.8" cy="1262.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: pg_sift sift_col 0.085 ms at 1M rows</title></circle>
+<circle cx="298" cy="1255.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>point_agg_id: pg_sift sift_col 0.097 ms at 2M rows</title></circle>
+<text x="304" y="1259.6" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.00</text>
+<text x="304" y="1282.1" font-size="11" text-anchor="start" fill="#1f2328">0.06</text>
+<text x="348" y="1242" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">keyset_page</text>
+<line x1="388" y1="1374" x2="618" y2="1374" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1378" font-size="10" text-anchor="end" fill="#59636e">0.01</text>
+<line x1="388" y1="1314" x2="618" y2="1314" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1318" font-size="10" text-anchor="end" fill="#59636e">0.1</text>
+<line x1="388" y1="1254" x2="618" y2="1254" stroke="#e3e7eb" stroke-width="1"/>
+<text x="382" y="1258" font-size="10" text-anchor="end" fill="#59636e">1</text>
+<text x="388" y="1389" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="618" y="1389" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,1309.5 472.3,1311.3 564.8,1308.8 618,1316.2"/>
+<rect x="385" y="1306.5" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: PostgreSQL 0.119 ms at 100k rows</title></rect>
+<rect x="469.3" y="1308.3" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: PostgreSQL 0.111 ms at 300k rows</title></rect>
+<rect x="561.8" y="1305.8" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: PostgreSQL 0.122 ms at 1M rows</title></rect>
+<rect x="615" y="1313.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: PostgreSQL 0.092 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="388,1305 472.3,1300.8 564.8,1299.4 618,1304"/>
+<circle cx="388" cy="1305" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: pg_sift sift_col 0.141 ms at 100k rows</title></circle>
+<circle cx="472.3" cy="1300.8" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: pg_sift sift_col 0.166 ms at 300k rows</title></circle>
+<circle cx="564.8" cy="1299.4" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: pg_sift sift_col 0.175 ms at 1M rows</title></circle>
+<circle cx="618" cy="1304" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>keyset_page: pg_sift sift_col 0.147 ms at 2M rows</title></circle>
+<text x="624" y="1308" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">0.02</text>
+<text x="624" y="1321" font-size="11" text-anchor="start" fill="#1f2328">-0.06</text>
+<text x="668" y="1242" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">bulk_copy_wal</text>
+<line x1="708" y1="1374" x2="938" y2="1374" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1378" font-size="10" text-anchor="end" fill="#59636e">10</text>
+<line x1="708" y1="1334" x2="938" y2="1334" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1338" font-size="10" text-anchor="end" fill="#59636e">100</text>
+<line x1="708" y1="1294" x2="938" y2="1294" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1298" font-size="10" text-anchor="end" fill="#59636e">1,000</text>
+<line x1="708" y1="1254" x2="938" y2="1254" stroke="#e3e7eb" stroke-width="1"/>
+<text x="702" y="1258" font-size="10" text-anchor="end" fill="#59636e">10,000</text>
+<text x="708" y="1389" font-size="10" text-anchor="middle" fill="#59636e">100k</text>
+<text x="938" y="1389" font-size="10" text-anchor="middle" fill="#59636e">2M</text>
+<polyline fill="none" stroke="#6e7781" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,1336.6 792.3,1318.7 884.8,1298.6 938,1286.2"/>
+<rect x="705" y="1333.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: PostgreSQL 86 ms at 100k rows</title></rect>
+<rect x="789.3" y="1315.7" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: PostgreSQL 242 ms at 300k rows</title></rect>
+<rect x="881.8" y="1295.6" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: PostgreSQL 768 ms at 1M rows</title></rect>
+<rect x="935" y="1283.2" width="6" height="6" fill="#6e7781" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: PostgreSQL 1,570 ms at 2M rows</title></rect>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="708,1325.5 792.3,1307.6 884.8,1287.7 938,1268.6"/>
+<circle cx="708" cy="1325.5" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: pg_sift sift_col 163 ms at 100k rows</title></circle>
+<circle cx="792.3" cy="1307.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: pg_sift sift_col 456 ms at 300k rows</title></circle>
+<circle cx="884.8" cy="1287.7" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: pg_sift sift_col 1,439 ms at 1M rows</title></circle>
+<circle cx="938" cy="1268.6" r="3" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal: pg_sift sift_col 4,318 ms at 2M rows</title></circle>
+<text x="944" y="1272.6" font-size="11" text-anchor="start" fill="#1f2328" font-weight="bold">1.06</text>
+<text x="944" y="1290.2" font-size="11" text-anchor="start" fill="#1f2328">0.97</text>
+<text x="20" y="1422" font-size="12" text-anchor="start" fill="#59636e">Data: docs/results/cases-scale.tsv, 2026-10-23, AMD Ryzen 9 5900XT 16-Core Processor, one backend, medians of interleaved runs; sizes 100k,</text>
+<text x="20" y="1439" font-size="12" text-anchor="start" fill="#59636e">300k, 1M, 2M. The slope is the least-squares slope of log time on log rows over all sizes.</text>
+</svg>
