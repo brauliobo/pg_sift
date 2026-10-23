@@ -96,6 +96,29 @@ Other kernels, ns per 16-page call, 30 tuples per page, d = 1 (480 slots) / 291 
 
 **Not done:** an FMA-based correctly rounded division (Markstein) could replace `vdivps` bit-exactly, but needs a proof for every input and FMA on the scalar side; intrinsic-level 512-bit vs 256-bit preference on Intel server parts was not measurable here (Zen 5 only).
 
+## AArch64 (NEON)
+
+`src/bm25/kernels_neon.c` is the NEON level (`sift.simd = neon`). An 8-slot byte of a mask word is two registers of floats and only the nonzero bytes are visited,
+as in the AVX2 file; the rank-order tf bytes are placed into the slot lanes with `TBL` from the same 256-entry expand table (an index of 0x80 gives 0 as in `PSHUFB`),
+and the slots outside the mask are blended back unchanged. The divisions are `FDIV` of four lanes, rounded as the scalar's, and the products and sums are not fused
+(`-ffp-contract=off`), so the scores are the scalar ones bit for bit. A byte with two slots or fewer is the scalar sequence: a four-lane division is not four times a scalar one.
+
+Measured on an Apple M4 (clang `-O2`, one thread, best of 300 batches and of five runs), ns per call over 16 pages, scalar / NEON, for 30 tuples per page at the
+densities d = 1, 0.25, 0.03 and 291 tuples per page at 0.5:
+
+| kernel | d = 1 | d = 0.25 | d = 0.03 | 291, d = 0.5 |
+|---|---|---|---|---|
+| `bm25_accum` | 258 / 141 | 98 / 98 | 43 / 22 | 1188 / 1000 |
+| `bm25_accum`, tf = 1 | 266 / 117 | 98 / 94 | 41 / 21 | 1125 / 906 |
+| `bm25_sel` | 273 / 164 | 98 / 113 | 41 / 23 | 1250 / 1156 |
+| `prune_gt` | 195 / 78 | 78 / 66 | 41 / 19 | 969 / 938 |
+| `knorm` | 180 / 106 | 74 / 74 | 39 / 23 | 906 / 594 |
+| `max_merge` | 188 / 74 | 70 / 63 | 39 / 20 | 969 / 516 |
+
+`bm25_sel` is 0.86x of scalar at d = 0.25, where most bytes hold one or two slots. `ub_accum` has no NEON kernel (1.0x: the compiler vectorizes the loop as well),
+nor have `expand` (a deposit), `tf_decode` (a variable length decode), `select_gt` (a compaction) and `vm_allvisible` (a bit gather): NEON has no instruction for them
+and the scalar loops are what they were.
+
 ## Verification
 
 - `tools/kernels/test`: random equivalence of every table against scalar (`make test N=5`), the exhaustive tf x dl grid, double-precision error, bound coverage, tf stream round trips at random positions and piece sizes, top-k against a sort. ASan + UBSan: `make SANITIZE=1 test`.

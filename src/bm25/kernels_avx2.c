@@ -14,18 +14,6 @@
 
 #define K2 static inline __attribute__((always_inline)) SIFT_TARGET_AVX2
 
-#define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
-#define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
-#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
-#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
-#define ROW8(F, m)	{F(m, 0), F(m, 1), F(m, 2), F(m, 3), F(m, 4), F(m, 5), F(m, 6), F(m, 7)}
-#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
-
-/* Lane j of row m: rank of bit j among the set bits of m, 0x80 (PSHUFB zero) if clear */
-#define XL(m, j)	((((m) >> (j)) & 1) ? BELOW(m, j) : 0x80)
-#define XROW(m)		ROW8(XL, m)
-const uint8 sift_kern_lut_expand[256][8] = {R256(XROW)};
-
 /* Lane j of row m: position of the j-th set bit of m (0 past the last) */
 #define CB(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
 #define CL(m, j)	(CB(m, j, 0) + CB(m, j, 1) + CB(m, j, 2) + CB(m, j, 3) + \
