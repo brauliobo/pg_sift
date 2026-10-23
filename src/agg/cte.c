@@ -13,15 +13,20 @@
 #include <math.h>
 
 #include "access/genam.h"
+#include "access/parallel.h"
 #include "access/relation.h"
 #include "catalog/pg_class.h"
+#include "executor/executor.h"
 #include "jit/jit.h"
 #include "nodes/extensible.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
+#include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
+#include "utils/plancache.h"
 #include "utils/rel.h"
 
 #include "agg/agg.h"
@@ -48,6 +53,13 @@
 #define CTE_INLINE_TOTALS	1.25
 
 static planner_hook_type prev_planner_hook;
+static ExecutorStart_hook_type prev_executor_start;
+
+/* sift_planner has planned a statement of this backend */
+static bool hook_ran;
+
+/* the first statement to start after the library loaded has been looked at (sift_executor_start) */
+static bool late_checked;
 
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
@@ -529,6 +541,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	MemoryContext memo = sift_agg_memo_begin();
 	PlannedStmt *stmt;
 
+	hook_ran = true;
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
@@ -543,9 +556,84 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	return stmt;
 }
 
+/* does the plan read a table that has a column index? */
+static bool
+reads_indexed_plan(PlannedStmt *ps)
+{
+	foreach_node(RangeTblEntry, rte, ps->rtable)
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+			return true;
+	return false;
+}
+
+/*
+ * Without shared_preload_libraries or session_preload_libraries the library is loaded when the planner first opens a column index, which is
+ * inside planner() and after it decided there was no hook: that one statement of the backend is planned without sift_planner (no inline CTE,
+ * no flattened laterals) and the aggregates that every later statement runs in the scan run their ordinary plan. The statement is planned
+ * again here, from its text, when it is a plain SELECT of the top level; the same text through the hook gives the plan the next statement of
+ * the session gets. Anything else (a statement with parameters, EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
+ */
+static PlannedStmt *
+replan(QueryDesc *qd)
+{
+	PlannedStmt *ps = qd->plannedstmt;
+	RawStmt    *raw = NULL;
+	List	   *trees,
+			   *plans;
+
+	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->params != NULL || qd->sourceText == NULL ||
+		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
+		return NULL;
+	foreach_node(RawStmt, r, pg_parse_query(qd->sourceText))
+		if (r->stmt_location == ps->stmt_location)
+			raw = r;
+	/* the text of a prepared statement is its PREPARE */
+	if (raw != NULL && IsA(raw->stmt, PrepareStmt))
+	{
+		RawStmt    *inner = makeNode(RawStmt);
+
+		*inner = *raw;
+		inner->stmt = castNode(PrepareStmt, raw->stmt)->query;
+		raw = inner;
+	}
+	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
+		return NULL;
+	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, NULL, 0, qd->queryEnv);
+	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT)
+		return NULL;
+	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, NULL);
+	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
+		return NULL;
+	return linitial_node(PlannedStmt, plans);
+}
+
+static void
+sift_executor_start(QueryDesc *queryDesc, int eflags)
+{
+	if (!late_checked)
+	{
+		late_checked = true;
+		if (!hook_ran && (eflags & EXEC_FLAG_EXPLAIN_ONLY) == 0)
+		{
+			PlannedStmt *fresh = replan(queryDesc);
+
+			if (fresh != NULL)
+				queryDesc->plannedstmt = fresh;
+			/* a prepared statement keeps no plan made without the hook */
+			ResetPlanCache();
+		}
+	}
+	if (prev_executor_start)
+		prev_executor_start(queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
+}
+
 void
 sift_aggcte_init(void)
 {
 	prev_planner_hook = planner_hook;
 	planner_hook = sift_planner;
+	prev_executor_start = ExecutorStart_hook;
+	ExecutorStart_hook = sift_executor_start;
 }
