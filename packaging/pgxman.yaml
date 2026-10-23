@@ -19,6 +19,7 @@ maintainers:
 buildDependencies:
   - liblz4-dev
   - libzstd-dev
+  - libicu-dev
 build:
   main:
     - name: Build pg_sift
