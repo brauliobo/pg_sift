@@ -12,6 +12,7 @@
 
 extern const SiftAggKernels sift_aggkern_avx2;
 extern const SiftAggKernels sift_aggkern_avx512;
+extern const SiftAggKernels sift_aggkern_neon;
 
 #define AGK_NW(n)		(((n) + 63) >> 6)
 

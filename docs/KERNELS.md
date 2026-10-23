@@ -182,6 +182,28 @@ Ns per call, one vector of 4096 rows (a bitmap of 64 words), same host and condi
 
 `tools/aggkern/bench` prints this table (`make bench`).
 
+On AArch64 (`agg/kern_neon.c`, Apple M4, clang `-O2`, one thread, the same conditions, best of 300 batches; clang vectorizes the plain scalar loops, so the scalar column is
+much faster than the x86-64 GCC one above):
+
+| operator | scalar | neon | x |
+|---|---|---|---|
+| cmp_f64 < | 2688 | 594 | 4.5x |
+| cmp_f64 > | 4312 | 609 | 7.1x |
+| sum_i32 all rows | 133 | 133 | 1.0x |
+| sum_i32 50 % | 711 | 285 | 2.5x |
+| absmax_f64 all rows | 3625 | 922 | 3.9x |
+| absmax_f64 50 % | 922 | 922 | 1.0x |
+| minmax_i32 all rows | 141 | 141 | 1.0x |
+| minmax_i32 50 % | 922 | 516 | 1.8x |
+| minmax_i64 all rows / 50 % | 523 / 1047 | 523 / 1047 | 1.0x |
+| minmax_f64 all rows | 5438 | 727 | 7.5x |
+| minmax_f64 50 % | 2719 | 1391 | 2.0x |
+
+A masked reduction walks the 64 bits of a mask word in sixteen steps of four rows and turns each nibble into a lane mask; the unmasked `sum_i32` and `minmax_i32` are the scalar
+loops (the compiler's vector loop was as fast as the intrinsics, 0.9x to 1.1x). `minmax_i64` has no NEON kernel: NEON has no 64-bit min or max, and compare-and-select was 0.3x to
+0.6x of the scalar loop. `minmax_f64` keeps NaN out of the running values by replacing the NaN rows with the identity (FMINNM would let a signaling NaN in) and notes them on the side.
+`lut_i32`, `gather_bits`, `gid_*`, `count_gid` and `sum_gid_*` are gathers and scatters, which NEON has no instruction for: the scalar functions.
+
 ## Verification
 
 - `tools/aggkern/test`: every slot of every level against scalar, bit for bit (`make test N=20`, N thousand random cases per thread plus a grid of every length 0..300 and every multiple of 64 and its neighbours up to 4096). A case (`src/agg/kern_cases.h`) draws the data per type: int32 and int64 small, full range and extremes (`INT_MIN`, `INT_MAX`, around 2^31 and 2^32); doubles from normal values, small integers with both zeros, `NaN` (several payloads, signalling), `Inf`, subnormals and the extremes; dictionary codes uniform, in runs, sorted and at the top of the LUT; masks empty, full, 1 % to 99 %, in runs, one bit, alternating; thresholds at the data, at its neighbours and at the type's bounds. The padding after every input is random garbage and every output is poisoned before the call. The inputs are allocated at their exact size, so the ASan build (`make SANITIZE=1 test`, with UBSan) catches a read past the padding or a write past an output. The scalar table is also checked against values written out by hand (float order, zeros, NaN, the sum of integers).
