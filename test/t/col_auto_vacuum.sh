@@ -7,8 +7,10 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 9
+# The least time between two VACUUMs of a table is five naptimes before PostgreSQL 18 (from 18, ten times the average one): a scan that checked many
+# rows in the heap after a change of ten rows asks for one, and must find the last within that time, so the naptime is not shorter
 node_init av 22 "autovacuum = off
-sift.maintenance_naptime = 200"
+sift.maintenance_naptime = 1000"
 node_start av || bail "start failed"
 sql av "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 150000) g" \
