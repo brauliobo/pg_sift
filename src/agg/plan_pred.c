@@ -657,6 +657,59 @@ is_gate(Node *n)
 	return exprType(n) == BOOLOID && pseudo_const(n);
 }
 
+/*
+ * (a, b, c) > (x, y, z) as the comparisons a row compare means: a > x OR (a = x AND (b > y OR (b = y AND c > z))), the last pair with the operator of the row
+ * compare itself (>=, <=). Each is a comparison of a leaf the zones, the summaries and the kernels test, where the row compare was a boolean of several leaves
+ * the executor evaluates for every row: a keyset page (WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT n) then reads the units from the key on, not all of them.
+ * NULL where either gives it: the first pair that differs decides, as in the row compare. NULL when an operator is missing.
+ */
+#if PG_VERSION_NUM >= 180000
+#define ROWCMP_KIND(rc)	((rc)->cmptype)
+#define ROWCMP_LT	COMPARE_LT
+#define ROWCMP_LE	COMPARE_LE
+#define ROWCMP_GT	COMPARE_GT
+#else
+#define ROWCMP_KIND(rc)	((rc)->rctype)
+#define ROWCMP_LT	ROWCOMPARE_LT
+#define ROWCMP_LE	ROWCOMPARE_LE
+#define ROWCMP_GT	ROWCOMPARE_GT
+#endif
+
+static Node *
+expand_row_compare(RowCompareExpr *rc)
+{
+	int			n = list_length(rc->largs);
+	bool		lower = ROWCMP_KIND(rc) == ROWCMP_LT || ROWCMP_KIND(rc) == ROWCMP_LE;
+	Node	   *out = NULL;
+
+	for (int i = n - 1; i >= 0; i--)
+	{
+		Node	   *l = list_nth(rc->largs, i),
+				   *r = list_nth(rc->rargs, i);
+		Oid			fam = list_nth_oid(rc->opfamilies, i),
+					coll = list_nth_oid(rc->inputcollids, i),
+					lt = exprType(l),
+					rt = exprType(r),
+					op_eq,
+					op_strict,
+					op_last;
+
+		op_eq = get_opfamily_member(fam, lt, rt, BTEqualStrategyNumber);
+		op_strict = get_opfamily_member(fam, lt, rt, lower ? BTLessStrategyNumber : BTGreaterStrategyNumber);
+		op_last = get_opfamily_member(fam, lt, rt, ROWCMP_KIND(rc) == ROWCMP_LT ? BTLessStrategyNumber :
+									  ROWCMP_KIND(rc) == ROWCMP_LE ? BTLessEqualStrategyNumber :
+									  ROWCMP_KIND(rc) == ROWCMP_GT ? BTGreaterStrategyNumber : BTGreaterEqualStrategyNumber);
+		if (!OidIsValid(op_eq) || !OidIsValid(op_strict) || !OidIsValid(op_last))
+			return NULL;
+		if (out == NULL)
+			out = (Node *) make_opclause(op_last, BOOLOID, false, (Expr *) l, (Expr *) r, InvalidOid, coll);
+		else
+			out = (Node *) make_orclause(list_make2(make_opclause(op_strict, BOOLOID, false, (Expr *) l, (Expr *) r, InvalidOid, coll),
+													make_andclause(list_make2(make_opclause(op_eq, BOOLOID, false, (Expr *) l, (Expr *) r, InvalidOid, coll), out))));
+	}
+	return out;
+}
+
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
@@ -681,6 +734,13 @@ compile_pred(AggCtx *c, Node *n)
 	}
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
+	if (IsA(n, RowCompareExpr))
+	{
+		Node	   *x = expand_row_compare((RowCompareExpr *) n);
+
+		if (x != NULL && (p = compile_pred(c, x)) != NULL)
+			return p;
+	}
 	if (null_guarded_arm(n) != NULL)
 		return compile_guarded(c, null_guarded_arm(n));
 	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
