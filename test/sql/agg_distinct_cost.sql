@@ -31,6 +31,10 @@ SELECT groups,
        differences(format('SELECT %s, count(*) AS n, count(DISTINCT cat) AS d FROM items GROUP BY %s', g, g)) AS differences
 FROM (VALUES ('5000 groups', 'grp'), ('100 groups', 'part')) v(groups, g) ORDER BY groups;
 
+-- a column of 100 values (a window of two words) keeps its sets in the words of the group (agg/dist.c): no chunk to price, for any number of groups
+SELECT scan_cost('SELECT grp, count(*) AS n, count(DISTINCT cat) AS d FROM items GROUP BY grp') / scan_cost('SELECT grp, count(*) AS n, count(DISTINCT part) AS d FROM items GROUP BY grp') > 1.5 AS words_not_priced,
+       differences('SELECT grp, count(*) AS n, count(DISTINCT part) AS d FROM items GROUP BY grp') AS differences;
+
 DROP FUNCTION scan_cost(text), differences(text);
 DROP TABLE items;
 DROP EXTENSION pg_sift;
