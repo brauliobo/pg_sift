@@ -320,7 +320,11 @@ table_init(AggExec *ex)
 			continue;
 		}
 		if (a->kind == SAA_COUNT_DISTINCT)
+		{
 			ex->dist[i] = dist_new(ex, !a->num.n && a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype != SCV_CODE);
+			if (i < 64 && (ex->dist_hash >> i & 1))
+				dist_start_hash(ex->dist[i]);
+		}
 		else if (a->kind == SAA_O_COUNT_KEY)
 			ex->dist[i] = dist_new(ex, false);
 		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)

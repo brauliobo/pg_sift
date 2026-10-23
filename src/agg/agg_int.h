@@ -132,6 +132,7 @@ typedef struct AggExec
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
 	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
+	uint64		dist_hash;		/* the aggregates (below 64) whose sets had left their bitmaps when the table spilled: the next table starts them as hash sets */
 	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
 	int			n_spills;		/* ... and the times it did */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
