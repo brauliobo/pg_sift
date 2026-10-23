@@ -284,6 +284,7 @@ static uint64
 refresh_segment(Relation index, uint64 rgen)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	/* check-memory: allow the merge takes it as arguments, and takes buffer and page locks only; sift.col_refresh runs under debug_discard_caches in cache_discard */
 	SiftColRel *rel = sift_col_rel(index);
 	uint64		gen = 0;
 
@@ -380,6 +381,7 @@ PG_FUNCTION_INFO_V1(sift_col_refresh);
 static int
 stale_segments(Relation index, uint64 *gens)
 {
+	/* check-memory: allow between its uses the loop reads segments (buffer and spin locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
 	SiftColRel *rel = sift_col_rel(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col refresh census", ALLOCSET_DEFAULT_SIZES);
@@ -461,6 +463,7 @@ leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n
 void
 sift_col_report_caps(Relation index)
 {
+	/* check-memory: allow the loop reads segments (buffer locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
 	const SiftColRel *rel = sift_col_rel(index);
 	const SiftCPaggSpec *spec = &rel->pagg;
 	const char *name = quote_identifier(RelationGetRelationName(index));

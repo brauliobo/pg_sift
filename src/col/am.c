@@ -676,6 +676,7 @@ sift_col_test_inval(Relation index)
 const SiftColIndexMeta *
 sift_col_index_defs(Relation index)
 {
+	/* check-memory: allow hands out &r->meta at once; the callers copy it before any lock (sift_col_index_meta, col_layout) */
 	SiftColRel *r = sift_col_rel(index);
 
 	r->meta.valid = index->rd_index->indisvalid && index->rd_index->indisready && index->rd_index->indislive;
@@ -1000,6 +1001,7 @@ bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
+	/* check-memory: allow copies the hint and the row context, and fetches the entry again to store the hint  */
 	SiftColRel *r = sift_col_rel(index);
 	SiftCWbufHint hint = r->hint;
 	MemoryContext rowcxt = r->rowcxt;
