@@ -117,7 +117,9 @@ $$);
 SELECT count(*) AS left_in_rrd FROM pg_class WHERE relnamespace = 'rrd'::regnamespace;
 
 -- schemas and ownership: the owner creates a schema (the database CREATE privilege) and drops it with everything in it; DROP OWNED and
--- REASSIGN OWNED fire the drop trigger for sift tables too
+-- REASSIGN OWNED fire the drop trigger for sift tables too. DROP OWNED warns that it revoked nothing and names the database, whose name
+-- depends on how the tests are run
+SET client_min_messages = error;
 SELECT * FROM rr_run($$
 rrd_owner | CREATE SCHEMA rrd_own
 rrd_owner | CREATE TABLE rrd_own.docs (id int, body text)
@@ -136,6 +138,7 @@ rrd_member | ALTER TABLE rrd.docs ADD COLUMN z int
 rrd_owner | DROP OWNED BY rrd_owner
 rrd_member | DROP OWNED BY rrd_member
 $$);
+RESET client_min_messages;
 SELECT count(*) AS left_in_schemas FROM pg_class WHERE relnamespace IN ('rrd'::regnamespace, 'rrd2'::regnamespace);
 SELECT count(*) AS paths_left FROM sift.table_paths;
 
