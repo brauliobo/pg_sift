@@ -113,6 +113,13 @@ topn_shared_init(ScanShared *sh, AggExec *ex)
 		memcpy(shared_order(sh, ex->spec), ex->vorder, ex->nvorder * sizeof(uint32));
 }
 
+/* a serial scan of a table partitioned by (part of) the group key: an item is a partition, whose groups are final when its units end */
+bool
+part_flush_on(const AggExec *ex)
+{
+	return ex->spec->part_final && ex->spec->nparts > 0 && ex->spec->nworkers == 0;
+}
+
 void
 shared_init(ScanShared *sh, AggExec *ex)
 {
@@ -124,6 +131,8 @@ shared_init(ScanShared *sh, AggExec *ex)
 	if (ex->super_on)
 		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src));
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
+	if (part_flush_on(ex))
+		sh->nitems = ex->spec->nparts;
 	pg_atomic_init_u32(&sh->next, 0);
 	if (ex->topn)
 		topn_shared_init(sh, ex);
@@ -183,7 +192,9 @@ scan_item(AggExec *ex, uint32 item)
 {
 	ScanShared *sh = ex->shared;
 
-	if (sh->ordered)
+	if (part_flush_on(ex))
+		scan_range(ex, sh->partoff[item], sh->partoff[item + 1]);
+	else if (sh->ordered)
 		for (uint32 sb = item; sb < sh->nsb; sb += SIFT_AGG_LANES)
 			scan_range(ex, sb, sb + 1);
 	else
@@ -350,6 +361,8 @@ scan_items(AggExec *ex)
 		scan_item(ex, item);
 		/* the cells of the last row are groups of the item's table */
 		arms_flush(ex);
+		if (part_flush_on(ex))
+			part_flush(ex);
 		if (ex->lane_serial)
 			lane_fold(ex);
 		else if (ex->shared->ordered)

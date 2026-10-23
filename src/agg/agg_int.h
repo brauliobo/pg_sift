@@ -263,6 +263,9 @@ typedef struct AggExec
 	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */
 	/* counters */
 	int64		n_units;
+	struct TupleTableSlot *done_slot;	/* its reads: a slot of minimal tuples */
+	struct Tuplestorestate *done;	/* part_flush_on: the finished groups of the partitions scanned, as the tuples of the result */
+	int64		n_flushed;
 	const uint32 *partoff;		/* a parallel worker of a partitioned table: the leader's first superblock of each partition (sift_aggpart_set_offsets) */
 	int			parts_pruned;	/* the partitions of a partitioned table that its conditions refuted when the scan started (part_prune_init) */
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
@@ -306,6 +309,8 @@ extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);
+bool part_flush_on(const AggExec *ex);
+void part_flush(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
 Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);

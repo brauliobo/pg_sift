@@ -57,6 +57,7 @@
 #include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/tuplestore.h"
 #include "utils/date.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -802,17 +803,10 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 	return sift_topn_next(ex->topn, slot) ? slot : NULL;
 }
 
-/* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
-static bool
-group_slot(AggExec *ex, TupleTableSlot *slot)
+/* group g of table t as a tuple of the scan */
+static void
+group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 {
-	AggExec    *t = ex->gtab;
-	uint32		g;
-
-	while (ex->gpos >= t->nglist)
-		if (!spill_more(ex))
-			return false;
-	g = t->glist[ex->gpos++];
 	ExecClearTuple(slot);
 	for (int j = 0; j < t->spec->nkeys; j++)
 		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
@@ -823,7 +817,52 @@ group_slot(AggExec *ex, TupleTableSlot *slot)
 		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
 	}
 	ExecStoreVirtualTuple(slot);
+}
+
+/* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
+static bool
+group_slot(AggExec *ex, TupleTableSlot *slot)
+{
+	AggExec    *t = ex->gtab;
+
+	while (ex->gpos >= t->nglist)
+		if (!spill_more(ex))
+			return false;
+	group_tuple(t, t->glist[ex->gpos++], slot);
 	return true;
+}
+
+/*
+ * The units of a partition are over and no other partition holds a row of its groups (the group key holds the partition key): the groups are
+ * final. They go to the tuples of the result and the table starts again, so the scan holds the groups of one partition, not of all.
+ */
+void
+part_flush(AggExec *ex)
+{
+	TupleTableSlot *slot = ex->css.ss.ss_ScanTupleSlot;
+	MemoryContext tmp = AllocSetContextCreate(ex->cxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES),
+				old = MemoryContextSwitchTo(tmp);
+
+	if (ex->done == NULL)
+	{
+		MemoryContextSwitchTo(ex->cxt);
+		ex->done = tuplestore_begin_heap(false, false, work_mem);
+		MemoryContextSwitchTo(tmp);
+	}
+	dist_finish_all(ex);
+	mapped_finish(ex);
+	list_groups(ex);
+	for (uint32 i = 0; i < ex->nglist; i++)
+	{
+		group_tuple(ex, ex->glist[i], slot);
+		tuplestore_puttupleslot(ex->done, slot);
+	}
+	ex->n_flushed += ex->nglist;
+	ex->glist = NULL;
+	ex->nglist = 0;
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+	table_reset(ex);
 }
 
 static TupleTableSlot *
@@ -838,6 +877,16 @@ agg_next(ScanState *node)
 	{
 		run_scan(ex);
 		finish_groups(ex);
+		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
+	}
+	if (ex->done)
+	{
+		if (ex->done_slot == NULL)
+			ex->done_slot = MakeSingleTupleTableSlot(slot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
+		/* the expressions above were compiled for the virtual slot of the node */
+		if (!tuplestore_gettupleslot(ex->done, true, false, ex->done_slot))
+			return NULL;
+		return ExecCopySlot(slot, ex->done_slot);
 	}
 	if (ex->fuse)
 		return fuse_next(ex, slot);
@@ -1030,6 +1079,10 @@ agg_end(CustomScanState *node)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
 			tuplesort_end(ex->osa[i]->sort);
 	gen_close(ex);
+	if (ex->done)
+		tuplestore_end(ex->done);
+	if (ex->done_slot)
+		ExecDropSingleTupleTableSlot(ex->done_slot);
 	if (ex->css.ss.ps.state)
 		fuse_unregister(ex);
 	if (ex->fuse && --ex->fuse->refs == 0)
@@ -1288,6 +1341,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
 	}
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+	if (part_flush_on(ex))
+		ExplainPropertyText("Groups Finished", "per partition", es);
 	if (c->n_osa_spilled)
 		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
 	if (c->n_spills)
