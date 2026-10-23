@@ -77,6 +77,11 @@ def run(args):
                 psql(f'set search_path = scal_{name}, public; {c.setup(size if c.per_size else max(sizes))}')
                 print(f'# {name}: built for {size if c.per_size else max(sizes)} {c.unit} in {time.time() - t0:.0f}s', file=sys.stderr, flush=True)
             psql(f'set search_path = scal_{name}, public; {c.at(size)}')
+            if c.check and size == sizes[0]:
+                res = {e: psql('\n'.join(f'set {x};' for x in COMMON + [f'search_path = scal_{name}, public'] + ENGINES[e]) + f'\n{c.check(size)}', check=False).strip() for e in ENGINES}
+                same = len(set(res.values())) == 1 and 'ERR' not in res['sift']
+                print(f'CHECK {name}@{size} {"ok" if same else "MISMATCH " + str(res)}', flush=True)
+                failed |= not same
             for q in c.queries:
                 for eng in ENGINES if c.native else ['sift']:
                     r, err = explain(q.sql(size), [f'search_path = scal_{name}, public'] + ENGINES[eng], args.reps)
