@@ -498,21 +498,13 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 }
 
 static bool
-col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set)
+col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
 {
 	ColSource  *src = impl;
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept, pruned, set);
-}
-
-static void
-col_skipped(void *impl, int64 pruned, int64 set)
-{
-	ColSource  *src = impl;
-
-	sift_col_skipped(src->cs, pruned, set);
+	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept);
 }
 
 static bool
@@ -815,7 +807,6 @@ static const SiftSrcProvider col_provider = {
 	.nsb = col_nsb,
 	.begin = col_begin,
 	.kept = col_kept,
-	.skipped = col_skipped,
 	.next = col_next,
 	.super = col_super,
 	.split = col_split,

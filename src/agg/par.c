@@ -144,16 +144,12 @@ typedef struct SkipMap
 	bool		ok;
 	uint32		nsb;
 	uint64	   *kept;
-	uint16	   *pruned;
-	uint16	   *set;
 } SkipMap;
 
-static bool
-range_skipped(AggExec *ex, uint32 lo, uint32 hi)
+static SkipMap *
+skip_map(AggExec *ex)
 {
 	SkipMap    *m = ex->skip;
-	int64		pruned = 0,
-				set = 0;
 
 	if (m == NULL)
 	{
@@ -162,10 +158,17 @@ range_skipped(AggExec *ex, uint32 lo, uint32 hi)
 		m = ex->skip = MemoryContextAllocZero(ex->cxt, sizeof(SkipMap));
 		m->nsb = nsb;
 		m->kept = MemoryContextAllocZero(ex->cxt, (nsb + 63) / 64 * sizeof(uint64));
-		m->pruned = MemoryContextAllocZero(ex->cxt, nsb * sizeof(uint16));
-		m->set = MemoryContextAllocZero(ex->cxt, nsb * sizeof(uint16));
-		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept, m->pruned, m->set);
+		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept);
 	}
+	return m;
+}
+
+/* Is there no superblock of [lo, hi) the zones leave a unit in? */
+static bool
+range_skipped(AggExec *ex, uint32 lo, uint32 hi)
+{
+	SkipMap    *m = skip_map(ex);
+
 	hi = Min(hi, m->nsb);
 	if (!m->ok || lo >= hi)
 		return false;
@@ -180,13 +183,29 @@ range_skipped(AggExec *ex, uint32 lo, uint32 hi)
 		if (m->kept[w] & mask)
 			return false;
 	}
-	for (uint32 sb = lo; sb < hi; sb++)
-	{
-		pruned += m->pruned[sb];
-		set += m->set[sb];
-	}
-	sift_colsrc_skipped(ex->src, pruned, set);
 	return true;
+}
+
+/* The first superblock from sb, a step apart, that the zones leave a unit in (nsb or more when there is none; sb itself without the map) */
+static uint32
+next_kept(AggExec *ex, uint32 sb, uint32 step)
+{
+	SkipMap    *m = skip_map(ex);
+
+	if (!m->ok)
+		return sb;
+	while (sb < m->nsb)
+	{
+		uint64		rest = m->kept[sb / 64] >> (sb % 64);
+
+		if (rest & 1)
+			return sb;
+		if (rest == 0)			/* nothing is kept to the end of the word: the first superblock of the next word on the same step */
+			sb += ((sb / 64 + 1) * 64 - sb + step - 1) / step * step;
+		else
+			sb += step;
+	}
+	return sb;
 }
 
 void
@@ -246,7 +265,7 @@ scan_item(AggExec *ex, uint32 item)
 	if (part_flush_on(ex))
 		scan_range(ex, sh->partoff[item], sh->partoff[item + 1]);
 	else if (sh->ordered)
-		for (uint32 sb = item; sb < sh->nsb; sb += SIFT_AGG_LANES)
+		for (uint32 sb = next_kept(ex, item, SIFT_AGG_LANES); sb < sh->nsb; sb = next_kept(ex, sb + SIFT_AGG_LANES, SIFT_AGG_LANES))
 			scan_range(ex, sb, sb + 1);
 	else
 		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));

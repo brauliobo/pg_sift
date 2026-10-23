@@ -318,15 +318,9 @@ sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcP
 }
 
 bool
-sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint16 *pruned, uint16 *set)
+sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
 {
-	return src->prov->kept != NULL && src->prov->kept(src->impl, prune, nprune, nspace, kept, pruned, set);
-}
-
-void
-sift_colsrc_skipped(SiftSrcSource *src, int64 pruned, int64 set)
-{
-	src->prov->skipped(src->impl, pruned, set);
+	return src->prov->kept != NULL && src->prov->kept(src->impl, prune, nprune, nspace, kept);
 }
 
 bool
