@@ -162,8 +162,9 @@ group_has_partition_key(AggCtx *c, List *keys)
 
 	if (c->nparts == 0)
 		return false;
+	/* even_if_detached: a partition the snapshot still sees may be mid-DETACH CONCURRENTLY, which the call otherwise refuses with an error */
 	for (int i = 0; i < c->nparts; i++)
-		if (get_partition_parent(c->partheap[i], false) != c->heapoid)
+		if (get_partition_parent(c->partheap[i], true) != c->heapoid)
 			return false;
 	rel = table_open(c->heapoid, NoLock);
 	pk = RelationGetPartitionKey(rel);
