@@ -46,3 +46,9 @@ partitions_tiny	A query over 5,000 partitions of 6 rows each	orders	default	Seq 
 dirty_share_few	A table with a few percent of dirty documents keeps the scan	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 dirty_share_half	one with a third or more keeps the normal plan, which is cheaper there	events	-	Seq Scan	native	-	ms	faster33	no
 cte_series_arms	Three `UNION ALL` arms over the elements of a jsonb array, counted `DISTINCT` above a spine, 100,000 rows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_in_wide_50k	is tested by a bit table instead of a hash table	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_in_wide_500k	the zone test of a set travels to the column layer up to twice the units of the scan	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_in_narrow_500k	the selectivity of the list is the one the planner kept for the condition	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_subq_500k	the rows a lookup join loads (`IN (SELECT ..)`, `EXISTS`, a join) are read by the heap scan	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_exists_500k	when an equality of the joined table keeps a third of it or more	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+keys_join_500k	as an `IN` list of the table already was	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
