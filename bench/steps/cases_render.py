@@ -17,8 +17,10 @@ import extras  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
+OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
 UNIT = {'ms': 'ms', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
-VARIANT = {'scan': 'the units scanned (`sift.agg_preagg = off`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
+VARIANT = {'scan': 'the units scanned (`sift.agg_preagg = off`)', 'runs_off': 'the sorted runs not read (`sift.topn_runs = off`)', 'zone_off': 'the zones of the keys after the first not used (`sift.topn_zone_keys = off`)',
+           'forced': 'the top-N scan forced by turning the btree plans off (`enable_indexscan`, `enable_indexonlyscan`, `enable_bitmapscan`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
 
 
 def figure(v):
@@ -40,12 +42,12 @@ def collect(rows, registry, root=REPO):
                 continue
             val = lambda r: float(r['value']) if r and r['value'] not in ('', 'NA', 'error') else None  # noqa: E731
             others = {arm: ('not supported' if (r := get(arm)) and r['value'] == 'NA' else val(r)) for arm in c.baselines[1:] + [v[0] for v in c.variants] if get(arm)}
-            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), noisy=any('NOISY' in (r['note'] or '') for r in (n, s))))
+            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), kept=re.sub(r' NOISY$', '', n['note']) == re.sub(r' NOISY$', '', s['note']), noisy=any('NOISY' in (r['note'] or '') for r in (n, s))))
     return out
 
 
 def verdict(f):
-    if not f['native'] or not f['sift']:
+    if f['kept'] or not f['native'] or not f['sift']:
         return None
     return f['native'] / f['sift']
 
@@ -59,6 +61,7 @@ def cell_others(f):
 
 def takeaway(figs):
     rs = [(f, verdict(f)) for f in figs if verdict(f)]
+    kept = [f for f in figs if f['kept']]
     faster = [r for f, r in rs if r >= 1 + TIE]
     tie = [f for f, r in rs if 1 - TIE < r < 1 + TIE]
     slower = [(f, 1 / r) for f, r in rs if r <= 1 - TIE]
@@ -68,6 +71,11 @@ def takeaway(figs):
         text += ', a tie on %d' % len(tie)
     if slower:
         text += ', slower on %d: %s' % (len(slower), ', '.join('%s %s (%s slower)' % (f['case'].id, UNIT[f['metric']], speed(r)) for f, r in slower))
+    flat = [(f, a) for f, _ in rs for a in OFF if isinstance(f['others'].get(a), float) and f['sift'] and f['others'][a] <= f['sift'] * (1 + TIE)]
+    if flat:
+        text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
+    if kept:
+        text += '; the planner kept the normal plan (the same plan as PostgreSQL\'s, no ratio) on %d: %s' % (len(kept), ', '.join('%s %s' % (f['case'].id, UNIT[f['metric']]) for f in kept))
     return text + '.'
 
 
@@ -85,7 +93,7 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
     body = []
     for f in figs:
         r = verdict(f)
-        sp = '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
+        sp = 'same plan' if f['kept'] else '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
         if r and isinstance(f['others'].get('bulk_off'), float) and f['sift']:
             sp += ' (`sift.table_bulk_groups` on vs off: %s lower)' % speed(f['others']['bulk_off'] / f['sift'])
         first = f['metric'] == f['case'].metrics[0]
