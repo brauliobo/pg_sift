@@ -61,6 +61,7 @@
 #include "agg/topn.h"
 #include "agg/spec.h"
 #include "agg/colsrc.h"
+#include "agg/dist_int.h"
 #include "agg/search.h"
 #include "agg/plan_int.h"
 
@@ -1305,9 +1306,28 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 }
 
 /*
+ * Does the set of a count(DISTINCT) of a leaf stay in the words of a group (agg/dist.c DD_WORDS)? The values of the leaf fall in a window of
+ * dist_narrow_words words aligned to 64: from the range of its zones, or, for a text leaf, the codes of its dictionary (0 to nd - 1). A
+ * leaf with no range known is not: the executor decides at its first batch, and the plan keeps the bitmap price.
+ */
+static bool
+distinct_narrow(AggCtx *c, const SiftAggAgg *a)
+{
+	double		nd = c->stats.ndistinct[a->leaf],
+				lo = c->stats.min[a->leaf],
+				hi = c->stats.max[a->leaf],
+				room = 64.0 * sift_limit(dist_narrow_words, DIST_NARROW_WORDS);
+
+	if (lo != 0 || hi != 0)
+		return floor(hi / 64.0) * 64.0 + 64.0 - floor(lo / 64.0) * 64.0 <= room;
+	return nd > 0 && nd <= room && leaf_of(c, a->leaf)->vtype == SCV_CODE;
+}
+
+/*
  * The chunks of the bitmap sets of a count(DISTINCT) of a leaf: a group's values fall in chunks of AGG_DIST_CHUNK_BITS bits of the value
  * range (nd values wide), and a chunk is allocated and zeroed when a value first touches it. Only while the chunks fit the set's memory:
  * past it the sets move to a hash set, whose pair costs between 0.1 and 2 us with the column and the size of the set (not priced: 0).
+ * A set of a narrow leaf has none.
  */
 static double
 distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
@@ -1317,7 +1337,7 @@ distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
 				chunks,
 				touched;
 
-	if (nd <= 0)
+	if (nd <= 0 || distinct_narrow(c, a))
 		return 0;
 	chunks = Max(ceil(nd / AGG_DIST_CHUNK_BITS), 1.0);
 	touched = Min(groups * chunks * -expm1(-k->agg_rows / groups / chunks), k->agg_rows);
