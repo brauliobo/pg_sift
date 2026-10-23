@@ -783,16 +783,27 @@ param_set_ratio(AggCtx *c)
 	return Min(f, Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
 }
 
-/* the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers, or the probes a nested loop makes of one per key */
+/* is the path a scan of the table the node scans (the plan has other ranges of it: a CTE read twice, an inlined copy)? */
+static bool
+scans_table(AggCtx *c, const Path *p)
+{
+	return p->parent->reloptkind == RELOPT_BASEREL &&
+		planner_rt_fetch(p->parent->relid, c->root)->relid == planner_rt_fetch(c->relid, c->root)->relid;
+}
+
+/*
+ * the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers,
+ * or the probes a join makes of one per key (a nested loop, or the input of a merge or hash join above it)
+ */
 static Path *
-row_scan_of(Path *p)
+row_scan_of(Path *p, AggCtx *c)
 {
 	for (;;)
 		switch (nodeTag(p))
 		{
 			case T_IndexPath:
 			case T_BitmapHeapPath:
-				return p;
+				return scans_table(c, p) ? p : NULL;
 			case T_AggPath:
 				p = ((AggPath *) p)->subpath;
 				break;
@@ -814,14 +825,24 @@ row_scan_of(Path *p)
 			case T_ProjectionPath:
 				p = ((ProjectionPath *) p)->subpath;
 				break;
+			case T_MaterialPath:
+				p = ((MaterialPath *) p)->subpath;
+				break;
 			case T_NestPath:
+			case T_MergePath:
+			case T_HashPath:
 				{
 					/* the keys of a lookup drive the probes of an index or bitmap scan of the table: the plan costs a probe a key */
-					Path	   *inner = ((NestPath *) p)->jpath.innerjoinpath;
+					JoinPath   *jp = (JoinPath *) p;
+					Path	   *inner = jp->innerjoinpath,
+							   *found;
 
 					if (IsA(inner, MemoizePath))
 						inner = ((MemoizePath *) inner)->subpath;
-					return (IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL ? inner : NULL;
+					if ((IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL && scans_table(c, inner))
+						return inner;
+					found = row_scan_of(jp->outerjoinpath, c);
+					return found ? found : row_scan_of(jp->innerjoinpath, c);
 				}
 			default:
 				return NULL;
@@ -837,7 +858,7 @@ param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *
 	if (f <= 1.0)
 		return;
 	foreach_ptr(Path, p, output_rel->pathlist)
-		if (row_scan_of(p) != NULL)
+		if (row_scan_of(p, c) != NULL)
 		{
 			p->startup_cost *= f;
 			p->total_cost *= f;

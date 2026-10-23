@@ -12,7 +12,9 @@ CREATE INDEX sc_facts_parent ON sc_facts (parent_id, ts, deleted_at);
 CREATE INDEX sc_facts_col ON sc_facts USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
 CREATE TABLE sc_dims (id int PRIMARY KEY, settings jsonb NOT NULL);
 INSERT INTO sc_dims SELECT p, jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= 30 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, 60) p;
-VACUUM (FREEZE, ANALYZE) sc_facts, sc_dims;
+CREATE TABLE sc_kinds (kind text PRIMARY KEY, label text);
+INSERT INTO sc_kinds SELECT 'cat_' || chr(97 + i), 'label ' || i FROM generate_series(0, 3) i;
+VACUUM (FREEZE, ANALYZE) sc_facts, sc_dims, sc_kinds;
 
 CREATE FUNCTION plan_of(q text, OUT plan text, OUT cost numeric) LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
@@ -48,6 +50,10 @@ SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_b'''));
 SELECT * FROM same(in_scope('d.id % 3 = 1'));
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_c'''));
+-- the facts joined to a third table: the normal plan reads them by the probes of a nested loop below a hash join, priced for the same keys
+SELECT * FROM same($f$
+SELECT k.label, count(*) AS n FROM sc_dims d JOIN sc_facts f ON f.parent_id = d.id JOIN sc_kinds k ON k.kind = f.kind
+WHERE d.settings ->> 'tier' = 'tier_b' AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$);
 -- no parent: the same answer from either plan
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_none'''));
 -- a filter PostgreSQL has statistics for (the primary key and its values): its estimate stands and the btree plan reads the few parents
@@ -65,5 +71,5 @@ RESET sift.agg_param_set_size;
 SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)'))) = known AS known_unchanged FROM c_est;
 
 DROP FUNCTION in_scope(text), join_scope(text), plan_of(text), same(text);
-DROP TABLE sc_facts, sc_dims;
+DROP TABLE sc_facts, sc_dims, sc_kinds;
 DROP EXTENSION pg_sift;
