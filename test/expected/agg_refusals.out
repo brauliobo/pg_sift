@@ -183,6 +183,14 @@ SELECT arm, used, slug, scan_cost > normal_cost AS dearer FROM sift.explain_why(
  single | f    | cost | t
 (1 row)
 
+-- the costs are those of the grouping stage: a LIMIT above it leaves them as they are
+SELECT a.scan_cost = b.scan_cost AND a.normal_cost = b.normal_cost AS stage_costs
+FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1') a, sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1 ORDER BY 1 LIMIT 3') b;
+ stage_costs 
+-------------
+ t
+(1 row)
+
 -- the settings that give up before any shape is looked at
 SET sift.enable_agg = off;
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1');
