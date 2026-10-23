@@ -64,13 +64,31 @@ int			sift_col_auto_merge_max_workers = 0;
 #define REWRITE_SLOT_KEY	0x53520000	/* with 0x51F7 in the advisory lock space: slot s of sift.col_auto_merge_max_workers is key + s */
 
 /*
- * A partition is an immutable segment of at least half of sift.col_auto_merge_partition_kb; the smaller ones are the overlays that promotions and
+ * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else sift.vacuum_rewrite_limit for an index over it, so that
+ * the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it. 0: no partitions.
+ */
+static int	part_kb = 0;
+
+static void
+use_partitions(const SiftDirSnapshot *snap)
+{
+	uint64		bytes = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			bytes += snap->segs[i].bytes;
+	part_kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
+		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+}
+
+/*
+ * A partition is an immutable segment of at least half of the partition size; the smaller ones are the overlays that promotions and
  * rewrites of a partition left over the same superblocks. 0: no partitions, the rewrite is of every segment into one.
  */
 static bool
 is_partition(const SiftSegEntry *e)
 {
-	return sift_col_auto_merge_partition_kb > 0 && e->bytes >= (uint64) sift_col_auto_merge_partition_kb * 512;
+	return part_kb > 0 && e->bytes >= (uint64) part_kb * 512;
 }
 
 /* The merges of the maintenance worker sleep like vacuum_cost_delay does (sift.maintenance_cost_delay) and keep to sift.maintenance_wal_rate; its promotions, which the writers wait for, and the rollup refresh do not */
@@ -204,9 +222,10 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	int			n,
 				k = 0;
 
+	use_partitions(snap);
 	if (force)
 		return sift_merge_pick(index, &pol, snap, true, sel);
-	if (sift_col_auto_merge_partition_kb == 0)
+	if (part_kb == 0)
 	{
 		n = sift_merge_pick(index, &pol, snap, false, sel);
 		return n > 0 && clean_apart(index, snap, sel, n) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
@@ -305,7 +324,7 @@ static int
 pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite pick", ALLOCSET_SMALL_SIZES);
-	RewriteView *v = view_open(index, snap, cx);
+	RewriteView *v;
 	bool		take[SIFT_MAX_SEGMENTS] = {false},
 				dirty_part[SIFT_MAX_SEGMENTS] = {false};
 	int			nsel = 0,
@@ -316,13 +335,15 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 				listed = 0;
 	bool		dirty_over = false;
 
+	use_partitions(snap);
+	v = view_open(index, snap, cx);
 	*cut = false;
 	for (int i = 0; i < v->n; i++)
 	{
 		uint32		d = (v->imm[i].flags & SIFT_SEG_DIRTY) ? dirty_units(v->seg[i]) : 0;
 
 		listed += v->seg[i]->nsb;
-		if (sift_col_auto_merge_partition_kb == 0)
+		if (part_kb == 0)
 			take[i] = true;
 		else if (v->over[i])
 		{
@@ -511,7 +532,7 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	pfree(snap);
 	if (n > 0)
 		merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-					   cut ? (uint64) sift_col_auto_merge_partition_kb * 1024 : 0, Max(room, 1));
+					   cut ? (uint64) part_kb * 1024 : 0, Max(room, 1));
 	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 
@@ -604,8 +625,7 @@ vacuum_truncates(Relation index)
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
  * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite leaves alone an index over sift.vacuum_rewrite_limit, and
- * waits until sift.col_auto_merge_min_churn_pct percent of the rows changed since the last rewrite: the dead ones, and those of its write buffer and of
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite waits until sift.col_auto_merge_min_churn_pct percent of the rows changed since the last rewrite: the dead ones, and those of its write buffer and of
  * its segments but the largest (the one a rewrite leaves). It waits too while the blocks the last rewrite freed are held back by a snapshot.
  * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with dirty_pct of its units dirty is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
@@ -618,7 +638,7 @@ rewrite_check(Relation index, bool automatic, int *gates)
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
 	RewriteView *v;
 	const char *why = NULL;
-	bool		partitioned = sift_col_auto_merge_partition_kb > 0,
+	bool		partitioned,
 				part_dirty = false;
 	uint64		listed = 0,
 				dirty = 0,
@@ -633,6 +653,8 @@ rewrite_check(Relation index, bool automatic, int *gates)
 				covered;
 
 	sift_dir_read(index, snap);
+	use_partitions(snap);
+	partitioned = part_kb > 0;
 	v = view_open(index, snap, cx);
 	for (int i = 0; i < v->n; i++)
 	{
@@ -675,11 +697,8 @@ rewrite_check(Relation index, bool automatic, int *gates)
 	MemoryContextDelete(cx);
 	pfree(snap);
 	changed += rows - (partitioned ? part_rows : largest) + buffered;
-	if (gates != NULL && automatic && !partitioned && bytes > ((uint64) sift_vacuum_rewrite_limit << 20))
-		*gates |= SIFT_COL_GATE_SIZE;
-	/* the size and the churn bound what a rewrite of all the segments costs, not the promotion of a write buffer */
-	if (!automatic || ((partitioned || bytes <= ((uint64) sift_vacuum_rewrite_limit << 20)) &&
-					   (double) changed * 100 >= sift_col_auto_merge_min_churn_pct * (double) (rows + buffered)))
+	/* the churn bounds what a rewrite of all the segments costs, not the promotion of a write buffer */
+	if (!automatic || (double) changed * 100 >= sift_col_auto_merge_min_churn_pct * (double) (rows + buffered))
 	{
 		if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
 			listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
@@ -964,8 +983,6 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 		blocked[nblocked++] = CStringGetTextDatum("temporary table");
 	if (!sift_col_autovacuum_enabled(heap))
 		blocked[nblocked++] = CStringGetTextDatum("autovacuum_enabled is false");
-	if (gates & SIFT_COL_GATE_SIZE)
-		blocked[nblocked++] = CStringGetTextDatum("index over sift.vacuum_rewrite_limit");
 	if (gates & SIFT_COL_GATE_HELD)
 		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
 	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));

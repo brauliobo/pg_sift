@@ -200,7 +200,7 @@ CREATE FUNCTION sift.col_maintain(index regclass) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_col_maintain' LANGUAGE C STRICT VOLATILE;
 
 -- Why sift.col_maintain would rewrite the index now: 'dirty units', 'fragmented units' or 'write buffer rows' (the thresholds are sift.col_auto_merge_*),
--- NULL when it is not due. automatic: as the server's own rewrite, which leaves an index over sift.vacuum_rewrite_limit megabytes alone.
+-- NULL when it is not due. automatic: as the server's own rewrite, which waits for sift.col_auto_merge_min_churn_pct and for the horizon.
 CREATE FUNCTION sift.col_maintenance_due(index regclass, automatic bool DEFAULT true) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_col_maintenance_due' LANGUAGE C STRICT VOLATILE;
 
@@ -212,7 +212,7 @@ CREATE FUNCTION sift.col_maintenance_status(index regclass,
 											OUT rewrite_due text, OUT last_request timestamptz, OUT blocked_by text[])
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_maintenance_status' LANGUAGE C STRICT VOLATILE;
-COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite, an index over the rewrite limit).';
+COMMENT ON FUNCTION sift.col_maintenance_status(regclass) IS 'Where the VACUUM and the rewrite that keep a sift_col index answerable stand: the table, its last VACUUM, the rows changed since and the number that starts the next, why the rewrite is due, the last request of a worker, and blocked_by: what keeps a worker from running (setting off, autovacuum_enabled false, a standby, a snapshot holding back the last rewrite).';
 
 -- The profile of the columns of a sift_col index and what its options could still use, one row per column and per pair of dimensions: kind (dimension, key,
 -- unique, date, measure, text, list), what the index holds of it, the units looked at (32 evenly spaced ones: the same answer for the same index), the share
