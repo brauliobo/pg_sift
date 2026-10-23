@@ -361,3 +361,6 @@ SELECT ta_check($q$SELECT id, kn FROM tq ORDER BY kn * -1, id LIMIT 30$q$) AS ne
  same+topn 30 | same+topn 30 | same+topn 30
 (1 row)
 
+DROP TABLE ta, ta_q, tq, tv;
+DROP FUNCTION ta_check(text,integer), ta_error(text,boolean), ta_mode(boolean,integer), ta_scan(text), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

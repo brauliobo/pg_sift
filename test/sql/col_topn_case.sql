@@ -163,3 +163,6 @@ FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE tb, tb_q;
+DROP FUNCTION tb_check(text,integer), tb_error(text,boolean), tb_mode(boolean,integer), tb_scan(text);
+DROP EXTENSION pg_sift_test, pg_sift;

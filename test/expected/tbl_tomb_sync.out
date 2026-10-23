@@ -47,3 +47,5 @@ SELECT id, v FROM th WHERE id IN (5, 10, 94, 95, 96, 29999, 30000) ORDER BY id;
  29999 | 30000
 (3 rows)
 
+DROP TABLE th, tm;
+DROP EXTENSION pg_sift;
