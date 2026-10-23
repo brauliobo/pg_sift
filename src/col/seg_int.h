@@ -206,6 +206,7 @@ typedef struct PointLeaf
 	uint32		nkeys;
 	uint32		count;
 	uint32		words;
+	bool		tids;			/* the slots list heap addresses (column format minor 16), not rows of the segment */
 } PointLeaf;
 
 typedef struct SegPriv

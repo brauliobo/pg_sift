@@ -791,3 +791,291 @@ table_rows	query_key	index	variant	plan	exec_median_ms	planning_median_ms	first_
 1000000	nl_join_100	sift_col classes + key_columns	planner	SiftAgg	0.287	0.095	1.083
 1000000	nl_join_100	sift_col classes + key_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	2.276	0.064	3.381
 1000000	nl_join_100	sift_col classes + key_columns	forced index scan	HashJoin/IndexOnly	375.204	0.154	383.717
+26700	pt_id_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	0.777	0.018	2.371
+26700	pt_id_rows	sift_col classes + point_columns	planner	Index	0.015	0.018	0.071
+26700	pt_id_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.019	0.021	0.069
+26700	pt_id_rows	sift_col classes + point_columns	forced index scan	Index	0.017	0.021	0.102
+26700	pt_id_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.027	0.042	0.136
+26700	pt_id_count	sift_col classes + point_columns	planner	IndexOnly	0.027	0.050	0.107
+26700	pt_id_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.023	0.022	0.076
+26700	pt_id_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.021	0.020	0.084
+26700	pt_rnd_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	0.823	0.021	2.518
+26700	pt_rnd_rows	sift_col classes + point_columns	planner	Index	0.018	0.025	0.070
+26700	pt_rnd_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.023	0.027	0.065
+26700	pt_rnd_rows	sift_col classes + point_columns	forced index scan	Index	0.015	0.020	0.051
+26700	pt_rnd_cover	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	0.879	0.020	1.945
+26700	pt_rnd_cover	sift_col classes + point_columns	planner	IndexOnly	0.019	0.019	0.066
+26700	pt_rnd_cover	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.017	0.018	0.045
+26700	pt_rnd_cover	sift_col classes + point_columns	forced index scan	IndexOnly	0.018	0.018	0.054
+26700	in10_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	1.318	0.038	2.160
+26700	in10_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	0.028	0.030	0.098
+26700	in10_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.026	0.028	0.084
+26700	in10_rows	sift_col classes + point_columns	forced index scan	Index	0.026	0.031	0.052
+26700	in100_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	1.437	0.042	2.922
+26700	in100_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	0.427	0.077	0.630
+26700	in100_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.311	0.052	0.556
+26700	in100_rows	sift_col classes + point_columns	forced index scan	Index	0.234	0.044	0.511
+26700	in100_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.131	0.101	0.255
+26700	in100_count	sift_col classes + point_columns	planner	IndexOnly	0.273	0.074	0.373
+26700	in100_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.232	0.041	0.600
+26700	in100_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.255	0.039	0.387
+26700	mc_eq_only_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.030	0.044	0.124
+26700	mc_eq_only_count	sift_col classes + point_columns	planner	IndexOnly	0.171	0.052	0.244
+26700	mc_eq_only_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.130	0.025	0.463
+26700	mc_eq_only_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.212	0.026	0.323
+26700	mc_eq_only_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	1.433	0.038	2.423
+26700	mc_eq_only_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	0.096	0.020	0.583
+26700	mc_eq_only_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.097	0.020	0.347
+26700	mc_eq_only_rows	sift_col classes + point_columns	forced index scan	Index	0.101	0.020	0.330
+26700	txt_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	1.651	0.026	4.012
+26700	txt_eq_rows	sift_col classes + point_columns	planner	Index	0.057	0.018	0.135
+26700	txt_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.060	0.018	0.132
+26700	txt_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.056	0.017	0.146
+26700	uuid_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	1.000	0.019	3.279
+26700	uuid_eq_rows	sift_col classes + point_columns	planner	Index	0.025	0.018	0.143
+26700	uuid_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.059	0.030	0.108
+26700	uuid_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.043	0.024	0.119
+26700	nl_join_100	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.050	0.077	0.206
+26700	nl_join_100	sift_col classes + point_columns	planner	SiftAgg	0.042	0.067	0.184
+26700	nl_join_100	sift_col classes + point_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.614	0.045	0.924
+26700	nl_join_100	sift_col classes + point_columns	forced index scan	NestedLoop/IndexOnly	0.745	0.044	1.345
+26700	pt_id_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	0.817	0.024	1.986
+26700	pt_id_rows	sift_col classes + point_tid_columns	planner	Index	0.012	0.018	0.055
+26700	pt_id_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.021	0.057
+26700	pt_id_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.011	0.017	0.053
+26700	pt_id_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.025	0.039	0.143
+26700	pt_id_count	sift_col classes + point_tid_columns	planner	IndexOnly	0.028	0.046	0.080
+26700	pt_id_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.018	0.021	0.052
+26700	pt_id_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.033	0.027	0.103
+26700	pt_rnd_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	0.816	0.022	2.303
+26700	pt_rnd_rows	sift_col classes + point_tid_columns	planner	Index	0.012	0.020	0.061
+26700	pt_rnd_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.024	0.056
+26700	pt_rnd_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.011	0.018	0.064
+26700	pt_rnd_cover	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	0.946	0.019	2.382
+26700	pt_rnd_cover	sift_col classes + point_tid_columns	planner	IndexOnly	0.023	0.023	0.111
+26700	pt_rnd_cover	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.013	0.018	0.058
+26700	pt_rnd_cover	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.023	0.020	0.082
+26700	in10_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	1.110	0.022	1.880
+26700	in10_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	0.019	0.024	0.064
+26700	in10_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.019	0.023	0.052
+26700	in10_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.016	0.023	0.044
+26700	in100_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	1.681	0.052	1.826
+26700	in100_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	0.254	0.046	0.557
+26700	in100_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.225	0.040	0.447
+26700	in100_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.197	0.036	0.368
+26700	in100_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.104	0.083	0.233
+26700	in100_count	sift_col classes + point_tid_columns	planner	IndexOnly	0.536	0.135	0.440
+26700	in100_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.233	0.040	0.498
+26700	in100_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.257	0.039	0.375
+26700	mc_eq_only_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.030	0.042	0.114
+26700	mc_eq_only_count	sift_col classes + point_tid_columns	planner	IndexOnly	0.175	0.044	0.296
+26700	mc_eq_only_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.099	0.021	0.330
+26700	mc_eq_only_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.168	0.026	0.304
+26700	mc_eq_only_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	0.868	0.018	1.289
+26700	mc_eq_only_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	0.089	0.020	0.274
+26700	mc_eq_only_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.086	0.019	0.413
+26700	mc_eq_only_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.066	0.019	0.338
+26700	txt_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	1.495	0.024	3.907
+26700	txt_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.058	0.019	0.114
+26700	txt_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.059	0.019	0.110
+26700	txt_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.055	0.017	0.144
+26700	uuid_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	1.169	0.020	3.494
+26700	uuid_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.029	0.023	0.118
+26700	uuid_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.028	0.019	0.096
+26700	uuid_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.026	0.020	0.082
+26700	nl_join_100	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.041	0.060	0.202
+26700	nl_join_100	sift_col classes + point_tid_columns	planner	SiftAgg	0.063	0.090	0.199
+26700	nl_join_100	sift_col classes + point_tid_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.606	0.054	0.629
+26700	nl_join_100	sift_col classes + point_tid_columns	forced index scan	NestedLoop/IndexOnly	0.993	0.042	2.129
+100000	pt_id_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	4.381	0.035	6.965
+100000	pt_id_rows	sift_col classes + point_columns	planner	Index	0.015	0.018	0.083
+100000	pt_id_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.018	0.057
+100000	pt_id_rows	sift_col classes + point_columns	forced index scan	Index	0.015	0.018	0.050
+100000	pt_id_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.051	0.076	0.131
+100000	pt_id_count	sift_col classes + point_columns	planner	IndexOnly	0.029	0.056	0.063
+100000	pt_id_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.020	0.019	0.052
+100000	pt_id_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.021	0.019	0.060
+100000	pt_rnd_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	5.790	0.040	7.748
+100000	pt_rnd_rows	sift_col classes + point_columns	planner	Index	0.014	0.017	0.093
+100000	pt_rnd_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.022	0.024	0.095
+100000	pt_rnd_rows	sift_col classes + point_columns	forced index scan	Index	0.016	0.018	0.056
+100000	pt_rnd_cover	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	4.736	0.023	7.725
+100000	pt_rnd_cover	sift_col classes + point_columns	planner	IndexOnly	0.018	0.017	0.065
+100000	pt_rnd_cover	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.016	0.073
+100000	pt_rnd_cover	sift_col classes + point_columns	forced index scan	IndexOnly	0.018	0.016	0.074
+100000	in10_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	6.826	0.050	10.596
+100000	in10_rows	sift_col classes + point_columns	planner	Index	0.024	0.029	0.162
+100000	in10_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.024	0.026	0.140
+100000	in10_rows	sift_col classes + point_columns	forced index scan	Index	0.023	0.028	0.066
+100000	in100_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	5.833	0.054	9.518
+100000	in100_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	0.790	0.053	1.823
+100000	in100_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.687	0.042	1.148
+100000	in100_rows	sift_col classes + point_columns	forced index scan	Index	1.075	0.060	1.321
+100000	in100_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.292	0.072	0.704
+100000	in100_count	sift_col classes + point_columns	planner	SiftAgg	0.339	0.084	0.614
+100000	in100_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.724	0.041	0.965
+100000	in100_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.849	0.046	1.082
+100000	mc_eq_only_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.031	0.043	0.132
+100000	mc_eq_only_count	sift_col classes + point_columns	planner	SiftAgg	0.031	0.044	0.108
+100000	mc_eq_only_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.383	0.022	1.455
+100000	mc_eq_only_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.438	0.022	0.672
+100000	mc_eq_only_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	7.930	0.062	9.572
+100000	mc_eq_only_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	0.399	0.027	1.746
+100000	mc_eq_only_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.389	0.022	1.510
+100000	mc_eq_only_rows	sift_col classes + point_columns	forced index scan	Index	0.584	0.030	0.785
+100000	txt_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	12.835	0.058	15.369
+100000	txt_eq_rows	sift_col classes + point_columns	planner	Index	0.064	0.019	0.145
+100000	txt_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.066	0.018	0.144
+100000	txt_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.063	0.018	0.136
+100000	uuid_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	11.962	0.066	13.926
+100000	uuid_eq_rows	sift_col classes + point_columns	planner	Index	0.048	0.026	0.165
+100000	uuid_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.030	0.018	0.131
+100000	uuid_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.038	0.022	0.205
+100000	nl_join_100	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.051	0.075	0.176
+100000	nl_join_100	sift_col classes + point_columns	planner	SiftAgg	0.041	0.065	0.234
+100000	nl_join_100	sift_col classes + point_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.833	0.053	1.048
+100000	nl_join_100	sift_col classes + point_columns	forced index scan	NestedLoop/IndexOnly	0.840	0.043	1.132
+100000	pt_id_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	6.385	0.043	7.096
+100000	pt_id_rows	sift_col classes + point_tid_columns	planner	Index	0.011	0.018	0.060
+100000	pt_id_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.021	0.062
+100000	pt_id_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.012	0.018	0.040
+100000	pt_id_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.026	0.042	0.128
+100000	pt_id_count	sift_col classes + point_tid_columns	planner	IndexOnly	0.029	0.051	0.077
+100000	pt_id_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.019	0.060
+100000	pt_id_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.024	0.020	0.073
+100000	pt_rnd_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	5.971	0.060	8.170
+100000	pt_rnd_rows	sift_col classes + point_tid_columns	planner	Index	0.013	0.020	0.076
+100000	pt_rnd_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.015	0.020	0.059
+100000	pt_rnd_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.011	0.016	0.052
+100000	pt_rnd_cover	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	4.503	0.025	7.301
+100000	pt_rnd_cover	sift_col classes + point_tid_columns	planner	IndexOnly	0.032	0.023	0.103
+100000	pt_rnd_cover	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.017	0.020	0.060
+100000	pt_rnd_cover	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.025	0.020	0.087
+100000	in10_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	5.533	0.032	8.785
+100000	in10_rows	sift_col classes + point_tid_columns	planner	Index	0.016	0.023	0.072
+100000	in10_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.030	0.036	0.064
+100000	in10_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.016	0.023	0.057
+100000	in100_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	4.396	0.039	7.793
+100000	in100_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	1.530	0.100	1.027
+100000	in100_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.696	0.038	1.201
+100000	in100_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.648	0.037	0.978
+100000	in100_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.263	0.071	0.428
+100000	in100_count	sift_col classes + point_tid_columns	planner	SiftAgg	0.313	0.087	0.670
+100000	in100_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	1.010	0.045	1.270
+100000	in100_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	1.341	0.057	1.368
+100000	mc_eq_only_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.033	0.040	0.197
+100000	mc_eq_only_count	sift_col classes + point_tid_columns	planner	SiftAgg	0.040	0.052	0.152
+100000	mc_eq_only_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.371	0.023	2.164
+100000	mc_eq_only_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.496	0.023	1.027
+100000	mc_eq_only_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	6.326	0.042	8.488
+100000	mc_eq_only_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	0.354	0.020	0.813
+100000	mc_eq_only_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.337	0.020	0.794
+100000	mc_eq_only_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.332	0.027	1.002
+100000	txt_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	13.075	0.072	14.733
+100000	txt_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.079	0.022	0.196
+100000	txt_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.066	0.018	0.180
+100000	txt_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.068	0.019	0.126
+100000	uuid_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	13.999	0.084	15.181
+100000	uuid_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.030	0.021	0.203
+100000	uuid_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.025	0.017	0.193
+100000	uuid_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.029	0.020	0.187
+100000	nl_join_100	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.046	0.067	0.202
+100000	nl_join_100	sift_col classes + point_tid_columns	planner	SiftAgg	0.081	0.101	0.182
+100000	nl_join_100	sift_col classes + point_tid_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.523	0.049	0.719
+100000	nl_join_100	sift_col classes + point_tid_columns	forced index scan	NestedLoop/IndexOnly	1.048	0.041	1.732
+1000000	pt_id_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	50.286	0.103	47.642
+1000000	pt_id_rows	sift_col classes + point_columns	planner	Index	0.022	0.023	0.070
+1000000	pt_id_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.018	0.018	0.064
+1000000	pt_id_rows	sift_col classes + point_columns	forced index scan	Index	0.041	0.038	0.062
+1000000	pt_id_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.028	0.047	0.145
+1000000	pt_id_count	sift_col classes + point_columns	planner	IndexOnly	0.038	0.059	0.156
+1000000	pt_id_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.025	0.023	0.066
+1000000	pt_id_count	sift_col classes + point_columns	forced index scan	IndexOnly	0.029	0.025	0.138
+1000000	pt_rnd_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	38.231	0.078	44.027
+1000000	pt_rnd_rows	sift_col classes + point_columns	planner	Index	0.020	0.021	0.136
+1000000	pt_rnd_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.022	0.021	0.084
+1000000	pt_rnd_rows	sift_col classes + point_columns	forced index scan	Index	0.017	0.018	0.088
+1000000	pt_rnd_cover	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	44.901	0.081	46.462
+1000000	pt_rnd_cover	sift_col classes + point_columns	planner	IndexOnly	0.023	0.017	0.078
+1000000	pt_rnd_cover	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.018	0.017	0.094
+1000000	pt_rnd_cover	sift_col classes + point_columns	forced index scan	IndexOnly	0.021	0.017	0.065
+1000000	in10_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	43.956	0.088	43.735
+1000000	in10_rows	sift_col classes + point_columns	planner	Index	0.052	0.040	0.183
+1000000	in10_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.048	0.035	0.105
+1000000	in10_rows	sift_col classes + point_columns	forced index scan	Index	0.036	0.028	0.110
+1000000	in100_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	46.320	0.132	46.648
+1000000	in100_rows	sift_col classes + point_columns	planner	Index	2.475	0.056	4.271
+1000000	in100_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	3.026	0.074	3.915
+1000000	in100_rows	sift_col classes + point_columns	forced index scan	Index	2.416	0.053	3.603
+1000000	in100_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	1.599	0.098	2.180
+1000000	in100_count	sift_col classes + point_columns	planner	SiftAgg	1.586	0.090	2.312
+1000000	in100_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	3.188	0.075	2.762
+1000000	in100_count	sift_col classes + point_columns	forced index scan	IndexOnly	2.823	0.053	3.767
+1000000	mc_eq_only_count	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.170	0.048	0.296
+1000000	mc_eq_only_count	sift_col classes + point_columns	planner	SiftAgg	0.146	0.060	0.221
+1000000	mc_eq_only_count	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	15.045	0.068	23.481
+1000000	mc_eq_only_count	sift_col classes + point_columns	forced index scan	IndexOnly	4.475	0.025	6.332
+1000000	mc_eq_only_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	51.603	0.085	48.408
+1000000	mc_eq_only_rows	sift_col classes + point_columns	planner	BmpHeap/BmpIdx	16.824	0.072	24.300
+1000000	mc_eq_only_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	18.679	0.048	25.352
+1000000	mc_eq_only_rows	sift_col classes + point_columns	forced index scan	Index	21.237	0.055	34.899
+1000000	txt_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	55.654	0.075	50.070
+1000000	txt_eq_rows	sift_col classes + point_columns	planner	Index	0.154	0.020	0.297
+1000000	txt_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.141	0.020	0.302
+1000000	txt_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.143	0.021	0.255
+1000000	uuid_eq_rows	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	Seq	49.263	0.077	47.820
+1000000	uuid_eq_rows	sift_col classes + point_columns	planner	Index	0.078	0.024	0.190
+1000000	uuid_eq_rows	sift_col classes + point_columns	forced bitmap scan	BmpHeap/BmpIdx	0.074	0.022	0.162
+1000000	uuid_eq_rows	sift_col classes + point_columns	forced index scan	Index	0.075	0.021	0.164
+1000000	nl_join_100	sift_col classes + point_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.070	0.070	0.203
+1000000	nl_join_100	sift_col classes + point_columns	planner	SiftAgg	0.087	0.088	0.215
+1000000	nl_join_100	sift_col classes + point_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.866	0.063	1.443
+1000000	nl_join_100	sift_col classes + point_columns	forced index scan	NestedLoop/IndexOnly	1.007	0.043	1.427
+1000000	pt_id_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	39.158	0.060	44.419
+1000000	pt_id_rows	sift_col classes + point_tid_columns	planner	Index	0.013	0.018	0.056
+1000000	pt_id_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.018	0.021	0.060
+1000000	pt_id_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.013	0.017	0.060
+1000000	pt_id_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.031	0.052	0.174
+1000000	pt_id_count	sift_col classes + point_tid_columns	planner	IndexOnly	0.036	0.049	0.096
+1000000	pt_id_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.019	0.021	0.060
+1000000	pt_id_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.031	0.023	0.081
+1000000	pt_rnd_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	36.956	0.081	38.535
+1000000	pt_rnd_rows	sift_col classes + point_tid_columns	planner	Index	0.015	0.019	0.063
+1000000	pt_rnd_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.016	0.019	0.059
+1000000	pt_rnd_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.019	0.023	0.064
+1000000	pt_rnd_cover	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	43.182	0.076	43.277
+1000000	pt_rnd_cover	sift_col classes + point_tid_columns	planner	IndexOnly	0.024	0.018	0.096
+1000000	pt_rnd_cover	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.023	0.027	0.052
+1000000	pt_rnd_cover	sift_col classes + point_tid_columns	forced index scan	IndexOnly	0.028	0.021	0.082
+1000000	in10_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	44.408	0.094	43.137
+1000000	in10_rows	sift_col classes + point_tid_columns	planner	Index	0.022	0.030	0.083
+1000000	in10_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.031	0.038	0.073
+1000000	in10_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.027	0.036	0.058
+1000000	in100_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	37.802	0.120	39.260
+1000000	in100_rows	sift_col classes + point_tid_columns	planner	Index	2.352	0.050	3.431
+1000000	in100_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	2.870	0.051	2.854
+1000000	in100_rows	sift_col classes + point_tid_columns	forced index scan	Index	2.373	0.047	3.414
+1000000	in100_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	2.332	0.091	2.313
+1000000	in100_count	sift_col classes + point_tid_columns	planner	SiftAgg	1.757	0.094	2.611
+1000000	in100_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	3.094	0.079	3.313
+1000000	in100_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	3.074	0.071	3.378
+1000000	mc_eq_only_count	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.111	0.045	0.248
+1000000	mc_eq_only_count	sift_col classes + point_tid_columns	planner	SiftAgg	0.110	0.045	0.240
+1000000	mc_eq_only_count	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	12.383	0.068	18.027
+1000000	mc_eq_only_count	sift_col classes + point_tid_columns	forced index scan	IndexOnly	5.594	0.042	6.001
+1000000	mc_eq_only_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	39.072	0.075	42.406
+1000000	mc_eq_only_rows	sift_col classes + point_tid_columns	planner	BmpHeap/BmpIdx	10.762	0.056	15.398
+1000000	mc_eq_only_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	11.424	0.057	18.713
+1000000	mc_eq_only_rows	sift_col classes + point_tid_columns	forced index scan	Index	18.964	0.037	31.967
+1000000	txt_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	52.120	0.095	48.965
+1000000	txt_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.126	0.019	0.293
+1000000	txt_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.144	0.020	0.232
+1000000	txt_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.157	0.024	0.235
+1000000	uuid_eq_rows	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	Seq	46.236	0.075	47.066
+1000000	uuid_eq_rows	sift_col classes + point_tid_columns	planner	Index	0.042	0.018	0.143
+1000000	uuid_eq_rows	sift_col classes + point_tid_columns	forced bitmap scan	BmpHeap/BmpIdx	0.054	0.022	0.128
+1000000	uuid_eq_rows	sift_col classes + point_tid_columns	forced index scan	Index	0.050	0.020	0.169
+1000000	nl_join_100	sift_col classes + point_tid_columns	scan off (sift.enable_col_scan=off)	SiftAgg	0.057	0.063	0.225
+1000000	nl_join_100	sift_col classes + point_tid_columns	planner	SiftAgg	0.091	0.085	0.203
+1000000	nl_join_100	sift_col classes + point_tid_columns	forced bitmap scan	NestedLoop/BmpHeap/BmpIdx	0.720	0.050	0.950
+1000000	nl_join_100	sift_col classes + point_tid_columns	forced index scan	NestedLoop/IndexOnly	1.235	0.041	1.638

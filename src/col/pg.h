@@ -116,6 +116,7 @@ typedef struct SiftColOptions
 	int			key_columns;	/* offset of the "key_columns" string (the leaves whose keys every unit keeps, docs/COL.md 2.13), 0 = not set */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string (the leaves that get a point directory in every segment, docs/COL.md 2.17), 0 = none */
+	int			point_tid_columns;	/* offset of the "point_tid_columns" string (the leaves whose point directory lists heap addresses, docs/COL.md 2.17; column format minor 16), 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
@@ -136,6 +137,7 @@ extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 

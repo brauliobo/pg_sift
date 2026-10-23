@@ -12,7 +12,12 @@
 #include "core/host.h"
 
 #define SIFT_CPOINT_MAGIC	0x4B4C4F43		/* "COLK" */
-#define SIFT_CPOINT_VERSION	2
+#define SIFT_CPOINT_VERSION_ROWS	2		/* the frame of a segment whose tables all list rows (minor 14) */
+#define SIFT_CPOINT_VERSION	3			/* the frame of a segment with a table of heap addresses (minor 16): its records carry the mode of the table */
+#define SIFT_CPOINT_MODE_ROWS	0		/* record word 5: the slots list the rows of the segment (the other modes of the frame) */
+#define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows (the heap address payload, docs/COL.md 2.17) */
+#define SIFT_CPOINT_TID_LIST	UINT64CONST(0x8000)	/* in a table of addresses, in the low 16 bits of a slot's payload: the high 32 are the word offset of a list, not a block (no offset number has this bit) */
+#define SIFT_CPOINT_TID_MAXOFF	512		/* an offset number of the address codes below this, which every heap page of 8 kB does (MaxHeapTuplesPerPage is 291) */
 #define SIFT_CPOINT_EMPTY	UINT64_MAX
 #define SIFT_CPOINT_MAX_KEYS	64			/* an IN list or a range of more keys is answered by the units */
 #define SIFT_CPOINT_MAX_ROWS	65536		/* a lookup that finds more rows is not a point lookup: the units answer it */
@@ -41,6 +46,39 @@ sift_cpoint_slot_is(uint64 slot, uint64 hash)
 {
 	return (slot >> 32) == (hash & 0xFFFFFFFF);
 }
+
+/*
+ * A table of heap addresses has the same slots with a 16 bit fingerprint over the 48 bit address of the key's only row (block << 16 | offset, the document key of
+ * the units), or over SIFT_CPOINT_TID_LIST and the word offset of its list; a list is {u32 count (2 or more), u32 bytes, the bytes: the first address as a code
+ * (block << 9 | offset) in LEB128, then the differences of the addresses after it}, padded to a word. A lookup returns addresses, so no unit is read.
+ */
+static inline bool
+sift_cpoint_tid_slot_is(uint64 slot, uint64 hash)
+{
+	return (slot >> 48) == (hash & 0xFFFF);
+}
+
+static inline uint64
+sift_cpoint_tid_code(uint64 key)
+{
+	return (key >> 16) << 9 | (key & 0xFFFF);
+}
+
+static inline uint64
+sift_cpoint_tid_key(uint64 code)
+{
+	return (code >> 9) << 16 | (code & (SIFT_CPOINT_TID_MAXOFF - 1));
+}
+
+/* Appends the code to out as LEB128; reads one at *p (not past end), false when it is cut or longer than a code can be */
+extern void sift_cpoint_put_varint(StringInfo out, uint64 v);
+extern bool sift_cpoint_get_varint(const uint8 **p, const uint8 *end, uint64 *v);
+
+/*
+ * Appends the leaf's block for the n entries (key, address) to out, addresses ascending in each key (sift_cpoint_build for the table of heap addresses; the
+ * numbers it returns are the same: words counts the words of the lists, each padded to a word).
+ */
+extern void sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words);
 
 /*
  * Appends the leaf's block for the n entries (key, row) to out, rows ascending in each key: the table (nslots * 8 bytes), then the lists, each {u32 count (2 or

@@ -98,6 +98,9 @@ CREATE FUNCTION fz.gen_part(lo bigint, hi bigint, salt int) RETURNS SETOF ev_par
 	SELECT id, parent_id, kind, grp, ts, amount, val FROM fz.gen_events(lo, hi, salt) $$;
 INSERT INTO ev_part SELECT * FROM fz.gen_part(1, @ROWS@ / 2, 7);
 CREATE INDEX ev_part_col ON ev_part USING sift_col (id, parent_id, kind, grp, ts, amount, val);
+-- the lookups of the access method: a directory of heap addresses (point_tid_columns) beside the index above
+CREATE INDEX ev_part_pt ON ev_part USING sift_col (id sift.col_int4_ops, parent_id sift.col_int4_ops, kind sift.col_text_ops, amount sift.col_int4_ops)
+	WITH (point_tid_columns = 'id, parent_id, kind');
 
 -- a key some units keep a bitmap of and others keep nothing of (a sparse key list is beyond the share of a unit), and a cube histogram of in all: the units
 -- without it answer from the cube (a pad of 1500 bytes a row makes units of about 1,300 rows)

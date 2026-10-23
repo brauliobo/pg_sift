@@ -570,18 +570,47 @@ def render_same(p):
     return grouped(q, f'events e {joins}'), bool(q['keys'])
 
 
+def gen_point(r, ctx):
+    """Rows of ev_part by an equality or a short IN list on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
+    access method must give the rows of the normal plan, across the DML of the run (dead rows, addresses a VACUUM frees, the write buffer)."""
+    n = ctx['rows'] // 2
+    col = r.choice(['id', 'id', 'parent_id', 'kind'])
+    val = (lambda: f"'k{r.randrange(5)}'") if col == 'kind' else (lambda: str(r.randrange(1, n if col == 'id' else n // 4)))
+    form = r.randrange(5)
+    if form == 0:
+        cond = f'e.{col} = {val()}'
+    elif form == 1:
+        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(2, 9)))})'
+    elif form == 2:
+        cond = f'e.{col} = ANY (ARRAY[{", ".join(val() for _ in range(r.randrange(1, 5)))}])'
+    elif form == 3:
+        cond = f'e.{col} = {val()} AND e.amount {r.choice(["<", ">"])} {r.randrange(100, 900)}'
+    else:
+        cond = f'(e.{col} = {val()} OR e.{col} = {val()})'
+    return dict(where=[cond])
+
+
+def render_point(p):
+    return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'point': (gen_point, render_point, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
 PAR = 'max_parallel_workers_per_gather=%d;parallel_setup_cost=0;parallel_tuple_cost=0;min_parallel_table_scan_size=0;min_parallel_index_scan_size=0;parallel_leader_participation=%s'
 
 
+POINT = 'sift.enable_col_scan=on;sift.enable_agg=off;enable_seqscan=off;max_parallel_workers_per_gather=0;'
+
+
 def variants(r, fam):
+    if fam == 'point':  # the access method: an index scan, a bitmap scan; the reference is the normal plan
+        return [('idx', POINT + 'enable_bitmapscan=off'), ('bmp', POINT + 'enable_indexscan=off;enable_indexonlyscan=off')]
     v = [('pre', 'sift.enable_agg=on;max_parallel_workers_per_gather=0'),
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)

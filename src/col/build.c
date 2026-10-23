@@ -397,6 +397,28 @@ notice_key_overflow(Relation index)
 	}
 }
 
+/* The option writes column format minor 16, which a library before 3.3 refuses, and takes a longer build for the heap addresses it lists: said once, where it is used */
+static void
+notice_point_tid(Relation index)
+{
+	const SiftColLeafStats *ls;
+	const SiftColIndexMeta *d;
+	double		units = 0;
+
+	if (sift_col_options_point_tid_columns(index)[0] == '\0')
+		return;
+	d = sift_col_index_defs(index);
+	ls = sift_col_leaf_stats(index);
+	for (int c = 0; c < d->ncols; c++)
+		units = Max(units, ls[c].point_tid_units);
+	if (units <= 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": point_tid_columns lists the heap addresses of the rows", RelationGetRelationName(index)),
+			 errdetail("A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65%% longer than without a directory."),
+			 errhint("Drop the option, or set sift.col_format_minor to 15, to list the rows of the segment instead.")));
+}
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -433,6 +455,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (res == NULL)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
+	notice_point_tid(index);
 	sift_col_report_caps(index);
 	sift_col_vacuum_notice(heap, index);
 	if (chosen)

@@ -211,4 +211,6 @@ columns and fills its caches.
 | btree (6 indexes) | 170,221,568 | 170.22 | 1.00x |
 | sift_col classes | 29,122,560 | 29.12 | 0.17x |
 | sift_col classes + key_columns | 30,269,440 | 30.27 | 0.18x |
+| sift_col classes + point_columns | 93,724,672 | 93.72 | 0.55x |
+| sift_col classes + point_tid_columns | 91,381,760 | 91.38 | 0.54x |
 <!-- col-scan-table:end -->
