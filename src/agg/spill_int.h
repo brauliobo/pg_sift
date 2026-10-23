@@ -6,6 +6,8 @@
 
 #include "agg/agg_fwd_int.h"
 
+struct AggSpill;
+
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
@@ -20,6 +22,7 @@ bool spill_rescan(AggExec *ex);
 void spill_end(AggExec *ex);
 bool spill_presize_ok(const AggExec *ex);
 bool spill_started(const AggExec *ex);
+bool spill_would(AggExec *ex, struct AggSpill *sp);
 
 #pragma GCC visibility pop
 

@@ -110,6 +110,22 @@ over_budget(AggExec *ex)
 	return n >= SPILL_MIN_GROUPS && MemoryContextMemAllocated(ex->tcxt, true) > sp->floor + sp->budget;
 }
 
+/*
+ * Would the table be spilled now, had the spill been armed? A streaming count(DISTINCT) scan (agg/dist.c) holds the spill back, since a partial
+ * state carries the set of a group and the pairs it dropped are not in it, and starts over as a plain scan when this says yes.
+ */
+bool
+spill_would(AggExec *ex, AggSpill *sp)
+{
+	AggSpill   *armed = ex->spill;
+	bool		over;
+
+	ex->spill = sp;
+	over = over_budget(ex);
+	ex->spill = armed;
+	return over;
+}
+
 static SpillSet *
 set_new(AggSpill *sp, int depth)
 {

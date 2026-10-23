@@ -67,6 +67,8 @@ struct Dist
 	uint64		bytes;
 	uint64	   *arena;
 	uint32		arena_left;
+	uint64	   *freec;			/* chunks dist_compact gave back, linked through their first word */
+	int64		wmark;			/* a streaming scan (dist_stream_scan): no value below it will be added again; INT64_MIN: no promise */
 	/* DD_HASH */
 	DSet		ds;
 	uint64		maxn;
@@ -100,6 +102,8 @@ bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
 uint64 dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, uint64 nwords);
 uint64 dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits);
 void dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 newcap);
+bool dist_stream_begin(AggExec *ex);
+void dist_stream_scan(AggExec *ex);
 void dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v);
 void dist_finish_all(AggExec *ex);
 void dist_end_all(AggExec *ex);

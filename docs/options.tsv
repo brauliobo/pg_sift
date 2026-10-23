@@ -94,6 +94,7 @@ sift.agg_key_skew	sift_col, sift_table				the probes of a lookup join are priced
 sift.agg_rollup_cost	sift_col, sift_table				a unit is answered from its rollup only when that costs less than scanning its elements	none; planning only (0 always, large never)	COL-PREAGG.md#6-consumption-in-siftagg-built
 sift.agg_dense	sift_col, sift_table	agg-switches			one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort	none on the index; off gives the generic path with the same rows	COL-PLAN.md#executor
 sift.agg_two_level	sift_col, sift_table	agg-switches					COL-PLAN.md#executor
+sift.agg_dist_stream	sift_col, sift_table	agg-switches					AGG.md#counting-distinct-values-over-the-rows-of-a-scan
 sift.agg_fuse	sift_col, sift_table	agg-switches					COL-PLAN.md#one-pass-for-the-arms
 sift.agg_join_filter	sift_col, sift_table	agg-switches					AGG.md#join-key-filters-and-shared-lookups
 sift.agg_rows	sift_col, sift_table	agg-switches					AGG.md#counting-distinct-values-over-the-rows-of-a-scan

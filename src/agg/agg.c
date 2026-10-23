@@ -98,6 +98,7 @@ double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
 bool		sift_agg_super = true;
 bool		sift_agg_dense = true;
+bool		sift_agg_dist_stream = true;
 bool		sift_agg_semi_lut = true;
 bool		sift_agg_two_level_on = true;
 int		sift_agg_semi_lut_size = 4096;
@@ -149,6 +150,10 @@ sift_agg_init(void)
 							 "Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples.",
 							 NULL, &sift_agg_dense, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_dist_stream",
+							 "Visits the superblocks of a count(DISTINCT) of an integer column in the order of the zone minimum of the column when that keeps its sets small: the values below the minimum of the superblocks to come are dropped.",
+							 NULL, &sift_agg_dist_stream, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_semi_lut",
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
@@ -323,7 +328,10 @@ run_scan(AggExec *ex)
 	ordered = sift_aggspec_ordered(ex->spec);
 	scan_buffers(ex);
 	none = join_none(ex);
-	if (!backend_begin(ex) && !none)
+	ex->ndsorder = 0;
+	ex->dsabort = false;
+	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
+	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
@@ -341,7 +349,9 @@ run_scan(AggExec *ex)
 		spine_load(ex);
 	ex->gtab = ex->lanes ? result_view(ex) : ex;
 	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
-	if (ex->par == NULL || parallel_leader_participation)
+	if (ex->ndsorder > 0)
+		dist_stream_scan(ex);
+	else if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	backend_finish(ex);
 	unmatched_tail(ex);
@@ -1279,6 +1289,12 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
 	if (c->n_dist_chunks)
 		ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
+	if (c->ndsorder)
+	{
+		ExplainPropertyInteger("Distinct Stream Superblocks", NULL, c->ndsorder, es);
+		if (c->dsabort)
+			ExplainPropertyBool("Distinct Stream Given Up", true, es);
+	}
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */

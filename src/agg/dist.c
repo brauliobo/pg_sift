@@ -149,6 +149,7 @@ dist_new(AggExec *ex, bool sgn)
 	d->mode = DD_BITS;
 	d->sgn = sgn;
 	d->budget = get_hash_memory_limit();
+	d->wmark = PG_INT64_MIN;
 	return d;
 }
 
@@ -307,6 +308,14 @@ dist_put_sort(Dist *d, uint32 g, uint32 v)
 static uint64 *
 dist_chunk(AggExec *ex, Dist *d)
 {
+	if (d->freec)
+	{
+		uint64	   *c = d->freec;
+
+		d->freec = ((uint64 **) c)[0];
+		memset(c, 0, DB_WORDS * sizeof(uint64));
+		return c;
+	}
 	if (d->arena_left == 0)
 	{
 		uint64	   *blk = MemoryContextAllocZero(ex->tcxt, (DB_ARENA + 1) * DB_WORDS * sizeof(uint64));
@@ -316,6 +325,63 @@ dist_chunk(AggExec *ex, Dist *d)
 		d->arena_left = DB_ARENA;
 	}
 	return d->arena + (size_t) (DB_ARENA - --d->arena_left) * DB_WORDS;
+}
+
+/*
+ * A streaming scan (dist_stream_scan) promised that no value below d->wmark is added again, and the count of a group was taken when its bit was
+ * set, so the bits below are dead weight: the chunks of the windows wholly below the mark go to the free list and the directories slide up.
+ * True when the base moved, so that the caller tries again before it gives the bitmap up.
+ */
+static bool
+dist_compact(Dist *d)
+{
+	int64		lo = (d->wmark >> DB_SHIFT) & ~(int64) (DB_NCD_MIN / 2 - 1);
+	uint32		shift;
+
+	if (d->mode != DD_BITS || d->ncd == 0 || lo <= d->cbase)
+		return false;
+	shift = (uint32) Min(lo - d->cbase, (int64) d->ncd);
+	for (uint32 g = 0; g < d->ngd; g++)
+	{
+		DistChunk  *dir = d->gd[g];
+
+		if (dir == NULL)
+			continue;
+		for (uint32 c = 0; c < shift; c++)
+			if (dir[c])
+			{
+				((uint64 **) dir[c])[0] = d->freec;
+				d->freec = dir[c];
+				d->bytes -= DB_WORDS * sizeof(uint64);
+			}
+		memmove(dir, dir + shift, (d->ncd - shift) * sizeof(DistChunk));
+		memset(dir + (d->ncd - shift), 0, shift * sizeof(DistChunk));
+	}
+	d->cbase += shift;
+	return true;
+}
+
+/* the same for a hash set: the pairs below the mark are left out of a rebuilt table; false when they are too few to be worth it */
+static bool
+dist_compact_hash(AggExec *ex, Dist *d)
+{
+	DSet	   *s = &d->ds;
+	uint64	   *old = s->slot;
+	uint64		dead = 0;
+
+	if (d->wmark == PG_INT64_MIN || s->n == 0)
+		return false;
+	for (uint64 i = 0; i < s->cap; i++)
+		dead += old[i] && dist_x(d, (uint32) old[i]) < d->wmark;
+	if (dead < s->n / 8 + 1)
+		return false;
+	s->slot = MemoryContextAllocZero(ex->tcxt, s->cap * sizeof(uint64));
+	s->n = 0;
+	for (uint64 i = 0; i < s->cap; i++)
+		if (old[i] && dist_x(d, (uint32) old[i]) >= d->wmark)
+			dset_insert_raw(s, old[i]);
+	pfree(old);
+	return true;
 }
 
 /* the directories cover the chunk xc; false if they cannot (the set is no longer a bitmap) */
@@ -336,6 +402,7 @@ dist_cover(AggExec *ex, Dist *d, int64 xc)
 	}
 	if (xc >= d->cbase && xc < d->cbase + d->ncd)
 		return true;
+	SIFT_INVARIANT(d->wmark == PG_INT64_MIN || xc >= (d->wmark >> DB_SHIFT), "sift: a value of a streamed count(DISTINCT) came back below its watermark");
 	lo = Min(d->cbase, xc) & ~(int64) (DB_NCD_MIN / 2 - 1);
 	hi = Max(d->cbase + d->ncd - 1, xc);
 	if (hi - lo + 1 > DB_NCD_MAX)
@@ -371,7 +438,7 @@ dist_chunk_for(AggExec *ex, Dist *d, uint32 g, int64 xc)
 	DistChunk  *dir;
 
 	if (!dist_cover(ex, d, xc))
-		goto convert;
+		goto full;
 	if (g >= d->ngd)
 	{
 		uint32		n = Max(Max(g + 1, d->ngd * 2), 64);
@@ -388,7 +455,7 @@ dist_chunk_for(AggExec *ex, Dist *d, uint32 g, int64 xc)
 	if (d->gd[g] == NULL)
 	{
 		if (d->bytes + d->ncd * sizeof(DistChunk) > d->budget)
-			goto convert;
+			goto full;
 		d->gd[g] = MemoryContextAllocZero(ex->tcxt, d->ncd * sizeof(DistChunk));
 		d->bytes += d->ncd * sizeof(DistChunk);
 	}
@@ -396,12 +463,15 @@ dist_chunk_for(AggExec *ex, Dist *d, uint32 g, int64 xc)
 	if (dir[xc - d->cbase] == NULL)
 	{
 		if (d->bytes + DB_WORDS * sizeof(uint64) > d->budget)
-			goto convert;
+			goto full;
 		dir[xc - d->cbase] = dist_chunk(ex, d);
 		d->bytes += DB_WORDS * sizeof(uint64);
 	}
 	return dir[xc - d->cbase];
-convert:
+full:
+	/* a streaming scan gives the windows below its mark back before the bitmap is given up; each try moves the base, so it ends */
+	if (dist_compact(d))
+		return dist_chunk_for(ex, d, g, xc);
 	dist_convert(ex, d, DD_HASH);
 	return NULL;
 }
@@ -442,6 +512,8 @@ dist_hash_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 		return false;
 	if (s->n >= d->maxn)
 	{
+		if (dist_compact_hash(ex, d))
+			return dist_hash_add(ex, d, g, v);
 		dist_convert(ex, d, DD_SORT);
 		dist_put_sort(d, g, v);
 		return false;
@@ -840,4 +912,176 @@ dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv
 			(*pv_out)[np++] = (uint32) s->slot[i];
 		}
 	*np_out = np;
+}
+
+/*
+ * A streaming count(DISTINCT x): the superblocks are visited in ascending order of the zone minimum of x, so once the ones before are done no
+ * value below the minimum of the next can come again, and the set of the groups drops what is below it (dist_compact, when the set would
+ * outgrow hash memory). The count of a group is taken when a value is first seen, so nothing is lost on the way. With x close to the heap order
+ * the set holds the values of the superblocks whose zones overlap, not all the values of the scan; with x at random in every superblock
+ * nothing is dropped and the scan is the one without the order (the choice below sees that in the zones, before any row is read).
+ */
+typedef struct DsSb
+{
+	int64		min;
+	int64		max;
+	uint32		sb;
+	uint32		rows;
+} DsSb;
+
+static int
+dssb_by_min(const void *a, const void *b)
+{
+	const DsSb *x = a,
+			   *y = b;
+
+	if (x->min != y->min)
+		return x->min < y->min ? -1 : 1;
+	return x->sb < y->sb ? -1 : x->sb > y->sb;
+}
+
+static int
+dssb_by_max(const void *a, const void *b)
+{
+	const DsSb *x = a,
+			   *y = b;
+
+	return x->max < y->max ? -1 : x->max > y->max;
+}
+
+/* Is the scan one that streams, and in what order? Sets dsorder, dsmin, ndsorder and dsagg; false: the scan goes on as it would (with workers) */
+bool
+dist_stream_begin(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+	int			ai = sift_aggspec_dstream(s);
+	double		mem = (double) get_hash_memory_limit(),
+				total = 0,
+				done = 0,
+				expired = 0,
+				before = 0,
+				peak = 0;
+	uint32		nsb,
+				n = 0,
+				p = 0;
+	DsSb	   *z,
+			   *zm;
+	int			leaf;
+
+	ex->ndsorder = 0;
+	if (ex->dsorder)
+	{
+		pfree(ex->dsorder);
+		pfree(ex->dsmin);
+		ex->dsorder = NULL;
+		ex->dsmin = NULL;
+	}
+	if (ai < 0 || !sift_agg_dist_stream || ex->be != &sift_agg_cpu_backend || ex->search || ex->topn)
+		return false;
+	leaf = s->agg[ai].leaf;
+	if (leaf >= ex->nbase || ex->lay->leaf[leaf].vtype != SCV_I32)
+		return false;
+	/* a table of groups far past hash memory is the spill's to handle, not this */
+	if (s->est_groups * 256.0 > 4.0 * mem)
+		return false;
+	nsb = sift_colsrc_nsb(ex->src);
+	/* the write buffers are read in by the first begin; until then a range says it may hold anything */
+	sift_colsrc_begin(ex->src, 0, 1, ex->prune, ex->nzone);
+	z = palloc(Max(nsb, 1) * sizeof(DsSb));
+	for (uint32 sb = ex->tid_sb_lo; sb < Min(nsb, ex->tid_sb_hi); sb++)
+	{
+		SiftSrcZone zone;
+		DsSb	   *e = &z[n];
+
+		if (sift_colsrc_zone_range(ex->src, sb, sb + 1, leaf, &zone) == 0)
+			continue;
+		e->sb = sb;
+		if (zone.inexact)
+		{
+			e->min = PG_INT64_MIN;
+			e->max = PG_INT64_MAX;
+			e->rows = zone.nvals;
+		}
+		else if (zone.nnull >= zone.nvals)
+		{
+			e->min = PG_INT64_MAX;
+			e->max = PG_INT64_MIN;
+			e->rows = 0;
+		}
+		else
+		{
+			e->min = zone.min;
+			e->max = zone.max;
+			e->rows = zone.nvals - zone.nnull;
+		}
+		total += e->rows;
+		n++;
+	}
+	/* a set of at most this many 16-byte pairs fits hash memory twice over: the scan with workers is the better one */
+	if (n < 2 || total * 16.0 <= mem / 2)
+	{
+		pfree(z);
+		return false;
+	}
+	qsort(z, n, sizeof(DsSb), dssb_by_min);
+	zm = palloc(n * sizeof(DsSb));
+	memcpy(zm, z, n * sizeof(DsSb));
+	qsort(zm, n, sizeof(DsSb), dssb_by_max);
+	/* the pairs the sweep holds at most: the rows of the superblocks done, less those whose zone ends below the minimum of the next */
+	for (uint32 k = 0; k < n; k++)
+	{
+		int64		m = k + 1 < n ? z[k + 1].min : PG_INT64_MAX;
+
+		peak = Max(peak, before + z[k].rows);
+		done += z[k].rows;
+		for (; p < n && zm[p].max < m; p++)
+			expired += zm[p].rows;
+		before = done - expired;
+	}
+	pfree(zm);
+	if (peak * 2.0 > total)
+	{
+		pfree(z);
+		return false;
+	}
+	ex->dsorder = MemoryContextAlloc(ex->cxt, n * sizeof(uint32));
+	ex->dsmin = MemoryContextAlloc(ex->cxt, n * sizeof(int64));
+	for (uint32 k = 0; k < n; k++)
+	{
+		ex->dsorder[k] = z[k].sb;
+		ex->dsmin[k] = z[k].min;
+	}
+	pfree(z);
+	ex->ndsorder = n;
+	ex->dsagg = ai;
+	return true;
+}
+
+/*
+ * The sweep. The spill of the group table is held back: a partial state carries the set of a group, and the pairs this scan dropped are not in
+ * it. If the table would have spilled the sweep is given up and the scan starts over as it would without it.
+ */
+void
+dist_stream_scan(AggExec *ex)
+{
+	struct AggSpill *sp = ex->spill;
+
+	ex->spill = NULL;
+	for (uint32 k = 0; k < ex->ndsorder; k++)
+	{
+		scan_units(ex, ex->dsorder[k], ex->dsorder[k] + 1);
+		arms_flush(ex);
+		if (sp && spill_would(ex, sp))
+		{
+			ex->spill = sp;
+			ex->dsabort = true;
+			table_reset(ex);
+			ex->n_units = ex->n_pre_units = ex->n_super = ex->n_rows = ex->n_tuples = 0;
+			pg_atomic_write_u32(&ex->shared->next, 0);
+			scan_items(ex);
+			return;
+		}
+		ex->dist[ex->dsagg]->wmark = k + 1 < ex->ndsorder ? ex->dsmin[k + 1] : PG_INT64_MAX;
+	}
+	ex->spill = sp;
 }
