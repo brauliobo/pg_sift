@@ -635,6 +635,33 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 	return cands;
 }
 
+/*
+ * Do two partitions write the same pre-aggregates? The key lists of the integer leaves (key_columns = auto) follow the data of each partition, and a
+ * unit without one is read by its rows: acc keeps the leaves every partition so far lists, and what else differs is a layout of its own.
+ */
+static bool
+part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
+{
+	SiftSrcPreagg a,
+				b;
+	int			n = 0;
+
+	memcpy(&a, acc, sizeof(a));
+	memcpy(&b, pa, sizeof(b));
+	a.npres = b.npres = 0;
+	memset(a.pres, 0, sizeof(a.pres));
+	memset(b.pres, 0, sizeof(b.pres));
+	if (memcmp(&a, &b, sizeof(a)) != 0)
+		return false;
+	for (int p = 0; p < acc->npres; p++)
+		for (int q = 0; q < pa->npres; q++)
+			if (acc->pres[p] == pa->pres[q])
+				acc->pres[n++] = acc->pres[p];
+	memset(acc->pres + n, 0, (acc->npres - n) * sizeof(acc->pres[0]));
+	acc->npres = n;
+	return true;
+}
+
 /* the partitions that the planner kept, the partitioned ones replaced by theirs: false when a partition is not one a column index reads */
 static void
 part_leaves(RelOptInfo *rel, List **leaves)
@@ -793,13 +820,15 @@ part_source(AggCtx *c)
 	foreach_ptr(PartCand, f, first)
 	{
 		List	   *picked = list_make1(f);
+		SiftSrcPreagg common;
 
+		memcpy(&common, f->pa, sizeof(common));
 		for (int i = 1; i < n && picked != NIL; i++)
 		{
 			PartCand   *m = NULL;
 
 			foreach_ptr(PartCand, pc, part_candidates(c, list_nth_node(RelOptInfo, leaves, i)))
-				if (sift_aggpart_same_layout(f->lay, pc->lay) && memcmp(f->pa, pc->pa, sizeof(*f->pa)) == 0)
+				if (sift_aggpart_same_layout(f->lay, pc->lay) && part_preagg_common(&common, pc->pa))
 				{
 					m = pc;
 					break;
@@ -823,7 +852,7 @@ part_source(AggCtx *c)
 			sift_aggpart_add_stats(&c->stats, pc->stats);
 		}
 		c->lay = f->lay;
-		c->pa = *f->pa;
+		c->pa = common;
 		c->indexoid = f->indexoid;
 		return true;
 	}
