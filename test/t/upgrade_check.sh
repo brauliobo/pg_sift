@@ -12,9 +12,10 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
 plan 54
-# the test clusters run with sift.table_auto_defrag = off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
+# the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
-node_init uc 21 "sift.table_auto_defrag = on"
+node_init uc 21 "sift.table_auto_defrag = on
+sift.col_auto_merge = on"
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
 
