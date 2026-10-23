@@ -826,6 +826,19 @@ dist_word(const DistView *vw, uint32 g, int64 x, uint64 *m)
 	return &dir[c][(x >> 6) & (DB_WORDS - 1)];
 }
 
+/* The span of the values the zones of an integer leaf hold (the largest less the smallest), -1 when they do not say */
+static int64
+dist_zone_span(AggExec *ex, int leaf)
+{
+	SiftSrcZone z;
+
+	if (leaf < 0 || leaf >= ex->nbase || ex->lay->leaf[leaf].vtype != SCV_I32 || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src))
+		return -1;
+	if (sift_colsrc_zone_range(ex->src, ex->tid_sb_lo, Min(sift_colsrc_nsb(ex->src), ex->tid_sb_hi), leaf, &z) <= 0 || z.inexact || z.nnull >= z.nvals)
+		return -1;
+	return z.max - z.min;
+}
+
 /*
  * Do the zones of an integer leaf span more than the widest window? A column that grows with the heap order (a date, a serial) would fit one
  * for most of the scan and pay for the bitmap at the end: its set starts as one.
@@ -833,12 +846,25 @@ dist_word(const DistView *vw, uint32 g, int64 x, uint64 *m)
 static bool
 dist_narrow_spans(AggExec *ex, int leaf)
 {
-	SiftSrcZone z;
+	int64		span = dist_zone_span(ex, leaf);
 
-	if (leaf < 0 || leaf >= ex->nbase || ex->lay->leaf[leaf].vtype != SCV_I32 || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src))
-		return false;
-	return sift_colsrc_zone_range(ex->src, ex->tid_sb_lo, Min(sift_colsrc_nsb(ex->src), ex->tid_sb_hi), leaf, &z) > 0 && !z.inexact &&
-		z.nnull < z.nvals && z.max - z.min >= 64 * sift_limit(dist_narrow_words, DIST_NARROW_WORDS);
+	return span >= 0 && span >= 64 * sift_limit(dist_narrow_words, DIST_NARROW_WORDS);
+}
+
+/*
+ * What a set that outgrew the narrow window starts as. A bitmap costs a directory and 512 bytes for each chunk of 4096 values a group has a value in;
+ * a hash set 32 bytes a value. A group holds at most est_rows / est_groups values, in at most as many chunks as the zones span: the hash set is the
+ * smaller when that is fewer than 16 times the chunks and the directory (a column of a hundred thousand values, a few rows of each key: 880
+ * bytes a group in a bitmap against 60). No span in the zones, or no estimate: the bitmap.
+ */
+static DistMode
+dist_wide_mode(AggExec *ex, int leaf)
+{
+	int64		span = dist_zone_span(ex, leaf);
+
+	if (span < 0 || ex->spec->est_rows <= 0)
+		return DD_BITS;
+	return ex->spec->est_rows / Max(ex->spec->est_groups, 1.0) < 16.0 * (2.0 + (double) (span >> DB_SHIFT)) ? DD_HASH : DD_BITS;
 }
 
 /* DD_WORDS: the first batch sets the window; the tuple it stopped at (nsel, or the one that made the set a bitmap) */
@@ -861,7 +887,7 @@ dist_update_narrow(AggExec *ex, Dist *d, int ai, int64 *cnt, const uint64 *ok, i
 			return nsel;
 		if ((d->sgn && dist_narrow_spans(ex, ex->spec->agg[ai].leaf)) || !dist_narrow_room(ex, d, 0, lo, hi))
 		{
-			dist_convert(ex, d, DD_BITS);
+			dist_convert(ex, d, d->sgn ? dist_wide_mode(ex, ex->spec->agg[ai].leaf) : DD_BITS);
 			return 0;
 		}
 	}

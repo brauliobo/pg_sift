@@ -521,6 +521,7 @@ typedef struct SiftAggSpec
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
+	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */

@@ -928,6 +928,7 @@ fuse_shape(const SiftAggSpec *a)
 	t.key = NULL;
 	t.nworkers = 0;
 	t.est_groups = 0;
+	t.est_rows = 0;
 	/* the FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text; the conjuncts over the rows are split (fuse_split) */
 	t.npreds_total = 0;
 	t.desc_quals = NULL;
@@ -989,6 +990,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	spec->setmask = palloc0(n * sizeof(uint32));
 	spec->nsets = n;
 	spec->est_groups = 0;
+	spec->est_rows = 0;
 	spec->nworkers = 0;
 	for (int k = 0; k < nk; k++)
 		spec->key[k] = *(SiftAggKey *) list_nth(keys, k);
@@ -999,6 +1001,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 		spec->setmask[i] |= (uint32) 1 << nk;
 		spec->nworkers = Max(spec->nworkers, m[i]->nworkers);
 		spec->est_groups += m[i]->est_groups;
+		spec->est_rows += m[i]->est_rows;
 	}
 	spec->npost = f.npost;
 	spec->naggs = f.nagg;

@@ -712,6 +712,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse(DIRTY_UNITS);
 	finish_combos(c, s);
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows, false);
+	s->est_rows = input_rel->rows;
 	/*
 	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of all the rows
 	 * the lists can pass: a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
