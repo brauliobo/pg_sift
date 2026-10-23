@@ -249,11 +249,11 @@ sift_col_init(void)
 							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
 							 "when the rows changed since the last VACUUM are a thousandth of the table (50 rows at least, 100,000 at most). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
 							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
-							 "The merge rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
+							 "The merge rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct, and it stays within sift.col_auto_merge_wal_pct of the WAL the server writes; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
 							 "when the maintenance lock is held. An index over sift.vacuum_rewrite_limit is rewritten by partitions of that size (sift.col_auto_merge_partition_kb sets another), one step each, so that the lock is let go between them. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. "
 							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
 							 "Set it for the server or the database: the worker reads no session setting.",
-							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
+							 &sift_col_auto_merge, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
 							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
 							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
@@ -266,11 +266,12 @@ sift_col_init(void)
 							 "Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs.",
 							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
 							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.col_auto_merge_min_churn_pct",
-							 "Percent of the rows of a sift_col index that must have changed since its last rewrite (dead, or written after it) for the automatic rewrite to run.",
-							 "The rewrite writes the whole index, so the rows it has to fix must be worth it: 5 bounds the write amplification of the automatic rewrite at 20 bytes written per byte changed. "
+	DefineCustomRealVariable("sift.col_auto_merge_wal_pct",
+							 "Percent of the WAL the server writes that the automatic rewrite of a sift_col index may add.",
+							 "The rewrite writes the whole index, so it waits until the server has written 100 / this percent times the bytes of the index since the index was last written "
+							 "(its build or its last rewrite): 5 bounds the rewrites at a twentieth of the WAL, and the churn that makes one worth it is the churn that wrote that WAL. "
 							 "0 does not wait. sift.col_maintain(index) ignores it.",
-							 &sift_col_auto_merge_min_churn_pct, 0.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_active",
 							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",

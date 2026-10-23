@@ -163,16 +163,24 @@ sift_col_autovacuum_enabled(Relation heap)
 	return heap->rd_options == NULL || ((StdRdOptions *) heap->rd_options)->autovacuum.enabled;
 }
 
-/* CREATE INDEX on a heap table that opted out of autovacuum: the worker leaves it alone, and the merge waits for a VACUUM nobody runs */
+/* CREATE INDEX and REINDEX say what sift.col_auto_merge does with the index, and that it does nothing for a table that opted out of autovacuum */
 void
 sift_col_vacuum_notice(Relation heap, Relation index)
 {
-	if (sift_col_auto_merge && !sift_col_autovacuum_enabled(heap))
+	if (!sift_col_auto_merge || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	if (!sift_col_autovacuum_enabled(heap))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": sift.col_auto_merge does not vacuum \"%s\", whose autovacuum_enabled is false",
 						RelationGetRelationName(index), RelationGetRelationName(heap)),
 				 errdetail("The units answer from their pre-aggregates again only after a VACUUM of the table, and the merge of the index follows that VACUUM."),
 				 errhint("Run VACUUM on it from a job, or RESET autovacuum_enabled.")));
+	else
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": sift.col_auto_merge keeps it answerable after churn", RelationGetRelationName(index)),
+				 errdetail("A background worker vacuums \"%s\" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.",
+						   RelationGetRelationName(heap)),
+				 errhint("SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.")));
 }
 
 /* The heap of the index when it is one to vacuum, else InvalidOid: not another table AM's, and not one that opted out of vacuum */

@@ -82,7 +82,7 @@ begin
 	create table churn.m as
 	select g::bigint as id, timestamptz '2026-01-01' + interval '90 days' * g / p_n as ts, mod(abs(hashint8(g * 31)::bigint), 10000)::int as key,
 		'cat_' || chr(97 + mod(g, 8)) as kind, (mod(abs(hashint8(g * 17)::bigint), 100000) / 100.0)::numeric(12,2) as amount,
-		jsonb_build_object('m', mod(g, 1000) / 100.0, 'tag', 'asp_' || chr(97 + mod(g, 5)), 'pad', repeat(md5(g::text), 12)) as payload
+		jsonb_build_object('m', mod(g, 1000) / 100.0, 'tag', 'asp_' || chr(97 + mod(g, 5)), 'pad', repeat(md5(g::text), coalesce(nullif(current_setting('churn.pad', true), ''), '12')::int)) as payload
 	from generate_series(1, p_n) g;
 end $$;
 
