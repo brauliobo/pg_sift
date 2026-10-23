@@ -194,6 +194,14 @@ group expressions, arguments and `FILTER`s, so any expression is allowed there. 
 `count`, `sum` and `avg` keep the normal plan. Sums and averages of floats add in arrival order (the sort adds in the order of the id), so the last digits can differ, as
 between the scan's own aggregates and the normal plan's. `sift.agg_rows = off` restores the sort.
 
+**Streaming `count(DISTINCT x)` of an integer column.** When the sets of a `count(DISTINCT x)` over a scan would outgrow `hash_mem` and the superblocks of the column hold ranges
+of `x` that overlap little (a column that grows with the heap: a time, a serial id, a key loaded in order), the scan visits the superblocks in the order of the zone minimum of `x`
+and, before each, drops from the sets the values below the minimum of the superblocks still to come: no later row can hold them, so they cannot be counted twice, and the group's
+count already includes them. The answer is the exact one of the plain scan. The sweep runs in one process and does not spill the table of the groups (a spill would drop pairs from
+the sets it dumps): when that table would outgrow `hash_mem`, or a unit has rows the zones do not bound (a write buffer, which is read first), the scan starts over in its plain order.
+`EXPLAIN ANALYZE` shows `Distinct Stream Superblocks`, and `Distinct Stream Given Up` after a restart. A column with a random order in every superblock, two sets, or a grouping set
+keeps the plain scan. `sift.agg_dist_stream = off` restores it.
+
 ## Workload shapes
 
 The shapes of an event analytics workload (an item table with jsonb metrics, a document with an array of parts, entity and mapping tables) are
