@@ -553,7 +553,6 @@ extern void sift_tbl_gate(int number);
 #define sift_tbl_gate(number)	((void) 0)
 #endif
 extern PGDLLIMPORT bool sift_tbl_inline_promote;
-extern PGDLLIMPORT bool sift_tbl_dict_lookup;
 extern PGDLLIMPORT bool sift_tbl_wide_rows;
 extern PGDLLIMPORT int sift_tbl_backpressure;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;

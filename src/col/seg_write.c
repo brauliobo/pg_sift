@@ -31,6 +31,12 @@ typedef struct PointAcc
 
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
+/* the dictionaries written in blocks that their leaves did not ask for (DICT_BLOCKS, not DICT_LOOKUP) add together at most 1/33 (3%) of the segment (what it wrote before the dictionaries, and these in the compact form) */
+#define CDICT_BLOCKS_BUDGET_DENOM	33
+/* an estimate of the blocks over this share of the compact form (1/6) is not worth serializing them for */
+#define CDICT_BLOCKS_CLEAR_DENOM	6
+
+bool		sift_col_table_lookup = false;
 
 typedef struct SetAcc
 {
@@ -75,7 +81,7 @@ struct SiftColSegWriter
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
-	bool	   *lookup;			/* [ncols] the dictionary is written in the form that is searched in place (minor 14) */
+	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -134,9 +140,9 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
-	/* a sift_table has no option for its dictionaries: every leaf may have one stored for a lookup, when the format setting its caller passes allows (table/seg_int.h) */
+	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
 	for (int c = 0; c < schema->ncols; c++)
-		w->pagg.lookup[c] = true;
+		w->pagg.lookup[c] = sift_col_table_lookup;
 	/* a sift_table has no index option for its pre-aggregates and writes this default (a sift_col index sets its own spec, which has calendar dims when it asks) */
 	if (format >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
 	{
@@ -604,23 +610,77 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	uint64	   *offs = palloc0(sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	uint32	   *hdr = (uint32 *) offs;
 	uint64	   *tab = (uint64 *) (hdr + 2);
+	Size	   *extra = palloc0(ncols * sizeof(Size)),
+			   *compact = palloc0(ncols * sizeof(Size)),
+				budget = sift_sw_tell(w->sw);
+	bool		blocks = w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact;
 	StringInfoData blob;
 
 	sw_pad8(w->sw);
 	sec->off = sift_sw_tell(w->sw);
 	hdr[0] = DICTS_MAGIC;
 	hdr[1] = ncols;
+	/*
+	 * A dictionary of many strings that did not ask for the order is stored in blocks, to be read in place, when that adds little to the segment (the
+	 * budget): ids, hashes and uuids compress as well in blocks as whole, short strings that repeat their words do not. The estimates from a sample
+	 * decide what is clear (they run high for the blocks: an estimate within the budget is), and the blocks are serialized next to the compact form
+	 * only for a dictionary in between
+	 */
+	for (int c = 0; blocks && c < ncols; c++)
+	{
+		if (w->dict[c] == NULL || (w->dform && w->dform[c]) || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+			extra[c] = SIZE_MAX;
+		else
+			extra[c] = sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact[c]);
+		budget += compact[c];
+	}
+	budget /= CDICT_BLOCKS_BUDGET_DENOM;
 	/* the directory is written last to know the offsets: serialize the dictionaries first into memory */
 	initStringInfo(&blob);
 	for (int c = 0; c < ncols; c++)
 	{
+		uint32		form = w->dform ? w->dform[c] : 0;
+
 		if (w->dict[c] == NULL)
 			continue;
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
-		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, w->lookup && w->lookup[c], &blob);
+		if (extra[c] != SIZE_MAX && blocks)
+		{
+			if (extra[c] <= budget)
+			{
+				form = DICT_BLOCKS;
+				budget -= extra[c];
+			}
+			else if (extra[c] <= compact[c] / CDICT_BLOCKS_CLEAR_DENOM)
+			{
+				StringInfoData whole,
+							alt;
+
+				initStringInfo(&whole);
+				initStringInfo(&alt);
+				sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, 0, &whole);
+				sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, DICT_BLOCKS, &alt);
+				if (alt.len <= whole.len + budget)
+				{
+					budget -= Max(alt.len, whole.len) - whole.len;
+					appendBinaryStringInfo(&blob, alt.data, alt.len);
+					w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+				}
+				else
+					appendBinaryStringInfo(&blob, whole.data, whole.len);
+				pfree(whole.data);
+				pfree(alt.data);
+				continue;
+			}
+		}
+		if (form == DICT_BLOCKS)
+			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, form, &blob);
 	}
+	pfree(extra);
+	pfree(compact);
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
 	sw_pad8(w->sw);
@@ -987,14 +1047,14 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
-	/* a dictionary of many strings is written to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
+	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{
-		w->lookup = palloc0(w->schema->ncols * sizeof(bool));
+		w->dform = palloc0(w->schema->ncols * sizeof(uint8));
 		for (int c = 0; c < w->schema->ncols; c++)
 			if (w->dict[c] != NULL && w->pagg.lookup[c] && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
 			{
-				w->lookup[c] = true;
+				w->dform[c] = DICT_LOOKUP;
 				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
 			}
 	}

@@ -94,7 +94,7 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 		if (pol.mode == SIFT_CCM_LAYER && !sift_colz_available(pol.alg))
 			continue;
 		initStringInfo(&buf);
-		sift_cdict_serialize(d, &pol, false, &buf);
+		sift_cdict_serialize(d, &pol, 0, &buf);
 		CHECK(t, buf.len <= plain->len, "dictionary (%s) of %d bytes is larger than the plain form of %d", specs[k], buf.len, plain->len);
 		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes, "dictionary (%s) parse", specs[k]);
@@ -115,22 +115,23 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 			pfree(bad);
 		}
 	}
-	/* the form that is searched in place, raw and with compressed blocks: the same dictionary back, with its order, and no damage that parses is out of range */
-	for (int z = 0; z < 2; z++)
+	/* the forms read in place, raw and with compressed blocks, with and without the order: the same dictionary back, and no damage that parses is out of range */
+	for (int z = 0; z < 4; z++)
 	{
 		SiftCcPolicy zpol;
 		StringInfoData buf;
 		SiftCDict  *p;
 		Size		used = 0;
+		uint32		form = z & 2 ? DICT_LOOKUP : DICT_BLOCKS;
 
 		initStringInfo(&buf);
 		CHECK(t, sift_cc_policy_parse("zstd", &zpol) == NULL, "policy zstd");
-		sift_cdict_serialize(d, z ? &zpol : NULL, true, &buf);
+		sift_cdict_serialize(d, z & 1 ? &zpol : NULL, form, &buf);
 		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
-		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes && p->sorted != NULL, "lookup dictionary parse");
+		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes && p->blocked && (p->sorted != NULL) == (form == DICT_LOOKUP), "lookup dictionary parse");
 		for (uint32 i = 0; p != NULL && i < n; i += 1 + (uint32) pg_prng_uint64_range(&rng, 0, 4))
 			CHECK(t, sift_cdict_find(p, str[i], len[i]) == sift_cdict_find(d, str[i], len[i]), "lookup dictionary code");
-		for (uint32 i = 1; p != NULL && i < p->n; i++)
+		for (uint32 i = 1; p != NULL && p->sorted != NULL && i < p->n; i++)
 		{
 			uint32		alen,
 						blen;
@@ -201,7 +202,7 @@ check_dict(TCtx *t)
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "pad");
 	resetStringInfo(&buf);
-	sift_cdict_serialize(d, NULL, false, &buf);
+	sift_cdict_serialize(d, NULL, 0, &buf);
 	p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 	CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n, "dictionary parse");
 	for (uint32 i = 0; p != NULL && i < n; i += 1 + RAND(t, 5))

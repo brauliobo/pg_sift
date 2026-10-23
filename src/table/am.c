@@ -46,7 +46,6 @@
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
-bool		sift_tbl_dict_lookup = false;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
 
@@ -93,8 +92,8 @@ sift_tbl_define_gucs(void)
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_dict_lookup",
-							 "Stores the dictionary of 1,024 strings or more of the column segments written from now on so that a row fetch reads a string in place (column format minor 14); the stored form is larger than the compact one.",
-							 NULL, &sift_tbl_dict_lookup, false,
+							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string.",
+							 NULL, &sift_col_table_lookup, false,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_backpressure",
 							"Percent of the directory of a sift_table from which a writer that needs a new write buffer first waits for the maintenance lock and merges.",

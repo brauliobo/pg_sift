@@ -141,6 +141,7 @@ extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
  */
 #define DICT_LAZY_RATIO			16
 extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
+extern PGDLLIMPORT bool sift_col_table_lookup;	/* sift.table_dict_lookup: the order of a dictionary of a sift_table is stored too */
 extern const char *sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char *buf);
 
 /* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows and their running sums, nrows + 1 of them */
