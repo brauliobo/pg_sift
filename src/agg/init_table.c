@@ -289,8 +289,8 @@ table_init(AggExec *ex)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
 	if (total > ex->direct_max || direct_oversized(ex, total))
 	{
-		hash_init(ex);
-		total = 1024;
+		total = Max(1024, spill_keep(ex));
+		hash_init(ex, (uint32) total);
 	}
 	else
 		direct_layout(ex);
