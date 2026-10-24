@@ -2,12 +2,12 @@
 # orders: 1000000
 # postgresql: 18.6
 # pg_sift: 3.3
-# build: 70a1ba967e90
-# date: 2026-10-23
+# build: 9e1d576ec8cd
+# date: 2026-10-24
 # cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
 # method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
-# host_load_before: load 4.42 4.75 6.16 cpu_psi 0.00%
-# host_load_after: load 4.59 4.78 6.15 cpu_psi 3.08%
+# host_load_before: load 11.23 8.85 8.72 cpu_psi 0.00%
+# host_load_after: load 11.93 9.28 8.87 cpu_psi 5.32%
 # work_mem: 64MB
 version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_page_totals	sift	ms	4.374	3.715	6.074	15	11.19	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
@@ -159,3 +159,10 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	jsonb_each_member	native	ms	337.939	326.410	353.037	15	5.39	Seq Scan on events NOISY
 3.3	keys_in_wide_50k	sift	ms	38.996	37.694	45.138	15	4.59	Bitmap Heap Scan on events_w
 3.3	keys_in_wide_50k	native	ms	39.949	36.109	42.065	15	4.59	Bitmap Heap Scan on events_w
+3.3	keycut_customer_agg	sift	ms	0.296	0.227	0.529	15	11.53	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	keycut_customer_agg	native	ms	33.355	31.795	36.150	15	11.53	Seq Scan on orders
+3.3	keycut_customer_btree	sift	ms	0.157	0.132	0.222	15	11.96	Bitmap Heap Scan on orders
+3.3	keycut_customer_btree	native	ms	0.120	0.096	0.160	15	11.96	Bitmap Heap Scan on orders
+3.3	keycut_customer_btree	forced	ms	0.237	0.177	0.312	15	11.96	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	keycut_customer_range	sift	ms	0.241	0.225	0.545	15	11.93	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount)
+3.3	keycut_customer_range	native	ms	1.192	1.148	2.171	15	11.93	Bitmap Heap Scan on orders
