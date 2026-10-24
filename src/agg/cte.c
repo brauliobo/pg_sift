@@ -487,6 +487,33 @@ typedef struct CteVariants
 				work;
 } CteVariants;
 
+/*
+ * The plan that keeps the shared CTEs, and in lift what agg_cte_lift came to while it was planned (the plan is the only one that is priced with it).
+ * Memoize over a lookup of a CTE's rows is priced on hits a near-unique key (a jsonb document) does not give, so the shared plan would look cheaper than it is.
+ */
+static PlannedStmt *
+plan_shared(SIFT_PLANNER_PARAMS, MemoryContext *cx, double *lift)
+{
+	double		outer_lift = agg_cte_lift;
+	bool		outer_memoize = enable_memoize;
+	PlannedStmt *stmt;
+
+	agg_cte_lift = 1.0;
+	PG_TRY();
+	{
+		enable_memoize = false;
+		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
+	}
+	PG_FINALLY();
+	{
+		enable_memoize = outer_memoize;
+	}
+	PG_END_TRY();
+	*lift = agg_cte_lift;
+	agg_cte_lift = outer_lift;
+	return stmt;
+}
+
 /* both queries are consumed by the planner */
 static void
 plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants *v)
@@ -494,26 +521,11 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	const char *outer_variant;
 	double		read_rows,
 				lift,
-				outer_lift = agg_cte_lift,
 				charged;
 	int			unnesting;
-	bool		outer_memoize = enable_memoize;
 
 	memset(v, 0, sizeof(*v));
-	agg_cte_lift = 1.0;
-	/* Memoize over a lookup of a CTE's rows is priced on hits a near-unique key (a jsonb document) does not give, so the shared plan would look cheaper than it is */
-	PG_TRY();
-	{
-		enable_memoize = false;
-		v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
-	}
-	PG_FINALLY();
-	{
-		enable_memoize = outer_memoize;
-	}
-	PG_END_TRY();
-	lift = agg_cte_lift;
-	agg_cte_lift = outer_lift;
+	v->plain = plan_shared(SIFT_PLANNER_ARGS(parse), &v->plain_cx, &lift);
 	outer_variant = agg_variant_push("inline");
 	agg_read_rows = 0;
 	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
@@ -599,6 +611,37 @@ static struct
 }			first_plan;
 static bool planning_second;
 
+/*
+ * The statement planned as the verdict kept for it says (verdict.c): the inline plan when the scans won, else the plan that keeps the shared CTEs.
+ * The totals are those of the plan in full that made the verdict.
+ */
+static PlannedStmt *
+plan_cached(SIFT_PLANNER_PARAMS, Query *inline_parse, const CteVerdict *vd, MemoryContext *cx)
+{
+	PlannedStmt *stmt;
+
+	agg_report("verdict_cached", AGG_REFUSE_NONE, NULL, true, 0, 0);
+	if (vd->won)
+	{
+		const char *outer_variant = agg_variant_push("inline");
+
+		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
+		agg_variant = outer_variant;
+		inline_won = true;
+		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, vd->scans, vd->shared);
+	}
+	else
+	{
+		double		lift;
+
+		stmt = plan_shared(SIFT_PLANNER_ARGS(parse), cx, &lift);
+		if (vd->scans > 0)
+			agg_report("cte_inline", AGG_REFUSE_CTE_COST, "from the verdict cached", false, vd->scans, vd->shared);
+	}
+	elog(DEBUG1, "sift: shared CTE verdict from the cache: %s", vd->won ? "inline" : "shared");
+	return stmt;
+}
+
 /* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
 static PlannedStmt *
 plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
@@ -608,6 +651,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 			   *pristine_inline = NULL;
 	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
+	CteVerdict	vd;
 	bool		same,
 				won;
 
@@ -617,6 +661,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	agg_vet_forget();
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
+	verdict_lookup(inline_parse, &vd);
+	if (vd.known)
+		return plan_cached(SIFT_PLANNER_ARGS(parse), inline_parse, &vd, cx);
 	if (sift_agg_scale_horizon > 1.0)
 	{
 		pristine = copyObject(parse);
@@ -628,6 +675,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
+	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost);
 	if (!planning_second)
 	{
 		first_plan.set = true;

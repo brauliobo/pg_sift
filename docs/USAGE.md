@@ -635,6 +635,13 @@ A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stor
 
 The chunk codec (encodings plus LZ4 or zstd, [docs/COL-CODEC.md](COL-CODEC.md)) compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
+### The choice for a shared CTE is kept per backend
+
+Choosing between a shared CTE and its inline plan takes PostgreSQL's planner several runs of the statement (the shared plan, the inline plan, the larger sizes of `sift.agg_scale_horizon`, the flattened form).
+A backend keeps the choice for up to 4,096 statements (under 1 MB), under the statement without its constants, the size class of each table it reads (half an octave of its pages) and the settings that move a plan (the planner's, `work_mem` and the `sift.*` ones), and plans only the chosen variant when it sees the statement again.
+The entry is dropped when a table it reads is invalidated (DDL, an index created or dropped, `ANALYZE`, `VACUUM`), and it is checked again by a plan in full at every eighth hit. A verdict that went stale (the constants select other rows than the ones it was made for) costs the other plan, never other rows: both variants are plans of the same query.
+`sift.explain_why` shows a `verdict_cached` row for a statement planned from it, and `sift.stats()` counts `verdict_cache_hits`, `verdict_cache_misses` and `verdict_cache_flips` (the plans in full that chose the other plan). There is no setting: the first plan of a statement and the plan after a change are made in full.
+
 ### When the cost model keeps the normal plan and the scan is faster
 
 A `cte_cost` refusal (`sift.explain_why`: the `cte_inline` row, `scan_cost` against `normal_cost`) compares the scans of the inline plan with the normal plan of the shared CTE, which PostgreSQL prices from row counts it guesses:
