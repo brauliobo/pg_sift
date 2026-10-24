@@ -660,7 +660,7 @@ The zones and the keys of a unit (section 2.13) cut the units that cannot hold a
 on a column of random keys (an id, a uuid, a text of distinct values) against a b-tree. An index with the reloption `point_columns = 'col, col'` (plain integer-like, text and uuid columns of the top level,
 the leaves of `key_columns`) writes, for each of these leaves, a table of its rows by value at the end of the DICT section of the segment: an open addressing table with a slot for each distinct key (the code of a
 dictionary leaf), 8 bytes, at most three quarters full, linear probing: the low 32 bits of a hash of the key over the key's only row (the segment's row number), or over the offset of the list of its rows when it has
-several. A lookup of an equality, an `IN` list of up to 64 keys or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
+several. A lookup of an equality, an `IN` list of up to 65,536 keys (more than 64 only while they are under a sixteenth of the rows of the segment) or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
 ascending, without reading a chunk: the units that hold none are cut, and in the others only those rows are selected.
 
 This lookup path (the directory and the access-method scan that reads it) is the part of sift that is meant to replace a b-tree for point lookups, and the part that is to be tuned for it: its size, and the gap to a b-tree below, are what that work
@@ -710,8 +710,8 @@ The block of an address says the unit (`block >> 8` is the superblock), so a loo
 so the table is a filter (about 1 in 65,000 for each other key in the probe sequence): the access method returns the addresses with the heap check of the condition
 (`xs_recheck`, a bitmap scan's recheck), as for rows. Three rules keep the answer the heap's. The units whose rows may have died are read instead (a unit with a dead
 row, `sift_cseg_dirty`: VACUUM frees an address to be used again by another row, listed under another key or none), as a segment without the directory would be. A scan that
-wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 64 keys,
-is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
+wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 65,536 keys
+(or more than 64 that are a sixteenth of the rows), is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
 row of each unit is listed under its key.
 
 An index written at `sift.col_format_minor` 14 or below lists the rows (minor 14), whatever the option (the default setting, 15, writes the addresses for a leaf of the option and stamps only that segment minor 16), and one written before the option is read as before: `REINDEX`
@@ -723,7 +723,7 @@ sort of the keys of five leaves), a promotion of the write buffer 5% more (92 ms
 A lookup of one row costs 11 to 13 microseconds at 26,700, 100,000 and 1,000,000 rows (6 for a btree), flat in the units, where the directory of rows grows from 15 to 22
 with the units (bench/col_scan.py, kind point_tid); 10 keys cost 22 against 52 and 13 for a btree; a uuid 42 against 78 and 7; a text 126 against 154 and 10 (its string is
 found in the dictionary first). It does not give an order: the table is a hash, so ORDER BY, ranges and `min`/`max` stay with the zones, the sorted runs and the top-N of the
-aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 64 keys, `EXISTS` and semi-joins on a key:
+aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 65,536 keys, `EXISTS` and semi-joins on a key:
 lookups of a few rows by value; the single key, the `IN` list and the nested loop are the ones measured).
 
 ## 3. MVCC: when a row may be read from the index

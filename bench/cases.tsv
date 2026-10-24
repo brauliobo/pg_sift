@@ -78,3 +78,5 @@ keycut_customer_range	`key_cut` (`sift_col` reloption, default none	orders	defau
 jsonb_each_member	jsonb_each_member	events	-	Pushed Aggregates	native	-	ms	faster33	yes
 softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
 softdel_deleted_list	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units Pruned: [1-9]	native,pg_duckdb	-	ms	faster33	no
+point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	yes
+point_in_1000	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no
