@@ -114,7 +114,8 @@ if [[ $MODE == affected ]]; then
 	esac
 	exit 0
 fi
-COL_SLICES=4   # slices of the column differential jobs of the full tier (below)
+COL_SLICES_LEAN=4 COL_SLICES_DEEP=8   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour
+COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 declare -A JOB_WEIGHT=(
 	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
 	[difftest-col-4]=849 [difftest-col-tbl-2]=800 [difftest-col-2]=789 [difftest-col-tbl-3]=675 [tap-shell-compat_matrix]=578 [fuzz]=558
@@ -128,6 +129,12 @@ declare -A JOB_WEIGHT=(
 	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
 )
 JOB_WEIGHT_DEFAULT=10
+# the jobs whose size the deep tier changes: lane seconds of the deep run 40079220375 on PostgreSQL 18 (the slices are the eighth of difftest-col 5860 s and difftest-col-tbl 5101 s)
+declare -A JOB_WEIGHT_DEEP=([difftest]=1949 [difftest-mutants]=1281 [fuzz]=728 [soak]=613 [difftest-fuzz]=510 [difftest-nopos]=474 [soak-col]=303 [soak-gin]=136 [difftest-col-analytics]=150
+	[difftest-col-1]=714 [difftest-col-2]=714 [difftest-col-3]=714 [difftest-col-4]=714 [difftest-col-5]=714 [difftest-col-6]=714 [difftest-col-7]=714 [difftest-col-8]=714
+	[difftest-col-tbl-1]=638 [difftest-col-tbl-2]=638 [difftest-col-tbl-3]=638 [difftest-col-tbl-4]=638 [difftest-col-tbl-5]=638 [difftest-col-tbl-6]=638 [difftest-col-tbl-7]=638 [difftest-col-tbl-8]=638)
+# weight_of JOB [deep]: the weight in seconds of a lane
+weight_of() { if [[ -n ${2:-} && -v JOB_WEIGHT_DEEP[$1] ]]; then echo "${JOB_WEIGHT_DEEP[$1]}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi; }
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
@@ -172,59 +179,65 @@ if [[ $MODE == --selftest ]]; then
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done
-	# the column differential jobs of the full tier are slices of one corpus: K/N for K = 1..N, nothing else different between them (no subset of the variants,
-	# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
-	plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan full)
-	for prefix in difftest-col difftest-col-tbl; do
-		n=0 ks='' rest='' union='' cd=''
-		while read -r id _ _ cmd; do
-			[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
-			eval "args=($cmd)"
-			cd=${args[0]}; k=''; mine=()
-			for (( i = 1; i < ${#args[@]}; i++ )); do
-				if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
-			done
-			[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
-			[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
-				{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
-			[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
-			rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
-			[[ ${BASH_REMATCH[2]} == "$COL_SLICES" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $COL_SLICES"; bad=1; }
-			part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
-			[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
-			union+=$part$'\n'
-		done <<<"$plan"
-		(( n == COL_SLICES )) || { echo "FAIL: $n slices of $prefix in the full plan, want $COL_SLICES"; bad=1; }
-		[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$COL_SLICES") " ]] || { echo "FAIL: the slices of $prefix are not 1..$COL_SLICES:$ks"; bad=1; }
-		if [[ -n $cd ]]; then
-			whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
-			[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
-			[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
-		fi
+	for deep in '' 1; do
+		cs=$COL_SLICES_LEAN; [[ -z $deep ]] || cs=$COL_SLICES_DEEP
+		# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 8): K/N for K = 1..N, nothing else different between them (no subset of the variants,
+		# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
+		plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=18 "$0" --plan full)
+		for prefix in difftest-col difftest-col-tbl; do
+			n=0 ks='' rest='' union='' cd=''
+			while read -r id _ _ cmd; do
+				[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
+				eval "args=($cmd)"
+				cd=${args[0]}; k=''; mine=()
+				for (( i = 1; i < ${#args[@]}; i++ )); do
+					if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
+				done
+				[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
+				[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
+					{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
+				[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
+				rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
+				[[ ${BASH_REMATCH[2]} == "$cs" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $cs"; bad=1; }
+				part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
+				[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
+				union+=$part$'\n'
+			done <<<"$plan"
+			(( n == cs )) || { echo "FAIL: $n slices of $prefix in the full plan, want $cs"; bad=1; }
+			[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$cs") " ]] || { echo "FAIL: the slices of $prefix are not 1..$cs:$ks"; bad=1; }
+			if [[ -n $cd ]]; then
+				whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
+				[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
+				[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
+			fi
+		done
+		grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan ${deep:+(deep) }lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	done
 	# the lean full tier before PostgreSQL 18 runs half of the slices (the first and second of 4), the deep one all of them
 	for pg in 16 17; do
 		for deep in '' 1; do
 			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
-			(( n == (deep ? COL_SLICES : COL_SLICES / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
+			(( n == (deep ? COL_SLICES_DEEP : COL_SLICES_LEAN / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
 		done
 	done
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
 	for pg in 17 18; do
+	for deep in '' 1; do
 		ns=3; (( pg == 17 )) && ns=5
-		all=$(env -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
-		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
-		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg are not the plan, each job once"; bad=1; }
+		[[ -z $deep ]] || { ns=4; (( pg == 17 )) && ns=9; }
+		all=$(env -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
+		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
+		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
 		lo='' hi=0
 		for (( k = 1; k <= ns - (pg < 18 ? 1 : 0); k++ )); do
 			l=0
-			while read -r j _; do l=$(( l + ${JOB_WEIGHT[$j]:-$JOB_WEIGHT_DEFAULT} )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
 			[[ -z $lo ]] || (( l < lo )) && lo=$l
 		done
-		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
+		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
-	grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
+	done
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 	(cd "$REPO" && scripts/sha256.sh --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 	# scripts/leftovers.allow: a test that exists, an object and a reason on every line
@@ -456,7 +469,7 @@ shard_loads() {
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
-	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || echo "${JOB_WEIGHT[$id]:-$JOB_WEIGHT_DEFAULT} $id"; done | sort -s -k1,1nr)
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || echo "$(weight_of "$id" "${SIFT_CI_DEEP:-}") $id"; done | sort -s -k1,1nr)
 }
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
