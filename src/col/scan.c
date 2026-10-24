@@ -444,8 +444,35 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 	uint64	   *has,
 			   *done;
 
-	if (!sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n))
-		return false;
+	if (c->pc_tids != NULL && c->pc_gen == seg->entry.gen && c->pc_col == col && c->pc_nkeys == nkeys && memcmp(c->pc_keys, keys, nkeys * sizeof(int64)) == 0)
+	{
+		tids = c->pc_tids;
+		n = c->pc_n;
+	}
+	else
+	{
+		/* the begins of a scan ask the same keys again (the zones of the top-N bar change between them) and the list is decoded entry by entry */
+		MemoryContext old = MemoryContextSwitchTo(src->mcxt);
+		bool		found = sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n);
+
+		if (found)
+		{
+			if (c->pc_tids)
+				pfree(c->pc_tids);
+			if (c->pc_keys)
+				pfree(c->pc_keys);
+			c->pc_keys = palloc(Max(nkeys, 1) * sizeof(int64));
+			memcpy(c->pc_keys, keys, nkeys * sizeof(int64));
+			c->pc_gen = seg->entry.gen;
+			c->pc_col = col;
+			c->pc_nkeys = nkeys;
+			c->pc_tids = tids ? tids : palloc(sizeof(SiftKey));
+			c->pc_n = n;
+		}
+		MemoryContextSwitchTo(old);
+		if (!found)
+			return false;
+	}
 	has = palloc0(2 * nw * sizeof(uint64));
 	done = has + nw;
 	/* the addresses ascend, so a unit repeats, and the run of a segment follows the runs of the segments before it unless their blocks interleave */
@@ -475,8 +502,6 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 		c->ptidv = tids;
 		c->nptidv = n;
 	}
-	else if (tids)
-		pfree(tids);
 	c->ptids = true;
 	c->ppred = i;
 	return true;

@@ -38,6 +38,12 @@ typedef struct ColCursor
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
 	SiftKey    *ptidv;			/* ... and, for a source that narrows its units (SIFT_COLO_POINT_ROWS), the addresses of the segment, ascending */
 	uint32		nptidv;
+	uint64		pc_gen;			/* of the segment */
+	int			pc_col;			/* the last list of addresses the directory gave for a leaf and these keys (pc_nkeys of pc_keys), kept for the next begin of the source */
+	int			pc_nkeys;
+	int64	   *pc_keys;
+	SiftKey    *pc_tids;
+	uint32		pc_n;
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
