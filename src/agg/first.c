@@ -42,10 +42,10 @@ att_not_null(Oid relid, int att)
 
 /*
  * does a usable unique index of the table hold only columns among atts (nkey compared with `=`, then nord of an ORDER BY, NOT NULL where the index
- * holds them: it takes NULLs for different)? Then a row is the only one with its values of them.
+ * holds them: it takes NULLs for different)? Then a row is the only one with its values of them. *cols, when given, gets the columns of that index.
  */
 bool
-sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts)
+sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, List **cols)
 {
 	Relation	rel = table_open(relid, AccessShareLock);
 	List	   *indexes = RelationGetIndexList(rel);
@@ -75,6 +75,8 @@ sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts)
 					break;
 			}
 			found = n == ix->indnkeyatts;
+			for (n = 0; found && cols != NULL && n < ix->indnkeyatts; n++)
+				*cols = lappend_int(*cols, ix->indkey.values[n]);
 		}
 		ReleaseSysCache(tup);
 		if (found)
@@ -93,7 +95,7 @@ first_unique(const SiftAggFirst *f)
 
 	memcpy(atts, f->keyatt, f->nkey * sizeof(int));
 	memcpy(atts + f->nkey, f->ordatt, f->nord * sizeof(int));
-	return sift_agg_unique_key(f->relid, f->nkey, f->nord, atts);
+	return sift_agg_unique_key(f->relid, f->nkey, f->nord, atts, NULL);
 }
 
 /* does the join read only columns the table has? */

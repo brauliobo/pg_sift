@@ -30,7 +30,7 @@ extern PGDLLIMPORT int sift_agg_lookup_max_kb;
 extern bool agg_lookup_fits(double rows, int width);
 
 /* agg/first.c: does a unique index of the table hold only columns among atts */
-extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts);
+extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, List **cols);
 
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
