@@ -226,10 +226,10 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 	r->lo = nlo;
 	r->hi = nhi;
 	/* check-memory: allow the bounds are int32 values, v is 64 bits */
-	for (int64 v = nlo; v <= (had ? old_lo - 1 : nhi); v++)
+	for (int64 v = nlo; v <= (had ? (int64) old_lo - 1 : nhi); v++)
 		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
 	/* check-memory: allow the bounds are int32 values, v is 64 bits */
-	for (int64 v = had ? old_hi + 1 : nhi + 1; v <= nhi; v++)
+	for (int64 v = had ? (int64) old_hi + 1 : (int64) nhi + 1; v <= nhi; v++)
 		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
 }
 
