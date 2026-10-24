@@ -6,13 +6,18 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_constraint.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -472,6 +477,56 @@ notice_point_tid(Relation index)
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
+/*
+ * The primary key of a table that other tables reference is the key a join to it reads. When it is not a column of the index, an aggregate scan of two
+ * sift tables joined on it keeps the normal plan (join_condition), and the column costs a few bytes a row (3.4 on 353,029 rows with ids up to 15.5 million;
+ * +19% to +131% of the index), more than a default may add, so the build says it once.
+ */
+static void
+notice_pkey(Relation heap, Relation index)
+{
+	Oid			pkoid;
+	Bitmapset  *pk = get_primary_key_attnos(RelationGetRelid(heap), false, &pkoid);
+	int			member;
+	AttrNumber	attno;
+	Relation	conrel;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tup;
+	Oid			from = InvalidOid;
+	int			nfrom = 0;
+
+	if (!bms_get_singleton_member(pk, &member))
+		return;
+	attno = (AttrNumber) (member + FirstLowInvalidHeapAttributeNumber);
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+		if (index->rd_index->indkey.values[i] == attno)
+			return;
+	conrel = table_open(ConstraintRelationId, AccessShareLock);
+	ScanKeyInit(&key, Anum_pg_constraint_confrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(heap)));
+	scan = systable_beginscan(conrel, InvalidOid, false, NULL, 1, &key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
+
+		if (con->contype == CONSTRAINT_FOREIGN && con->conrelid != RelationGetRelid(heap))
+		{
+			from = OidIsValid(from) ? from : con->conrelid;
+			nfrom++;
+		}
+	}
+	systable_endscan(scan);
+	table_close(conrel, AccessShareLock);
+	if (nfrom == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the primary key \"%s\" of \"%s\" is not a column of the index", RelationGetRelationName(index),
+					get_attname(RelationGetRelid(heap), attno, false), RelationGetRelationName(heap)),
+			 errdetail("%d table%s (\"%s\"%s) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.",
+					   nfrom, nfrom == 1 ? "" : "s", get_rel_name(from), nfrom > 1 ? " and others" : ""),
+			 errhint("Add the column to the index if queries join on it.")));
+}
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -512,6 +567,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
 	notice_point_tid(index);
+	notice_pkey(heap, index);
 	sift_col_report_caps(index);
 	sift_col_vacuum_notice(heap, index);
 	if (chosen)
