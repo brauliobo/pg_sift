@@ -579,10 +579,7 @@ static struct
 				scans,
 				work;
 }			first_plan;
-static bool planning_flat;
-/* the first plan of a statement that has a flat one skips the plans at the larger sizes, which plan_flat makes only if the flat plan does not win */
-static bool defer_horizon,
-			horizon_deferred;
+static bool planning_second;
 
 /* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
 static PlannedStmt *
@@ -608,17 +605,12 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		pristine_inline = copyObject(inline_parse);
 	}
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
-	same = planning_flat && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
+	same = planning_second && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
 		first_plan.scans == v.scans.total && first_plan.work == v.work;
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work)
-	{
-		if (defer_horizon)
-			horizon_deferred = true;
-		else
-			won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
-	}
-	if (!planning_flat)
+		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
+	if (!planning_second)
 	{
 		first_plan.set = true;
 		first_plan.won = won;
@@ -673,53 +665,40 @@ reads_column_index(Query *q)
 static PlannedStmt *
 plan_flat(SIFT_PLANNER_PARAMS)
 {
-	Query	   *flat = NULL,
-			   *again = NULL;
+	Query	   *flat = NULL;
 	PlannedStmt *plain,
-			   *flatplan;
+			   *flatplan = NULL;
 	MemoryContext plain_cx,
 				flat_cx;
+	bool		flat_inlined = false;
 
+	first_plan.set = planning_second = false;
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		flat = copyObject(parse);
-		again = copyObject(parse);
 		sift_agg_flatten_laterals(flat);
+		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
+		flat_inlined = inline_won;
+		/* a flat plan that reads every table that has a column index in a scan is the plan: the first one would only be set against it */
+		if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
+			return flatplan;
+		planning_second = true;
 	}
-	first_plan.set = planning_flat = horizon_deferred = false;
-	defer_horizon = flat != NULL;
 	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
-	defer_horizon = false;
+	planning_second = false;
 	/* the flat plan runs more of the statement in the scan only where an ordinary plan still reads a table that has a column index */
-	if (flat == NULL || !plain_reader_stmt(plain))
+	if (flatplan == NULL || !plain_reader_stmt(plain))
 	{
-		if (!horizon_deferred)
-			return plain;
-		discard_plan(plain_cx);
-		return plan_cte(SIFT_PLANNER_ARGS(again), &plain_cx);
-	}
-	planning_flat = true;
-	first_plan.set &= !horizon_deferred;
-	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
-	planning_flat = false;
-	/* the first plan skipped the plans at the larger sizes: the flat plan that reads no table in an ordinary plan wins without them, any other is weighed against the first plan as planned in full */
-	if (horizon_deferred && !((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan)))
-	{
-		discard_plan(plain_cx);
-		plain = plan_cte(SIFT_PLANNER_ARGS(again), &plain_cx);
-		if (!plain_reader_stmt(plain))
-		{
+		if (flatplan != NULL)
 			discard_plan(flat_cx);
-			return plain;
-		}
+		return plain;
 	}
 	/*
-	 * The scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows.
-	 * The same holds when the flat plan reads every table that has a column index in a scan and the first still reads one in an ordinary
-	 * plan (we are here for that): the plan above the scans, priced from the rows it takes for one, is no measure of the work they replace.
+	 * The scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows,
+	 * and the first plan, which still reads a table that has a column index in an ordinary plan (we are here for that), is no measure of them.
 	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
-		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) || !plain_reader_stmt(flatplan) ||
+		((flat_inlined && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
 		 flatplan->planTree->total_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
