@@ -848,6 +848,8 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);
 	agg_arm_path(&cp->path);
+	if (sift_agg_force)
+		cp->path.startup_cost = cp->path.total_cost = 0;
 	add_path(output_rel, &cp->path);
 }
 
