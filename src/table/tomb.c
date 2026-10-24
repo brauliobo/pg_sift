@@ -39,7 +39,26 @@ tomb_reset(SiftTblRel *st, const SiftSegEntry *e)
 	st->tomb_synced = 0;
 	st->tomb_last = InvalidBlockNumber;
 	st->tomb_lastcnt = 0;
+	st->tomb_seqbase = 0;
+	st->tomb_followed = false;
 	st->nents = st->nrecent = 0;
+}
+
+/*
+ * VACUUM replaced the log by one without the entries of the rows it had cleared from the units: it clears them first, and a scan of this
+ * backend that listed its unit before still returns them, with nothing to hide them if the entries went. So the entries already read stay,
+ * the new log is read on top of them without what is held already, and a TID is never given to another row, so the extra ones hide nothing.
+ */
+static void
+tomb_follow(SiftTblRel *st, const SiftSegEntry *e)
+{
+	st->tomb_seqbase += st->tomb_synced;
+	st->tomb_gen = e->gen;
+	st->tomb_hdr = e->header_blk;
+	st->tomb_synced = 0;
+	st->tomb_last = InvalidBlockNumber;
+	st->tomb_lastcnt = 0;
+	st->tomb_followed = true;
 }
 
 /* Merges the sorted b into the sorted array *a (capacity *cap) in place, from the back: the entries before the smallest key of b do not move
@@ -158,6 +177,19 @@ sift_tbl_tomb_entries(Relation rel, SiftTblRel *st)
 	return n;
 }
 
+/* Is the entry read from the new log one this backend holds from the old */
+static bool
+tomb_held(const SiftTblRel *st, const SiftTblTomb *ent)
+{
+	int			n;
+	const SiftTblTomb *h = sift_tbl_tomb_find(st, ent->key, &n);
+
+	for (int i = 0; i < n; i++)
+		if (h[i].xid == ent->xid && h[i].cid == ent->cid && h[i].kind == ent->kind && h[i].succ == ent->succ)
+			return true;
+	return false;
+}
+
 void
 sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 {
@@ -176,7 +208,12 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 		return;
 	}
 	if (e->gen != st->tomb_gen)
-		tomb_reset(st, e);
+	{
+		if (st->tomb_gen == 0)
+			tomb_reset(st, e);
+		else
+			tomb_follow(st, e);
+	}
 	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
 	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
 	n = TBL_TOMB_HDR(BufferGetPage(buf))->nentries;
@@ -207,8 +244,11 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 		}
 		for (uint32 i = from; i < tp->nent; i++)
 		{
-			batch[nbatch] = TBL_TOMB_ENTS(BufferGetPage(buf))[i];
-			batch[nbatch++].seq = st->tomb_synced++;
+			SiftTblTomb ent = TBL_TOMB_ENTS(BufferGetPage(buf))[i];
+
+			ent.seq = st->tomb_seqbase + st->tomb_synced++;
+			if (!st->tomb_followed || !tomb_held(st, &ent))
+				batch[nbatch++] = ent;
 		}
 		st->tomb_last = blk;
 		st->tomb_lastcnt = tp->nent;
