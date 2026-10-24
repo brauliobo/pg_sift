@@ -289,6 +289,14 @@ SHOW sift.explain_refusals;
 (1 row)
 
 RESET client_min_messages;
+-- the refusal of a LIMIT 1 child says what makes its key unique
+SELECT slug, reason ~ 'no unique index on [a-z_, ]+: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE .* CLUSTER on it and VACUUM' AS advice
+FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id LIMIT 1) d ON true GROUP BY 1$q$) WHERE slug = 'lateral_limit';
+     slug      | advice 
+---------------+--------
+ lateral_limit | t
+(1 row)
+
 DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift;
