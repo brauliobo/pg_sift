@@ -23,5 +23,5 @@ make -j"$(nproc)" -s
 make -s install
 # what the suites use besides the server: the TAP modules and the contrib modules
 make -s -C src/test/perl install
-for m in amcheck pg_walinspect dblink pageinspect; do make -s -C contrib/$m install; done
+for m in amcheck pg_walinspect dblink pageinspect pg_visibility; do make -s -C contrib/$m install; done
 echo "$COMMIT" > "$PREFIX/.commit"
