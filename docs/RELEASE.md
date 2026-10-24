@@ -57,7 +57,7 @@ A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared 
 
 PostgreSQL 17 and 18 run the quick tier, in two shards when more than 40 jobs are picked (`SIFT_CI_SHARD=K/N`: every Nth job of the longest-first queue;
 PostgreSQL 17 has a third shard for the jobs that install a library flavor, which cannot share a server with the pool).
-PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in one shard and fails the run like 17 and 18.
+PostgreSQL 19, built from `REL_19_STABLE` and cached (`.github/actions/pg19`, kept warm by `pg19-cache.yml`), runs the same jobs in the same shards and fails the run like 17 and 18.
 19 is a supported major: the source in `src/core/compat.h` carries its differences, and a red 19 job blocks a release like any other.
 
 Following the 19 betas and release candidates needs no change in the repository: the action builds the head of `REL_19_STABLE` (`scripts/pg19-build.sh`: assertions on, ICU, the TAP and contrib modules the tests use).
@@ -67,9 +67,14 @@ What does need a bump: the cache key is the hash of `scripts/pg19-build.sh`, so 
 the git build; when 20 opens, change the default `ref` of the action to `master` (or `REL_20_STABLE` once it exists) and rename the job. To try a build by hand:
 `scripts/pg19-build.sh /var/tmp/pg19 <commit>`, then `PATH=/var/tmp/pg19/bin:$PATH scripts/pgtest.sh install`.
 `scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
-the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18. `assert.yml`
+the full tier (`make check-full`: ASan, soaks and fuzz runs, all mutants) on 17 and 18, in a lean size (a job fits 45 minutes, the run 75: scripts/ci.sh, `lean_or_deep`) and, with the nightly run or `deep`, a deep one (long soaks, the whole differential corpus). `assert.yml`
 (assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks are a separate step, not part of a release: `bench/bench refresh` measures the numbers of the README again (bench/README.md, "Keeping the numbers fresh"), and
 `scripts/check-bench-fresh.sh` (lint, and `release.sh`) fails when a generated block differs from `docs/results` and warns when the results are from another MAJOR.MINOR than `pg_sift.control`:
 a release that prints that warning has benchmark numbers of an older version in its README, so run `bench/bench refresh` first or say so in the notes.
+The lean full tier runs everything the deep one runs, with these differences (SIFT_CI_DEEP=1, the nightly run or the `deep` input of a dispatch, has the larger side):
+- `difftest-col`, `difftest-col-tbl`: each scenario state (insert, update, delete, abort, vacuum, hot, recycle, held, maint) meets a third of the scenario queries, rotating, instead of all of them; on PostgreSQL 17 only every other fixture (slices 1 and 2 of 4, in name order) runs, the other half runs on 18 (deep: all, on both).
+- `difftest` 4000 documents, 100 queries, 3 rounds (deep 5000, 150, 4); `difftest-mutants` 4000 documents and 1 round, all 16 mutants (deep 8000, 2); `difftest-nopos` 2500 documents, 40 queries, 1 round (deep 3000, 60, 2); `difftest-fuzz` seeds 1-6 with 100 queries (deep 1-12, 150); `fuzz` scale 4 (deep 10); `soak` 180 s, `soak-gin` 60 s, `soak-col` 120 s (deep 600, 120, 300).
+- Not cut: the regression tests (`installcheck`), the TAP tests, isolation, `hardened`, `coverage`, `production-regress`, `plan-gate`, the leak gate and the sanitizer reports, on every major.
+
 `scripts/check-bench-cases.sh` (lint) fails when a CHANGELOG line a change adds under `## Unreleased` claims a speed and no case of `bench/cases.tsv` measures it, or a case feeds no block or has no row in `docs/results/cases.tsv`; `scripts/check-bench-cases.sh --strict` applies it to every line of Unreleased and lists the optimizations nobody measured: `release.sh` runs it in its preflight and stops while a line is left, so the count of lines it prints is the number to bring to zero (a case, or a line of `scripts/bench-cases.allow` with the reason a number cannot be measured); `bench/bench cases --docs --rows 1000000` gives the published numbers (bench/README.md, "Cases").
 Job times and why the quick jobs have their size: [TEST-TIMES.md](TEST-TIMES.md).
