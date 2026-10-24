@@ -686,6 +686,42 @@ chunk_set(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	pfree(one);
 }
 
+/*
+ * A selection of a few rows (what a point directory or an earlier test left) is tested on the rows themselves: decoding them costs a gather each,
+ * where the vector tests decode the chunk. The codec decodes a selection the same way below this share (sift_cc_decode_sel).
+ */
+#define SPARSE_RATIO	16
+
+static bool
+sparse_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
+{
+	uint32		cw = words_of(c->n),
+				m = (uint32) sift_colk->bits_count(bits, cw),
+				k = 0,
+			   *idx;
+	int64	   *key;
+
+	if ((uint64) m * SPARSE_RATIO > c->n)
+		return false;
+	if (m > 0)
+	{
+		idx = palloc(m * sizeof(uint32));
+		key = palloc(m * sizeof(int64));
+		for (uint32 w = 0; w < cw; w++)
+			for (uint64 b = bits[w]; b; b &= b - 1)
+				idx[k++] = w * 64 + pg_rightmost_one_pos64(b);
+		sift_cchunk_decode_sel(c, idx, m, key);
+		for (k = 0; k < m; k++)
+			if (!key_matches(t, key[k]))
+				bits[idx[k] >> 6] &= ~(UINT64CONST(1) << (idx[k] & 63));
+		pfree(idx);
+		pfree(key);
+	}
+	if (c->nulls)
+		sift_colk->bits_andnot(bits, c->nulls, cw);
+	return true;
+}
+
 void
 sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 {
@@ -713,6 +749,8 @@ sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 		default:
 			break;
 	}
+	if (t->kind != SIFT_CT_STRS && sparse_run(t, c, bits))
+		return;
 	tmp = palloc(nw * sizeof(uint64));
 	if (t->kind == SIFT_CT_RANGE || t->kind == SIFT_CT_NRANGE)
 		chunk_range(c, t->lo, t->hi, tmp);

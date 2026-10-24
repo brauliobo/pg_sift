@@ -222,6 +222,8 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
 		}
+		if (ls[i].point_units > 0 && ls[i].nunits > 0)
+			st->point_cover[i] = Min(ls[i].point_units / ls[i].nunits, 1.0);
 		if (ls[i].set_units > 0)
 		{
 			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
@@ -334,14 +336,14 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 static void *
 col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
