@@ -305,6 +305,18 @@ sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 }
 
 bool
+sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	return src->prov->sb_heads && src->prov->sb_heads(src->impl, sb, leaf, lo, nlo, hi, nhi);
+}
+
+int
+sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	return src->prov->run_heads ? src->prov->run_heads(src->impl, unit, leaf, lo, nlo, hi, nhi) : 0;
+}
+
+bool
 sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
 {
 	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
