@@ -37,3 +37,22 @@ CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 1
     q('point', "id, v from t where id = 777 and id <= {bound}", None),
     q('in51', f"id, v from t where id in ({IN51}) and id <= {{bound}}", None),
 ])]
+
+
+# The CI gate (scripts/scaling-gate.sh): 8-page units (a SIFT_TESTING=1 SIFT_SB_SHIFT=3 build), 1k-16k units = 1 GB of tmpfs. The point and IN queries read the
+# point directory through the test function of the access method (a production plan does not reach it), flat in the units.
+def point(keys):
+    return lambda size: f"select count(*) from sift._test_col_tids('ix'::regclass, '0:in:{'|'.join(map(str, keys))}', 0)"
+
+
+GATE = [Case('units', [1024, 2048, 4096, 8192, 16384], setup=setup, at=at, native=False, unit='units', queries=[
+    q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g"),
+    q('pruned', "count(*), sum(v) from t where id <= {bound} and v > 100000", 'linear'),
+    q('count', "count(*) from t where id <= {bound}", 'linear'),
+    q('sum', "sum(v) from t where id <= {bound}", 'linear'),
+    q('order_limit', "id from t where id <= {bound} order by id desc limit 10"),
+    Query('point', point([777]), 'flat', needs_sift=False),
+    Query('in51', point([1000 + 37 * i for i in range(51)]), 'flat', needs_sift=False),
+])]
+if PAGES != 8:
+    GATE = []                                  # the gate needs the 8-page geometry; scaling.py then has no case to run
