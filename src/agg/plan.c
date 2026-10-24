@@ -575,17 +575,31 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 	return n;
 }
 
+static bool
+fn_unsafe(Oid funcid, void *context)
+{
+	return func_parallel(funcid) != PROPARALLEL_SAFE;
+}
+
+/* does a function of the packed spec (its expressions are Nodes among Integers and Strings) run only in the leader? */
+static bool
+unsafe_in_worker(Node *n, void *context)
+{
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList) || IsA(n, Query))
+		return false;
+	return check_functions_in_node(n, fn_unsafe, NULL) || expression_tree_walker(n, unsafe_in_worker, context);
+}
+
 /*
- * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the whole
- * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
- * (sift_aggspec_parallel_ok).
+ * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
+ * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
+ * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables.
  */
 int
-parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
+parallel_workers(AggCtx *c, SiftAggSpec *s)
 {
-	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
-	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
-		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
+	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
+		max_parallel_workers_per_gather <= 0 || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
 		return 0;
 	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
@@ -905,7 +919,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
-	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
 	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
 		nworkers = 0;
@@ -979,6 +993,51 @@ groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
 		if (!IsA(get_sortgroupclause_expr(sgc, root->processed_tlist), Const))
 			return true;
 	return false;
+}
+
+/*
+ * ORDER BY an aggregate LIMIT n of a plain GROUP BY (no HAVING, window, DISTINCT or grouping sets above the groups): the first sort key is an
+ * aggregate of the scan whose value the executor ranks without making the group a tuple, so the groups after the n-th (+ OFFSET) are not emitted.
+ * The sort and the limit stay in PostgreSQL's plan: it ranks the ties by the other keys.
+ */
+static void
+group_topn(PlannerInfo *root, SiftAggSpec *s, List *aggs, List *groupClause, GroupPathExtraData *gextra)
+{
+	Query	   *parse = root->parse;
+	SortGroupClause *sgc;
+	Node	   *e;
+	TypeCacheEntry *tc;
+	Const	   *lim,
+			   *off = NULL;
+	int64		k;
+	int			ai = -1;
+
+	if (parse->sortClause == NIL || parse->limitCount == NULL || parse->limitOption != LIMIT_OPTION_COUNT || groupClause != parse->groupClause ||
+		parse->groupClause == NIL || parse->groupingSets != NIL || parse->hasWindowFuncs || parse->hasDistinctOn || parse->distinctClause != NIL ||
+		parse->hasTargetSRFs || parse->havingQual != NULL || (gextra && gextra->havingQual))
+		return;
+	lim = (Const *) parse->limitCount;
+	if (!IsA(lim, Const) || lim->constisnull || (parse->limitOffset && (!IsA(parse->limitOffset, Const) || ((Const *) parse->limitOffset)->constisnull)))
+		return;
+	if (parse->limitOffset)
+		off = (Const *) parse->limitOffset;
+	k = DatumGetInt64(lim->constvalue) + (off ? DatumGetInt64(off->constvalue) : 0);
+	if (k <= 0 || k > 1000000)
+		return;
+	sgc = linitial_node(SortGroupClause, parse->sortClause);
+	e = strip_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
+	foreach_ptr(Node, a, aggs)
+		if (IsA(a, Aggref) && equal(strip_relabel(a), e))
+			ai = foreach_current_index(a);
+	if (ai < 0 || !sift_aggspec_gtopn_kind(&s->agg[ai]))
+		return;
+	tc = lookup_type_cache(exprType(e), TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
+	if (sgc->sortop != tc->lt_opr && sgc->sortop != tc->gt_opr)
+		return;
+	s->gtopn_k = (int) k;
+	s->gtopn_agg = ai;
+	s->gtopn_desc = sgc->sortop == tc->gt_opr;
+	s->gtopn_nulls_first = sgc->nulls_first;
 }
 
 /*
@@ -1079,6 +1138,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 														 list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
+	group_topn(root, s, ow.aggs, groupClause, gextra);
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
 }
 

@@ -366,7 +366,16 @@ table_reset(AggExec *ex)
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
 		ComboSt    *cs = &ex->cs[ci];
+		bool		chained = false;
 
+		/* the ids it gave to the values of an earlier lookup's output rows are keyed by rows that start again: the memo goes with them */
+		for (int p = 0; p < ex->spec->combo[ci].nleaves; p++)
+			chained |= ex->spec->combo[ci].leaf[p] < 0;
+		if (chained)
+		{
+			combo_reset(ex, ci);
+			continue;
+		}
 		/* the direct table forgets the ids of the entries only: it can be megabytes */
 		for (uint32 x = 0; cs->dir && x < cs->nent; x++)
 			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)

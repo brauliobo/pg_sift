@@ -127,6 +127,7 @@ typedef struct AggExec
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
 	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
+	uint32		n_gpruned;		/* groups dropped by the top-N of the aggregate (agg/gtopn.c) */
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
 	uint8	   *fwin;			/* DISTINCT ON: per tuple of the chunk, its row became the best of its group (decided by the first of the aggregates, which the others follow) */
 	AggState   *gas;			/* the AggState their functions are called with */
@@ -315,7 +316,9 @@ extern int		sift_agg_combo_cache;
 /* agg.c */
 void run_scan(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
+void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);
+void groups_topn(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
 Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);

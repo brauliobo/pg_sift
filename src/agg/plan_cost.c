@@ -1628,6 +1628,9 @@ distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
 	if (nd <= 0 || distinct_narrow(c, a))
 		return 0;
 	chunks = Max(ceil(nd / AGG_DIST_CHUNK_BITS), 1.0);
+	/* the integer set of a group that holds few rows starts as a hash set (dist_wide_mode in agg/dist.c): no chunk is allocated */
+	if (leaf_of(c, a->leaf)->vtype != SCV_CODE && k->agg_rows / groups < 16.0 * (2.0 + floor((c->stats.max[a->leaf] - c->stats.min[a->leaf]) / AGG_DIST_CHUNK_BITS)))
+		return 0;
 	touched = Min(groups * chunks * -expm1(-k->agg_rows / groups / chunks), k->agg_rows);
 	return touched * AGG_DIST_CHUNK_BYTES > (double) get_hash_memory_limit() ? 0 : touched;
 }

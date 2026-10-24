@@ -88,6 +88,7 @@ point_keys_agg	asks the point directory (`point_columns`, `point_tid_columns`) f
 percentile_select	finds the percentiles of a group by a quickselect over its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 percentile_disc_int	finds the percentile_disc of a decimal, timestamp or bigint on the 64-bit values of its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 mode_histogram	on the histogram of the values of a group, as it does `percentile_disc`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+group_topn	are dropped before they become tuples: an `ORDER BY <aggregate>	orders	default	Groups Dropped By Top-N	native	-	ms	faster33	no
 two_level_inner_max	the largest value of a float key of each row averaged by group is one two-level scan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 distinct_rows_sets	distinct rows of a grouping set over a preserved join	orders	default	Pushed Aggregates: count, count, count, count\(DISTINCT (o\.)?customer_id\)	native	-	ms	faster33	no
 placeholder_leaf_args	the cast of a map value is the float leaf	orders	default	Pushed Aggregates: count\(\*\), count\(\*\), count\(\*\), avg\(metrics_a\.\*\.value\)	native	-	ms	faster33	no
@@ -99,5 +100,6 @@ index_pick	a table with several `sift_col` indexes is planned through the cheape
 window_first_rows	the first N rows of each group asked with a window function	orders	default+id	.	native	agg_forced:sift.agg_force = on	ms	faster33	no
 soft_delete_exceptions	`WHERE stamp IS NULL` is answered from the pre-aggregates	orders	default	Filters: removed_at IS NULL	native	-	ms	faster33	no
 approx_distinct_sketch	`hll_columns` (default none;	orders	default+title WITH (hll_columns = 'title, customer_id')	approx_count_distinct.*Units Without The Sketch: 0	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+count_distinct_highcard	a hundred thousand groups of a few rows	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 prod_settings_heap_check	is never priced above the random fetch of the same pages	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 lookup_table_whole	is priced with the pages PostgreSQL's own sequential scan of it reads	orders	default	.	native	-	ms	faster33	no

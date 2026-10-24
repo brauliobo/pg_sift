@@ -484,6 +484,8 @@ is_ordered_agg(const SiftAggAgg *a)
 }
 
 /* mode() WITHIN GROUP (ORDER BY x) is a SAA_PCT_DISC with the fraction -1 (the fractions of a percentile are in [0, 1]): the value of most rows, the first of them in the order of the sort on a tie */
+bool sift_aggspec_gtopn_kind(const SiftAggAgg *a);
+
 static inline bool
 osa_is_mode(const SiftAggAgg *a)
 {
@@ -544,6 +546,10 @@ typedef struct SiftAggSpec
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (agg/topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */
 	char	   *desc_topn;		/* EXPLAIN: the sort columns */
+	int			gtopn_k;		/* ORDER BY an aggregate LIMIT n (+ OFFSET): the groups that rank after the n-th of aggregate gtopn_agg are not emitted (agg/gtopn.c); 0: none */
+	int			gtopn_agg;
+	bool		gtopn_desc;
+	bool		gtopn_nulls_first;
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */

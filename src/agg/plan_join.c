@@ -834,6 +834,9 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	cp->path.parallel_safe = false;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
+	/* the groups after the n-th of the sort key are not emitted (a tie keeps more): the sort above sees about n of them */
+	if (s->gtopn_k > 0 && cp->path.rows > 4.0 * s->gtopn_k)
+		cp->path.rows = 2.0 * s->gtopn_k;
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
