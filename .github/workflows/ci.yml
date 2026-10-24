@@ -107,7 +107,8 @@ jobs:
             (if $heavy then [(17, 18) as $v | (if $deep then (if $v == 17 then 9 else 4 end) else (if $v == 17 then 5 else 3 end) end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end)
             + (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
-              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}] else [] end) end
+              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}]
+              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: "^installcheck-agg_(cte_|.*_cost$|.*_scope$|.*lateral|.*subplan|plan_|nested_ctes|.*placeholder|statement_cte)", cassert: true}] else [] end) end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
@@ -137,7 +138,7 @@ jobs:
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 
   postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}${{ matrix.cassert && ' (assertions)' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
@@ -168,7 +169,7 @@ jobs:
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
 
       - name: Install PostgreSQL ${{ matrix.pg }}
-        if: ${{ !matrix.git }}
+        if: ${{ !matrix.git && !matrix.cassert }}
         run: |
           sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
@@ -179,6 +180,22 @@ jobs:
         uses: ./.github/actions/pg19
         with:
           exact: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
+      # the planner asserts of the server (a foreach_node cast of the wrong node type is an Assert) exist only in a build with --enable-cassert, which the
+      # distribution packages lack: the aggregate planner tests run on a PostgreSQL 18 built from source with it (scripts/pg-assert.sh, cached with the build of assert.yml)
+      - name: Cache PostgreSQL ${{ matrix.pg }} with assertions
+        if: ${{ matrix.cassert }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-assert-${{ matrix.pg }}-${{ hashFiles('scripts/pg-assert.sh') }}
+
+      - name: Build PostgreSQL ${{ matrix.pg }} with assertions
+        if: ${{ matrix.cassert }}
+        run: |
+          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl liblz4-dev libzstd-dev
+          prefix=$(PG_ASSERT_MAJOR=${{ matrix.pg }} scripts/pg-assert.sh)
+          echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Use PostgreSQL 19
         if: ${{ matrix.git }}
@@ -213,7 +230,7 @@ jobs:
       # last cache and builds only what it lacks. The cache is saved after a failed run as well: the builds are the cost, not the tests
       - name: Key of the older releases
         id: oldlib
-        if: ${{ matrix.pg != 17 && !matrix.git }}
+        if: ${{ matrix.pg != 17 && !matrix.git && !matrix.cassert }}
         run: |
           prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
@@ -221,7 +238,7 @@ jobs:
 
       - name: Cache the older releases
         id: oldlib-cache
-        if: ${{ matrix.pg != 17 && !matrix.git }}
+        if: ${{ matrix.pg != 17 && !matrix.git && !matrix.cassert }}
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/sift/old-lib/*/root
@@ -244,7 +261,7 @@ jobs:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
           SIFT_CI_AFFECTED: ${{ matrix.jobs }}
           SIFT_CI_JOBS: ${{ matrix.only }}
-          SIFT_CI_NO_HARNESS: ${{ (matrix.tier != 'quick' || matrix.pg != 18 || matrix.arm) && '1' || '' }}
+          SIFT_CI_NO_HARNESS: ${{ (matrix.tier != 'quick' || matrix.pg != 18 || matrix.arm || matrix.cassert) && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
 
@@ -259,7 +276,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
+          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}${{ matrix.cassert && '-cassert' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
