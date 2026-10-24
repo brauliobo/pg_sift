@@ -801,7 +801,11 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 		p->rows = rows;
 }
 
-/* the most rows a node expects among those that read a table with a column index, in a plan; *reads: this node reads one */
+/*
+ * the most rows a node expects among those that read a table with a column index, in a plan; *reads: this node reads one. A node that
+ * keeps fewer rows than it reads (an aggregate, a grouping, a LIMIT, a set operation) ends the count: what comes out of it is its own
+ * estimate, not the rows of the table below, which a body that aggregates does not return.
+ */
 static double
 plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
 {
@@ -813,6 +817,18 @@ plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
 	check_stack_depth();
 	switch (nodeTag(plan))
 	{
+		case T_Agg:
+		case T_Group:
+		case T_Unique:
+		case T_Limit:
+		case T_SetOp:
+			{
+				bool		r = false;
+
+				plan_leaf_rows(subroot, plan->lefttree, &r);
+				*reads = r;
+				return plan->plan_rows;
+			}
 		case T_SeqScan:
 		case T_IndexScan:
 		case T_IndexOnlyScan:
