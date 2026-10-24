@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The options of pg_sift: every reloption of the index kinds and every sift.* setting, read from the C sources. The block of README.md between the
-# sift-options markers and the two tables of docs/USAGE.md (sift-settings, sift-reloptions) are generated. Needs python3 and no PostgreSQL (a second
+# sift-options markers, the two tables of docs/USAGE.md (sift-settings, sift-reloptions) and the case of every option in docs/OPTIONS.md (sift-cases) are generated. Needs python3 and no PostgreSQL (a second
 # or less); --live asks a server.
 #
 #   scripts/gen-options.sh             check, then write README.md and docs/USAGE.md
@@ -8,6 +8,7 @@
 #   scripts/gen-options.sh --live      compare the settings (pg_settings) and the reloptions (sift._test_reloptions) of a new database with the sources (PG* in
 #                                      the environment, a SIFT_TESTING build; scripts/ci.sh)
 #   scripts/gen-options.sh --selftest  prove in memory that a new option without a row, a row without an option and a changed default are caught
+#   scripts/gen-options.sh --missing   list the defaults and opt-ins with no measured gain, growth or write cost and, where there is a gain, no benchmark (each needs a measurement by the lane that owns it)
 #   scripts/gen-options.sh --snapshot  print scripts/options-released.tsv for the current sources (a release replaces the file with it)
 #
 # What the sources say is read, not copied: the DefineCustom*Variable() calls of src/ give a setting its name, type, default, range, context, unit and
@@ -17,16 +18,19 @@
 # of one family may share a README row (group). The check fails when
 #   - an option of src/ has no row, or a row names an option that does not exist (a setting under #ifdef SIFT_TESTING is not documented),
 #   - a row lacks its `applies`, `buys` or `cost` (a member of a group takes the first row's), names an unknown index kind, or links to a file or heading that is not there,
+#   - a row lacks its class (default, opt-in, diagnostic, safety, deprecated) or its advice, an opt-in lacks the limit of the 3.3 default rule it failed (`why`), a bool
+#     opt-in defaults to on (or a bool default to off), or a pr, since or bench cell names nothing real,
 #   - a reloption is registered without an entry of the relopt_parse_elt table of its access method, or the reverse,
 #   - a default that is not a literal cannot be evaluated (add the PostgreSQL constant to CONST),
-#   - README.md or docs/USAGE.md is not what is generated.
+#   - README.md, docs/USAGE.md or docs/OPTIONS.md is not what is generated.
+# An empty gain, growth or write cell of a default or an opt-in is no failure: it is a measurement nobody made (`--missing`, and **not measured** in docs/OPTIONS.md).
 # `new in <version>` and `was <default>` in the tables come from scripts/options-released.tsv, the defaults of the last release; `new in` is the default_version of
-# pg_sift.control unless the optional last column of the row (`since`) names the release that really has the option.
+# pg_sift.control unless the `since` cell of the row names the release that really has the option.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 mode=${1:-write}
-[[ $mode == write || $mode == --check || $mode == --live || $mode == --selftest || $mode == --snapshot ]] || { echo "usage: $0 [--check|--live|--selftest|--snapshot]" >&2; exit 2; }
+[[ $mode == write || $mode == --check || $mode == --live || $mode == --selftest || $mode == --snapshot || $mode == --missing ]] || { echo "usage: $0 [--check|--live|--selftest|--snapshot|--missing]" >&2; exit 2; }
 exec python3 -I - "$mode" <<'PY'
 import csv
 import os
@@ -263,8 +267,7 @@ def read_tsv(text, cols, name, errors):
         if not line.strip() or line.startswith('#'):
             continue
         f = line.split('\t')
-        if cols[-1] == 'since' and len(f) == len(cols) - 1:
-            f.append('')
+        f += [''] * (len(cols) - len(f))        # trailing empty cells may be stripped
         if len(f) != len(cols):
             errors.append('%s:%d: %d columns, not %d (%s)' % (name, n, len(f), len(cols), ', '.join(cols)))
             continue
@@ -275,7 +278,13 @@ def read_tsv(text, cols, name, errors):
     return rows
 
 
-NOTE_COLS = ['key', 'applies', 'group', 'values', 'minor', 'buys', 'cost', 'link', 'since']
+NOTE_COLS = ['key', 'applies', 'group', 'values', 'minor', 'buys', 'cost', 'link', 'since', 'class', 'why', 'gain', 'growth', 'write', 'pr', 'bench', 'advice']
+CELLS = ('class', 'why', 'gain', 'growth', 'write', 'pr', 'bench', 'advice')
+CLASSES = ['default', 'opt-in', 'diagnostic', 'safety', 'deprecated']
+# the limits of the 3.3 rule for a default that an opt-in failed, and the reasons the rule does not cover
+WHY = {'gain': 'under 5% on a relevant class', 'growth': 'over 3% index growth', 'write': 'over 5% write cost', 'result': 'changes results or semantics',
+       'hardware': 'needs hardware', 'memory': 'takes memory', 'risk': 'not run on real workloads', 'unknown': 'the history does not say'}
+EVIDENCE = ('gain', 'growth', 'write')     # empty: not measured (--missing); `-`: no such effect
 
 
 def anchors(path, cache={}):
@@ -302,20 +311,43 @@ def check(opts, notes, errors):
         if o['key'] not in notes:
             errors.append('%s: %s has no row in docs/options.tsv (applies, buys, cost, link: what it is for, what it costs; `-` in applies hides an alias)' % (o['where'], o['key']))
     group_first = {}
+    cases = {l.split('\t')[0] for l in read('bench/cases.tsv').split('\n') if l.strip() and not l.startswith('#')}
     for k, r in notes.items():
         n = 'docs/options.tsv:%d: %s' % (r['line'], k)
         if k not in keys:
             errors.append('%s is not an option of src/ (or it is under #ifdef SIFT_TESTING)' % n)
             continue
+        first = group_first.setdefault(r['group'], r) if r['group'] else r
+        o = next(o for o in docs if o['key'] == k)
+        cls = r['class'] or first['class']
+        if cls not in CLASSES:
+            errors.append('%s: class `%s` is none of %s' % (n, cls, ', '.join(CLASSES)))
+        if not (r['advice'] or first['advice']):
+            errors.append('%s: no advice (the line a user reads: when to set it, when to leave it, how to opt out)' % n)
+        if cls == 'opt-in' and not (r['why'] or first['why']):
+            errors.append('%s: an opt-in needs why: the limit of the default rule it failed (%s)' % (n, ', '.join(WHY)))
+        for w in (r['why'].split(',') if r['why'] else []):
+            if w.strip() not in WHY:
+                errors.append('%s: why %s is none of %s' % (n, w.strip(), ', '.join(WHY)))
+        if r['pr'] and not re.fullmatch(r'\d+(, ?\d+)*', r['pr']):
+            errors.append('%s: pr is a comma separated list of pull request numbers' % n)
+        if r['since'] and not re.fullmatch(r'\d+\.\d+', r['since']):
+            errors.append('%s: since is a release like 3.3' % n)
+        b = r['bench']
+        bf, _, ba = b.partition('#')
+        if b and b != '-' and b not in cases and not (bf.startswith('docs/') and os.path.exists(os.path.join(ROOT, bf)) and (not ba or ba in anchors(bf[5:]))):
+            errors.append('%s: bench %s is neither a case of bench/cases.tsv, `-`, nor a file%s of docs/ (written docs/results/x.tsv)' % (n, b, ' and heading' if ba else ''))
+        if o['type'] == 'bool' and cls in ('default', 'opt-in') and (cls == 'opt-in') == bool(o['default']):
+            errors.append('%s: class %s but the default is %s' % (n, cls, 'on' if o['default'] else 'off'))
         if r['applies'] == '-':
+            if cls != 'deprecated':
+                errors.append('%s: applies `-` is an alias that is not listed: class deprecated' % n)
             if not r['buys']:
                 errors.append('%s: applies `-` needs the reason in buys' % n)
             continue
         for a in r['applies'].split(','):
             if a.strip() not in APPLIES:
                 errors.append('%s: applies %s is none of %s' % (n, a, ', '.join(APPLIES)))
-        first = group_first.setdefault(r['group'], r) if r['group'] else r
-        o = next(o for o in docs if o['key'] == k)
         for c in ('buys', 'cost'):
             if not (r[c] or first[c]):
                 errors.append('%s: no %s' % (n, c))
@@ -331,6 +363,27 @@ def check(opts, notes, errors):
 
 def release_label():
     return re.search(r"default_version\s*=\s*'(\d+\.\d+)", read('pg_sift.control')).group(1)
+
+
+def lead_rows(notes):
+    """-> {group or key: the first row of the group}: the cells a member leaves empty are its"""
+    lead = {}
+    for k, r in notes.items():
+        lead.setdefault(r['group'] or k, r)
+    return lead
+
+
+def missing(notes):
+    """-> [(key, [cells])]: the measurements a default or an opt-in has not got (empty; `-` says there is no such effect)"""
+    lead = lead_rows(notes)
+    out = []
+    for k, r in notes.items():
+        cell = lambda c: r[c] or lead[r['group'] or k][c]
+        if cell('class') in ('default', 'opt-in'):
+            m = [c for c in EVIDENCE if not cell(c)] + (['bench'] if cell('gain') != '-' and cell('bench') in ('', '-') else []) + (['why'] if cell('why') == 'unknown' else [])
+            if m:
+                out.append((k, m))
+    return out
 
 
 def released_label():
@@ -355,9 +408,7 @@ def link(r, prefix):
 def generate(opts, notes, released, version, old_version):
     by_key = {o['key']: o for o in opts}
     listed = [(by_key[k], r) for k, r in notes.items() if r['applies'] != '-']
-    lead = {}
-    for o, r in listed:
-        lead.setdefault(r['group'] or o['key'], r)
+    lead = lead_rows(notes)
     old_minor = int(released.get('sift.col_format_minor', '0'))
 
     def meta(r, c):
@@ -377,37 +428,86 @@ def generate(opts, notes, released, version, old_version):
             c = 'format minor %s%s%s' % (r['minor'], '; a 3.2 library cannot read it' if marks and int(r['minor']) > old_minor else '', '; ' + c if c else '')
         return c
 
-    rows, done = [], set()      # the README: a row per option, a row per group
-    for o, r in listed:
-        if r['group']:
-            if r['group'] in done:
+    def entries(hidden=False):
+        """-> [([options], row)]: a member of a group joins the row of the first one unless it has cells of its own (class, why, evidence, pr, bench, advice)"""
+        out, first = [], {}
+        for k, r in notes.items():
+            if r['applies'] == '-' and not hidden:
                 continue
-            done.add(r['group'])
-            ms = [(m, mr) for m, mr in listed if mr['group'] == r['group']]
-            pre = os.path.commonprefix([m['name'] for m, _ in ms])
-            pre = pre[:max(pre.rfind('_'), pre.rfind('.')) + 1]
-            rows.append(('`%s{%s}`' % (pre, ','.join(m['name'][len(pre):] for m, _ in ms)), r['applies'], '', ', '.join('%s=%s' % (m['name'][len(pre):], default(m, False)) for m, _ in ms),
-                         r['buys'], cost(r, False), link(r, 'docs/')))
-        else:
-            rows.append(('`%s`' % o['name'], r['applies'], values(o, r), default(o, False), r['buys'], cost(r, False), link(r, 'docs/')))
+            g = r['group']
+            if g in first and all(r[c] in ('', first[g][1][c]) for c in CELLS):
+                first[g][0].append(by_key[k])
+                continue
+            out.append(([by_key[k]], r))
+            if g:
+                first.setdefault(g, out[-1])
+        return out
+
+    def prefix(os_):
+        pre = os.path.commonprefix([m['name'] for m in os_])
+        return pre[:max(pre.rfind('_'), pre.rfind('.')) + 1]
+
+    def names(os_):
+        return '`%s`' % os_[0]['name'] if len(os_) == 1 else '`%s{%s}`' % (prefix(os_), ','.join(m['name'][len(prefix(os_)):] for m in os_))
+
+    def defaults(os_, marks=False):
+        return default(os_[0], marks) if len(os_) == 1 else ', '.join('%s=%s' % (m['name'][len(prefix(os_)):], default(m, marks)) for m in os_)
+
+    rows = []       # the README: a row per option, a row per group
+    for os_, r in entries():
+        rows.append((names(os_), r['applies'], '' if len(os_) > 1 else values(os_[0], r), defaults(os_), meta(r, 'class'),
+                     meta(r, 'buys'), cost(r, False), link(r, 'docs/')))
     readme = ['<!-- sift-options:start -->', '## Options at a glance', '',
               'Every index option (`WITH (...)`) and every `sift.*` setting, generated by `scripts/gen-options.sh` from the C sources: the defaults are the ones the library is compiled with.',
+              'The class says whether the option is automatic behaviour (`default`), an `opt-in`, a `diagnostic`, a `safety` limit or `deprecated`; [docs/OPTIONS.md](docs/OPTIONS.md) has the measured case for each.',
               'The full tables, with range, context and description, are in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).', '',
               '<details>', '<summary>The table: %d options and settings with their defaults, what each buys and what it costs</summary>' % len(rows), '',
-              '| Option | Applies to | Type and values | Default | What it buys | Cost | Read more |', '|---|---|---|---|---|---|---|']
+              '| Option | Applies to | Type and values | Default | Class | What it buys | Cost | Read more |', '|---|---|---|---|---|---|---|---|']
     readme += ['| ' + ' | '.join(esc(c) for c in row) + ' |' for row in rows]
     readme += ['', '</details>', '<!-- sift-options:end -->']
 
-    gs = ['| Setting | Applies to | Default | Values | Context | Description | Cost |', '|---|---|---|---|---|---|---|']
-    rs = ['| Index option | Index | Default | Values | Description | Cost |', '|---|---|---|---|---|---|']
+    def ev(r, c):       # a member of a family that repeats the cell of the first one says so
+        v = meta(r, c)
+        g = lead[r['group'] or r['key']]
+        return v if r is g or r[c] not in ('', g[c]) else ('as `%s`' % g['key'] if v else v)
+
+    def shown(r, c):
+        return ev(r, c) or ('**not measured**' if meta(r, 'class') in ('default', 'opt-in') else '')
+    sections = ['<!-- sift-cases:start -->', '| Class | Options | Meaning |', '|---|---|---|']
+    ents = entries(True)
+    meaning = {'default': 'on by default: automatic behaviour, or a knob whose default is the recommended value', 'opt-in': 'off or empty by default; `why` is the limit of the default rule it failed',
+               'diagnostic': 'to measure, compare or explain a plan; not for a production configuration', 'safety': 'a limit or guard on memory, locks, I/O or replicas',
+               'deprecated': 'an older spelling that is still accepted'}
+    for c in CLASSES:
+        sections.append('| [%s](#%s) | %d | %s |' % (c, c, sum(len(os_) for os_, r in ents if meta(r, 'class') == c), meaning[c]))
+    for c in CLASSES:
+        sub = [(os_, r) for os_, r in ents if meta(r, 'class') == c]
+        if not sub:
+            continue
+        optin = c == 'opt-in'
+        sections += ['', '### %s' % c, '', '| Option | Applies to | Default | Since | %sGain | Growth | Write cost | PR | Bench | Advice |' % ('Why not the default | ' if optin else ''),
+                     '|---|---|---|---|%s---|---|---|---|---|---|' % ('---|' if optin else '')]
+        for os_, r in sub:
+            why = ', '.join(WHY[w.strip()] for w in meta(r, 'why').split(',')) if meta(r, 'why') else ''
+            bench = ev(r, 'bench')
+            bench = bench if bench.startswith('as `') else '' if bench in ('', '-') else '`%s`' % bench if '/' not in bench else '[%s](%s)' % (bench, bench[5:])
+            prs = ', '.join('[#%s](https://github.com/brauliobo/pg_sift/pull/%s)' % (n, n) for n in re.findall(r'\d+', r['pr'] or lead.get(r['group'] or '', r)['pr']))
+            sections.append('| ' + ' | '.join(esc(x) for x in (
+                [names(os_), r['applies'] if r['applies'] != '-' else 'all', defaults(os_), r['since'] or ''] + ([why] if optin else []) +
+                [shown(r, 'gain'), shown(r, 'growth'), shown(r, 'write'), prs, bench, meta(r, 'advice')])) + ' |')
+    sections.append('<!-- sift-cases:end -->')
+
+    gs = ['| Setting | Applies to | Default | Class | Values | Context | Description | Cost |', '|---|---|---|---|---|---|---|---|']
+    rs = ['| Index option | Index | Default | Class | Values | Description | Cost |', '|---|---|---|---|---|---|---|']
     for o, r in listed:
         c = (cost(r) + (' ' + link(r, '') if r['link'] else '')).strip()
         d = (o['short'] + ' ' + o['long']).strip()
         if o['kind'] == 'guc':
-            gs.append('| `%s` | %s | %s | %s | %s | %s | %s |' % (o['name'], r['applies'], default(o), values(o, r), o['ctx'], esc(d), esc(c)))
+            gs.append('| `%s` | %s | %s | %s | %s | %s | %s | %s |' % (o['name'], r['applies'], default(o), meta(r, 'class'), values(o, r), o['ctx'], esc(d), esc(c)))
         else:
-            rs.append('| `%s` | `%s` | %s | %s | %s | %s |' % (o['name'], o['am'], default(o), values(o, r), esc(d), esc(c)))
-    return '\n'.join(readme), '\n'.join(['<!-- sift-settings:start -->'] + gs + ['<!-- sift-settings:end -->']), '\n'.join(['<!-- sift-reloptions:start -->'] + rs + ['<!-- sift-reloptions:end -->'])
+            rs.append('| `%s` | `%s` | %s | %s | %s | %s | %s |' % (o['name'], o['am'], default(o), meta(r, 'class'), values(o, r), esc(d), esc(c)))
+    return ('\n'.join(readme), '\n'.join(['<!-- sift-settings:start -->'] + gs + ['<!-- sift-settings:end -->']), '\n'.join(['<!-- sift-reloptions:start -->'] + rs + ['<!-- sift-reloptions:end -->']),
+            '\n'.join(sections))
 
 
 def splice(text, tag, block, errors, path):
@@ -508,6 +608,12 @@ def selftest():
     text = read('docs/options.tsv')
     victim = next(o for o in opts if o['kind'] == 'guc' and not o['testing'] and not notes[o['key']]['group'])
     victim_row = next(l for l in text.split('\n') if l.startswith(victim['key'] + '\t'))
+    def set_cell(row, col, v):
+        f = row.split('\t')
+        f += [''] * (len(NOTE_COLS) - len(f))
+        f[NOTE_COLS.index(col)] = v
+        return '\t'.join(f)
+
     cases = [
         ('a row is missing', dict(notes_text=text.replace(victim_row + '\n', '')), victim['key'] + ' has no row'),
         ('a row names no option', dict(notes_text=text + 'sift.no_such_setting\tall\t\t\t\tx\ty\t\n'), 'sift.no_such_setting is not an option'),
@@ -517,7 +623,10 @@ def selftest():
          'sift_col(zz_new) has no row'),
         ('a reloption that is not parsed', dict(srcs={**srcs, 'col/am.c': srcs['col/am.c'].replace('{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},', '')}),
          'superunit of sift_col is registered but not parsed'),
-        ('a link to nowhere', dict(notes_text=text.replace(victim_row, victim_row.rsplit('\t', 1)[0] + '\tNOWHERE.md#x')), 'NOWHERE.md#x is not a file'),
+        ('a class that does not exist', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'class', 'bogus'))), 'class `bogus`'),
+        ('an opt-in with no why', dict(notes_text=text.replace(victim_row, set_cell(set_cell(victim_row, 'class', 'opt-in'), 'why', ''))), 'an opt-in needs why'),
+        ('a benchmark that is no case', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'bench', 'no_such_case'))), 'bench no_such_case'),
+        ('a link to nowhere', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'link', 'NOWHERE.md#x'))), 'NOWHERE.md#x is not a file'),
     ]
     for what, kw, want in cases:
         e = []
@@ -525,7 +634,9 @@ def selftest():
         if not any(want in x for x in e):
             errs.append('selftest: %s was not caught (wanted "%s", got %s)' % (what, want, e[:2]))
     # a changed default reaches the tables and is flagged against the release
-    flip = next(o for o in opts if o['kind'] == 'guc' and o['type'] == 'bool' and not o['testing'] and o['key'] in released)
+    lead = lead_rows(notes)
+    flip = next(o for o in opts if o['kind'] == 'guc' and o['type'] == 'bool' and not o['testing'] and o['key'] in released
+                and (notes[o['key']]['class'] or lead[notes[o['key']]['group'] or o['key']]['class']) not in ('default', 'opt-in'))      # the class of those two follows the default
     changed = srcs[flip['where'].split(':')[0]]
     pat = re.compile(r'(DefineCustomBoolVariable\(\s*"%s".*?&\w+,\s*)(true|false)' % re.escape(flip['name']), re.S)
     new = pat.sub(lambda m: m.group(1) + ('false' if m.group(2) == 'true' else 'true'), changed, count=1)
@@ -549,13 +660,18 @@ elif mode == '--snapshot':
         print('# released: %s, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)\n%s' % (release_label(), snapshot(opts)))
 else:
     opts, notes, released = load(errors)
-    if mode == '--live':
+    if mode == '--missing':
+        m = missing(notes)
+        for k, cells in m:
+            print('%s\t%s' % (k, ' '.join(cells)))
+        print('options: %d of %d rows have an unmeasured cell' % (len(m), len(notes)), file=sys.stderr)
+    elif mode == '--live':
         errors += live(opts)
         if not errors:
             print('options: live ok, the library agrees with src/ on every setting and reloption')
     elif not errors:
-        readme, settings, reloptions = render(opts, notes, released)
-        files = {'README.md': [('sift-options', readme)], 'docs/USAGE.md': [('sift-settings', settings), ('sift-reloptions', reloptions)]}
+        readme, settings, reloptions, cases = render(opts, notes, released)
+        files = {'README.md': [('sift-options', readme)], 'docs/USAGE.md': [('sift-settings', settings), ('sift-reloptions', reloptions)], 'docs/OPTIONS.md': [('sift-cases', cases)]}
         for path, blocks in files.items():
             old = new = read(path)
             for tag, block in blocks:

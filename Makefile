@@ -132,7 +132,7 @@ refusals:
 # docs/REFERENCE.md and the README block from the sift.* objects of the install scripts (scripts/gen-reference.sh --check proves them)
 reference:
 	scripts/gen-reference.sh
-# the options tables of README.md and docs/USAGE.md from the reloption and setting definitions in src/ and docs/options.tsv (scripts/gen-options.sh --check proves them)
+# the options tables of README.md, docs/USAGE.md and docs/OPTIONS.md from the reloption and setting definitions in src/ and docs/options.tsv (scripts/gen-options.sh --check proves them)
 options:
 	scripts/gen-options.sh
 
