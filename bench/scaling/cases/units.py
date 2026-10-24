@@ -22,7 +22,7 @@ def at(size):
 
 
 def q(name, body, target='flat'):
-    return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", target)
+    return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", target, needs_sift=target is not None)
 
 
 CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 16384, 65536], setup=setup, at=at, native=False, unit='units',
@@ -32,6 +32,8 @@ CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 1
     q('count', "count(*) from t where id <= {bound}", 'linear'),
     q('sum', "sum(v) from t where id <= {bound}", 'linear'),
     q('order_limit', "id from t where id <= {bound} order by id desc limit 10"),
-    q('point', "id, v from t where id = 777 and id <= {bound}"),
-    q('in51', f"id, v from t where id in ({IN51}) and id <= {{bound}}"),
+    # information only: a point lookup and an IN list are not planned on the sift_col index of a production build (a seq scan with nothing to replace it; with the
+    # partial index the scan is the bitmap of the whole index predicate), so these two measure the heap or the partial index, not a point directory
+    q('point', "id, v from t where id = 777 and id <= {bound}", None),
+    q('in51', f"id, v from t where id in ({IN51}) and id <= {{bound}}", None),
 ])]
