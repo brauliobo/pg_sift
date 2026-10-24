@@ -144,6 +144,8 @@ run_corpus() {
 			fi
 			echo "SELECT coldiff.run_query(:'scen', '$name', :'f', :'variants'::text[], :runs, nullif(:'mutate', ''), :'rel'::float8, :'abs'::float8);"
 			[[ -n ${HELD:-} ]] || echo "COMMIT;"
+			# the output of the queries goes to /dev/null: a line on stderr every 50 files says how far the session is
+			(( ${#names[@]} % 50 )) || echo "\\! date +'[coldiff %T] $scen: ${#names[@]} files done' >&2"
 		done
 		[[ -z ${HELD:-} ]] || echo "COMMIT;"
 	} >"$script"
