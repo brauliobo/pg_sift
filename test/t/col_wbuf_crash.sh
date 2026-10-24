@@ -49,7 +49,7 @@ CHECK=("CREATE TEMP TABLE r AS SELECT * FROM sift._test_col_wbuf_rows('t_idx', 7
 		(SELECT count(*) FROM r), (SELECT count(*) FROM done), (SELECT count(*) FROM sift._test_col_wbuf_segments('t_idx')),
 		(SELECT coalesce(sum(nrows), 0) FROM sift._test_col_wbuf_segments('t_idx')) - (SELECT count(*) FROM r)")
 
-# A crash before the first call committed leaves no row and no segment: sum() of nothing is NULL, which is not a failure (nothing was lost).
+# Over no rows and no segments (nothing committed before the crash) sum() is NULL: that reads as 0, and a lost call still shows as missing.
 # healthy: missing | duplicated | wrongly flagged | records and batches differ | live agree | store check | records | calls | segments | torn rows
 healthy() {
 	local out
@@ -64,6 +64,8 @@ fresh || bail "setup failed"
 pgbench_bg cm "$CLIENTS" 2 "${ARGS[@]}"
 if wait "$PGBENCH_PID" && healthy; then ok "undisturbed: $SUMMARY"; else not_ok "undisturbed"; diag "$(tail -5 "$D/pgbench.log")"; fi
 
+# the kill comes after the first committed call: no iteration is spent on a cluster that has done nothing
+CRASH_READY="SELECT count(*) > 0 FROM done"
 for i in $(seq "$ITERS"); do
 	fresh || bail "fresh index failed"
 	crash_cycle cm "iteration $i" 2 "$CLIENTS" "${ARGS[@]}" || break
