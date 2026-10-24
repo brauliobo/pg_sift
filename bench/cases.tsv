@@ -90,3 +90,8 @@ percentile_disc_int	finds the percentile_disc of a decimal, timestamp or bigint 
 distinct_rows_sets	distinct rows of a grouping set over a preserved join	orders	default	Pushed Aggregates: count, count, count, count\(DISTINCT (o\.)?customer_id\)	native	-	ms	faster33	no
 placeholder_leaf_args	the cast of a map value is the float leaf	orders	default	Pushed Aggregates: count\(\*\), count\(\*\), count\(\*\), avg\(metrics_a\.\*\.value\)	native	-	ms	faster33	no
 sets_lookup_keys	resolves its rows in a loop of the column's kind	orders	default	Group Keys: category: l\.label, country: r\.region.*grouping set	native	-	ms	faster33	no
+lateral_group_decor	`x JOIN LATERAL (SELECT g, sum(f.a) FROM f WHERE f.k = x.k GROUP BY g [HAVING ..]) ON true`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+lateral_comma_agg	`FROM x, LATERAL (SELECT sum(f.a) FROM f WHERE f.k = x.k)` (the comma form	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+exists_decor	`EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..)` and `NOT EXISTS` where PostgreSQL leaves a sub-plan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+index_pick	a table with several `sift_col` indexes is planned through the cheapest index	orders	default	Index: orders_col	native	-	ms	faster33	no
+window_first_rows	the first N rows of each group asked with a window function	orders	default+id	.	native	agg_forced:sift.agg_force = on	ms	faster33	no
