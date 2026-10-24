@@ -342,6 +342,9 @@ points_read(SiftColSegment *seg)
 			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (rec[5] == SIFT_CPOINT_MODE_TIDS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
 			at != next || size > s->len - sizeof(foot) - next)
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
+		/* the units of a key-cut segment are not block ranges: an address names no unit, so such a segment lists rows (docs/COL.md 2.16) */
+		if (rec[5] == SIFT_CPOINT_MODE_TIDS && sift_cseg_keyed(&seg->entry))
+			corrupt(seg, "The point directory of leaf %u lists heap addresses, which a key-cut segment cannot; REINDEX the index.", rec[0]);
 		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4], rec[5] == SIFT_CPOINT_MODE_TIDS};
 		prev = rec[0];
 		next += size;
@@ -1948,6 +1951,9 @@ typedef struct TidAcc
 	uint32		limit;			/* 0: no limit; else more addresses than this make over */
 	bool		over;
 	uint32		words;			/* the words of the lists read */
+	uint32		slots;			/* the slots whose addresses were taken: one slot's list is ascending and lists no address twice */
+	uint32		last_sb;		/* the superblock of the last address and its unit: the addresses of a list ascend, so a unit repeats */
+	uint32		last_u;
 } TidAcc;
 
 #define TID_PAYLOAD(slot)	((slot) & ((UINT64CONST(1) << 48) - 1))
@@ -1957,9 +1963,19 @@ tid_push(TidAcc *a, SiftKey key)
 {
 	SiftColSegment *seg = a->seg;
 	uint32		sb = (uint32) (key >> 16) >> SIFT_SB_SHIFT,
-				u = sift_cseg_find_unit(seg, sb);
+				u;
 
-	if ((key & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || (key & 0xFFFF) == 0 || u >= seg->nsb || seg->sbdir[u].sb != sb)
+	if (a->n > 0 && sb == a->last_sb)
+		u = a->last_u;
+	else
+	{
+		u = sift_cseg_find_unit(seg, sb);
+		if (u >= seg->nsb || seg->sbdir[u].sb != sb)
+			corrupt(seg, "The point directory of leaf %d lists the address %llx, which is in no unit of the segment.", a->col, (unsigned long long) key);
+		a->last_sb = sb;
+		a->last_u = u;
+	}
+	if ((key & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || (key & 0xFFFF) == 0)
 		corrupt(seg, "The point directory of leaf %d lists the address %llx, which is in no unit of the segment.", a->col, (unsigned long long) key);
 	if (a->n == a->cap)
 		a->t = a->t ? repalloc_huge(a->t, (a->cap *= 2) * sizeof(SiftKey)) : palloc((a->cap = 16) * sizeof(SiftKey));
@@ -1981,6 +1997,7 @@ tid_slot_read(TidAcc *a, uint64 slot)
 	const uint8 *p,
 			   *end;
 
+	a->slots++;
 	if ((pay & 0xFFFF) != SIFT_CPOINT_TID_LIST)
 	{
 		if (a->limit && a->n + 1 > a->limit)
@@ -2068,10 +2085,16 @@ sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys,
 			pfree(a.t);
 		return false;
 	}
-	qsort(a.t, a.n, sizeof(SiftKey), tid_cmp);
-	for (uint32 i = 0; i < a.n; i++)
-		if (u == 0 || a.t[u - 1] != a.t[i])
-			a.t[u++] = a.t[i];
+	/* the addresses of one slot ascend and are distinct; those of several slots (several keys, or keys that share a fingerprint) are sorted and made so */
+	if (a.slots > 1)
+	{
+		qsort(a.t, a.n, sizeof(SiftKey), tid_cmp);
+		for (uint32 i = 0; i < a.n; i++)
+			if (u == 0 || a.t[u - 1] != a.t[i])
+				a.t[u++] = a.t[i];
+	}
+	else
+		u = a.n;
 	*tids = a.t;
 	*ntids = u;
 	return true;

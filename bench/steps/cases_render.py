@@ -1,4 +1,4 @@
-"""The "What got faster in 3.3" block of README.md (the chart, the takeaway and the application-shaped cases) and docs/BENCHMARKS.md (every case), from docs/results/cases.tsv (bench/bench cases --docs).
+"""The "Benchmark cases" block of README.md (the chart, the takeaway and the application-shaped cases) and docs/BENCHMARKS.md (every case), from docs/results/cases.tsv (bench/bench cases --docs).
 
     python3 -I bench/steps/cases_render.py [--results DIR] [--readme FILE] [--benchmarks FILE]      (bench/bench readme, scripts/check-bench-fresh.sh)
 
@@ -120,7 +120,7 @@ def lines(meta, rows, registry, results_dir='docs/results', bench_dir='bench'):
                                                                   ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
-    out = ['%d cases of the 3.3 optimizations (`bench/cases.tsv`) on %s rows (the orders of the store benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
+    out = ['%d benchmark cases (`bench/cases.tsv`) on %s rows (the orders of the store benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
         n, '{:,}'.format(int(meta.get('orders', 0))), rounds(meta), extras.footer(meta)), ''] + head + body + [
         '', '**Takeaway:** ' + takeaway(figs), '', '**Caveats**', '',
         '- PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store\'s PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).',
@@ -264,7 +264,7 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='docs/results'):
     if table:
         out += ['The cases that read like an application\'s query, with the SQL in `bench/cases/` and the slope of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows):' % results_dir, ''] + table + ['']
     out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
-            'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#what-got-faster-in-33); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
+            'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
             '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
                 meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'), meta.get('host_load_before', '?'))]
     return out
