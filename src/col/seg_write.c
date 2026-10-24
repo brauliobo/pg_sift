@@ -259,16 +259,23 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
 				w->pt[c].want = true;
-				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* the option is what stamps minor 16: the setting stays at 15 */
+				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
 }
 
+/*
+ * The units of a key-cut segment are not block ranges, so a heap address does not name its unit: its point directories list the rows of the segment
+ *, whatever point_tid_columns says, and a lookup reads the unit of each row.
+ */
 void
 sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
 {
 	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
 	w->keyed = true;
 	w->aim_rows = aim_rows;
+	if (w->pt)
+		for (int c = 0; c < w->schema->ncols; c++)
+			w->pt[c].tids = false;
 }
 
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */

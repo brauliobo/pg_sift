@@ -453,6 +453,13 @@ notice_point_tid(Relation index)
 
 	if (sift_col_options_point_tid_columns(index)[0] == '\0')
 		return;
+	if (sift_col_options_key_cut(index)[0] != '\0')
+	{
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": point_tid_columns lists the rows of the segment on a key-cut index", RelationGetRelationName(index)),
+				 errdetail("The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.")));
+		return;
+	}
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	for (int c = 0; c < d->ncols; c++)
