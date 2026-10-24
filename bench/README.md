@@ -261,6 +261,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `lanes.sh` | the lanes (a cluster per engine, the compressed cache of built lanes) |
 | `footprint.sh` | `du`, `clean`, the peak footprint of a session and the pruning of the cache of lanes |
 | `readme.py` |  |
+| `compare.py` | the README's comparison with the other systems (run by `highlights.py`): the matrix of workload classes against PostgreSQL, ClickHouse, Elasticsearch, Citus columnar and pg_duckdb (on how many questions pg_sift is faster, by how much, the losses in bold, `not measured` where no result file holds a figure), the conditions of every number, the search and port tables, and the warm milliseconds of every question at 1M and 10M orders. |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |

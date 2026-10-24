@@ -37,6 +37,7 @@ SYSTEMS = {
     'es':         ('Elasticsearch', '#6250d6', '#9085e9', 'up'),
     'ch':         ('ClickHouse', '#eda100', '#c98500', 'down'),
     'citus':      ('Citus columnar', '#e87ba4', '#d55181', 'cross'),
+    'flat':       ('PostgreSQL flat tables', '#8a5a2b', '#d4a373', 'diamond'),
     'duckdb_heap': ('pg_duckdb heap', '#eb6834', '#d95926', 'up'),
     'duckdb_parquet': ('pg_duckdb Parquet', '#eb6834', '#d95926', 'down'),
 }

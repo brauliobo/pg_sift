@@ -2,19 +2,47 @@
 
 [![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#postgresql-versions) [![release](https://img.shields.io/badge/release-3.3.0-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791)](#install) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
-pg_sift adds fast full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`. No external search
-server, no separate analytics database, no `shared_preload_libraries`. It supports PostgreSQL 17, 18 and 19[^pg19]. The search engine also runs as a SQLite extension and a MariaDB library.
+pg_sift adds ranked full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`: no search server, no separate analytics database, no `shared_preload_libraries`.
+It is for applications that keep their data in PostgreSQL and serve dashboards, reports and search from the same rows. A `sift` index answers BM25 queries (boolean, phrase, prefix, regex, fuzzy, facets); a `sift_col` index
+or a `sift_table` answers counts, sums, distinct counts, group-bys and top-N from compressed columns; a query the planner cannot prove equal keeps PostgreSQL's own plan. It supports PostgreSQL 17, 18 and 19[^pg19]; the search engine also runs as a SQLite extension and a MariaDB library.
 
 [^pg19]: PostgreSQL 19 is tested on its release candidate (a server built from `REL_19_STABLE`, the same jobs as for 17 and 18); see [docs/SUPPORT.md](docs/SUPPORT.md#postgresql-versions).
 
-[Quick start](#quick-start) · [Features](#features) · [Reference](#sql-reference) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations and limits](#operations-and-limits) · [Vulkan](#vulkan-experimental) · [Docs](#docs)
+[At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
+
+## At a glance
+
+### When pg_sift is the right tool, and when it is not
+
+It wins where the question reads many rows and the answer is small:
+
+- **Aggregates over a filtered table:** counts, sums, distinct counts, group-bys, time buckets, top-N and window reports over hundreds of thousands to millions of rows, answered from pre-aggregates and compressed columns, with the time growing slower than the rows (the rows above, Scale).
+- **Ranked search next to the data:** BM25 with filters, counts and facets in the same transaction as the rows, with no pipeline that keeps a second system in step; updates, deletes, VACUUM and replicas are PostgreSQL's.
+
+It does not win, and the table and charts show each case:
+
+- **A lookup by key** where a btree exists: the btree is as fast or faster, and the planner keeps it.
+- **A report of a few stores over a small result:** when the whole query takes a few milliseconds, PostgreSQL's flat tables are as fast or faster than the scan (Query shapes).
+- **Large analytic tables that need a warehouse:** it is one PostgreSQL node, without sharding or distributed execution; ClickHouse loads faster and stores the same table in less space, and ClickHouse and Elasticsearch are ahead on some filtered averages and range counts at 10,000,000 rows.
+- **Text analysis beyond English stemming and one key per index**, and the search classes where Elasticsearch is ahead (the Search table).
+- **A shape the planner cannot prove equal** keeps the normal plan.
 
 ## Quick start
 
 ### Install
 
-Supports PostgreSQL 17, 18 and 19 on Linux, x86-64 and arm64, and PostgreSQL 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). Linux packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems (the release `.deb` and `.rpm` are built for PostgreSQL 18; for 17 and 19 build from source): [docs/USAGE.md](docs/USAGE.md#install).
-Try it in five minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md). Container recipes (PostgreSQL 17, 18 and 19, Docker Compose, a CloudNativePG extension image): [docs/CONTAINERS.md](docs/CONTAINERS.md). Supported versions, upgrade paths and the licence: [docs/SUPPORT.md](docs/SUPPORT.md).
+Supports PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64) and PostgreSQL 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). The release packages are built for PostgreSQL 18; for 17 and 19 build from source.
+
+| Where | How |
+|---|---|
+| Debian 13, Ubuntu 24.04 (PGDG `postgresql-18`) | download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest), then `sudo apt install ./postgresql-18-pg-sift_*_amd64.deb` |
+| RHEL family (PostgreSQL 18) | download the `.rpm` from the latest release, then `sudo dnf install ./pg_sift_18-*.rpm` |
+| Arch Linux | the AUR package `pg_sift` (recipe in [packaging/](packaging/)) |
+| Docker | `packaging/docker/build.sh 18` builds the image `pg_sift:pg18` on the official `postgres` image: [docs/QUICKSTART.md](docs/QUICKSTART.md), [docs/CONTAINERS.md](docs/CONTAINERS.md) (Docker Compose, CloudNativePG) |
+| macOS arm64 | the Homebrew formula below |
+| anything else | from source, below |
+
+Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). Install details, upgrade paths and the licence: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
 
 From source (needs server headers with `pg_config` on `PATH` and a C compiler):
 
@@ -77,8 +105,104 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 - **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan, counts from the index, facets, autocomplete.
 - **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` run on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU; off by default, the CPU path unchanged ([Vulkan](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
+- **Pre-aggregates, top-N and lookups:** units whose rows are all visible answer from the exact count/sum/min/max stored with them (on by default), `ORDER BY ... LIMIT n` stops after the first rows of the units that can hold them, and an equality or `IN` lookup on a key column reads only the units that hold it (`point_columns`, `point_tid_columns`; opt-in per index).
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
+
+## Compared with
+
+Feature facts checked against each project's own documentation on 2026-10-18 (speed is in Benchmarks); `?` is not verified. Full tables, a note per row, sources, and the inferred and unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
+
+<details>
+<summary>Search: pg_sift against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch</summary>
+
+| Search | pg_sift | PG FTS | pg_search | pg_textsearch | rum | pgx-bm25 | TIN | Elasticsearch |
+|---|---|---|---|---|---|---|---|---|
+| BM25 ranking | Yes | No | Yes | Yes | No | Yes | Yes | Yes |
+| Prefix, wildcard | Yes | Partly | Partly | Partly | Partly | Partly | Yes | Yes |
+| Regex, fuzzy | Yes | No | Yes | No | No | No | Yes | Yes |
+| Field weights | Partly | Yes | Partly | No | Partly | Yes | Partly | Yes |
+| Facets | Yes | No | Yes | No | No | No | No | Yes |
+| Filters inside the ranked scan | Yes | Partly | Yes | No | Partly | No | Partly | Yes |
+| Top-N with other filters | Yes | No | Yes | Partly | Yes | Partly | Yes | Yes |
+| `count(*)` from the index | Yes | No | Partly | No | No | No | Yes | Yes |
+| MVCC, same-transaction reads | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
+| Physical replication, hot standby | Yes | Yes | No | Yes | Yes | Yes | Yes | n/a |
+| Inside PostgreSQL, no extra service | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
+| Immutable segments, background merge | Yes | No | Yes | Partly | No | Partly | Yes | Yes |
+| Stemmer languages | 1 | 29 | 20 | PG configs | PG configs | PG dictionaries | 18 | 36 analyzers |
+| License | PostgreSQL | PostgreSQL | AGPL-3.0 | PostgreSQL | PostgreSQL | PostgreSQL | ? | AGPL-3.0, SSPL, ELv2 |
+
+</details>
+
+<details>
+<summary>Analytics: pg_sift against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB</summary>
+
+| Analytics | pg_sift `sift_col` | pg_sift `sift_table` | PostgreSQL | Citus columnar | ClickHouse | Elasticsearch | DuckDB | TimescaleDB columnstore |
+|---|---|---|---|---|---|---|---|---|
+| Columnar storage | Yes (as an index; the table stays a heap) | Yes | No | Yes | Yes | Yes | Yes | Partly |
+| Aggregates on column data | Yes | Partly | No | No | Yes | Yes | Yes | Yes |
+| `GROUP BY` expressions | Yes | Partly | Yes | Yes | Yes | Yes | ? | Yes |
+| Joins | Yes | Yes | Yes | Yes | Yes | Partly | Yes | Yes |
+| Pre-aggregates | Yes | No | Partly | Partly | Yes | Partly | ? | Yes |
+| MVCC, transactions | Yes | Yes | Yes | Partly | Partly | No | Yes | Yes |
+| `UPDATE`, `DELETE` | Yes | Partly | Yes | No | Partly | Yes | Yes | Yes |
+| On an existing heap table via an index | Yes | No | n/a | No | No | No | No | No |
+| Exact `count(DISTINCT)` | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
+| PostgreSQL SQL | Yes | Yes | Yes | Yes | No | No | Partly | Yes |
+| Inside PostgreSQL, no extra server | Yes | Yes | Yes | Yes | No | No | No | Yes |
+| License | PostgreSQL | PostgreSQL | PostgreSQL | AGPL-3.0 | Apache-2.0 | AGPL-3.0, SSPL, ELv2 | MIT | Apache-2.0; columnstore under the Timescale License |
+
+</details>
+
+pg_sift is weaker in text analysis (English stemming only, one key per index) and where its column engine is narrow (joins are accelerated for small tables only, `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates): [docs/COMPARISON.md](docs/COMPARISON.md#where-pg_sift-is-weaker).
+
+## SQLite and MariaDB
+
+The search engine runs outside PostgreSQL too, with the same core and the same results.
+
+### SQLite
+
+The search engine as a loadable extension, for apps that want search without a server.
+
+- **Needs:** Linux x86-64, SQLite 3.38 or newer.
+- **Queries:** exact BM25, phrase, prefix, wildcard, regex and fuzzy; highlights, snippets, facets.
+- **Speed:** 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles).
+- **Install, options and numbers:** [sqlite/README.md](sqlite/README.md).
+
+```sql
+.load ./sift
+CREATE VIRTUAL TABLE docs USING sift(title, body);
+SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT 10;   -- BM25 top-10, best first
+```
+
+### MariaDB
+
+`libsift_udf.so` and two SQL files bring the engine to MariaDB, with no storage engine and no server patch.
+
+- **Needs:** MariaDB 10.5 to 13.x; results are identical to pg_sift.
+- **Speed:** 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller.
+- **Install and guide:** [mariadb/README.md](mariadb/README.md).
+
+```sql
+CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
+SELECT sift_count('news', 'power AND plant');
+```
+
+## Operations and limits
+
+- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- **Maintenance:** on by default. A background worker (`sift.async_maintenance`) promotes write buffers and merges segments, `sift.col_auto_merge` vacuums and merges a `sift_col` index after churn, `sift.table_auto_defrag` clears the dead rows of a `sift_table`; VACUUM clears dead rows as usual.
+- **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
+- **Replication:** physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
+- **Cost of one library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
+- **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested; arm64 tested with 18); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
+- **Ports:** search only; the column engine is PostgreSQL-only ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+- **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
+- **Weaker than other systems:** text analysis and the narrow parts of the column engine ([Compared with](#compared-with)).
+- **Types, options and limits of the column engine:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index in [docs/SIZING.md](docs/SIZING.md).
+
+[^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).
 
 <!-- sift-reference:start -->
 
@@ -184,106 +308,6 @@ The full tables, with range, context and description, are in [docs/USAGE.md](doc
 
 </details>
 <!-- sift-options:end -->
-
-## Compared with
-
-Feature facts checked against each project's own documentation on 2026-10-18 (speed is in Benchmarks); `?` is not verified. Full tables, a note per row, sources, and the inferred and unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
-
-<details>
-<summary>Search: pg_sift against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch</summary>
-
-| Search | pg_sift | PG FTS | pg_search | pg_textsearch | rum | pgx-bm25 | TIN | Elasticsearch |
-|---|---|---|---|---|---|---|---|---|
-| BM25 ranking | Yes | No | Yes | Yes | No | Yes | Yes | Yes |
-| Prefix, wildcard | Yes | Partly | Partly | Partly | Partly | Partly | Yes | Yes |
-| Regex, fuzzy | Yes | No | Yes | No | No | No | Yes | Yes |
-| Field weights | Partly | Yes | Partly | No | Partly | Yes | Partly | Yes |
-| Facets | Yes | No | Yes | No | No | No | No | Yes |
-| Filters inside the ranked scan | Yes | Partly | Yes | No | Partly | No | Partly | Yes |
-| Top-N with other filters | Yes | No | Yes | Partly | Yes | Partly | Yes | Yes |
-| `count(*)` from the index | Yes | No | Partly | No | No | No | Yes | Yes |
-| MVCC, same-transaction reads | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
-| Physical replication, hot standby | Yes | Yes | No | Yes | Yes | Yes | Yes | n/a |
-| Inside PostgreSQL, no extra service | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
-| Immutable segments, background merge | Yes | No | Yes | Partly | No | Partly | Yes | Yes |
-| Stemmer languages | 1 | 29 | 20 | PG configs | PG configs | PG dictionaries | 18 | 36 analyzers |
-| License | PostgreSQL | PostgreSQL | AGPL-3.0 | PostgreSQL | PostgreSQL | PostgreSQL | ? | AGPL-3.0, SSPL, ELv2 |
-
-</details>
-
-<details>
-<summary>Analytics: pg_sift against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB</summary>
-
-| Analytics | pg_sift `sift_col` | pg_sift `sift_table` | PostgreSQL | Citus columnar | ClickHouse | Elasticsearch | DuckDB | TimescaleDB columnstore |
-|---|---|---|---|---|---|---|---|---|
-| Columnar storage | Yes (as an index; the table stays a heap) | Yes | No | Yes | Yes | Yes | Yes | Partly |
-| Aggregates on column data | Yes | Partly | No | No | Yes | Yes | Yes | Yes |
-| `GROUP BY` expressions | Yes | Partly | Yes | Yes | Yes | Yes | ? | Yes |
-| Joins | Yes | Yes | Yes | Yes | Yes | Partly | Yes | Yes |
-| Pre-aggregates | Yes | No | Partly | Partly | Yes | Partly | ? | Yes |
-| MVCC, transactions | Yes | Yes | Yes | Partly | Partly | No | Yes | Yes |
-| `UPDATE`, `DELETE` | Yes | Partly | Yes | No | Partly | Yes | Yes | Yes |
-| On an existing heap table via an index | Yes | No | n/a | No | No | No | No | No |
-| Exact `count(DISTINCT)` | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
-| PostgreSQL SQL | Yes | Yes | Yes | Yes | No | No | Partly | Yes |
-| Inside PostgreSQL, no extra server | Yes | Yes | Yes | Yes | No | No | No | Yes |
-| License | PostgreSQL | PostgreSQL | PostgreSQL | AGPL-3.0 | Apache-2.0 | AGPL-3.0, SSPL, ELv2 | MIT | Apache-2.0; columnstore under the Timescale License |
-
-</details>
-
-pg_sift is weaker in text analysis (English stemming only, one key per index) and where its column engine is narrow (joins are accelerated for small tables only, `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates): [docs/COMPARISON.md](docs/COMPARISON.md#where-pg_sift-is-weaker).
-
-| Inside PostgreSQL, no extra server | Yes | Yes | Yes | Yes | No | No | No | Yes |
-| License | PostgreSQL | PostgreSQL | PostgreSQL | AGPL-3.0 | Apache-2.0 | AGPL-3.0, SSPL, ELv2 | MIT | Apache-2.0; columnstore under the Timescale License |
-
-pg_sift is weaker in text analysis (English stemming only, one key per index) and where its column engine is narrow (joins are accelerated for small tables only, `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates): [docs/COMPARISON.md](docs/COMPARISON.md#where-pg_sift-is-weaker).
-
-## SQLite and MariaDB
-
-The search engine runs outside PostgreSQL too, with the same core and the same results.
-
-### SQLite
-
-The search engine as a loadable extension, for apps that want search without a server.
-
-- **Needs:** Linux x86-64, SQLite 3.38 or newer.
-- **Queries:** exact BM25, phrase, prefix, wildcard, regex and fuzzy; highlights, snippets, facets.
-- **Speed:** 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles).
-- **Install, options and numbers:** [sqlite/README.md](sqlite/README.md).
-
-```sql
-.load ./sift
-CREATE VIRTUAL TABLE docs USING sift(title, body);
-SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT 10;   -- BM25 top-10, best first
-```
-
-### MariaDB
-
-`libsift_udf.so` and two SQL files bring the engine to MariaDB, with no storage engine and no server patch.
-
-- **Needs:** MariaDB 10.5 to 13.x; results are identical to pg_sift.
-- **Speed:** 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller.
-- **Install and guide:** [mariadb/README.md](mariadb/README.md).
-
-```sql
-CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
-SELECT sift_count('news', 'power AND plant');
-```
-
-## Operations and limits
-
-- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
-- **Maintenance:** a background worker (`sift.async_maintenance`) promotes write buffers and merges segments; VACUUM clears dead rows.
-- **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
-- **Replication:** physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
-- **Cost of one library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
-- **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested; arm64 tested with 18); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
-- **Ports:** search only; the column engine is PostgreSQL-only ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
-- **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
-- **Weaker than other systems:** text analysis and the narrow parts of the column engine ([Compared with](#compared-with)).
-- **Types, options and limits of the column engine:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index in [docs/SIZING.md](docs/SIZING.md).
-
-[^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).
 
 ## Vulkan (experimental)
 

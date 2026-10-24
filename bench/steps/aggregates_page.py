@@ -265,6 +265,14 @@ def readme_shapes(results):
            f'top 3 per store, notes by role) with 10, 400 and 4,000 tenants in the filter. pg_sift is faster than the PostgreSQL heap on {len(faster)} of them ({rng(faster)}, median {statistics.median(g for g, _, _ in gains):.1f}x)'
            + (f' and slower on {len(slower)} ({rng([r for r, _ in slower])}; {sum(1 for _, v in slower if v == "K10")} of them with the smallest filter set, where the whole query takes 1 to 5 ms)' if slower else '') + '.', '',
            picture('shapes-speedup', 'Speed-up of pg_sift over the PostgreSQL heap on 8 whole-table shapes and 7 shapes at three filter sizes', 'docs/img/'), '']
+    ch = [(q, v, t['ch'] / t['col']) for q, v, t in cases if t['ch'] and t['col']]
+    flat = [(q, v, t['flat'] / t['col']) for q, v, t in cases if t['flat'] and t['col']]
+    name = lambda q, v: q if v == '-' else f'{q} at {v.replace("K", "")} tenants'
+    if ch:
+        out += [f'Against ClickHouse (one thread, a throwaway server) pg_sift is faster on {sum(1 for *_, r in ch if r >= 1.05)} of {len(ch)} cases and slower on '
+                + ', '.join(name(q, v) + f' ({1 / r:.1f}x)' for q, v, r in sorted(ch, key=lambda c: c[2]) if r <= 0.95) + '; against the best conventional layout of the same data in PostgreSQL (flat tables) it is faster on '
+                f'{sum(1 for *_, r in flat if r >= 1.05)} of {len(flat)} and slower on {sum(1 for *_, r in flat if r <= 0.95)} ({sum(1 for _, v, r in flat if r <= 0.95 and v == "K10")} of them with the smallest filter set).', '',
+                picture('shapes-latency', 'Time per application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse', 'docs/img/'), '']
     if maybe(results, 'cases-wm4g.tsv'):
         import cases as cases_mod
         import cases_render
