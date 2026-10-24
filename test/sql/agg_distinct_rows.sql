@@ -24,11 +24,12 @@ VACUUM (FREEZE, ANALYZE) facts;
 \ir test/agg_check_query.sql
 
 -- the aggregates the scan computes (a rows count shows as `count`, a set as `count(DISTINCT col)`), and the counters of what the group table did
+-- (PostgreSQL 17 qualifies the column of a grouping set's distinct count with its table, 18 does not: the qualifier is dropped)
 CREATE FUNCTION pushed(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
-    IF l LIKE '%Pushed Aggregates:%' THEN RETURN btrim(l); END IF;
+    IF l LIKE '%Pushed Aggregates:%' THEN RETURN regexp_replace(btrim(l), 'DISTINCT \w+\.', 'DISTINCT ', 'g'); END IF;
   END LOOP;
   RETURN 'no SiftAgg';
 END $$;
