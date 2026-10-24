@@ -164,7 +164,7 @@ SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PART
 (1 row)
 
 -- the window stays as written: rank(), a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
--- in a condition that is not a conjunct, more than the first row
+-- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
 SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
  label | in_scan | same | rows 
 -------+---------+------+------
@@ -245,10 +245,10 @@ SELECT * FROM check_query('the second row', $q$ SELECT * FROM (SELECT id, grp, r
  the second row | f       | t    |   37
 (1 row)
 
-SELECT * FROM check_query('the first three rows', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
-        label         | in_scan | same | rows 
-----------------------+---------+------+------
- the first three rows | f       | t    |  111
+SELECT * FROM check_query('the first three rows are arrays', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+              label              | in_scan | same | rows 
+---------------------------------+---------+------+------
+ the first three rows are arrays | t       | t    |  111
 (1 row)
 
 SELECT * FROM check_query('a left join', $q$
