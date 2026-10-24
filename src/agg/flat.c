@@ -907,9 +907,13 @@ typedef struct DecorRead
 	Bitmapset  *nulled;			/* the join, which now makes them NULL for a row without a group (an inner join did not) */
 } DecorRead;
 
-/* a column of the lateral sub-select read where the join nulls it */
+/* a column of the lateral sub-select read where the join nulls it (PostgreSQL 19 hands the callback a const Var) */
 static Node *
+#if PG_VERSION_NUM >= 190000
+decor_read(const Var *var, replace_rte_variables_context *context)
+#else
 decor_read(Var *var, replace_rte_variables_context *context)
+#endif
 {
 	DecorRead  *read = context->callback_arg;
 	List	   *exprs = read->exprs;
