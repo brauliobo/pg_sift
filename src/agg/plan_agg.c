@@ -504,7 +504,7 @@ compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 		return compile_mapped(c, a, arg, out, ai);
 	out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
 		fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
-	out->argtype = NUMERICOID;
+	out->argtype = exprType(arg);
 	out->distinct = sum && a->aggdistinct != NIL;
 	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
 	return true;
@@ -648,6 +648,9 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
 										fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
 		return compile_numeric_agg(c, a, arg, out, ai);
+	/* the distinct values of a bigint are kept as those of a decimal: exact, and a partial state the leader can merge */
+	if (exprType(arg) == INT8OID && fid == F_COUNT_ANY && a->aggdistinct != NIL && compile_numeric_agg(c, a, arg, out, ai))
+		return true;
 	if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
 		return compile_float_agg(c, a, arg, out, ai);
 	if ((fid == F_SUM_INT8 || fid == F_AVG_INT8) && a->aggdistinct == NIL && compile_int8_agg(c, a, arg, out))
