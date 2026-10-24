@@ -647,8 +647,8 @@ sift_cseg_dict_search(SiftColSegment *seg, int col)
 	if (pv->dict[col] != NULL)
 		return pv->dict[col];
 	l = dict_look(seg, col);
-	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order */
-	if (l && l->searchable && sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER)
+	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost */
+	if (l && l->searchable && (sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
 	return sift_cseg_dict(seg, col);
 }
