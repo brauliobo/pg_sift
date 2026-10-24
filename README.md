@@ -25,6 +25,9 @@ It does not win, and the table and charts show each case:
 - **A report of a few stores over a small result:** when the whole query takes a few milliseconds, PostgreSQL's flat tables are as fast or faster than the scan (Query shapes).
 - **Large analytic tables that need a warehouse:** it is one PostgreSQL node, without sharding or distributed execution; ClickHouse loads faster and stores the same table in less space, and ClickHouse and Elasticsearch are ahead on some filtered averages and range counts at 10,000,000 rows.
 - **Text analysis beyond English stemming and one key per index**, and the search classes where Elasticsearch is ahead (the Search table).
+- **Writes through a `sift_table`:** 20 statements of `UPDATE .. WHERE id IN (<2,000 ids>)` over 600,000 orders take 3,076 ms against 669 ms on a heap table (4.6x slower), and a `COPY` of 1,000,000 orders 1,583 ms against 897 ms (1.8x slower); the update, delete and VACUUM numbers are in Changes of data.
+- **A `count(DISTINCT)` that spills** (40,000 groups at `work_mem = 1MB`): 394 ms against 282 ms (1.4x slower).
+- **A filter that keeps a few rows:** 1.8 ms against 0.9 ms (`filter_few_rows`, 1.9x slower).
 - **A shape the planner cannot prove equal** keeps the normal plan.
 
 ## Quick start
