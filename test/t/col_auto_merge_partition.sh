@@ -54,7 +54,8 @@ churn fa 38000 4
 for _ in $(seq 600); do [[ $(merges fa_idx) -gt $M0 ]] && break; sleep 0.1; done
 await fa_idx
 AFTER=$(gens fa_idx)
-KEPT=$(comm -12 <(echo "$BEFORE") <(echo "$AFTER") | wc -l)
+# the generations are numbers in numeric order, which comm (it wants the lexicographic order) misreads once they cross a power of ten
+KEPT=$(grep -Fxc -f <(echo "$AFTER") <<<"$BEFORE")
 diag "partitions $(wc -l <<<"$BEFORE") before, $KEPT kept, $(( $(merges fa_idx) - M0 )) merge steps"
 check "the window of churn is rewritten: no dirty segment, nothing buffered" settled fa_idx
 check "and the partitions it did not reach are the segments they were" test "$KEPT" -ge $(( $(wc -l <<<"$BEFORE") - 3 ))
