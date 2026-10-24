@@ -24,6 +24,7 @@
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "utils/array.h"
@@ -1126,13 +1127,29 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	*indexPages = Max(1.0, kept * index->pages);
 }
 
+/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
+static void
+col_scale_rel(RelOptInfo *rel)
+{
+	if (sift_plan_scale <= 1.0)
+		return;
+	rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+	rel->tuples *= sift_plan_scale;
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+	{
+		ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+		ii->tuples *= sift_plan_scale;
+	}
+}
+
 /* ---- off means off ---- */
 
 /*
  * With sift.enable_col_scan off the planner must build no bitmap path on a sift_col index: a path with a bad cost still beats one that
  * enable_seqscan = off disabled (PostgreSQL counts the disabled nodes before the cost). The index stays in the list, SiftAgg reads it there.
  * Up to PostgreSQL 18 get_relation_info_hook clears amhasgetbitmap of the index; 19 has no such hook, so the bitmap paths that use one are
- * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off.
+ * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off. sift.plan_scale is applied by
+ * get_relation_info_hook up to 18 and by build_simple_rel_hook, which replaces it, in 19.
  */
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
@@ -1151,17 +1168,8 @@ col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *
 			if (!sift_enable_col_scan)
 				ii->amhasgetbitmap = ii->amhasgettuple = false;
 		}
-	/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
-	if (indexed && sift_plan_scale > 1.0)
-	{
-		rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-		rel->tuples *= sift_plan_scale;
-		foreach_node(IndexOptInfo, ii, rel->indexlist)
-		{
-			ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-			ii->tuples *= sift_plan_scale;
-		}
-	}
+	if (indexed)
+		col_scale_rel(rel);
 }
 
 void
@@ -1204,6 +1212,21 @@ disable_col_bitmaps(List *paths)
 			p->disabled_nodes = Max(p->disabled_nodes, 1) + 1;
 }
 
+static build_simple_rel_hook_type prev_simple_rel_hook;
+
+static void
+col_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (prev_simple_rel_hook)
+		prev_simple_rel_hook(root, rel, rte);
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+		if (ii->relam == sift_col_am_oid())
+		{
+			col_scale_rel(rel);
+			return;
+		}
+}
+
 static void
 col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
@@ -1220,5 +1243,7 @@ sift_col_scan_init(void)
 {
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = col_set_rel_pathlist;
+	prev_simple_rel_hook = build_simple_rel_hook;
+	build_simple_rel_hook = col_build_simple_rel;
 }
 #endif

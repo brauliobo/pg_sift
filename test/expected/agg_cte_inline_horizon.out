@@ -87,8 +87,8 @@ SELECT scale, inline_used(scale, 1) AS horizon_off, inline_used(scale, 100) AS h
  scale | horizon_off | horizon_100 
 -------+-------------+-------------
      1 | t           | t
-     3 | f           | f
-    10 | f           | f
+     3 | t           | t
+    10 | t           | t
 (3 rows)
 
 SELECT differences(series_query()) AS differences;
