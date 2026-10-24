@@ -371,6 +371,36 @@ def render_leftlateral(p):
     return f"SELECT count(s.id) AS ids, avg(s.amount) AS amount, avg(s.sc) AS sc FROM ({inner}) s", False
 
 
+def gen_lateralagg(r, ctx):
+    p = dict(func=r.choice(['jsonb_to_recordset', 'jsonb_array_elements']), cond=r.choice(['', '', 'o.score IS NOT NULL', 'o.score > %d' % r.randrange(9), "o.dir_a = 'p'"]),
+             aggs=r.sample(['avg(o.score)', 'sum(o.score)', 'min(o.score)', 'max(o.score)', 'count(o.score)', 'max(o.score * 2)', 'count(o.cat)', 'min(o.cat)'], r.randrange(1, 4)),
+             where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), keys=keys(r, 'e', EVENTS, r.randrange(0, 2)), outer=r.choice(['avg', 'sum', 'max', 'count']), ordered=True)
+    return p
+
+
+def render_lateralagg(p):
+    if p['func'] == 'jsonb_to_recordset':
+        lat = "jsonb_to_recordset(e.doc -> 'parts') AS o(cat text, dir_a text, score float8)"
+        sub = lambda t: t
+    else:
+        lat = "jsonb_array_elements(e.doc -> 'parts') AS o"
+        sub = lambda t: re.sub(r'o\.score', "(o ->> 'score')::float8", t).replace('o.dir_a', "(o ->> 'dir_a')").replace('o.cat', "(o ->> 'cat')")
+    cols = ', '.join(f"{sub(a)} AS a{i}" for i, a in enumerate(p['aggs']))
+    wh = (' WHERE ' + sub(p['cond'])) if p['cond'] else ''
+    inner = f"SELECT e.id, e.grp, e.kind, {', '.join(f't.a{i}' for i in range(len(p['aggs'])))} FROM events e LEFT JOIN LATERAL (SELECT {cols} FROM {lat}{wh}) t ON true"
+    if p['where']:
+        inner += ' WHERE ' + ' AND '.join(p['where'])
+    outer = ', '.join(f"{p['outer']}(s.a{i}) AS v{i}" for i in range(len(p['aggs'])) if not (p['outer'] in ('avg', 'sum') and 'cat' in p['aggs'][i]))
+    k = p['keys'] and [re.sub(r'\be\.', 's.', x) for x in p['keys'] if re.match(r'e\.(id|grp|kind)\b', x)]
+    if not outer:
+        outer = 'count(s.id) AS n'
+    else:
+        outer += ', count(s.id) AS n'
+    if k:
+        return f"SELECT {', '.join(k)}, {outer} FROM ({inner}) s GROUP BY {', '.join(k)} ORDER BY {', '.join(k)}", True
+    return f"SELECT {outer} FROM ({inner}) s", False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -614,7 +644,7 @@ FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'point': (gen_point, render_point, 3),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
