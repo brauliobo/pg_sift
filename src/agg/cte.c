@@ -596,7 +596,8 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		sift_agg_flatten_laterals(flat);
 	}
 	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
-	if (flat == NULL)
+	/* the flat plan runs more of the statement in the scan only where an ordinary plan still reads a table that has a column index */
+	if (flat == NULL || !plain_reader_stmt(plain))
 		return plain;
 	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
