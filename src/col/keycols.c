@@ -350,7 +350,7 @@ sift_col_auto_paths(Relation heap, Relation index)
 		appendStringInfo(&v, "auto: %s", spec.data);
 		sift_col_set_option(index, "paths", v.data);
 		ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
-						 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and sift.suggest_paths reads the documents again.",
+						 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
 								   SIFT_COL_AUTO_PATHS_SAMPLE),
 						 errhint("Write paths = '...' to fix them by hand.")));
 	}
