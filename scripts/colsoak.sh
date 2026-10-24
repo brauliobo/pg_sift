@@ -30,6 +30,9 @@ log() { printf '[colsoak %s] %s\n' "$(date +%T)" "$*" | tee -a "$OUT/colsoak.log
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_colsoak WITH (FORCE)" -c "CREATE DATABASE sift_colsoak"
+# The segments never stop changing, so each backend fills its cache of segment dictionaries, heads and zones (col/dictcache.c, 64 MB) all
+# through the run: a rise the leak sampler cannot tell from a leak. A small cache is full in seconds, and evicts under the writers.
+psql -X -qAt -d postgres -c "ALTER DATABASE sift_colsoak SET sift.test_limits = 'dict_cache_kb=1024'"
 q <<-'SQL'
 	CREATE EXTENSION pg_sift;
 	CREATE TABLE s (id bigserial, g int, n int, f float8, t text) WITH (autovacuum_enabled = off);
@@ -80,7 +83,8 @@ leak_watch_start "$OUT/memory.tsv" soak_backends
 trap 'kill $LEAK_WATCH 2>/dev/null || true' EXIT
 pgbench -n -T "$DURATION" -c "$CLIENTS" -j 4 -f "$OUT/check.sql@6" -f "$OUT/write.sql@6" -f "$OUT/vacuum.sql@3" -f "$OUT/maint.sql@3" >"$OUT/pgbench.txt" 2>&1 || true
 trap - EXIT
-leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { log "MEMORY GROWTH"; grep GROWING "$OUT/memory.txt" | while read -r l; do log "$l"; done; bad=1; }
+# A backend's working memory swings by 6-15 MB from one transaction to the next: the 10 s window of a short soak sees that as a rise of up to 10 MB
+LEAK_GROWTH_MB=$(( DURATION < 60 ? 16 : ${LEAK_GROWTH_MB:-8} )) leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { log "MEMORY GROWTH"; grep GROWING "$OUT/memory.txt" | while read -r l; do log "$l"; done; bad=1; }
 
 bad=${bad:-0}
 failed=$(awk '/^number of failed transactions/ { print $5; exit }' "$OUT/pgbench.txt")
