@@ -192,6 +192,7 @@ static List *flat_levels;		/* the query level being flattened and those around i
 static bool group_aggregate_lateral(Query *q, bool apply);
 struct DecorJoin;
 static bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
+static bool decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor);
 static void decor_apply(Query *q, struct DecorJoin *r);
 static bool decorrelate_sublinks(Query *q, bool apply);
 
@@ -212,6 +213,8 @@ flatten_jointree(Query *q, Node *n, bool apply, List **pulled, List **decor, boo
 		foreach_ptr(Node, x, f->fromlist)
 			items = lappend(items, flatten_jointree(q, x, apply, pulled, decor, changed));
 		f->fromlist = items;
+		if (decorrelate_comma(q, f, apply, decor))
+			*changed = true;
 	}
 	else if (IsA(n, JoinExpr))
 	{
@@ -851,6 +854,20 @@ tree_rtis(Node *n)
 	return s;
 }
 
+/* the outer columns come from the items of the FROM tree and are not another lateral sub-select's, which the rewrite replaces (and the rewrite of this one would read stale) */
+static bool
+decor_outer_ok(Query *q, Decor *d, Node *from)
+{
+	int			rti = -1;
+
+	if (!bms_is_subset(d->outer, tree_rtis(from)))
+		return false;
+	while ((rti = bms_next_member(d->outer, rti)) >= 0)
+		if (rt_fetch(rti, q->rtable)->rtekind == RTE_SUBQUERY && rt_fetch(rti, q->rtable)->lateral)
+			return false;
+	return true;
+}
+
 /* a lateral sub-select to replace (the replacement waits for the joins of the level to be spliced, as for a pull-up) */
 typedef struct DecorJoin
 {
@@ -870,7 +887,7 @@ decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor)
 		return false;
 	r->lrti = ((RangeTblRef *) j->rarg)->rtindex;
 	rte = rt_fetch(r->lrti, q->rtable);
-	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_analyze(rte->subquery, &r->d) || !bms_is_subset(r->d.outer, tree_rtis(j->larg)))
+	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_analyze(rte->subquery, &r->d) || !decor_outer_ok(q, &r->d, j->larg))
 		return false;
 	if (apply)
 		*decor = lappend(*decor, r);
@@ -994,6 +1011,56 @@ join_columns(Query *q, Node *n, List **names, List **vars)
 	*vars = list_concat(*vars, vv);
 }
 
+/* the sub-select as a range table entry of the query (its columns named as its select list does) */
+static void
+add_subquery(Query *q, Query *sub)
+{
+	RangeTblEntry *rte = makeNode(RangeTblEntry);
+	List	   *names = NIL;
+
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = sub;
+	rte->inFromCl = true;
+	foreach_node(TargetEntry, te, sub->targetList)
+		names = lappend(names, makeString(te->resname));
+	rte->eref = makeAlias("decor", names);
+	q->rtable = lappend(q->rtable, rte);
+}
+
+/* `left JOIN rti ON quals` with the range table entry of the join that the planner expects */
+static JoinExpr *
+join_item(Query *q, Node *left, Index rti, JoinType type, Node *quals)
+{
+	List	   *names = NIL,
+			   *vars = NIL;
+	RangeTblRef *ref = makeNode(RangeTblRef);
+	JoinExpr   *j = makeNode(JoinExpr);
+	RangeTblEntry *jr = makeNode(RangeTblEntry);
+	int			nleft;
+
+	join_columns(q, left, &names, &vars);
+	nleft = list_length(names);
+	ref->rtindex = rti;
+	j->jointype = type;
+	j->larg = left;
+	j->rarg = (Node *) ref;
+	j->quals = quals;
+	join_columns(q, (Node *) ref, &names, &vars);
+	jr->rtekind = RTE_JOIN;
+	jr->jointype = type;
+	jr->joinaliasvars = vars;
+	for (int i = 1; i <= list_length(vars); i++)
+		if (i <= nleft)
+			jr->joinleftcols = lappend_int(jr->joinleftcols, i);
+		else
+			jr->joinrightcols = lappend_int(jr->joinrightcols, i - nleft);
+	jr->eref = makeAlias("unnamed_join", names);
+	jr->inFromCl = true;
+	q->rtable = lappend(q->rtable, jr);
+	j->rtindex = list_length(q->rtable);
+	return j;
+}
+
 /* `(SELECT aggregate FROM t WHERE t.k = x.k)` of a select list or WHERE: the item of the FROM list that holds x LEFT JOIN the table grouped */
 static Node *
 decor_sublink(Node *n, SublinkDecor *c)
@@ -1002,15 +1069,9 @@ decor_sublink(Node *n, SublinkDecor *c)
 	Decor		d = {0};
 	Query	   *q = c->q;
 	List	   *exprs = NIL,
-			   *join = NIL,
-			   *names = NIL,
-			   *vars = NIL;
+			   *join = NIL;
 	ListCell   *item = NULL;
-	RangeTblEntry *g,
-			   *jr;
-	JoinExpr   *j;
-	Index		grti;
-	int			nleft;
+	Index		grti = list_length(q->rtable) + 1;
 
 	if (n == NULL)
 		return NULL;
@@ -1027,46 +1088,9 @@ decor_sublink(Node *n, SublinkDecor *c)
 	c->changed = true;
 	if (!c->apply)
 		return n;
-	grti = list_length(q->rtable) + 1;
-	g = makeNode(RangeTblEntry);
-	g->rtekind = RTE_SUBQUERY;
-	g->subquery = decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join);
+	add_subquery(q, decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join));
 	sift_agg_by_cost = true;
-	g->inFromCl = true;
-	foreach_node(TargetEntry, te, g->subquery->targetList)
-		names = lappend(names, makeString(te->resname));
-	g->eref = makeAlias("decor", names);
-	q->rtable = lappend(q->rtable, g);
-
-	/* x LEFT JOIN g ON equalities, with the range table entry of the join that the planner expects */
-	names = vars = NIL;
-	join_columns(q, lfirst(item), &names, &vars);
-	nleft = list_length(names);
-	{
-		RangeTblRef *ref = makeNode(RangeTblRef);
-
-		ref->rtindex = grti;
-		j = makeNode(JoinExpr);
-		j->jointype = JOIN_LEFT;
-		j->larg = lfirst(item);
-		j->rarg = (Node *) ref;
-		j->quals = (Node *) make_ands_explicit(join);
-		join_columns(q, (Node *) ref, &names, &vars);
-	}
-	jr = makeNode(RangeTblEntry);
-	jr->rtekind = RTE_JOIN;
-	jr->jointype = JOIN_LEFT;
-	jr->joinaliasvars = vars;
-	for (int i = 1; i <= list_length(vars); i++)
-		if (i <= nleft)
-			jr->joinleftcols = lappend_int(jr->joinleftcols, i);
-		else
-			jr->joinrightcols = lappend_int(jr->joinrightcols, i - nleft);
-	jr->eref = makeAlias("unnamed_join", names);
-	jr->inFromCl = true;
-	q->rtable = lappend(q->rtable, jr);
-	j->rtindex = list_length(q->rtable);
-	lfirst(item) = j;
+	lfirst(item) = join_item(q, lfirst(item), grti, JOIN_LEFT, (Node *) make_ands_explicit(join));
 	return (Node *) linitial_node(TargetEntry, exprs)->expr;
 }
 
@@ -1082,6 +1106,44 @@ decorrelate_sublinks(Query *q, bool apply)
 		te->expr = (Expr *) decor_sublink((Node *) te->expr, &c);
 	q->jointree->quals = decor_sublink(q->jointree->quals, &c);
 	return c.changed;
+}
+
+/* `FROM x, LATERAL (aggregates of a table tied to x)` is that sub-select inner joined to the item of the list that holds the columns it reads */
+static bool
+decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor)
+{
+	bool		changed = false;
+	int			i = 1;
+
+	while (i < list_length(f->fromlist))
+	{
+		Node	   *n = list_nth(f->fromlist, i);
+		RangeTblEntry *rte;
+		Decor		d = {0};
+		int			k = 0;
+
+		if (IsA(n, RangeTblRef) && (rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable))->rtekind == RTE_SUBQUERY && rte->lateral &&
+			decor_analyze(rte->subquery, &d))
+		{
+			while (k < i && !decor_outer_ok(q, &d, list_nth(f->fromlist, k)))
+				k++;
+			if (k < i)
+			{
+				changed = true;
+				if (apply)
+				{
+					JoinExpr   *j = join_item(q, list_nth(f->fromlist, k), ((RangeTblRef *) n)->rtindex, JOIN_INNER, NULL);
+
+					lfirst(list_nth_cell(f->fromlist, k)) = j;
+					f->fromlist = list_delete_nth_cell(f->fromlist, i);
+					decorrelate_join(q, j, true, decor);
+					continue;
+				}
+			}
+		}
+		i++;
+	}
+	return changed;
 }
 
 bool
