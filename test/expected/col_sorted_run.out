@@ -282,7 +282,7 @@ SELECT sift.col_verify('sr_on', true);
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      96 |   96 |        92 | 
+      96 |   96 |        90 | 
 (1 row)
 
 SELECT sift.col_merge('sr_on', true) >= 0 AS merged;
