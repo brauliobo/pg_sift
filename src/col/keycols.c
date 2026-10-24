@@ -218,6 +218,12 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return false;
+	/*
+	 * The merge holds the index metapage; a VACUUM holds the heap and waits for the metapage, so waiting for the heap here is a deadlock. The lock is the one
+	 * that the write of the option takes, taken first and without waiting: when someone else holds it the choice is left to the next merge.
+	 */
+	if (!ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock))
+		return false;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	if (sift_col_options_key_columns(index) != NULL && !rel->pagg.keyauto)
 		return false;
@@ -236,7 +242,7 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 		MemoryContextReset(cx);
 	}
 	MemoryContextDelete(cx);
-	heap = table_open(index->rd_index->indrelid, ShareUpdateExclusiveLock);
+	heap = table_open(index->rd_index->indrelid, NoLock);
 	initStringInfo(&list);
 	for (int c = 0; c < rel->schema->ncols; c++)
 	{
