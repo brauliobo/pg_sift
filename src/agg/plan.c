@@ -853,16 +853,18 @@ row_scan_of(Path *p, AggCtx *c)
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false);
+	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false),
+				rows = input_rows_ratio(c, s, input_rel);
 
-	if (f <= 1.0)
+	if (f <= 1.0 && rows <= 1.0)
 		return;
 	foreach_ptr(Path, p, output_rel->pathlist)
-		if (row_scan_of(p, c) != NULL)
-		{
-			p->startup_cost *= f;
-			p->total_cost *= f;
-		}
+	{
+		double		g = (row_scan_of(p, c) != NULL ? f : 1.0) * (IsA(p, CustomPath) ? 1.0 : rows);
+
+		p->startup_cost *= g;
+		p->total_cost *= g;
+	}
 }
 
 /* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
