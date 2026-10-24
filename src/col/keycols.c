@@ -198,6 +198,63 @@ sift_col_auto_keys(Relation heap, Relation index)
 	return true;
 }
 
+/*
+ * Before a merge of every immutable segment of an index whose key_columns is 'auto' (or absent): the choice of the build is made again from the segments about to
+ * be rewritten. Churn puts new row versions in the tail of the heap, a unit then holds many keys, the cube no longer holds the column in the unit and a key list
+ * would prune it; a REINDEX chose it, a merge kept the choice of the day of the build. A key-shaped column that the cube holds in under SIFT_COL_AUTO_ADD_PCT of
+ * the units joins the option (the merge writes its lists, sift_col_auto_keys_report then drops it if they do not fit), so a column is added below 40% and dropped
+ * from 50%: it does not alternate. Returns whether the option changed; the caller reads the index's schema again after it.
+ */
+bool
+sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
+{
+	const SiftColRel *rel;
+	Relation	heap;
+	MemoryContext cx;
+	uint32		units = 0,
+				cubed[SIFT_COL_MAX_COLS] = {0};
+	StringInfoData list;
+	bool		added = false;
+
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+		return false;
+	rel = sift_col_rel_private(index, CurrentMemoryContext);
+	if (sift_col_options_key_columns(index) != NULL && !rel->pagg.keyauto)
+		return false;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col auto keys merge", ALLOCSET_DEFAULT_SIZES);
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &in[i], cx);
+		SiftCPaggCensus c;
+
+		units += seg->nsb;
+		sift_cseg_pre_census(seg, &rel->pagg, sift_col_format_minor, 0, &c);
+		for (int d = 0; d < rel->pagg.ndims; d++)
+			if (!rel->pagg.dim[d].cal)
+				cubed[rel->pagg.dim[d].leaf] += c.dim[d];
+		sift_cseg_close(seg);
+		MemoryContextReset(cx);
+	}
+	MemoryContextDelete(cx);
+	heap = table_open(index->rd_index->indrelid, ShareUpdateExclusiveLock);
+	initStringInfo(&list);
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		if (rel->pagg.set[c])
+			append_name(&list, leaf_name(index, &rel->schema->cols[c]));
+		else if (units > 0 && cubed[c] * 100 < (uint64) units * SIFT_COL_AUTO_ADD_PCT && sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]))
+		{
+			append_name(&list, leaf_name(index, &rel->schema->cols[c]));
+			added = true;
+		}
+	}
+	table_close(heap, NoLock);
+	if (added)
+		set_chosen(index, &list);
+	pfree(list.data);
+	return added;
+}
+
 static void
 append_bytes(StringInfo s, uint64 n)
 {

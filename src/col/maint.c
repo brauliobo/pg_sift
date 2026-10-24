@@ -558,16 +558,26 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	int			n;
 	int			room;
+	int			nimm = 0;
 	bool		cut = false;
 
 	sift_dir_read(index, snap);
 	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut) : pick_merge(index, snap, force, sel);
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
 	room = SIFT_MAX_SEGMENTS - 16 - (snap->nsegs - n);
+	for (int i = 0; i < snap->nsegs; i++)
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
 	pfree(snap);
 	if (n > 0)
+	{
+		/* the cached schema is read after the option is written: the write reloads it */
+		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
+
 		merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 					   cut ? (uint64) part_kb * 1024 : 0, Max(room, 1));
+		if (keyed)
+			sift_col_auto_keys_report(index);
+	}
 	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 
