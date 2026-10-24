@@ -797,7 +797,7 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 		return;
 	elog(DEBUG1, "sift: rows of a scan whose filters have no statistics %.0f, not %.0f (of %.0f)", rows, rel->rows, rel->tuples);
 	rel->rows = rows;
-	foreach_node(Path, p, rel->pathlist)
+	foreach_ptr(Path, p, rel->pathlist)
 		p->rows = rows;
 }
 
@@ -890,7 +890,7 @@ derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (its body builds %.0f from a table with a column index)", rows, rel->rows, leaf);
 	agg_cte_lift = Max(agg_cte_lift, rows / rel->rows);
 	rel->rows = rows;
-	foreach_node(Path, p, rel->pathlist)
+	foreach_ptr(Path, p, rel->pathlist)
 		p->rows = rows;
 }
 
