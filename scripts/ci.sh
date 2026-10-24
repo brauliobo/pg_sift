@@ -281,7 +281,7 @@ if [[ $MODE == --selftest ]]; then
 	for pg in 17 18; do
 	for deep in '' 1; do
 		ns=3; (( pg == 17 )) && ns=5
-		[[ -z $deep ]] || { ns=4; (( pg == 17 )) && ns=9; }
+		[[ -z $deep ]] || { ns=5; (( pg == 17 )) && ns=10; }
 		all=$(env -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
 		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
@@ -433,17 +433,17 @@ if [[ $MODE == full ]]; then
 	# the other half runs on 18)
 	for (( k = 1; k <= COL_SLICES; k++ )); do
 		(( PG_MAJOR >= 18 || k <= COL_SLICES / 2 )) || [[ -n ${SIFT_CI_DEEP:-} ]] || continue
-		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
-		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
-	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --suite analytics --rows 20000
+	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; a timing that loses only warns (hosted runners are noisy)
 	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 3 --warn-time
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
-	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on
+	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on --stop-after 3
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"
