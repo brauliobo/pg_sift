@@ -448,9 +448,13 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 		return false;
 	has = palloc0(2 * nw * sizeof(uint64));
 	done = has + nw;
+	/* the addresses ascend, so a unit repeats, and the run of a segment follows the runs of the segments before it unless their blocks interleave */
+	if (n > 0 && src->nptid > 0 && tids[0] < src->ptid[src->nptid - 1])
+		src->ptid_unsorted = true;
 	for (uint32 k = 0; k < n; k++)
 	{
-		uint32		u = sift_cseg_find_unit(seg, (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT);
+		uint32		sb = (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT,
+					u = last != PG_UINT32_MAX && sb == seg->sbdir[last].sb ? last : sift_cseg_find_unit(seg, sb);
 
 		sift_col_bit_set(has, u);
 		if (u != last)
@@ -745,13 +749,51 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->setcut = pr.setcut;
 }
 
-static int
-ptid_cmp(const void *a, const void *b)
+/* The lists of the segments are ascending runs: merging the runs takes a few passes over the addresses where a sort takes n log n comparisons */
+static void
+ptid_merge_runs(SiftKey *a, uint32 n)
 {
-	SiftKey		x = *(const SiftKey *) a,
-				y = *(const SiftKey *) b;
+	SiftKey    *buf = palloc(n * sizeof(SiftKey)),
+			   *from = a,
+			   *to = buf,
+			   *tmp;
+	uint32	   *edge = palloc((n + 1) * sizeof(uint32));
+	uint32		runs = 0;
 
-	return (x > y) - (x < y);
+	for (uint32 k = 0; k < n; k++)
+		if (k == 0 || a[k] < a[k - 1])
+			edge[runs++] = k;
+	edge[runs] = n;
+	while (runs > 1)
+	{
+		uint32		out = 0;
+
+		for (uint32 r = 0; r < runs; r += 2)
+		{
+			uint32		i = edge[r],
+						mid = edge[r + 1],
+						j = mid,
+						end = r + 1 < runs ? edge[r + 2] : mid,
+						o = i;
+
+			while (i < mid && j < end)
+				to[o++] = from[i] <= from[j] ? from[i++] : from[j++];
+			while (i < mid)
+				to[o++] = from[i++];
+			while (j < end)
+				to[o++] = from[j++];
+			edge[out++] = edge[r];
+		}
+		edge[out] = n;
+		runs = out;
+		tmp = from;
+		from = to;
+		to = tmp;
+	}
+	if (from != a)
+		memcpy(a, from, n * sizeof(SiftKey));
+	pfree(buf);
+	pfree(edge);
 }
 
 const SiftKey *
@@ -775,10 +817,11 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	cached = keep_cached(src, preds, npreds, nzones);
 	src->ptid = NULL;
 	src->nptid = src->capptid = 0;
+	src->ptid_unsorted = false;
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
-	if (src->nseg > 1 && src->nptid > 1)
-		qsort(src->ptid, src->nptid, sizeof(SiftKey), ptid_cmp);
+	if (src->ptid_unsorted)
+		ptid_merge_runs(src->ptid, src->nptid);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));

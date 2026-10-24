@@ -459,7 +459,7 @@ def write_results(args, cases, results, load_before):
             results = [r for r in old if r['case'] not in ran and str(args.rows) == old_meta.get('orders')] + results   # a run of every case at another size replaces the file
     if args.scales:
         meta['scales'] = args.scales
-    extras.write(path, 'Benchmark cases of the 3.3 optimizations (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
+    extras.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
     log('wrote %s' % path)
 
 

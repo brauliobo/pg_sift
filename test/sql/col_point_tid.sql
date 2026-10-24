@@ -169,6 +169,25 @@ SELECT (SELECT count(*) FROM sift._test_col_tids('pb_t', '0:eq:3', 24)) >= (SELE
 -- a key in every unit with a range on another column: the zones of the range cut the units first, and the directory lists the addresses of the kept units only
 SELECT t.listed < (SELECT count(*) FROM pb WHERE k = 3) AS fewer_than_the_key, t.listed >= (SELECT count(*) FROM pb WHERE k = 3 AND id BETWEEN 100000 AND 101000) AS all_rows_of_the_range
 FROM (SELECT count(*) AS listed FROM sift._test_col_tids('pb_t', '0:eq:3;1:ge:100000;1:le:101000', 24)) t;
+-- several segments: the lists of the keys come segment by segment and are sorted only when the blocks of a segment start below the last of the one before (rows inserted into freed pages)
+CREATE TABLE pbs (id int, k int);
+INSERT INTO pbs SELECT i, i % 7 FROM generate_series(1, 60000) i;
+CREATE INDEX pbs_t ON pbs USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
+INSERT INTO pbs SELECT i, i % 7 FROM generate_series(60001, 90000) i;
+SELECT sift.col_promote('pbs_t'::regclass) >= 0 AS promoted;
+CREATE FUNCTION pbs_check() RETURNS TABLE (segments bool, all_rows_listed bool, ascending bool) LANGUAGE sql AS $$
+  SELECT (SELECT count(*) > 1 FROM sift.col_segments('pbs_t') WHERE kind = 'immutable'),
+         (SELECT count(*) FROM sift._test_col_tids('pbs_t', '0:in:3|5', 24)) = (SELECT count(*) FROM pbs WHERE k IN (3, 5)),
+         (SELECT coalesce(bool_and(tid < next), true) FROM (SELECT tid, lead(tid) OVER (ORDER BY ord) AS next FROM (SELECT row_number() OVER () AS ord, tid FROM sift._test_col_tids('pbs_t', '0:in:3|5', 24)) s) q WHERE next IS NOT NULL)
+$$;
+SELECT * FROM pbs_check();
+DELETE FROM pbs WHERE id % 3 = 0;
+VACUUM pbs;
+INSERT INTO pbs SELECT i, i % 7 FROM generate_series(90001, 110000) i;
+SELECT sift.col_promote('pbs_t'::regclass) >= 0 AS promoted;
+SELECT * FROM pbs_check();
+DROP FUNCTION pbs_check();
+DROP TABLE pbs;
 -- 85,000 rows are more than a lookup takes (65,536): the units answer
 SELECT p.units > 0 AS units_answer, p.rows = f.rows AS same_rows FROM sift._test_col_counters('pb_t', '0:in:1|2|3', 24) p, sift._test_col_counters('pb_t', '0:in:1|2|3', 0) f;
 DROP TABLE pb;

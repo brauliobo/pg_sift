@@ -13,6 +13,7 @@ Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, h
 `CHANGELOG.md`, `pg_sift.control` at the version of the extension SQL (a patch release keeps it), and push `main`. When the last code commit is pushed,
 `gh workflow run ci.yml --ref main` starts the full run of that commit (about 8 minutes), so that the release finds it done.
 After a minor release replace `scripts/options-released.tsv` with `scripts/gen-options.sh --snapshot` of the release, so that the options tables stop marking its defaults as new or changed.
+Also empty `scripts/bench-cases.allow` of the lines the release moved out of `## Unreleased` (the check fails on a line whose phrase no longer matches, which turns `main` and every quick tier red).
 
 ## What it does
 
@@ -28,6 +29,15 @@ After a minor release replace `scripts/options-released.tsv` with `scripts/gen-o
 `ci`, `upgrade` and `package` run at once. The steps that passed are in `~/.local/state/pg_sift-release/VERSION/manifest` and the logs in `logs/` there.
 The AUR step needs the key: a key loaded in your ssh-agent, or `AUR_SSH_KEY=PATH scripts/release.sh VERSION` (the passphrase is asked through your `SSH_ASKPASS`).
 Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 12 GB, ports from `SIFT_PORT` (56210) and the 10th after it.
+
+### The AUR from the host that has the key
+
+When the key lives on another host (a desktop whose wallet unlocks it), run `release.sh` where the checks run, with `GIT_SSH_COMMAND=false`. Its `aur` step then fails and the manifest shows `aur fail`: expected, the tag, the release and the assets are already published and verified. Publish the PKGBUILD from the key host:
+
+1. Clone the tag into tmpfs: `git clone -q --depth 1 --branch vVERSION https://github.com/brauliobo/pg_sift.git /dev/shm/aurVERSION/repo`; check that `git rev-parse HEAD` is the tag commit and `packaging/PKGBUILD` has `pkgver=VERSION`; `scripts/release-aur.sh --dry-run` shows the two files it would change.
+2. In that checkout run `scripts/release-aur.sh` with `XDG_RUNTIME_DIR=/run/user/1000`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`, `WAYLAND_DISPLAY=wayland-1`, `DISPLAY=:0`, `SSH_ASKPASS=/usr/bin/ksshaskpass`, `SSH_ASKPASS_REQUIRE=force`, `AUR_SSH_KEY=$HOME/.ssh/id_github` and the git author and committer name and email. It loads the key in a private ssh-agent, killed at the end; with the wallet locked, `ksshaskpass` asks for the wallet password on that host's screen, and the passphrase never goes through a log or a command line. Over ssh from another host, keep it to a single `timeout 150 ssh -o BatchMode=yes HOST '…'`.
+3. Check: `git ls-remote https://aur.archlinux.org/pg_sift.git master` is the commit the push printed (`OLD..NEW HEAD -> master`); a fresh clone has `pkgver=VERSION` in `PKGBUILD` and `.SRCINFO`. The web views (the RPC `aur.archlinux.org/rpc/v5/info?arg[]=pg_sift` and cgit) lag the git head by minutes, up to about 15 on 3.3.0: judge the push by `ls-remote`, and only a head that is still the old commit means it did not land.
+4. Remove `/dev/shm/aurVERSION` on the key host; no `ssh-agent` of this run is left.
 
 ## Homebrew tap
 
@@ -71,6 +81,8 @@ the full tier (`make check-full`: ASan, soaks and fuzz runs, all mutants) on 17 
 (assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks are a separate step, not part of a release: `bench/bench refresh` measures the numbers of the README again (bench/README.md, "Keeping the numbers fresh"), and
 `scripts/check-bench-fresh.sh` (lint, and `release.sh`) fails when a generated block differs from `docs/results` and warns when the results are from another MAJOR.MINOR than `pg_sift.control`:
 a release that prints that warning has benchmark numbers of an older version in its README, so run `bench/bench refresh` first or say so in the notes.
+The shards of the full tier are cut by weight (`JOB_WEIGHT` in scripts/ci.sh: the seconds of a lane of each job of 90 s and more, measured on PostgreSQL 18 in the lean run 40097165396, 2026-10-24): by position the three PostgreSQL 18 shards were 98, 118 and 164 lane-minutes (the longest job 45 min); by weight they are within 15% of each other (`ci.sh --selftest` checks it). The deep tier (nightly) has its own weights for the jobs it makes larger (`JOB_WEIGHT_DEEP`, run 40079220375) and is cut finer so that no job passes the hour: `difftest-col` and `difftest-col-tbl` in 8 slices instead of 4, PostgreSQL 18 in 4 shards and 17 in 9 (8 of the pool and the flavor jobs), the full entries first in the matrix. Re-measure the table after a change of the sizes below.
+
 The lean full tier runs everything the deep one runs, with these differences (SIFT_CI_DEEP=1, the nightly run or the `deep` input of a dispatch, has the larger side):
 - `difftest-col`, `difftest-col-tbl`: each scenario state (insert, update, delete, abort, vacuum, hot, recycle, held, maint) meets a third of the scenario queries, rotating, instead of all of them; on PostgreSQL 17 only every other fixture (slices 1 and 2 of 4, in name order) runs, the other half runs on 18 (deep: all, on both).
 - `difftest` 4000 documents, 100 queries, 3 rounds (deep 5000, 150, 4); `difftest-mutants` 4000 documents and 1 round, all 16 mutants (deep 8000, 2); `difftest-nopos` 2500 documents, 40 queries, 1 round (deep 3000, 60, 2); `difftest-fuzz` seeds 1-6 with 100 queries (deep 1-12, 150); `fuzz` scale 4 (deep 10); `soak` 180 s, `soak-gin` 60 s, `soak-col` 120 s (deep 600, 120, 300).
