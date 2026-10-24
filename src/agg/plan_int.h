@@ -448,7 +448,11 @@ typedef struct CteVerdict
 	Oid			rels[VERDICT_RELS];
 }			CteVerdict;
 
-extern void verdict_lookup(Query *q, CteVerdict *vd);
+#define VERDICT_CTE		0		/* inline or shared CTE (cte.c plan_cte) */
+#define VERDICT_FLAT	1		/* the flattened form of the statement or the one as written (cte.c plan_flat) */
+
+extern void verdict_new_planning(void);
+extern void verdict_lookup(Query *q, int kind, CteVerdict *vd);
 extern void verdict_remember(const CteVerdict *vd, bool won, double scans, double shared);
 
 #endif							/* SIFT_AGG_PLAN_INT_H */
