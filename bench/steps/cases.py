@@ -164,11 +164,12 @@ def server_session(timeout):
 
 def lane_sessions(case, engines, duck_port):
     """lane -> Session: sift and native always, then the variants of the registry and the engines the run asked for (the registry lists the ones a case may use)"""
-    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off']}
+    # a case that turns the access-method scan on (-- set: sift.enable_col_scan = on) compares it with the plan PostgreSQL makes without it
+    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])}
     for name, settings in case.variants:
         lanes[name] = ['SET %s' % s for s in settings.split(';')]
     out = {}
-    wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # release runs 4GB; the cluster default is 64MB
+    wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # a large server runs 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
         s = server_session(TIMEOUT)
         for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
@@ -570,7 +571,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(BENCH, 'out', 'cases-%s.tsv' % time.strftime('%Y%m%dT%H%M%S')))
     ap.add_argument('--scales', help='run every case at ROWS times each of these (1,10,100): the curve of bench/results/cases-scale.tsv, the planner\'s plan at each size')
     ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
-    ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; release 4GB): written to the file as the work_mem meta')
+    ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large server 4GB): written to the file as the work_mem meta')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)

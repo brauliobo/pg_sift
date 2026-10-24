@@ -66,6 +66,14 @@ INSERT INTO pt_w (w) VALUES
  ('k = 4321'), ('k = 99999'), ('k IN (1, 2, 3, 4000, 8999)'), ('k IS NULL'), ('k = 4321 AND id > 15000'), ('k BETWEEN 100 AND 103'), ('k BETWEEN 100 AND 300'),
  ('s = ''s77'''), ('s IN (''s1'', ''s2'', ''none'')'), ('s = '''''), ('u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b'''),
  ('u IN (''c4ca4238-a0b9-2382-0dcc-509a6f75849b'', ''c81e728d-9d4c-2f63-6f06-7f89cc14862c'')'), ('k = 4321 AND s = ''s77'''), ('k = 4321 OR s = ''s77'''), ('id = 777');
+-- long IN lists (65 keys and more, hits, misses and a NULL among them): the directory answers up to 65,536 keys, and not a list that names an eighteenth of the rows
+INSERT INTO pt_w (w)
+SELECT format('k IN (%s)', string_agg(((i * 7919) % 9000 + (i % 3) * 20000)::text, ',' ORDER BY i)) FROM generate_series(1, 65) i
+UNION ALL SELECT format('k IN (%s)', string_agg(((i * 7919) % 9000 + (i % 3) * 20000)::text, ',' ORDER BY i)) FROM generate_series(1, 300) i
+UNION ALL SELECT format('k IN (%s)', string_agg(((i * 7919) % 9000 + (i % 3) * 20000)::text, ',' ORDER BY i)) FROM generate_series(1, 2500) i
+UNION ALL SELECT format('s IN (%s)', string_agg(quote_literal('s' || (i * 31) % 6500), ',' ORDER BY i)) FROM generate_series(1, 200) i
+UNION ALL SELECT format('u IN (%s)', string_agg(quote_literal(md5((i % 6000)::text)::uuid), ',' ORDER BY i)) FROM generate_series(1, 100) i
+UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORDER BY i)) FROM generate_series(1, 1000) i;
 
 -- the directory: the segments are minor 16, verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
 CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k, s, u');
@@ -75,6 +83,10 @@ SELECT count(*) > 0 AS segments, min(format) AS format, sum(units) > 2 AS units 
 SELECT p.units AS units_with_addresses, f.units > 2 AS units_without, p.rows = 0 AS no_row_read
 FROM sift._test_col_counters('pt_t', '0:eq:4321', 24) p, sift._test_col_counters('pt_t', '0:eq:4321', 0) f;
 SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read FROM sift._test_col_counters('pt_t', '1:in:s1|s2|s3|none', 24) p;
+-- 300 keys: the units of their rows only, no row read; the same list answered by the units reads more
+SELECT p.units < f.units AS fewer_units, p.rows = 0 AS no_row_read
+FROM sift._test_col_counters('pt_t', '0:in:' || (SELECT string_agg(((i * 7919) % 9000)::text, '|') FROM generate_series(1, 300) i), 24) p,
+	 sift._test_col_counters('pt_t', '0:in:' || (SELECT string_agg(((i * 7919) % 9000)::text, '|') FROM generate_series(1, 300) i), 0) f;
 SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read FROM sift._test_col_counters('pt_t', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 24) p;
 -- a leaf that has no directory, and a range, read their units as before
 SELECT p.units = f.units AS same_units_for_a_range, p.rows = f.rows AS same_rows
@@ -82,7 +94,7 @@ FROM sift._test_col_counters('pt_t', '0:ge:100;0:le:300', 24) p, sift._test_col_
 SELECT p.units = f.units AS same_units_for_a_leaf_without, p.rows = f.rows AS same_rows
 FROM sift._test_col_counters('pt_t', '3:eq:777', 24) p, sift._test_col_counters('pt_t', '3:eq:777', 0) f;
 SELECT n, preds, pt_cover('pt_t', preds, heapwhere) FROM pt_q ORDER BY n;
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
 
 -- a segment with a dead row is read instead of the addresses of its rows, which a VACUUM frees to be used again: the rows of the new key are those of the heap
 DELETE FROM pt WHERE k = 4321 AND id < 15000;
@@ -92,20 +104,20 @@ SELECT p.units > 0 AS dirty_units_are_read, p.units <= f.units AS no_more_than_w
 FROM sift._test_col_counters('pt_t', '1:eq:s77', 24) p, sift._test_col_counters('pt_t', '1:eq:s77', 0) f;
 SELECT p.units > 0 AS dirty_units_are_read FROM sift._test_col_counters('pt_t', '0:eq:4321', 24) p;
 SELECT n, preds, pt_cover('pt_t', preds, heapwhere) FROM pt_q WHERE n IN (1, 6) ORDER BY n;
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
 INSERT INTO pt (id, k, s, u) SELECT i, 4321, 's77', 'c4ca4238-a0b9-2382-0dcc-509a6f75849b' FROM generate_series(30001, 30400) i;
 UPDATE pt SET k = 4321, s = 's5' WHERE id % 1999 = 0;
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches FROM pt_w ORDER BY n;
 SELECT (SELECT count(*) FROM (SELECT id FROM pt WHERE k = 4321) a) = (SELECT count(*) FROM (SELECT DISTINCT id FROM pt WHERE k = 4321) b) AS no_row_twice;
 VACUUM (INDEX_CLEANUP on) pt;
 SELECT sift.col_promote('pt_t'::regclass) >= 0 AS promoted;
 SELECT sift.col_verify('pt_t', true);
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 SELECT sift.col_merge('pt_t'::regclass, true) >= 0 AS merged;
 SELECT kind, format, count(*) AS segments FROM sift.col_segments('pt_t') GROUP BY kind, format ORDER BY kind, format;
 SELECT sift.col_verify('pt_t', true);
 SELECT n, preds, pt_cover('pt_t', preds, heapwhere) FROM pt_q ORDER BY n;
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 
 -- one damage at a time in the directories, through a fresh open and the check of the segment (meaningful under SANITIZE=1)
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pt_t', 1000000000);
@@ -118,12 +130,12 @@ RESET sift.col_format_minor;
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
 DROP INDEX pt_t;
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 ALTER INDEX pt_r RESET (point_tid_columns);
 ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 REINDEX INDEX pt_r;
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 ALTER INDEX pt_r RESET (point_columns);
 ALTER INDEX pt_r SET (point_tid_columns = 'k, s, u');
 SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
@@ -131,7 +143,7 @@ REINDEX INDEX pt_r;
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
 SELECT min(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
-SELECT n, w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
+SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 
 -- narrow rows (about 290 on a page, so the offset numbers reach the largest of a page) and many blocks: the lists are the heap's
 CREATE TABLE pb (id int, k int);
