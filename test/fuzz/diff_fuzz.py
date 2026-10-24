@@ -469,7 +469,8 @@ def render_latest(p):
 
 def gen_decor(r, ctx):
     tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
-    return dict(form=r.choice(['lateral', 'left', 'comma', 'select', 'where']), tie=tie, aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
+    return dict(form=r.choice(['lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma', 'select', 'where']), tie=tie,
+                groups=r.sample(['f.kind', 'f.grp', 'f.flag', 'f.ts', 'f.a % 10', 'f.parent_id', 'f.grp % 4'], r.randrange(0, 3)), having=r.choice(['', '', 'count(*) > 1', 'min(f.amount) < 50']), aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
                                                                                       'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
                                                                                       'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
                 inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12),
@@ -487,11 +488,14 @@ def render_decor(p):
     wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
     sub = lambda i: f"SELECT {p['aggs'][i]} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}"
     n = len(p['aggs'])
-    if p['form'] in ('lateral', 'left', 'comma'):
-        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ','}[p['form']]
-        cols = ', '.join(f"{p['aggs'][i]} AS v{i}" for i in range(n))
-        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}) x" + ('' if p['form'] == 'comma' else ' ON true')
-        outs = [f'x.v{i}' for i in range(n)]
+    if p['form'] in ('lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma'):
+        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ',', 'glateral': 'JOIN', 'gleft': 'LEFT JOIN', 'gcomma': ','}[p['form']]
+        grouped = p['form'][0] == 'g' and p['groups']
+        gcols = [f"{g} AS g{j}" for j, g in enumerate(p['groups'] if grouped else [])]
+        cols = ', '.join(gcols + [f"{p['aggs'][i]} AS v{i}" for i in range(n)])
+        tail = ' GROUP BY ' + ', '.join(p['groups']) + (' HAVING ' + p['having'] if p['having'] else '') if grouped else ''
+        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}{tail}) x" + ('' if join == ',' else ' ON true')
+        outs = [f'x.v{i}' for i in range(n)] + [f'x.g{j}' for j in range(len(gcols))]
     else:
         frm = 'events e'
         outs = [f'({sub(i)})' for i in range(n)]
@@ -505,6 +509,25 @@ def render_decor(p):
     if p['total'] and p['form'] != 'where':
         sel = 'count(*) AS n, ' + ', '.join(f'count({o}) AS c{i}' for i, o in enumerate(outs))
     return f"SELECT {sel} FROM {frm} WHERE {wh}{cond}", False
+
+
+def gen_exists(r, ctx):
+    ties = ['f.parent_id = e.parent_id', 'f.grp = e.grp', 'f.kind = e.kind', 'f.ts = e.ts', 'f.flag = e.flag', 'f.big = e.big']
+    inner = lambda: preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)) + (['f.id < 0'] if r.random() < 0.05 else [])
+    return dict(form=r.choice(['select', 'not', 'or', 'ornot', 'case', 'two', 'top', 'topnot']), tie=r.sample(ties, r.choice([1, 1, 2])), tie2=r.sample(ties, 1), inner=inner(), inner2=inner(),
+                outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)) + (['e.id < 0'] if r.random() < 0.03 else []), pick=r.randrange(3, 10), total=r.random() < 0.3)
+
+
+def render_exists(p):
+    ex = lambda tie, inner: f"EXISTS (SELECT 1 FROM events f WHERE {' AND '.join(tie + inner)})"
+    a, b = ex(p['tie'], p['inner']), ex(p['tie2'], p['inner2'])
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    sel = {'select': f'e.id, {a} AS v0', 'not': f'e.id, NOT {a} AS v0', 'case': f"e.id, CASE WHEN {a} THEN 1 WHEN e.grp > 5 THEN 2 ELSE 3 END AS v0",
+           'two': f'e.id, {a} AS v0, NOT {b} AS v1'}.get(p['form'], 'e.id')
+    cond = {'or': f' AND (e.grp < 4 OR {a})', 'ornot': f' AND (e.grp < 4 OR NOT {a})', 'top': f' AND {a}', 'topnot': f' AND NOT {a}'}.get(p['form'], '')
+    if p['total']:
+        sel = 'count(*) AS n' + (f', count(*) FILTER (WHERE {a}) AS hits' if p['form'] in ('select', 'not', 'case', 'two') else '')
+    return f'SELECT {sel} FROM events e WHERE {wh}{cond}', False
 
 
 def gen_union(r, ctx):
@@ -769,6 +792,22 @@ def render_point(p):
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
+def gen_pointagg(r, ctx):
+    """The same lists as gen_point, aggregated by Custom Scan (SiftAgg), which asks the directory too (and narrows each unit to the rows it lists): as a list, as the keys of a semi lookup
+    join to a few rows of the table, and with another conjunct; the reference is the normal plan, across the DML of the run."""
+    p = gen_point(r, ctx)
+    n = ctx['rows'] // 2
+    if r.randrange(3) == 0:
+        a = r.randrange(1, n)
+        col = r.choice(['parent_id', 'id'])
+        p['where'] = [f"e.{col} IN (SELECT m.{col} FROM ev_part m WHERE m.id BETWEEN {a} AND {a + r.randrange(0, 30)})"]
+    return p
+
+
+def render_pointagg(p):
+    return f"SELECT e.kind, count(*), sum(e.amount) FROM ev_part e WHERE {p['where'][0]} GROUP BY 1 ORDER BY 1", True
+
+
 # ---------- key_cut (docs/COL.md 2.16): units cut by a key, the rows of the normal plan after every kind of churn and every kind of merge ----------
 KCUT_LITERALS = {
     'ki': lambda r: str(r.randrange(-6, 36)),
@@ -869,8 +908,8 @@ FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
-    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
     'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3),
 }

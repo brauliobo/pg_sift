@@ -423,3 +423,47 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 	dlist_push_tail(&lru, &e->node);
 	cache_bytes += size;
 }
+
+/* a unit's page mask and run head are kept under the unit number with this bit: the lengths of the unit are under the number alone */
+#define SBHEAD_UNIT		0x80000000u
+
+bool
+sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
+{
+	DictKey		k;
+	DictEnt    *e;
+	MemoryContext cx;
+	SiftCRun	r;
+	uint64		at;
+
+	dict_key(&k, seg, col, u | SBHEAD_UNIT);
+	if (cache != NULL && (e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		dlist_move_tail(&lru, &e->node);
+		*out = *(SiftCSbHead *) e->obj;
+		return true;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!sift_cseg_unit_pagemask(seg, u, out->pm))
+		return false;
+	if (sift_cseg_run(seg, col, u, &r, &at) && r.heads > 0)
+	{
+		out->has = true;
+		sift_crun_head_counts(r.heads, r.n, &out->nlo, &out->nhi);
+		sift_cseg_run_heads(seg, at, &r, out->ent);
+	}
+	if (cache == NULL)
+		cache_init();
+	if (!dict_room(sizeof(*out)))
+		return true;
+	cx = AllocSetContextCreate(cache_cx, "sift cache segment run head", ALLOCSET_SMALL_SIZES);
+	e = hash_search(cache, &k, HASH_ENTER, NULL);
+	e->cx = cx;
+	e->obj = MemoryContextAlloc(cx, sizeof(*out));
+	memcpy(e->obj, out, sizeof(*out));
+	e->size = sizeof(*out);
+	e->pins = 0;
+	dlist_push_tail(&lru, &e->node);
+	cache_bytes += sizeof(*out);
+	return true;
+}

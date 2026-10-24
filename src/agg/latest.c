@@ -203,7 +203,7 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 		*why = "the sub-select reads nothing but the partition and the row number";
 		return NULL;
 	}
-	foreach_node(Expr, e, cols)
+	foreach_ptr(Expr, e, cols)
 	{
 		TargetEntry *te = makeTargetEntry((Expr *) array_of(e, w->orderClause, sub->targetList), nkeys + foreach_current_index(e) + 1, psprintf("a%d", foreach_current_index(e) + 1), false);
 
@@ -220,7 +220,7 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 	gr->inFromCl = true;
 	gr->eref = makeAlias("g", gnames);
 	/* each array cut at n, unnested together (a ROWS FROM of one unnest each) with the ordinal as the last column */
-	foreach_node(Expr, e, cols)
+	foreach_ptr(Expr, e, cols)
 	{
 		Oid			t = exprType((Node *) e);
 		Oid			at = get_array_type(t);

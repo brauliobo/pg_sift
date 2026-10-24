@@ -253,10 +253,8 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 {
 	SiftColSegment *seg = NULL;
 	uint32		u = 0;
-	uint64		pm[SIFT_PAGEMASK_WORDS],
-				av[SIFT_PAGEMASK_WORDS];
-	SiftCRun	r;
-	uint64		at;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+	SiftCSbHead h;
 
 	if (src->flags & COLO_TABLE)
 		return false;
@@ -272,19 +270,20 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 		seg = s;
 		u = k;
 	}
-	if (seg == NULL || sift_cseg_keyed(&seg->entry) || !sift_cseg_unit_pagemask(seg, u, pm))
+	if (seg == NULL || sift_cseg_keyed(&seg->entry) || !sift_cseg_sbhead(seg, u, col, &h))
 		return false;
 	src->visibility.sb_mask(src->visibility.arg, sb, av);
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-		if (pm[w] & ~av[w])
+		if (h.pm[w] & ~av[w])
 			return false;
 	if (!segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
-	if (sift_cseg_dirty(seg, u) || !sift_cseg_run(seg, col, u, &r, &at) || r.heads == 0)
+	if (!h.has || sift_cseg_dirty(seg, u))
 		return false;
-	sift_crun_head_counts(r.heads, r.n, nlo, nhi);
-	sift_cseg_run_heads(seg, at, &r, out);
+	*nlo = h.nlo;
+	*nhi = h.nhi;
+	memcpy(out, h.ent, (h.nlo + h.nhi) * sizeof(SiftCHeadEnt));
 	return true;
 }
 
