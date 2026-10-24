@@ -87,3 +87,4 @@ point_prefix_count	priced by the planner as the lookups of the keys the dictiona
 distinct_rows_sets	distinct rows of a grouping set over a preserved join	orders	default	Pushed Aggregates: count, count, count, count\(DISTINCT o\.customer_id\)	native	-	ms	faster33	no
 tbl_update_keys	asks the table which of the page's versions are dead	orders	-	tombstones	native	-	ms	faster33	no
 point_keys_agg	asks the point directory (`point_columns`, `point_tid_columns`) for the rows of a short `IN` list	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+percentile_select	finds the percentiles of a group by a quickselect over its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
