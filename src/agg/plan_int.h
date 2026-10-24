@@ -286,6 +286,7 @@ extern Oid json_cast_target(Oid fid);
 extern int match_leaf(AggCtx *c, Node *e);
 extern Node *normalize_expr(AggCtx *c, Node *n);
 extern Node *placeholder_expr(AggCtx *c, PlaceHolderVar *ph);
+extern Node *strict_placeholders(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
 extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);

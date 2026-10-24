@@ -99,9 +99,9 @@ SELECT pushed($q$
         count(DISTINCT entity_id) AS entities, avg(value) AS value
  FROM periods p LEFT JOIN parsed x ON x.day <@ p.range
  GROUP BY GROUPING SETS ((p.period, category, sub), (p.period, category), (p.period)) $q$);
-                                                          pushed                                                          
---------------------------------------------------------------------------------------------------------------------------
- Pushed Aggregates: count, count, count, count(DISTINCT f.entity_id), avg(((r.value #>> '{}'::text[]))::double precision)
+                                         pushed                                         
+----------------------------------------------------------------------------------------
+ Pushed Aggregates: count, count, count, count(DISTINCT entity_id), avg(scores.*.value)
 (1 row)
 
 SELECT * FROM check_query($q$

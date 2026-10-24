@@ -649,6 +649,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
+	a = (Aggref *) strict_placeholders(c, (Node *) a);
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;

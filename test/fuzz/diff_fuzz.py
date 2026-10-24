@@ -279,6 +279,36 @@ def render_lookup(p):
     return grouped(p, frm), bool(p['keys'])
 
 
+
+# a spine of periods (one matches no row) joined from the left to the parsed rows under grouping sets: the aggregates' arguments and FILTERs reach
+# the scan as placeholders; a strict expression of the scanned columns is read as such, a constant or a non-strict one keeps the placeholder
+PH_STRICT = ['e.val', 'e.amount * 2', "(e.metrics ->> 'm1')::float8", 'e.val + e.amount', "(r.value #>> '{}')::float8", "(r.value #>> '{}')::float8 * 10 - e.grp"]
+PH_OTHER = ['coalesce(e.val, 0)', 'CASE WHEN e.val IS NULL THEN -1 ELSE e.val END', '1', 'greatest(e.amount, 500)', "coalesce((r.value #>> '{}')::float8, -1)",
+            '(e.val IS NULL)::int']
+
+
+def gen_placeholder(r, ctx):
+    expr = r.choice(PH_STRICT + PH_OTHER)
+    c = r.randrange(10)
+    return dict(expr=expr, unnest='r.' in expr or r.random() < 0.3, m3=r.random() < 0.15, key=r.choice(['x.kind', 'x.key', 'x.grp']),
+                sets=r.random() < 0.7, aggs=['count(*)'] + r.sample(['count(v)', 'sum(v)', 'avg(v)', 'min(v)', 'max(v)', f'count(*) FILTER (WHERE v > {c})',
+                                                                    f'count(DISTINCT x.id) FILTER (WHERE v >= {c})', f'sum(v) FILTER (WHERE v < {c})',
+                                                                    f'avg(v) FILTER (WHERE x.kind IS NOT NULL)'], r.randrange(1, 5)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)))
+
+
+def render_placeholder(p):
+    key = p['key'] if p['unnest'] or p['key'] != 'x.key' else 'x.kind'
+    fn = ', jsonb_each(e.metrics) r' if p['unnest'] else ''
+    cond = [] if not p['unnest'] or p['m3'] else ["r.key <> 'm3'"]
+    w = ' WHERE ' + ' AND '.join(p['where'] + cond) if p['where'] or cond else ''
+    rk = ', r.key' if p['unnest'] else ''
+    grp = f'GROUPING SETS ((p.period, {key}), (p.period))' if p['sets'] else f'p.period, {key}'
+    sql = (f"WITH periods(period, lo, hi) AS (VALUES ('a', date '2025-01-01', date '2025-06-30'), ('b', date '2025-07-01', date '2026-02-04'), "
+           f"('z', date '2030-01-01', date '2030-12-31')), parsed AS (SELECT e.id, e.kind, e.grp, e.ts{rk}, {p['expr']} AS v FROM events e{fn}{w}) "
+           f"SELECT p.period, {key} AS k, {', '.join(f'{a} AS a{i}' for i, a in enumerate(p['aggs']))} FROM periods p LEFT JOIN parsed x ON x.ts BETWEEN p.lo AND p.hi GROUP BY {grp}")
+    return sql, False
+
 def gen_dirty(r, ctx):
     form = r.randrange(5)
     cols = EVENTS
@@ -827,6 +857,7 @@ FAMILIES = {
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
