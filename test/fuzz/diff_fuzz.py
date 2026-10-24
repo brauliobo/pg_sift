@@ -640,11 +640,75 @@ def render_point(p):
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
+# ---------- key_cut (docs/COL.md 2.16): units cut by a key, the rows of the normal plan after every kind of churn and every kind of merge ----------
+KCUT_LITERALS = {
+    'ki': lambda r: str(r.randrange(-6, 36)),
+    'kd': lambda r: r.choice(["'infinity'::date", "'-infinity'::date", f"date '2025-{r.randrange(1, 8):02d}-{r.randrange(1, 29):02d}'", "date '2025-01-01'", "date '2025-07-19'"]),
+    'kt': lambda r: r.choice(["'infinity'::timestamp", "'-infinity'::timestamp", f"timestamp '2025-{r.randrange(1, 6):02d}-{r.randrange(1, 29):02d} {r.randrange(24):02d}:00:00'",
+                              "timestamp '2025-01-01 00:00:00.25'"]),
+    'kn': lambda r: r.choice(["'NaN'::numeric", str(r.randrange(0, 250)), f'{r.randrange(0, 250)}.{r.randrange(0, 125) * 8:03d}', '1000000']),
+    'kf': lambda r: r.choice(["'NaN'::float8", "'Infinity'::float8", "'-Infinity'::float8", "'-0'::float8", "0::float8", f'{r.randrange(-50, 50)}.{r.randrange(0, 100):02d}']),
+}
+KCUT_KEYS = ['ki', 'kd', 'kt', 'kn', 'kf']
+
+
+def kcut_pred(r, e):
+    c = r.choice(KCUT_KEYS + KCUT_KEYS + ['amount', 'kind'])
+    if c == 'amount':
+        return f'{e}.amount {r.choice([">", "<", ">=", "<="])} {r.randrange(1000)}'
+    if c == 'kind':
+        return f"{e}.kind = 'k{r.randrange(6)}'"
+    lit = KCUT_LITERALS[c]
+    form = r.randrange(7)
+    if form == 0:
+        return f'{e}.{c} = {lit(r)}'
+    if form == 1:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)}'
+    if form == 2:
+        return f'{e}.{c} BETWEEN {lit(r)} AND {lit(r)}'
+    if form == 3:
+        return f'{e}.{c} IN ({", ".join(lit(r) for _ in range(r.randrange(1, 5)))})'
+    if form == 4:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'({e}.{c} = {lit(r)} OR {e}.{c} > {lit(r)})'
+    return f'{e}.{c} <> {lit(r)}'
+
+
+KCUT_KEY_EXPRS = ['{e}.kind', '{e}.ki', '{e}.ki % 5', '{e}.kd', "date_trunc('month', {e}.kd)::date", '{e}.kt', '({e}.kn IS NULL)', "({e}.kf = 'NaN')"]
+KCUT_AGGS = ['count(*)', 'count({e}.ki)', 'sum({e}.amount)', 'avg({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'sum({e}.val)', 'min({e}.ki)', 'max({e}.ki)', 'min({e}.kd)', 'max({e}.kd)',
+             'min({e}.kt)', 'max({e}.kt)', 'min({e}.kn)', 'max({e}.kn)', 'min({e}.kf)', 'max({e}.kf)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.ki)', 'count(DISTINCT {e}.kd)',
+             'count(*) FILTER (WHERE {e}.ki > 10)']
+
+
+def gen_keycut(r, ctx):
+    t = r.choice(['kcut_a', 'kcut_b', 'kcut_c'])
+    form = r.choice(['agg', 'agg', 'agg', 'topn', 'rows'])
+    where_ = [kcut_pred(r, 'e') for _ in range(r.randrange(0, 4))]
+    if len(where_) > 1 and r.random() < 0.25:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    if form == 'agg':
+        ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(KCUT_KEY_EXPRS, r.choice([0, 0, 1, 1, 2]))))
+        ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 6))))
+        return dict(table=t, form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    order = ', '.join(f'e.{k} {r.choice(["", "DESC"])} {r.choice(["", "NULLS FIRST", "NULLS LAST"])}'.strip() for k in r.sample(KCUT_KEYS, r.choice([1, 2, 3])))
+    return dict(table=t, form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order=order, limit=r.choice([1, 5, 20, 100, 400]), offset=r.choice([0, 0, 7]))
+
+
+def render_keycut(p):
+    if p['form'] == 'agg':
+        return grouped(p, f"{p['table']} e"), True
+    cols = 'e.id, e.ki, e.kd, e.kt, e.kn, e.kf, e.amount'
+    tail = f"ORDER BY {p['order']}, e.id LIMIT {p['limit']} OFFSET {p['offset']}" if p['form'] == 'topn' else 'ORDER BY e.id'
+    return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
+    'keycut': (gen_keycut, render_keycut, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -719,6 +783,48 @@ def dml(r, ctx):
     return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'])
 
 
+KCUT_COLS = {'ki': ['ki + 1', 'NULL', '39 - ki', '7'], 'kd': ["kd + {d}", "'infinity'", "'-infinity'", 'NULL', "date '2025-03-01'"],
+             'kt': ["kt + interval '{d} days'", "'infinity'", 'NULL', "timestamp '2025-02-02 02:02:02'"], 'kn': ['kn * 2', "'NaN'", 'NULL', '1.5'],
+             'kf': ['kf + 1', "'-0'", "'NaN'", 'NULL', "'Infinity'"]}
+KCUT_KEY_OF = {'a': 'ki, kd', 'b': 'kt, kn', 'c': 'kf, ki'}
+
+
+def dml_kcut(r, ctx):
+    """Statements on the key-cut tables: churn of the keys (rows move between units), deletes, inserts, VACUUM, and every way the units are written again: a promotion of the write
+    buffer, a merge, a refresh, a REINDEX, and a merge of units written before the key was declared (a key that is not in the order of the segments it merges)."""
+    x = r.choice('abc')
+    t, idx = f'kcut_{x}', f'kcut_{x}_idx'
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(16)
+    if e < 4:
+        c = r.choice(KCUT_KEYS)
+        return [f'UPDATE {t} SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 4:
+        return [f'UPDATE {t} SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}']
+    if e in (5, 6):
+        return [f'DELETE FROM {t} WHERE {ids}']
+    if e in (7, 8, 9):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 10:
+        return [f'VACUUM {t}']
+    if e == 11:
+        return [f"SELECT sift.col_promote('{idx}')"]
+    if e == 12:
+        return [r.choice([f"SELECT sift.col_merge('{idx}', true)", f"SELECT sift.col_merge('{idx}', true)", f"SELECT count(*) FROM sift.col_refresh('{idx}')", f'REINDEX INDEX {idx}'])]
+    if e == 13:
+        # segments written without the key, merged into units cut by it
+        lo = ctx['next_kc']; ctx['next_kc'] += 60
+        return [f'ALTER INDEX {idx} RESET (key_cut)', f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + 59}, {r.randrange(1, 9)})', f"SELECT sift.col_promote('{idx}')",
+                f"ALTER INDEX {idx} SET (key_cut = '{KCUT_KEY_OF[x]}')", f"SELECT sift.col_merge('{idx}', true)"]
+    if e == 14:
+        # another key: the segments cut by the old one stop a merge (the REINDEX hint of the error), so the index is built again
+        return [f"ALTER INDEX {idx} SET (key_cut = '{r.choice(['ki', 'kd', 'kt', 'kn', 'kf', 'ki, kd', 'kd, kt', 'kn, kf', KCUT_KEY_OF[x]])}')", f'REINDEX INDEX {idx}']
+    return [f'ANALYZE {t}']
+
+
 # ---------- a run ----------
 def sqlq(s):
     assert '$fzq$' not in s
@@ -752,9 +858,12 @@ def gen_query(seed, i, ctx, only):
 def episodes(seed, nq, ctx, only, dmls=4):
     """[(dml statements, [query entries])]: 4-10 queries after 0-4 statements."""
     r = random.Random(seed * 7919 + 1)
+    rk = random.Random(seed * 104729 + 3)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
+        if not only or 'keycut' in only:
+            st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)
@@ -932,7 +1041,7 @@ def main():
         tag = f'{seed}'
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000}
+        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

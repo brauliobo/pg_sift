@@ -109,4 +109,33 @@ ALTER TABLE kc ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kc SELECT id, CASE WHEN id <= @ROWS@ / 3 THEN id % 150 ELSE (id % 150) * 1000003 END, kind, grp, ts, amount, val, repeat('x', 1500) FROM fz.gen_events(1, @ROWS@, 3);
 CREATE INDEX kc_col ON kc USING sift_col (id, parent_id, kind, grp, ts, amount, val) WITH (preagg = 'cube(parent_id: amount)', key_columns = 'parent_id');
 
-VACUUM (FREEZE, ANALYZE) items, events, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup;
+-- tables whose units are cut by a key (key_cut, docs/COL.md 2.16), the rows in a heap order that is not the key order: integer, date, timestamp, numeric and float keys with NULLs,
+-- infinities, NaN and a negative zero; 64 rows a unit aim, so that a table of a few thousand rows has dozens of units
+CREATE TABLE kcut_a (id int, ki int, kd date, kt timestamp, kn numeric(14,3), kf float8, amount int, val float8, kind text, pad text) WITH (autovacuum_enabled = false);
+CREATE FUNCTION fz.gen_kcut(lo bigint, hi bigint, salt int) RETURNS SETOF kcut_a LANGUAGE sql AS $$
+	SELECT i::int,
+	       CASE WHEN fz.h(i, 61 + salt) % 100 < 5 THEN NULL ELSE fz.h(i, 62 + salt) % 40 - 5 END,
+	       CASE WHEN fz.h(i, 63 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 63 + salt) % 100 < 6 THEN 'infinity'::date WHEN fz.h(i, 63 + salt) % 100 < 8 THEN '-infinity'::date
+	            ELSE date '2025-01-01' + fz.h(i, 64 + salt) % 200 END,
+	       CASE WHEN fz.h(i, 65 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 65 + salt) % 100 < 6 THEN 'infinity'::timestamp WHEN fz.h(i, 65 + salt) % 100 < 8 THEN '-infinity'::timestamp
+	            ELSE timestamp '2025-01-01' + (fz.h(i, 66 + salt) % 3000) * interval '1 hour' + (fz.h(i, 67 + salt) % 4) * interval '250 milliseconds' END,
+	       CASE WHEN fz.h(i, 68 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 68 + salt) % 100 < 6 THEN 'NaN'::numeric
+	            ELSE round((fz.h(i, 69 + salt) % 2000)::numeric / 8, fz.h(i, 70 + salt) % 4) * CASE WHEN fz.h(i, 71 + salt) % 9 = 0 THEN 1000000 ELSE 1 END END,
+	       CASE WHEN fz.h(i, 72 + salt) % 100 < 4 THEN NULL WHEN fz.h(i, 72 + salt) % 100 < 6 THEN 'NaN'::float8 WHEN fz.h(i, 72 + salt) % 100 < 7 THEN 'Infinity'::float8
+	            WHEN fz.h(i, 72 + salt) % 100 < 8 THEN '-Infinity'::float8 WHEN fz.h(i, 72 + salt) % 100 < 9 THEN '-0'::float8
+	            ELSE (fz.h(i, 73 + salt) % 10000) / 100.0 - 50 END,
+	       CASE WHEN fz.h(i, 74 + salt) % 100 < 5 THEN NULL ELSE fz.h(i, 75 + salt) % 1000 END,
+	       CASE WHEN fz.h(i, 76 + salt) % 100 < 6 THEN NULL ELSE (fz.h(i, 77 + salt) % 10000) / 100.0 - 50 END,
+	       CASE WHEN fz.h(i, 78 + salt) % 100 < 5 THEN NULL ELSE 'k' || fz.h(i, 79 + salt) % 5 END,
+	       repeat('x', 60)
+	FROM generate_series(lo, hi) i $$;
+CREATE TABLE kcut_b (LIKE kcut_a) WITH (autovacuum_enabled = false);
+CREATE TABLE kcut_c (LIKE kcut_a) WITH (autovacuum_enabled = false);
+INSERT INTO kcut_a SELECT * FROM fz.gen_kcut(1, @ROWS@, 0);
+INSERT INTO kcut_b SELECT * FROM fz.gen_kcut(1, @ROWS@, 20);
+INSERT INTO kcut_c SELECT * FROM fz.gen_kcut(1, @ROWS@, 40);
+CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd', key_cut_rows = 64);
+CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn', key_cut_rows = 64);
+CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki', key_cut_rows = 64);
+
+VACUUM (FREEZE, ANALYZE) items, events, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, kcut_a, kcut_b, kcut_c;
