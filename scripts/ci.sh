@@ -410,6 +410,7 @@ claim_locked() {
 		mkdir "$BASE/claims/$id"
 		echo "$est" >"$BASE/running/$id"
 		echo "$LANE" >"$BASE/claims/$id/lane"
+		echo "$SECONDS" >"$BASE/claims/$id/start"
 		CLAIMED=$id
 		return 0
 	done
@@ -465,10 +466,26 @@ watchdog() { # stops every postmaster under $BASE once the scratch directory pas
 }
 watchdog &
 WATCHDOG=$!
+# a job that runs long (difftest-col takes two to three hours in the full tier) is silent in the live log until it ends: every 5 minutes the jobs past
+# 10 minutes are listed with the last line of their own log, so that a long run is told from a hang by whether that line moves
+heartbeat() {
+	local f id s
+	while sleep 300; do
+		for f in "$BASE"/running/*; do
+			[[ -e $f ]] || continue
+			id=${f##*/}
+			[[ -f $BASE/claims/$id/start ]] || continue
+			s=$(<"$BASE/claims/$id/start")
+			(( SECONDS - s >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - s))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
+		done
+	done
+}
+heartbeat &
+HEARTBEAT=$!
 # SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
 [[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
 cleanup() {
-	kill "$WATCHDOG" ${STATS:-} 2>/dev/null
+	kill "$WATCHDOG" "$HEARTBEAT" ${STATS:-} 2>/dev/null
 	if [[ -z ${KEEP:-} && ${failed:-1} == 0 ]]; then rm -rf "$BASE"; else echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
