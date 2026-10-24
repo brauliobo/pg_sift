@@ -134,7 +134,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | `sift.cluster_advice` | sift_col | on | 3.3 |  | - | - | ,, |  | Leave on: sift.cluster_advice() recommends a physical order or key_cut and CREATE INDEX may print the advice. Off answers not recommended and prints nothing; the index option switches one index. |
 | `sift.explain_refusals` | sift_col, sift_table | off | 3.3 | - | - | - | , |  | Set it in a session to see why a query kept the normal plan (a notice with the slug and reason); the plans are the same on or off. sift.explain_why(query) asks without running it. |
 | `sift.count_refusals` | sift_col, sift_table | off | 3.3 | as `sift.explain_refusals` | as `sift.explain_refusals` | as `sift.explain_refusals` | - | as `sift.explain_refusals` | Set it to count why queries kept the normal plan in sift.stats() (refused.<slug>, limit.<id>) without the notice; leave off otherwise. |
-| `sift.plan_scale` | sift_col, sift_table | 1 | 3.3 | - | - | - | - |  | Set 10 or 100 in a session and compare EXPLAIN or sift.explain_why to see the planner's choice at a larger size without the data. 1 plans the table as it is. PostgreSQL up to 18. |
+| `sift.plan_scale` | sift_col, sift_table | 1 | 3.3 | - | - | - | - |  | Set 10 or 100 in a session and compare EXPLAIN or sift.explain_why to see the planner's choice at a larger size without the data. 1 plans the table as it is. |
 | `sift.agg_force` | sift_col, sift_table | off | 3.4 | 27 nested-list statements, 31.7M rows, 32 keys, work_mem 4GB: 136.8 s plain, 117.4 s planner's choice, 6.3 s forced; statements of 15 to 120 ms get slower | - | - | , |  | A diagnostic first: it takes the scan whatever the cost model says, to time a refused plan. Set it for a role only if its requests are large; SET LOCAL it per statement. Small requests get slower. |
 
 ### safety
@@ -192,5 +192,6 @@ No default changed since 3.3; new: `sift.agg_force`, `sift_col(key_cut)`, `sift_
 | `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
 | `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
+| `sift.plan_scale` | 1 | 1 |  | Now also scales the normal side of a plan on PostgreSQL 19 (3.3 did nothing there, as PostgreSQL 19 removed the hook it used); nothing to do. |
 | `sift.agg_force` | new | off |  | New, off: a diagnostic that nothing sets after the update. Nothing to do. |
 <!-- sift-upgrade:end -->
