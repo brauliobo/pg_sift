@@ -421,7 +421,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
-		sift_maint_space(index, NULL, info->message_level);
+		sift_maint_space_budget(index, NULL, info->message_level,
+								ops->vacuum_space_defer && ops->vacuum_space_defer(index) ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
 		ops->vacuum_done(index);
