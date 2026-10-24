@@ -21,18 +21,18 @@ VACUUM (FREEZE, ANALYZE) dims;
 VACUUM (FREEZE, ANALYZE) tags;
 \ir test/agg_helpers.sql
 \set ECHO none
--- the plan reads docs in no node but the scan
-CREATE FUNCTION reads_docs(q text) RETURNS bool LANGUAGE plpgsql AS $$
+-- the plan reads what the pattern names in no node but the scan (docs, by default)
+CREATE FUNCTION reads_plan(q text, pat text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; found bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR l ~ '(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan) on docs'; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR l ~ pat; END LOOP;
 	RETURN found;
 END $$;
-CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, only_scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION check_query(name text, q text, pat text DEFAULT '(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan) on docs') RETURNS TABLE (label text, only_scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY SELECT name, runs_in_scan(q) AND NOT reads_docs(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+	RETURN QUERY SELECT name, runs_in_scan(q) AND NOT reads_plan(q, pat), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
 -- one row for a document: the average of its parts that have a score
 SELECT * FROM check_query('average of the parts', $q$
@@ -110,6 +110,44 @@ $q$);
  a non-strict argument | f         | t    | [{"n": 857, "sv": 4.085069, "grp": 6}, {"n": 857, "sv": 4.088542, "grp": 2}, {"n": 857, "sv": 4.0921
 (1 row)
 
+-- a sublink holds the lateral: the query around it reads docs in an ordinary plan, and the sublink's own plan is the scan that groups the elements
+SELECT * FROM check_query('a sublink', $q$
+ SELECT docs.id, docs.grp FROM docs
+ WHERE docs.id IN (SELECT r.id FROM (SELECT d.id, s.sv FROM docs d
+                                    LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+                   WHERE r.sv > 4)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+   label   | only_scan | same |                                               outcome                                                
+-----------+-----------+------+------------------------------------------------------------------------------------------------------
+ a sublink | t         | t    | [{"id": 1003, "grp": 2}, {"id": 1004, "grp": 3}, {"id": 1006, "grp": 5}, {"id": 1007, "grp": 6}, {"i
+(1 row)
+
+-- a sublink of a value (an InitPlan)
+SELECT * FROM check_query('a sublink of a value', $q$
+ SELECT docs.id, docs.dim_id FROM docs
+ WHERE docs.dim_id < (SELECT max(r.sv) FROM (SELECT d.id, s.sv FROM docs d
+                                           LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8)) s ON true) r)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+        label         | only_scan | same |                                               outcome                                                
+----------------------+-----------+------+------------------------------------------------------------------------------------------------------
+ a sublink of a value | t         | t    | [{"id": 1, "dim_id": 2}, {"id": 10, "dim_id": 1}, {"id": 100, "dim_id": 1}, {"id": 1000, "dim_id": 1
+(1 row)
+
+-- the same sublink over documents repeated by their tags
+SELECT * FROM check_query('a sublink over a join that repeats the keys', $q$
+ SELECT docs.id, docs.grp FROM docs
+ WHERE docs.id IN (SELECT r.id FROM (SELECT d.id, s.sv FROM (SELECT docs.id, docs.doc FROM docs INNER JOIN tags t ON t.dim_id = docs.dim_id) d
+                                    LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+                   WHERE r.sv > 4)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+                    label                    | only_scan | same |                                               outcome                                                
+---------------------------------------------+-----------+------+------------------------------------------------------------------------------------------------------
+ a sublink over a join that repeats the keys | f         | t    | [{"id": 1003, "grp": 2}, {"id": 1004, "grp": 3}, {"id": 1006, "grp": 5}, {"id": 1007, "grp": 6}, {"i
+(1 row)
+
 DROP TABLE docs, dims, tags;
-DROP FUNCTION reads_docs(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+DROP FUNCTION reads_plan(text,text), check_query(text,text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
 DROP EXTENSION pg_sift;
