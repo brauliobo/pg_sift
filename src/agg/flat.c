@@ -187,6 +187,7 @@ read_columns(Node *n, Pulled *p)
 }
 
 static bool flatten_query(Query *q, bool apply);
+bool		sift_agg_by_cost;
 static List *flat_levels;		/* the query level being flattened and those around it */
 static bool group_aggregate_lateral(Query *q, bool apply);
 struct DecorJoin;
@@ -857,7 +858,6 @@ typedef struct DecorJoin
 	Decor		d;
 } DecorJoin;
 
-static bool decorrelated;		/* a rewrite of this kind was made: the plan it gives is chosen by cost */
 
 /* `x [LEFT | INNER] JOIN LATERAL (aggregates of a table tied to x) ON true` */
 static bool
@@ -966,7 +966,7 @@ decor_apply(Query *q, DecorJoin *r)
 	j->jointype = JOIN_LEFT;
 	rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_LEFT;
 	j->quals = (Node *) make_ands_explicit(join);
-	decorrelated = true;
+	sift_agg_by_cost = true;
 }
 
 typedef struct SublinkDecor
@@ -1031,7 +1031,7 @@ decor_sublink(Node *n, SublinkDecor *c)
 	g = makeNode(RangeTblEntry);
 	g->rtekind = RTE_SUBQUERY;
 	g->subquery = decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join);
-	decorrelated = true;
+	sift_agg_by_cost = true;
 	g->inFromCl = true;
 	foreach_node(TargetEntry, te, g->subquery->targetList)
 		names = lappend(names, makeString(te->resname));
@@ -1095,7 +1095,7 @@ bool
 sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
-	decorrelated = false;
+	sift_agg_by_cost = false;
 	flatten_query(q, true);
-	return decorrelated;
+	return sift_agg_by_cost;
 }

@@ -403,20 +403,23 @@ def render_lateralagg(p):
 
 def gen_latest(r, ctx):
     orders = ['e.ts', 'e.amount', 'e.val', 'e.a', 'e.big', 'e.kind', 'e.num', 'e.parent_id']
+    n = r.choice([1, 1, 2, 3, 5, 12, 400])
+    forms = [f't.rn <= {n}', f't.rn < {n + 1}', f'{n} >= t.rn', f'{n + 1} > t.rn', f't.rn <= {n}::bigint AND t.rn <= {n + 3}'] + ([f't.rn = 1', '1 = t.rn'] if n == 1 else [])
     return dict(parts=r.sample(['e.kind', 'e.grp', 'e.a', 'e.parent_id', 'e.flag'], r.randrange(1, 3)),
                 order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
-                filter=r.choice(['t.rn = 1', 't.rn <= 1', 't.rn < 2', '1 = t.rn', '1 >= t.rn', 't.rn = 1::bigint AND t.rn <= 1']), cte=r.random() < 0.3,
+                filter=r.choice(forms), cte=r.random() < 0.3, extra=r.sample(['e.ts', 'e.val', 'e.num', 'e.title', 'e.amount * 2'], r.randrange(0, 3)),
                 where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=r.choice([[], [], ['t.amount > %d' % r.randrange(20)]]),
                 shape=r.choice(['rows', 'rows', 'rn', 'count']))
 
 
 def render_latest(p):
-    # id last: the order has no ties, so the first row of a group is the one the normal plan keeps
+    # id last: the order has no ties, so the first rows of a group are the ones the normal plan keeps
     win = f"row_number() OVER (PARTITION BY {', '.join(p['parts'])} ORDER BY {', '.join(p['order'])}, e.id) rn"
-    sub = f"SELECT e.id, e.kind, e.grp, e.amount, {win} FROM events e {where(p)}"
+    extra = ''.join(f', {x} AS x{i}' for i, x in enumerate(p['extra']))
+    sub = f"SELECT e.id, e.kind, e.grp, e.amount{extra}, {win} FROM events e {where(p)}"
     frm, pre = (f"latest t", f"WITH latest AS ({sub}) ") if p['cte'] else (f"({sub}) t", '')
     cond = ' AND '.join([p['filter']] + p['outer'])
-    sel = {'rows': 't.id, t.kind, t.amount', 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount'}[p['shape']]
+    sel = {'rows': 't.id, t.kind, t.amount' + ''.join(f', t.x{i}' for i in range(len(p['extra']))), 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount, max(t.rn) AS deepest'}[p['shape']]
     return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
 
 
