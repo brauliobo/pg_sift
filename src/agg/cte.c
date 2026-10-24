@@ -744,10 +744,29 @@ reads_indexed_plan(PlannedStmt *ps)
  * Without shared_preload_libraries or session_preload_libraries the library is loaded when the planner first opens a column index, which is
  * inside planner() and after it decided there was no hook: that one statement of the backend is planned without sift_planner (no inline CTE,
  * no flattened laterals) and the aggregates that every later statement runs in the scan run their ordinary plan. The statement is planned
- * again here, from its text, when it is a plain SELECT of the top level; the same text through the hook gives the plan the next statement of
- * the session gets. The parameters of the extended protocol and of EXECUTE are planned as a custom plan is (their types and values are the
- * statement's own). Anything else (EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
+ * again here, from its text, when it is a SELECT of the top level, alone or the query of an EXPLAIN or a CREATE TABLE AS; the same text through
+ * the hook gives the plan the next statement of the session gets, and an EXPLAIN prints the plan that replaces the first one. The parameters of the
+ * extended protocol and of EXECUTE are planned as a custom plan is (their types and values are the statement's own). Anything else (a cursor,
+ * a function's query) keeps its plan: a cursor's plan depends on its options.
  */
+static Node *
+replan_query(Node *stmt)
+{
+	for (;;)
+		switch (nodeTag(stmt))
+		{
+			case T_PrepareStmt:
+				return castNode(PrepareStmt, stmt)->query;
+			case T_ExplainStmt:
+				stmt = castNode(ExplainStmt, stmt)->query;
+				break;
+			case T_CreateTableAsStmt:
+				return castNode(CreateTableAsStmt, stmt)->query;
+			default:
+				return stmt;
+		}
+}
+
 static PlannedStmt *
 replan(QueryDesc *qd)
 {
@@ -757,6 +776,7 @@ replan(QueryDesc *qd)
 	Oid		   *ptypes = NULL;
 	List	   *trees,
 			   *plans;
+	PlannedStmt *fresh;
 
 	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL ||
 		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
@@ -774,13 +794,12 @@ replan(QueryDesc *qd)
 	foreach_node(RawStmt, r, pg_parse_query(qd->sourceText))
 		if (r->stmt_location == ps->stmt_location)
 			raw = r;
-	/* the text of a prepared statement is its PREPARE */
-	if (raw != NULL && IsA(raw->stmt, PrepareStmt))
+	if (raw != NULL)
 	{
 		RawStmt    *inner = makeNode(RawStmt);
 
 		*inner = *raw;
-		inner->stmt = castNode(PrepareStmt, raw->stmt)->query;
+		inner->stmt = replan_query(raw->stmt);
 		raw = inner;
 	}
 	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
@@ -791,7 +810,9 @@ replan(QueryDesc *qd)
 	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, params);
 	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
 		return NULL;
-	return linitial_node(PlannedStmt, plans);
+	fresh = linitial_node(PlannedStmt, plans);
+	/* an EXPLAIN's plan has the location of its query inside the string, which another statement of the string may share: it must read what that one reads */
+	return reads_indexed_plan(fresh) ? fresh : NULL;
 }
 
 static void
@@ -800,7 +821,7 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	if (!late_checked)
 	{
 		late_checked = true;
-		if (!hook_ran && (eflags & EXEC_FLAG_EXPLAIN_ONLY) == 0)
+		if (!hook_ran)
 		{
 			PlannedStmt *fresh = replan(queryDesc);
 
