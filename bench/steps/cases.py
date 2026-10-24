@@ -165,7 +165,8 @@ def server_session(timeout):
 
 def lane_sessions(case, engines, duck_port):
     """lane -> Session: sift and native always, then the variants of the registry and the engines the run asked for (the registry lists the ones a case may use)"""
-    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off']}
+    # a case that turns the access-method scan on (-- set: sift.enable_col_scan = on) compares it with the plan PostgreSQL makes without it
+    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])}
     for name, settings in case.variants:
         lanes[name] = ['SET %s' % s for s in settings.split(';')]
     out = {}

@@ -617,14 +617,16 @@ def render_same(p):
 
 
 def gen_point(r, ctx):
-    """Rows of ev_part by an equality or a short IN list on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
+    """Rows of ev_part by an equality or an IN list (short, or of 65 to 400 keys) on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
     access method must give the rows of the normal plan, across the DML of the run (dead rows, addresses a VACUUM frees, the write buffer)."""
     n = ctx['rows'] // 2
     col = r.choice(['id', 'id', 'parent_id', 'kind'])
     val = (lambda: f"'k{r.randrange(5)}'") if col == 'kind' else (lambda: str(r.randrange(1, n if col == 'id' else n // 4)))
-    form = r.randrange(5)
+    form = r.randrange(6)
     if form == 0:
         cond = f'e.{col} = {val()}'
+    elif form == 5:  # a list past 64 keys, which the directory answers up to a share of the rows (misses and repeats among the keys)
+        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(65, 400)))})'
     elif form == 1:
         cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(2, 9)))})'
     elif form == 2:

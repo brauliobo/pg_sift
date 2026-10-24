@@ -1014,7 +1014,7 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 
 /*
  * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
- * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS), the rows of the keys the selectivity of the clause (misses and the keys with many rows
+ * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS, and past SIFT_CPOINT_MIN_KEYS a sixteenth of the rows), the rows of the keys the selectivity of the clause (misses and the keys with many rows
  * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole. *tid is the
  * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).
  */
@@ -1046,7 +1046,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				continue;
 			if (IsA(ri->clause, ScalarArrayOpExpr))
 				nkeys = estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
-			if (nkeys > SIFT_CPOINT_MAX_KEYS)
+			if (nkeys > SIFT_CPOINT_MAX_KEYS || (nkeys > SIFT_CPOINT_MIN_KEYS && nkeys > index->rel->tuples / 16))
 				continue;
 			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
 			share = 1.0 - exp(-rows / units);

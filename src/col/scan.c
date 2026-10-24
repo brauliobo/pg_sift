@@ -360,43 +360,46 @@ window_empty(const uint64 *keep, const PruneRange *pr)
 	return true;
 }
 
-/* The keys a test can match, when they are few: the keys of the point directory to probe */
-static bool
-point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
+/* The keys a test can match, when they are few (palloc'd, *nkeys of them): the keys of the point directory to probe. NULL: the units answer */
+static int64 *
+point_keys(const SiftCTest *t, int *nkeys)
 {
+	int64	   *keys;
 	int			n = 0;
 
 	switch (t->kind)
 	{
 		case SIFT_CT_SET:
 			if (t->nset == 0 || t->nset > SIFT_CPOINT_MAX_KEYS)
-				return false;
+				return NULL;
+			keys = palloc(t->nset * sizeof(int64));
 			memcpy(keys, t->set, t->nset * sizeof(int64));
 			n = t->nset;
 			break;
 		case SIFT_CT_RANGE:
-			if (t->lo > t->hi || (uint64) t->hi - (uint64) t->lo >= SIFT_CPOINT_MAX_KEYS)
-				return false;
+			if (t->lo > t->hi || (uint64) t->hi - (uint64) t->lo >= SIFT_CPOINT_MAX_RANGE)
+				return NULL;
 			n = (int) ((uint64) t->hi - (uint64) t->lo) + 1;
+			keys = palloc(n * sizeof(int64));
 			for (int i = 0; i < n; i++)
 				keys[i] = (int64) ((uint64) t->lo + i);
 			break;
 		case SIFT_CT_LUT:
 			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
+				n += sift_col_bit_test(t->lut, (uint32) k);
+			if (n == 0 || n > SIFT_CPOINT_MAX_KEYS)
+				return NULL;
+			keys = palloc(n * sizeof(int64));
+			n = 0;
+			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
 				if (sift_col_bit_test(t->lut, (uint32) k))
-				{
-					if (n == SIFT_CPOINT_MAX_KEYS)
-						return false;
 					keys[n++] = k;
-				}
-			if (n == 0)
-				return false;
 			break;
 		default:
-			return false;
+			return NULL;
 	}
 	*nkeys = n;
-	return true;
+	return keys;
 }
 
 /*
@@ -451,17 +454,13 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 }
 
 static bool
-prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
-	int64		keys[SIFT_CPOINT_MAX_KEYS];
-	int			nkeys;
 	uint32	   *rows,
 				nrows,
 				u = 0;
 	uint64	   *has;
 
-	if (c->prow != NULL || c->ptids || !point_keys(t, keys, &nkeys))
-		return false;
 	if (sift_cseg_point_is_tid(seg, col))
 		return prune_point_tids(src, c, i, col, keys, nkeys, keep);
 	if (!sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
@@ -482,6 +481,24 @@ prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int co
 	c->pat = 0;
 	c->ppred = i;
 	return true;
+}
+
+static bool
+prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+{
+	int			nkeys;
+	int64	   *keys;
+	bool		ok;
+
+	if (c->prow != NULL || c->ptids || (keys = point_keys(t, &nkeys)) == NULL)
+		return false;
+	/* a list that names a good share of the rows is no lookup: the zones and the units answer it as well */
+	if (nkeys > SIFT_CPOINT_MIN_KEYS && (uint64) nkeys > ((uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / 16)
+		ok = false;
+	else
+		ok = prune_keys(src, seg, c, i, col, keys, nkeys, keep);
+	pfree(keys);
+	return ok;
 }
 
 static void
