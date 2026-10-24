@@ -55,7 +55,7 @@
 	X(SPINE_ROWS, "spine_rows", "the rows of the spine are estimated above sift.agg_lookup_max_kb", 1, 0) \
 	X(ROWS_SHAPE, "rows_shape", "the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group", 0, 0) \
 	X(TOPN_SHAPE, "topn_shape", "the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests", 0, 0) \
-	X(WINDOW_FIRST, "window_first", "the first row of each group, asked with a window function, is not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else", 0, 0) \
+	X(WINDOW_FIRST, "window_first", "the first rows of each group, asked with a window function (rn = 1, rn <= N), are not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else, over a table with a column index for N > 1", 0, 0) \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1) \
 	X(CTE_COST, "cte_cost", "the shared CTE plan is estimated cheaper than the plan with the CTE inlined", 0, 1)
 
