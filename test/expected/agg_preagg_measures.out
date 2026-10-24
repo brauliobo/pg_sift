@@ -118,7 +118,7 @@ SELECT * FROM pa_sum('ed');
 SELECT * FROM pa_sum('eo');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |       1 |        0 |      1
+      18 |      0 |       1 |        0 |      2
 (1 row)
 
 -- the answers of the first way, which the plain plan gives too (the rows of a query on one line)
@@ -408,14 +408,14 @@ DELETE FROM eo WHERE id BETWEEN 1 AND 100;
 SELECT * FROM pa_sum('eo');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |       0 |        1 |      1
+      18 |      0 |       0 |        1 |      2
 (1 row)
 
 ROLLBACK;
 SELECT * FROM pa_sum('eo');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      18 |      0 |       0 |        1 |      1
+      18 |      0 |       0 |        1 |      2
 (1 row)
 
 -- the switch

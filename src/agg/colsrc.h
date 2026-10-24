@@ -211,7 +211,10 @@ typedef struct SiftSrcPrune
 	bool		any;
 	int			nkids;
 	const struct SiftSrcPrune *kids;
+	int			nulltest;		/* SSN_ISNULL / SSN_NOTNULL: the entry tests the NULLs of the unit's zone (a unit with none, or with only NULLs, is skipped); lo and hi are unused */
 } SiftSrcPrune;
+#define SSN_ISNULL		1
+#define SSN_NOTNULL		2
 
 /*
  * A test on a text leaf (SCV_CODE, top level scalar) that a source may run on the encoded form of its units instead of the executor

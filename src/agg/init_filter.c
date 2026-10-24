@@ -140,7 +140,7 @@ and_zone(List *tests, const SiftSrcPrune *z)
 	SiftSrcPrune *t = NULL;
 
 	foreach_ptr(SiftSrcPrune, e, tests)
-		if (e->nkids == 0 && e->leaf == z->leaf)
+		if (e->nkids == 0 && !e->nulltest && e->leaf == z->leaf)
 			t = e;
 	if (t == NULL)
 		return lappend(tests, memcpy(palloc(sizeof(SiftSrcPrune)), z, sizeof(SiftSrcPrune)));
@@ -165,6 +165,16 @@ and_zone(List *tests, const SiftSrcPrune *z)
 }
 
 static List *zone_tests(AggExec *ex, SiftAggPred *p, List *tests);
+
+/* the zone test of x IS [NOT] NULL (sift_aggspec_null_zone): a unit whose zone counts no NULL, or only NULLs, holds no row the test keeps */
+static bool
+null_zone(AggExec *ex, const SiftAggPred *p, SiftSrcPrune *z)
+{
+	if (!sift_aggspec_null_zone(p, ex->lay, ex->nbase))
+		return false;
+	*z = (SiftSrcPrune) {.leaf = p->leaf, .nulltest = p->op ? SSN_NOTNULL : SSN_ISNULL};
+	return true;
+}
 
 /* the entry of tests (one, or an AND of them) that holds for p, NULL when p refuses no unit */
 static SiftSrcPrune *
@@ -219,6 +229,8 @@ zone_tests(AggExec *ex, SiftAggPred *p, List *tests)
 		tests = or_zone(ex, p, tests);
 	else if (sift_aggspec_zone_cmp(p, ex->lay, ex->nbase) && cmp_zone(ex, p, &z))
 		tests = and_zone(tests, &z);
+	else if (null_zone(ex, p, &z))
+		tests = lappend(tests, memcpy(palloc(sizeof(SiftSrcPrune)), &z, sizeof(SiftSrcPrune)));
 	return tests;
 }
 

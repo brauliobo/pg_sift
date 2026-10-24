@@ -172,6 +172,15 @@ preagg_zones(AggExec *ex)
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
+		/* a test of the NULLs holds for all the rows of the unit when its zone counts none (IS NOT NULL) or only NULLs (IS NULL), and no NaN stands in for one */
+		if (z->nulltest)
+		{
+			if (ex->pa.nullz &&
+				(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.has_nan || (z->nulltest == SSN_NOTNULL ? a.nnull > 0 : a.nnull < a.nvals)))
+				return false;
+			continue;
+		}
+
 		/* the groups of the dim test the comparisons on its leaf, the cells of a calendar dim by their span (cal_keep) */
 		if (z->leaf != ex->pa.dim &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
@@ -322,7 +331,7 @@ cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
 	{
 		const SiftSrcPrune *pz = &ex->prune[z];
 
-		if (pz->leaf != ex->pa.dim)
+		if (pz->leaf != ex->pa.dim || pz->nulltest)
 			continue;
 		if (*keep == NULL)
 		{
@@ -960,7 +969,7 @@ preagg_init(AggExec *ex)
 		ex->pa_scan_run = 0;
 	}
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
-	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
+	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase, false))
 	{
 		PredState  *st = &ex->ps[p->id];
 
