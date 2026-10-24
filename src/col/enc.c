@@ -512,10 +512,10 @@ put_packed(StringInfo out, const uint32 *v, uint32 n, int bits)
 	{
 		acc |= (uint64) v[i] << nb;
 		for (nb += bits; nb >= 8; nb -= 8, acc >>= 8)
-			appendStringInfoCharMacro(out, (char) (acc & 0xFF));
+			appendStringInfoChar(out, (char) (acc & 0xFF));
 	}
 	if (nb > 0)
-		appendStringInfoCharMacro(out, (char) (acc & 0xFF));
+		appendStringInfoChar(out, (char) (acc & 0xFF));
 }
 
 static int
