@@ -90,6 +90,16 @@ END $$;
 SELECT scale, inline_used(scale, 1) AS horizon_off, inline_used(scale, 100) AS horizon_100 FROM unnest(ARRAY[1, 3, 10]) scale ORDER BY scale;
 SELECT differences(series_query()) AS differences;
 
+-- the row of the choice holds the totals of the two plans it compared, whichever it kept: the reason of a refusal names the same ones
+CREATE FUNCTION inline_costs(scale float8) RETURNS TABLE (has_costs boolean, same_as_reason boolean) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.plan_scale', scale::text, true), set_config('sift.agg_scale_horizon', '1', true);
+	RETURN QUERY SELECT w.scan_cost > 0 AND w.normal_cost > 0, w.used OR w.reason LIKE '%(inline costs ' || round(w.scan_cost::numeric, 2) || ' %the shared CTE ' || round(w.normal_cost::numeric, 2) || ' %'
+		FROM sift.explain_why(series_query()) w WHERE w.arm = 'cte_inline';
+END $$;
+SELECT scale, (inline_costs(scale)).* FROM unnest(ARRAY[1, 3, 10]) scale ORDER BY scale;
+DROP FUNCTION inline_costs;
+
 DROP FUNCTION inline_used, differences, series_query;
 DROP TABLE events, dims, maps;
 DROP EXTENSION pg_sift;

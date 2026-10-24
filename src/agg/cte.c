@@ -570,7 +570,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	}
 	if (won)
 	{
-		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
+		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, v.inlined->planTree->total_cost, v.plain_cost);
 		inline_won = true;
 		discard_plan(v.plain_cx);
 		*cx = v.inlined_cx;
@@ -586,7 +586,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
 		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
 			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);
-		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false);
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false, v.inlined->planTree->total_cost, v.plain_cost);
 	}
 	discard_plan(v.inlined_cx);
 	*cx = v.plain_cx;

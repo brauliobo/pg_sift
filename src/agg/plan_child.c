@@ -507,7 +507,7 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		atts[f->nkey + k] = f->ordatt[k];
 	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
 	{
-		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false);
+		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false, 0, 0);
 		return;
 	}
 	foreach_node(TargetEntry, te, q->targetList)
