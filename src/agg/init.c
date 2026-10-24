@@ -433,4 +433,6 @@ scan_buffers(AggExec *ex)
 	ex->tmpm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm2 = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpu32 = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
+	if (s->nsets > 1)
+		ex->setkid = MemoryContextAlloc(ex->cxt, (Size) maxv * s->nkeys * sizeof(uint32));
 }

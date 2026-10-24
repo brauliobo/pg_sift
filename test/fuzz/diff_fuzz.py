@@ -279,6 +279,50 @@ def render_lookup(p):
     return grouped(p, frm), bool(p['keys'])
 
 
+
+# lookups joined on one column of the scanned table, one per kind of leaf the scan resolves a join through: a dictionary code (text), an int8, a
+# float8 (NaN, -0), an int, a date; NULL keys on both sides and keys that match several rows
+ONELEAF = {'kind': 'ok_kind', 'big': 'ok_big', 'val': 'ok_val', 'grp': 'ok_grp', 'ts': 'ok_ts'}
+
+
+def gen_oneleaf(r, ctx):
+    col = r.choice(sorted(ONELEAF))
+    return dict(col=col, jointype=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']), lateral=r.random() < 0.3,
+                keys=r.sample(['d.tag', 'e.grp', 'e.kind', 'd.w % 3', f'e.{col}'], r.choice([0, 1, 1, 2])),
+                aggs=['count(*)'] + r.sample(['count(d.tag)', 'max(d.w)', 'sum(d.w)', 'sum(e.amount)', 'count(DISTINCT d.tag)',
+                                              'count(*) FILTER (WHERE d.w > 4)', 'avg(e.val) FILTER (WHERE d.tag IS NOT NULL)'], r.randrange(1, 4)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True)
+
+
+def oneleaf_from(p):
+    t, c = ONELEAF[p['col']], p['col']
+    if p['lateral']:
+        return f"events e {p['jointype']} LATERAL (SELECT x.tag, x.w FROM {t} x WHERE x.k = e.{c} ORDER BY x.w, x.tag LIMIT 1) d ON true"
+    return f"events e {p['jointype']} {t} d ON d.k = e.{c}"
+
+
+def render_oneleaf(p):
+    return grouped(p, oneleaf_from(p)), bool(p['keys'])
+
+
+# grouping sets over keys of many values (the group table is a hash table) and a lookup's column: the sets that read the same tuples share their key ids
+SETKEYS = ['e.kind', 'e.grp', 'e.a', 'e.b', 'd.tag', 'e.ts', 'e.a % 7']
+
+
+def gen_setkeys(r, ctx):
+    p = gen_oneleaf(r, ctx)
+    ks = r.sample(SETKEYS, r.randrange(3, 6))
+    sets = [r.sample(ks, r.randrange(0, len(ks) + 1)) for _ in range(r.randrange(2, 5))]
+    ks = [k for k in ks if any(k in st for st in sets)]
+    return dict(p, keys=ks, sets=sets, aggs=['count(*)'] + r.sample(['sum(e.amount)', 'count(d.tag)', 'avg(e.val)', 'max(d.w)', 'count(DISTINCT e.id)',
+                                                                     'count(*) FILTER (WHERE e.amount > 500)'], r.randrange(1, 4)))
+
+
+def render_setkeys(p):
+    sets = ', '.join('(' + ', '.join(sorted(st, key=p['keys'].index)) + ')' for st in p['sets'])
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    return f"SELECT {select_list(p)} FROM {oneleaf_from(p)}{w} GROUP BY GROUPING SETS ({sets})", False
+
 def gen_dirty(r, ctx):
     form = r.randrange(5)
     cols = EVENTS
@@ -828,6 +872,7 @@ FAMILIES = {
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
+    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -846,7 +891,7 @@ def variants(r, fam):
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
-    if fam in ('twolevel', 'union', 'lookup'):
+    if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
         ('par', 'sift.enable_agg=on;' + PAR % (r.choice([1, 2, 3, 4]), r.choice(LEADER))),

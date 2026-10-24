@@ -74,6 +74,7 @@ void key_range_fill(void *arg, int32 v, void *entry);
 bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel);
 void compute_kids(AggExec *ex, int nsel, uint32 *kid);
 void compute_gids(AggExec *ex, int nsel);
+void compute_set_gids(AggExec *ex, int nsel, const uint32 *kid);
 
 #pragma GCC visibility pop
 
