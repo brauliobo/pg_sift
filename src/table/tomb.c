@@ -368,30 +368,49 @@ sift_tbl_seg_load(Relation rel, SiftTblSeg *seg)
 	(void) sift_tbl_wbuf_page(rel, seg, 0);
 }
 
-/* Copies the write buffer page of vblock into copy (BLCKSZ bytes); false when no write buffer holds it. *gen: its segment's generation */
+/*
+ * Copies the write buffer page of vblock into copy (BLCKSZ bytes); false when none of the nsegs write buffers of segs holds it (*held: one covers it,
+ * and the page is not there). *gen: its segment's generation. A scan reads the list it began with: the write buffer a VACUUM promotes meanwhile
+ * is a column group in the directory the scan does not have
+ */
+bool
+sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber vblock, Page copy, uint64 *gen, bool *held)
+{
+	*held = false;
+	for (int i = 0; i < nsegs; i++)
+	{
+		SiftTblSeg *seg = &segs[i];
+		BlockNumber blk;
+		Buffer		buf;
+
+		if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
+			continue;
+		*held = true;
+		blk = sift_tbl_wbuf_page(rel, seg, vblock - seg->vbase);
+		if (!BlockNumberIsValid(blk))
+			return false;
+		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
+		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
+		memcpy(copy, BufferGetPage(buf), BLCKSZ);
+		UnlockReleaseBuffer(buf);
+		*gen = seg->gen;
+		return true;
+	}
+	return false;
+}
+
+/* The same from the write buffers this backend knows now, refreshed once when vblock is past them */
 bool
 sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen)
 {
 	for (int retry = 0; retry < 2; retry++)
 	{
-		for (int i = 0; i < st->nwbuf; i++)
-		{
-			SiftTblSeg *seg = &st->wbuf[i];
-			BlockNumber blk;
-			Buffer		buf;
+		bool		held;
 
-			if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
-				continue;
-			blk = sift_tbl_wbuf_page(rel, seg, vblock - seg->vbase);
-			if (!BlockNumberIsValid(blk))
-				return false;
-			buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
-			sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
-			memcpy(copy, BufferGetPage(buf), BLCKSZ);
-			UnlockReleaseBuffer(buf);
-			*gen = seg->gen;
+		if (sift_tbl_load_vblock_in(rel, st->wbuf, st->nwbuf, vblock, copy, gen, &held))
 			return true;
-		}
+		if (held)
+			return false;
 		if (retry == 0 && (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) || !st->initialized))
 			sift_tbl_refresh(rel, st);
 		else
