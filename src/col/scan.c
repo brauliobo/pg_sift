@@ -508,29 +508,37 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
 
-	for (int i = 0; i < npreds; i++)
-	{
-		const SiftColDef *def = &seg->schema->cols[preds[i].col];
-		SiftCTest	t;
-
-		if (window_empty(keep, pr))
-			break;
-		if (sift_colw_is_wide_int(def))
+	/*
+	 * The predicates of leaves without a point directory first (their zones and summaries), those of leaves with one after them: a directory of heap
+	 * addresses hands the addresses of the units the other predicates keep to the source and marks those units done, so a key that is in every unit (a
+	 * group, a tenant) with a range on another column (a date) costs the heap the rows of the range, not every row of the key.
+	 */
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = 0; i < npreds; i++)
 		{
-			sift_colw_prune(seg, &preds[i], keep);
-			continue;
+			const SiftColDef *def = &seg->schema->cols[preds[i].col];
+			SiftCTest	t;
+
+			if ((pr->top != NULL && sift_cseg_point_count(seg, preds[i].col) > 0) != (pass == 1))
+				continue;
+			if (window_empty(keep, pr))
+				break;
+			if (sift_colw_is_wide_int(def))
+			{
+				sift_colw_prune(seg, &preds[i], keep);
+				continue;
+			}
+			if (def->store == SIFT_COLS_STR)
+				seg_test(src, seg, def, &preds[i], &t);
+			else
+				make_test(src, def, NULL, &preds[i], &t);
+			/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
+			if (pass == 0 || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
+				sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+			range[i] = t.kind == SIFT_CT_RANGE;
+			lo[i] = t.lo;
+			hi[i] = t.hi;
 		}
-		if (def->store == SIFT_COLS_STR)
-			seg_test(src, seg, def, &preds[i], &t);
-		else
-			make_test(src, def, NULL, &preds[i], &t);
-		/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
-		if (pr->top == NULL || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
-			sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
-		range[i] = t.kind == SIFT_CT_RANGE;
-		lo[i] = t.lo;
-		hi[i] = t.hi;
-	}
 	/* the ranges on one leaf together: BETWEEN is two tests, each too wide for a small set to answer alone */
 	for (int i = 0; i < npreds; i++)
 	{
