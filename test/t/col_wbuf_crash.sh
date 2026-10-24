@@ -44,7 +44,7 @@ CHECK=("CREATE TEMP TABLE r AS SELECT * FROM sift._test_col_wbuf_rows('t_idx', 7
 		(SELECT count(*) FROM r WHERE deleted AND id % 7 <> 0),
 		(SELECT count(*) FROM (SELECT id FROM r WHERE NOT deleted EXCEPT SELECT id FROM b) x) +
 		(SELECT count(*) FROM (SELECT id FROM b EXCEPT SELECT id FROM r WHERE NOT deleted) x),
-		(SELECT sum(live) FROM sift._test_col_wbuf_segments('t_idx')) = (SELECT count(*) FROM r WHERE NOT deleted),
+		coalesce((SELECT sum(live) FROM sift._test_col_wbuf_segments('t_idx')), 0) = (SELECT count(*) FROM r WHERE NOT deleted),
 		sift._test_check('t_idx') >= 0,
 		(SELECT count(*) FROM r), (SELECT count(*) FROM done), (SELECT count(*) FROM sift._test_col_wbuf_segments('t_idx')),
 		(SELECT sum(nrows) FROM sift._test_col_wbuf_segments('t_idx')) - (SELECT count(*) FROM r)")
