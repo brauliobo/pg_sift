@@ -519,7 +519,7 @@ parallel_divisor(int workers)
 }
 
 /* The correlation of the heap column a leaf is read from with the heap order (0: unknown, or the leaf is a jsonb path or an expression) */
-static double
+double
 leaf_correlation(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];

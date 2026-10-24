@@ -173,8 +173,10 @@ BEGIN
 	RAISE NOTICE 'cursor % %', cardinality(want), got = want || ARRAY(SELECT x FROM unnest(want) WITH ORDINALITY u(x, o) ORDER BY o DESC);
 END $$;
 
--- the heap is read for the rows of the result only, and a column that grows with the table lets the scan skip superblocks
+-- the heap is read for the rows of the result only, and not at all when the units hold every column of the output; a column that grows with the table lets the scan skip superblocks
 SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches, ct_stat(q, 'Search Matches') > 100 AS many_matches
+FROM (SELECT $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
+SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_desc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq DESC LIMIT 10$q$ AS q) x;

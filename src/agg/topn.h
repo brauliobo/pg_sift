@@ -34,6 +34,7 @@
  * (the collation of a text key must be deterministic: the planner checks it)
  */
 extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
+extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
 
 /*
  * The spec the plan carries (SiftAggSpec.topn): a List of the keys (an integer list: keys: leaf, descending, nulls first, sort operator,
@@ -71,7 +72,7 @@ typedef struct SiftTopXform
 } SiftTopXform;
 
 /* exprs: the sort expressions of the TXK_EXPR keys (Vars of varno 1, varattno the leaf + 1), each a list member in the order of the keys; nout the number of output attributes */
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset);
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
