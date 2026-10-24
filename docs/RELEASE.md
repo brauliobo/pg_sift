@@ -29,6 +29,15 @@ After a minor release replace `scripts/options-released.tsv` with `scripts/gen-o
 The AUR step needs the key: a key loaded in your ssh-agent, or `AUR_SSH_KEY=PATH scripts/release.sh VERSION` (the passphrase is asked through your `SSH_ASKPASS`).
 Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 12 GB, ports from `SIFT_PORT` (56210) and the 10th after it.
 
+### The AUR from the host that has the key
+
+When the key lives on another host (a desktop whose wallet unlocks it), run `release.sh` where the checks run, with `GIT_SSH_COMMAND=false`. Its `aur` step then fails and the manifest shows `aur fail`: expected, the tag, the release and the assets are already published and verified. Publish the PKGBUILD from the key host:
+
+1. Clone the tag into tmpfs: `git clone -q --depth 1 --branch vVERSION https://github.com/brauliobo/pg_sift.git /dev/shm/aurVERSION/repo`; check that `git rev-parse HEAD` is the tag commit and `packaging/PKGBUILD` has `pkgver=VERSION`; `scripts/release-aur.sh --dry-run` shows the two files it would change.
+2. In that checkout run `scripts/release-aur.sh` with `XDG_RUNTIME_DIR=/run/user/1000`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`, `WAYLAND_DISPLAY=wayland-1`, `DISPLAY=:0`, `SSH_ASKPASS=/usr/bin/ksshaskpass`, `SSH_ASKPASS_REQUIRE=force`, `AUR_SSH_KEY=$HOME/.ssh/id_github` and the git author and committer name and email. It loads the key in a private ssh-agent, killed at the end; with the wallet locked, `ksshaskpass` asks for the wallet password on that host's screen, and the passphrase never goes through a log or a command line. Over ssh from another host, keep it to a single `timeout 150 ssh -o BatchMode=yes HOST '…'`.
+3. Check: `git ls-remote https://aur.archlinux.org/pg_sift.git master` is the commit the push printed (`OLD..NEW HEAD -> master`); a fresh clone has `pkgver=VERSION` in `PKGBUILD` and `.SRCINFO`. The web views (the RPC `aur.archlinux.org/rpc/v5/info?arg[]=pg_sift` and cgit) lag the git head by minutes, up to about 15 on 3.3.0: judge the push by `ls-remote`, and only a head that is still the old commit means it did not land.
+4. Remove `/dev/shm/aurVERSION` on the key host; no `ssh-agent` of this run is left.
+
 ## Homebrew tap
 
 The tap is this source repository: `Formula/pg_sift.rb` is maintained alongside the extension.
