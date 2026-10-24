@@ -40,7 +40,7 @@ SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v
 SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');
 
 -- a plan that keeps the scans with an empty map reads the heap check it recorded for them after the plans that lost were deleted
-SELECT used, slug FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 120) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+SELECT used, slug FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 120 AND k >= 0) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
 SELECT used, slug FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 200 GROUP BY v');
 
 -- the heap check a plan recorded is not kept across statements: a refused CTE plan deletes its memory when the planner hook is done, and the next statement
