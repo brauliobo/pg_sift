@@ -1,0 +1,64 @@
+-- A CTE that three aggregates read, built from a table with a column index joined to a filtered dimension whose few rows own all of the table's, and to a
+-- list of ranges by containment, is estimated at a row or two: each join keeps the share of a default guess. The shared plan was priced from that row,
+-- so it cost the same at ten times the rows as at one and the scans that replace it lost the comparison (cte_cost). The rows of the CTE scan are lifted
+-- to the geometric mean of the estimate and the largest result its body builds from the table (a floor, not an estimate), for the shared plan only.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
+INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 3000) g;
+CREATE TABLE events (id int PRIMARY KEY, owner_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL, doc jsonb);
+INSERT INTO events
+SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360),
+       jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || (g + j) % 4, 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 3) j))
+FROM generate_series(1, 20000) g;
+CREATE TABLE plain_events AS SELECT * FROM events;
+CREATE INDEX events_col ON events USING sift_col (id, owner_id, kind_id, ts, doc) WITH (paths = 'doc.parts[]{cat astext, score float8}');
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE plain_events; ANALYZE kinds;
+CREATE FUNCTION series_query(t text, extra text DEFAULT '') RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$WITH owners AS MATERIALIZED (SELECT DISTINCT owner_id FROM %1$s WHERE owner_id IN (SELECT 1 + g FROM generate_series(0, 29) g)),
+	periods AS (SELECT * FROM (VALUES ('cur', daterange(DATE '2025-06-01', DATE '2025-12-31', '[]')), ('prev', daterange(DATE '2025-01-01', DATE '2025-05-31', '[]'))) p(period, range)),
+	r AS (SELECT e.*, periods.period FROM %1$s e INNER JOIN owners o ON o.owner_id = e.owner_id INNER JOIN kinds k ON k.id = e.kind_id AND k.enabled IS TRUE
+	      INNER JOIN periods ON e.ts <@ periods.range),
+	a AS (SELECT r.period, o.cat, avg(o.score) AS s, count(DISTINCT r.id) AS n FROM r, jsonb_to_recordset(r.doc['parts']) AS o(cat text, score float) GROUP BY r.period, o.cat),
+	b AS (SELECT r.period, count(DISTINCT r.id) AS n, avg(o.score) AS s FROM r, jsonb_to_recordset(r.doc['parts']) AS o(cat text, score float) GROUP BY r.period),
+	c AS (SELECT r.period, r.owner_id, count(DISTINCT r.id) AS n FROM r GROUP BY r.period, r.owner_id)
+SELECT 'a' AS src, period, cat, s, n FROM a UNION ALL SELECT 'b', period, NULL, s, n FROM b UNION ALL SELECT 'c', period, owner_id::text, NULL, n FROM c %2$s$q$, t, extra) $f$;
+-- the rows PostgreSQL expects of the scan of the shared CTE r in the normal plan
+CREATE FUNCTION cte_rows(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (jsonb_path_query_first(j, '$.** ? (@."Node Type" == "CTE Scan" && @."CTE Name" == "r")') ->> 'Plan Rows')::float8;
+END $$;
+CREATE FUNCTION verdict(q text) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(DISTINCT used::text, ',') FROM sift.explain_why(q) WHERE arm = 'cte_inline' $$;
+-- the floor lifts the rows of the scan of the table with the column index, and the copy without one keeps PostgreSQL's
+SELECT t, cte_rows(series_query(t)) > 20 AS lifted FROM (VALUES ('events'), ('plain_events')) v(t) ORDER BY t;
+      t       | lifted 
+--------------+--------
+ events       | t
+ plain_events | f
+(2 rows)
+
+-- the scans take the shared CTE (used: t); the normal plan priced from one row had kept it
+SELECT verdict(series_query('events')) AS inline_used;
+ inline_used 
+-------------
+ true
+(1 row)
+
+-- an error while the statement is planned (after the CTEs were) leaves nothing behind: the next plan is the one it was
+DO $$ BEGIN
+	PERFORM verdict(series_query('events', 'WHERE n > 1 / 0'));
+EXCEPTION WHEN division_by_zero THEN RAISE NOTICE 'planning failed';
+END $$;
+NOTICE:  planning failed
+SELECT cte_rows(series_query('events')) > 20 AS lifted, verdict(series_query('events')) AS inline_used;
+ lifted | inline_used 
+--------+-------------
+ t      | true
+(1 row)
+
+DROP FUNCTION verdict, cte_rows, series_query;
+DROP TABLE events, plain_events, kinds;
+DROP EXTENSION pg_sift;

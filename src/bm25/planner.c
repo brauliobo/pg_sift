@@ -426,6 +426,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE)
 		derived_rel_rows(root, rel);
+	if (rte->rtekind == RTE_CTE)
+		derived_cte_rows(root, rel);
 	if (!scannable(root, rel, rte))
 		return;
 	scores = score_exprs(root, rel);
