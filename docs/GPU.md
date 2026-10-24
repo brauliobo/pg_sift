@@ -108,11 +108,10 @@ The CPU columns are the same build with
 
 Reading the table:
 
-- **Resident**, the device is 2x to 9x faster at 1M rows and 3.6x to 22x at 10M rows. The filtered counts at 1M rows are the smallest gain (2x to 3.6x): the
-  rest is the executor enumerating units and descriptors, not the kernel.
-- **First query** (every query uploads its chunks) it ties or loses at 1M rows. At 10M it wins about 1.4x to 2.4x for `q9`, `g1`, `g2` and `g3` and loses on the
-  filtered counts `q7` and `q8` (0.7x to 0.8x): the chunks cross PCIe and the CPU kernels are already fast on a count. That is why `auto` takes
-  grouped aggregates only, from 5M rows (an ungrouped count or sum runs on the device with `sift.gpu = on` only), and why the cache matters more than the kernel.
+- **Resident**, the device ties the CPU in this pass: 0.77x to 1.07x at 1M rows and 0.99x to 1.00x at 10M rows. The CPU kernels already answer these counts and
+  sums in a few milliseconds and the rest is the executor enumerating units and descriptors, not the kernel.
+- **First query** (every query uploads its chunks) it ties the CPU at both sizes: the chunks cross PCIe on top of a CPU path that is already fast. `auto`
+  takes grouped aggregates only, from 5M rows (an ungrouped count or sum runs on the device with `sift.gpu = on` only); no query of this table gains from it today.
 - A small index, a lookup, a search and a roll-up answered from the pre-aggregates do not benefit and are not routed.
 - The first query of a backend pays the device context (0.2 s).
 
