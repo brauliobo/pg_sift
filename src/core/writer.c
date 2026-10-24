@@ -249,6 +249,9 @@ wt_wal_wait(SiftWriteTarget *wt)
 	}
 }
 
+/* pages charged since the last sleep, whatever the target: a rewrite by partitions opens a target for each, and the pages under THROTTLE_PAGES of each would never sleep */
+static uint64 charged;
+
 /* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly; a WAL rate sleeps before the page that would exceed it */
 void
 sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
@@ -257,8 +260,8 @@ sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 		wt_wal_wait(wt);
 	if (wt->delay_ms == 0)
 		return;
-	wt->charged += pages;
-	for (; wt->charged >= THROTTLE_PAGES; wt->charged -= THROTTLE_PAGES)
+	charged += pages;
+	for (; charged >= THROTTLE_PAGES; charged -= THROTTLE_PAGES)
 	{
 		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, wt->delay_ms, PG_WAIT_EXTENSION);
 		ResetLatch(MyLatch);
