@@ -443,8 +443,16 @@ arm_inner_agg(AggCtx *c, ArmIn *in, Node *e, Oid want_type)
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
 			break;
+		case SAA_MAX:
+		case SAA_MIN:
+			/* the float8 leaf of the arm's table: the larger or smaller of a cell's values, a NaN the largest */
+			if (ia->restype != FLOAT8OID || ia->num.n || ia->nvx || ia->leaf < 0)
+				return -1;
+			break;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
 			/* the expression is evaluated for every tuple of the scan: an arm's own WHERE or a FILTER would keep it off the tuples they drop */
 			if (ia->restype != FLOAT8OID || in->quals != NIL || ia->filter != NULL)
 				return -1;

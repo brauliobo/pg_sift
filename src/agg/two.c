@@ -258,6 +258,8 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 			break;
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+		case SAA_MAX:
+		case SAA_MIN:
 			if (ia->nvx)
 				memcpy(a->dx[ai], eval_vx(ex, ia, n), n * sizeof(double));
 			else
@@ -270,6 +272,8 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 			break;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
 			out = combo_outs(ex, ia->combo);
 			for (int j = 0; j < n; j++)
 			{
@@ -359,6 +363,16 @@ cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 					a->amax[ai] = Max(a->amax[ai], fabs(x));
 			}
 			break;
+		case SAA_MAX:
+		case SAA_X_MAX:
+			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) > 0)
+				a->d[ai][g] = a->dx[ai][j];
+			break;
+		case SAA_MIN:
+		case SAA_X_MIN:
+			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) < 0)
+				a->d[ai][g] = a->dx[ai][j];
+			break;
 		default:
 			break;
 	}
@@ -390,6 +404,12 @@ cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 				return false;
 			*dv = a->d[ai][g] / (double) a->n[ai][g];
 			return true;
+		case SAA_MAX:
+		case SAA_MIN:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
+			*dv = a->d[ai][g];
+			return a->n[ai][g] > 0;
 		default:
 			SIFT_INVARIANT(false, "sift: unexpected inner aggregate");
 	}
@@ -434,7 +454,7 @@ cell_having(AggExec *ex, int k, uint32 g)
 		int64		iv = 0;
 		bool		notnull = cell_value(&ex->arm[k], ia, sa->hsrc[j], g, &dv, &iv);
 
-		bind_param(ex, j, ia->kind == SAA_SUM_F64 || ia->kind == SAA_AVG_F64 ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
+		bind_param(ex, j, ia->restype == FLOAT8OID ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
 	}
 	d = ExecEvalExprSwitchContext(ex->arm[k].hstate, ex->lutcx, &isnull);
 	ResetExprContext(ex->lutcx);

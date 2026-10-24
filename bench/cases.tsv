@@ -87,6 +87,7 @@ tbl_update_keys	asks the table which of the page's versions are dead	orders	-	to
 point_keys_agg	asks the point directory (`point_columns`, `point_tid_columns`) for the rows of a short `IN` list	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 percentile_select	finds the percentiles of a group by a quickselect over its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 percentile_disc_int	finds the percentile_disc of a decimal, timestamp or bigint on the 64-bit values of its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+two_level_inner_max	the largest value of a float key of each row averaged by group is one two-level scan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 distinct_rows_sets	distinct rows of a grouping set over a preserved join	orders	default	Pushed Aggregates: count, count, count, count\(DISTINCT (o\.)?customer_id\)	native	-	ms	faster33	no
 placeholder_leaf_args	the cast of a map value is the float leaf	orders	default	Pushed Aggregates: count\(\*\), count\(\*\), count\(\*\), avg\(metrics_a\.\*\.value\)	native	-	ms	faster33	no
 sets_lookup_keys	resolves its rows in a loop of the column's kind	orders	default	Group Keys: category: l\.label, country: r\.region.*grouping set	native	-	ms	faster33	no
