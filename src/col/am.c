@@ -236,7 +236,7 @@ sift_col_init(void)
 							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.cluster_advice",
 							 "sift.cluster_advice() recommends a physical order for the tables of the sift_col indexes.",
-							 "Off: it answers 'not recommended' for every index. The index option cluster_advice switches one index off.",
+							 "Off: it answers 'not recommended' for every index, and CREATE INDEX does not suggest key_cut. The index option cluster_advice switches one index off.",
 							 &sift_cluster_advice, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_worker",
 							 "A request for a rollup refresh starts the background worker that makes it.",
@@ -347,7 +347,7 @@ sift_col_init(void)
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
-					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
+					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
 					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
