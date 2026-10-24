@@ -2,7 +2,7 @@
 <title id="t">Speed-up of every benchmark case</title>
 <desc id="d">Bars: PostgreSQL time over pg_sift time for each case, grouped by family.</desc>
 <rect x="0.5" y="0.5" width="999" height="1783" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
-<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">66 cases of query shapes: pg_sift against PostgreSQL on the same rows</text>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">68 cases of query shapes: pg_sift against PostgreSQL on the same rows</text>
 <text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">PostgreSQL's median time over pg_sift's, 1,000,000 orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the</text>
 <text x="20" y="72" font-size="13" text-anchor="start" fill="#59636e">planner kept PostgreSQL's plan (the bar shows the cost of deciding, if any).</text>
 <line x1="270.7" y1="122" x2="270.7" y2="1716" stroke="#e3e7eb" stroke-width="1"/>

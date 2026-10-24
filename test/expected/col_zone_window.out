@@ -59,8 +59,8 @@ SELECT n, cond, s.* FROM zw_q, LATERAL same(cond) s ORDER BY n;
   7 | k < 2                                   | SiftAgg read 2 pruned 128  |           2 |              0
   8 | k BETWEEN 500 AND 600                   | SiftAgg read 0 pruned 130  |           0 |              0
   9 | j BETWEEN 3 AND 5                       | SiftAgg read 16 pruned 114 |           3 |              0
- 10 | j IS NULL                               | SiftAgg read 130 pruned 0  |           1 |              0
- 11 | j IS NOT NULL AND k BETWEEN 100 AND 129 | SiftAgg read 30 pruned 100 |          16 |              0
+ 10 | j IS NULL                               | SiftAgg read 44 pruned 86  |           1 |              0
+ 11 | j IS NOT NULL AND k BETWEEN 100 AND 129 | SiftAgg read 20 pruned 110 |          16 |              0
  12 | k = 5 OR k = 70 OR k = 129              | SiftAgg read 3 pruned 127  |           3 |              0
  13 | k BETWEEN 10 AND 20 OR j = 16           | SiftAgg read 15 pruned 115 |           9 |              0
  14 | id BETWEEN 8000 AND 9000                | SiftAgg read 5 pruned 125  |           5 |              0
@@ -80,8 +80,8 @@ SELECT n, cond, s.* FROM zw_q, LATERAL same(cond) s ORDER BY n;
   7 | k < 2                                   | SiftAgg read 2 pruned 128  |           2 |              0
   8 | k BETWEEN 500 AND 600                   | SiftAgg read 0 pruned 130  |           0 |              0
   9 | j BETWEEN 3 AND 5                       | SiftAgg read 16 pruned 114 |           3 |              0
- 10 | j IS NULL                               | SiftAgg read 130 pruned 0  |           1 |              0
- 11 | j IS NOT NULL AND k BETWEEN 100 AND 129 | SiftAgg read 30 pruned 100 |          16 |              0
+ 10 | j IS NULL                               | SiftAgg read 44 pruned 86  |           1 |              0
+ 11 | j IS NOT NULL AND k BETWEEN 100 AND 129 | SiftAgg read 20 pruned 110 |          16 |              0
  12 | k = 5 OR k = 70 OR k = 129              | SiftAgg read 3 pruned 127  |           3 |              0
  13 | k BETWEEN 10 AND 20 OR j = 16           | SiftAgg read 15 pruned 115 |           9 |              0
  14 | id BETWEEN 8000 AND 9000                | SiftAgg read 5 pruned 125  |           5 |              0
