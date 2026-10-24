@@ -655,6 +655,19 @@ vacuum_truncates(Relation index)
 }
 
 static bool rewrite_all(const char *why);
+static const char *rewrite_check(Relation index, bool automatic, int *gates);
+
+/*
+ * VACUUM moves the segments that end the file down into free blocks, a copy of each (its WAL is the segment's bytes) that also makes the segment new: the
+ * WAL budget of the automatic rewrite counts from the write of the oldest large segment, so every move put it off by another 100 / sift.col_auto_merge_wal_pct
+ * times the segment, and the churn it was to answer went on. An index that is due for a rewrite gets the segments written into those free blocks by it.
+ */
+static bool
+space_deferred(Relation index)
+{
+	return sift_col_auto_merge && sift_async_maintenance && !RecoveryInProgress() && index->rd_rel->relpersistence != RELPERSISTENCE_TEMP &&
+		rewrite_check(index, false, NULL) != NULL;
+}
 
 /* The LSN of the write of a segment: its header block, written once with the rest of the segment */
 static XLogRecPtr
@@ -835,6 +848,7 @@ static const SiftMaintOps col_ops = {
 	.vacuum_skipped = reap_overflow,
 	.rewrite_due = rewrite_due,
 	.rewrite_all = rewrite_all,
+	.vacuum_space_defer = space_deferred,
 	.vacuum_done = rewrite_request,
 };
 
