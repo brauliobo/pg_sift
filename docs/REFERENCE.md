@@ -1,6 +1,6 @@
 # SQL reference
 
-Generated from `sql/pg_sift--3.3.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
+Generated from `sql/pg_sift--3.4.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
 
 Schema `sift`: 50 functions, 5 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
 

@@ -11,8 +11,9 @@ before it takes one in the code; two features never share a number or a flag.
 | 3.1 | `sql/pg_sift--3.1.sql` | `sql/pg_sift--3.0--3.1.sql` (3.0.x, every patch release, update to 3.1 with `ALTER EXTENSION pg_sift UPDATE`) |
 | 3.2 | `sql/pg_sift--3.2.sql` | `sql/pg_sift--3.1--3.2.sql` |
 | 3.3 | `sql/pg_sift--3.3.sql` | `sql/pg_sift--3.2--3.3.sql` |
+| 3.4 | `sql/pg_sift--3.4.sql` | `sql/pg_sift--3.3--3.4.sql` |
 
-`sql/pg_sift--3.3.sql` is the complete script and `sql/pg_sift--3.2--3.3.sql` adds the same objects to a 3.2 install (`test/t/extension_lifecycle.sh`
+`sql/pg_sift--3.4.sql` is the complete script and `sql/pg_sift--3.3--3.4.sql` adds the same objects to a 3.3 install (`test/t/extension_lifecycle.sh`
 compares the two). The scripts of a released version never change, so that an install updated in place gets what a fresh one does: the objects added
 after a release go into the next version's two scripts, and `scripts/ci.sh --selftest` checks the released ones against `scripts/released-sql.sha256`. The on-disk formats below do not depend on the script: the library reads whatever the files hold.
 
