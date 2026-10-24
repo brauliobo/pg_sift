@@ -937,6 +937,8 @@ agg_next(ScanState *node)
 		run_scan(ex);
 		finish_groups(ex);
 		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
+		if (ex->spec->gtopn_k > 0 && !ex->done && !spill_started(ex))
+			groups_topn(ex);
 	}
 	if (ex->done)
 	{
@@ -1419,6 +1421,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
 	}
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+	if (ex->spec->gtopn_k > 0)
+		ExplainPropertyInteger("Groups Dropped By Top-N", NULL, ex->n_gpruned, es);
 	if (part_flush_on(ex))
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	if (c->n_osa_spilled)

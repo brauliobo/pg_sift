@@ -420,6 +420,10 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_node(p, s->search);
 	put_node(p, s->topn);
 	put_str(p, s->desc_topn ? s->desc_topn : "");
+	put_int(p, s->gtopn_k);
+	put_int(p, s->gtopn_agg);
+	put_int(p, s->gtopn_desc);
+	put_int(p, s->gtopn_nulls_first);
 	return pk.items;
 }
 
@@ -850,5 +854,9 @@ sift_aggspec_unpack(const List *items)
 	s->search = get_node(u);
 	s->topn = get_node(u);
 	s->desc_topn = get_str(u);
+	s->gtopn_k = get_int(u);
+	s->gtopn_agg = get_int(u);
+	s->gtopn_desc = get_int(u);
+	s->gtopn_nulls_first = get_int(u);
 	return s;
 }
