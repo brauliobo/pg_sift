@@ -230,6 +230,40 @@ blob_key_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 	pfree(pv);
 }
 
+/* the table of the values a combo slot gives ids to for aggregate ai (combo.c slot_ot) */
+static OutTable *
+mset_table(AggExec *ex, int ai)
+{
+	const SiftAggAgg *a = &ex->spec->agg[ai];
+
+	return &ex->aot[ex->spec->combo[a->combo].slot[a->slot].agg];
+}
+
+/* the pairs (group of the blob, id) of a count(DISTINCT) of a column of a joined table, with the values of the ids: the leader gives them its own */
+static void
+blob_mset(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
+{
+	OutTable   *t = mset_table(ex, ai);
+	uint32		np,
+			   *pg,
+			   *pv,
+			   *old,
+				nused,
+				hd[2];
+
+	dset_pairs(ex, ai, cidx, &pg, &pv, &np);
+	old = renumber(pv, np, t->n, &nused);
+	hd[0] = np;
+	hd[1] = 0;
+	bw_put(b, hd, sizeof(hd));
+	bw_put(b, pg, (Size) np * sizeof(uint32));
+	bw_values(b, t, old, nused);
+	bw_put(b, pv, (Size) np * sizeof(uint32));
+	pfree(pg);
+	pfree(pv);
+	pfree(old);
+}
+
 /* count(DISTINCT x), and the sum and average over distinct numbers: their partial state is a set of (group, value) pairs, not an accumulator */
 static bool
 set_agg(const SiftAggAgg *a)
@@ -533,6 +567,8 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 			blob_set(ex, i, gl, ng, cidx, pairs ? &pairs[i] : NULL, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
 			blob_key_set(ex, i, cidx, b);
+		if (s->agg[i].kind == SAA_M_DISTINCT)
+			blob_mset(ex, i, cidx, b);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			blob_osa(ex, i, cidx, n, b);
 		if (s->agg[i].kind == SAA_GEN)
@@ -783,6 +819,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 			case SAA_COUNT_ROWS:
 			case SAA_O_COUNT_STAR:
 			case SAA_O_COUNT_ROWS:
+			case SAA_M_COUNT:
 				acc->n[t] += ba->a.n[r];
 				break;
 			case SAA_O_SUM_I64:
@@ -825,6 +862,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				break;
 			case SAA_COUNT_DISTINCT:
 			case SAA_O_COUNT_KEY:
+			case SAA_M_DISTINCT:
 			case SAA_GROUPING:
 				break;
 			case SAA_PCT_CONT:
@@ -891,6 +929,14 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 			for (uint32 i = 0; i < vh[0]; i++)
 				ba->xv[i + 1] = idmap_id(&g->amap[ai], nv[i]);
 		}
+	}
+	if (g->spec->agg[ai].kind == SAA_M_DISTINCT)
+	{
+		ba->npairs = ((const uint32 *) br_get(p, 8))[0];
+		ba->pg = br_get(p, (Size) ba->npairs * 4);
+		ba->xv = palloc0((((const uint32 *) *p)[0] + 1) * sizeof(uint32));
+		merge_values(g, mset_table(g, ai), p, ba->xv);
+		ba->pv = br_get(p, (Size) ba->npairs * 4);
 	}
 	if (g->spec->agg[ai].kind == SAA_O_COUNT_KEY)
 	{
@@ -988,6 +1034,18 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 			else
 				acc->w[t] += v;
 			acc->n[t]++;
+		}
+		return;
+	}
+	if (g->spec->agg[ai].kind == SAA_M_DISTINCT)
+	{
+		/* a value the leader has not counted in the group is counted */
+		for (uint32 i = 0; i < ba->npairs; i++)
+		{
+			uint32		t = gids[ba->pg[i]];
+
+			if (dset_add(g, &g->dset[ai], t, ba->xv[ba->pv[i]]))
+				g->acc[ai].n[t]++;
 		}
 		return;
 	}
@@ -1092,7 +1150,7 @@ blob_merge(AggExec *g, const char *p)
 			merge_agg(g, i, &ba[i], gids, r0, n);
 	}
 	for (int i = 0; i < s->naggs; i++)
-		if (set_agg(&s->agg[i]) || s->agg[i].kind == SAA_O_COUNT_KEY)
+		if (set_agg(&s->agg[i]) || s->agg[i].kind == SAA_O_COUNT_KEY || s->agg[i].kind == SAA_M_DISTINCT)
 			merge_set(g, i, &ba[i], gids);
 		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			merge_osa(g, i, &ba[i], gids);

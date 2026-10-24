@@ -12,8 +12,11 @@ INSERT INTO facts
 SELECT i, '2026-01-01'::date + (i % 23), i % 7, CASE WHEN i % 29 = 0 THEN NULL ELSE ((hashint4(i) & 2147483647) % 3000)::float8 / 10 END, (hashint4(i + 2) & 2147483647) % 400
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, grp, amount, qty);
+CREATE TABLE dims (id int PRIMARY KEY, name text, w float8);
+INSERT INTO dims SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' || (i % 4) END, i FROM generate_series(0, 6) i;
 VACUUM ANALYZE facts;
 ANALYZE dates;
+ANALYZE dims;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -28,7 +31,12 @@ INSERT INTO shapes (name, q) VALUES
 	('condition in ON',   'SELECT d.day, count(f.id), max(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.qty < 50 GROUP BY d.day'),
 	('matches nothing',   'SELECT d.day, count(f.id), sum(f.amount) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.id < 0 GROUP BY d.day'),
 	('global',            'SELECT count(*), count(f.id), sum(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day'),
-	('distinct',          'SELECT d.day, count(DISTINCT f.grp), count(DISTINCT f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day');
+	('distinct',          'SELECT d.day, count(DISTINCT f.grp), count(DISTINCT f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	-- the values of a column of a joined table have the worker's own ids: the leader interns them, and a value two workers saw counts once
+	('distinct lookup',   'SELECT d.day, count(DISTINCT m.name), count(m.name) FROM dates d LEFT JOIN (facts f JOIN dims m ON m.id = f.grp) ON f.day = d.day GROUP BY d.day'),
+	('distinct left',     'SELECT f.qty / 100, count(DISTINCT m.name), count(m.name) FROM facts f LEFT JOIN dims m ON m.id = f.grp GROUP BY 1'),
+	('distinct global',   'SELECT count(DISTINCT m.name), count(m.name), count(*) FROM facts f LEFT JOIN dims m ON m.id = f.grp'),
+	('distinct filter',   'SELECT f.grp % 3, count(DISTINCT m.name) FILTER (WHERE f.qty > 100), count(DISTINCT m.w) FROM facts f LEFT JOIN dims m ON m.id = f.grp - 1 GROUP BY 1');
 CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -64,8 +72,12 @@ FROM shapes s ORDER BY s.n;
  condition in ON  | serial   | t       | t       | t       | t
  matches nothing  | none     | t       | t       | t       | t
  global           | parallel | t       | t       | t       | t
- distinct         | serial   | t       | t       | t       | t
-(8 rows)
+ distinct         | parallel | t       | t       | t       | t
+ distinct lookup  | parallel | t       | t       | t       | t
+ distinct left    | parallel | t       | t       | t       | t
+ distinct global  | parallel | t       | t       | t       | t
+ distinct filter  | parallel | t       | t       | t       | t
+(12 rows)
 
 -- the days no fact has (the calendar runs 18 days past the facts) are groups of the result, in the parallel scan too
 SET sift.enable_agg = on;
@@ -93,8 +105,12 @@ FROM shapes s ORDER BY s.n;
  matches nothing  | t        | t        | t
  global           | t        | t        | t
  distinct         | t        | t        | t
-(8 rows)
+ distinct lookup  | t        | t        | t
+ distinct left    | t        | t        | t
+ distinct global  | t        | t        | t
+ distinct filter  | t        | t        | t
+(12 rows)
 
-DROP TABLE facts, dates, shapes;
+DROP TABLE facts, dates, dims, shapes;
 DROP EXTENSION pg_sift;
 DROP FUNCTION mode_of, rows_of;

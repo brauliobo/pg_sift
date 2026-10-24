@@ -356,6 +356,8 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
 		case SAA_COUNT_DISTINCT:
+		case SAA_M_COUNT:
+		case SAA_M_DISTINCT:
 			return true;
 		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
 		case SAA_O_COUNT_STAR:
@@ -392,7 +394,7 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 			return false;
 	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
 	for (int i = 0; i < s->naggs; i++)
-		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN)
+		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
 			return false;
 	return true;
 }

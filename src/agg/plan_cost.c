@@ -103,11 +103,11 @@
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
-#define AGG_START_MS		2750.0	/* a millisecond in this path's estimates: AGG_SETUP_FACTOR times the default parallel_setup_cost is 8 ms */
+#define AGG_START_MS		500.0	/* a millisecond in this path's estimates, for starting workers: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
-#define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
+#define AGG_SETUP_FACTOR	2.0	/* times parallel_setup_cost: the least a scan is charged for workers; a scan the estimate puts under ~4,000 units (8 to 40 ms measured) stays in one process. 22 priced them at 215 ms for the median node: no replay statement took workers, and a shape of 3,200,000 rows that runs 2.5 times faster with them stayed serial */
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows of a flagged unit the source reads again from the heap when no sample of the unit's overflow slots says (statistics: ovf_frac) */
 #define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again */
@@ -1682,6 +1682,9 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
 			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+		/* the pairs of the sets of a joined column are at most one a row, and at most the values of each group: a column of few values sends few */
+		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
+			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 	}
 	if (arm > 0)
 	{

@@ -447,6 +447,8 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	out->argtype = typ;
 	out->combo = ci;
 	out->slot = si;
+	if (kind == SAA_M_DISTINCT)
+		out->est_distinct = Max(estimate_num_groups(c->root, list_make1(arg), Max(c->rel->tuples, 1.0), NULL, NULL), 1.0);
 	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
 	return true;
 }

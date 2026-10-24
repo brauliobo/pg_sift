@@ -274,6 +274,7 @@ typedef struct SiftAggAgg
 	bool		distinct;		/* SUM_NUM, AVG_NUM: of the distinct values */
 	SiftAggPred *filter;		/* NULL: none */
 	Bitmapset  *reads;			/* planner only, not packed: the leaves its arguments read */
+	double		est_distinct;	/* planner only, not packed, SAA_M_DISTINCT: the distinct values of the argument, as PostgreSQL estimates them */
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
 	Oid			collid;			/* input collation: count(DISTINCT) of dictionary values */

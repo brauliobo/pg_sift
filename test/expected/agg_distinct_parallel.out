@@ -65,7 +65,7 @@ FROM shapes s ORDER BY s.n;
        name       |   mode   | scan_w0 | scan_w2 | scan_w4 | scan_w3_no_leader 
 ------------------+----------+---------+---------+---------+-------------------
  count amount     | parallel | t       | t       | t       | t
- count global     | serial   | t       | t       | t       | t
+ count global     | parallel | t       | t       | t       | t
  count expression | serial   | t       | t       | t       | t
  count with int   | parallel | t       | t       | t       | t
  sum amount       | parallel | t       | t       | t       | t
