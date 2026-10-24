@@ -13,6 +13,7 @@ Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, h
 `CHANGELOG.md`, `pg_sift.control` at the version of the extension SQL (a patch release keeps it), and push `main`. When the last code commit is pushed,
 `gh workflow run ci.yml --ref main` starts the full run of that commit (about 8 minutes), so that the release finds it done.
 After a minor release replace `scripts/options-released.tsv` with `scripts/gen-options.sh --snapshot` of the release, so that the options tables stop marking its defaults as new or changed.
+Also empty `scripts/bench-cases.allow` of the lines the release moved out of `## Unreleased` (the check fails on a line whose phrase no longer matches, which turns `main` and every quick tier red).
 
 ## What it does
 
