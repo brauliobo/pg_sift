@@ -64,6 +64,7 @@ extern void sift_col_set_option(Relation index, const char *name, const char *va
 extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
 extern const char *sift_col_options_paths_raw(Relation index);
 extern bool sift_col_paths_auto(const char *opt);
+extern bool sift_col_paths_redecide(Relation index);
 extern void sift_col_auto_keys_report(Relation index);
 /* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);

@@ -455,6 +455,20 @@ sift_col_options_paths_raw(Relation index)
 }
 
 /* 'auto' (decided at the build) or 'auto: spec' (decided by an earlier build); a spec starts with a key and a type, so it never reads like this */
+/* the option is empty or a bare 'auto' on an index with a jsonb column: its paths are read from the documents at the next build */
+bool
+sift_col_paths_redecide(Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+
+	if (opt[0] != '\0' && !(sift_col_paths_auto(opt) && opt[4] == '\0'))
+		return false;
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid == JSONBOID)
+			return true;
+	return false;
+}
+
 bool
 sift_col_paths_auto(const char *opt)
 {
@@ -488,11 +502,18 @@ sift_col_options_preagg(Relation index)
 	return o->preagg ? (const char *) o + o->preagg : "";
 }
 
+/*
+ * An ALTER INDEX is checked by building the state the new options give. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
+ * again at the next REINDEX (col/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
+ */
 void
 sift_col_alter_check(Relation index)
 {
-	if (sift_col_is_index(index))
-		(void) sift_col_rel(index);
+	if (!sift_col_is_index(index))
+		return;
+	if (sift_col_paths_redecide(index))
+		return;
+	(void) sift_col_rel(index);
 }
 
 const char *
@@ -601,7 +622,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
-					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(att->attname))));
+					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
 		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
