@@ -184,6 +184,19 @@ def exp_merge_fanin(db, n):
     fresh(db, 'oe_src', 'oe_a', 'oe_b')
 
 
+def exp_switches(db, n):
+    """the BM25 switches: the index scan and the count pushdown against the plan PostgreSQL has without them (sift.score() needs the scan, so the scan is timed without it)"""
+    fresh(db, 'oe_src', 'oe_a')
+    corpus(db, 'oe_src', n)
+    psql('CREATE TABLE oe_a AS TABLE oe_src; CREATE INDEX oe_a_i ON oe_a USING sift (body); VACUUM (FREEZE, ANALYZE) oe_a', db)
+    for label, terms in (('rare terms', 'w12 w40'), ('frequent terms', 'w2 w5')):
+        x, y = ab_set(db, 'SET sift.enable_scan = off', 'SET sift.enable_scan = on', "SELECT id FROM oe_a WHERE body @@> '%s' ORDER BY id LIMIT 10" % terms)
+        row('sift.enable_scan', 'enable_scan off/on', n, 'first 10 ids of a match, %s (no score: it needs the scan)' % label, round(x, 2), round(y, 2), 'ms', pct(x, y))
+        x, y = ab_set(db, 'SET sift.enable_count = off', 'SET sift.enable_count = on', "SELECT count(*) FROM oe_a WHERE body @@> '%s'" % terms)
+        row('sift.enable_count', 'enable_count off/on', n, 'count(*) of a match, %s' % label, round(x, 2), round(y, 2), 'ms', pct(x, y))
+    fresh(db, 'oe_src', 'oe_a')
+
+
 def exp_async(db, n):
     """20 inserts of 2,000 rows into a text index that seals its write buffer at 64 kB: the writer merges itself (off) or leaves it to the worker (on)"""
     fresh(db, 'oe_src', 'oe_a', 'oe_b')
@@ -341,7 +354,7 @@ def exp_prefetch(db, n):
 
 EXPS = {'text': exp_text, 'keyword': exp_keyword, 'fields': exp_fields, 'merge_fanin': exp_merge_fanin, 'key_cut_rows': exp_key_cut_rows, 'point_columns': exp_point_columns,
         'dead_rewrite': exp_dead_rewrite, 'vis_page_cache': exp_vis_page_cache, 'compression': exp_compression, 'key_columns': exp_key_columns, 'key_columns_named': exp_key_columns_named, 'table': exp_table,
-        'prefetch': exp_prefetch, 'async': exp_async}
+        'prefetch': exp_prefetch, 'async': exp_async, 'switches': exp_switches}
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
