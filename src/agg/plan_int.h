@@ -388,6 +388,7 @@ extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);
 extern double agg_stage_normal;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
+extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double filter_rows_ratio(AggCtx *c);
 extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
